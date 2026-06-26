@@ -79,6 +79,17 @@ _SETTINGS_DEFAULTS = {
     "stt_max_no_speech": 0.6,         # rejeita se prob. de "sem fala" acima disto (0–1)
     "stt_min_logprob": -1.0,          # rejeita se confiança média abaixo disto (-5–0)
     "stt_max_compression": 2.4,       # rejeita se repetitivo demais (alucinação) (1–10)
+    # Modelos remotos (API OpenAI-compatível). base_url deve terminar em /v1
+    # (ex.: http://rtx-host:8000/v1). api_key opcional. Tudo local por padrão.
+    # base_url + api_key ficam locais (settings.json é gitignored). Vazio = local.
+    "remote_tts": False,              # síntese (OmniVoice) numa máquina remota (ex.: RTX)
+    "remote_tts_model": "tts-1",      # nome do modelo no servidor remoto
+    "remote_translate": False,        # tradução (LLM) via API remota
+    "remote_stt": False,              # transcrição (STT) via API remota
+    "remote_base_url": "",            # ex.: http://rtx-host:8000/v1
+    "remote_api_key": "",             # chave do provedor (guardada localmente; opcional)
+    "remote_translate_model": "gpt-4o-mini",
+    "remote_stt_model": "whisper-1",
 }
 _settings = dict(_SETTINGS_DEFAULTS)
 if SETTINGS_PATH.exists():
@@ -682,6 +693,16 @@ def update_settings(payload: dict):
         _settings["stt_min_logprob"] = _clamp(payload["stt_min_logprob"], -5.0, 0.0, -1.0)
     if "stt_max_compression" in payload:
         _settings["stt_max_compression"] = _clamp(payload["stt_max_compression"], 1.0, 10.0, 2.4)
+    for chave in ("remote_tts", "remote_translate", "remote_stt"):
+        if chave in payload:
+            _settings[chave] = bool(payload[chave])
+    if "remote_base_url" in payload:
+        _settings["remote_base_url"] = str(payload["remote_base_url"] or "").strip()[:300]
+    if "remote_api_key" in payload:
+        _settings["remote_api_key"] = str(payload["remote_api_key"] or "").strip()[:300]
+    for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
+        if chave in payload:
+            _settings[chave] = str(payload[chave] or "").strip()[:120]
     _save_settings()
     return _settings
 
@@ -869,8 +890,9 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
 
     job = _jobs[job_id]
     try:
-        model = _get_model()
-        sr = getattr(model, "sample_rate", 24000)
+        remote = _use_remote_tts()
+        model = None if remote else _get_model()
+        sr = 24000 if remote else getattr(model, "sample_rate", 24000)
         chunks = _split_text(_sanitize_text(text), max_chars=_settings["chunk_max_chars"])
         silence = np.zeros(int(CHUNK_SILENCE_S * sr), dtype=np.float32)
         job["total"] = len(chunks)
@@ -880,7 +902,10 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         with _gen_lock:
             started = time.time()
             # voz padrão ainda não materializada: cria a amostra-semente 1x
-            if voice_id == DESIGN_VOICE_ID:
+            if remote:
+                rvoice = _remote_voice_param(voice_id, omni)
+                conds = ref_text = None
+            elif voice_id == DESIGN_VOICE_ID:
                 ref_text = None       # sem ref de clone -> o timbre vem só do instruct
                 conds = None
             else:
@@ -894,11 +919,15 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                 # trecho sem pontuação terminal (quebra por vírgula) ganha ponto
                 if chunk[-1] not in ".!?…":
                     chunk = chunk.rstrip(" ,;:") + "."
-                for tentativa in (1, 2):
-                    audio = _generate_chunk(model, chunk, language, conds, ref_text, omni)
-                    if not _anomalo(audio, sr, chunk):
-                        break
-                    job["retries"] = job.get("retries", 0) + 1
+                if remote:
+                    # servidor remoto gera (e já aplica a velocidade); sem retry local
+                    audio = _tts_remote_chunk(chunk, rvoice, language, omni, sr)
+                else:
+                    for tentativa in (1, 2):
+                        audio = _generate_chunk(model, chunk, language, conds, ref_text, omni)
+                        if not _anomalo(audio, sr, chunk):
+                            break
+                        job["retries"] = job.get("retries", 0) + 1
                 audio = _fade_edges(_normalize(_trim_tail_silence(audio, sr)), sr)
                 if i < len(chunks) - 1:
                     audio = np.concatenate([audio, silence])
@@ -951,6 +980,8 @@ def synthesize(payload: dict):
     if voice_id == DESIGN_VOICE_ID:
         if not (omni.get("instruct") or "").strip():
             raise HTTPException(400, "Voice design vazio — descreva a voz no campo instruct")
+    elif _use_remote_tts():
+        pass  # o servidor remoto valida/mapeia a voz
     elif not voice_path.exists() and voice_id not in OMNI_PRESETS:
         raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
 
@@ -1086,7 +1117,116 @@ def _wav_to_mono16k(audio_path: Path):
     return np.ascontiguousarray(audio, dtype=np.float32)
 
 
-def _transcribe(audio_path: Path, language: str | None = None):
+# --- Modelos remotos (API OpenAI-compatível): tradução e transcrição opcionais ---
+def _remote_ready() -> bool:
+    return bool(_settings.get("remote_base_url") and _settings.get("remote_api_key"))
+
+
+def _use_remote_translate() -> bool:
+    return bool(_settings.get("remote_translate")) and _remote_ready()
+
+
+def _use_remote_stt() -> bool:
+    return bool(_settings.get("remote_stt")) and _remote_ready()
+
+
+def _use_remote_tts() -> bool:
+    return bool(_settings.get("remote_tts")) and bool(_settings.get("remote_base_url"))
+
+
+def _remote_voice_param(voice_id: str, omni: dict) -> str:
+    """Valor do campo `voice` enviado ao servidor remoto. Voice design manda a
+    descrição; senão o nome (mais legível) ou o id da voz."""
+    if voice_id == DESIGN_VOICE_ID:
+        return (omni.get("instruct") or "").strip() or "default"
+    try:
+        meta = json.loads((VOICES_DIR / f"{voice_id}.json").read_text())
+        return meta.get("name") or voice_id
+    except Exception:  # noqa: BLE001
+        return voice_id
+
+
+def _tts_remote_chunk(text: str, voice: str, language: str, omni: dict, sr: int = 24000):
+    """Encaminha um trecho ao servidor OmniVoice remoto (OpenAI-compatível) e
+    devolve o áudio como array float32 no sample-rate local."""
+    import io
+
+    import numpy as np
+    import requests
+    import soundfile as sf
+
+    base = _settings["remote_base_url"].rstrip("/")
+    headers = {}
+    if _settings.get("remote_api_key"):
+        headers["Authorization"] = f"Bearer {_settings['remote_api_key']}"
+    payload = {"model": _settings.get("remote_tts_model") or "tts-1",
+               "input": text, "voice": voice or "default",
+               "response_format": "wav", "language": _omni_language(language),
+               "speed": float(omni.get("speed") or 1.0)}
+    r = requests.post(f"{base}/audio/speech", headers=headers, json=payload, timeout=300)
+    if not r.ok:
+        raise RuntimeError(f"TTS remoto falhou ({r.status_code}): {r.text[:200]}")
+    data, src_sr = sf.read(io.BytesIO(r.content), dtype="float32")
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    if int(src_sr) != sr:
+        from math import gcd
+
+        from scipy.signal import resample_poly
+        g = gcd(int(src_sr), sr)
+        data = resample_poly(data, sr // g, int(src_sr) // g)
+    return np.asarray(data, dtype=np.float32)
+
+
+def _translate_prompt(text: str, target: str) -> str:
+    nome = LANG_DISPLAY.get(target, target)
+    return (f"Translate the text below into {nome}. Output ONLY the translation, "
+            f"no quotes, no explanations, keep it natural.\n\nText: {text}")
+
+
+def _translate_remote(text: str, target: str) -> str:
+    import requests
+
+    base = _settings["remote_base_url"].rstrip("/")
+    r = requests.post(
+        f"{base}/chat/completions",
+        headers={"Authorization": f"Bearer {_settings['remote_api_key']}",
+                 "Content-Type": "application/json"},
+        json={"model": _settings.get("remote_translate_model") or "gpt-4o-mini",
+              "temperature": 0.2,
+              "messages": [{"role": "user", "content": _translate_prompt(text, target)}]},
+        timeout=60,
+    )
+    if not r.ok:
+        raise RuntimeError(f"tradução remota falhou ({r.status_code}): {r.text[:200]}")
+    return r.json()["choices"][0]["message"]["content"].strip().strip('"').strip()
+
+
+def _transcribe_remote(audio_path: Path, language: str | None):
+    import requests
+
+    base = _settings["remote_base_url"].rstrip("/")
+    data = {"model": _settings.get("remote_stt_model") or "whisper-1",
+            "response_format": "verbose_json"}
+    if language and language not in ("auto",):
+        data["language"] = language
+    with open(audio_path, "rb") as fh:
+        r = requests.post(
+            f"{base}/audio/transcriptions",
+            headers={"Authorization": f"Bearer {_settings['remote_api_key']}"},
+            files={"file": ("audio.wav", fh, "audio/wav")}, data=data, timeout=120,
+        )
+    if not r.ok:
+        raise RuntimeError(f"transcrição remota falhou ({r.status_code}): {r.text[:200]}")
+    j = r.json()
+    return {"text": j.get("text", ""), "language": (j.get("language") or "").strip().lower(),
+            "segments": j.get("segments") or []}
+
+
+def _transcribe(audio_path: Path, language: str | None = None, allow_remote: bool = True):
+    if allow_remote and _use_remote_stt():
+        return _transcribe_remote(audio_path, language)
+
     import mlx_whisper
 
     # language fixo (ex.: "pt") melhora muito a precisão em trechos curtos: o
@@ -1131,6 +1271,9 @@ def _stt_ok(r: dict, text: str):
 
 
 def _translate(text: str, target: str) -> str:
+    if _use_remote_translate():
+        return _translate_remote(text, target)
+
     from mlx_lm import generate, load
 
     with _mt_lock:
