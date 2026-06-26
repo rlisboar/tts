@@ -133,12 +133,13 @@ OMNI_REF_MAX_S = 10.0  # ref >20s é cortada no maior silêncio até este teto
 OMNI_PRESET_SEED = ("Olá, esta é a minha voz. Vou narrar o seu texto com clareza, "
                     "ritmo natural e boa dicção, do começo ao fim.")
 OMNI_PRESETS = {
-    "vd-narrador": {"name": "Narrador (masc., grave)",     "instruct": "male, deep, warm, calm narrator, clear articulation"},
-    "vd-locutora": {"name": "Locutora (fem., suave)",      "instruct": "female, soft, warm, friendly, natural"},
-    "vd-jovem-m":  {"name": "Jovem (masc., animado)",      "instruct": "young male, energetic, upbeat, expressive"},
-    "vd-jovem-f":  {"name": "Jovem (fem., animada)",       "instruct": "young female, bright, cheerful, lively"},
-    "vd-formal":   {"name": "Formal (masc., autoritário)", "instruct": "male, serious, authoritative, formal, measured"},
-    "vd-podcast":  {"name": "Podcast (fem., conversa)",    "instruct": "female, conversational, relaxed, engaging podcast host"},
+    # instruct usa SÓ o vocabulário fechado do OmniVoice (gender/age/pitch/accent/whisper)
+    "vd-narrador": {"name": "Narrador (masc., grave)",     "instruct": "male, middle-aged, low pitch"},
+    "vd-locutora": {"name": "Locutora (fem., suave)",      "instruct": "female, moderate pitch"},
+    "vd-jovem-m":  {"name": "Jovem (masc., animado)",      "instruct": "male, young adult, high pitch"},
+    "vd-jovem-f":  {"name": "Jovem (fem., animada)",       "instruct": "female, young adult, high pitch"},
+    "vd-formal":   {"name": "Formal (masc., autoritário)", "instruct": "male, middle-aged, low pitch"},
+    "vd-podcast":  {"name": "Podcast (fem., conversa)",    "instruct": "female, young adult, moderate pitch"},
 }
 
 # Idioma: o token é injetado cru no MLX (<|lang_start|>{x}<|lang_end|>) — o porte MLX

@@ -8,14 +8,16 @@
   :root {
     --bg: #0b0d11; --bg2: #0f1216;
     --panel: #151a20; --panel2: #1b2128; --panel3: #232a32;
-    --text: #e9ebee; --muted: #9aa0a8; --faint: #6c727b;
-    --accent: #18b9a6; --accent-deep: #0f9183; --accent-soft: rgba(24,185,166,.14);
+    --text: #e9ebee; --muted: #9aa0a8; --faint: #7b818c;
+    --accent: #18b9a6; --accent-deep: #0f9183; --accent-soft: rgba(24,185,166,.13);
     --danger: #ef5b52; --ok: #35c98a; --warn: #e9a94a;
-    --border: #262c33; --ring: rgba(24,185,166,.28);
-    --shadow: 0 12px 34px rgba(0,0,0,.42);
+    --border: #272d35; --border-soft: #20262d; --ring: rgba(24,185,166,.30);
+    --shadow: 0 10px 28px rgba(0,0,0,.38); --shadow-sm: 0 1px 2px rgba(0,0,0,.20);
+    --r-sm: 8px; --r-md: 10px; --r-lg: 13px; --ctrl-h: 38px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
+  :root { color-scheme: dark; }   /* controles nativos (áudio, scrollbar) em tema escuro */
   body {
     background:
       radial-gradient(1200px 640px at 92% -12%, rgba(24,185,166,.06), transparent 62%),
@@ -23,16 +25,17 @@
       var(--bg);
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
-    font-size: 13.5px; line-height: 1.45;
+    font-size: 13.5px; line-height: 1.5;
     overflow: hidden;
-    -webkit-font-smoothing: antialiased;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
   }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
   ::-webkit-scrollbar-thumb:hover { background: var(--panel3); background-clip: content-box; }
 
   /* ───────── App shell ───────── */
-  .app { height: 100vh; display: flex; }
+  .app { height: 100vh; display: flex; flex-direction: column; }
+  .app-top { flex: 1; min-height: 0; display: flex; }
   .sidebar {
     width: 224px; flex-shrink: 0; background: var(--bg2);
     border-right: 1px solid var(--border); padding: 18px 14px;
@@ -69,63 +72,88 @@
   .content { flex: 1; min-width: 0; padding: 22px 26px; display: flex; flex-direction: column; overflow: hidden; }
   .view { flex: 1; min-height: 0; display: none; flex-direction: column; gap: 14px; }
   .view.active { display: flex; }
-  .view-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-  .view-head h1 { font-size: 21px; font-weight: 800; letter-spacing: -.02em; }
+  .view-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 2px; }
+  .view-head h1 { font-size: 22px; font-weight: 800; letter-spacing: -.02em; }
+  .view-head > .muted { margin-left: auto; font-size: 12px; }
   .view-head .row { margin-left: auto; }
 
-  /* ───────── Painel de Configurações (sempre visível, direita) ───────── */
-  .config-panel {
-    width: 372px; flex-shrink: 0; background: var(--bg2);
-    border-left: 1px solid var(--border); padding: 18px 16px;
-    display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden;
+  /* ───────── Configurações: dock full-width no rodapé ───────── */
+  .config-dock {
+    flex: 0 0 auto; max-height: 56vh; background: var(--bg2);
+    border-top: 1px solid var(--border); padding: 0 26px 16px;
+    overflow-y: auto; overflow-x: hidden;
   }
-  .config-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .config-head {
+    position: sticky; top: 0; z-index: 5; background: var(--bg2);
+    display: flex; align-items: center; gap: 12px; padding: 13px 0 11px;
+    border-bottom: 1px solid var(--border-soft); margin-bottom: 12px;
+  }
   .config-head h1 { font-size: 17px; font-weight: 800; letter-spacing: -.02em; }
-  .config-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 6px; display: flex; flex-direction: column; }
-  /* no painel estreito tudo empilha e ocupa 100% — nada de texto/controle cortado */
-  .config-body .row { margin-bottom: 14px; flex-direction: column; align-items: stretch; gap: 8px; }
-  .config-body .cfg-label { width: 100%; }
-  .config-body select, .config-body input[type=text], .config-body input[type=number],
-  .config-body textarea { width: 100%; max-width: 100%; }
-  .config-body .hint { overflow-wrap: anywhere; }
-  .config-panel .sliders { grid-template-columns: 1fr 1fr; gap: 12px 14px; }
-  .config-panel details { background: var(--panel); }
-  .config-save { position: sticky; bottom: 0; background: var(--bg2); padding-top: 12px; margin-top: auto;
-    border-top: 1px solid var(--border); flex-direction: row !important; align-items: center !important; }
+  .config-head .config-save { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  /* blocos auto-contidos lado a lado (usa a largura, sem fragmentar) */
+  .config-body { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+  .cfg-sec {
+    flex: 1 1 214px; max-width: 460px; min-width: 0;
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg);
+    padding: 13px 15px 15px; display: flex; flex-direction: column; gap: 9px;
+  }
+  .cfg-sec-h { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--accent); font-weight: 700; margin-bottom: 1px; }
+  .cfg-sec .cfg-label { width: 100%; }
+  .cfg-sec select, .cfg-sec input[type=text], .cfg-sec input[type=number], .cfg-sec textarea { width: 100%; }
+  .cfg-sec .sliders { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; margin: 2px 0; }
+  .cfg-sec .sliders label { font-size: 11.5px; }
+  .cfg-sec .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: end; }
+  .cfg-sec .check { margin: 1px 0; }
+  .cfg-sec .hint { margin-top: 2px; }
 
   /* ───────── Components ───────── */
-  h2 { font-size: 11.5px; margin-bottom: 12px; color: var(--faint); text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }
+  h2 { font-size: 12px; margin-bottom: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; font-weight: 700; }
+  .cfg-group { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .08em;
+    font-weight: 700; margin: 18px 0 2px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
+  .cfg-group:first-of-type { margin-top: 2px; padding-top: 0; border-top: 0; }
   .muted { color: var(--muted); }
   .small { font-size: 12px; }
   .card {
     background: var(--panel);
-    border: 1px solid var(--border); border-radius: 14px; padding: 18px;
-    box-shadow: 0 1px 2px rgba(0,0,0,.18);
+    border: 1px solid var(--border); border-radius: var(--r-lg); padding: 18px;
+    box-shadow: var(--shadow-sm);
   }
   .col-scroll { overflow: auto; min-height: 0; }
   button {
-    background: var(--accent); color: #04221e; border: 1px solid rgba(0,0,0,.10);
-    border-radius: 9px; padding: 9px 15px; font-size: 13px; cursor: pointer; font-weight: 650;
-    letter-spacing: -.01em; box-shadow: 0 1px 2px rgba(0,0,0,.16);
-    transition: background .15s, transform .06s, opacity .15s;
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    min-height: var(--ctrl-h); background: var(--accent); color: #04221e; border: 1px solid rgba(0,0,0,.12);
+    border-radius: var(--r-md); padding: 0 16px; font-size: 13px; cursor: pointer; font-weight: 650;
+    letter-spacing: -.01em; box-shadow: var(--shadow-sm); white-space: nowrap;
+    transition: background .15s, transform .06s, box-shadow .15s, opacity .15s, color .15s;
   }
   button:hover { background: #1ec7b3; }
   button:active { transform: translateY(1px); }
-  button:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
+  button:focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--ring); }
+  button:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; transform: none; }
   button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); box-shadow: none; }
-  button.ghost:hover { background: var(--panel3); }
-  button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); padding: 7px 12px; font-size: 12.5px; box-shadow: none; }
-  button.danger:hover { background: rgba(240,86,76,.10); }
-  button.small { padding: 6px 11px; font-size: 12px; }
-  button.rec { background: linear-gradient(135deg, #ff5b5b, var(--danger)); box-shadow: 0 4px 14px rgba(240,86,76,.4); animation: pulse 1.4s ease-in-out infinite; }
-  @keyframes pulse { 50% { filter: brightness(1.15); } }
+  button.ghost:hover { background: var(--panel3); border-color: var(--panel3); }
+  button.danger { background: transparent; color: var(--danger); border: 1px solid rgba(239,91,82,.55); box-shadow: none; }
+  button.danger:hover { background: rgba(239,91,82,.12); border-color: var(--danger); }
+  button.small { min-height: 32px; padding: 0 11px; font-size: 12px; }
+  button.rec { background: linear-gradient(135deg, #ff5f56, var(--danger)); color: #fff; border-color: transparent;
+    box-shadow: 0 0 0 3px rgba(239,91,82,.18); animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 3px rgba(239,91,82,.18); } 50% { box-shadow: 0 0 0 6px rgba(239,91,82,.06); } }
   input[type=text], input[type=number], textarea, select {
     background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 10px; padding: 9px 12px; font-size: 13.5px; width: 100%;
+    border-radius: var(--r-md); padding: 9px 12px; font-size: 13.5px; width: 100%;
     transition: border-color .15s, box-shadow .15s; font-family: inherit;
   }
+  input[type=text], input[type=number], select { min-height: var(--ctrl-h); }
   input:focus, textarea:focus, select:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
-  select { cursor: pointer; }
+  input::placeholder, textarea::placeholder { color: var(--faint); }
+  select {
+    cursor: pointer; -webkit-appearance: none; appearance: none; padding-right: 32px;
+    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8" viewBox="0 0 12 8"><path fill="none" stroke="%239aa0a8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M1.5 2l4.5 4 4.5-4"/></svg>');
+    background-repeat: no-repeat; background-position: right 11px center;
+  }
+  select:hover { border-color: var(--panel3); }
   textarea { resize: vertical; }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -136,17 +164,20 @@
   .tagbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .tagbar-label { font-size: 11px; color: var(--faint); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-right: 2px; }
   .chip {
-    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
-    border-radius: 99px; padding: 5px 11px; font-size: 12px; font-weight: 600;
-    cursor: pointer; box-shadow: none;
+    min-height: 28px; background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 99px; padding: 4px 12px; font-size: 12px; font-weight: 600;
+    cursor: pointer; box-shadow: none; transition: background .12s, color .12s, border-color .12s;
   }
-  .chip:hover { color: var(--text); border-color: var(--accent); background: var(--panel3); filter: none; }
+  .chip:hover { color: var(--text); border-color: var(--accent); background: var(--panel3); }
+  .chip:active { transform: translateY(1px); }
   .cols2 { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.05fr 1fr; gap: 16px; }
 
   .item {
-    display: flex; gap: 10px; align-items: center; padding: 11px 0;
-    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+    display: flex; gap: 10px; align-items: center; padding: 11px 10px; margin: 0 -10px;
+    border-radius: var(--r-md); border-bottom: 1px solid var(--border-soft); flex-wrap: wrap;
+    transition: background .12s;
   }
+  .item:hover { background: var(--panel2); }
   .item:last-child { border-bottom: 0; }
   .item .grow { flex: 1; min-width: 140px; }
   .item .name { font-weight: 600; font-size: 13.5px; }
@@ -166,34 +197,68 @@
   .badge.err { color: var(--danger); border-color: rgba(240,86,76,.5); background: rgba(240,86,76,.10); }
   #timer { font-variant-numeric: tabular-nums; font-size: 15px; color: var(--danger); font-weight: 800; }
   .hint { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 8px; }
-  audio { height: 34px; max-width: 230px; }
-  .empty { color: var(--faint); font-size: 13px; padding: 14px 0; text-align: center; }
+  audio { height: 36px; max-width: 240px; width: 100%; border-radius: var(--r-md); }
+  #transOut { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r-md);
+    padding: 12px 14px; margin-top: 12px; line-height: 1.65; }
+  #transOut:empty { display: none; }
+  .empty { color: var(--muted); font-size: 13px; padding: 28px 0; text-align: center; }
   #toast {
-    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
-    background: var(--panel3); border: 1px solid var(--border); border-radius: 12px;
-    padding: 11px 20px; font-size: 13px; display: none; max-width: 90%; box-shadow: var(--shadow); z-index: 50;
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(8px);
+    background: var(--panel3); border: 1px solid var(--border); border-radius: var(--r-md);
+    padding: 11px 18px; font-size: 13px; opacity: 0; pointer-events: none; max-width: 90%;
+    box-shadow: 0 8px 24px rgba(0,0,0,.35); z-index: 50; transition: opacity .18s, transform .18s;
   }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   .keybar {
     position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 60;
     width: min(680px, 92vw); border: 1px solid var(--danger) !important; border-radius: 14px;
   }
-  details { margin-top: 12px; border: 1px solid var(--border); border-radius: 12px; padding: 4px 12px; background: var(--bg2); }
-  details[open] { padding-bottom: 12px; }
-  summary { cursor: pointer; color: var(--text); font-size: 13px; font-weight: 700; padding: 8px 2px; list-style: none; }
+  details { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--r-md); padding: 2px 12px; background: var(--bg2); transition: border-color .15s; }
+  details[open] { padding-bottom: 12px; border-color: var(--panel3); }
+  summary { cursor: pointer; color: var(--text); font-size: 13px; font-weight: 700; padding: 10px 2px; list-style: none; user-select: none; display: flex; align-items: center; gap: 8px; transition: color .15s; }
+  summary:hover { color: var(--accent); }
   summary::-webkit-details-marker { display: none; }
-  summary::before { content: "▸ "; color: var(--accent); }
-  details[open] summary::before { content: "▾ "; }
-  .script-box summary { color: var(--accent); }
+  summary::before { content: ""; width: 7px; height: 7px; border-right: 1.6px solid var(--accent); border-bottom: 1.6px solid var(--accent); transform: rotate(-45deg); transition: transform .18s; flex-shrink: 0; margin-left: 2px; }
+  details[open] > summary::before { transform: rotate(45deg); }
+  .config-dock details[open] { box-shadow: inset 2px 0 0 var(--accent); }
   .script {
     background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
     padding: 12px 14px; margin-top: 8px; font-size: 14px; line-height: 1.7;
   }
   .sliders { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px 18px; margin-top: 10px; }
-  .sliders label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
-  .sliders output { color: var(--text); font-weight: 700; }
-  .sliders input[type=range] { accent-color: var(--accent); }
-  .check { font-size: 12.5px; color: var(--muted); display: flex; gap: 7px; align-items: center; }
-  .check input { accent-color: var(--accent); width: auto; }
+  .sliders label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: var(--muted); }
+  .sliders output { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 5px; border-radius: 99px;
+    background: var(--panel3); outline: none; cursor: pointer; padding: 0; min-height: 0;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 15px; height: 15px; border-radius: 50%;
+    background: var(--accent); border: 2px solid var(--bg2); box-shadow: 0 1px 4px rgba(0,0,0,.4);
+    transition: transform .1s, box-shadow .15s;
+  }
+  input[type=range]::-webkit-slider-thumb:hover { box-shadow: 0 0 0 5px var(--accent-soft); }
+  input[type=range]:active::-webkit-slider-thumb { transform: scale(1.12); }
+  input[type=range]::-moz-range-thumb {
+    width: 15px; height: 15px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg2);
+    box-shadow: 0 1px 4px rgba(0,0,0,.4); cursor: pointer;
+  }
+  input[type=range]::-moz-range-track { background: var(--panel3); height: 5px; border-radius: 99px; }
+  input[type=range]:focus-visible { box-shadow: 0 0 0 3px var(--ring); }
+  .check { font-size: 12.5px; color: var(--muted); display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  .check input[type=checkbox] {
+    appearance: none; -webkit-appearance: none; width: 18px; height: 18px; flex-shrink: 0;
+    border: 1.5px solid var(--border); border-radius: 6px; background: var(--panel2);
+    cursor: pointer; position: relative; transition: background .15s, border-color .15s;
+  }
+  .check input[type=checkbox]:hover { border-color: var(--accent); }
+  .check input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
+  .check input[type=checkbox]:checked::after {
+    content: ""; position: absolute; left: 5px; top: 1px; width: 5px; height: 10px;
+    border: solid #04221e; border-width: 0 2px 2px 0; transform: rotate(45deg);
+  }
+  .check input[type=checkbox]:focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--ring); }
+  .check input[type=number] { width: 64px; }
   .cfg-label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 5px; }
   .cfg-label select, .cfg-label input { width: auto; }
   .spinner {
@@ -203,16 +268,16 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  @media (max-width: 1280px) { .config-panel { width: 340px; } }
-  @media (max-width: 1080px) { .config-panel { width: 300px; } .config-panel .sliders { grid-template-columns: 1fr; } }
   @media (max-width: 880px) {
     .sidebar { width: 64px; padding: 14px 8px; }
     .brand span, .nav-item span:not(.ic), .side-foot .badge { display: none; }
     .nav-item { justify-content: center; padding: 11px 0; }
     .side-foot { padding: 4px; }
     .cols2 { grid-template-columns: 1fr; }
-    .config-panel { width: 284px; padding: 14px 10px; }
-    .config-panel .sliders { grid-template-columns: 1fr; }
+    .config-dock { padding: 0 12px 12px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   }
 </style>
 </head>
@@ -227,6 +292,7 @@
 </div>
 
 <div class="app">
+  <div class="app-top">
   <!-- ───────── Sidebar ───────── -->
   <aside class="sidebar">
     <div class="brand"><span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="#04221e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span> <span>TTS-Rod</span></div>
@@ -497,125 +563,143 @@
     </section>
 
   </main>
+  </div><!-- /app-top -->
 
-  <!-- ===== Configurações (painel fixo, sempre visível) ===== -->
-  <aside class="config-panel">
-    <div class="config-head"><h1>Configurações</h1><span class="muted small">UI + API</span></div>
+  <!-- ===== Configurações (rodapé full-width, sempre visível) ===== -->
+  <aside class="config-dock">
+    <div class="config-head">
+      <h1>Configurações</h1><span class="muted small">UI + API</span>
+      <div class="config-save">
+        <span id="cfgStatus" class="hint" style="margin-top:0"></span>
+        <button id="cfgSave">Salvar configurações</button>
+      </div>
+    </div>
     <div class="config-body">
-        <div class="row" style="margin-bottom:14px">
-          <label class="cfg-label">Modelo
-            <select id="cfgModel">
-              <option value="omnivoice">OmniVoice — 646 idiomas (precisão no campo ao lado)</option>
-              <option value="__custom__">outro id/dir MLX de OmniVoice…</option>
-            </select>
-          </label>
-          <input type="text" id="cfgModelCustom" placeholder="ex.: mlx-community/OmniVoice-fp32" style="display:none; max-width:320px">
-          <label class="cfg-label">Precisão
-            <select id="cfgPrecision">
-              <option value="fp32">fp32 — precisão total (~2× RAM, +lento)</option>
-              <option value="bf16">bf16 — rápido (~2 GB) · recomendado</option>
-              <option value="q8">8-bit — +rápido, ~½ RAM (experimental)</option>
-              <option value="q4">4-bit — máx. velocidade, menor qualidade (experimental)</option>
-            </select>
-          </label>
-        </div>
-        <div class="row" style="margin-bottom:14px">
+      <section class="cfg-sec">
+        <h3 class="cfg-sec-h">Modelo &amp; geração</h3>
+        <label class="cfg-label">Modelo
+          <select id="cfgModel">
+            <option value="omnivoice">OmniVoice — 646 idiomas</option>
+            <option value="__custom__">outro id/dir MLX de OmniVoice…</option>
+          </select>
+        </label>
+        <input type="text" id="cfgModelCustom" placeholder="ex.: mlx-community/OmniVoice-fp32" style="display:none">
+        <label class="cfg-label">Precisão
+          <select id="cfgPrecision">
+            <option value="fp32">fp32 — precisão total (~2× RAM, +lento)</option>
+            <option value="bf16">bf16 — rápido (~2 GB) · recomendado</option>
+            <option value="q8">8-bit — +rápido, ~½ RAM (experimental)</option>
+            <option value="q4">4-bit — máx. velocidade (experimental)</option>
+          </select>
+        </label>
+        <div class="row2">
           <label class="cfg-label">Voz padrão da API <select id="cfgVoice"></select></label>
           <label class="cfg-label">Idioma padrão
             <select id="cfgLang">
-              <option value="auto">Auto (detecta do texto)</option>
+              <option value="auto">Auto (detecta)</option>
               <option value="pt">Português</option><option value="en">English</option>
               <option value="es">Español</option><option value="fr">Français</option>
               <option value="de">Deutsch</option><option value="it">Italiano</option>
             </select>
           </label>
-          <label class="cfg-label">Trecho máx. (chars) <input type="number" id="cfgChunk" min="60" max="200" step="10" style="width:90px"></label>
-          <label class="cfg-label">Velocidade <input type="number" id="cfgSpeed" min="0.5" max="2" step="0.05" style="width:90px"></label>
         </div>
-        <label class="cfg-label" style="margin-bottom:14px">Pré-prompt (texto falado antes de toda geração)
-          <textarea id="cfgPrePrompt" style="min-height:48px" placeholder="ex.: Atenção:"></textarea>
+        <div class="row2">
+          <label class="cfg-label">Trecho máx. (chars) <input type="number" id="cfgChunk" min="60" max="200" step="10"></label>
+          <label class="cfg-label">Velocidade <input type="number" id="cfgSpeed" min="0.5" max="2" step="0.05"></label>
+        </div>
+        <label class="cfg-label">Pré-prompt (falado antes de toda geração)
+          <textarea id="cfgPrePrompt" style="min-height:46px" placeholder="ex.: Atenção:"></textarea>
         </label>
-        <details open>
-          <summary>OmniVoice — controles de geração</summary>
-          <div class="sliders" style="margin-top:10px">
-            <label>Passos · num_steps <output id="oNumStepsOut">16</output>
-              <input type="range" id="oNumSteps" min="4" max="64" step="1" value="16"></label>
-            <label>Aderência · guidance <output id="oGuidOut">2.0</output>
-              <input type="range" id="oGuid" min="0" max="10" step="0.1" value="2"></label>
-            <label>Variação de token · class_temp <output id="oClassTOut">0.00</output>
-              <input type="range" id="oClassT" min="0" max="2" step="0.05" value="0"></label>
-            <label>Variação de posição · position_temp <output id="oPosTOut">5.0</output>
-              <input type="range" id="oPosT" min="0" max="20" step="0.5" value="5"></label>
-            <label>Penalidade por camada · layer_penalty <output id="oLayerOut">5.0</output>
-              <input type="range" id="oLayer" min="0" max="20" step="0.5" value="5"></label>
-            <label>Deslocamento t · t_shift <output id="oTshiftOut">0.10</output>
-              <input type="range" id="oTshift" min="0" max="1" step="0.05" value="0.1"></label>
-          </div>
-          <div class="row" style="margin-top:12px">
-            <label class="cfg-label" style="flex:1; min-width:240px">Voice design · instruct (descreva a voz)
-              <input type="text" id="oInstruct" placeholder="ex.: female, low pitch, calm british accent"></label>
-            <label class="cfg-label">Duração fixa (s · vazio = auto)
-              <input type="number" id="oDur" min="0.5" max="60" step="0.5" placeholder="auto" style="width:110px"></label>
-            <label class="cfg-label">Ref. usada da amostra (s)
-              <input type="number" id="oRefMax" min="3" max="30" step="1" style="width:100px"></label>
-          </div>
-          <div class="row" style="margin-top:10px">
-            <button id="oReset" class="ghost" type="button">↺ Restaurar padrões</button>
-          </div>
-          <p class="hint">Passos↑ = mais qualidade, mais lento (16 rápido / 32 qualidade). Aderência↑ = segue
-          mais o texto e a voz de referência. Variações↑ = fala mais espontânea, menos estável. Voice design
-          cria/ajusta o timbre por descrição textual. Sobrepõem-se a estes defaults se enviados na requisição da API.</p>
-        </details>
-        <details>
-          <summary>Áudio (saída) — ganho e equalização</summary>
-          <div class="sliders" style="margin-top:10px">
-            <label>Ganho geral <output id="audGainOut">0 dB</output>
-              <input type="range" id="audGain" min="-15" max="15" step="0.5" value="0"></label>
-            <label>Grave (150 Hz) <output id="audLowOut">0 dB</output>
-              <input type="range" id="audLow" min="-12" max="12" step="0.5" value="0"></label>
-            <label>Médio (1.5 kHz) <output id="audMidOut">0 dB</output>
-              <input type="range" id="audMid" min="-12" max="12" step="0.5" value="0"></label>
-            <label>Agudo (5 kHz) <output id="audHighOut">0 dB</output>
-              <input type="range" id="audHigh" min="-12" max="12" step="0.5" value="0"></label>
-          </div>
-          <p class="hint">Aplicado na saída gerada (local e remoto). Se a fala soa <b>distorcida/estridente</b>, baixe Agudo e o Ganho geral. Limiter de segurança evita clipar.</p>
-        </details>
-        <details open>
-          <summary>Modelos remotos (API)</summary>
-          <label class="check" style="margin-top:10px"><input type="checkbox" id="remoteTts"> Síntese (OmniVoice) numa máquina remota — ex.: RTX</label>
-          <label class="cfg-label" style="margin-top:10px">URL do TTS remoto
-            <input type="text" id="remoteTtsUrl" placeholder="http://solaris:8800/tts"></label>
-          <label class="cfg-label" style="margin-top:10px">Voz remota (nome/preset do servidor)
-            <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
-          <label class="cfg-label" style="margin-top:10px">API key (opcional)
-            <input type="password" id="remoteApiKey" placeholder="deixe vazio se o servidor não exigir" autocomplete="off"></label>
-          <label class="cfg-label" style="margin-top:10px">Parâmetros extra (JSON) — sobrepõe/adiciona
-            <textarea id="remoteTtsExtra" style="min-height:56px; font-family:ui-monospace,Menlo,monospace; font-size:12px" placeholder='{"voice":"rodrigo"}'></textarea></label>
-          <p class="hint">Manda <code>POST</code> na URL com <b>os controles do OmniVoice já configurados acima</b> (num_steps, guidance, temps, t_shift, instruct, duração, speed) + <code>text</code> + <code>language</code> (nome em inglês). O JSON extra <b>sobrepõe/adiciona</b> (ex.: <code>voice</code>, ou renomear um campo p/ o que o seu servidor espera). Espera um WAV. Chave fica só neste Mac.</p>
-          <div style="border-top:1px solid var(--border); margin-top:12px"></div>
-          <p class="hint" style="margin-top:10px"><b>Tradução / transcrição</b> (provedor OpenAI-compatível, opcional):</p>
-          <label class="cfg-label" style="margin-top:6px">Base URL (termina em /v1)
-            <input type="text" id="remoteBaseUrl" placeholder="https://api.openai.com/v1"></label>
-          <div class="row" style="margin-top:10px; flex-direction:row; gap:14px">
-            <label class="check"><input type="checkbox" id="remoteTranslate"> Tradução via API</label>
-            <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
-          </div>
-          <label class="cfg-label" style="margin-top:10px">Modelo de tradução
-            <input type="text" id="remoteTranslateModel" placeholder="gpt-4o-mini"></label>
-          <label class="cfg-label" style="margin-top:10px">Modelo de transcrição
-            <input type="text" id="remoteSttModel" placeholder="whisper-1"></label>
-        </details>
-        <p class="hint">Estes valores valem para a UI e a API; um parâmetro explícito na requisição sempre
-        sobrepõe. A primeira geração baixa e monta o OmniVoice (~2 GB), depois fica em cache.</p>
-        <div class="row config-save">
-          <button id="cfgSave">Salvar configurações</button>
-          <span id="cfgStatus" class="hint" style="margin-top:0"></span>
+      </section>
+
+      <section class="cfg-sec">
+        <h3 class="cfg-sec-h">OmniVoice — geração</h3>
+        <div class="sliders">
+          <label>Passos <output id="oNumStepsOut">16</output>
+            <input type="range" id="oNumSteps" min="4" max="64" step="1" value="16"></label>
+          <label>Aderência <output id="oGuidOut">2.0</output>
+            <input type="range" id="oGuid" min="0" max="10" step="0.1" value="2"></label>
+          <label>Var. token <output id="oClassTOut">0.00</output>
+            <input type="range" id="oClassT" min="0" max="2" step="0.05" value="0"></label>
+          <label>Var. posição <output id="oPosTOut">5.0</output>
+            <input type="range" id="oPosT" min="0" max="20" step="0.5" value="5"></label>
+          <label>Penalidade <output id="oLayerOut">5.0</output>
+            <input type="range" id="oLayer" min="0" max="20" step="0.5" value="5"></label>
+          <label>t_shift <output id="oTshiftOut">0.10</output>
+            <input type="range" id="oTshift" min="0" max="1" step="0.05" value="0.1"></label>
         </div>
+        <div class="row2">
+          <label class="cfg-label">Duração fixa (s) <input type="number" id="oDur" min="0.5" max="60" step="0.5" placeholder="auto"></label>
+          <label class="cfg-label">Ref. da amostra (s) <input type="number" id="oRefMax" min="3" max="30" step="1"></label>
+        </div>
+        <button id="oReset" class="ghost small" type="button" style="align-self:flex-start">↺ Restaurar padrões</button>
+      </section>
+
+      <section class="cfg-sec">
+        <h3 class="cfg-sec-h">Voice design (tags fixas)</h3>
+        <div class="row2">
+          <label class="cfg-label">Gênero
+            <select id="vdGender"><option value="">—</option><option>male</option><option>female</option></select></label>
+          <label class="cfg-label">Idade
+            <select id="vdAge"><option value="">—</option><option>child</option><option>teenager</option><option>young adult</option><option>middle-aged</option><option>elderly</option></select></label>
+        </div>
+        <div class="row2">
+          <label class="cfg-label">Tom
+            <select id="vdPitch"><option value="">—</option><option>very low pitch</option><option>low pitch</option><option>moderate pitch</option><option>high pitch</option><option>very high pitch</option></select></label>
+          <label class="cfg-label">Sotaque (inglês)
+            <select id="vdAccent"><option value="">—</option><option>american accent</option><option>british accent</option><option>australian accent</option><option>canadian accent</option><option>indian accent</option><option>japanese accent</option><option>korean accent</option><option>portuguese accent</option><option>russian accent</option><option>chinese accent</option></select></label>
+        </div>
+        <label class="check"><input type="checkbox" id="vdWhisper"> sussurro (whisper)</label>
+        <label class="cfg-label">instruct gerado
+          <input type="text" id="oInstruct" placeholder="vazio = voz neutra"></label>
+        <p class="hint">Selecione a voz <b>"Voice design"</b> na aba Gerar p/ usar. Só estas tags valem; texto livre é ignorado.</p>
+      </section>
+
+      <section class="cfg-sec">
+        <h3 class="cfg-sec-h">Áudio (saída)</h3>
+        <div class="sliders">
+          <label>Ganho geral <output id="audGainOut">0 dB</output>
+            <input type="range" id="audGain" min="-15" max="15" step="0.5" value="0"></label>
+          <label>Grave (150 Hz) <output id="audLowOut">0 dB</output>
+            <input type="range" id="audLow" min="-12" max="12" step="0.5" value="0"></label>
+          <label>Médio (1.5 kHz) <output id="audMidOut">0 dB</output>
+            <input type="range" id="audMid" min="-12" max="12" step="0.5" value="0"></label>
+          <label>Agudo (5 kHz) <output id="audHighOut">0 dB</output>
+            <input type="range" id="audHigh" min="-12" max="12" step="0.5" value="0"></label>
+        </div>
+        <p class="hint">Vale local e remoto. Distorcido/estridente? Baixe Agudo e o Ganho.</p>
+      </section>
+
+      <section class="cfg-sec">
+        <h3 class="cfg-sec-h">TTS remoto (ex.: RTX)</h3>
+        <label class="check"><input type="checkbox" id="remoteTts"> Síntese numa máquina remota</label>
+        <label class="cfg-label">URL do TTS remoto
+          <input type="text" id="remoteTtsUrl" placeholder="http://solaris:8800/tts"></label>
+        <label class="cfg-label">Voz remota (nome/preset)
+          <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
+        <label class="cfg-label">API key (opcional)
+          <input type="password" id="remoteApiKey" placeholder="vazio se não exigir" autocomplete="off"></label>
+        <label class="cfg-label">Parâmetros extra (JSON)
+          <textarea id="remoteTtsExtra" style="min-height:42px; font-family:ui-monospace,Menlo,monospace; font-size:12px" placeholder='{"voice":"rodrigo"}'></textarea></label>
+      </section>
+
+      <section class="cfg-sec">
+        <h3 class="cfg-sec-h">Tradução / STT (API)</h3>
+        <label class="cfg-label">Base URL (termina em /v1)
+          <input type="text" id="remoteBaseUrl" placeholder="https://api.openai.com/v1"></label>
+        <label class="check"><input type="checkbox" id="remoteTranslate"> Tradução via API</label>
+        <label class="cfg-label">Modelo de tradução
+          <input type="text" id="remoteTranslateModel" placeholder="gpt-4o-mini"></label>
+        <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
+        <label class="cfg-label">Modelo de transcrição
+          <input type="text" id="remoteSttModel" placeholder="whisper-1"></label>
+        <p class="hint">Provedor OpenAI-compatível, opcional.</p>
+      </section>
     </div>
   </aside>
 </div>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -624,9 +708,9 @@ const TARGET_SR = 24000;
 function toast(msg, ms = 3500) {
   const t = $("toast");
   t.textContent = msg;
-  t.style.display = "block";
+  t.classList.add("show");
   clearTimeout(t._h);
-  t._h = setTimeout(() => t.style.display = "none", ms);
+  t._h = setTimeout(() => t.classList.remove("show"), ms);
 }
 
 let KEY = localStorage.getItem("ttsRodKey") || "";
@@ -676,6 +760,32 @@ function insertAtCursor(el, tag) {
 }
 document.querySelectorAll("#tagbar [data-tag]").forEach(b =>
   b.onclick = () => insertAtCursor($("ttsText"), b.dataset.tag));
+
+/* ───────── Voice design: vocabulário FECHADO do OmniVoice (compõe instruct) ───────── */
+const VD = {
+  gender: ["male", "female"],
+  age: ["child", "teenager", "young adult", "middle-aged", "elderly"],
+  pitch: ["very low pitch", "low pitch", "moderate pitch", "high pitch", "very high pitch"],
+  accent: ["american accent", "british accent", "australian accent", "canadian accent",
+           "indian accent", "japanese accent", "korean accent", "portuguese accent",
+           "russian accent", "chinese accent"],
+};
+function vdBuild() {
+  const parts = [$("vdGender").value, $("vdAge").value, $("vdPitch").value, $("vdAccent").value].filter(Boolean);
+  if ($("vdWhisper").checked) parts.push("whisper");
+  $("oInstruct").value = parts.join(", ");
+}
+function vdParse() {
+  const toks = ($("oInstruct").value || "").toLowerCase().split(/\s*,\s*/).map(t => t.trim());
+  $("vdGender").value = toks.find(t => VD.gender.includes(t)) || "";
+  $("vdAge").value = toks.find(t => VD.age.includes(t)) || "";
+  $("vdPitch").value = toks.find(t => VD.pitch.includes(t)) || "";
+  $("vdAccent").value = toks.find(t => VD.accent.includes(t)) || "";
+  $("vdWhisper").checked = toks.includes("whisper");
+}
+["vdGender", "vdAge", "vdPitch", "vdAccent"].forEach(id => $(id).onchange = vdBuild);
+$("vdWhisper").onchange = vdBuild;
+$("oInstruct").oninput = vdParse;
 
 /* ───────── Status do modelo ───────── */
 async function refreshStatus() {
@@ -1409,7 +1519,7 @@ async function loadSettings() {
       $(id).value = val;
       $(out).textContent = parseFloat(val).toFixed(dec);
     }
-    $("oInstruct").value = s.omni_instruct || "";
+    $("oInstruct").value = s.omni_instruct || ""; vdParse();
     $("oDur").value = s.omni_duration_s ?? "";
     $("oRefMax").value = s.omni_ref_max_s ?? 10;
     $("cfgPrecision").value = s.omni_precision || "bf16";
