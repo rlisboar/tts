@@ -73,6 +73,11 @@ _SETTINGS_DEFAULTS = {
     "omni_precision": "bf16",         # fp32 (repo F32) | bf16 (montado) | q8 | q4 (quantiza só o backbone)
     "voice_denoise": True,            # limpa ruído de fundo da amostra ao salvar a voz
     "voice_denoise_strength": 0.7,    # agressividade do spectral gating (0–1)
+    # Áudio de saída (pós-geração): ganho + EQ 3 bandas (dB)
+    "audio_gain_db": 0.0,             # ganho geral (-15..+15)
+    "audio_eq_low_db": 0.0,           # grave (shelf 150 Hz)
+    "audio_eq_mid_db": 0.0,           # médio (peak 1.5 kHz)
+    "audio_eq_high_db": 0.0,          # agudo (shelf 5 kHz)
     # Tradutor de voz — filtros anti-ruído da transcrição (rejeita alucinação do Whisper)
     "stt_min_words": 1,               # mínimo de palavras p/ aceitar (ignora ruído)
     "stt_min_chars": 2,               # mínimo de caracteres
@@ -557,19 +562,73 @@ def _anomalo(audio, sr: int, chunk: str) -> bool:
 
 
 def _normalize(audio, target_rms: float = TARGET_RMS, peak_limit: float = PEAK_LIMIT):
+    """Ganho LINEAR p/ o RMS alvo, mas limitado para o pico não passar de
+    peak_limit. 100% transparente (sem soft-clip) — não esmaga transientes nem
+    distorce. Áudio com muito transiente fica só um pouco mais baixo."""
     import numpy as np
 
     audio = np.asarray(audio, dtype=np.float32)
     rms = float(np.sqrt(np.mean(audio**2)))
-    if rms > 1e-6:
-        audio = audio * (target_rms / rms)
-    # soft-clip (tanh) só nos picos: mantém o RMS perceptual igual entre trechos.
-    # Antes, o hard peak-scale rebaixava o sinal todo -> trechos com mais transiente
-    # ficavam mais baixos (sensação de "volume baixando").
-    peak = float(np.abs(audio).max())
+    if rms <= 1e-6:
+        return audio
+    gain = target_rms / rms
+    peak = float(np.abs(audio).max()) * gain
     if peak > peak_limit:
-        audio = (peak_limit * np.tanh(audio / peak_limit)).astype(np.float32)
-    return audio
+        gain *= peak_limit / peak     # teto de pico (linear, sem distorção)
+    return (audio * gain).astype(np.float32)
+
+
+def _biquad(kind: str, f0: float, gain_db: float, sr: int, q: float = 0.707):
+    """Coeficientes RBJ (1 seção SOS) p/ shelf/peaking EQ."""
+    import numpy as np
+
+    A = 10.0 ** (gain_db / 40.0)
+    w0 = 2.0 * np.pi * f0 / sr
+    cw, sw = np.cos(w0), np.sin(w0)
+    alpha = sw / (2.0 * q)
+    if kind == "peak":
+        b0, b1, b2 = 1 + alpha * A, -2 * cw, 1 - alpha * A
+        a0, a1, a2 = 1 + alpha / A, -2 * cw, 1 - alpha / A
+    elif kind == "lowshelf":
+        s = 2.0 * np.sqrt(A) * alpha
+        b0 = A * ((A + 1) - (A - 1) * cw + s); b1 = 2 * A * ((A - 1) - (A + 1) * cw); b2 = A * ((A + 1) - (A - 1) * cw - s)
+        a0 = (A + 1) + (A - 1) * cw + s; a1 = -2 * ((A - 1) + (A + 1) * cw); a2 = (A + 1) + (A - 1) * cw - s
+    else:  # highshelf
+        s = 2.0 * np.sqrt(A) * alpha
+        b0 = A * ((A + 1) + (A - 1) * cw + s); b1 = -2 * A * ((A - 1) + (A + 1) * cw); b2 = A * ((A + 1) + (A - 1) * cw - s)
+        a0 = (A + 1) - (A - 1) * cw + s; a1 = 2 * ((A - 1) - (A + 1) * cw); a2 = (A + 1) - (A - 1) * cw - s
+    return [b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]
+
+
+def _apply_audio_fx(audio, sr: int):
+    """EQ 3 bandas (grave/médio/agudo) + ganho de saída configuráveis. Limiter de
+    segurança só se o usuário empurrar além de 0 dBFS."""
+    import numpy as np
+
+    g_low = float(_settings.get("audio_eq_low_db", 0.0))
+    g_mid = float(_settings.get("audio_eq_mid_db", 0.0))
+    g_high = float(_settings.get("audio_eq_high_db", 0.0))
+    gain_db = float(_settings.get("audio_gain_db", 0.0))
+    if max(abs(g_low), abs(g_mid), abs(g_high), abs(gain_db)) < 0.05:
+        return audio
+
+    from scipy.signal import sosfilt
+    y = np.asarray(audio, dtype=np.float32)
+    bands = []
+    if abs(g_low) >= 0.05:
+        bands.append(_biquad("lowshelf", 150.0, g_low, sr))
+    if abs(g_mid) >= 0.05:
+        bands.append(_biquad("peak", 1500.0, g_mid, sr, 1.0))
+    if abs(g_high) >= 0.05:
+        bands.append(_biquad("highshelf", 5000.0, g_high, sr))
+    for sos in bands:
+        y = sosfilt(np.array([sos], dtype=np.float64), y).astype(np.float32)
+    if abs(gain_db) >= 0.05:
+        y = y * (10.0 ** (gain_db / 20.0))
+    peak = float(np.abs(y).max() or 0.0)
+    if peak > 0.97:                       # só clipa se o usuário pediu ganho/realce demais
+        y = (0.97 * np.tanh(y / 0.97)).astype(np.float32)
+    return y.astype(np.float32)
 
 
 def _wav_duration(path: Path) -> float:
@@ -686,6 +745,11 @@ def update_settings(payload: dict):
         _settings["voice_denoise"] = bool(payload["voice_denoise"])
     if "voice_denoise_strength" in payload:
         _settings["voice_denoise_strength"] = _clamp(payload["voice_denoise_strength"], 0.0, 1.0, 0.7)
+    if "audio_gain_db" in payload:
+        _settings["audio_gain_db"] = _clamp(payload["audio_gain_db"], -15.0, 15.0, 0.0)
+    for chave, lim in (("audio_eq_low_db", 12.0), ("audio_eq_mid_db", 12.0), ("audio_eq_high_db", 12.0)):
+        if chave in payload:
+            _settings[chave] = _clamp(payload[chave], -lim, lim, 0.0)
     if "stt_min_words" in payload:
         _settings["stt_min_words"] = int(_clamp(payload["stt_min_words"], 0, 10, 1))
     if "stt_min_chars" in payload:
@@ -941,7 +1005,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                         if not _anomalo(audio, sr, chunk):
                             break
                         job["retries"] = job.get("retries", 0) + 1
-                audio = _fade_edges(_normalize(_trim_tail_silence(audio, sr)), sr)
+                audio = _fade_edges(_apply_audio_fx(_normalize(_trim_tail_silence(audio, sr)), sr), sr)
                 if i < len(chunks) - 1:
                     audio = np.concatenate([audio, silence])
                 sf.write(pdir / f"{i}.wav", audio, sr, subtype="PCM_16")
@@ -1496,6 +1560,108 @@ def stt_partial(audio: UploadFile = None, source_lang: str = Form("auto")):
         tmp.unlink(missing_ok=True)
     return {"text": (r.get("text") or "").strip(),
             "language": (r.get("language") or "").strip().lower()}
+
+
+def _parse_time(v) -> "float | None":
+    """Aceita segundos (12.5), MM:SS (1:23) ou HH:MM:SS (1:02:03). None se vazio."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        if ":" in s:
+            sec = 0.0
+            for part in s.split(":"):
+                sec = sec * 60 + float(part)
+            return sec
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _youtube_audio(url: str, start_s: float, end_s: float) -> bytes:
+    """Baixa o áudio do YouTube (yt-dlp) e recorta [start,end] em WAV 24k mono com
+    o ffmpeg estático (imageio-ffmpeg) — não depende de ffmpeg do sistema."""
+    import glob
+    import subprocess
+    import tempfile
+
+    import imageio_ffmpeg
+    import yt_dlp
+
+    ff = imageio_ffmpeg.get_ffmpeg_exe()
+    d = tempfile.mkdtemp(prefix="yt-")
+    try:
+        opts = {"format": "bestaudio/best", "outtmpl": os.path.join(d, "src.%(ext)s"),
+                "quiet": True, "no_warnings": True, "noplaylist": True,
+                "socket_timeout": 30,            # não trava em conexão lenta/parada
+                "max_filesize": 300 * 1024 * 1024}  # guarda contra vídeo gigante
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+        srcs = glob.glob(os.path.join(d, "src.*"))
+        if not srcs:
+            raise RuntimeError("nada baixado (vídeo indisponível ou maior que o limite)")
+        out = os.path.join(d, "out.wav")
+        cmd = [ff, "-y", "-hide_banner", "-loglevel", "error",
+               "-ss", f"{start_s}", "-t", f"{end_s - start_s}", "-i", srcs[0],
+               "-ar", "24000", "-ac", "1", "-f", "wav", out]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+        if p.returncode != 0 or not os.path.exists(out):
+            raise RuntimeError(f"ffmpeg: {p.stderr.decode()[:200]}")
+        if os.path.getsize(out) < 2000:   # ~vazio: trecho fora da duração do vídeo
+            raise RuntimeError("trecho vazio — o tempo de fim passou da duração do vídeo?")
+        with open(out, "rb") as fh:
+            return fh.read()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@app.post("/api/youtube-audio")
+def youtube_audio(payload: dict):
+    """Extrai um trecho de áudio de um link do YouTube -> WAV 24k mono. Usado como
+    fonte de voz (treino) e de transcrição."""
+    from urllib.parse import urlparse
+
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "Informe o link do YouTube")
+    u = urlparse(url)
+    host = (u.hostname or "").lower()
+    if u.scheme not in ("http", "https") or not (
+            host == "youtu.be" or host.endswith(("youtube.com", "youtube-nocookie.com"))):
+        raise HTTPException(400, "Use um link do YouTube (youtube.com ou youtu.be)")
+    start = max(0.0, _parse_time(payload.get("start")) or 0.0)
+    end = _parse_time(payload.get("end"))
+    if end is None or end <= start:
+        raise HTTPException(400, "Informe início e fim (fim maior que início)")
+    if end - start > 600:
+        raise HTTPException(400, "Trecho longo demais (máx. 10 min)")
+    try:
+        data = _youtube_audio(url, start, end)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Falha ao extrair do YouTube: {str(exc)[:200]}")
+    return Response(content=data, media_type="audio/wav")
+
+
+@app.post("/api/transcribe")
+def transcribe_audio(audio: UploadFile = None, source_lang: str = Form("auto")):
+    """Transcrição pura (sem tradução/TTS): áudio -> texto + segmentos. Usa o
+    Whisper local ou remoto, conforme as configurações de modelos remotos."""
+    if audio is None:
+        raise HTTPException(400, "Áudio obrigatório")
+    tmp = OUTPUTS_DIR / f".stt-{uuid.uuid4().hex[:10]}"
+    tmp.write_bytes(audio.file.read())
+    try:
+        r = _transcribe(tmp, language=(source_lang or "auto").lower())
+    finally:
+        tmp.unlink(missing_ok=True)
+    segs = r.get("segments") or []
+    return {"text": (r.get("text") or "").strip(),
+            "language": (r.get("language") or "").strip().lower(),
+            "segments": [{"start": float(s.get("start") or 0.0),
+                          "end": float(s.get("end") or 0.0),
+                          "text": (s.get("text") or "").strip()} for s in segs]}
 
 
 @app.post("/api/translate-speech")

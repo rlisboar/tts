@@ -6,3 +6,5 @@ soundfile
 fastapi
 uvicorn
 python-multipart
+yt-dlp
+imageio-ffmpeg
