@@ -37,10 +37,14 @@ for _d in OUTPUTS_DIR.glob(".job-*"):
 # COMPLETO do repo sem sufixo (que traz o HuBERT). Feito uma vez em .omnivoice-bf16/.
 OMNI_BACKBONE_REPO = os.environ.get("TTS_ROD_OMNI_BACKBONE", "mlx-community/OmniVoice-bf16")
 OMNI_TOKENIZER_REPO = os.environ.get("TTS_ROD_OMNI_TOKENIZER", "mlx-community/OmniVoice")
+# repo fp32 completo (backbone F32 + tokenizer) — carrega direto, sem montagem
+OMNI_FP32_REPO = os.environ.get("TTS_ROD_OMNI_FP32", "mlx-community/OmniVoice-fp32")
 OMNI_ASSEMBLED = BASE / ".omnivoice-bf16"
 # "omnivoice" (default) = monta o bf16 acima; ou um id/dir MLX de OmniVoice já pronto
 MODEL_ID = os.environ.get("TTS_ROD_MODEL", "omnivoice")
 OMNI_ALIASES = {"", "omnivoice", "omni", "omnivoice-bf16"}
+# voz "virtual": gera só a partir da descrição textual (instruct), sem ref de clone
+DESIGN_VOICE_ID = "__design__"
 
 # ---------------------------------------------------------------------------
 # Configurações padrão editáveis no dashboard (persistem em settings.json e
@@ -53,7 +57,7 @@ _SETTINGS_DEFAULTS = {
     "language": "auto",        # "auto" = OmniVoice detecta o idioma do texto (recomendado)
     "default_voice": None,     # id; None = voz mais recente
     "chunk_max_chars": 140,
-    "speed": 1.0,              # só API /v1 (conversão ffmpeg)
+    "speed": 1.0,              # velocidade da fala (UI + API); nativa do modelo (preserva o tom)
     "auto_cleanup": False,     # apaga áudios gerados automaticamente
     "auto_cleanup_minutes": 15,
     # OmniVoice — controles de geração (defaults = os da lib)
@@ -66,6 +70,9 @@ _SETTINGS_DEFAULTS = {
     "omni_instruct": "",              # voice design textual (ex.: "female, low pitch")
     "omni_duration_s": None,          # força duração fixa em s (None = automático)
     "omni_ref_max_s": 10.0,           # quanto da amostra de referência usar (3–30 s)
+    "omni_precision": "bf16",         # fp32 (repo F32) | bf16 (montado) | q8 | q4 (quantiza só o backbone)
+    "voice_denoise": True,            # limpa ruído de fundo da amostra ao salvar a voz
+    "voice_denoise_strength": 0.7,    # agressividade do spectral gating (0–1)
     # Tradutor de voz — filtros anti-ruído da transcrição (rejeita alucinação do Whisper)
     "stt_min_words": 1,               # mínimo de palavras p/ aceitar (ignora ruído)
     "stt_min_chars": 2,               # mínimo de caracteres
@@ -220,29 +227,56 @@ def _assemble_omnivoice_path() -> str:
 
 
 def _resolve_model_path() -> str:
-    """'omnivoice' (alias) -> monta o bf16; senão usa o id/dir MLX informado."""
+    """'omnivoice' (alias) -> monta o bf16 (ou baixa o fp32 se precisão=fp32);
+    senão usa o id/dir MLX informado."""
     if str(_settings["model"] or "").strip().lower() in OMNI_ALIASES:
+        if str(_settings.get("omni_precision", "bf16")).lower() == "fp32":
+            return OMNI_FP32_REPO   # repo completo F32, carrega direto
         return _assemble_omnivoice_path()
     return _settings["model"]
+
+
+def _quantize_backbone(model, bits: int):
+    """Quantiza in-place SÓ o backbone (transformer) p/ q8/q4 — reduz RAM e acelera
+    matmul. NÃO toca no audio_tokenizer (codec, preserva timbre) nem nos audio_heads
+    (vocab 1025, não divisível pelo group_size). Camadas com última dim não múltipla
+    de 64 são puladas pelo predicate (ficam em bf16)."""
+    import mlx.nn as nn
+
+    gs = 64
+
+    def pred(_path, module):
+        w = getattr(module, "weight", None)
+        return w is not None and w.ndim >= 2 and w.shape[-1] % gs == 0
+
+    nn.quantize(model.backbone, group_size=gs, bits=bits, class_predicate=pred)
 
 
 def _get_model():
     global _model
     with _model_lock:
-        if _model is not None and _model_state.get("model") == _settings["model"]:
+        prec = str(_settings.get("omni_precision", "bf16")).lower()
+        if (_model is not None and _model_state.get("model") == _settings["model"]
+                and _model_state.get("precision") == prec):
             return _model
-        # troca de modelo no dashboard: descarrega o atual e carrega o novo
+        # troca de modelo/precisão no dashboard: descarrega o atual e carrega o novo
         _model = None
         _conds_cache.clear()
-        _model_state.update(status="loading", device="mlx", model=_settings["model"])
+        _model_state.update(status="loading", device="mlx", model=_settings["model"],
+                            precision=prec)
         try:
             import gc
 
+            import mlx.core as mx
             gc.collect()
             from mlx_audio.tts.utils import load_model
 
             _model = load_model(_resolve_model_path())
-            _model_state.update(status="ready", error=None)
+            if prec in ("q8", "q4"):
+                _model_state.update(progress=f"quantizando backbone p/ {prec}…")
+                _quantize_backbone(_model, 8 if prec == "q8" else 4)
+                mx.eval(_model.parameters())
+            _model_state.update(status="ready", error=None, progress=None)
             return _model
         except Exception as exc:  # noqa: BLE001
             _model_state.update(status="error", error=str(exc))
@@ -337,12 +371,57 @@ def _split_text(text: str, max_chars: int = CHUNK_MAX_CHARS) -> list[str]:
     return merged
 
 
+def _time_stretch(audio, speed: float, n_fft: int = 1024, hop: int = 256):
+    """Muda a velocidade SEM mexer no tom (phase vocoder). speed>1 = mais rápido
+    (mais curto); <1 = mais lento. Preserva TODAS as palavras — ao contrário de
+    forçar duration_s, que corta slots de token e pula palavras."""
+    import numpy as np
+
+    x = np.asarray(audio, dtype=np.float32)
+    if abs(speed - 1.0) < 1e-3 or x.size < n_fft * 2:
+        return x
+    win = np.hanning(n_fft).astype(np.float32)
+
+    def stft(sig):
+        n = 1 + (len(sig) - n_fft) // hop
+        return np.stack([np.fft.rfft(sig[i*hop:i*hop+n_fft] * win) for i in range(n)], axis=1)
+
+    def istft(D):
+        frames = D.shape[1]
+        out = np.zeros((frames - 1) * hop + n_fft, dtype=np.float32)
+        wsum = np.zeros_like(out)
+        for i in range(frames):
+            seg = np.fft.irfft(D[:, i], n_fft).astype(np.float32) * win
+            out[i*hop:i*hop+n_fft] += seg
+            wsum[i*hop:i*hop+n_fft] += win * win
+        wsum[wsum < 1e-8] = 1e-8
+        return out / wsum
+
+    D = stft(x)
+    bins = D.shape[0]
+    omega = 2.0 * np.pi * hop * np.arange(bins) / n_fft       # avanço de fase esperado/hop
+    steps = np.arange(0, D.shape[1] - 1, speed)
+    out = np.zeros((bins, len(steps)), dtype=np.complex64)
+    phase = np.angle(D[:, 0])
+    for i, stp in enumerate(steps):
+        k = int(np.floor(stp)); frac = stp - k
+        mag = (1.0 - frac) * np.abs(D[:, k]) + frac * np.abs(D[:, k + 1])
+        out[:, i] = mag * np.exp(1j * phase)
+        dp = np.angle(D[:, k + 1]) - np.angle(D[:, k]) - omega
+        dp -= 2.0 * np.pi * np.round(dp / (2.0 * np.pi))      # phase unwrap
+        phase = phase + omega + dp
+    y = istft(out)
+    peak = float(np.abs(y).max() or 0.0)
+    if peak > 0.99:
+        y *= 0.99 / peak
+    return y.astype(np.float32)
+
+
 def _generate_chunk(model, text: str, language: str, conds, ref_text, omni: dict):
     import numpy as np
 
-    # masked-diffusion não-AR: duração estimada internamente, sem teto de tokens
-    # nem risco de "correr até o fim". conds são os ref_tokens cacheados; todos os
-    # controles vêm do dict omni (settings/override por requisição).
+    # masked-diffusion não-AR: duração estimada internamente. Geramos na duração
+    # natural (todas as palavras) e a velocidade vira time-stretch pós-geração.
     o = omni or {}
     results = model.generate(
         text=text,
@@ -359,7 +438,12 @@ def _generate_chunk(model, text: str, language: str, conds, ref_text, omni: dict
         duration_s=o.get("duration_s"),
     )
     pieces = [np.array(r.audio, dtype=np.float32) for r in results]
-    return np.concatenate(pieces)
+    audio = np.concatenate(pieces)
+    # velocidade: time-stretch preserva tom e todas as palavras (não trunca)
+    speed = float(o.get("speed") or 1.0)
+    if abs(speed - 1.0) > 1e-3:
+        audio = _time_stretch(audio, speed)
+    return audio
 
 
 def _trim_tail_silence(audio, sr: int, limiar: float = 0.006, pad_s: float = 0.3):
@@ -373,6 +457,75 @@ def _trim_tail_silence(audio, sr: int, limiar: float = 0.006, pad_s: float = 0.3
             break
         fim -= win
     return audio[:min(len(audio), fim + int(pad_s * sr))]
+
+
+def _denoise_audio(audio, sr: int, strength: float = 0.7):
+    """Limpa ruído de fundo estacionário (hiss/zumbido/AC) da amostra de voz por
+    spectral gating: estima o perfil de ruído nos quadros mais silenciosos e
+    subtrai por banda, com piso e suavização p/ evitar 'musical noise'. Passa-alta
+    em 70 Hz tira rumble. strength 0..1 = agressividade. numpy/scipy, sem deps."""
+    import numpy as np
+    from scipy.ndimage import uniform_filter
+    from scipy.signal import butter, istft, sosfilt, stft
+
+    x = np.asarray(audio, dtype=np.float32)
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    if x.size < sr // 5:                       # < 0.2s: nada a fazer
+        return x
+    s = float(max(0.0, min(1.0, strength)))
+    if s <= 0.0:
+        return x
+
+    # passa-alta 70 Hz (rumble/AC) antes da subtração espectral
+    sos = butter(2, 70.0 / (sr / 2), btype="high", output="sos")
+    x = sosfilt(sos, x).astype(np.float32)
+
+    nperseg = 1024
+    nover = nperseg * 3 // 4
+    f, t, Z = stft(x, fs=sr, nperseg=nperseg, noverlap=nover)
+    mag, phase = np.abs(Z), np.angle(Z)
+
+    # quadros mais silenciosos (20% de menor energia) = estimativa do ruído por banda
+    energy = mag.mean(axis=0)
+    cut = np.percentile(energy, 20)
+    noise = mag[:, energy <= cut]
+    if noise.shape[1] < 4:
+        noise = mag
+    n_mean = noise.mean(axis=1, keepdims=True)
+    n_std = noise.std(axis=1, keepdims=True)
+
+    beta = 1.0 + 1.6 * s                        # sobre-subtração 1.0..2.6
+    floor = 0.18 * (1.0 - s) + 0.04             # piso residual 0.22..0.04
+    n_est = n_mean + 1.5 * n_std
+    gain = 1.0 - beta * n_est / (mag + 1e-8)
+    gain = np.clip(gain, floor, 1.0)
+    gain = uniform_filter(gain, size=(2, 3))    # suaviza em freq/tempo
+
+    Z2 = gain * mag * np.exp(1j * phase)
+    _, y = istft(Z2, fs=sr, nperseg=nperseg, noverlap=nover)
+    y = np.asarray(y, dtype=np.float32)
+
+    peak = float(np.abs(y).max() or 0.0)
+    if peak > 0.99:                             # evita clip pós-processo
+        y *= 0.99 / peak
+    return y
+
+
+def _fade_edges(audio, sr: int, ms: float = 8.0):
+    """Aplica fade-in/out curto (rampa linear) nas bordas — leva início e fim a
+    zero, eliminando o 'click'/estalo de descontinuidade entre trechos. 8ms é
+    inaudível na fala."""
+    import numpy as np
+
+    n = int(sr * ms / 1000.0)
+    if n < 1 or audio.size < 2 * n:
+        return audio
+    a = np.asarray(audio, dtype=np.float32).copy()
+    ramp = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    a[:n] *= ramp
+    a[-n:] *= ramp[::-1]
+    return a
 
 
 def _anomalo(audio, sr: int, chunk: str) -> bool:
@@ -392,12 +545,16 @@ def _anomalo(audio, sr: int, chunk: str) -> bool:
 def _normalize(audio, target_rms: float = TARGET_RMS, peak_limit: float = PEAK_LIMIT):
     import numpy as np
 
+    audio = np.asarray(audio, dtype=np.float32)
     rms = float(np.sqrt(np.mean(audio**2)))
     if rms > 1e-6:
         audio = audio * (target_rms / rms)
+    # soft-clip (tanh) só nos picos: mantém o RMS perceptual igual entre trechos.
+    # Antes, o hard peak-scale rebaixava o sinal todo -> trechos com mais transiente
+    # ficavam mais baixos (sensação de "volume baixando").
     peak = float(np.abs(audio).max())
     if peak > peak_limit:
-        audio = audio * (peak_limit / peak)
+        audio = (peak_limit * np.tanh(audio / peak_limit)).astype(np.float32)
     return audio
 
 
@@ -465,6 +622,7 @@ def _resolve_omni(payload: dict) -> dict:
                      else _settings["omni_instruct"]),
         "duration_s": (_resolve_duration_s(payload["duration_s"], _settings["omni_duration_s"])
                        if "duration_s" in payload else _settings["omni_duration_s"]),
+        "speed": _clamp(payload.get("speed"), 0.25, 4.0, _settings["speed"]),
     }
 
 
@@ -507,6 +665,13 @@ def update_settings(payload: dict):
         _settings["omni_duration_s"] = _resolve_duration_s(payload["omni_duration_s"], None)
     if "omni_ref_max_s" in payload:
         _settings["omni_ref_max_s"] = _clamp(payload["omni_ref_max_s"], 3.0, 30.0, 10.0)
+    if "omni_precision" in payload:
+        p = str(payload["omni_precision"] or "bf16").lower()
+        _settings["omni_precision"] = p if p in ("fp32", "bf16", "q8", "q4") else "bf16"
+    if "voice_denoise" in payload:
+        _settings["voice_denoise"] = bool(payload["voice_denoise"])
+    if "voice_denoise_strength" in payload:
+        _settings["voice_denoise_strength"] = _clamp(payload["voice_denoise_strength"], 0.0, 1.0, 0.7)
     if "stt_min_words" in payload:
         _settings["stt_min_words"] = int(_clamp(payload["stt_min_words"], 0, 10, 1))
     if "stt_min_chars" in payload:
@@ -539,17 +704,43 @@ def list_voices():
     return voices
 
 
+def _truthy(v) -> bool:
+    return str(v).strip().lower() in ("1", "true", "on", "yes", "sim")
+
+
 @app.post("/api/voices")
-def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str = Form("")):
+def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str = Form(""),
+                 denoise: str = Form("1"), denoise_strength: str = Form("")):
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
+    import soundfile as sf
+
     voice_id = uuid.uuid4().hex[:10]
     wav_path = VOICES_DIR / f"{voice_id}.wav"
-    wav_path.write_bytes(audio.file.read())
+    tmp = VOICES_DIR / f".up-{voice_id}"
+    tmp.write_bytes(audio.file.read())
+    try:
+        data, sr = sf.read(str(tmp), dtype="float32")
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(400, "Áudio inválido")
+    tmp.unlink(missing_ok=True)
+
+    # limpa o ruído de fundo NA FONTE: a amostra salva (e os ref_tokens do clone)
+    # passam a ser a versão limpa
+    do_denoise = _truthy(denoise)
+    try:
+        strg = float(denoise_strength)
+    except (TypeError, ValueError):
+        strg = float(_settings.get("voice_denoise_strength", 0.7))
+    strg = _clamp(strg, 0.0, 1.0, 0.7)
+    if do_denoise:
+        data = _denoise_audio(data, sr, strg)
+    sf.write(str(wav_path), data, sr, subtype="PCM_16")
 
     duration = _wav_duration(wav_path)
     if duration < 3:
-        wav_path.unlink()
+        wav_path.unlink(missing_ok=True)
         raise HTTPException(400, f"Gravação muito curta ({duration}s). Mínimo 3s, ideal 10–30s.")
 
     meta = {
@@ -557,12 +748,41 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
         "name": name.strip() or voice_id,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "duration": duration,
+        "denoised": bool(do_denoise),
     }
     # transcrição opcional da amostra: clonagem do OmniVoice fica mais estável
     if ref_text.strip():
         meta["ref_text"] = ref_text.strip()[:500]
     (VOICES_DIR / f"{voice_id}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
     return meta
+
+
+@app.post("/api/voices/{voice_id}/denoise")
+def denoise_voice(voice_id: str, payload: dict = None):
+    """Limpa o ruído de fundo de uma voz JÁ existente, sobrescrevendo o .wav. O
+    mtime muda -> o cache de ref_tokens invalida sozinho na próxima geração."""
+    import soundfile as sf
+
+    path = VOICES_DIR / f"{voice_id}.wav"
+    if not path.exists():
+        raise HTTPException(404, "Voz não encontrada")
+    strg = _clamp((payload or {}).get("strength"), 0.0, 1.0,
+                  float(_settings.get("voice_denoise_strength", 0.7)))
+    data, sr = sf.read(str(path), dtype="float32")
+    data = _denoise_audio(data, sr, strg)
+    sf.write(str(path), data, sr, subtype="PCM_16")
+    _conds_cache.clear()
+    duration = _wav_duration(path)
+    jp = VOICES_DIR / f"{voice_id}.json"
+    if jp.exists():
+        try:
+            m = json.loads(jp.read_text())
+            m["duration"] = duration
+            m["denoised"] = True
+            jp.write_text(json.dumps(m, ensure_ascii=False, indent=2))
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": True, "duration": duration}
 
 
 @app.get("/api/voices/{voice_id}/audio")
@@ -660,11 +880,15 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         with _gen_lock:
             started = time.time()
             # voz padrão ainda não materializada: cria a amostra-semente 1x
-            if voice_id in OMNI_PRESETS and not voice_path.exists():
-                job["progress"] = {"stage": "criando voz padrão…"}
-                _materialize_preset(model, sr, voice_id)
-            ref_text = _voice_ref_text(voice_id)
-            conds = _cond_for(model, voice_id, voice_path)
+            if voice_id == DESIGN_VOICE_ID:
+                ref_text = None       # sem ref de clone -> o timbre vem só do instruct
+                conds = None
+            else:
+                if voice_id in OMNI_PRESETS and not voice_path.exists():
+                    job["progress"] = {"stage": "criando voz padrão…"}
+                    _materialize_preset(model, sr, voice_id)
+                ref_text = _voice_ref_text(voice_id)
+                conds = _cond_for(model, voice_id, voice_path)
             for i, chunk in enumerate(chunks):
                 job["progress"] = {"current": i + 1, "total": len(chunks)}
                 # trecho sem pontuação terminal (quebra por vírgula) ganha ponto
@@ -675,7 +899,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                     if not _anomalo(audio, sr, chunk):
                         break
                     job["retries"] = job.get("retries", 0) + 1
-                audio = _normalize(_trim_tail_silence(audio, sr))
+                audio = _fade_edges(_normalize(_trim_tail_silence(audio, sr)), sr)
                 if i < len(chunks) - 1:
                     audio = np.concatenate([audio, silence])
                 sf.write(pdir / f"{i}.wav", audio, sr, subtype="PCM_16")
@@ -724,7 +948,10 @@ def synthesize(payload: dict):
         raise HTTPException(400, "Texto longo demais (máx. 5000 caracteres)")
 
     voice_path = VOICES_DIR / f"{voice_id}.wav"
-    if not voice_path.exists() and voice_id not in OMNI_PRESETS:
+    if voice_id == DESIGN_VOICE_ID:
+        if not (omni.get("instruct") or "").strip():
+            raise HTTPException(400, "Voice design vazio — descreva a voz no campo instruct")
+    elif not voice_path.exists() and voice_id not in OMNI_PRESETS:
         raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
 
     job_id = uuid.uuid4().hex[:10]
@@ -841,14 +1068,36 @@ _STT_BLACKLIST = {
 }
 
 
-def _transcribe(audio_path: Path):
+def _wav_to_mono16k(audio_path: Path):
+    """Lê WAV (vindo do navegador) via soundfile e devolve array float32 mono a
+    16 kHz. Evita o load_audio do whisper e o ffmpeg_read do transformers — ambos
+    dependem do binário externo `ffmpeg`, ausente em muitos Macs."""
+    import numpy as np
+    import soundfile as sf
+
+    audio, sr = sf.read(str(audio_path), dtype="float32")
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    if int(sr) != 16000:
+        from math import gcd
+        from scipy.signal import resample_poly
+        g = gcd(int(sr), 16000)
+        audio = resample_poly(audio, 16000 // g, int(sr) // g)
+    return np.ascontiguousarray(audio, dtype=np.float32)
+
+
+def _transcribe(audio_path: Path, language: str | None = None):
     import mlx_whisper
 
+    # language fixo (ex.: "pt") melhora muito a precisão em trechos curtos: o
+    # whisper deixa de adivinhar o idioma a cada frase. None = auto-detecta.
+    lang = language if language and language not in ("auto",) else None
+    audio = _wav_to_mono16k(audio_path)
     with _stt_lock:
         # opções que reduzem alucinação: greedy, sem condicionar no texto anterior,
         # e os limiares de no-speech / confiança / repetição configuráveis
         r = mlx_whisper.transcribe(
-            str(audio_path), path_or_hf_repo=WHISPER_REPO,
+            audio, path_or_hf_repo=WHISPER_REPO, language=lang,
             temperature=0.0, condition_on_previous_text=False,
             no_speech_threshold=_settings["stt_max_no_speech"],
             logprob_threshold=_settings["stt_min_logprob"],
@@ -955,11 +1204,12 @@ def _emotion_light(path: Path, text: str) -> str:
 
 def _emotion_accurate(path: Path) -> str:
     """Modelo SER (wav2vec2, PyTorch) -> categoria -> adjetivos, com gate de confiança."""
+    audio = _wav_to_mono16k(path)  # array 16 kHz -> sem ffmpeg_read do transformers
     with _ser_lock:
         if _ser["clf"] is None:
             from transformers import pipeline
             _ser["clf"] = pipeline("audio-classification", model=SER_REPO)
-        res = _ser["clf"](str(path), top_k=None)
+        res = _ser["clf"]({"raw": audio, "sampling_rate": 16000}, top_k=None)
     if not res:
         return "neutral, calm"
     top = max(res, key=lambda x: x.get("score", 0.0))
@@ -982,6 +1232,49 @@ def _emotion_instruct(path: Path, text: str, mode: str):
     return "", None
 
 
+@app.post("/api/translate/warmup")
+def translate_warmup():
+    """Carrega whisper + LLM de tradução em background — chamado quando o usuário
+    abre/começa o tradutor, p/ os modelos ficarem quentes antes da 1ª frase."""
+    def _warm():
+        try:
+            import numpy as np
+            import mlx_whisper
+            with _stt_lock:
+                mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32),
+                                       path_or_hf_repo=WHISPER_REPO, language="pt")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from mlx_lm import load
+            with _mt_lock:
+                if _mt["model"] is None:
+                    _mt["model"], _mt["tok"] = load(TRANSLATE_REPO)
+        except Exception:  # noqa: BLE001
+            pass
+    threading.Thread(target=_warm, daemon=True).start()
+    return {"ok": True}
+
+
+@app.post("/api/stt-partial")
+def stt_partial(audio: UploadFile = None, source_lang: str = Form("auto")):
+    """Transcrição parcial e rápida (sem tradução/TTS) — usada para mostrar as
+    palavras na tela enquanto o usuário ainda fala. Sem filtro anti-ruído: é só
+    prévia ao vivo, a versão final vem do /api/translate-speech."""
+    if audio is None:
+        raise HTTPException(400, "Áudio obrigatório")
+    tmp = OUTPUTS_DIR / f".pstt-{uuid.uuid4().hex[:8]}"
+    tmp.write_bytes(audio.file.read())
+    try:
+        r = _transcribe(tmp, language=(source_lang or "auto").lower())
+    except Exception:  # noqa: BLE001 — prévia: nunca derruba a UI
+        return {"text": ""}
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {"text": (r.get("text") or "").strip(),
+            "language": (r.get("language") or "").strip().lower()}
+
+
 @app.post("/api/translate-speech")
 def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
                      voice_id: str = Form(""), source_lang: str = Form("auto"),
@@ -999,7 +1292,7 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
     tmp.write_bytes(audio.file.read())
     emo, emo_err = "", None
     try:
-        r = _transcribe(tmp)
+        r = _transcribe(tmp, language=(source_lang or "auto").lower())
         src_text = (r.get("text") or "").strip()
         src_lang = (r.get("language") or "").strip().lower()
         ok, motivo = _stt_ok(r, src_text)
@@ -1118,10 +1411,9 @@ def openai_speech(payload: dict):
     fmt = payload.get("response_format", "mp3")
     if fmt not in _AUDIO_FORMATS:
         raise HTTPException(400, f"response_format inválido. Suportados: {', '.join(_AUDIO_FORMATS)}")
-    speed = _clamp(payload.get("speed"), 0.25, 4.0, _settings["speed"])
     voice_id = _resolve_voice(payload.get("voice"))
     language = (payload.get("language") or _settings["language"]).lower()
-    omni = _resolve_omni(payload)
+    omni = _resolve_omni(payload)  # inclui speed -> aplicado nativamente pelo modelo
     # tts-1-hd força mais passos de difusão (qualidade); senão vale o padrão/override
     if str(payload.get("model", "tts-1")).endswith("-hd") and "num_steps" not in payload:
         omni["num_steps"] = OMNI_STEPS_HQ
@@ -1147,7 +1439,8 @@ def openai_speech(payload: dict):
         raise HTTPException(500, f"Falha na síntese: {job.get('error')}")
 
     wav_path = OUTPUTS_DIR / f"{job['output']['id']}.wav"
-    data, mime = _encode_audio(wav_path, fmt, speed)
+    # velocidade já aplicada nativamente pelo modelo; aqui ffmpeg só converte o formato
+    data, mime = _encode_audio(wav_path, fmt, 1.0)
     return Response(content=data, media_type=mime)
 
 
