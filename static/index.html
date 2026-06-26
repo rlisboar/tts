@@ -512,6 +512,25 @@
           mais o texto e a voz de referência. Variações↑ = fala mais espontânea, menos estável. Voice design
           cria/ajusta o timbre por descrição textual. Sobrepõem-se a estes defaults se enviados na requisição da API.</p>
         </details>
+        <details open>
+          <summary>Modelos remotos (API)</summary>
+          <label class="check" style="margin-top:10px"><input type="checkbox" id="remoteTts"> Síntese (OmniVoice) numa máquina remota — ex.: RTX</label>
+          <label class="cfg-label" style="margin-top:10px">Base URL (termina em /v1)
+            <input type="text" id="remoteBaseUrl" placeholder="http://rtx-host:8000/v1"></label>
+          <label class="cfg-label" style="margin-top:10px">API key (opcional)
+            <input type="password" id="remoteApiKey" placeholder="deixe vazio se o servidor não exigir" autocomplete="off"></label>
+          <label class="cfg-label" style="margin-top:10px">Modelo TTS remoto
+            <input type="text" id="remoteTtsModel" placeholder="tts-1"></label>
+          <div class="row" style="margin-top:12px; flex-direction:row; gap:14px">
+            <label class="check"><input type="checkbox" id="remoteTranslate"> Tradução via API</label>
+            <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
+          </div>
+          <label class="cfg-label" style="margin-top:10px">Modelo de tradução
+            <input type="text" id="remoteTranslateModel" placeholder="gpt-4o-mini"></label>
+          <label class="cfg-label" style="margin-top:10px">Modelo de transcrição
+            <input type="text" id="remoteSttModel" placeholder="whisper-1"></label>
+          <p class="hint">Servidor OpenAI-compatível: TTS → <code>POST {base}/audio/speech</code> ({input, voice, language, speed}); tradução → <code>/chat/completions</code>; STT → <code>/audio/transcriptions</code>. Clonagem por amostra local não vai ao remoto — use o nome/preset que o servidor conhece, ou Voice design. Chave fica só neste Mac.</p>
+        </details>
         <p class="hint">Estes valores valem para a UI e a API; um parâmetro explícito na requisição sempre
         sobrepõe. A primeira geração baixa e monta o OmniVoice (~2 GB), depois fica em cache.</p>
         <div class="row config-save">
@@ -1271,6 +1290,14 @@ async function loadSettings() {
     $("voiceDenoise").checked = s.voice_denoise ?? true;
     $("voiceDenoiseStr").value = s.voice_denoise_strength ?? 0.7;
     $("voiceDenoiseStrOut").textContent = parseFloat(s.voice_denoise_strength ?? 0.7).toFixed(2);
+    $("remoteTts").checked = !!s.remote_tts;
+    $("remoteTranslate").checked = !!s.remote_translate;
+    $("remoteStt").checked = !!s.remote_stt;
+    $("remoteBaseUrl").value = s.remote_base_url || "";
+    $("remoteApiKey").value = s.remote_api_key || "";
+    $("remoteTtsModel").value = s.remote_tts_model || "tts-1";
+    $("remoteTranslateModel").value = s.remote_translate_model || "gpt-4o-mini";
+    $("remoteSttModel").value = s.remote_stt_model || "whisper-1";
     for (const [id, out, key, fmt] of STT_CTL) {
       if (s[key] !== undefined) { $(id).value = s[key]; $(out).textContent = fmt(s[key]); }
     }
@@ -1309,7 +1336,15 @@ $("cfgSave").onclick = async () => {
         omni_instruct: $("oInstruct").value,
         omni_duration_s: $("oDur").value === "" ? null : parseFloat($("oDur").value),
         omni_ref_max_s: parseFloat($("oRefMax").value) || 10,
-        omni_precision: $("cfgPrecision").value
+        omni_precision: $("cfgPrecision").value,
+        remote_tts: $("remoteTts").checked,
+        remote_translate: $("remoteTranslate").checked,
+        remote_stt: $("remoteStt").checked,
+        remote_base_url: $("remoteBaseUrl").value,
+        remote_api_key: $("remoteApiKey").value,
+        remote_tts_model: $("remoteTtsModel").value,
+        remote_translate_model: $("remoteTranslateModel").value,
+        remote_stt_model: $("remoteSttModel").value
       })
     });
     $("cfgStatus").textContent = "salvo ✔ — já vale para a API";
