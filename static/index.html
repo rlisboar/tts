@@ -6,345 +6,520 @@
 <title>TTS-Rod — Voz clonada local</title>
 <style>
   :root {
-    --bg: #0f1117; --panel: #181b24; --panel2: #1f2330;
-    --text: #e6e8ee; --muted: #8b90a0; --accent: #4f8cff;
-    --danger: #e5544b; --ok: #3dba6f; --border: #2a2f3e;
+    --bg: #0b0d11; --bg2: #0f1216;
+    --panel: #151a20; --panel2: #1b2128; --panel3: #232a32;
+    --text: #e9ebee; --muted: #9aa0a8; --faint: #6c727b;
+    --accent: #18b9a6; --accent-deep: #0f9183; --accent-soft: rgba(24,185,166,.14);
+    --danger: #ef5b52; --ok: #35c98a; --warn: #e9a94a;
+    --border: #262c33; --ring: rgba(24,185,166,.28);
+    --shadow: 0 12px 34px rgba(0,0,0,.42);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
   body {
-    background: var(--bg); color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    max-width: 860px; margin: 0 auto; padding: 24px 16px 64px;
+    background:
+      radial-gradient(1200px 640px at 92% -12%, rgba(24,185,166,.06), transparent 62%),
+      radial-gradient(760px 520px at -6% 110%, rgba(255,255,255,.022), transparent 58%),
+      var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
+    font-size: 13.5px; line-height: 1.45;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
   }
-  h1 { font-size: 22px; margin-bottom: 4px; }
-  h2 { font-size: 15px; margin-bottom: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
-  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 20px; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--panel3); background-clip: content-box; }
+
+  /* ───────── App shell ───────── */
+  .app { height: 100vh; display: flex; }
+  .sidebar {
+    width: 224px; flex-shrink: 0; background: var(--bg2);
+    border-right: 1px solid var(--border); padding: 18px 14px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 800;
+    padding: 4px 8px 14px; letter-spacing: -.01em;
+  }
+  .brand .logo {
+    width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
+    background: linear-gradient(160deg, var(--accent), var(--accent-deep));
+    box-shadow: 0 6px 18px rgba(24,185,166,.30); font-size: 18px;
+  }
+  .nav { display: flex; flex-direction: column; gap: 3px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 11px; width: 100%; text-align: left;
+    background: transparent; color: var(--muted); border: 0; border-radius: 10px;
+    padding: 10px 12px; font-size: 13.5px; font-weight: 600; cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .nav-item .ic { width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .nav-item .ic svg { width: 18px; height: 18px; }
+  .brand .logo svg { width: 19px; height: 19px; }
+  .nav-item:hover { background: var(--panel); color: var(--text); }
+  .nav-item.active {
+    background: var(--accent-soft); color: var(--text);
+    box-shadow: inset 0 0 0 1px rgba(24,185,166,.22), inset 3px 0 0 0 var(--accent);
+  }
+  .nav-item.active .ic { filter: none; }
+  .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+  .side-foot .badge { width: 100%; text-align: center; }
+
+  .content { flex: 1; min-width: 0; padding: 22px 26px; display: flex; flex-direction: column; overflow: hidden; }
+  .view { flex: 1; min-height: 0; display: none; flex-direction: column; gap: 14px; }
+  .view.active { display: flex; }
+  .view-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .view-head h1 { font-size: 21px; font-weight: 800; letter-spacing: -.02em; }
+  .view-head .row { margin-left: auto; }
+
+  /* ───────── Painel de Configurações (sempre visível, direita) ───────── */
+  .config-panel {
+    width: 372px; flex-shrink: 0; background: var(--bg2);
+    border-left: 1px solid var(--border); padding: 18px 16px;
+    display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden;
+  }
+  .config-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .config-head h1 { font-size: 17px; font-weight: 800; letter-spacing: -.02em; }
+  .config-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 6px; display: flex; flex-direction: column; }
+  /* no painel estreito tudo empilha e ocupa 100% — nada de texto/controle cortado */
+  .config-body .row { margin-bottom: 14px; flex-direction: column; align-items: stretch; gap: 8px; }
+  .config-body .cfg-label { width: 100%; }
+  .config-body select, .config-body input[type=text], .config-body input[type=number],
+  .config-body textarea { width: 100%; max-width: 100%; }
+  .config-body .hint { overflow-wrap: anywhere; }
+  .config-panel .sliders { grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+  .config-panel details { background: var(--panel); }
+  .config-save { position: sticky; bottom: 0; background: var(--bg2); padding-top: 12px; margin-top: auto;
+    border-top: 1px solid var(--border); flex-direction: row !important; align-items: center !important; }
+
+  /* ───────── Components ───────── */
+  h2 { font-size: 11.5px; margin-bottom: 12px; color: var(--faint); text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border); border-radius: 14px; padding: 18px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.18);
+  }
+  .col-scroll { overflow: auto; min-height: 0; }
   button {
-    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
-    padding: 9px 16px; font-size: 14px; cursor: pointer; font-weight: 600;
+    background: var(--accent); color: #04221e; border: 1px solid rgba(0,0,0,.10);
+    border-radius: 9px; padding: 9px 15px; font-size: 13px; cursor: pointer; font-weight: 650;
+    letter-spacing: -.01em; box-shadow: 0 1px 2px rgba(0,0,0,.16);
+    transition: background .15s, transform .06s, opacity .15s;
   }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
-  button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); padding: 5px 10px; font-size: 12px; }
-  button.small { padding: 5px 10px; font-size: 12px; }
-  button.rec { background: var(--danger); }
-  input[type=text], textarea, select {
+  button:hover { background: #1ec7b3; }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
+  button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); box-shadow: none; }
+  button.ghost:hover { background: var(--panel3); }
+  button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); padding: 7px 12px; font-size: 12.5px; box-shadow: none; }
+  button.danger:hover { background: rgba(240,86,76,.10); }
+  button.small { padding: 6px 11px; font-size: 12px; }
+  button.rec { background: linear-gradient(135deg, #ff5b5b, var(--danger)); box-shadow: 0 4px 14px rgba(240,86,76,.4); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { filter: brightness(1.15); } }
+  input[type=text], input[type=number], textarea, select {
     background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 8px; padding: 9px 12px; font-size: 14px; width: 100%;
+    border-radius: 10px; padding: 9px 12px; font-size: 13.5px; width: 100%;
+    transition: border-color .15s, box-shadow .15s; font-family: inherit;
   }
-  textarea { min-height: 90px; resize: vertical; font-family: inherit; }
+  input:focus, textarea:focus, select:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+  select { cursor: pointer; }
+  textarea { resize: vertical; }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .toolbar select { width: auto; min-width: 150px; }
+
+  .grow-card { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+  .hero-area { flex: 1; min-height: 120px; resize: none; font-size: 15px; line-height: 1.6; }
+  .tagbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .tagbar-label { font-size: 11px; color: var(--faint); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-right: 2px; }
+  .chip {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 99px; padding: 5px 11px; font-size: 12px; font-weight: 600;
+    cursor: pointer; box-shadow: none;
+  }
+  .chip:hover { color: var(--text); border-color: var(--accent); background: var(--panel3); filter: none; }
+  .cols2 { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.05fr 1fr; gap: 16px; }
+
   .item {
-    display: flex; gap: 10px; align-items: center; padding: 10px 0;
+    display: flex; gap: 10px; align-items: center; padding: 11px 0;
     border-bottom: 1px solid var(--border); flex-wrap: wrap;
   }
   .item:last-child { border-bottom: 0; }
   .item .grow { flex: 1; min-width: 140px; }
-  .item .name { font-weight: 600; font-size: 14px; }
+  .item .name { font-weight: 600; font-size: 13.5px; }
   .item .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .vid {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 1px 6px; cursor: pointer; color: var(--text);
+  }
+  .vid:hover { border-color: var(--accent); color: var(--accent); }
   .badge {
-    display: inline-block; padding: 3px 10px; border-radius: 99px;
-    font-size: 12px; font-weight: 600; background: var(--panel2); border: 1px solid var(--border);
+    display: inline-block; padding: 4px 11px; border-radius: 99px;
+    font-size: 12px; font-weight: 700; background: var(--panel2); border: 1px solid var(--border);
   }
-  .badge.ok { color: var(--ok); border-color: var(--ok); }
-  .badge.warn { color: #e0a23e; border-color: #e0a23e; }
-  .badge.err { color: var(--danger); border-color: var(--danger); }
-  #timer { font-variant-numeric: tabular-nums; font-size: 15px; color: var(--danger); font-weight: 700; }
-  .hint { color: var(--muted); font-size: 12.5px; line-height: 1.5; margin-top: 10px; }
-  audio { height: 34px; max-width: 240px; }
-  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .badge.ok { color: var(--ok); border-color: rgba(52,211,153,.5); background: rgba(52,211,153,.10); }
+  .badge.warn { color: var(--warn); border-color: rgba(245,180,85,.5); background: rgba(245,180,85,.10); }
+  .badge.err { color: var(--danger); border-color: rgba(240,86,76,.5); background: rgba(240,86,76,.10); }
+  #timer { font-variant-numeric: tabular-nums; font-size: 15px; color: var(--danger); font-weight: 800; }
+  .hint { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 8px; }
+  audio { height: 34px; max-width: 230px; }
+  .empty { color: var(--faint); font-size: 13px; padding: 14px 0; text-align: center; }
   #toast {
-    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-    background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
-    padding: 10px 18px; font-size: 13.5px; display: none; max-width: 90%;
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+    background: var(--panel3); border: 1px solid var(--border); border-radius: 12px;
+    padding: 11px 20px; font-size: 13px; display: none; max-width: 90%; box-shadow: var(--shadow); z-index: 50;
   }
-  .script-box { margin-top: 10px; }
-  .script-box summary { cursor: pointer; color: var(--accent); font-size: 13.5px; font-weight: 600; }
+  .keybar {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 60;
+    width: min(680px, 92vw); border: 1px solid var(--danger) !important; border-radius: 14px;
+  }
+  details { margin-top: 12px; border: 1px solid var(--border); border-radius: 12px; padding: 4px 12px; background: var(--bg2); }
+  details[open] { padding-bottom: 12px; }
+  summary { cursor: pointer; color: var(--text); font-size: 13px; font-weight: 700; padding: 8px 2px; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸ "; color: var(--accent); }
+  details[open] summary::before { content: "▾ "; }
+  .script-box summary { color: var(--accent); }
   .script {
-    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
-    padding: 12px 14px; margin-top: 8px; font-size: 14.5px; line-height: 1.7;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; margin-top: 8px; font-size: 14px; line-height: 1.7;
   }
-  .sliders { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 12px; }
-  .sliders label {
-    display: flex; flex-direction: column; gap: 4px; font-size: 12.5px;
-    color: var(--muted); min-width: 150px; flex: 1;
-  }
-  .sliders output { color: var(--text); font-weight: 600; }
+  .sliders { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px 18px; margin-top: 10px; }
+  .sliders label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+  .sliders output { color: var(--text); font-weight: 700; }
   .sliders input[type=range] { accent-color: var(--accent); }
-  .check { font-size: 12.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
-  .check input { accent-color: var(--accent); }
-  .cfg-label { font-size: 12.5px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+  .check { font-size: 12.5px; color: var(--muted); display: flex; gap: 7px; align-items: center; }
+  .check input { accent-color: var(--accent); width: auto; }
+  .cfg-label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 5px; }
   .cfg-label select, .cfg-label input { width: auto; }
   .spinner {
-    display: inline-block; width: 14px; height: 14px; border: 2px solid var(--muted);
+    display: inline-block; width: 13px; height: 13px; border: 2px solid var(--border);
     border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite;
     vertical-align: -2px; margin-right: 6px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (max-width: 1280px) { .config-panel { width: 340px; } }
+  @media (max-width: 1080px) { .config-panel { width: 300px; } .config-panel .sliders { grid-template-columns: 1fr; } }
+  @media (max-width: 880px) {
+    .sidebar { width: 64px; padding: 14px 8px; }
+    .brand span, .nav-item span:not(.ic), .side-foot .badge { display: none; }
+    .nav-item { justify-content: center; padding: 11px 0; }
+    .side-foot { padding: 4px; }
+    .cols2 { grid-template-columns: 1fr; }
+    .config-panel { width: 284px; padding: 14px 10px; }
+    .config-panel .sliders { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
 
-<h1>🎙️ TTS-Rod</h1>
-<p class="sub">Clonagem de voz 100% local — <span id="status" class="badge">verificando…</span></p>
-
-<div id="keyBar" class="card" style="display:none; border-color: var(--danger)">
+<div id="keyBar" class="card keybar" style="display:none">
   <div class="row">
-    <span>🔑 Este dispositivo precisa da chave da API (arquivo <code>.apikey</code> / terminal do run.sh):</span>
+    <span>Este dispositivo precisa da chave da API (arquivo <code>.apikey</code> / terminal do run.sh):</span>
     <input type="text" id="keyInput" placeholder="cole a chave aqui" style="max-width:340px">
     <button id="keySave">Salvar</button>
   </div>
 </div>
 
-<!-- ───────────────────── Gravação ───────────────────── -->
-<div class="card">
-  <h2>1 · Gravar nova voz</h2>
-  <div class="row">
-    <input type="text" id="voiceName" placeholder="Nome da voz (ex.: Rodrigo)" style="max-width:260px">
-    <button id="recBtn">● Gravar</button>
-    <span id="timer"></span>
-  </div>
-  <label class="cfg-label" style="display:block; margin-top:12px">Texto falado na gravação — melhora a clonagem (deixe idêntico ao que você disse)
-    <textarea id="voiceRefText" style="min-height:60px">Olá! Estou gravando a minha voz para criar um clone digital. O sol nasceu dourado sobre as montanhas, e o vento soprava entre as folhas verdes.</textarea>
-  </label>
-  <div class="row" id="previewRow" style="display:none; margin-top:12px">
-    <audio id="previewAudio" controls></audio>
-    <button id="saveVoiceBtn">Salvar voz</button>
-    <button id="discardBtn" class="ghost">Descartar</button>
-  </div>
-  <details class="script-box">
-    <summary>📖 Texto de treino — cobre os principais fonemas do português</summary>
-    <p class="script">
-      Olá! Meu nome é Rodrigo e estou gravando minha voz para criar um clone digital.
-      O sol nasceu dourado sobre as montanhas, e o vento soprava entre as folhas verdes.
-      Será que vai chover amanhã à tarde?
-      Minha mãe comprou seis maçãs, doze laranjas e quinze bananas por vinte e sete reais e cinquenta centavos.
-      O cachorro correu atrás do gato e pulou a cerca de ferro do vizinho.
-      Que maravilha extraordinária! Os corações dos campeões batem forte nas comemorações.
-      O menino ganhou um violão novinho e tocou uma melodia alegre na praça.
-      À noite, o velho pescador trouxe peixe fresco, queijo quente e suco gelado.
-      O táxi azul cruzou a ponte completamente vazia rumo ao centro da cidade.
-    </p>
-  </details>
-  <p class="hint">
-    Leia o texto acima (ou o seu próprio) com naturalidade, em ambiente silencioso e sem eco —
-    e deixe o campo de transcrição <b>idêntico ao que você falou</b>. No OmniVoice, uma amostra
-    <b>curta e exata (≈10–20s)</b> com a transcrição correta clona melhor que uma longa.
-  </p>
-</div>
-
-<!-- ───────────────────── Vozes salvas ───────────────────── -->
-<div class="card">
-  <h2>2 · Vozes salvas</h2>
-  <div id="voiceList"><div class="empty">Nenhuma voz ainda — grave acima.</div></div>
-</div>
-
-<!-- ───────────────────── Síntese ───────────────────── -->
-<div class="card">
-  <h2>3 · Gerar fala</h2>
-  <textarea id="ttsText" placeholder="Digite o texto que será falado com a voz clonada…"></textarea>
-  <p class="hint" style="margin-top:4px">
-    Passos, aderência, variação e voice design ajustam-se em ⚙️ Configurações → controles do OmniVoice.
-  </p>
-  <div class="row" style="margin-top:12px">
-    <select id="voiceSelect" style="max-width:220px"></select>
-    <select id="langSelect" style="max-width:200px">
-      <option value="auto" selected>Idioma: Auto (detecta)</option>
-      <option value="pt">Português</option>
-      <option value="en">English</option>
-      <option value="es">Español</option>
-      <option value="fr">Français</option>
-      <option value="de">Deutsch</option>
-      <option value="it">Italiano</option>
-    </select>
-    <button id="ttsBtn">🔊 Gerar e falar</button>
-    <button id="stopBtn" class="ghost" style="display:none">■ Parar</button>
-    <span id="ttsStatus" class="hint"></span>
-  </div>
-</div>
-
-<!-- ───────────────────── Tradutor de voz ───────────────────── -->
-<div class="card">
-  <h2>🌐 Tradutor de voz <span class="hint">(fala → texto → tradução → sua voz)</span></h2>
-  <div class="row">
-    <button id="transRecBtn">🎙️ Falar</button>
-    <select id="transMode" style="max-width:160px">
-      <option value="manual">Modo: Manual</option>
-      <option value="continuo">Modo: Contínuo</option>
-      <option value="conversa">Modo: Conversa</option>
-    </select>
-    <select id="transSrc" style="max-width:170px">
-      <option value="auto">De: qualquer idioma</option>
-      <option value="pt">De: Português</option>
-      <option value="en">De: English</option>
-      <option value="es">De: Español</option>
-      <option value="fr">De: Français</option>
-      <option value="de">De: Deutsch</option>
-      <option value="it">De: Italiano</option>
-      <option value="ja">De: 日本語</option>
-      <option value="zh">De: 中文</option>
-    </select>
-    <select id="transLang" style="max-width:170px">
-      <option value="en">traduzir → English</option>
-      <option value="es">traduzir → Español</option>
-      <option value="fr">traduzir → Français</option>
-      <option value="de">traduzir → Deutsch</option>
-      <option value="it">traduzir → Italiano</option>
-      <option value="pt">traduzir → Português</option>
-      <option value="ja">traduzir → 日本語</option>
-      <option value="zh">traduzir → 中文</option>
-    </select>
-    <select id="transVoice" style="max-width:200px"></select>
-    <select id="transEmo" style="max-width:170px">
-      <option value="off">Emoção: off</option>
-      <option value="light">Emoção: leve (prosódia)</option>
-      <option value="accurate">Emoção: precisa (SER)</option>
-    </select>
-    <span id="transStatus" class="hint"></span>
-  </div>
-  <div id="transOut" class="hint" style="margin-top:10px; line-height:1.6"></div>
-  <details style="margin-top:10px">
-    <summary style="cursor:pointer; font-weight:600">🎚️ Microfone / filtros</summary>
-    <div class="sliders" style="margin-top:10px">
-      <label>Ganho do mic <output id="micGainOut">1.0</output>
-        <input type="range" id="micGain" min="0" max="3" step="0.1" value="1"></label>
-      <label>Passa-alta · corta grave/zumbido <output id="micHpOut">90 Hz</output>
-        <input type="range" id="micHp" min="0" max="300" step="10" value="90"></label>
-      <label>Sensibilidade · ignora ruído <output id="micThreshOut">0.015</output>
-        <input type="range" id="micThresh" min="0.005" max="0.08" step="0.001" value="0.015"></label>
-      <label>Pausa = fim de frase <output id="micSilenceOut">700 ms</output>
-        <input type="range" id="micSilence" min="300" max="2000" step="50" value="700"></label>
-      <label>Duração mínima da fala <output id="micMinUtterOut">350 ms</output>
-        <input type="range" id="micMinUtter" min="100" max="1500" step="50" value="350"></label>
+<div class="app">
+  <!-- ───────── Sidebar ───────── -->
+  <aside class="sidebar">
+    <div class="brand"><span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="#04221e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span> <span>TTS-Rod</span></div>
+    <nav class="nav">
+      <button class="nav-item" data-view="gerar"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M19 5a9 9 0 0 1 0 14"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></span><span>Gerar fala</span></button>
+      <button class="nav-item" data-view="vozes"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span><span>Vozes</span></button>
+      <button class="nav-item" data-view="tradutor"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg></span><span>Tradutor</span></button>
+      <button class="nav-item" data-view="historico"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>Histórico</span></button>
+    </nav>
+    <div class="side-foot">
+      <span id="status" class="badge">verificando…</span>
+      <button id="shutdownBtn" class="danger" title="Para religar, dê dois cliques em TTS-Rod.command no Finder.">Desligar</button>
     </div>
-    <div class="row" style="margin-top:8px; align-items:center">
-      <label class="check"><input type="checkbox" id="micNs" checked> supressão de ruído (navegador)</label>
-      <div style="flex:1; min-width:180px">
-        <div class="hint" style="margin-bottom:2px">nível do mic (a marca laranja é o limiar)</div>
-        <div id="micMeter" style="height:12px; background:#1b1b1b; border-radius:6px; position:relative; overflow:hidden">
-          <div id="micMeterBar" style="height:100%; width:0; background:#666; transition:width .05s"></div>
-          <div id="micMeterMark" style="position:absolute; top:0; bottom:0; left:10%; width:2px; background:#fa0"></div>
+  </aside>
+
+  <!-- ───────── Conteúdo ───────── -->
+  <main class="content">
+
+    <!-- ===== Gerar fala ===== -->
+    <section class="view" id="view-gerar">
+      <div class="view-head"><h1>Gerar fala</h1><span class="muted small">voz clonada · 100% local</span></div>
+      <div class="card grow-card">
+        <textarea id="ttsText" class="hero-area" placeholder="Digite o texto que será falado com a voz clonada…  (use as tags abaixo p/ riso, suspiro, etc.)"></textarea>
+        <div class="tagbar" id="tagbar">
+          <span class="tagbar-label">Tags</span>
+          <button class="chip" data-tag="[laughter]">riso</button>
+          <button class="chip" data-tag="[sigh]">suspiro</button>
+          <button class="chip" data-tag="[confirmation-en]">confirma</button>
+          <button class="chip" data-tag="[question-en]">pergunta</button>
+          <button class="chip" data-tag="[question-ah]">ah?</button>
+          <button class="chip" data-tag="[question-oh]">oh?</button>
+          <button class="chip" data-tag="[question-ei]">ei?</button>
+          <button class="chip" data-tag="[question-yi]">yi?</button>
+          <button class="chip" data-tag="[surprise-ah]">ah!</button>
+          <button class="chip" data-tag="[surprise-oh]">oh!</button>
+          <button class="chip" data-tag="[surprise-wa]">wa!</button>
+          <button class="chip" data-tag="[surprise-yo]">yo!</button>
+          <button class="chip" data-tag="[dissatisfaction-hnn]">hnn</button>
+        </div>
+        <div class="toolbar">
+          <select id="voiceSelect"></select>
+          <select id="langSelect">
+            <option value="auto" selected>Idioma: Auto (detecta)</option>
+            <option value="pt">Português</option>
+            <option value="en">English</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="it">Italiano</option>
+          </select>
+          <button id="ttsBtn">Gerar e falar</button>
+          <button id="stopBtn" class="ghost" style="display:none">■ Parar</button>
+          <span id="ttsStatus" class="hint" style="margin-top:0"></span>
+        </div>
+        <p class="hint">Passos, aderência, variação e voice design ajustam-se em Configurações → controles do OmniVoice.</p>
+      </div>
+    </section>
+
+    <!-- ===== Vozes ===== -->
+    <section class="view" id="view-vozes">
+      <div class="view-head"><h1>Vozes</h1><span class="muted small">grave uma amostra curta e exata (≈10–20s)</span></div>
+      <div class="cols2">
+        <div class="card col-scroll">
+          <h2>Gravar nova voz</h2>
+          <div class="row">
+            <input type="text" id="voiceName" placeholder="Nome da voz (ex.: Rodrigo)" style="max-width:260px">
+            <button id="recBtn">● Gravar</button>
+            <span id="timer"></span>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <label class="check"><input type="checkbox" id="voiceDenoise" checked> Limpar ruído de fundo ao salvar</label>
+            <label class="cfg-label" style="flex:1; min-width:150px">Força da limpeza <output id="voiceDenoiseStrOut">0.7</output>
+              <input type="range" id="voiceDenoiseStr" min="0" max="1" step="0.05" value="0.7"></label>
+          </div>
+          <label class="cfg-label" style="margin-top:14px">Texto falado na gravação — melhora a clonagem (deixe idêntico ao que você disse)
+            <textarea id="voiceRefText" style="min-height:84px">Olá! Meu nome é Rodrigo e gravo minha voz para criar um clone digital. O sol dourado nasceu sobre as montanhas enquanto o vento frio soprava. Que maravilha extraordinária! O velho pescador trouxe peixe fresco, pão quente e suco gelado.</textarea>
+          </label>
+          <div class="row" id="previewRow" style="display:none; margin-top:12px">
+            <audio id="previewAudio" controls></audio>
+            <button id="saveVoiceBtn">Salvar voz</button>
+            <button id="discardBtn" class="ghost">Descartar</button>
+          </div>
+          <details class="script-box">
+            <summary>Texto de treino — cobre os principais fonemas do português</summary>
+            <p class="script">
+              Olá! Meu nome é Rodrigo e gravo minha voz para criar um clone digital.
+              O sol dourado nasceu sobre as montanhas enquanto o vento frio soprava.
+              Que maravilha extraordinária! O velho pescador trouxe peixe fresco, pão quente e suco gelado.
+            </p>
+          </details>
+          <p class="hint">
+            Leia o texto acima (ou o seu próprio) com naturalidade, em ambiente silencioso e sem eco —
+            e deixe o campo de transcrição <b>idêntico ao que você falou</b>. No OmniVoice, uma amostra
+            <b>curta e exata (≈10–20s)</b> com a transcrição correta clona melhor que uma longa.
+          </p>
+        </div>
+        <div class="card col-scroll">
+          <h2>Vozes salvas</h2>
+          <div id="voiceList"><div class="empty">Nenhuma voz ainda — grave ao lado.</div></div>
         </div>
       </div>
-    </div>
-    <p class="hint">Suba o <b>ganho</b> se a voz sai baixa. Suba a <b>passa-alta</b> p/ cortar zumbido/ventilador/AC.
-    Ajuste a <b>sensibilidade</b> até a barra ficar verde só quando você fala (e cinza no silêncio). Os filtros
-    também limpam o áudio que vai pra transcrição.</p>
-  </details>
-  <details style="margin-top:10px">
-    <summary style="cursor:pointer; font-weight:600">🧠 Anti-ruído da transcrição (rejeita ruído/alucinação)</summary>
-    <div class="sliders" style="margin-top:10px">
-      <label>Mín. de palavras <output id="sttWordsOut">1</output>
-        <input type="range" id="sttWords" min="0" max="6" step="1" value="1"></label>
-      <label>Mín. de caracteres <output id="sttCharsOut">2</output>
-        <input type="range" id="sttChars" min="0" max="20" step="1" value="2"></label>
-      <label>Máx. "sem fala" <output id="sttNoSpeechOut">0.60</output>
-        <input type="range" id="sttNoSpeech" min="0" max="1" step="0.05" value="0.6"></label>
-      <label>Mín. confiança <output id="sttLogprobOut">-1.0</output>
-        <input type="range" id="sttLogprob" min="-5" max="0" step="0.1" value="-1"></label>
-      <label>Máx. repetição <output id="sttCompOut">2.4</output>
-        <input type="range" id="sttComp" min="1" max="10" step="0.1" value="2.4"></label>
-    </div>
-    <p class="hint">Mais palavras/caracteres = ignora frases curtas de ruído. <b>Máx. "sem fala"</b> menor e
-    <b>mín. confiança</b> maior = mais rígido (rejeita mais). <b>Máx. repetição</b> menor corta alucinação
-    repetitiva. Salva automático. Mostra abaixo o motivo quando ignora.</p>
-  </details>
-  <p class="hint">
-    <b>Manual</b>: clique Falar → diga → Parar. <b>Contínuo</b>: escuta sem parar, traduz cada frase
-    quando você faz pausa (fala adiantado; usa cancelamento de eco). <b>Conversa</b>: detecta o silêncio,
-    traduz e fala, e só volta a escutar depois (estilo intérprete, sem fone). A 1ª vez baixa os modelos
-    (~3 GB) e demora; depois ~4–5 s por frase.</p>
-</div>
+    </section>
 
-<!-- ───────────────────── Histórico ───────────────────── -->
-<div class="card">
-  <h2>4 · Áudios gerados</h2>
-  <div class="row" style="margin-bottom:10px">
-    <button id="clearAll" class="danger">🗑 apagar todos</button>
-    <label class="check">
-      <input type="checkbox" id="autoClean"> auto-limpeza: apagar áudios com mais de
-      <input type="number" id="autoCleanMin" min="1" max="1440" step="1" value="15"
-             style="width:64px; padding:4px 8px"> min
-    </label>
-  </div>
-  <div id="outputList"><div class="empty">Nada gerado ainda.</div></div>
-</div>
+    <!-- ===== Tradutor ===== -->
+    <section class="view" id="view-tradutor">
+      <div class="view-head"><h1>Tradutor de voz</h1><span class="muted small">fala → texto → tradução → sua voz</span></div>
+      <div class="card col-scroll" style="flex:1; min-height:0">
+        <div class="row">
+          <button id="transRecBtn">Falar</button>
+          <select id="transMode" style="max-width:160px">
+            <option value="manual">Modo: Manual</option>
+            <option value="continuo">Modo: Contínuo</option>
+            <option value="conversa">Modo: Conversa</option>
+          </select>
+          <select id="transSrc" style="max-width:170px">
+            <option value="auto">De: qualquer idioma</option>
+            <option value="pt" selected>De: Português</option>
+            <option value="en">De: English</option>
+            <option value="es">De: Español</option>
+            <option value="fr">De: Français</option>
+            <option value="de">De: Deutsch</option>
+            <option value="it">De: Italiano</option>
+            <option value="ja">De: 日本語</option>
+            <option value="zh">De: 中文</option>
+          </select>
+          <select id="transLang" style="max-width:170px">
+            <option value="en">traduzir → English</option>
+            <option value="es">traduzir → Español</option>
+            <option value="fr">traduzir → Français</option>
+            <option value="de">traduzir → Deutsch</option>
+            <option value="it">traduzir → Italiano</option>
+            <option value="pt">traduzir → Português</option>
+            <option value="ja">traduzir → 日本語</option>
+            <option value="zh">traduzir → 中文</option>
+          </select>
+          <select id="transVoice" style="max-width:200px"></select>
+          <select id="transEmo" style="max-width:170px">
+            <option value="off">Emoção: off</option>
+            <option value="light">Emoção: leve (prosódia)</option>
+            <option value="accurate">Emoção: precisa (SER)</option>
+          </select>
+          <span id="transStatus" class="hint" style="margin-top:0"></span>
+        </div>
+        <div id="transOut" class="hint" style="margin-top:12px; line-height:1.6"></div>
+        <details>
+          <summary>Microfone / filtros</summary>
+          <div class="sliders" style="margin-top:10px">
+            <label>Ganho do mic <output id="micGainOut">1.0</output>
+              <input type="range" id="micGain" min="0" max="3" step="0.1" value="1"></label>
+            <label>Passa-alta · corta grave/zumbido <output id="micHpOut">90 Hz</output>
+              <input type="range" id="micHp" min="0" max="300" step="10" value="90"></label>
+            <label>Sensibilidade · ignora ruído <output id="micThreshOut">0.015</output>
+              <input type="range" id="micThresh" min="0.005" max="0.08" step="0.001" value="0.015"></label>
+            <label>Pausa = fim de frase <output id="micSilenceOut">700 ms</output>
+              <input type="range" id="micSilence" min="300" max="2000" step="50" value="700"></label>
+            <label>Duração mínima da fala <output id="micMinUtterOut">350 ms</output>
+              <input type="range" id="micMinUtter" min="100" max="1500" step="50" value="350"></label>
+          </div>
+          <div class="row" style="margin-top:10px; align-items:center">
+            <label class="check"><input type="checkbox" id="micNs" checked> supressão de ruído (navegador)</label>
+            <div style="flex:1; min-width:180px">
+              <div class="hint" style="margin-bottom:2px; margin-top:0">nível do mic (a marca laranja é o limiar)</div>
+              <div id="micMeter" style="height:12px; background:#0c0e15; border-radius:6px; position:relative; overflow:hidden">
+                <div id="micMeterBar" style="height:100%; width:0; background:#666; transition:width .05s"></div>
+                <div id="micMeterMark" style="position:absolute; top:0; bottom:0; left:10%; width:2px; background:#fa0"></div>
+              </div>
+            </div>
+          </div>
+          <p class="hint">Suba o <b>ganho</b> se a voz sai baixa. Suba a <b>passa-alta</b> p/ cortar zumbido/ventilador/AC.
+          Ajuste a <b>sensibilidade</b> até a barra ficar verde só quando você fala (e cinza no silêncio). Os filtros
+          também limpam o áudio que vai pra transcrição.</p>
+        </details>
+        <details>
+          <summary>Anti-ruído da transcrição (rejeita ruído/alucinação)</summary>
+          <div class="sliders" style="margin-top:10px">
+            <label>Mín. de palavras <output id="sttWordsOut">1</output>
+              <input type="range" id="sttWords" min="0" max="6" step="1" value="1"></label>
+            <label>Mín. de caracteres <output id="sttCharsOut">2</output>
+              <input type="range" id="sttChars" min="0" max="20" step="1" value="2"></label>
+            <label>Máx. "sem fala" <output id="sttNoSpeechOut">0.60</output>
+              <input type="range" id="sttNoSpeech" min="0" max="1" step="0.05" value="0.6"></label>
+            <label>Mín. confiança <output id="sttLogprobOut">-1.0</output>
+              <input type="range" id="sttLogprob" min="-5" max="0" step="0.1" value="-1"></label>
+            <label>Máx. repetição <output id="sttCompOut">2.4</output>
+              <input type="range" id="sttComp" min="1" max="10" step="0.1" value="2.4"></label>
+          </div>
+          <p class="hint">Mais palavras/caracteres = ignora frases curtas de ruído. <b>Máx. "sem fala"</b> menor e
+          <b>mín. confiança</b> maior = mais rígido (rejeita mais). <b>Máx. repetição</b> menor corta alucinação
+          repetitiva. Salva automático. Mostra abaixo o motivo quando ignora.</p>
+        </details>
+        <p class="hint">
+          <b>Manual</b>: clique Falar → diga → Parar. <b>Contínuo</b>: escuta sem parar, traduz cada frase
+          quando você faz pausa (fala adiantado; usa cancelamento de eco). <b>Conversa</b>: detecta o silêncio,
+          traduz e fala, e só volta a escutar depois (estilo intérprete, sem fone). A 1ª vez baixa os modelos
+          (~3 GB) e demora; depois ~4–5 s por frase.</p>
+      </div>
+    </section>
 
-<!-- ───────────────────── Configurações ───────────────────── -->
-<div class="card">
-  <h2>⚙️ Configurações padrão — valem para a UI e a API</h2>
-  <div class="row" style="margin-bottom:12px">
-    <label class="cfg-label">Modelo
-      <select id="cfgModel">
-        <option value="omnivoice">OmniVoice — 646 idiomas, RTF ~0,8 (bf16, ~2 GB)</option>
-        <option value="__custom__">outro id/dir MLX de OmniVoice…</option>
-      </select>
-    </label>
-    <input type="text" id="cfgModelCustom" placeholder="ex.: mlx-community/OmniVoice-fp32" style="display:none; max-width:320px">
-  </div>
-  <div class="row" style="margin-bottom:12px">
-    <label class="cfg-label">Voz padrão da API <select id="cfgVoice"></select></label>
-    <label class="cfg-label">Idioma padrão
-      <select id="cfgLang">
-        <option value="auto">Auto (detecta do texto)</option>
-        <option value="pt">Português</option><option value="en">English</option>
-        <option value="es">Español</option><option value="fr">Français</option>
-        <option value="de">Deutsch</option><option value="it">Italiano</option>
-      </select>
-    </label>
-    <label class="cfg-label">Trecho máx. (chars) <input type="number" id="cfgChunk" min="60" max="200" step="10" style="width:90px"></label>
-    <label class="cfg-label">Velocidade (API) <input type="number" id="cfgSpeed" min="0.25" max="4" step="0.25" style="width:90px"></label>
-  </div>
-  <label class="cfg-label" style="display:block; margin-bottom:12px">Pré-prompt (texto falado antes de toda geração)
-    <textarea id="cfgPrePrompt" style="min-height:48px" placeholder="ex.: Atenção:"></textarea>
-  </label>
-  <details style="margin-bottom:12px" open>
-    <summary style="cursor:pointer; font-weight:600">🎛️ OmniVoice — controles de geração</summary>
-    <div class="sliders" style="margin-top:10px">
-      <label>Passos · num_steps <output id="oNumStepsOut">16</output>
-        <input type="range" id="oNumSteps" min="4" max="64" step="1" value="16"></label>
-      <label>Aderência · guidance <output id="oGuidOut">2.0</output>
-        <input type="range" id="oGuid" min="0" max="10" step="0.1" value="2"></label>
-      <label>Variação de token · class_temp <output id="oClassTOut">0.00</output>
-        <input type="range" id="oClassT" min="0" max="2" step="0.05" value="0"></label>
-      <label>Variação de posição · position_temp <output id="oPosTOut">5.0</output>
-        <input type="range" id="oPosT" min="0" max="20" step="0.5" value="5"></label>
-      <label>Penalidade por camada · layer_penalty <output id="oLayerOut">5.0</output>
-        <input type="range" id="oLayer" min="0" max="20" step="0.5" value="5"></label>
-      <label>Deslocamento t · t_shift <output id="oTshiftOut">0.10</output>
-        <input type="range" id="oTshift" min="0" max="1" step="0.05" value="0.1"></label>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <label class="cfg-label" style="flex:1; min-width:240px">Voice design · instruct (descreva a voz)
-        <input type="text" id="oInstruct" placeholder="ex.: female, low pitch, calm british accent"></label>
-      <label class="cfg-label">Duração fixa (s · vazio = auto)
-        <input type="number" id="oDur" min="0.5" max="60" step="0.5" placeholder="auto" style="width:110px"></label>
-      <label class="cfg-label">Ref. usada da amostra (s)
-        <input type="number" id="oRefMax" min="3" max="30" step="1" style="width:100px"></label>
-    </div>
-    <div class="row" style="margin-top:8px">
-      <button id="oReset" class="ghost" type="button">↺ Restaurar padrões</button>
-    </div>
-    <p class="hint">Passos↑ = mais qualidade, mais lento (16 rápido / 32 qualidade). Aderência↑ = segue
-    mais o texto e a voz de referência. Variações↑ = fala mais espontânea, menos estável. Voice design
-    cria/ajusta o timbre por descrição textual. Sobrepõem-se a estes defaults se enviados na requisição da API.</p>
-  </details>
-  <div class="row">
-    <button id="cfgSave">💾 Salvar configurações</button>
-    <span id="cfgStatus" class="hint"></span>
-  </div>
-  <p class="hint">Estes valores valem para a UI e a API; um parâmetro explícito na requisição sempre
-  sobrepõe. A primeira geração baixa e monta o OmniVoice (~2 GB), depois fica em cache.</p>
-</div>
+    <!-- ===== Histórico ===== -->
+    <section class="view" id="view-historico">
+      <div class="view-head"><h1>Histórico</h1>
+        <div class="row">
+          <label class="check">
+            <input type="checkbox" id="autoClean"> auto-limpeza após
+            <input type="number" id="autoCleanMin" min="1" max="1440" step="1" value="15"
+                   style="width:64px; padding:5px 8px"> min
+          </label>
+          <button id="clearAll" class="danger">Apagar todos</button>
+        </div>
+      </div>
+      <div class="card col-scroll" style="flex:1; min-height:0">
+        <div id="outputList"><div class="empty">Nada gerado ainda.</div></div>
+      </div>
+    </section>
 
-<!-- ───────────────────── Servidor ───────────────────── -->
-<div class="card">
-  <h2>⏻ Servidor</h2>
-  <div class="row">
-    <button id="shutdownBtn" class="danger">⏻ Desligar servidor</button>
-    <span class="hint">Para religar, dê dois cliques em <b>TTS-Rod.command</b> (no Finder).</span>
-  </div>
+  </main>
+
+  <!-- ===== Configurações (painel fixo, sempre visível) ===== -->
+  <aside class="config-panel">
+    <div class="config-head"><h1>Configurações</h1><span class="muted small">UI + API</span></div>
+    <div class="config-body">
+        <div class="row" style="margin-bottom:14px">
+          <label class="cfg-label">Modelo
+            <select id="cfgModel">
+              <option value="omnivoice">OmniVoice — 646 idiomas (precisão no campo ao lado)</option>
+              <option value="__custom__">outro id/dir MLX de OmniVoice…</option>
+            </select>
+          </label>
+          <input type="text" id="cfgModelCustom" placeholder="ex.: mlx-community/OmniVoice-fp32" style="display:none; max-width:320px">
+          <label class="cfg-label">Precisão
+            <select id="cfgPrecision">
+              <option value="fp32">fp32 — precisão total (~2× RAM, +lento)</option>
+              <option value="bf16">bf16 — rápido (~2 GB) · recomendado</option>
+              <option value="q8">8-bit — +rápido, ~½ RAM (experimental)</option>
+              <option value="q4">4-bit — máx. velocidade, menor qualidade (experimental)</option>
+            </select>
+          </label>
+        </div>
+        <div class="row" style="margin-bottom:14px">
+          <label class="cfg-label">Voz padrão da API <select id="cfgVoice"></select></label>
+          <label class="cfg-label">Idioma padrão
+            <select id="cfgLang">
+              <option value="auto">Auto (detecta do texto)</option>
+              <option value="pt">Português</option><option value="en">English</option>
+              <option value="es">Español</option><option value="fr">Français</option>
+              <option value="de">Deutsch</option><option value="it">Italiano</option>
+            </select>
+          </label>
+          <label class="cfg-label">Trecho máx. (chars) <input type="number" id="cfgChunk" min="60" max="200" step="10" style="width:90px"></label>
+          <label class="cfg-label">Velocidade <input type="number" id="cfgSpeed" min="0.5" max="2" step="0.05" style="width:90px"></label>
+        </div>
+        <label class="cfg-label" style="margin-bottom:14px">Pré-prompt (texto falado antes de toda geração)
+          <textarea id="cfgPrePrompt" style="min-height:48px" placeholder="ex.: Atenção:"></textarea>
+        </label>
+        <details open>
+          <summary>OmniVoice — controles de geração</summary>
+          <div class="sliders" style="margin-top:10px">
+            <label>Passos · num_steps <output id="oNumStepsOut">16</output>
+              <input type="range" id="oNumSteps" min="4" max="64" step="1" value="16"></label>
+            <label>Aderência · guidance <output id="oGuidOut">2.0</output>
+              <input type="range" id="oGuid" min="0" max="10" step="0.1" value="2"></label>
+            <label>Variação de token · class_temp <output id="oClassTOut">0.00</output>
+              <input type="range" id="oClassT" min="0" max="2" step="0.05" value="0"></label>
+            <label>Variação de posição · position_temp <output id="oPosTOut">5.0</output>
+              <input type="range" id="oPosT" min="0" max="20" step="0.5" value="5"></label>
+            <label>Penalidade por camada · layer_penalty <output id="oLayerOut">5.0</output>
+              <input type="range" id="oLayer" min="0" max="20" step="0.5" value="5"></label>
+            <label>Deslocamento t · t_shift <output id="oTshiftOut">0.10</output>
+              <input type="range" id="oTshift" min="0" max="1" step="0.05" value="0.1"></label>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <label class="cfg-label" style="flex:1; min-width:240px">Voice design · instruct (descreva a voz)
+              <input type="text" id="oInstruct" placeholder="ex.: female, low pitch, calm british accent"></label>
+            <label class="cfg-label">Duração fixa (s · vazio = auto)
+              <input type="number" id="oDur" min="0.5" max="60" step="0.5" placeholder="auto" style="width:110px"></label>
+            <label class="cfg-label">Ref. usada da amostra (s)
+              <input type="number" id="oRefMax" min="3" max="30" step="1" style="width:100px"></label>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button id="oReset" class="ghost" type="button">↺ Restaurar padrões</button>
+          </div>
+          <p class="hint">Passos↑ = mais qualidade, mais lento (16 rápido / 32 qualidade). Aderência↑ = segue
+          mais o texto e a voz de referência. Variações↑ = fala mais espontânea, menos estável. Voice design
+          cria/ajusta o timbre por descrição textual. Sobrepõem-se a estes defaults se enviados na requisição da API.</p>
+        </details>
+        <p class="hint">Estes valores valem para a UI e a API; um parâmetro explícito na requisição sempre
+        sobrepõe. A primeira geração baixa e monta o OmniVoice (~2 GB), depois fica em cache.</p>
+        <div class="row config-save">
+          <button id="cfgSave">Salvar configurações</button>
+          <span id="cfgStatus" class="hint" style="margin-top:0"></span>
+        </div>
+    </div>
+  </aside>
 </div>
 
 <div id="toast"></div>
@@ -383,6 +558,31 @@ async function api(path, opts = {}) {
   }
   return r.json();
 }
+
+/* ───────── Navegação por abas ───────── */
+function showView(id) {
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + id));
+  document.querySelectorAll(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.view === id));
+}
+document.querySelectorAll(".nav-item").forEach(b => b.onclick = () => {
+  showView(b.dataset.view);
+  if (b.dataset.view === "tradutor") warmTranslator();  // pré-carrega modelos
+});
+showView("gerar");
+
+/* ───────── Tags OmniVoice: insere a tag não-verbal no cursor do texto ───────── */
+function insertAtCursor(el, tag) {
+  const s = el.selectionStart ?? el.value.length;
+  const e = el.selectionEnd ?? el.value.length;
+  const before = el.value.slice(0, s), after = el.value.slice(e);
+  const ins = (before && !/\s$/.test(before) ? " " : "") + tag
+            + (after && !/^\s/.test(after) ? " " : "");
+  el.value = before + ins + after;
+  el.selectionStart = el.selectionEnd = s + ins.length;
+  el.focus();
+}
+document.querySelectorAll("#tagbar [data-tag]").forEach(b =>
+  b.onclick = () => insertAtCursor($("ttsText"), b.dataset.tag));
 
 /* ───────── Status do modelo ───────── */
 async function refreshStatus() {
@@ -463,6 +663,9 @@ $("recBtn").onclick = async () => {
 
 $("discardBtn").onclick = () => { wavBlob = null; $("previewRow").style.display = "none"; };
 
+$("voiceDenoiseStr").oninput = () =>
+  $("voiceDenoiseStrOut").textContent = parseFloat($("voiceDenoiseStr").value).toFixed(2);
+
 $("saveVoiceBtn").onclick = async () => {
   if (!wavBlob) return;
   const name = $("voiceName").value.trim();
@@ -471,6 +674,8 @@ $("saveVoiceBtn").onclick = async () => {
   fd.append("name", name);
   fd.append("audio", wavBlob, "voz.wav");
   fd.append("ref_text", $("voiceRefText").value.trim());
+  fd.append("denoise", $("voiceDenoise").checked ? "1" : "0");
+  fd.append("denoise_strength", $("voiceDenoiseStr").value);
   try {
     await api("/api/voices", { method: "POST", body: fd });
     wavBlob = null; $("previewRow").style.display = "none"; $("voiceName").value = "";
@@ -485,7 +690,11 @@ async function refreshVoices() {
   const list = $("voiceList"), sel = $("voiceSelect"), sel2 = $("transVoice");
   const selected = sel.value, selected2 = sel2.value;
   sel.innerHTML = ""; sel2.innerHTML = "";
-  list.innerHTML = voices.length ? "" : '<div class="empty">Nenhuma voz ainda — grave acima.</div>';
+  // voz "virtual": gera a partir da descrição (campo Voice design), sem clone
+  const dopt = document.createElement("option");
+  dopt.value = "__design__"; dopt.textContent = "Voice design (descrição → voz)";
+  sel.appendChild(dopt);
+  list.innerHTML = voices.length ? "" : '<div class="empty">Nenhuma voz ainda — grave ao lado.</div>';
   for (const v of voices) {
     const virtual = v.preset && !v.materialized;  // voz padrão ainda não criada
     const div = document.createElement("div");
@@ -493,15 +702,31 @@ async function refreshVoices() {
     if (virtual) {
       div.innerHTML = `
         <div class="grow"><div class="name">⭐ ${v.name}</div>
-        <div class="meta">voz padrão · ${v.instruct || ""}</div></div>
+        <div class="meta">voz padrão · ${v.instruct || ""} · <code class="vid" title="clique p/ copiar o id">${v.id}</code></div></div>
         <span class="hint">criada ao gerar pela 1ª vez</span>`;
     } else {
       const tag = v.preset ? "⭐ " : "";
+      const limpa = v.denoised ? " · limpa" : "";
+      const buster = encodeURIComponent(`${v.duration || 0}-${v.denoised ? 1 : 0}`);
+      const cleanBtn = v.preset ? "" : `<button class="ghost small clean">limpar</button>`;
       div.innerHTML = `
         <div class="grow"><div class="name">${tag}${v.name}</div>
-        <div class="meta">${v.duration}s · ${v.preset ? "voz padrão" : v.created_at}</div></div>
-        <audio controls preload="none" src="${k(`/api/voices/${v.id}/audio`)}"></audio>
+        <div class="meta">${v.duration}s · ${v.preset ? "voz padrão" : v.created_at}${limpa} · <code class="vid" title="clique p/ copiar o id">${v.id}</code></div></div>
+        <audio controls preload="none" src="${k(`/api/voices/${v.id}/audio?_v=${buster}`)}"></audio>
+        ${cleanBtn}
         <button class="danger">${v.preset ? "resetar" : "apagar"}</button>`;
+      const cb = div.querySelector(".clean");
+      if (cb) cb.onclick = async () => {
+        cb.disabled = true; cb.textContent = "limpando…";
+        try {
+          await api(`/api/voices/${v.id}/denoise`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ strength: parseFloat($("voiceDenoiseStr").value) })
+          });
+          toast("Voz limpa ✔ — regenere a fala p/ ouvir o efeito");
+          refreshVoices();
+        } catch (e) { toast("Erro: " + e.message); cb.disabled = false; cb.textContent = "limpar"; }
+      };
       div.querySelector(".danger").onclick = async () => {
         const verbo = v.preset ? "Resetar" : "Apagar";
         if (!confirm(`${verbo} a voz "${v.name}"?`)) return;
@@ -509,6 +734,11 @@ async function refreshVoices() {
         refreshVoices();
       };
     }
+    const vidEl = div.querySelector(".vid");
+    if (vidEl) vidEl.onclick = () => {
+      navigator.clipboard?.writeText(v.id).catch(() => {});
+      toast("id copiado: " + v.id);
+    };
     list.appendChild(div);
     const rotulo = (v.preset ? "⭐ " : "") + v.name;
     const opt = document.createElement("option");
@@ -598,8 +828,14 @@ async function streamJob(job_id, statusEl) {
 $("ttsBtn").onclick = async () => {
   const text = $("ttsText").value.trim();
   const voice_id = $("voiceSelect").value;
+  const designMode = voice_id === "__design__";
+  const designInstruct = $("oInstruct").value.trim();
   if (!text) { toast("Digite um texto."); return; }
   if (!voice_id) { toast("Grave e salve uma voz primeiro."); return; }
+  if (designMode && !designInstruct) {
+    toast("Voice design: descreva a voz em Configurações → Voice design.");
+    return;
+  }
 
   stopPlayback();
   player = { ctx: new AudioContext(), nextTime: 0, sources: [], stopped: false };
@@ -614,7 +850,8 @@ $("ttsBtn").onclick = async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text, voice_id,
-        language: $("langSelect").value
+        language: $("langSelect").value,
+        ...(designMode ? { instruct: designInstruct } : {})
       })
     });
 
@@ -755,7 +992,45 @@ function initMicControls() {
   updateMicMark();
 }
 
+/* --- Aquecimento: carrega whisper + LLM antes da 1ª frase (paraleliza) --- */
+let _warmed = false;
+function warmTranslator() {
+  if (_warmed) return; _warmed = true;
+  api("/api/translate/warmup", { method: "POST" }).catch(() => {});
+}
+
+/* --- Transcrição ao vivo: re-transcreve o áudio-até-agora e mostra na tela --- */
+let live = null;  // { getChunks, lang, busy, timer, last }
+function startLive(getChunks) {
+  stopLive();
+  live = { getChunks, lang: $("transSrc").value, busy: false, last: "" };
+  live.timer = setInterval(livePoll, 650);
+}
+function stopLive() {
+  if (live) { clearInterval(live.timer); live = null; }
+}
+async function livePoll() {
+  if (!live || live.busy) return;
+  const chunks = live.getChunks();
+  if (!chunks || !chunks.length) return;
+  live.busy = true;
+  try {
+    const wav = await blobToWav(new Blob(chunks, { type: "audio/webm" }));
+    const fd = new FormData();
+    fd.append("audio", wav, "p.wav");
+    fd.append("source_lang", live.lang);
+    const r = await api("/api/stt-partial", { method: "POST", body: fd });
+    if (live && r.text && r.text !== live.last) {
+      live.last = r.text;
+      $("transOut").innerHTML =
+        `<b>Você (ao vivo):</b> <span style="opacity:.75">${r.text}</span>`
+        + `<span class="spinner" style="margin-left:6px"></span>`;
+    }
+  } catch {} finally { if (live) live.busy = false; }
+}
+
 $("transRecBtn").onclick = async () => {
+  warmTranslator();
   const mode = $("transMode").value;
   if (mode === "manual") {                  // gravar / parar manual
     if (transRec && transRec.state === "recording") { transRec.stop(); return; }
@@ -769,9 +1044,11 @@ $("transRecBtn").onclick = async () => {
     transRec.onstop = async () => {
       closeProcessedMic();
       setRecBtn(false);
+      stopLive();
       await translateAndSpeak(new Blob(transChunks, { type: "audio/webm" }));
     };
-    transRec.start();
+    transRec.start(300);             // timeslice -> chunks durante a fala (prévia ao vivo)
+    startLive(() => transChunks);
     setRecBtn(true);
     return;
   }
@@ -784,7 +1061,7 @@ $("transRecBtn").onclick = async () => {
 $("transMode").onchange = () => { if (auto) stopAuto(); if (transRec && transRec.state === "recording") transRec.stop(); };
 
 function setRecBtn(on, label) {
-  $("transRecBtn").textContent = on ? (label || "■ Parar") : (label || "🎙️ Falar");
+  $("transRecBtn").textContent = on ? (label || "■ Parar") : (label || "Falar");
   $("transRecBtn").classList.toggle("rec", on);
 }
 
@@ -805,10 +1082,11 @@ function stopAuto() {
   if (!auto) return;
   const st = auto; auto = null;
   st.stop = true;
+  stopLive();
   clearInterval(st.timer);
   try { if (st.rec && st.rec.state === "recording") st.rec.stop(); } catch {}
   closeProcessedMic();
-  setRecBtn(false, "🎙️ Falar");
+  setRecBtn(false, "Falar");
   $("transStatus").textContent = "parado";
 }
 
@@ -827,13 +1105,15 @@ function vadTick(st) {
       st.speaking = true; st.silence = 0; st.chunks = [];
       st.rec = new MediaRecorder(st.recStream);
       st.rec.ondataavailable = e => { if (e.data.size) st.chunks.push(e.data); };
-      st.rec.start();
+      st.rec.start(300);                 // timeslice -> prévia ao vivo durante o trecho
       st.uttStart = performance.now();
+      if (st.mode !== "conversa") startLive(() => st.chunks);  // conversa = half-duplex, sem prévia
     } else st.silence = 0;
   } else if (st.speaking) {
     st.silence += VAD.frameMs;
     if (st.silence >= VAD.silenceHoldMs) {         // silêncio sustentado -> fim do trecho
       st.speaking = false;
+      stopLive();
       const dur = performance.now() - st.uttStart;
       const rec = st.rec, chunks = st.chunks; st.rec = null;
       rec.onstop = () => {
@@ -869,8 +1149,13 @@ async function translateAndSpeak(blob) {
   const voice_id = $("transVoice").value;
   if (!voice_id) { toast("Escolha uma voz."); return; }
   $("transStatus").innerHTML = '<span class="spinner"></span>transcrevendo + traduzindo…';
+  let wav;
+  // navegador decodifica o webm/opus e re-encoda WAV — o servidor lê com soundfile
+  // (sem ffmpeg). Também habilita a captura de emoção (que usa soundfile).
+  try { wav = await blobToWav(blob); }
+  catch (e) { $("transStatus").textContent = ""; toast("Falha ao processar áudio: " + e.message, 6000); return; }
   const fd = new FormData();
-  fd.append("audio", blob, "fala.webm");
+  fd.append("audio", wav, "fala.wav");
   fd.append("target_lang", $("transLang").value);
   fd.append("source_lang", $("transSrc").value);
   fd.append("emotion_mode", $("transEmo").value);
@@ -885,7 +1170,7 @@ async function translateAndSpeak(blob) {
   $("transOut").innerHTML =
     `<b>Você (${r.source_lang || "?"}):</b> ${r.source_text}<br>`
     + `<b>Tradução (${r.target_lang}):</b> ${r.translation}`
-    + (r.emotion ? `<br><b>🎭 Emoção:</b> ${r.emotion}` : "")
+    + (r.emotion ? `<br><b>Emoção:</b> ${r.emotion}` : "")
     + (r.emotion_error ? `<br><span style="color:#c66">emoção indisponível: ${r.emotion_error}</span>` : "");
   $("transStatus").innerHTML = '<span class="spinner"></span>falando traduzido…';
   try { await streamJob(r.job_id, $("transStatus")); $("transStatus").textContent = "pronto ✔"; }
@@ -982,6 +1267,10 @@ async function loadSettings() {
     $("oInstruct").value = s.omni_instruct || "";
     $("oDur").value = s.omni_duration_s ?? "";
     $("oRefMax").value = s.omni_ref_max_s ?? 10;
+    $("cfgPrecision").value = s.omni_precision || "bf16";
+    $("voiceDenoise").checked = s.voice_denoise ?? true;
+    $("voiceDenoiseStr").value = s.voice_denoise_strength ?? 0.7;
+    $("voiceDenoiseStrOut").textContent = parseFloat(s.voice_denoise_strength ?? 0.7).toFixed(2);
     for (const [id, out, key, fmt] of STT_CTL) {
       if (s[key] !== undefined) { $(id).value = s[key]; $(out).textContent = fmt(s[key]); }
     }
@@ -1019,7 +1308,8 @@ $("cfgSave").onclick = async () => {
         omni_t_shift: parseFloat($("oTshift").value),
         omni_instruct: $("oInstruct").value,
         omni_duration_s: $("oDur").value === "" ? null : parseFloat($("oDur").value),
-        omni_ref_max_s: parseFloat($("oRefMax").value) || 10
+        omni_ref_max_s: parseFloat($("oRefMax").value) || 10,
+        omni_precision: $("cfgPrecision").value
       })
     });
     $("cfgStatus").textContent = "salvo ✔ — já vale para a API";

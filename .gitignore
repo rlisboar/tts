@@ -16,3 +16,6 @@ settings.json
 
 # artefatos de PoC / teste
 poc-*.wav
+
+# log de runtime do servidor
+server.log
