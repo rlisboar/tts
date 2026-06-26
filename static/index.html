@@ -234,6 +234,7 @@
       <button class="nav-item" data-view="gerar"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M19 5a9 9 0 0 1 0 14"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></span><span>Gerar fala</span></button>
       <button class="nav-item" data-view="vozes"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span><span>Vozes</span></button>
       <button class="nav-item" data-view="tradutor"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg></span><span>Tradutor</span></button>
+      <button class="nav-item" data-view="stt"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/></svg></span><span>Transcrição</span></button>
       <button class="nav-item" data-view="historico"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>Histórico</span></button>
     </nav>
     <div class="side-foot">
@@ -303,6 +304,17 @@
             <label class="cfg-label" style="flex:1; min-width:150px">Força da limpeza <output id="voiceDenoiseStrOut">0.7</output>
               <input type="range" id="voiceDenoiseStr" min="0" max="1" step="0.05" value="0.7"></label>
           </div>
+          <details style="margin-top:10px">
+            <summary>Importar do YouTube</summary>
+            <input type="text" id="ytUrl" placeholder="link do YouTube" style="margin-top:10px">
+            <div class="row" style="margin-top:8px">
+              <input type="text" id="ytStart" placeholder="início (ex.: 0:30)" style="max-width:150px">
+              <input type="text" id="ytEnd" placeholder="fim (ex.: 0:50)" style="max-width:150px">
+              <button id="ytImportBtn" class="ghost" type="button">Importar</button>
+              <span id="ytStatus" class="hint" style="margin-top:0"></span>
+            </div>
+            <p class="hint">Baixa o áudio do trecho e coloca no player abaixo — confira e Salvar voz. Ideal 10–30s de fala limpa.</p>
+          </details>
           <label class="cfg-label" style="margin-top:14px">Texto falado na gravação — melhora a clonagem (deixe idêntico ao que você disse)
             <textarea id="voiceRefText" style="min-height:84px">Olá! Meu nome é Rodrigo e gravo minha voz para criar um clone digital. O sol dourado nasceu sobre as montanhas enquanto o vento frio soprava. Que maravilha extraordinária! O velho pescador trouxe peixe fresco, pão quente e suco gelado.</textarea>
           </label>
@@ -427,6 +439,46 @@
       </div>
     </section>
 
+    <!-- ===== Transcrição (STT) ===== -->
+    <section class="view" id="view-stt">
+      <div class="view-head"><h1>Transcrição</h1><span class="muted small">fala ou arquivo → texto (Whisper, local ou remoto)</span></div>
+      <div class="card grow-card">
+        <div class="toolbar">
+          <button id="sttRecBtn">● Gravar</button>
+          <button id="sttUploadBtn" class="ghost" type="button">Carregar arquivo</button>
+          <input type="file" id="sttFile" accept="audio/*" style="display:none">
+          <select id="sttSrcLang" style="max-width:190px">
+            <option value="auto" selected>Idioma: Auto (detecta)</option>
+            <option value="pt">Português</option>
+            <option value="en">English</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="it">Italiano</option>
+            <option value="ja">日本語</option>
+            <option value="zh">中文</option>
+          </select>
+          <span id="sttStatus" class="hint" style="margin-top:0"></span>
+        </div>
+        <details>
+          <summary>Importar do YouTube</summary>
+          <input type="text" id="sttYtUrl" placeholder="link do YouTube" style="margin-top:10px">
+          <div class="row" style="margin-top:8px">
+            <input type="text" id="sttYtStart" placeholder="início (ex.: 1:00)" style="max-width:150px">
+            <input type="text" id="sttYtEnd" placeholder="fim (ex.: 3:30)" style="max-width:150px">
+            <button id="sttYtBtn" class="ghost" type="button">Importar e transcrever</button>
+          </div>
+        </details>
+        <textarea id="sttText" class="hero-area" placeholder="O texto transcrito aparece aqui — edite à vontade."></textarea>
+        <div class="toolbar">
+          <button id="sttCopyBtn" class="ghost">Copiar</button>
+          <button id="sttDownloadBtn" class="ghost">Baixar .txt</button>
+          <button id="sttSrtBtn" class="ghost">Baixar .srt</button>
+          <span class="hint" style="margin-top:0">1ª vez baixa o Whisper (~1,6 GB) se for local.</span>
+        </div>
+      </div>
+    </section>
+
     <!-- ===== Histórico ===== -->
     <section class="view" id="view-historico">
       <div class="view-head"><h1>Histórico</h1>
@@ -513,6 +565,20 @@
           <p class="hint">Passos↑ = mais qualidade, mais lento (16 rápido / 32 qualidade). Aderência↑ = segue
           mais o texto e a voz de referência. Variações↑ = fala mais espontânea, menos estável. Voice design
           cria/ajusta o timbre por descrição textual. Sobrepõem-se a estes defaults se enviados na requisição da API.</p>
+        </details>
+        <details>
+          <summary>Áudio (saída) — ganho e equalização</summary>
+          <div class="sliders" style="margin-top:10px">
+            <label>Ganho geral <output id="audGainOut">0 dB</output>
+              <input type="range" id="audGain" min="-15" max="15" step="0.5" value="0"></label>
+            <label>Grave (150 Hz) <output id="audLowOut">0 dB</output>
+              <input type="range" id="audLow" min="-12" max="12" step="0.5" value="0"></label>
+            <label>Médio (1.5 kHz) <output id="audMidOut">0 dB</output>
+              <input type="range" id="audMid" min="-12" max="12" step="0.5" value="0"></label>
+            <label>Agudo (5 kHz) <output id="audHighOut">0 dB</output>
+              <input type="range" id="audHigh" min="-12" max="12" step="0.5" value="0"></label>
+          </div>
+          <p class="hint">Aplicado na saída gerada (local e remoto). Se a fala soa <b>distorcida/estridente</b>, baixe Agudo e o Ganho geral. Limiter de segurança evita clipar.</p>
         </details>
         <details open>
           <summary>Modelos remotos (API)</summary>
@@ -692,6 +758,37 @@ $("discardBtn").onclick = () => { wavBlob = null; $("previewRow").style.display 
 
 /* Carregar voz de um arquivo (wav/mp3/m4a/…): o navegador decodifica e re-encoda
    WAV 24k via blobToWav — entra no mesmo fluxo de preview/salvar da gravação. */
+/* Extrai um trecho de áudio de um link do YouTube -> Blob WAV (servidor usa
+   yt-dlp + ffmpeg estático). Compartilhado por Vozes e Transcrição. */
+async function fetchYouTube(url, start, end) {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 180000);   // 3 min: não pendura a UI
+  let r;
+  try {
+    r = await authFetch("/api/youtube-audio", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, start, end }), signal: ctrl.signal
+    });
+  } catch (e) { throw new Error(e.name === "AbortError" ? "tempo esgotado (3 min)" : e.message); }
+  finally { clearTimeout(to); }
+  if (!r.ok) { let d = r.statusText; try { d = (await r.json()).detail || d; } catch {} throw new Error(d); }
+  return await r.blob();
+}
+
+$("ytImportBtn").onclick = async () => {
+  const url = $("ytUrl").value.trim();
+  if (!url) { toast("Cole o link do YouTube."); return; }
+  $("ytStatus").innerHTML = '<span class="spinner"></span>extraindo…';
+  $("ytImportBtn").disabled = true;
+  try {
+    wavBlob = await fetchYouTube(url, $("ytStart").value.trim(), $("ytEnd").value.trim());
+    $("previewAudio").src = URL.createObjectURL(wavBlob);
+    $("previewRow").style.display = "flex";
+    $("ytStatus").textContent = "pronto — confira e Salvar voz";
+  } catch (e) { $("ytStatus").textContent = ""; toast("Erro: " + e.message, 6000); }
+  finally { $("ytImportBtn").disabled = false; }
+};
+
 $("uploadBtn").onclick = () => $("voiceFile").click();
 $("voiceFile").onchange = async (e) => {
   const f = e.target.files[0];
@@ -710,6 +807,9 @@ $("voiceFile").onchange = async (e) => {
 
 $("voiceDenoiseStr").oninput = () =>
   $("voiceDenoiseStrOut").textContent = parseFloat($("voiceDenoiseStr").value).toFixed(2);
+
+for (const [sl, out] of [["audGain", "audGainOut"], ["audLow", "audLowOut"], ["audMid", "audMidOut"], ["audHigh", "audHighOut"]])
+  $(sl).oninput = () => $(out).textContent = `${(+$(sl).value).toFixed(1).replace(/\.0$/, "")} dB`;
 
 $("saveVoiceBtn").onclick = async () => {
   if (!wavBlob) return;
@@ -1316,6 +1416,11 @@ async function loadSettings() {
     $("voiceDenoise").checked = s.voice_denoise ?? true;
     $("voiceDenoiseStr").value = s.voice_denoise_strength ?? 0.7;
     $("voiceDenoiseStrOut").textContent = parseFloat(s.voice_denoise_strength ?? 0.7).toFixed(2);
+    for (const [sl, out, key] of [["audGain", "audGainOut", "audio_gain_db"], ["audLow", "audLowOut", "audio_eq_low_db"],
+        ["audMid", "audMidOut", "audio_eq_mid_db"], ["audHigh", "audHighOut", "audio_eq_high_db"]]) {
+      $(sl).value = s[key] ?? 0;
+      $(out).textContent = `${(+(s[key] ?? 0)).toFixed(1).replace(/\.0$/, "")} dB`;
+    }
     $("remoteTts").checked = !!s.remote_tts;
     $("remoteTranslate").checked = !!s.remote_translate;
     $("remoteStt").checked = !!s.remote_stt;
@@ -1365,6 +1470,10 @@ $("cfgSave").onclick = async () => {
         omni_duration_s: $("oDur").value === "" ? null : parseFloat($("oDur").value),
         omni_ref_max_s: parseFloat($("oRefMax").value) || 10,
         omni_precision: $("cfgPrecision").value,
+        audio_gain_db: parseFloat($("audGain").value) || 0,
+        audio_eq_low_db: parseFloat($("audLow").value) || 0,
+        audio_eq_mid_db: parseFloat($("audMid").value) || 0,
+        audio_eq_high_db: parseFloat($("audHigh").value) || 0,
         remote_tts: $("remoteTts").checked,
         remote_translate: $("remoteTranslate").checked,
         remote_stt: $("remoteStt").checked,
@@ -1387,6 +1496,78 @@ $("shutdownBtn").onclick = async () => {
   try { await api("/api/shutdown", { method: "POST" }); } catch {}
   document.body.innerHTML = '<div style="text-align:center;margin-top:80px;font-size:18px;color:#888">'
     + 'Servidor desligado.<br><br>Para religar, dê dois cliques em <b>TTS-Rod.command</b> no Finder.</div>';
+};
+
+/* ───────── Transcrição (STT): grava ou carrega arquivo -> texto ───────── */
+let sttRec = null, sttChunks = [], sttStream = null, sttSegs = [];
+$("sttRecBtn").onclick = async () => {
+  if (sttRec && sttRec.state === "recording") { sttRec.stop(); return; }
+  try {
+    sttStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch { toast("Sem acesso ao microfone."); return; }
+  sttChunks = [];
+  sttRec = new MediaRecorder(sttStream);
+  sttRec.ondataavailable = e => { if (e.data.size) sttChunks.push(e.data); };
+  sttRec.onstop = async () => {
+    sttStream.getTracks().forEach(t => t.stop());
+    $("sttRecBtn").textContent = "● Gravar"; $("sttRecBtn").classList.remove("rec");
+    await sttTranscribe(new Blob(sttChunks, { type: sttRec.mimeType }));
+  };
+  sttRec.start();
+  $("sttRecBtn").textContent = "■ Parar"; $("sttRecBtn").classList.add("rec");
+};
+$("sttUploadBtn").onclick = () => $("sttFile").click();
+$("sttFile").onchange = async (e) => {
+  const f = e.target.files[0]; e.target.value = "";
+  if (f) await sttTranscribe(f);
+};
+$("sttYtBtn").onclick = async () => {
+  const url = $("sttYtUrl").value.trim();
+  if (!url) { toast("Cole o link do YouTube."); return; }
+  $("sttStatus").innerHTML = '<span class="spinner"></span>extraindo do YouTube…';
+  $("sttYtBtn").disabled = true;
+  try {
+    const blob = await fetchYouTube(url, $("sttYtStart").value.trim(), $("sttYtEnd").value.trim());
+    await sttTranscribe(blob);
+  } catch (e) { $("sttStatus").textContent = ""; toast("Erro: " + e.message, 6000); }
+  finally { $("sttYtBtn").disabled = false; }
+};
+async function sttTranscribe(blob) {
+  $("sttStatus").innerHTML = '<span class="spinner"></span>transcrevendo…';
+  let wav;
+  try { wav = await blobToWav(blob); }
+  catch (e) { $("sttStatus").textContent = ""; toast("Falha no áudio: " + e.message, 6000); return; }
+  const fd = new FormData();
+  fd.append("audio", wav, "a.wav");
+  fd.append("source_lang", $("sttSrcLang").value);
+  try {
+    const r = await api("/api/transcribe", { method: "POST", body: fd });
+    $("sttText").value = r.text || "";
+    sttSegs = r.segments || [];
+    $("sttStatus").textContent = `pronto (${r.language || "?"}) — ${(r.text || "").length} caracteres`;
+  } catch (e) { $("sttStatus").textContent = ""; toast("Erro: " + e.message, 6000); }
+}
+function _dl(name, text, type) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name; a.click();
+}
+$("sttCopyBtn").onclick = () => { navigator.clipboard?.writeText($("sttText").value).catch(() => {}); toast("Copiado"); };
+$("sttDownloadBtn").onclick = () => {
+  if (!$("sttText").value.trim()) { toast("Nada a baixar."); return; }
+  _dl("transcricao.txt", $("sttText").value, "text/plain");
+};
+$("sttSrtBtn").onclick = () => {
+  if (!sttSegs.length) { toast("Sem segmentos — baixe como .txt."); return; }
+  const ts = x => {
+    const h = String(Math.floor(x / 3600)).padStart(2, "0");
+    const m = String(Math.floor(x % 3600 / 60)).padStart(2, "0");
+    const s = (x % 60).toFixed(3).padStart(6, "0").replace(".", ",");
+    return `${h}:${m}:${s}`;
+  };
+  const srt = sttSegs.map((s, i) => `${i + 1}\n${ts(s.start || 0)} --> ${ts(s.end || 0)}\n${(s.text || "").trim()}\n`).join("\n");
+  _dl("transcricao.srt", srt, "application/x-subrip");
 };
 
 refreshStatus();
