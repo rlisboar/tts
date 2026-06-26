@@ -83,7 +83,10 @@ _SETTINGS_DEFAULTS = {
     # (ex.: http://rtx-host:8000/v1). api_key opcional. Tudo local por padrão.
     # base_url + api_key ficam locais (settings.json é gitignored). Vazio = local.
     "remote_tts": False,              # síntese (OmniVoice) numa máquina remota (ex.: RTX)
-    "remote_tts_model": "tts-1",      # nome do modelo no servidor remoto
+    "remote_tts_url": "",             # URL completa do endpoint, ex.: http://solaris:8800/tts
+    "remote_tts_voice": "",           # nome/preset da voz no servidor remoto (vai como `voice`)
+    "remote_tts_extra": "",           # JSON com params extras do servidor (speed, num_steps…)
+    "remote_tts_model": "tts-1",      # (compat OpenAI) nome do modelo, se o servidor usar
     "remote_translate": False,        # tradução (LLM) via API remota
     "remote_stt": False,              # transcrição (STT) via API remota
     "remote_base_url": "",            # ex.: http://rtx-host:8000/v1
@@ -696,6 +699,12 @@ def update_settings(payload: dict):
     for chave in ("remote_tts", "remote_translate", "remote_stt"):
         if chave in payload:
             _settings[chave] = bool(payload[chave])
+    if "remote_tts_url" in payload:
+        _settings["remote_tts_url"] = str(payload["remote_tts_url"] or "").strip()[:300]
+    if "remote_tts_voice" in payload:
+        _settings["remote_tts_voice"] = str(payload["remote_tts_voice"] or "").strip()[:120]
+    if "remote_tts_extra" in payload:
+        _settings["remote_tts_extra"] = str(payload["remote_tts_extra"] or "").strip()[:2000]
     if "remote_base_url" in payload:
         _settings["remote_base_url"] = str(payload["remote_base_url"] or "").strip()[:300]
     if "remote_api_key" in payload:
@@ -903,8 +912,12 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             started = time.time()
             # voz padrão ainda não materializada: cria a amostra-semente 1x
             if remote:
-                rvoice = _remote_voice_param(voice_id, omni)
                 conds = ref_text = None
+                # voz: campo "Voz remota" fixo OU sobe a voz local e usa o nome dela
+                rvoice = (_settings.get("remote_tts_voice") or "").strip() or None
+                if not rvoice and voice_id != DESIGN_VOICE_ID and voice_path.exists():
+                    job["progress"] = {"stage": "enviando voz ao servidor remoto…"}
+                    rvoice = _ensure_remote_voice(voice_id, voice_path)
             elif voice_id == DESIGN_VOICE_ID:
                 ref_text = None       # sem ref de clone -> o timbre vem só do instruct
                 conds = None
@@ -920,8 +933,8 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                 if chunk[-1] not in ".!?…":
                     chunk = chunk.rstrip(" ,;:") + "."
                 if remote:
-                    # servidor remoto gera (e já aplica a velocidade); sem retry local
-                    audio = _tts_remote_chunk(chunk, rvoice, language, omni, sr)
+                    # servidor remoto gera; sem retry local
+                    audio = _tts_remote_chunk(chunk, language, omni, sr, rvoice)
                 else:
                     for tentativa in (1, 2):
                         audio = _generate_chunk(model, chunk, language, conds, ref_text, omni)
@@ -1131,39 +1144,101 @@ def _use_remote_stt() -> bool:
 
 
 def _use_remote_tts() -> bool:
-    return bool(_settings.get("remote_tts")) and bool(_settings.get("remote_base_url"))
+    return bool(_settings.get("remote_tts")) and bool(_settings.get("remote_tts_url"))
 
 
-def _remote_voice_param(voice_id: str, omni: dict) -> str:
-    """Valor do campo `voice` enviado ao servidor remoto. Voice design manda a
-    descrição; senão o nome (mais legível) ou o id da voz."""
-    if voice_id == DESIGN_VOICE_ID:
-        return (omni.get("instruct") or "").strip() or "default"
+def _remote_origin() -> str:
+    """scheme://host:port da URL do TTS remoto (p/ os endpoints /voices)."""
+    from urllib.parse import urlsplit
+
+    u = urlsplit((_settings.get("remote_tts_url") or "").strip())
+    return f"{u.scheme}://{u.netloc}" if u.scheme and u.netloc else ""
+
+
+_remote_voice_cache: dict = {}   # (origin, voice_id, mtime) -> nome remoto
+
+
+def _ensure_remote_voice(voice_id: str, voice_path: Path):
+    """Garante que a voz local exista no servidor remoto (sobe 1x por mtime).
+    Devolve o nome remoto (sanitizado) ou None se não der."""
+    import re as _re
+
+    import requests
+
+    origin = _remote_origin()
+    if not origin or not voice_path.exists():
+        return None
+    name = _re.sub(r"[^a-zA-Z0-9_-]", "_", _voice_display_name(voice_id))[:64] or "voz"
+    key = (origin, name, voice_path.stat().st_mtime_ns)
+    if _remote_voice_cache.get(voice_id) == key:
+        return name
+    headers = {}
+    if _settings.get("remote_api_key"):
+        headers["Authorization"] = f"Bearer {_settings['remote_api_key']}"
     try:
-        meta = json.loads((VOICES_DIR / f"{voice_id}.json").read_text())
-        return meta.get("name") or voice_id
+        with open(voice_path, "rb") as fh:
+            r = requests.post(f"{origin}/voices", headers=headers,
+                              files={"audio": ("voz.wav", fh, "audio/wav")},
+                              data={"name": name, "ref_text": _voice_ref_text(voice_id) or ""},
+                              timeout=120)
+        if r.ok:
+            _remote_voice_cache[voice_id] = key
+            return r.json().get("voice", name)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _voice_display_name(voice_id: str) -> str:
+    try:
+        return json.loads((VOICES_DIR / f"{voice_id}.json").read_text()).get("name") or voice_id
     except Exception:  # noqa: BLE001
         return voice_id
 
 
-def _tts_remote_chunk(text: str, voice: str, language: str, omni: dict, sr: int = 24000):
-    """Encaminha um trecho ao servidor OmniVoice remoto (OpenAI-compatível) e
-    devolve o áudio como array float32 no sample-rate local."""
+def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voice: str = None):
+    """Encaminha um trecho ao servidor de TTS remoto (ex.: OmniVoice numa RTX) e
+    devolve o áudio como array float32 no sample-rate local. Manda os params do
+    OmniVoice configurados + text/language (+ voice se houver clone remoto)."""
     import io
 
     import numpy as np
     import requests
     import soundfile as sf
 
-    base = _settings["remote_base_url"].rstrip("/")
-    headers = {}
+    url = _settings["remote_tts_url"].strip()
+    headers = {"Content-Type": "application/json"}
     if _settings.get("remote_api_key"):
         headers["Authorization"] = f"Bearer {_settings['remote_api_key']}"
-    payload = {"model": _settings.get("remote_tts_model") or "tts-1",
-               "input": text, "voice": voice or "default",
-               "response_format": "wav", "language": _omni_language(language),
-               "speed": float(omni.get("speed") or 1.0)}
-    r = requests.post(f"{base}/audio/speech", headers=headers, json=payload, timeout=300)
+    # 1) params do OmniVoice configurados na UI (nomes canônicos do generate)
+    body = {
+        "num_steps": int(omni.get("num_steps") or OMNI_STEPS_FAST),
+        "guidance_scale": omni.get("guidance_scale", 2.0),
+        "class_temperature": omni.get("class_temperature", 0.0),
+        "position_temperature": omni.get("position_temperature", 5.0),
+        "layer_penalty_factor": omni.get("layer_penalty_factor", 5.0),
+        "t_shift": omni.get("t_shift", 0.1),
+        "speed": 1.0,   # servidor gera na duração natural; velocidade vira time-stretch local
+    }
+    if (omni.get("instruct") or "").strip():
+        body["instruct"] = omni["instruct"]
+    if omni.get("duration_s") is not None:
+        body["duration_s"] = omni["duration_s"]
+    if voice:
+        body["voice"] = voice
+    # 2) JSON extra do usuário sobrepõe/adiciona (ex.: voice, ou renomear campos)
+    try:
+        extra = json.loads(_settings.get("remote_tts_extra") or "{}")
+        if isinstance(extra, dict):
+            body.update(extra)
+    except (ValueError, TypeError):
+        pass
+    # 3) text/language por cima (text é sempre o trecho atual)
+    body["text"] = text
+    lang_name = LANG_DISPLAY.get((language or "").lower())
+    if lang_name and "language" not in body:   # extra pode fixar; senão usa o da UI
+        body["language"] = lang_name
+    r = requests.post(url, headers=headers, json=body, timeout=300)
     if not r.ok:
         raise RuntimeError(f"TTS remoto falhou ({r.status_code}): {r.text[:200]}")
     data, src_sr = sf.read(io.BytesIO(r.content), dtype="float32")
@@ -1175,7 +1250,12 @@ def _tts_remote_chunk(text: str, voice: str, language: str, omni: dict, sr: int 
         from scipy.signal import resample_poly
         g = gcd(int(src_sr), sr)
         data = resample_poly(data, sr // g, int(src_sr) // g)
-    return np.asarray(data, dtype=np.float32)
+    data = np.asarray(data, dtype=np.float32)
+    # velocidade: time-stretch (preserva tom, não pula palavras), igual ao local
+    speed = float(omni.get("speed") or 1.0)
+    if abs(speed - 1.0) > 1e-3:
+        data = _time_stretch(data, speed)
+    return data
 
 
 def _translate_prompt(text: str, target: str) -> str:

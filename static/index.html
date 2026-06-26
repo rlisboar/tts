@@ -294,6 +294,8 @@
           <div class="row">
             <input type="text" id="voiceName" placeholder="Nome da voz (ex.: Rodrigo)" style="max-width:260px">
             <button id="recBtn">● Gravar</button>
+            <button id="uploadBtn" class="ghost" type="button">Carregar arquivo</button>
+            <input type="file" id="voiceFile" accept="audio/*" style="display:none">
             <span id="timer"></span>
           </div>
           <div class="row" style="margin-top:10px">
@@ -515,13 +517,20 @@
         <details open>
           <summary>Modelos remotos (API)</summary>
           <label class="check" style="margin-top:10px"><input type="checkbox" id="remoteTts"> Síntese (OmniVoice) numa máquina remota — ex.: RTX</label>
-          <label class="cfg-label" style="margin-top:10px">Base URL (termina em /v1)
-            <input type="text" id="remoteBaseUrl" placeholder="http://rtx-host:8000/v1"></label>
+          <label class="cfg-label" style="margin-top:10px">URL do TTS remoto
+            <input type="text" id="remoteTtsUrl" placeholder="http://solaris:8800/tts"></label>
+          <label class="cfg-label" style="margin-top:10px">Voz remota (nome/preset do servidor)
+            <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
           <label class="cfg-label" style="margin-top:10px">API key (opcional)
             <input type="password" id="remoteApiKey" placeholder="deixe vazio se o servidor não exigir" autocomplete="off"></label>
-          <label class="cfg-label" style="margin-top:10px">Modelo TTS remoto
-            <input type="text" id="remoteTtsModel" placeholder="tts-1"></label>
-          <div class="row" style="margin-top:12px; flex-direction:row; gap:14px">
+          <label class="cfg-label" style="margin-top:10px">Parâmetros extra (JSON) — sobrepõe/adiciona
+            <textarea id="remoteTtsExtra" style="min-height:56px; font-family:ui-monospace,Menlo,monospace; font-size:12px" placeholder='{"voice":"rodrigo"}'></textarea></label>
+          <p class="hint">Manda <code>POST</code> na URL com <b>os controles do OmniVoice já configurados acima</b> (num_steps, guidance, temps, t_shift, instruct, duração, speed) + <code>text</code> + <code>language</code> (nome em inglês). O JSON extra <b>sobrepõe/adiciona</b> (ex.: <code>voice</code>, ou renomear um campo p/ o que o seu servidor espera). Espera um WAV. Chave fica só neste Mac.</p>
+          <div style="border-top:1px solid var(--border); margin-top:12px"></div>
+          <p class="hint" style="margin-top:10px"><b>Tradução / transcrição</b> (provedor OpenAI-compatível, opcional):</p>
+          <label class="cfg-label" style="margin-top:6px">Base URL (termina em /v1)
+            <input type="text" id="remoteBaseUrl" placeholder="https://api.openai.com/v1"></label>
+          <div class="row" style="margin-top:10px; flex-direction:row; gap:14px">
             <label class="check"><input type="checkbox" id="remoteTranslate"> Tradução via API</label>
             <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
           </div>
@@ -529,7 +538,6 @@
             <input type="text" id="remoteTranslateModel" placeholder="gpt-4o-mini"></label>
           <label class="cfg-label" style="margin-top:10px">Modelo de transcrição
             <input type="text" id="remoteSttModel" placeholder="whisper-1"></label>
-          <p class="hint">Servidor OpenAI-compatível: TTS → <code>POST {base}/audio/speech</code> ({input, voice, language, speed}); tradução → <code>/chat/completions</code>; STT → <code>/audio/transcriptions</code>. Clonagem por amostra local não vai ao remoto — use o nome/preset que o servidor conhece, ou Voice design. Chave fica só neste Mac.</p>
         </details>
         <p class="hint">Estes valores valem para a UI e a API; um parâmetro explícito na requisição sempre
         sobrepõe. A primeira geração baixa e monta o OmniVoice (~2 GB), depois fica em cache.</p>
@@ -681,6 +689,24 @@ $("recBtn").onclick = async () => {
 };
 
 $("discardBtn").onclick = () => { wavBlob = null; $("previewRow").style.display = "none"; };
+
+/* Carregar voz de um arquivo (wav/mp3/m4a/…): o navegador decodifica e re-encoda
+   WAV 24k via blobToWav — entra no mesmo fluxo de preview/salvar da gravação. */
+$("uploadBtn").onclick = () => $("voiceFile").click();
+$("voiceFile").onchange = async (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";                       // permite re-selecionar o mesmo arquivo
+  if (!f) return;
+  toast("Processando arquivo…");
+  try {
+    wavBlob = await blobToWav(f);
+    $("previewAudio").src = URL.createObjectURL(wavBlob);
+    $("previewRow").style.display = "flex";
+    if (!$("voiceName").value.trim())
+      $("voiceName").value = f.name.replace(/\.[^.]+$/, "").slice(0, 40);
+    toast("Arquivo pronto — confira no player e clique Salvar voz.");
+  } catch (err) { toast("Falha ao ler o arquivo: " + err.message, 6000); }
+};
 
 $("voiceDenoiseStr").oninput = () =>
   $("voiceDenoiseStrOut").textContent = parseFloat($("voiceDenoiseStr").value).toFixed(2);
@@ -1293,9 +1319,11 @@ async function loadSettings() {
     $("remoteTts").checked = !!s.remote_tts;
     $("remoteTranslate").checked = !!s.remote_translate;
     $("remoteStt").checked = !!s.remote_stt;
+    $("remoteTtsUrl").value = s.remote_tts_url || "";
+    $("remoteTtsVoice").value = s.remote_tts_voice || "";
+    $("remoteTtsExtra").value = s.remote_tts_extra || "";
     $("remoteBaseUrl").value = s.remote_base_url || "";
     $("remoteApiKey").value = s.remote_api_key || "";
-    $("remoteTtsModel").value = s.remote_tts_model || "tts-1";
     $("remoteTranslateModel").value = s.remote_translate_model || "gpt-4o-mini";
     $("remoteSttModel").value = s.remote_stt_model || "whisper-1";
     for (const [id, out, key, fmt] of STT_CTL) {
@@ -1340,9 +1368,11 @@ $("cfgSave").onclick = async () => {
         remote_tts: $("remoteTts").checked,
         remote_translate: $("remoteTranslate").checked,
         remote_stt: $("remoteStt").checked,
+        remote_tts_url: $("remoteTtsUrl").value,
+        remote_tts_voice: $("remoteTtsVoice").value,
+        remote_tts_extra: $("remoteTtsExtra").value,
         remote_base_url: $("remoteBaseUrl").value,
         remote_api_key: $("remoteApiKey").value,
-        remote_tts_model: $("remoteTtsModel").value,
         remote_translate_model: $("remoteTranslateModel").value,
         remote_stt_model: $("remoteSttModel").value
       })
