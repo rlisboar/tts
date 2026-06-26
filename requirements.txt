@@ -1,0 +1,8 @@
+mlx-audio
+mlx-whisper
+mlx-lm
+torch
+soundfile
+fastapi
+uvicorn
+python-multipart

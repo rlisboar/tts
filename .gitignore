@@ -1,0 +1,18 @@
+# segredos e dados pessoais — NUNCA versionar
+.apikey
+voices/
+outputs/
+
+# ambientes e modelos (instalados/baixados sob demanda)
+.venv/
+.venv-mlx/
+.venv-omni/
+.omnivoice-bf16/
+__pycache__/
+*.pyc
+
+# estado de runtime (regenerado a partir dos defaults em app.py)
+settings.json
+
+# artefatos de PoC / teste
+poc-*.wav

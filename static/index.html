@@ -1,0 +1,1045 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TTS-Rod — Voz clonada local</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #181b24; --panel2: #1f2330;
+    --text: #e6e8ee; --muted: #8b90a0; --accent: #4f8cff;
+    --danger: #e5544b; --ok: #3dba6f; --border: #2a2f3e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 860px; margin: 0 auto; padding: 24px 16px 64px;
+  }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  h2 { font-size: 15px; margin-bottom: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 20px; }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 9px 16px; font-size: 14px; cursor: pointer; font-weight: 600;
+  }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); padding: 5px 10px; font-size: 12px; }
+  button.small { padding: 5px 10px; font-size: 12px; }
+  button.rec { background: var(--danger); }
+  input[type=text], textarea, select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 12px; font-size: 14px; width: 100%;
+  }
+  textarea { min-height: 90px; resize: vertical; font-family: inherit; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .item {
+    display: flex; gap: 10px; align-items: center; padding: 10px 0;
+    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  .item:last-child { border-bottom: 0; }
+  .item .grow { flex: 1; min-width: 140px; }
+  .item .name { font-weight: 600; font-size: 14px; }
+  .item .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 99px;
+    font-size: 12px; font-weight: 600; background: var(--panel2); border: 1px solid var(--border);
+  }
+  .badge.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.warn { color: #e0a23e; border-color: #e0a23e; }
+  .badge.err { color: var(--danger); border-color: var(--danger); }
+  #timer { font-variant-numeric: tabular-nums; font-size: 15px; color: var(--danger); font-weight: 700; }
+  .hint { color: var(--muted); font-size: 12.5px; line-height: 1.5; margin-top: 10px; }
+  audio { height: 34px; max-width: 240px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 18px; font-size: 13.5px; display: none; max-width: 90%;
+  }
+  .script-box { margin-top: 10px; }
+  .script-box summary { cursor: pointer; color: var(--accent); font-size: 13.5px; font-weight: 600; }
+  .script {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; margin-top: 8px; font-size: 14.5px; line-height: 1.7;
+  }
+  .sliders { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 12px; }
+  .sliders label {
+    display: flex; flex-direction: column; gap: 4px; font-size: 12.5px;
+    color: var(--muted); min-width: 150px; flex: 1;
+  }
+  .sliders output { color: var(--text); font-weight: 600; }
+  .sliders input[type=range] { accent-color: var(--accent); }
+  .check { font-size: 12.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  .check input { accent-color: var(--accent); }
+  .cfg-label { font-size: 12.5px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+  .cfg-label select, .cfg-label input { width: auto; }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px; border: 2px solid var(--muted);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite;
+    vertical-align: -2px; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<h1>🎙️ TTS-Rod</h1>
+<p class="sub">Clonagem de voz 100% local — <span id="status" class="badge">verificando…</span></p>
+
+<div id="keyBar" class="card" style="display:none; border-color: var(--danger)">
+  <div class="row">
+    <span>🔑 Este dispositivo precisa da chave da API (arquivo <code>.apikey</code> / terminal do run.sh):</span>
+    <input type="text" id="keyInput" placeholder="cole a chave aqui" style="max-width:340px">
+    <button id="keySave">Salvar</button>
+  </div>
+</div>
+
+<!-- ───────────────────── Gravação ───────────────────── -->
+<div class="card">
+  <h2>1 · Gravar nova voz</h2>
+  <div class="row">
+    <input type="text" id="voiceName" placeholder="Nome da voz (ex.: Rodrigo)" style="max-width:260px">
+    <button id="recBtn">● Gravar</button>
+    <span id="timer"></span>
+  </div>
+  <label class="cfg-label" style="display:block; margin-top:12px">Texto falado na gravação — melhora a clonagem (deixe idêntico ao que você disse)
+    <textarea id="voiceRefText" style="min-height:60px">Olá! Estou gravando a minha voz para criar um clone digital. O sol nasceu dourado sobre as montanhas, e o vento soprava entre as folhas verdes.</textarea>
+  </label>
+  <div class="row" id="previewRow" style="display:none; margin-top:12px">
+    <audio id="previewAudio" controls></audio>
+    <button id="saveVoiceBtn">Salvar voz</button>
+    <button id="discardBtn" class="ghost">Descartar</button>
+  </div>
+  <details class="script-box">
+    <summary>📖 Texto de treino — cobre os principais fonemas do português</summary>
+    <p class="script">
+      Olá! Meu nome é Rodrigo e estou gravando minha voz para criar um clone digital.
+      O sol nasceu dourado sobre as montanhas, e o vento soprava entre as folhas verdes.
+      Será que vai chover amanhã à tarde?
+      Minha mãe comprou seis maçãs, doze laranjas e quinze bananas por vinte e sete reais e cinquenta centavos.
+      O cachorro correu atrás do gato e pulou a cerca de ferro do vizinho.
+      Que maravilha extraordinária! Os corações dos campeões batem forte nas comemorações.
+      O menino ganhou um violão novinho e tocou uma melodia alegre na praça.
+      À noite, o velho pescador trouxe peixe fresco, queijo quente e suco gelado.
+      O táxi azul cruzou a ponte completamente vazia rumo ao centro da cidade.
+    </p>
+  </details>
+  <p class="hint">
+    Leia o texto acima (ou o seu próprio) com naturalidade, em ambiente silencioso e sem eco —
+    e deixe o campo de transcrição <b>idêntico ao que você falou</b>. No OmniVoice, uma amostra
+    <b>curta e exata (≈10–20s)</b> com a transcrição correta clona melhor que uma longa.
+  </p>
+</div>
+
+<!-- ───────────────────── Vozes salvas ───────────────────── -->
+<div class="card">
+  <h2>2 · Vozes salvas</h2>
+  <div id="voiceList"><div class="empty">Nenhuma voz ainda — grave acima.</div></div>
+</div>
+
+<!-- ───────────────────── Síntese ───────────────────── -->
+<div class="card">
+  <h2>3 · Gerar fala</h2>
+  <textarea id="ttsText" placeholder="Digite o texto que será falado com a voz clonada…"></textarea>
+  <p class="hint" style="margin-top:4px">
+    Passos, aderência, variação e voice design ajustam-se em ⚙️ Configurações → controles do OmniVoice.
+  </p>
+  <div class="row" style="margin-top:12px">
+    <select id="voiceSelect" style="max-width:220px"></select>
+    <select id="langSelect" style="max-width:200px">
+      <option value="auto" selected>Idioma: Auto (detecta)</option>
+      <option value="pt">Português</option>
+      <option value="en">English</option>
+      <option value="es">Español</option>
+      <option value="fr">Français</option>
+      <option value="de">Deutsch</option>
+      <option value="it">Italiano</option>
+    </select>
+    <button id="ttsBtn">🔊 Gerar e falar</button>
+    <button id="stopBtn" class="ghost" style="display:none">■ Parar</button>
+    <span id="ttsStatus" class="hint"></span>
+  </div>
+</div>
+
+<!-- ───────────────────── Tradutor de voz ───────────────────── -->
+<div class="card">
+  <h2>🌐 Tradutor de voz <span class="hint">(fala → texto → tradução → sua voz)</span></h2>
+  <div class="row">
+    <button id="transRecBtn">🎙️ Falar</button>
+    <select id="transMode" style="max-width:160px">
+      <option value="manual">Modo: Manual</option>
+      <option value="continuo">Modo: Contínuo</option>
+      <option value="conversa">Modo: Conversa</option>
+    </select>
+    <select id="transSrc" style="max-width:170px">
+      <option value="auto">De: qualquer idioma</option>
+      <option value="pt">De: Português</option>
+      <option value="en">De: English</option>
+      <option value="es">De: Español</option>
+      <option value="fr">De: Français</option>
+      <option value="de">De: Deutsch</option>
+      <option value="it">De: Italiano</option>
+      <option value="ja">De: 日本語</option>
+      <option value="zh">De: 中文</option>
+    </select>
+    <select id="transLang" style="max-width:170px">
+      <option value="en">traduzir → English</option>
+      <option value="es">traduzir → Español</option>
+      <option value="fr">traduzir → Français</option>
+      <option value="de">traduzir → Deutsch</option>
+      <option value="it">traduzir → Italiano</option>
+      <option value="pt">traduzir → Português</option>
+      <option value="ja">traduzir → 日本語</option>
+      <option value="zh">traduzir → 中文</option>
+    </select>
+    <select id="transVoice" style="max-width:200px"></select>
+    <select id="transEmo" style="max-width:170px">
+      <option value="off">Emoção: off</option>
+      <option value="light">Emoção: leve (prosódia)</option>
+      <option value="accurate">Emoção: precisa (SER)</option>
+    </select>
+    <span id="transStatus" class="hint"></span>
+  </div>
+  <div id="transOut" class="hint" style="margin-top:10px; line-height:1.6"></div>
+  <details style="margin-top:10px">
+    <summary style="cursor:pointer; font-weight:600">🎚️ Microfone / filtros</summary>
+    <div class="sliders" style="margin-top:10px">
+      <label>Ganho do mic <output id="micGainOut">1.0</output>
+        <input type="range" id="micGain" min="0" max="3" step="0.1" value="1"></label>
+      <label>Passa-alta · corta grave/zumbido <output id="micHpOut">90 Hz</output>
+        <input type="range" id="micHp" min="0" max="300" step="10" value="90"></label>
+      <label>Sensibilidade · ignora ruído <output id="micThreshOut">0.015</output>
+        <input type="range" id="micThresh" min="0.005" max="0.08" step="0.001" value="0.015"></label>
+      <label>Pausa = fim de frase <output id="micSilenceOut">700 ms</output>
+        <input type="range" id="micSilence" min="300" max="2000" step="50" value="700"></label>
+      <label>Duração mínima da fala <output id="micMinUtterOut">350 ms</output>
+        <input type="range" id="micMinUtter" min="100" max="1500" step="50" value="350"></label>
+    </div>
+    <div class="row" style="margin-top:8px; align-items:center">
+      <label class="check"><input type="checkbox" id="micNs" checked> supressão de ruído (navegador)</label>
+      <div style="flex:1; min-width:180px">
+        <div class="hint" style="margin-bottom:2px">nível do mic (a marca laranja é o limiar)</div>
+        <div id="micMeter" style="height:12px; background:#1b1b1b; border-radius:6px; position:relative; overflow:hidden">
+          <div id="micMeterBar" style="height:100%; width:0; background:#666; transition:width .05s"></div>
+          <div id="micMeterMark" style="position:absolute; top:0; bottom:0; left:10%; width:2px; background:#fa0"></div>
+        </div>
+      </div>
+    </div>
+    <p class="hint">Suba o <b>ganho</b> se a voz sai baixa. Suba a <b>passa-alta</b> p/ cortar zumbido/ventilador/AC.
+    Ajuste a <b>sensibilidade</b> até a barra ficar verde só quando você fala (e cinza no silêncio). Os filtros
+    também limpam o áudio que vai pra transcrição.</p>
+  </details>
+  <details style="margin-top:10px">
+    <summary style="cursor:pointer; font-weight:600">🧠 Anti-ruído da transcrição (rejeita ruído/alucinação)</summary>
+    <div class="sliders" style="margin-top:10px">
+      <label>Mín. de palavras <output id="sttWordsOut">1</output>
+        <input type="range" id="sttWords" min="0" max="6" step="1" value="1"></label>
+      <label>Mín. de caracteres <output id="sttCharsOut">2</output>
+        <input type="range" id="sttChars" min="0" max="20" step="1" value="2"></label>
+      <label>Máx. "sem fala" <output id="sttNoSpeechOut">0.60</output>
+        <input type="range" id="sttNoSpeech" min="0" max="1" step="0.05" value="0.6"></label>
+      <label>Mín. confiança <output id="sttLogprobOut">-1.0</output>
+        <input type="range" id="sttLogprob" min="-5" max="0" step="0.1" value="-1"></label>
+      <label>Máx. repetição <output id="sttCompOut">2.4</output>
+        <input type="range" id="sttComp" min="1" max="10" step="0.1" value="2.4"></label>
+    </div>
+    <p class="hint">Mais palavras/caracteres = ignora frases curtas de ruído. <b>Máx. "sem fala"</b> menor e
+    <b>mín. confiança</b> maior = mais rígido (rejeita mais). <b>Máx. repetição</b> menor corta alucinação
+    repetitiva. Salva automático. Mostra abaixo o motivo quando ignora.</p>
+  </details>
+  <p class="hint">
+    <b>Manual</b>: clique Falar → diga → Parar. <b>Contínuo</b>: escuta sem parar, traduz cada frase
+    quando você faz pausa (fala adiantado; usa cancelamento de eco). <b>Conversa</b>: detecta o silêncio,
+    traduz e fala, e só volta a escutar depois (estilo intérprete, sem fone). A 1ª vez baixa os modelos
+    (~3 GB) e demora; depois ~4–5 s por frase.</p>
+</div>
+
+<!-- ───────────────────── Histórico ───────────────────── -->
+<div class="card">
+  <h2>4 · Áudios gerados</h2>
+  <div class="row" style="margin-bottom:10px">
+    <button id="clearAll" class="danger">🗑 apagar todos</button>
+    <label class="check">
+      <input type="checkbox" id="autoClean"> auto-limpeza: apagar áudios com mais de
+      <input type="number" id="autoCleanMin" min="1" max="1440" step="1" value="15"
+             style="width:64px; padding:4px 8px"> min
+    </label>
+  </div>
+  <div id="outputList"><div class="empty">Nada gerado ainda.</div></div>
+</div>
+
+<!-- ───────────────────── Configurações ───────────────────── -->
+<div class="card">
+  <h2>⚙️ Configurações padrão — valem para a UI e a API</h2>
+  <div class="row" style="margin-bottom:12px">
+    <label class="cfg-label">Modelo
+      <select id="cfgModel">
+        <option value="omnivoice">OmniVoice — 646 idiomas, RTF ~0,8 (bf16, ~2 GB)</option>
+        <option value="__custom__">outro id/dir MLX de OmniVoice…</option>
+      </select>
+    </label>
+    <input type="text" id="cfgModelCustom" placeholder="ex.: mlx-community/OmniVoice-fp32" style="display:none; max-width:320px">
+  </div>
+  <div class="row" style="margin-bottom:12px">
+    <label class="cfg-label">Voz padrão da API <select id="cfgVoice"></select></label>
+    <label class="cfg-label">Idioma padrão
+      <select id="cfgLang">
+        <option value="auto">Auto (detecta do texto)</option>
+        <option value="pt">Português</option><option value="en">English</option>
+        <option value="es">Español</option><option value="fr">Français</option>
+        <option value="de">Deutsch</option><option value="it">Italiano</option>
+      </select>
+    </label>
+    <label class="cfg-label">Trecho máx. (chars) <input type="number" id="cfgChunk" min="60" max="200" step="10" style="width:90px"></label>
+    <label class="cfg-label">Velocidade (API) <input type="number" id="cfgSpeed" min="0.25" max="4" step="0.25" style="width:90px"></label>
+  </div>
+  <label class="cfg-label" style="display:block; margin-bottom:12px">Pré-prompt (texto falado antes de toda geração)
+    <textarea id="cfgPrePrompt" style="min-height:48px" placeholder="ex.: Atenção:"></textarea>
+  </label>
+  <details style="margin-bottom:12px" open>
+    <summary style="cursor:pointer; font-weight:600">🎛️ OmniVoice — controles de geração</summary>
+    <div class="sliders" style="margin-top:10px">
+      <label>Passos · num_steps <output id="oNumStepsOut">16</output>
+        <input type="range" id="oNumSteps" min="4" max="64" step="1" value="16"></label>
+      <label>Aderência · guidance <output id="oGuidOut">2.0</output>
+        <input type="range" id="oGuid" min="0" max="10" step="0.1" value="2"></label>
+      <label>Variação de token · class_temp <output id="oClassTOut">0.00</output>
+        <input type="range" id="oClassT" min="0" max="2" step="0.05" value="0"></label>
+      <label>Variação de posição · position_temp <output id="oPosTOut">5.0</output>
+        <input type="range" id="oPosT" min="0" max="20" step="0.5" value="5"></label>
+      <label>Penalidade por camada · layer_penalty <output id="oLayerOut">5.0</output>
+        <input type="range" id="oLayer" min="0" max="20" step="0.5" value="5"></label>
+      <label>Deslocamento t · t_shift <output id="oTshiftOut">0.10</output>
+        <input type="range" id="oTshift" min="0" max="1" step="0.05" value="0.1"></label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label class="cfg-label" style="flex:1; min-width:240px">Voice design · instruct (descreva a voz)
+        <input type="text" id="oInstruct" placeholder="ex.: female, low pitch, calm british accent"></label>
+      <label class="cfg-label">Duração fixa (s · vazio = auto)
+        <input type="number" id="oDur" min="0.5" max="60" step="0.5" placeholder="auto" style="width:110px"></label>
+      <label class="cfg-label">Ref. usada da amostra (s)
+        <input type="number" id="oRefMax" min="3" max="30" step="1" style="width:100px"></label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="oReset" class="ghost" type="button">↺ Restaurar padrões</button>
+    </div>
+    <p class="hint">Passos↑ = mais qualidade, mais lento (16 rápido / 32 qualidade). Aderência↑ = segue
+    mais o texto e a voz de referência. Variações↑ = fala mais espontânea, menos estável. Voice design
+    cria/ajusta o timbre por descrição textual. Sobrepõem-se a estes defaults se enviados na requisição da API.</p>
+  </details>
+  <div class="row">
+    <button id="cfgSave">💾 Salvar configurações</button>
+    <span id="cfgStatus" class="hint"></span>
+  </div>
+  <p class="hint">Estes valores valem para a UI e a API; um parâmetro explícito na requisição sempre
+  sobrepõe. A primeira geração baixa e monta o OmniVoice (~2 GB), depois fica em cache.</p>
+</div>
+
+<!-- ───────────────────── Servidor ───────────────────── -->
+<div class="card">
+  <h2>⏻ Servidor</h2>
+  <div class="row">
+    <button id="shutdownBtn" class="danger">⏻ Desligar servidor</button>
+    <span class="hint">Para religar, dê dois cliques em <b>TTS-Rod.command</b> (no Finder).</span>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const TARGET_SR = 24000;
+
+function toast(msg, ms = 3500) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.style.display = "none", ms);
+}
+
+let KEY = localStorage.getItem("ttsRodKey") || "";
+// <audio src>/<a download> não enviam header — chave vai na query string
+const k = u => KEY ? u + (u.includes("?") ? "&" : "?") + "api_key=" + encodeURIComponent(KEY) : u;
+
+function authFetch(path, opts = {}) {
+  opts.headers = { ...(opts.headers || {}), "X-API-Key": KEY };
+  return fetch(path, opts);
+}
+
+async function api(path, opts = {}) {
+  const r = await authFetch(path, opts);
+  if (r.status === 401) {
+    $("keyBar").style.display = "flex";
+    throw new Error("chave da API necessária");
+  }
+  if (!r.ok) {
+    let detail = r.statusText;
+    try { detail = (await r.json()).detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  return r.json();
+}
+
+/* ───────── Status do modelo ───────── */
+async function refreshStatus() {
+  try {
+    const s = await api("/api/status");
+    const el = $("status");
+    if (s.status === "ready")        { el.textContent = `modelo pronto (${s.device})`; el.className = "badge ok"; }
+    else if (s.status === "loading") { el.textContent = "carregando modelo…"; el.className = "badge warn"; }
+    else if (s.status === "error")   { el.textContent = "erro no modelo"; el.className = "badge err"; el.title = s.error; }
+    else                             { el.textContent = "modelo carrega na 1ª geração"; el.className = "badge"; }
+  } catch { $("status").textContent = "servidor offline"; $("status").className = "badge err"; }
+}
+
+/* ───────── Gravação → WAV 24 kHz mono ───────── */
+let mediaRecorder = null, chunks = [], wavBlob = null, timerH = null;
+
+function encodeWav(samples, sr) {
+  // PCM 16-bit mono
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + samples.length * 2, true); str(8, "WAVE");
+  str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+async function blobToWav(blob) {
+  const raw = await blob.arrayBuffer();
+  const ctx = new AudioContext();
+  const decoded = await ctx.decodeAudioData(raw);
+  ctx.close();
+  const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * TARGET_SR), TARGET_SR);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start();
+  const rendered = await off.startRendering();
+  return encodeWav(rendered.getChannelData(0), TARGET_SR);
+}
+
+$("recBtn").onclick = async () => {
+  if (mediaRecorder && mediaRecorder.state === "recording") { mediaRecorder.stop(); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
+    });
+  } catch { toast("Permissão de microfone negada."); return; }
+
+  chunks = [];
+  mediaRecorder = new MediaRecorder(stream);
+  mediaRecorder.ondataavailable = e => chunks.push(e.data);
+  mediaRecorder.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    clearInterval(timerH); $("timer").textContent = "";
+    $("recBtn").textContent = "● Gravar"; $("recBtn").classList.remove("rec");
+    try {
+      wavBlob = await blobToWav(new Blob(chunks, { type: mediaRecorder.mimeType }));
+      $("previewAudio").src = URL.createObjectURL(wavBlob);
+      $("previewRow").style.display = "flex";
+    } catch (e) { toast("Falha ao processar áudio: " + e.message); }
+  };
+  mediaRecorder.start();
+  const t0 = Date.now();
+  timerH = setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    $("timer").textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    if (s >= 90) mediaRecorder.stop(); // limite de 90 s
+  }, 250);
+  $("recBtn").textContent = "■ Parar"; $("recBtn").classList.add("rec");
+};
+
+$("discardBtn").onclick = () => { wavBlob = null; $("previewRow").style.display = "none"; };
+
+$("saveVoiceBtn").onclick = async () => {
+  if (!wavBlob) return;
+  const name = $("voiceName").value.trim();
+  if (!name) { toast("Dê um nome à voz."); return; }
+  const fd = new FormData();
+  fd.append("name", name);
+  fd.append("audio", wavBlob, "voz.wav");
+  fd.append("ref_text", $("voiceRefText").value.trim());
+  try {
+    await api("/api/voices", { method: "POST", body: fd });
+    wavBlob = null; $("previewRow").style.display = "none"; $("voiceName").value = "";
+    toast("Voz salva ✔");
+    refreshVoices();
+  } catch (e) { toast("Erro: " + e.message); }
+};
+
+/* ───────── Lista de vozes ───────── */
+async function refreshVoices() {
+  const voices = await api("/api/voices");
+  const list = $("voiceList"), sel = $("voiceSelect"), sel2 = $("transVoice");
+  const selected = sel.value, selected2 = sel2.value;
+  sel.innerHTML = ""; sel2.innerHTML = "";
+  list.innerHTML = voices.length ? "" : '<div class="empty">Nenhuma voz ainda — grave acima.</div>';
+  for (const v of voices) {
+    const virtual = v.preset && !v.materialized;  // voz padrão ainda não criada
+    const div = document.createElement("div");
+    div.className = "item";
+    if (virtual) {
+      div.innerHTML = `
+        <div class="grow"><div class="name">⭐ ${v.name}</div>
+        <div class="meta">voz padrão · ${v.instruct || ""}</div></div>
+        <span class="hint">criada ao gerar pela 1ª vez</span>`;
+    } else {
+      const tag = v.preset ? "⭐ " : "";
+      div.innerHTML = `
+        <div class="grow"><div class="name">${tag}${v.name}</div>
+        <div class="meta">${v.duration}s · ${v.preset ? "voz padrão" : v.created_at}</div></div>
+        <audio controls preload="none" src="${k(`/api/voices/${v.id}/audio`)}"></audio>
+        <button class="danger">${v.preset ? "resetar" : "apagar"}</button>`;
+      div.querySelector(".danger").onclick = async () => {
+        const verbo = v.preset ? "Resetar" : "Apagar";
+        if (!confirm(`${verbo} a voz "${v.name}"?`)) return;
+        await api(`/api/voices/${v.id}`, { method: "DELETE" });
+        refreshVoices();
+      };
+    }
+    list.appendChild(div);
+    const rotulo = (v.preset ? "⭐ " : "") + v.name;
+    const opt = document.createElement("option");
+    opt.value = v.id; opt.textContent = rotulo;
+    sel.appendChild(opt);
+    const opt2 = document.createElement("option");
+    opt2.value = v.id; opt2.textContent = rotulo;
+    sel2.appendChild(opt2);
+  }
+  if (selected) sel.value = selected;
+  if (selected2) sel2.value = selected2;
+}
+
+/* ───────── Síntese ───────── */
+for (const [slider, out, dec] of [["oNumSteps", "oNumStepsOut", 0], ["oGuid", "oGuidOut", 1],
+    ["oClassT", "oClassTOut", 2], ["oPosT", "oPosTOut", 1], ["oLayer", "oLayerOut", 1],
+    ["oTshift", "oTshiftOut", 2]]) {
+  $(slider).oninput = () => $(out).textContent = parseFloat($(slider).value).toFixed(dec);
+}
+
+/* Restaura os controles do OmniVoice aos defaults da lib (não salva — clique em
+   "Salvar configurações" para persistir). */
+const OMNI_DEFAULTS = [["oNumSteps", "oNumStepsOut", 16, 0], ["oGuid", "oGuidOut", 2, 1],
+  ["oClassT", "oClassTOut", 0, 2], ["oPosT", "oPosTOut", 5, 1], ["oLayer", "oLayerOut", 5, 1],
+  ["oTshift", "oTshiftOut", 0.1, 2]];
+$("oReset").onclick = () => {
+  for (const [id, out, val, dec] of OMNI_DEFAULTS) {
+    $(id).value = val;
+    $(out).textContent = parseFloat(val).toFixed(dec);
+  }
+  $("oInstruct").value = "";
+  $("oDur").value = "";
+  $("oRefMax").value = 10;
+  toast("Padrões restaurados — clique em Salvar para aplicar");
+};
+
+/* Player progressivo: busca cada trecho assim que o servidor termina e agenda
+   no AudioContext em sequência — a fala começa no 1º trecho pronto. */
+let player = null;
+
+function stopPlayback() {
+  if (!player) return;
+  player.stopped = true;
+  player.sources.forEach(s => { try { s.stop(); } catch {} });
+  if (player.ctx && player.ctx.state !== "closed") player.ctx.close();
+  player = null;
+  $("stopBtn").style.display = "none";
+}
+$("stopBtn").onclick = stopPlayback;
+
+/* Toca um job de TTS por streaming (busca cada trecho e agenda no AudioContext).
+   Usado pela síntese e pelo tradutor de voz. */
+async function streamJob(job_id, statusEl) {
+  stopPlayback();
+  player = { ctx: new AudioContext(), nextTime: 0, sources: [], stopped: false };
+  const meu = player;
+  $("stopBtn").style.display = "";
+  let buscados = 0;
+  try {
+    while (true) {
+      const j = await api(`/api/tts/jobs/${job_id}`);
+      if (j.status === "error") throw new Error(j.error || "falha na geração");
+      while (buscados < j.pieces) {
+        const buf = await (await authFetch(`/api/tts/jobs/${job_id}/pieces/${buscados}`)).arrayBuffer();
+        if (!meu.stopped) {
+          const audio = await meu.ctx.decodeAudioData(buf);
+          const src = meu.ctx.createBufferSource();
+          src.buffer = audio; src.connect(meu.ctx.destination);
+          const t = Math.max(meu.ctx.currentTime + 0.05, meu.nextTime);
+          src.start(t); meu.nextTime = t + audio.duration; meu.sources.push(src);
+        }
+        buscados++;
+      }
+      if (j.status === "done") { refreshOutputs(); return j; }
+      if (statusEl && j.progress) statusEl.innerHTML =
+        `<span class="spinner"></span>${buscados > 0 ? "falando + " : ""}gerando trecho ${j.progress.current}/${j.progress.total}…`;
+      await new Promise(r => setTimeout(r, 700));
+    }
+  } finally {
+    if (player === meu && !meu.stopped) {
+      const resta = Math.max(0, (meu.nextTime - meu.ctx.currentTime) * 1000) + 300;
+      setTimeout(() => { if (player === meu) stopPlayback(); }, resta);
+    }
+  }
+}
+
+$("ttsBtn").onclick = async () => {
+  const text = $("ttsText").value.trim();
+  const voice_id = $("voiceSelect").value;
+  if (!text) { toast("Digite um texto."); return; }
+  if (!voice_id) { toast("Grave e salve uma voz primeiro."); return; }
+
+  stopPlayback();
+  player = { ctx: new AudioContext(), nextTime: 0, sources: [], stopped: false };
+  const meu = player;
+  $("ttsBtn").disabled = true;
+  $("stopBtn").style.display = "";
+  $("ttsStatus").innerHTML = '<span class="spinner"></span>gerando… (1ª vez baixa e monta o OmniVoice, ~2 GB)';
+
+  try {
+    const { job_id } = await api("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text, voice_id,
+        language: $("langSelect").value
+      })
+    });
+
+    let buscados = 0;
+    while (true) {
+      const j = await api(`/api/tts/jobs/${job_id}`);
+      if (j.status === "error") throw new Error(j.error || "falha na geração");
+
+      while (buscados < j.pieces) {
+        const buf = await (await authFetch(`/api/tts/jobs/${job_id}/pieces/${buscados}`)).arrayBuffer();
+        if (!meu.stopped) {
+          const audio = await meu.ctx.decodeAudioData(buf);
+          const src = meu.ctx.createBufferSource();
+          src.buffer = audio;
+          src.connect(meu.ctx.destination);
+          const t = Math.max(meu.ctx.currentTime + 0.05, meu.nextTime);
+          src.start(t);
+          meu.nextTime = t + audio.duration;
+          meu.sources.push(src);
+        }
+        buscados++;
+      }
+
+      if (j.status === "done") {
+        $("ttsStatus").textContent = `pronto em ${j.output.elapsed}s — salvo no histórico`;
+        refreshOutputs();
+        break;
+      }
+      if (j.progress) $("ttsStatus").innerHTML =
+        `<span class="spinner"></span>${buscados > 0 ? "falando + " : ""}gerando trecho ${j.progress.current}/${j.progress.total}…`;
+      await new Promise(r => setTimeout(r, 700));
+    }
+  } catch (e) { $("ttsStatus").textContent = ""; toast("Erro: " + e.message, 6000); }
+  finally {
+    $("ttsBtn").disabled = false;
+    refreshStatus();
+    // esconde "Parar" quando o áudio agendado terminar
+    if (player === meu && !meu.stopped) {
+      const resta = Math.max(0, (meu.nextTime - meu.ctx.currentTime) * 1000) + 300;
+      setTimeout(() => { if (player === meu) stopPlayback(); }, resta);
+    }
+  }
+};
+
+/* ───────── Tradutor de voz: Manual / Contínuo / Conversa ───────── */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let transRec = null, transChunks = [];      // modo manual
+let auto = null;                            // modos contínuo/conversa (VAD)
+const VAD = { thresh: 0.015, silenceHoldMs: 700, minUtterMs: 350, frameMs: 50 };
+
+/* --- Microfone: ganho + passa-alta + supressão + medidor (aplica ao que é gravado) --- */
+const micFx = Object.assign({ gain: 1, hp: 90, thresh: 0.015, ns: true, silenceHold: 700, minUtter: 350 },
+  JSON.parse(localStorage.getItem("micFx") || "{}"));
+let micGraph = null, meterRAF = null;
+VAD.thresh = micFx.thresh; VAD.silenceHoldMs = micFx.silenceHold; VAD.minUtterMs = micFx.minUtter;
+const saveMicFx = () => localStorage.setItem("micFx", JSON.stringify(micFx));
+
+/* filtros STT (servidor): [id slider, id output, chave settings, formato] */
+const STT_CTL = [
+  ["sttWords", "sttWordsOut", "stt_min_words", v => (+v).toFixed(0)],
+  ["sttChars", "sttCharsOut", "stt_min_chars", v => (+v).toFixed(0)],
+  ["sttNoSpeech", "sttNoSpeechOut", "stt_max_no_speech", v => (+v).toFixed(2)],
+  ["sttLogprob", "sttLogprobOut", "stt_min_logprob", v => (+v).toFixed(1)],
+  ["sttComp", "sttCompOut", "stt_max_compression", v => (+v).toFixed(1)],
+];
+
+async function openProcessedMic() {
+  const raw = await navigator.mediaDevices.getUserMedia({ audio: {
+    echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false } });
+  const ctx = new AudioContext();
+  const src = ctx.createMediaStreamSource(raw);
+  const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = micFx.hp;
+  const gain = ctx.createGain(); gain.gain.value = micFx.gain;
+  const an = ctx.createAnalyser(); an.fftSize = 1024;
+  const dest = ctx.createMediaStreamDestination();
+  src.connect(hp); hp.connect(gain); gain.connect(an); an.connect(dest);
+  micGraph = { raw, ctx, an, gain, hp, stream: dest.stream, buf: new Float32Array(an.fftSize) };
+  startMeter();
+  return micGraph;
+}
+
+function closeProcessedMic() {
+  stopMeter();
+  if (!micGraph) return;
+  micGraph.raw.getTracks().forEach(t => t.stop());
+  if (micGraph.ctx.state !== "closed") micGraph.ctx.close();
+  micGraph = null;
+}
+
+function startMeter() {
+  const loop = () => {
+    if (!micGraph) return;
+    micGraph.an.getFloatTimeDomainData(micGraph.buf);
+    let s = 0; for (const v of micGraph.buf) s += v * v;
+    const r = Math.sqrt(s / micGraph.buf.length);
+    const bar = $("micMeterBar");
+    if (bar) { bar.style.width = Math.min(100, r / 0.15 * 100) + "%";
+               bar.style.background = r > VAD.thresh ? "#3a3" : "#666"; }
+    meterRAF = requestAnimationFrame(loop);
+  };
+  loop();
+}
+function stopMeter() {
+  if (meterRAF) cancelAnimationFrame(meterRAF);
+  meterRAF = null;
+  const b = $("micMeterBar"); if (b) b.style.width = "0";
+}
+function updateMicMark() {
+  const m = $("micMeterMark"); if (m) m.style.left = Math.min(100, micFx.thresh / 0.15 * 100) + "%";
+}
+
+function initMicControls() {
+  $("micGain").value = micFx.gain; $("micGainOut").textContent = micFx.gain.toFixed(1);
+  $("micHp").value = micFx.hp; $("micHpOut").textContent = micFx.hp + " Hz";
+  $("micThresh").value = micFx.thresh; $("micThreshOut").textContent = micFx.thresh.toFixed(3);
+  $("micNs").checked = micFx.ns;
+  $("micGain").oninput = () => { micFx.gain = +$("micGain").value; $("micGainOut").textContent = micFx.gain.toFixed(1);
+    if (micGraph) micGraph.gain.gain.value = micFx.gain; saveMicFx(); };
+  $("micHp").oninput = () => { micFx.hp = +$("micHp").value; $("micHpOut").textContent = micFx.hp + " Hz";
+    if (micGraph) micGraph.hp.frequency.value = micFx.hp; saveMicFx(); };
+  $("micThresh").oninput = () => { micFx.thresh = +$("micThresh").value; VAD.thresh = micFx.thresh;
+    $("micThreshOut").textContent = micFx.thresh.toFixed(3); updateMicMark(); saveMicFx(); };
+  $("micNs").onchange = () => { micFx.ns = $("micNs").checked; saveMicFx();
+    toast("Supressão muda na próxima vez que abrir o mic"); };
+  $("micSilence").value = micFx.silenceHold; $("micSilenceOut").textContent = micFx.silenceHold + " ms";
+  $("micMinUtter").value = micFx.minUtter; $("micMinUtterOut").textContent = micFx.minUtter + " ms";
+  $("micSilence").oninput = () => { micFx.silenceHold = +$("micSilence").value; VAD.silenceHoldMs = micFx.silenceHold;
+    $("micSilenceOut").textContent = micFx.silenceHold + " ms"; saveMicFx(); };
+  $("micMinUtter").oninput = () => { micFx.minUtter = +$("micMinUtter").value; VAD.minUtterMs = micFx.minUtter;
+    $("micMinUtterOut").textContent = micFx.minUtter + " ms"; saveMicFx(); };
+  for (const [id, out, key, fmt] of STT_CTL) {
+    $(id).oninput = async () => {
+      const v = parseFloat($(id).value); $(out).textContent = fmt(v);
+      try { await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: v }) }); } catch {}
+    };
+  }
+  updateMicMark();
+}
+
+$("transRecBtn").onclick = async () => {
+  const mode = $("transMode").value;
+  if (mode === "manual") {                  // gravar / parar manual
+    if (transRec && transRec.state === "recording") { transRec.stop(); return; }
+    if (auto) stopAuto();
+    let g;
+    try { g = await openProcessedMic(); }
+    catch { toast("Sem acesso ao microfone."); return; }
+    transChunks = [];
+    transRec = new MediaRecorder(g.stream);
+    transRec.ondataavailable = e => { if (e.data.size) transChunks.push(e.data); };
+    transRec.onstop = async () => {
+      closeProcessedMic();
+      setRecBtn(false);
+      await translateAndSpeak(new Blob(transChunks, { type: "audio/webm" }));
+    };
+    transRec.start();
+    setRecBtn(true);
+    return;
+  }
+  // modos automáticos (VAD)
+  if (auto) { stopAuto(); return; }
+  if (!$("transVoice").value) { toast("Escolha uma voz."); return; }
+  await startAuto(mode);
+};
+
+$("transMode").onchange = () => { if (auto) stopAuto(); if (transRec && transRec.state === "recording") transRec.stop(); };
+
+function setRecBtn(on, label) {
+  $("transRecBtn").textContent = on ? (label || "■ Parar") : (label || "🎙️ Falar");
+  $("transRecBtn").classList.toggle("rec", on);
+}
+
+async function startAuto(mode) {
+  let g;
+  try { g = await openProcessedMic(); }   // ganho + passa-alta + supressão aplicados
+  catch { toast("Sem acesso ao microfone."); return; }
+  auto = { mode, an: g.an, recStream: g.stream, buf: new Float32Array(g.an.fftSize),
+           speaking: false, silence: 0, rec: null, chunks: [], busy: false,
+           stop: false, queue: [], uttStart: 0 };
+  auto.timer = setInterval(() => vadTick(auto), VAD.frameMs);
+  pump(auto);
+  setRecBtn(true, "■ Parar escuta");
+  $("transStatus").innerHTML = '<span class="spinner"></span>escutando…';
+}
+
+function stopAuto() {
+  if (!auto) return;
+  const st = auto; auto = null;
+  st.stop = true;
+  clearInterval(st.timer);
+  try { if (st.rec && st.rec.state === "recording") st.rec.stop(); } catch {}
+  closeProcessedMic();
+  setRecBtn(false, "🎙️ Falar");
+  $("transStatus").textContent = "parado";
+}
+
+function vadLevel(st) {
+  st.an.getFloatTimeDomainData(st.buf);
+  let s = 0; for (const v of st.buf) s += v * v;
+  return Math.sqrt(s / st.buf.length);
+}
+
+function vadTick(st) {
+  if (st.stop) return;
+  if (st.mode === "conversa" && st.busy) return;  // half-duplex: não escuta enquanto fala
+  const lvl = vadLevel(st);
+  if (lvl > VAD.thresh) {
+    if (!st.speaking) {                            // começou a falar -> grava o trecho
+      st.speaking = true; st.silence = 0; st.chunks = [];
+      st.rec = new MediaRecorder(st.recStream);
+      st.rec.ondataavailable = e => { if (e.data.size) st.chunks.push(e.data); };
+      st.rec.start();
+      st.uttStart = performance.now();
+    } else st.silence = 0;
+  } else if (st.speaking) {
+    st.silence += VAD.frameMs;
+    if (st.silence >= VAD.silenceHoldMs) {         // silêncio sustentado -> fim do trecho
+      st.speaking = false;
+      const dur = performance.now() - st.uttStart;
+      const rec = st.rec, chunks = st.chunks; st.rec = null;
+      rec.onstop = () => {
+        if (dur >= VAD.minUtterMs) st.queue.push(new Blob(chunks, { type: "audio/webm" }));
+      };
+      try { rec.stop(); } catch {}
+    }
+  }
+}
+
+async function pump(st) {                          // processa os trechos em fila, em ordem
+  while (!st.stop) {
+    if (!st.queue.length) { await sleep(80); continue; }
+    const blob = st.queue.shift();
+    st.busy = true;
+    await translateAndSpeak(blob);
+    await waitPlaybackEnd();   // toca as traduções em ordem; no modo conversa, mantém o mic fechado até terminar
+    st.busy = false;
+    if (!st.stop && !st.queue.length) $("transStatus").innerHTML = '<span class="spinner"></span>escutando…';
+  }
+}
+
+async function waitPlaybackEnd() {
+  for (let i = 0; i < 240; i++) {
+    if (!player || player.stopped) return;
+    const left = (player.nextTime - player.ctx.currentTime) * 1000;
+    if (left <= 0) return;
+    await sleep(Math.min(400, left + 60));
+  }
+}
+
+async function translateAndSpeak(blob) {
+  const voice_id = $("transVoice").value;
+  if (!voice_id) { toast("Escolha uma voz."); return; }
+  $("transStatus").innerHTML = '<span class="spinner"></span>transcrevendo + traduzindo…';
+  const fd = new FormData();
+  fd.append("audio", blob, "fala.webm");
+  fd.append("target_lang", $("transLang").value);
+  fd.append("source_lang", $("transSrc").value);
+  fd.append("emotion_mode", $("transEmo").value);
+  fd.append("voice_id", voice_id);
+  let r;
+  try { r = await api("/api/translate-speech", { method: "POST", body: fd }); }
+  catch (e) { $("transStatus").textContent = ""; toast("Erro: " + e.message, 6000); return; }
+  if (r.rejected) {                       // ruído/alucinação: ignora e segue
+    $("transStatus").textContent = `ignorado (${r.reason})` + (auto ? " — escutando…" : "");
+    return;
+  }
+  $("transOut").innerHTML =
+    `<b>Você (${r.source_lang || "?"}):</b> ${r.source_text}<br>`
+    + `<b>Tradução (${r.target_lang}):</b> ${r.translation}`
+    + (r.emotion ? `<br><b>🎭 Emoção:</b> ${r.emotion}` : "")
+    + (r.emotion_error ? `<br><span style="color:#c66">emoção indisponível: ${r.emotion_error}</span>` : "");
+  $("transStatus").innerHTML = '<span class="spinner"></span>falando traduzido…';
+  try { await streamJob(r.job_id, $("transStatus")); $("transStatus").textContent = "pronto ✔"; }
+  catch (e) { $("transStatus").textContent = ""; toast("Erro na fala: " + e.message, 6000); }
+}
+
+/* ───────── Histórico ───────── */
+async function refreshOutputs() {
+  const outs = await api("/api/outputs");
+  const list = $("outputList");
+  list.innerHTML = outs.length ? "" : '<div class="empty">Nada gerado ainda.</div>';
+  for (const o of outs) {
+    const div = document.createElement("div");
+    div.className = "item";
+    const short = o.text.length > 90 ? o.text.slice(0, 90) + "…" : o.text;
+    div.innerHTML = `
+      <div class="grow"><div class="name">${short}</div>
+      <div class="meta">${o.duration}s · gerado em ${o.elapsed}s · ${o.created_at}</div></div>
+      <audio controls preload="none" src="${k(`/api/outputs/${o.id}/audio`)}"></audio>
+      <a href="${k(`/api/outputs/${o.id}/audio`)}" download><button class="ghost small">baixar</button></a>
+      <button class="danger">apagar</button>`;
+    div.querySelector(".danger").onclick = async () => {
+      await api(`/api/outputs/${o.id}`, { method: "DELETE" });
+      refreshOutputs();
+    };
+    list.appendChild(div);
+  }
+}
+
+$("keySave").onclick = () => {
+  KEY = $("keyInput").value.trim();
+  localStorage.setItem("ttsRodKey", KEY);
+  $("keyBar").style.display = "none";
+  refreshStatus(); refreshVoices(); refreshOutputs(); loadSettings();
+};
+
+/* ───────── Limpeza de áudios ───────── */
+$("clearAll").onclick = async () => {
+  if (!confirm("Apagar TODOS os áudios gerados?")) return;
+  const r = await api("/api/outputs", { method: "DELETE" });
+  toast(`${r.removidos} áudio(s) apagado(s)`);
+  refreshOutputs();
+};
+
+async function salvaAutoClean() {
+  await api("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      auto_cleanup: $("autoClean").checked,
+      auto_cleanup_minutes: parseInt($("autoCleanMin").value) || 15
+    })
+  });
+  toast($("autoClean").checked
+    ? `Auto-limpeza ativa: áudios somem após ${$("autoCleanMin").value} min`
+    : "Auto-limpeza desativada");
+}
+$("autoClean").onchange = salvaAutoClean;
+$("autoCleanMin").onchange = () => { if ($("autoClean").checked) salvaAutoClean(); };
+
+/* ───────── Configurações padrão (UI + API) ───────── */
+const MODELOS_PADRAO = ["omnivoice"];
+
+$("cfgModel").onchange = () =>
+  $("cfgModelCustom").style.display = $("cfgModel").value === "__custom__" ? "" : "none";
+
+async function loadSettings() {
+  try {
+    const s = await api("/api/settings");
+    if (MODELOS_PADRAO.includes(s.model)) {
+      $("cfgModel").value = s.model;
+      $("cfgModelCustom").style.display = "none";
+    } else {
+      $("cfgModel").value = "__custom__";
+      $("cfgModelCustom").value = s.model;
+      $("cfgModelCustom").style.display = "";
+    }
+    $("cfgLang").value = s.language;
+    $("cfgChunk").value = s.chunk_max_chars;
+    $("cfgSpeed").value = s.speed;
+    $("cfgPrePrompt").value = s.pre_prompt;
+    $("autoClean").checked = s.auto_cleanup;
+    $("autoCleanMin").value = s.auto_cleanup_minutes;
+    $("langSelect").value = s.language;
+    for (const [id, out, val, dec] of [["oNumSteps", "oNumStepsOut", s.omni_num_steps, 0],
+        ["oGuid", "oGuidOut", s.omni_guidance_scale, 1],
+        ["oClassT", "oClassTOut", s.omni_class_temperature, 2],
+        ["oPosT", "oPosTOut", s.omni_position_temperature, 1],
+        ["oLayer", "oLayerOut", s.omni_layer_penalty_factor, 1],
+        ["oTshift", "oTshiftOut", s.omni_t_shift, 2]]) {
+      $(id).value = val;
+      $(out).textContent = parseFloat(val).toFixed(dec);
+    }
+    $("oInstruct").value = s.omni_instruct || "";
+    $("oDur").value = s.omni_duration_s ?? "";
+    $("oRefMax").value = s.omni_ref_max_s ?? 10;
+    for (const [id, out, key, fmt] of STT_CTL) {
+      if (s[key] !== undefined) { $(id).value = s[key]; $(out).textContent = fmt(s[key]); }
+    }
+    // popula voz padrão da API com as vozes existentes
+    const voices = await api("/api/voices");
+    $("cfgVoice").innerHTML = '<option value="">(voz mais recente)</option>';
+    for (const v of voices) {
+      const opt = document.createElement("option");
+      opt.value = v.id; opt.textContent = v.name;
+      $("cfgVoice").appendChild(opt);
+    }
+    if (s.default_voice) $("cfgVoice").value = s.default_voice;
+  } catch {}
+}
+
+$("cfgSave").onclick = async () => {
+  const model = $("cfgModel").value === "__custom__"
+    ? $("cfgModelCustom").value.trim() : $("cfgModel").value;
+  try {
+    await api("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        pre_prompt: $("cfgPrePrompt").value,
+        language: $("cfgLang").value,
+        default_voice: $("cfgVoice").value || null,
+        chunk_max_chars: parseInt($("cfgChunk").value) || 140,
+        speed: parseFloat($("cfgSpeed").value) || 1.0,
+        omni_num_steps: parseInt($("oNumSteps").value) || 16,
+        omni_guidance_scale: parseFloat($("oGuid").value),
+        omni_class_temperature: parseFloat($("oClassT").value),
+        omni_position_temperature: parseFloat($("oPosT").value),
+        omni_layer_penalty_factor: parseFloat($("oLayer").value),
+        omni_t_shift: parseFloat($("oTshift").value),
+        omni_instruct: $("oInstruct").value,
+        omni_duration_s: $("oDur").value === "" ? null : parseFloat($("oDur").value),
+        omni_ref_max_s: parseFloat($("oRefMax").value) || 10
+      })
+    });
+    $("cfgStatus").textContent = "salvo ✔ — já vale para a API";
+    setTimeout(() => $("cfgStatus").textContent = "", 4000);
+  } catch (e) { toast("Erro ao salvar: " + e.message); }
+};
+
+$("shutdownBtn").onclick = async () => {
+  if (!confirm("Desligar o servidor? A página para de funcionar até religar (TTS-Rod.command).")) return;
+  try { await api("/api/shutdown", { method: "POST" }); } catch {}
+  document.body.innerHTML = '<div style="text-align:center;margin-top:80px;font-size:18px;color:#888">'
+    + 'Servidor desligado.<br><br>Para religar, dê dois cliques em <b>TTS-Rod.command</b> no Finder.</div>';
+};
+
+refreshStatus();
+refreshVoices();
+refreshOutputs();
+loadSettings();
+initMicControls();
+setInterval(refreshStatus, 15000);
+</script>
+</body>
+</html>
