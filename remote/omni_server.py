@@ -105,6 +105,10 @@ def synth(text, language=None, speed=None, voice=None, instruct=None, ref_text=N
         rt = ref_text or (open(txt, encoding="utf-8").read().strip() if txt else "")
         if rt: kw["ref_text"] = rt
     if instruct: kw["instruct"] = instruct   # voice design textual
+    # seed: voz reprodutível (mesmo instruct/seed -> mesmo timbre/sotaque). <0 = aleatório.
+    seed = (gen_params or {}).get("seed")
+    if seed is not None and int(seed) >= 0:
+        torch.manual_seed(int(seed)); torch.cuda.manual_seed_all(int(seed))
     gc = _gen_config(gen_params)
     if gc is not None: kw["generation_config"] = gc
     try: audio = m.generate(**kw)

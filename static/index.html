@@ -682,7 +682,14 @@
         <label class="check"><input type="checkbox" id="vdWhisper"> sussurro (whisper)</label>
         <label class="cfg-label">instruct gerado
           <input type="text" id="oInstruct" placeholder="vazio = voz neutra"></label>
-        <p class="hint">Selecione a voz <b>"Voice design"</b> na aba Gerar p/ usar. Só estas tags valem; texto livre é ignorado.</p>
+        <div class="row2">
+          <label class="cfg-label">seed (voz fixa)
+            <input type="number" id="oSeed" min="-1" step="1" value="42" title="mesmo instruct + seed = sempre a mesma voz. -1 = aleatória a cada geração"></label>
+          <button id="oSeedRoll" class="ghost small" type="button" title="sorteia outra voz para o mesmo instruct">🎲 nova voz</button>
+        </div>
+        <p class="hint">Sem seed a voz muda a cada geração (timbre/sotaque). <b>Seed fixa = voz reprodutível.</b>
+          "portuguese accent" é ambíguo (PT-europeu às vezes) — p/ BR, prefira sem sotaque e fixe a seed.
+          Selecione a voz <b>"Voice design"</b> p/ usar. Só estas tags valem; texto livre é ignorado.</p>
       </section>
 
       <section class="cfg-sec">
@@ -831,6 +838,17 @@ function updateTransVdHint() {
   el.style.color = tags ? "" : "var(--accent)";
 }
 $("transVoice").addEventListener("change", updateTransVdHint);
+
+// 🎲 sorteia outra voz p/ o mesmo instruct e fixa (salva a seed na hora)
+$("oSeedRoll").onclick = async () => {
+  const s = Math.floor(Math.random() * 1e9);
+  $("oSeed").value = s;
+  try {
+    await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ omni_seed: s }) });
+    toast("🎲 nova voz fixada (seed " + s + ")");
+  } catch (e) { toast("Erro: " + e.message); }
+};
 
 /* ───────── Status do modelo ───────── */
 async function refreshStatus() {
@@ -1762,7 +1780,8 @@ async function loadSettings() {
       $(id).value = val;
       $(out).textContent = parseFloat(val).toFixed(dec);
     }
-    $("oInstruct").value = s.omni_instruct || ""; vdParse();
+    $("oInstruct").value = s.omni_instruct || ""; vdParse(); updateTransVdHint();
+    $("oSeed").value = s.omni_seed ?? 42;
     $("oDur").value = s.omni_duration_s ?? "";
     $("oRefMax").value = s.omni_ref_max_s ?? 10;
     $("cfgPrecision").value = s.omni_precision || "bf16";
@@ -1834,6 +1853,7 @@ $("cfgSave").onclick = async () => {
         omni_layer_penalty_factor: parseFloat($("oLayer").value),
         omni_t_shift: parseFloat($("oTshift").value),
         omni_instruct: $("oInstruct").value,
+        omni_seed: parseInt($("oSeed").value, 10),
         omni_duration_s: $("oDur").value === "" ? null : parseFloat($("oDur").value),
         omni_ref_max_s: parseFloat($("oRefMax").value) || 10,
         omni_precision: $("cfgPrecision").value,
