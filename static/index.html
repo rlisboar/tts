@@ -199,8 +199,18 @@
   .hint { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 8px; }
   audio { height: 36px; max-width: 240px; width: 100%; border-radius: var(--r-md); }
   #transOut { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r-md);
-    padding: 12px 14px; margin-top: 12px; line-height: 1.65; }
+    padding: 2px 14px; margin-top: 12px; line-height: 1.6; max-height: 300px; overflow-y: auto; }
   #transOut:empty { display: none; }
+  .trans-head { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+  .trans-head .lbl { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
+  .trans-entry { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
+  .trans-entry:last-child { border-bottom: 0; }
+  .t-lang { display: inline-block; font-size: 10px; font-weight: 700; color: var(--accent);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-right: 7px;
+    text-transform: uppercase; vertical-align: 1px; }
+  .t-src { color: var(--muted); }
+  .t-dst { color: var(--text); margin-top: 4px; }
+  .t-emo { font-size: 11px; color: var(--faint); margin-top: 3px; }
   .empty { color: var(--muted); font-size: 13px; padding: 28px 0; text-align: center; }
   #toast {
     position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(8px);
@@ -443,14 +453,16 @@
             <option value="zh">traduzir → 中文</option>
           </select>
           <select id="transVoice" style="max-width:200px"></select>
-          <select id="transEmo" style="max-width:170px">
+          <select id="transEmo" style="max-width:210px" title="Detecta a emoção e aplica via tom (pitch) + velocidade — preserva o timbre da voz clonada (OmniVoice não tem emoção direta)">
             <option value="off">Emoção: off</option>
-            <option value="light">Emoção: leve (prosódia)</option>
-            <option value="accurate">Emoção: precisa (SER)</option>
+            <option value="light">Emoção: aplicar (prosódia)</option>
+            <option value="accurate">Emoção: aplicar (SER)</option>
           </select>
           <span id="transStatus" class="hint" style="margin-top:0"></span>
         </div>
-        <div id="transOut" class="hint" style="margin-top:12px; line-height:1.6"></div>
+        <div class="trans-head"><span class="lbl">Transcrição</span>
+          <button id="transClear" class="ghost small" type="button" style="margin-left:auto">Limpar</button></div>
+        <div id="transOut"></div>
         <details>
           <summary>Microfone / filtros</summary>
           <div class="sliders" style="margin-top:10px">
@@ -464,6 +476,8 @@
               <input type="range" id="micSilence" min="300" max="2000" step="50" value="700"></label>
             <label>Duração mínima da fala <output id="micMinUtterOut">350 ms</output>
               <input type="range" id="micMinUtter" min="100" max="1500" step="50" value="350"></label>
+            <label>Trecho do contínuo (latência×contexto) <output id="micContMaxOut">3.0 s</output>
+              <input type="range" id="micContMax" min="1.5" max="6" step="0.5" value="3"></label>
           </div>
           <div class="row" style="margin-top:10px; align-items:center">
             <label class="check"><input type="checkbox" id="micNs" checked> supressão de ruído (navegador)</label>
@@ -498,10 +512,12 @@
           repetitiva. Salva automático. Mostra abaixo o motivo quando ignora.</p>
         </details>
         <p class="hint">
-          <b>Manual</b>: clique Falar → diga → Parar. <b>Contínuo</b>: escuta sem parar, traduz cada frase
-          quando você faz pausa (fala adiantado; usa cancelamento de eco). <b>Conversa</b>: detecta o silêncio,
-          traduz e fala, e só volta a escutar depois (estilo intérprete, sem fone). A 1ª vez baixa os modelos
-          (~3 GB) e demora; depois ~4–5 s por frase.</p>
+          <b>Manual</b>: clique Falar → diga → Parar. <b>Contínuo</b> (tradução simultânea): corta a fala em
+          trechos curtos (sem esperar pausa), e <b>enquanto um trecho toca já traduz o próximo</b> — áudio
+          emendado numa timeline contínua. Continua capturando o tempo todo (cancelamento de eco; use fone p/
+          evitar realimentação). Ajuste o <b>Trecho do contínuo</b> em Microfone/filtros (menor = menos
+          latência, menos contexto). <b>Conversa</b>: half-duplex, traduz e fala, só volta a escutar depois.
+          A 1ª vez baixa os modelos (~3 GB).</p>
       </div>
     </section>
 
@@ -668,6 +684,10 @@
             <input type="range" id="audHigh" min="-12" max="12" step="0.5" value="0"></label>
         </div>
         <p class="hint">Vale local e remoto. Distorcido/estridente? Baixe Agudo e o Ganho.</p>
+        <label class="cfg-label">Microfone (entrada)
+          <select id="audioInDevice"><option value="">Padrão do sistema</option></select></label>
+        <label class="cfg-label">Saída de som
+          <select id="audioOutDevice"><option value="">Padrão do sistema</option></select></label>
       </section>
 
       <section class="cfg-sec">
@@ -837,9 +857,10 @@ $("recBtn").onclick = async () => {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
+      audio: micAudioConstraints({ echoCancellation: false, noiseSuppression: false, autoGainControl: true })
     });
   } catch { toast("Permissão de microfone negada."); return; }
+  refreshDevices();   // já com permissão -> popula rótulos dos dispositivos
 
   chunks = [];
   mediaRecorder = new MediaRecorder(stream);
@@ -1048,7 +1069,7 @@ $("stopBtn").onclick = stopPlayback;
    Usado pela síntese e pelo tradutor de voz. */
 async function streamJob(job_id, statusEl) {
   stopPlayback();
-  player = { ctx: new AudioContext(), nextTime: 0, sources: [], stopped: false };
+  player = { ctx: mkCtx(), nextTime: 0, sources: [], stopped: false };
   const meu = player;
   $("stopBtn").style.display = "";
   let buscados = 0;
@@ -1093,7 +1114,7 @@ $("ttsBtn").onclick = async () => {
   }
 
   stopPlayback();
-  player = { ctx: new AudioContext(), nextTime: 0, sources: [], stopped: false };
+  player = { ctx: mkCtx(), nextTime: 0, sources: [], stopped: false };
   const meu = player;
   $("ttsBtn").disabled = true;
   $("stopBtn").style.display = "";
@@ -1156,10 +1177,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 let transRec = null, transChunks = [];      // modo manual
 let auto = null;                            // modos contínuo/conversa (VAD)
 const VAD = { thresh: 0.015, silenceHoldMs: 700, minUtterMs: 350, frameMs: 50 };
+let CONT_MAX_MS = 3000;   // contínuo: corta o trecho a cada Ns mesmo sem pausa (latência baixa)
 
 /* --- Microfone: ganho + passa-alta + supressão + medidor (aplica ao que é gravado) --- */
-const micFx = Object.assign({ gain: 1, hp: 90, thresh: 0.015, ns: true, silenceHold: 700, minUtter: 350 },
+const micFx = Object.assign({ gain: 1, hp: 90, thresh: 0.015, ns: true, silenceHold: 700, minUtter: 350, contMax: 3000 },
   JSON.parse(localStorage.getItem("micFx") || "{}"));
+CONT_MAX_MS = micFx.contMax;
 let micGraph = null, meterRAF = null;
 VAD.thresh = micFx.thresh; VAD.silenceHoldMs = micFx.silenceHold; VAD.minUtterMs = micFx.minUtter;
 const saveMicFx = () => localStorage.setItem("micFx", JSON.stringify(micFx));
@@ -1174,8 +1197,9 @@ const STT_CTL = [
 ];
 
 async function openProcessedMic() {
-  const raw = await navigator.mediaDevices.getUserMedia({ audio: {
-    echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false } });
+  const raw = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints({
+    echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false }) });
+  refreshDevices();
   const ctx = new AudioContext();
   const src = ctx.createMediaStreamSource(raw);
   const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = micFx.hp;
@@ -1218,6 +1242,48 @@ function updateMicMark() {
   const m = $("micMeterMark"); if (m) m.style.left = Math.min(100, micFx.thresh / 0.15 * 100) + "%";
 }
 
+/* ───────── Dispositivos de áudio: microfone (entrada) + saída de som ───────── */
+let micDeviceId = localStorage.getItem("micDeviceId") || "";
+let outDeviceId = localStorage.getItem("outDeviceId") || "";
+function micAudioConstraints(base) {
+  return micDeviceId ? { ...base, deviceId: { exact: micDeviceId } } : base;
+}
+function mkCtx() {   // AudioContext de reprodução roteado p/ a saída escolhida
+  const c = new AudioContext();
+  if (outDeviceId && c.setSinkId) c.setSinkId(outDeviceId).catch(() => {});
+  return c;
+}
+function fillDevices(sel, devs, current) {
+  sel.innerHTML = '<option value="">Padrão do sistema</option>';
+  devs.forEach((d, i) => {
+    const o = document.createElement("option");
+    o.value = d.deviceId;
+    o.textContent = d.label || `${d.kind === "audioinput" ? "Microfone" : "Saída"} ${i + 1}`;
+    sel.appendChild(o);
+  });
+  sel.value = current || "";
+}
+async function refreshDevices() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    fillDevices($("audioInDevice"), devs.filter(d => d.kind === "audioinput"), micDeviceId);
+    const outs = devs.filter(d => d.kind === "audiooutput");
+    if ("sinkId" in HTMLMediaElement.prototype) fillDevices($("audioOutDevice"), outs, outDeviceId);
+    else $("audioOutDevice").innerHTML = '<option value="">(troca de saída não suportada no navegador)</option>';
+  } catch {}
+}
+async function applyOutput() {
+  document.querySelectorAll("audio").forEach(a => { if (a.setSinkId) a.setSinkId(outDeviceId || "default").catch(() => {}); });
+  for (const ctx of [player && player.ctx, auto && auto.player && auto.player.ctx]) {
+    if (ctx && ctx.setSinkId) { try { await ctx.setSinkId(outDeviceId); } catch {} }
+  }
+}
+$("audioInDevice").onchange = () => { micDeviceId = $("audioInDevice").value; localStorage.setItem("micDeviceId", micDeviceId);
+  toast("Microfone trocado — vale na próxima gravação/escuta"); };
+$("audioOutDevice").onchange = () => { outDeviceId = $("audioOutDevice").value; localStorage.setItem("outDeviceId", outDeviceId);
+  applyOutput(); toast("Saída de som trocada"); };
+
 function initMicControls() {
   $("micGain").value = micFx.gain; $("micGainOut").textContent = micFx.gain.toFixed(1);
   $("micHp").value = micFx.hp; $("micHpOut").textContent = micFx.hp + " Hz";
@@ -1237,6 +1303,9 @@ function initMicControls() {
     $("micSilenceOut").textContent = micFx.silenceHold + " ms"; saveMicFx(); };
   $("micMinUtter").oninput = () => { micFx.minUtter = +$("micMinUtter").value; VAD.minUtterMs = micFx.minUtter;
     $("micMinUtterOut").textContent = micFx.minUtter + " ms"; saveMicFx(); };
+  $("micContMax").value = micFx.contMax / 1000; $("micContMaxOut").textContent = (micFx.contMax / 1000).toFixed(1) + " s";
+  $("micContMax").oninput = () => { micFx.contMax = Math.round(+$("micContMax").value * 1000); CONT_MAX_MS = micFx.contMax;
+    $("micContMaxOut").textContent = (micFx.contMax / 1000).toFixed(1) + " s"; saveMicFx(); };
   for (const [id, out, key, fmt] of STT_CTL) {
     $(id).oninput = async () => {
       const v = parseFloat($(id).value); $(out).textContent = fmt(v);
@@ -1328,7 +1397,8 @@ async function startAuto(mode) {
            speaking: false, silence: 0, rec: null, chunks: [], busy: false,
            stop: false, queue: [], uttStart: 0 };
   auto.timer = setInterval(() => vadTick(auto), VAD.frameMs);
-  pump(auto);
+  if (mode === "continuo") pumpPipeline(auto);   // simultâneo (gera N+1 enquanto N toca)
+  else pump(auto);                               // conversa: half-duplex, serial
   setRecBtn(true, "■ Parar escuta");
   $("transStatus").innerHTML = '<span class="spinner"></span>escutando…';
 }
@@ -1340,6 +1410,11 @@ function stopAuto() {
   stopLive();
   clearInterval(st.timer);
   try { if (st.rec && st.rec.state === "recording") st.rec.stop(); } catch {}
+  if (st.player) {                               // para a timeline do pipeline
+    st.player.stopped = true;
+    st.player.sources.forEach(s => { try { s.stop(); } catch {} });
+    if (st.player.ctx.state !== "closed") st.player.ctx.close();
+  }
   closeProcessedMic();
   setRecBtn(false, "Falar");
   $("transStatus").textContent = "parado";
@@ -1351,31 +1426,41 @@ function vadLevel(st) {
   return Math.sqrt(s / st.buf.length);
 }
 
+function startChunk(st) {                           // começa a gravar um trecho
+  st.speaking = true; st.silence = 0; st.chunks = [];
+  st.rec = new MediaRecorder(st.recStream);
+  st.rec.ondataavailable = e => { if (e.data.size) st.chunks.push(e.data); };
+  st.rec.start(300);
+  st.uttStart = performance.now();
+  // contínuo NÃO usa prévia ao vivo: o /api/stt-partial dobraria a carga de STT e
+  // competiria com a tradução real -> pipeline atrasa. O texto traduzido aparece rápido.
+}
+function flushChunk(st, continuing) {               // fecha o trecho -> fila; se continuing, recomeça já
+  const dur = performance.now() - st.uttStart;
+  const rec = st.rec, chunks = st.chunks; st.rec = null;
+  if (!continuing) { st.speaking = false; stopLive(); }
+  rec.onstop = () => {
+    if (dur >= VAD.minUtterMs) st.queue.push(new Blob(chunks, { type: "audio/webm" }));
+  };
+  try { rec.stop(); } catch {}
+  if (continuing) startChunk(st);                   // ainda falando -> grava o próximo sem esperar silêncio
+}
 function vadTick(st) {
   if (st.stop) return;
-  if (st.mode === "conversa" && st.busy) return;  // half-duplex: não escuta enquanto fala
+  if (st.mode === "conversa" && st.busy) return;    // half-duplex: não escuta enquanto fala
   const lvl = vadLevel(st);
   if (lvl > VAD.thresh) {
-    if (!st.speaking) {                            // começou a falar -> grava o trecho
-      st.speaking = true; st.silence = 0; st.chunks = [];
-      st.rec = new MediaRecorder(st.recStream);
-      st.rec.ondataavailable = e => { if (e.data.size) st.chunks.push(e.data); };
-      st.rec.start(300);                 // timeslice -> prévia ao vivo durante o trecho
-      st.uttStart = performance.now();
-      if (st.mode !== "conversa") startLive(() => st.chunks);  // conversa = half-duplex, sem prévia
-    } else st.silence = 0;
+    if (!st.speaking) startChunk(st);
+    else {
+      st.silence = 0;
+      // CONTÍNUO: não espera silêncio — corta por duração máx e já traduz/toca,
+      // reiniciando a captura na hora (interpretação ~simultânea).
+      if (st.mode === "continuo" && performance.now() - st.uttStart >= CONT_MAX_MS)
+        flushChunk(st, true);
+    }
   } else if (st.speaking) {
     st.silence += VAD.frameMs;
-    if (st.silence >= VAD.silenceHoldMs) {         // silêncio sustentado -> fim do trecho
-      st.speaking = false;
-      stopLive();
-      const dur = performance.now() - st.uttStart;
-      const rec = st.rec, chunks = st.chunks; st.rec = null;
-      rec.onstop = () => {
-        if (dur >= VAD.minUtterMs) st.queue.push(new Blob(chunks, { type: "audio/webm" }));
-      };
-      try { rec.stop(); } catch {}
-    }
+    if (st.silence >= VAD.silenceHoldMs) flushChunk(st, false);   // pausa natural -> fecha
   }
 }
 
@@ -1400,15 +1485,14 @@ async function waitPlaybackEnd() {
   }
 }
 
-async function translateAndSpeak(blob) {
+/* STT + tradução de um trecho. Devolve a resposta da API (job_id + textos) ou
+   null (ruído/erro). NÃO toca — quem chama decide como reproduzir. */
+async function requestTranslation(blob) {
   const voice_id = $("transVoice").value;
-  if (!voice_id) { toast("Escolha uma voz."); return; }
-  $("transStatus").innerHTML = '<span class="spinner"></span>transcrevendo + traduzindo…';
+  if (!voice_id) { toast("Escolha uma voz."); return null; }
   let wav;
-  // navegador decodifica o webm/opus e re-encoda WAV — o servidor lê com soundfile
-  // (sem ffmpeg). Também habilita a captura de emoção (que usa soundfile).
   try { wav = await blobToWav(blob); }
-  catch (e) { $("transStatus").textContent = ""; toast("Falha ao processar áudio: " + e.message, 6000); return; }
+  catch (e) { toast("Falha ao processar áudio: " + e.message, 6000); return null; }
   const fd = new FormData();
   fd.append("audio", wav, "fala.wav");
   fd.append("target_lang", $("transLang").value);
@@ -1417,19 +1501,85 @@ async function translateAndSpeak(blob) {
   fd.append("voice_id", voice_id);
   let r;
   try { r = await api("/api/translate-speech", { method: "POST", body: fd }); }
-  catch (e) { $("transStatus").textContent = ""; toast("Erro: " + e.message, 6000); return; }
-  if (r.rejected) {                       // ruído/alucinação: ignora e segue
+  catch (e) { toast("Erro: " + e.message, 6000); return null; }
+  if (r.rejected) {
     $("transStatus").textContent = `ignorado (${r.reason})` + (auto ? " — escutando…" : "");
-    return;
+    return null;
   }
-  $("transOut").innerHTML =
-    `<b>Você (${r.source_lang || "?"}):</b> ${r.source_text}<br>`
-    + `<b>Tradução (${r.target_lang}):</b> ${r.translation}`
-    + (r.emotion ? `<br><b>Emoção:</b> ${r.emotion}` : "")
-    + (r.emotion_error ? `<br><span style="color:#c66">emoção indisponível: ${r.emotion_error}</span>` : "");
+  return r;
+}
+
+function showTrans(r) {
+  const out = $("transOut");
+  const e = document.createElement("div");
+  e.className = "trans-entry";
+  e.innerHTML =
+    `<div class="t-src"><span class="t-lang">${(r.source_lang || "?")}</span>${r.source_text || ""}</div>`
+    + `<div class="t-dst"><span class="t-lang">${r.target_lang || ""}</span>${r.translation || ""}</div>`
+    + (r.emotion ? `<div class="t-emo">🎭 ${r.emotion}</div>` : "")
+    + (r.emotion_error ? `<div class="t-emo" style="color:#c66">emoção indisponível: ${r.emotion_error}</div>` : "");
+  out.appendChild(e);
+  while (out.children.length > 60) out.removeChild(out.firstChild);   // cap p/ não crescer sem fim
+  out.scrollTop = out.scrollHeight;                                    // auto-scroll p/ o mais recente
+}
+$("transClear").onclick = () => { $("transOut").innerHTML = ""; };
+
+/* Manual / conversa: traduz e toca (reseta o player a cada trecho). */
+async function translateAndSpeak(blob) {
+  $("transStatus").innerHTML = '<span class="spinner"></span>transcrevendo + traduzindo…';
+  const r = await requestTranslation(blob);
+  if (!r) return;
+  showTrans(r);
   $("transStatus").innerHTML = '<span class="spinner"></span>falando traduzido…';
   try { await streamJob(r.job_id, $("transStatus")); $("transStatus").textContent = "pronto ✔"; }
   catch (e) { $("transStatus").textContent = ""; toast("Erro na fala: " + e.message, 6000); }
+}
+
+/* Agenda os trechos de áudio de um job numa timeline PERSISTENTE (pl), gapless,
+   sem resetar — permite emendar trechos de chamadas consecutivas (pipeline).
+   Retorna quando o job termina (todas as peças buscadas), não quando toca. */
+async function streamJobInto(job_id, pl) {
+  let buscados = 0;
+  while (!pl.stopped) {
+    const j = await api(`/api/tts/jobs/${job_id}`);
+    if (j.status === "error") throw new Error(j.error || "falha na geração");
+    while (buscados < j.pieces) {
+      const buf = await (await authFetch(`/api/tts/jobs/${job_id}/pieces/${buscados}`)).arrayBuffer();
+      if (!pl.stopped) {
+        const audio = await pl.ctx.decodeAudioData(buf);
+        const src = pl.ctx.createBufferSource();
+        src.buffer = audio; src.connect(pl.ctx.destination);
+        const t = Math.max(pl.ctx.currentTime + 0.08, pl.nextTime);
+        src.start(t); pl.nextTime = t + audio.duration; pl.sources.push(src);
+      }
+      buscados++;
+    }
+    if (j.status === "done") { refreshOutputs(); return; }
+    await sleep(120);
+  }
+}
+
+/* Pipeline de tradução simultânea (modo contínuo): consome trechos da fila e os
+   traduz/sintetiza em sequência, emendando o áudio numa timeline contínua. A
+   tradução do trecho N+1 acontece ENQUANTO o N toca -> latência mínima. */
+async function pumpPipeline(st) {
+  const pl = { ctx: mkCtx(), nextTime: 0, sources: [], stopped: false };
+  st.player = pl;
+  let pending = null;   // tradução do próximo trecho já em andamento (prefetch)
+  while (!st.stop) {
+    // se a geração não acompanha, descarta trechos atrasados -> fica em tempo real
+    if (st.queue.length > 2) { st.queue.splice(0, st.queue.length - 2); st.dropped = (st.dropped || 0) + 1; }
+    if (!pending && st.queue.length) pending = requestTranslation(st.queue.shift());
+    if (!pending) { await sleep(40); continue; }
+    const r = await pending; pending = null;
+    // dispara JÁ a tradução do trecho seguinte (STT+LLM em paralelo com este tocando)
+    if (!st.stop && st.queue.length) pending = requestTranslation(st.queue.shift());
+    if (!r) continue;
+    showTrans(r);
+    const buf = Math.max(0, pl.nextTime - pl.ctx.currentTime);
+    $("transStatus").innerHTML = `<span class="spinner"></span>simultâneo · buffer ${buf.toFixed(1)}s`;
+    try { await streamJobInto(r.job_id, pl); } catch (e) { /* trecho falhou: segue */ }
+  }
 }
 
 /* ───────── Histórico ───────── */
@@ -1614,8 +1764,9 @@ $("sttRecBtn").onclick = async () => {
   if (sttRec && sttRec.state === "recording") { sttRec.stop(); return; }
   try {
     sttStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      audio: micAudioConstraints({ echoCancellation: true, noiseSuppression: true, autoGainControl: true }) });
   } catch { toast("Sem acesso ao microfone."); return; }
+  refreshDevices();
   sttChunks = [];
   sttRec = new MediaRecorder(sttStream);
   sttRec.ondataavailable = e => { if (e.data.size) sttChunks.push(e.data); };
@@ -1685,6 +1836,7 @@ refreshVoices();
 refreshOutputs();
 loadSettings();
 initMicControls();
+refreshDevices();
 setInterval(refreshStatus, 15000);
 </script>
 </body>

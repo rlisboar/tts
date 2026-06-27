@@ -683,6 +683,30 @@ def _resolve_duration_s(v, default):
         return default
 
 
+# Vocabulário FECHADO do instruct do OmniVoice (igual ao _resolve_instruct do modelo).
+# Qualquer item fora disto quebra a geração no servidor (clone vira voz default),
+# então sanitizamos antes de enviar — emoção em texto livre é descartada.
+_OMNI_INSTRUCT_VALID = {
+    "male", "female", "child", "teenager", "young adult", "middle-aged", "elderly",
+    "very low pitch", "low pitch", "moderate pitch", "high pitch", "very high pitch", "whisper",
+    "american accent", "british accent", "australian accent", "canadian accent", "indian accent",
+    "japanese accent", "korean accent", "portuguese accent", "russian accent", "chinese accent",
+}
+
+
+def _sanitize_instruct(s) -> str:
+    """Mantém só tags válidas do OmniVoice (descarta texto livre/emoção)."""
+    if not s:
+        return ""
+    seen, out = set(), []
+    for tok in str(s).split(","):
+        t = tok.strip().lower()
+        if t in _OMNI_INSTRUCT_VALID and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return ", ".join(out)
+
+
 def _resolve_omni(payload: dict) -> dict:
     """Resolve os controles do OmniVoice: override no request, senão settings."""
     return {
@@ -692,8 +716,8 @@ def _resolve_omni(payload: dict) -> dict:
         "position_temperature": _clamp(payload.get("position_temperature"), 0.0, 20.0, _settings["omni_position_temperature"]),
         "layer_penalty_factor": _clamp(payload.get("layer_penalty_factor"), 0.0, 20.0, _settings["omni_layer_penalty_factor"]),
         "t_shift": _clamp(payload.get("t_shift"), 0.0, 1.0, _settings["omni_t_shift"]),
-        "instruct": (str(payload["instruct"]).strip()[:300] if payload.get("instruct")
-                     else _settings["omni_instruct"]),
+        "instruct": _sanitize_instruct(payload["instruct"] if payload.get("instruct")
+                                       else _settings["omni_instruct"]),
         "duration_s": (_resolve_duration_s(payload["duration_s"], _settings["omni_duration_s"])
                        if "duration_s" in payload else _settings["omni_duration_s"]),
         "speed": _clamp(payload.get("speed"), 0.25, 4.0, _settings["speed"]),
@@ -1168,12 +1192,16 @@ _mt = {"model": None, "tok": None}
 _mt_lock = threading.Lock()
 
 
-# alucinações comuns do Whisper em silêncio/ruído (pt + en)
+# alucinações comuns do Whisper em silêncio/ruído (pt + en). Comparadas após
+# normalizar (lower + tira pontuação/aspas das pontas), então cobrem variações.
 _STT_BLACKLIST = {
-    "obrigado", "obrigada", "obrigado.", "tchau", "valeu", "fim", "the end",
-    "thank you", "thanks for watching", "you", "bye", "bye.", "okay", "ok",
+    "obrigado", "obrigada", "tchau", "valeu", "fim", "the end",
+    "thank you", "thank you very much", "thanks for watching", "you", "bye", "okay", "ok",
     "legendas pela comunidade amara.org", "amara.org", "subtitles by the amara.org community",
     "♪", "...", ".", "music", "música", "applause", "aplausos",
+    # interjeições/fragmentos curtos típicos de ruído (match é da frase INTEIRA)
+    "e aí", "e ai", "aí", "hum", "hmm", "uhum", "ãhã", "ã", "ahn", "eh",
+    "uh", "uhn", "um", "ó", "ahã", "mm", "mhm", "thanks",
 }
 
 
@@ -1323,13 +1351,28 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
     return data
 
 
-def _translate_prompt(text: str, target: str) -> str:
+# rótulo PT da emoção -> palavra inglesa p/ o prompt do LLM
+_EMO_EN = {
+    "alegre": "happy and upbeat", "triste": "sad and downcast", "raiva": "angry and intense",
+    "medo": "fearful and tense", "surpresa": "surprised and excited", "calmo": "calm and gentle",
+    "desgosto": "displeased", "suave": "soft and gentle", "intenso": "intense and firm",
+    "animado": "lively and enthusiastic", "ágil": "lively",
+}
+
+
+def _translate_prompt(text: str, target: str, emotion: str | None = None) -> str:
     nome = LANG_DISPLAY.get(target, target)
+    emo_en = _EMO_EN.get((emotion or "").lower()) if emotion and emotion != "neutro" else None
+    if emo_en:
+        return (f"Translate the text below into {nome}, conveying a {emo_en} tone. "
+                f"Preserve the meaning exactly — only adjust punctuation, emphasis and natural "
+                f"interjections so it sounds {emo_en} when spoken aloud. Output ONLY the "
+                f"translation, no quotes, no explanations.\n\nText: {text}")
     return (f"Translate the text below into {nome}. Output ONLY the translation, "
             f"no quotes, no explanations, keep it natural.\n\nText: {text}")
 
 
-def _translate_remote(text: str, target: str) -> str:
+def _translate_remote(text: str, target: str, emotion: str | None = None) -> str:
     import requests
 
     base = _settings["remote_base_url"].rstrip("/")
@@ -1338,8 +1381,8 @@ def _translate_remote(text: str, target: str) -> str:
         headers={"Authorization": f"Bearer {_settings['remote_api_key']}",
                  "Content-Type": "application/json"},
         json={"model": _settings.get("remote_translate_model") or "gpt-4o-mini",
-              "temperature": 0.2,
-              "messages": [{"role": "user", "content": _translate_prompt(text, target)}]},
+              "temperature": 0.4 if emotion else 0.2,
+              "messages": [{"role": "user", "content": _translate_prompt(text, target, emotion)}]},
         timeout=60,
     )
     if not r.ok:
@@ -1415,9 +1458,9 @@ def _stt_ok(r: dict, text: str):
     return True, ""
 
 
-def _translate(text: str, target: str) -> str:
+def _translate(text: str, target: str, emotion: str | None = None) -> str:
     if _use_remote_translate():
-        return _translate_remote(text, target)
+        return _translate_remote(text, target, emotion)
 
     from mlx_lm import generate, load
 
@@ -1425,26 +1468,25 @@ def _translate(text: str, target: str) -> str:
         if _mt["model"] is None:
             _mt["model"], _mt["tok"] = load(TRANSLATE_REPO)
         model, tok = _mt["model"], _mt["tok"]
-        nome = LANG_DISPLAY.get(target, target)
-        msgs = [{"role": "user", "content":
-                 f"Translate the text below into {nome}. Output ONLY the translation, "
-                 f"no quotes, no explanations, keep it natural.\n\nText: {text}"}]
+        msgs = [{"role": "user", "content": _translate_prompt(text, target, emotion)}]
         prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
         out = generate(model, tok, prompt=prompt, max_tokens=512, verbose=False)
     return out.strip().strip('"').strip()
 
 
-# --- Captura de emoção: vira `instruct` (voice design) do OmniVoice ---
+# --- Captura de emoção -> alavancas que o OmniVoice TEM, sem quebrar o clone:
+#     pitch (tag VÁLIDA do instruct) + velocidade (time-stretch, preserva o timbre).
+#     Mapa: label -> (rótulo p/ exibir, tag de pitch, fator de velocidade).
 _ser = {"clf": None}
 _ser_lock = threading.Lock()
 SER_REPO = os.environ.get("TTS_ROD_SER", "superb/wav2vec2-base-superb-er")
-_SER_MAP = {
-    "hap": "happy, cheerful, upbeat", "happy": "happy, cheerful, upbeat",
-    "ang": "angry, intense, tense", "angry": "angry, intense, tense",
-    "sad": "sad, subdued, soft", "sadness": "sad, subdued, soft",
-    "neu": "neutral, calm", "neutral": "neutral, calm", "calm": "calm, relaxed",
-    "fear": "fearful, anxious, tense", "fearful": "fearful, anxious, tense",
-    "disgust": "disgusted, cold", "surprise": "surprised, excited",
+_SER_EMO = {
+    "hap": ("alegre", "high pitch", 1.12), "happy": ("alegre", "high pitch", 1.12),
+    "ang": ("raiva", "high pitch", 1.08), "angry": ("raiva", "high pitch", 1.08),
+    "sad": ("triste", "low pitch", 0.88), "sadness": ("triste", "low pitch", 0.88),
+    "neu": ("neutro", "", 1.0), "neutral": ("neutro", "", 1.0), "calm": ("calmo", "low pitch", 0.95),
+    "fear": ("medo", "high pitch", 1.08), "fearful": ("medo", "high pitch", 1.08),
+    "disgust": ("desgosto", "low pitch", 0.95), "surprise": ("surpresa", "very high pitch", 1.12),
 }
 
 
@@ -1463,35 +1505,31 @@ def _prosody(path: Path) -> dict:
     return {"rms": float(np.sqrt(np.mean(a ** 2))), "dyn": float(np.std(en)), "dur": dur}
 
 
-def _emotion_light(path: Path, text: str) -> str:
-    """Heurística de prosódia -> adjetivos de tom (intensidade/energia). Determinística."""
+def _emotion_light(path: Path, text: str):
+    """Prosódia (energia + ritmo) -> (rótulo, pitch, velocidade). Determinística."""
     p = _prosody(path)
     rate = len(text) / p["dur"]
     forte, fraco, expr = p["rms"] > 0.16, p["rms"] < 0.06, p["dyn"] > 0.05
     rapido, lento = rate > 16, rate < 9
-    adj = []
+    pitch = "high pitch" if (forte and expr) else ("low pitch" if fraco else "")
+    speed = 1.10 if rapido else (0.90 if lento else 1.0)
     if forte and expr:
-        adj += ["energetic", "expressive"]
+        lbl = "animado"
     elif forte:
-        adj += ["intense", "firm"]
+        lbl = "intenso"
     elif fraco:
-        adj += ["soft", "gentle"]
-    if rapido:
-        adj.append("lively")
+        lbl = "suave"
+    elif rapido:
+        lbl = "ágil"
     elif lento:
-        adj.append("calm")
-    if not adj:
-        adj = ["neutral", "natural"]
-    vistos, out = set(), []
-    for a in adj:
-        if a not in vistos:
-            vistos.add(a)
-            out.append(a)
-    return ", ".join(out[:4])
+        lbl = "calmo"
+    else:
+        lbl = "neutro"
+    return (lbl, pitch, speed)
 
 
-def _emotion_accurate(path: Path) -> str:
-    """Modelo SER (wav2vec2, PyTorch) -> categoria -> adjetivos, com gate de confiança."""
+def _emotion_accurate(path: Path):
+    """Modelo SER (wav2vec2) -> categoria -> (rótulo, pitch, velocidade), com gate."""
     audio = _wav_to_mono16k(path)  # array 16 kHz -> sem ffmpeg_read do transformers
     with _ser_lock:
         if _ser["clf"] is None:
@@ -1499,25 +1537,27 @@ def _emotion_accurate(path: Path) -> str:
             _ser["clf"] = pipeline("audio-classification", model=SER_REPO)
         res = _ser["clf"]({"raw": audio, "sampling_rate": 16000}, top_k=None)
     if not res:
-        return "neutral, calm"
+        return ("neutro", "", 1.0)
     top = max(res, key=lambda x: x.get("score", 0.0))
     lab = str(top.get("label", "")).lower()
-    # baixa confiança ou neutro -> não força emoção (evita falso "happy/angry")
+    # baixa confiança ou neutro -> não força emoção (evita falso "alegre/raiva")
     if top.get("score", 0.0) < 0.5 or lab in ("neu", "neutral"):
-        return "neutral, calm"
-    return _SER_MAP.get(lab, lab)
+        return ("neutro", "", 1.0)
+    return _SER_EMO.get(lab, ("neutro", "", 1.0))
 
 
 def _emotion_instruct(path: Path, text: str, mode: str):
-    """Retorna (instruct, erro). mode: off | light | accurate."""
+    """Retorna (rótulo, pitch_tag, fator_velocidade, erro). mode: off|light|accurate."""
     try:
         if mode == "light":
-            return _emotion_light(path, text), None
+            lbl, pitch, spd = _emotion_light(path, text)
+            return (lbl, pitch, spd, None)
         if mode == "accurate":
-            return _emotion_accurate(path), None
+            lbl, pitch, spd = _emotion_accurate(path)
+            return (lbl, pitch, spd, None)
     except Exception as exc:  # noqa: BLE001
-        return "", str(exc)
-    return "", None
+        return ("", "", 1.0, str(exc))
+    return ("", "", 1.0, None)
 
 
 @app.post("/api/translate/warmup")
@@ -1680,7 +1720,7 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
 
     tmp = OUTPUTS_DIR / f".stt-{uuid.uuid4().hex[:10]}"
     tmp.write_bytes(audio.file.read())
-    emo, emo_err = "", None
+    emo_label, emo_pitch, emo_speed, emo_err = "", "", 1.0, None
     try:
         r = _transcribe(tmp, language=(source_lang or "auto").lower())
         src_text = (r.get("text") or "").strip()
@@ -1694,17 +1734,28 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
         if exp not in ("", "auto") and src_lang and src_lang != exp:
             return {"rejected": True, "reason": f"idioma errado (detectou {src_lang})",
                     "source_text": src_text, "source_lang": src_lang}
-        # captura de emoção (precisa do áudio ainda em disco) -> vira instruct
+        # captura de emoção (precisa do áudio ainda em disco)
         modo = (emotion_mode or "off").lower()
         if modo in ("light", "accurate"):
-            emo, emo_err = _emotion_instruct(tmp, src_text, modo)
+            emo_label, emo_pitch, emo_speed, emo_err = _emotion_instruct(tmp, src_text, modo)
     finally:
         tmp.unlink(missing_ok=True)
 
-    translation = _translate(src_text, tgt)
+    emotivo = bool(emo_label) and emo_label != "neutro"
+    # 1) o LLM já traduz no TOM da emoção (pontuação/ênfase) -> prosódia segue o texto
+    translation = _translate(src_text, tgt, emo_label if emotivo else None)
     omni = _resolve_omni({})
-    if emo:
-        omni["instruct"] = emo  # reproduz a emoção detectada na voz traduzida
+    if emotivo:
+        # 2) pitch = tag válida (nudge, mantém o clone); 3) velocidade = time-stretch
+        ep = _sanitize_instruct(emo_pitch)
+        if ep:
+            omni["instruct"] = ep
+        if emo_speed and abs(float(emo_speed) - 1.0) > 1e-3:
+            base = float(omni.get("speed") or 1.0)
+            omni["speed"] = round(_clamp(base * float(emo_speed), 0.5, 2.0, base), 3)
+        # 4) mais expressivo/menos monótono (guidance↓, position_temperature↑)
+        omni["guidance_scale"] = round(max(0.5, float(omni.get("guidance_scale") or 2.0) - 0.4), 2)
+        omni["position_temperature"] = round(min(20.0, float(omni.get("position_temperature") or 5.0) + 4.0), 1)
 
     job_id = uuid.uuid4().hex[:10]
     _jobs[job_id] = {"status": "running", "pieces": 0, "total": None,
@@ -1718,9 +1769,13 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
         args=(job_id, translation, vid, vpath, tgt, omni),
         daemon=True,
     ).start()
+    emo_show = None
+    if emo_label and emo_label != "neutro":
+        bits = [b for b in (emo_pitch, f"{omni['speed']}×" if abs(float(omni.get('speed') or 1) - 1) > 1e-3 else "") if b]
+        emo_show = emo_label + (f" ({', '.join(bits)})" if bits else "")
     return {"job_id": job_id, "source_text": src_text, "source_lang": src_lang,
             "translation": translation, "target_lang": tgt,
-            "emotion": emo or None, "emotion_error": emo_err}
+            "emotion": emo_show, "emotion_error": emo_err}
 
 
 # ---------------------------------------------------------------------------
