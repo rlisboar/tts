@@ -152,7 +152,9 @@ def run_asr(path, task, language, beam=5):
         temperature=0.0, condition_on_previous_text=False,
         no_speech_threshold=0.6, log_prob_threshold=-1.0, compression_ratio_threshold=2.4,
         vad_filter=True,
-        vad_parameters=dict(threshold=0.6, min_speech_duration_ms=250, min_silence_duration_ms=500))
+        # menos agressivo: o cliente já corta por VAD; aqui só removemos silêncio longo.
+        # threshold alto derrubava fala baixa (fim de frase, consoantes) -> palavras perdidas.
+        vad_parameters=dict(threshold=0.3, min_speech_duration_ms=0, min_silence_duration_ms=700))
     segs=[{"id":i,"start":float(s.start),"end":float(s.end),"text":s.text,
            "no_speech_prob":float(getattr(s,"no_speech_prob",0.0) or 0.0),
            "avg_logprob":float(getattr(s,"avg_logprob",0.0) or 0.0),
