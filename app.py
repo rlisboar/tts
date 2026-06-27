@@ -98,6 +98,7 @@ _SETTINGS_DEFAULTS = {
     "remote_api_key": "",             # chave do provedor (guardada localmente; opcional)
     "remote_translate_model": "gpt-4o-mini",
     "remote_stt_model": "whisper-1",
+    "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
 }
 _settings = dict(_SETTINGS_DEFAULTS)
 if SETTINGS_PATH.exists():
@@ -212,7 +213,9 @@ async def _exige_chave(request, call_next):
 
 _model = None
 _model_lock = threading.Lock()
-_gen_lock = threading.Lock()  # geração não é thread-safe; serializa
+_gen_lock = threading.Lock()  # geração LOCAL (MLX) não é thread-safe; serializa
+import contextlib
+_NO_LOCK = contextlib.nullcontext()  # remoto pode rodar concorrente (sem serializar)
 _model_state = {"status": "idle", "device": None, "model": _settings["model"],
                 "error": None, "progress": None}
 
@@ -801,6 +804,8 @@ def update_settings(payload: dict):
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
             _settings[chave] = str(payload[chave] or "").strip()[:120]
+    if "translate_model" in payload:   # repo MLX do tradutor local (recarrega sob demanda)
+        _settings["translate_model"] = str(payload["translate_model"] or "").strip()[:120]
     _save_settings()
     return _settings
 
@@ -997,7 +1002,9 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         pdir = _piece_dir(job_id)
         pdir.mkdir(exist_ok=True)
 
-        with _gen_lock:
+        # remoto: sem lock global -> jobs concorrentes (o servidor RTX paraleliza);
+        # local: serializa no _gen_lock (MLX single-stream).
+        with (_NO_LOCK if remote else _gen_lock):
             started = time.time()
             # voz padrão ainda não materializada: cria a amostra-semente 1x
             if remote:
@@ -1188,8 +1195,12 @@ def delete_output(out_id: str):
 # ---------------------------------------------------------------------------
 
 _stt_lock = threading.Lock()      # mlx-whisper não é thread-safe; serializa
-_mt = {"model": None, "tok": None}
+_mt = {"model": None, "tok": None, "repo": None}
 _mt_lock = threading.Lock()
+
+
+def _mt_repo() -> str:
+    return (_settings.get("translate_model") or "").strip() or TRANSLATE_REPO
 
 
 # alucinações comuns do Whisper em silêncio/ruído (pt + en). Comparadas após
@@ -1225,7 +1236,8 @@ def _wav_to_mono16k(audio_path: Path):
 
 # --- Modelos remotos (API OpenAI-compatível): tradução e transcrição opcionais ---
 def _remote_ready() -> bool:
-    return bool(_settings.get("remote_base_url") and _settings.get("remote_api_key"))
+    # base_url basta; api_key é opcional (endpoints em LAN, ex.: RTX, não têm auth)
+    return bool(_settings.get("remote_base_url"))
 
 
 def _use_remote_translate() -> bool:
@@ -1362,14 +1374,21 @@ _EMO_EN = {
 
 def _translate_prompt(text: str, target: str, emotion: str | None = None) -> str:
     nome = LANG_DISPLAY.get(target, target)
+    if target == "pt":   # evita PT-europeu ("está a cair") — fixa o alvo no Brasil
+        nome = "Brazilian Portuguese (português do Brasil, registro coloquial brasileiro)"
     emo_en = _EMO_EN.get((emotion or "").lower()) if emotion and emotion != "neutro" else None
+    base = (
+        f"You are an expert {nome} translator and localizer. Render the text into "
+        f"natural, idiomatic {nome} exactly as a native speaker would say it out loud — "
+        f"translate the MEANING and intent, never word-for-word. Use native phrasing, "
+        f"idioms, contractions and the same register and tone; rephrase anything that "
+        f"would sound literal, stiff or translated. Keep proper names. Do not add or omit "
+        f"information. Output ONLY the {nome} translation — no quotes, no notes, no original."
+    )
     if emo_en:
-        return (f"Translate the text below into {nome}, conveying a {emo_en} tone. "
-                f"Preserve the meaning exactly — only adjust punctuation, emphasis and natural "
-                f"interjections so it sounds {emo_en} when spoken aloud. Output ONLY the "
-                f"translation, no quotes, no explanations.\n\nText: {text}")
-    return (f"Translate the text below into {nome}. Output ONLY the translation, "
-            f"no quotes, no explanations, keep it natural.\n\nText: {text}")
+        base += (f" Word it so it sounds {emo_en} when spoken aloud "
+                 f"(punctuation, emphasis, natural interjections) without changing the meaning.")
+    return f"{base}\n\nText: {text}"
 
 
 def _translate_remote(text: str, target: str, emotion: str | None = None) -> str:
@@ -1458,20 +1477,40 @@ def _stt_ok(r: dict, text: str):
     return True, ""
 
 
+_NOTE_RE = re.compile(
+    r"^[\(\[\*]*\s*(note|nota|obs\b|observa|alternativ|"
+    r"a (more|better) (natural|idiomatic|colloquial|common|literal)\b|"
+    r"uma (forma|maneira|vers[aã]o) mais (natural|comum|idiom|coloquial))", re.I)
+
+
+def _clean_translation(s: str) -> str:
+    """Tira notas/alternativas/preâmbulos que o LLM às vezes anexa (senão o TTS fala isso)."""
+    s = (s or "").strip().strip('"').strip()
+    s = s.split("\n\n", 1)[0].strip()          # corta bloco extra após linha em branco (nota/alternativa)
+    linhas = []
+    for ln in s.split("\n"):
+        if _NOTE_RE.match(ln.strip()):          # linha de nota inline -> para aqui
+            break
+        linhas.append(ln)
+    return "\n".join(linhas).strip().strip('"').strip()
+
+
 def _translate(text: str, target: str, emotion: str | None = None) -> str:
     if _use_remote_translate():
-        return _translate_remote(text, target, emotion)
+        return _clean_translation(_translate_remote(text, target, emotion))
 
     from mlx_lm import generate, load
 
+    repo = _mt_repo()
     with _mt_lock:
-        if _mt["model"] is None:
-            _mt["model"], _mt["tok"] = load(TRANSLATE_REPO)
+        if _mt["model"] is None or _mt.get("repo") != repo:   # troca de modelo -> recarrega
+            _mt["model"], _mt["tok"] = load(repo)
+            _mt["repo"] = repo
         model, tok = _mt["model"], _mt["tok"]
         msgs = [{"role": "user", "content": _translate_prompt(text, target, emotion)}]
         prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
         out = generate(model, tok, prompt=prompt, max_tokens=512, verbose=False)
-    return out.strip().strip('"').strip()
+    return _clean_translation(out)
 
 
 # --- Captura de emoção -> alavancas que o OmniVoice TEM, sem quebrar o clone:
@@ -1575,9 +1614,11 @@ def translate_warmup():
             pass
         try:
             from mlx_lm import load
+            repo = _mt_repo()
             with _mt_lock:
-                if _mt["model"] is None:
-                    _mt["model"], _mt["tok"] = load(TRANSLATE_REPO)
+                if _mt["model"] is None or _mt.get("repo") != repo:
+                    _mt["model"], _mt["tok"] = load(repo)
+                    _mt["repo"] = repo
         except Exception:  # noqa: BLE001
             pass
     threading.Thread(target=_warm, daemon=True).start()

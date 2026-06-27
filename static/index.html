@@ -1207,7 +1207,20 @@ async function openProcessedMic() {
   const an = ctx.createAnalyser(); an.fftSize = 1024;
   const dest = ctx.createMediaStreamDestination();
   src.connect(hp); hp.connect(gain); gain.connect(an); an.connect(dest);
-  micGraph = { raw, ctx, an, gain, hp, stream: dest.stream, buf: new Float32Array(an.fftSize) };
+  // captura PCM CONTÍNUA: sempre gravando (sem stop/start de recorder) -> nada se
+  // perde nas trocas de trecho. Fatiamos o buffer nos cortes do VAD (ver flushChunk).
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const sink = ctx.createGain(); sink.gain.value = 0;   // mantém o proc vivo, sem som (sem feedback)
+  gain.connect(proc); proc.connect(sink); sink.connect(ctx.destination);
+  micGraph = { raw, ctx, an, gain, hp, proc, sink, stream: dest.stream,
+               buf: new Float32Array(an.fftSize),
+               sr: ctx.sampleRate, frames: [], base: 0, head: 0 };
+  proc.onaudioprocess = (e) => {
+    const d = e.inputBuffer.getChannelData(0);
+    micGraph.frames.push(new Float32Array(d));   // cópia (o buffer é reciclado)
+    micGraph.head += d.length;
+    trimPcm(micGraph, micGraph.head - micGraph.sr * 40);   // teto de ~40s de buffer
+  };
   startMeter();
   return micGraph;
 }
@@ -1215,9 +1228,34 @@ async function openProcessedMic() {
 function closeProcessedMic() {
   stopMeter();
   if (!micGraph) return;
+  try { micGraph.proc.onaudioprocess = null; micGraph.proc.disconnect(); micGraph.sink.disconnect(); } catch {}
   micGraph.raw.getTracks().forEach(t => t.stop());
   if (micGraph.ctx.state !== "closed") micGraph.ctx.close();
   micGraph = null;
+}
+
+// buffer PCM contínuo: extrai [from,to) em amostras e descarta o que ficou velho.
+function grabPcm(g, from, to) {
+  from = Math.max(g.base, from); to = Math.min(g.head, to);
+  const n = Math.max(0, to - from);
+  const out = new Float32Array(n);
+  if (!n) return out;
+  let idx = g.base, o = 0;
+  for (const f of g.frames) {
+    const s = idx, e = idx + f.length;
+    if (e > from && s < to) {
+      const a = Math.max(from, s) - s, b = Math.min(to, e) - s;
+      out.set(f.subarray(a, b), o); o += b - a;
+    }
+    idx = e;
+    if (idx >= to) break;
+  }
+  return out;
+}
+function trimPcm(g, keepFrom) {
+  while (g.frames.length && g.base + g.frames[0].length <= keepFrom) {
+    g.base += g.frames[0].length; g.frames.shift();
+  }
 }
 
 function startMeter() {
@@ -1394,8 +1432,8 @@ async function startAuto(mode) {
   try { g = await openProcessedMic(); }   // ganho + passa-alta + supressão aplicados
   catch { toast("Sem acesso ao microfone."); return; }
   auto = { mode, an: g.an, recStream: g.stream, buf: new Float32Array(g.an.fftSize),
-           speaking: false, silence: 0, rec: null, chunks: [], busy: false,
-           stop: false, queue: [], uttStart: 0 };
+           speaking: false, silence: 0, busy: false,
+           stop: false, queue: [], uttStart: 0, chunkStart: 0 };
   auto.timer = setInterval(() => vadTick(auto), VAD.frameMs);
   if (mode === "continuo") pumpPipeline(auto);   // simultâneo (gera N+1 enquanto N toca)
   else pump(auto);                               // conversa: half-duplex, serial
@@ -1409,7 +1447,6 @@ function stopAuto() {
   st.stop = true;
   stopLive();
   clearInterval(st.timer);
-  try { if (st.rec && st.rec.state === "recording") st.rec.stop(); } catch {}
   if (st.player) {                               // para a timeline do pipeline
     st.player.stopped = true;
     st.player.sources.forEach(s => { try { s.stop(); } catch {} });
@@ -1426,24 +1463,25 @@ function vadLevel(st) {
   return Math.sqrt(s / st.buf.length);
 }
 
-function startChunk(st) {                           // começa a gravar um trecho
-  st.speaking = true; st.silence = 0; st.chunks = [];
-  st.rec = new MediaRecorder(st.recStream);
-  st.rec.ondataavailable = e => { if (e.data.size) st.chunks.push(e.data); };
-  st.rec.start(300);
+function startChunk(st) {                           // marca o início do trecho na timeline PCM
+  st.speaking = true; st.silence = 0;
+  const g = micGraph, sr = (g && g.sr) || 48000;
+  // pré-roll: começa 250ms ANTES do onset -> não corta o ataque da 1ª palavra
+  st.chunkStart = g ? Math.max(g.base, g.head - Math.floor(0.25 * sr)) : 0;
   st.uttStart = performance.now();
   // contínuo NÃO usa prévia ao vivo: o /api/stt-partial dobraria a carga de STT e
   // competiria com a tradução real -> pipeline atrasa. O texto traduzido aparece rápido.
 }
-function flushChunk(st, continuing) {               // fecha o trecho -> fila; se continuing, recomeça já
-  const dur = performance.now() - st.uttStart;
-  const rec = st.rec, chunks = st.chunks; st.rec = null;
-  if (!continuing) { st.speaking = false; stopLive(); }
-  rec.onstop = () => {
-    if (dur >= VAD.minUtterMs) st.queue.push(new Blob(chunks, { type: "audio/webm" }));
-  };
-  try { rec.stop(); } catch {}
-  if (continuing) startChunk(st);                   // ainda falando -> grava o próximo sem esperar silêncio
+function flushChunk(st, continuing) {               // fatia o PCM acumulado -> fila
+  const g = micGraph; if (!g) { if (!continuing) { st.speaking = false; stopLive(); } return; }
+  const sr = g.sr, dur = performance.now() - st.uttStart;
+  const samples = grabPcm(g, st.chunkStart, g.head);
+  // captura é contínua -> zero gap; só vira trecho se durou o mínimo e tem áudio real
+  if (dur >= VAD.minUtterMs && samples.length > sr * 0.2)
+    st.queue.push(encodeWav(samples, sr));          // WAV pronto (blobToWav reamostra p/ 24k)
+  if (continuing) { st.chunkStart = g.head; st.uttStart = performance.now(); }  // segue, sem gap
+  else { st.speaking = false; stopLive(); }
+  trimPcm(g, g.head - Math.floor(0.5 * sr));         // mantém ~0.5s de cauda p/ pré-roll futuro
 }
 function vadTick(st) {
   if (st.stop) return;
@@ -1539,8 +1577,8 @@ async function translateAndSpeak(blob) {
    sem resetar — permite emendar trechos de chamadas consecutivas (pipeline).
    Retorna quando o job termina (todas as peças buscadas), não quando toca. */
 async function streamJobInto(job_id, pl) {
-  let buscados = 0;
-  while (!pl.stopped) {
+  let buscados = 0, tries = 0;
+  while (!pl.stopped && tries++ < 250) {   // ~30s/trecho no máx -> não congela o pipeline
     const j = await api(`/api/tts/jobs/${job_id}`);
     if (j.status === "error") throw new Error(j.error || "falha na geração");
     while (buscados < j.pieces) {
@@ -1568,7 +1606,9 @@ async function pumpPipeline(st) {
   let pending = null;   // tradução do próximo trecho já em andamento (prefetch)
   while (!st.stop) {
     // se a geração não acompanha, descarta trechos atrasados -> fica em tempo real
-    if (st.queue.length > 2) { st.queue.splice(0, st.queue.length - 2); st.dropped = (st.dropped || 0) + 1; }
+    // buffer generoso: prefere atrasar (e recuperar nas pausas) a descartar palavras.
+    // só corta se a fila ficar absurda (~30s) p/ não estourar memória/latência.
+    if (st.queue.length > 10) { st.queue.splice(0, st.queue.length - 10); st.dropped = (st.dropped || 0) + 1; }
     if (!pending && st.queue.length) pending = requestTranslation(st.queue.shift());
     if (!pending) { await sleep(40); continue; }
     const r = await pending; pending = null;
