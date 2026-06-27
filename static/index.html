@@ -734,7 +734,12 @@
         <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
         <label class="cfg-label">Modelo de transcrição
           <input type="text" id="remoteSttModel" placeholder="whisper-1"></label>
-        <p class="hint">Provedor OpenAI-compatível, opcional.</p>
+        <label class="cfg-label">URL do STT (proxy externo — opcional)
+          <input type="text" id="remoteSttBaseUrl" placeholder="vazio = usa a URL base acima"></label>
+        <label class="cfg-label">Chave do STT (opcional)
+          <input type="password" id="remoteSttKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
+        <p class="hint">Provedor OpenAI-compatível. Preencha URL/chave do STT só p/ rotear a
+          <b>transcrição</b> a uma API externa (ex.: OpenAI/Groq) sem mexer no translate/TTS.</p>
       </section>
     </div>
   </aside>
@@ -1803,6 +1808,8 @@ async function loadSettings() {
     $("remoteApiKey").value = s.remote_api_key || "";
     $("remoteTranslateModel").value = s.remote_translate_model || "gpt-4o-mini";
     $("remoteSttModel").value = s.remote_stt_model || "whisper-1";
+    $("remoteSttBaseUrl").value = s.remote_stt_base_url || "";
+    $("remoteSttKey").value = s.remote_stt_key || "";
     for (const [id, out, key, fmt] of STT_CTL) {
       if (s[key] !== undefined) { $(id).value = s[key]; $(out).textContent = fmt(s[key]); }
     }
@@ -1870,7 +1877,9 @@ $("cfgSave").onclick = async () => {
         remote_base_url: $("remoteBaseUrl").value,
         remote_api_key: $("remoteApiKey").value,
         remote_translate_model: $("remoteTranslateModel").value,
-        remote_stt_model: $("remoteSttModel").value
+        remote_stt_model: $("remoteSttModel").value,
+        remote_stt_base_url: $("remoteSttBaseUrl").value,
+        remote_stt_key: $("remoteSttKey").value
       })
     });
     $("cfgStatus").textContent = "salvo ✔ — já vale para a API";
