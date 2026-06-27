@@ -1749,14 +1749,19 @@ def transcribe_audio(audio: UploadFile = None, source_lang: str = Form("auto")):
 @app.post("/api/translate-speech")
 def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
                      voice_id: str = Form(""), source_lang: str = Form("auto"),
-                     emotion_mode: str = Form("off")):
+                     emotion_mode: str = Form("off"), instruct: str = Form("")):
     """fala (áudio) -> transcreve -> traduz -> dispara TTS na voz; devolve textos + job_id."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
     tgt = (target_lang or "en").lower()
     vid = voice_id or _settings["default_voice"]
+    design = (vid == DESIGN_VOICE_ID)                       # voz por descrição (tags), sem clone
+    des_instruct = _sanitize_instruct(instruct) if design else ""
     vpath = VOICES_DIR / f"{vid}.wav"
-    if not vpath.exists() and vid not in OMNI_PRESETS:
+    if design:
+        if not des_instruct and not _sanitize_instruct(_settings.get("omni_instruct") or ""):
+            raise HTTPException(400, "Voice design vazio — descreva a voz (tags) p/ o tradutor")
+    elif not vpath.exists() and vid not in OMNI_PRESETS:
         raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
 
     tmp = OUTPUTS_DIR / f".stt-{uuid.uuid4().hex[:10]}"
@@ -1786,10 +1791,14 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
     # 1) o LLM já traduz no TOM da emoção (pontuação/ênfase) -> prosódia segue o texto
     translation = _translate(src_text, tgt, emo_label if emotivo else None)
     omni = _resolve_omni({})
+    if design:   # voz por descrição: o instruct do tradutor define a voz (vence o clone/emoção)
+        omni["instruct"] = des_instruct or _sanitize_instruct(_settings.get("omni_instruct") or "")
     if emotivo:
         # 2) pitch = tag válida (nudge, mantém o clone); 3) velocidade = time-stretch
+        #    em voice design o pitch da emoção NÃO troca a voz desenhada (mantém o instruct);
+        #    a emoção ainda atua via velocidade/expressividade + tom do texto traduzido.
         ep = _sanitize_instruct(emo_pitch)
-        if ep:
+        if ep and not design:
             omni["instruct"] = ep
         if emo_speed and abs(float(emo_speed) - 1.0) > 1e-3:
             base = float(omni.get("speed") or 1.0)
