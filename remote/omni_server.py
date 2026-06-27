@@ -1,20 +1,25 @@
-# OmniVoice TTS + Whisper ASR — servidor REMOTO (NÃO faz parte do app do Mac).
+# OmniVoice TTS + Whisper ASR + tradutor LLM — servidor REMOTO (NÃO faz parte do app do Mac).
 #
-# Roda numa máquina com GPU NVIDIA (CUDA), ex.: RTX 4090, via systemd
-# (omnivoice-tts.service): `uvicorn server:app --host 0.0.0.0 --port 8800`.
-# CUDA_VISIBLE_DEVICES seleciona a GPU (aqui cuda:0 = a 4090).
+# Roda numa máquina com 2 GPUs NVIDIA (CUDA), via systemd (omnivoice-tts.service):
+# `uvicorn server:app --host 0.0.0.0 --port 8800`. Drop-in define CUDA_VISIBLE_DEVICES=1,0
+# (CUDA_DEVICE_ORDER=PCI_BUS_ID): cuda:0 = RTX 4090 (OmniVoice+Whisper), cuda:1 = RTX 4070
+# (tradutor LLM, isolado). Whisper usa device_index=0.
 #
-# Motor: OmniVoice (PyTorch, bf16) — clonagem por `ref_audio` + voice design por
-# `instruct` (tags válidas) — e faster-whisper large-v3 (float16) p/ ASR.
-# Expõe API OpenAI-compatível: POST /v1/audio/speech, /v1/audio/transcriptions,
-# /v1/audio/translations; além de POST /tts simples e /voices (CRUD de clones).
+# Motores: OmniVoice (PyTorch bf16) — clone por `ref_audio` + voice design por `instruct`
+# (tags válidas); faster-whisper large-v3 (float16) p/ ASR; e Qwen2.5-14B-Instruct em 4-bit
+# (bitsandbytes nf4) como tradutor — carregado em thread separada na 4070.
+# API OpenAI-compatível: POST /v1/audio/speech, /v1/audio/transcriptions, /v1/audio/translations,
+# /v1/chat/completions (tradução); além de POST /tts simples e /voices (CRUD de clones).
 # O app TTS-Rod (Mac, MLX) conecta como cliente em Configurações → Modelos remotos.
 #
-# Requisitos no servidor: torch+cuda, omnivoice, faster-whisper, fastapi, uvicorn,
-# soundfile, numpy; um ffmpeg (aqui /usr/local/bin/ffmpeg8); o modelo em ./model_local.
-# Pasta de vozes clonadas: ./voices (wav + .txt de ref_text).
+# mt_chat força greedy + injeta um system prompt que trava o idioma de saída (sem vazar
+# para outro idioma/escrita, ex.: chinês) — corrige instabilidade do 4-bit.
 #
-# Esta é uma cópia versionada do que roda em /root/omnivoice/server.py (v2.3).
+# Requisitos no servidor: torch+cuda, omnivoice, faster-whisper, transformers, bitsandbytes,
+# accelerate, fastapi, uvicorn, soundfile, numpy; um ffmpeg (/usr/local/bin/ffmpeg8); o
+# modelo TTS em ./model_local; vozes clonadas em ./voices (wav + .txt de ref_text).
+#
+# Esta é uma cópia versionada do que roda em /root/omnivoice/server.py (v2.4).
 import io, os, re, time, asyncio, tempfile, subprocess, numpy as np, torch, soundfile as sf
 from concurrent.futures import ThreadPoolExecutor
 torch.set_float32_matmul_precision("high")
@@ -43,6 +48,7 @@ IO_WORKERS  = int(os.getenv("OMNI_IO_WORKERS",  "16"))  # CPU: ffmpeg transcode 
 TTS_POOL = ThreadPoolExecutor(max_workers=TTS_WORKERS, thread_name_prefix="tts")
 ASR_POOL = ThreadPoolExecutor(max_workers=ASR_WORKERS, thread_name_prefix="asr")
 IO_POOL  = ThreadPoolExecutor(max_workers=IO_WORKERS,  thread_name_prefix="io")
+MT_POOL  = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mt")  # 1 generate por vez no LLM
 async def offload(pool, fn, *a):
     return await asyncio.get_event_loop().run_in_executor(pool, fn, *a)
 
@@ -160,8 +166,48 @@ try:
     print(f"warmup done {time.time()-t:.1f}s", flush=True)
 except Exception as e: print("warmup err:", repr(e)[:160], flush=True)
 
-app = FastAPI(title="OmniVoice TTS + Whisper ASR", version="2.3",
-              description="OpenAI-compatible speech+transcription on RTX 4090, voice cloning + voice design")
+# ---------- MT: tradutor LLM (4-bit) — na 4070 ociosa (cuda:1), isolado do OmniVoice ----------
+# Carrega em thread separada: o TTS sobe na hora; a tradução fica pronta ~1-2 min depois.
+MT_REPO = os.getenv("OMNI_MT_REPO", "Qwen/Qwen2.5-14B-Instruct")
+MT_DEV  = os.getenv("OMNI_MT_DEV",  "cuda:1" if torch.cuda.device_count() > 1 else "cuda:0")
+mt = {"tok": None, "model": None, "ready": False, "err": None}
+def _load_mt():
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+        bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                 bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
+        print(f"loading MT {MT_REPO} (4-bit) on {MT_DEV}...", flush=True)
+        tok = AutoTokenizer.from_pretrained(MT_REPO)
+        model = AutoModelForCausalLM.from_pretrained(
+            MT_REPO, quantization_config=bnb, device_map={"": MT_DEV}, torch_dtype=torch.bfloat16)
+        model.eval()
+        mt["tok"], mt["model"], mt["ready"] = tok, model, True
+        print(f"MT ready on {MT_DEV}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        mt["err"] = repr(e)[:200]; print("MT load failed:", mt["err"], flush=True)
+MT_SYS = ("You are a professional translation engine. Follow the user's instruction and "
+          "translate into the requested target language ONLY. Render the meaning idiomatically, "
+          "never word-for-word. Output ONLY the translation — no explanations, no quotes, and do "
+          "NOT emit any other language or writing system (e.g. Chinese characters) than the requested target.")
+def mt_chat(messages, temperature=0.3, max_new_tokens=512):
+    tok, model = mt["tok"], mt["model"]
+    if not messages or messages[0].get("role") != "system":   # injeta trava de idioma se faltar
+        messages = [{"role": "system", "content": MT_SYS}] + list(messages)
+    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tok(prompt, return_tensors="pt").to(model.device)
+    # tradução: greedy por padrão (estável, não vaza idioma); só amostra se temp claramente alta
+    sample = bool(temperature and temperature > 0.5)
+    kw = dict(max_new_tokens=int(max_new_tokens), do_sample=sample,
+              repetition_penalty=1.05, pad_token_id=tok.eos_token_id)
+    if sample: kw.update(temperature=float(temperature), top_p=0.9)
+    with torch.inference_mode():
+        out = model.generate(**inputs, **kw)
+    return tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+import threading as _th
+_th.Thread(target=_load_mt, daemon=True).start()
+
+app = FastAPI(title="OmniVoice TTS + Whisper ASR + MT", version="2.4",
+              description="OpenAI-compatible speech + transcription + chat(translation) on dual RTX, voice cloning + voice design")
 
 class Req(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -181,18 +227,38 @@ class SpeechReq(BaseModel):
     language: str | None = None
     instruct: str | None = None
     ref_text: str | None = None
+class ChatReq(BaseModel):                       # OpenAI /v1/chat/completions (tradução LLM)
+    model_config = ConfigDict(extra="allow")
+    model: str | None = "qwen2.5-14b-instruct"
+    messages: list
+    temperature: float | None = 0.3
+    max_tokens: int | None = 512
 
 @app.get("/health")
 def health():
     return {"status":"ok","gpu":torch.cuda.get_device_name(0),"tts_sr":SR,"asr_model":"large-v3",
+            "mt":{"repo":MT_REPO,"dev":MT_DEV,"ready":mt["ready"],"err":mt["err"]},
             "pools":{"tts":TTS_WORKERS,"asr":ASR_WORKERS,"io":IO_WORKERS},
             "voices":len([f for f in os.listdir(VOICES_DIR) if f.endswith('.wav')]),
             "vram_mb":round(torch.cuda.memory_allocated()/1024/1024,1)}
 
 @app.get("/v1/models")
 def models():
-    ids=["omnivoice","tts-1","gpt-4o-mini-tts","whisper-1","large-v3"]
+    ids=["omnivoice","tts-1","gpt-4o-mini-tts","whisper-1","large-v3","qwen2.5-14b-instruct"]
     return {"object":"list","data":[{"id":i,"object":"model","owned_by":"local"} for i in ids]}
+
+@app.post("/v1/chat/completions")
+async def chat_completions(r: ChatReq):
+    if not mt["ready"]:
+        raise HTTPException(503, f"MT model not ready ({mt['err'] or 'loading'})")
+    msgs=[{"role":str(m.get("role","user")),"content":str(m.get("content",""))} for m in (r.messages or [])]
+    if not msgs: raise HTTPException(400, "messages is required")
+    t=time.time()
+    text=await offload(MT_POOL, mt_chat, msgs, float(r.temperature if r.temperature is not None else 0.3), int(r.max_tokens or 512))
+    return {"id":"chatcmpl-local","object":"chat.completion","created":int(time.time()),
+            "model": r.model or MT_REPO,
+            "choices":[{"index":0,"message":{"role":"assistant","content":text},"finish_reason":"stop"}],
+            "usage":{},"x_gen_seconds":round(time.time()-t,3)}
 
 # ---------- voices: clonagem por amostra ----------
 @app.post("/voices")
