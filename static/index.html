@@ -89,8 +89,20 @@
     display: flex; align-items: center; gap: 12px; padding: 13px 0 11px;
     border-bottom: 1px solid var(--border-soft); margin-bottom: 12px;
   }
-  .config-head h1 { font-size: 17px; font-weight: 800; letter-spacing: -.02em; }
+  .config-head h1 { font-size: 17px; font-weight: 800; letter-spacing: -.02em; cursor: pointer; }
   .config-head .config-save { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  /* colapsável */
+  .cfg-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; padding: 0; border-radius: var(--r-sm);
+    background: var(--panel); border: 1px solid var(--border); color: var(--fg);
+    cursor: pointer; font-size: 12px; line-height: 1; transition: transform .18s, background .15s;
+  }
+  .cfg-toggle:hover { background: var(--bg2); border-color: var(--accent); }
+  .config-dock.collapsed .cfg-toggle { transform: rotate(-90deg); }
+  .config-dock.collapsed { max-height: none; overflow: hidden; }
+  .config-dock.collapsed .config-body { display: none; }
+  .config-dock.collapsed .config-head { margin-bottom: 0; border-bottom: none; padding-bottom: 13px; }
   /* blocos auto-contidos lado a lado (usa a largura, sem fragmentar) */
   .config-body { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
   .cfg-sec {
@@ -584,7 +596,8 @@
   <!-- ===== Configurações (rodapé full-width, sempre visível) ===== -->
   <aside class="config-dock">
     <div class="config-head">
-      <h1>Configurações</h1><span class="muted small">UI + API</span>
+      <button id="cfgToggle" class="cfg-toggle" title="Mostrar/ocultar configurações" aria-expanded="true">▾</button>
+      <h1 id="cfgTitle">Configurações</h1><span class="muted small">UI + API</span>
       <div class="config-save">
         <span id="cfgStatus" class="hint" style="margin-top:0"></span>
         <button id="cfgSave">Salvar configurações</button>
@@ -1745,6 +1758,20 @@ async function loadSettings() {
     if (s.default_voice) $("cfgVoice").value = s.default_voice;
   } catch {}
 }
+
+// ── Configurações colapsável (lembra o estado) ──
+(() => {
+  const dock = document.querySelector(".config-dock");
+  const setColl = (c) => {
+    dock.classList.toggle("collapsed", c);
+    $("cfgToggle").setAttribute("aria-expanded", String(!c));
+    localStorage.setItem("ttsCfgCollapsed", c ? "1" : "0");
+  };
+  const toggle = () => setColl(!dock.classList.contains("collapsed"));
+  $("cfgToggle").onclick = toggle;
+  $("cfgTitle").onclick = toggle;
+  setColl(localStorage.getItem("ttsCfgCollapsed") === "1");   // restaura
+})();
 
 $("cfgSave").onclick = async () => {
   const model = $("cfgModel").value === "__custom__"
