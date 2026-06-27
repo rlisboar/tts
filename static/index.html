@@ -1190,7 +1190,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 let transRec = null, transChunks = [];      // modo manual
 let auto = null;                            // modos contínuo/conversa (VAD)
 const VAD = { thresh: 0.015, silenceHoldMs: 700, minUtterMs: 350, frameMs: 50 };
-let CONT_MAX_MS = 4500;   // contínuo: corta o trecho a cada Ns mesmo sem pausa (mais contexto p/ o STT)
+let CONT_MAX_MS = 4500;   // contínuo: alvo de duração do trecho (mais contexto p/ o STT)
+const CONT_GAP_MS = 130;  // após o alvo, corta na 1ª micro-pausa (borda de palavra) -> não fatia palavra
+const CONT_GRACE_MS = 2000; // teto duro: se a fala não der respiro, corta mesmo assim (evita atraso)
 
 /* --- Microfone: ganho + passa-alta + supressão + medidor (aplica ao que é gravado) --- */
 const micFx = Object.assign({ gain: 1, hp: 90, thresh: 0.015, ns: true, silenceHold: 700, minUtter: 350, contMax: 4500 },
@@ -1477,7 +1479,7 @@ function vadLevel(st) {
 }
 
 function startChunk(st) {                           // marca o início do trecho na timeline PCM
-  st.speaking = true; st.silence = 0;
+  st.speaking = true; st.silence = 0; st.wantCut = false;
   const g = micGraph, sr = (g && g.sr) || 48000;
   // pré-roll: começa 250ms ANTES do onset -> não corta o ataque da 1ª palavra
   st.chunkStart = g ? Math.max(g.base, g.head - Math.floor(0.25 * sr)) : 0;
@@ -1492,7 +1494,7 @@ function flushChunk(st, continuing) {               // fatia o PCM acumulado -> 
   // captura é contínua -> zero gap; só vira trecho se durou o mínimo e tem áudio real
   if (dur >= VAD.minUtterMs && samples.length > sr * 0.2)
     st.queue.push(encodeWav(samples, sr));          // WAV pronto (blobToWav reamostra p/ 24k)
-  if (continuing) { st.chunkStart = g.head; st.uttStart = performance.now(); }  // segue, sem gap
+  if (continuing) { st.chunkStart = g.head; st.uttStart = performance.now(); st.wantCut = false; }  // segue, sem gap
   else { st.speaking = false; stopLive(); }
   trimPcm(g, g.head - Math.floor(0.5 * sr));         // mantém ~0.5s de cauda p/ pré-roll futuro
 }
@@ -1504,14 +1506,20 @@ function vadTick(st) {
     if (!st.speaking) startChunk(st);
     else {
       st.silence = 0;
-      // CONTÍNUO: não espera silêncio — corta por duração máx e já traduz/toca,
-      // reiniciando a captura na hora (interpretação ~simultânea).
-      if (st.mode === "continuo" && performance.now() - st.uttStart >= CONT_MAX_MS)
-        flushChunk(st, true);
+      // CONTÍNUO: ao bater o alvo de duração NÃO corta no meio da palavra — marca
+      // wantCut e espera a próxima micro-pausa (borda de palavra). Teto duro evita
+      // atraso infinito se a fala não der respiro.
+      if (st.mode === "continuo") {
+        const el = performance.now() - st.uttStart;
+        if (el >= CONT_MAX_MS + CONT_GRACE_MS) flushChunk(st, true);   // teto: corta mesmo assim
+        else if (el >= CONT_MAX_MS) st.wantCut = true;                 // alvo: corta no próximo respiro
+      }
     }
   } else if (st.speaking) {
     st.silence += VAD.frameMs;
-    if (st.silence >= VAD.silenceHoldMs) flushChunk(st, false);   // pausa natural -> fecha
+    // já passou do alvo e veio um respiro entre palavras -> corta AQUI (borda limpa)
+    if (st.mode === "continuo" && st.wantCut && st.silence >= CONT_GAP_MS) flushChunk(st, true);
+    else if (st.silence >= VAD.silenceHoldMs) flushChunk(st, false);   // pausa longa -> fecha enunciado
   }
 }
 
