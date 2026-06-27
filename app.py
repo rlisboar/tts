@@ -99,6 +99,10 @@ _SETTINGS_DEFAULTS = {
     "remote_api_key": "",             # chave do provedor (guardada localmente; opcional)
     "remote_translate_model": "gpt-4o-mini",
     "remote_stt_model": "whisper-1",
+    # STT pode apontar p/ uma API DEDICADA (proxy externo) sem mexer no translate/TTS.
+    # vazio = usa remote_base_url/remote_api_key compartilhados.
+    "remote_stt_base_url": "",        # ex.: https://api.openai.com/v1 (OpenAI-compatível)
+    "remote_stt_key": "",             # chave dessa API de STT (vazio = usa remote_api_key)
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
 }
 _settings = dict(_SETTINGS_DEFAULTS)
@@ -813,6 +817,10 @@ def update_settings(payload: dict):
         _settings["remote_base_url"] = str(payload["remote_base_url"] or "").strip()[:300]
     if "remote_api_key" in payload:
         _settings["remote_api_key"] = str(payload["remote_api_key"] or "").strip()[:300]
+    if "remote_stt_base_url" in payload:
+        _settings["remote_stt_base_url"] = str(payload["remote_stt_base_url"] or "").strip()[:300]
+    if "remote_stt_key" in payload:
+        _settings["remote_stt_key"] = str(payload["remote_stt_key"] or "").strip()[:300]
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
             _settings[chave] = str(payload[chave] or "").strip()[:120]
@@ -1257,7 +1265,9 @@ def _use_remote_translate() -> bool:
 
 
 def _use_remote_stt() -> bool:
-    return bool(_settings.get("remote_stt")) and _remote_ready()
+    # ativo se houver URL dedicada de STT OU a base compartilhada
+    return bool(_settings.get("remote_stt")) and bool(
+        _settings.get("remote_stt_base_url") or _settings.get("remote_base_url"))
 
 
 def _use_remote_tts() -> bool:
@@ -1426,15 +1436,18 @@ def _translate_remote(text: str, target: str, emotion: str | None = None) -> str
 def _transcribe_remote(audio_path: Path, language: str | None):
     import requests
 
-    base = _settings["remote_base_url"].rstrip("/")
+    # URL/chave dedicadas do STT, se definidas; senão as compartilhadas (RTX)
+    base = (_settings.get("remote_stt_base_url") or _settings["remote_base_url"]).rstrip("/")
+    key = _settings.get("remote_stt_key") or _settings.get("remote_api_key") or ""
     data = {"model": _settings.get("remote_stt_model") or "whisper-1",
             "response_format": "verbose_json"}
     if language and language not in ("auto",):
         data["language"] = language
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
     with open(audio_path, "rb") as fh:
         r = requests.post(
             f"{base}/audio/transcriptions",
-            headers={"Authorization": f"Bearer {_settings['remote_api_key']}"},
+            headers=headers,
             files={"file": ("audio.wav", fh, "audio/wav")}, data=data, timeout=120,
         )
     if not r.ok:
