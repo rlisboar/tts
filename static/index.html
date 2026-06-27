@@ -1191,8 +1191,9 @@ let transRec = null, transChunks = [];      // modo manual
 let auto = null;                            // modos contínuo/conversa (VAD)
 const VAD = { thresh: 0.015, silenceHoldMs: 700, minUtterMs: 350, frameMs: 50 };
 let CONT_MAX_MS = 4500;   // contínuo: alvo de duração do trecho (mais contexto p/ o STT)
-const CONT_GAP_MS = 130;  // após o alvo, corta na 1ª micro-pausa (borda de palavra) -> não fatia palavra
-const CONT_GRACE_MS = 2000; // teto duro: se a fala não der respiro, corta mesmo assim (evita atraso)
+const CONT_GAP_MS = 250;  // pausa mínima p/ cortar = borda real (250ms > oclusão de plosiva ~150ms,
+                          // senão cortava DENTRO da palavra ao falar rápido)
+const CONT_GRACE_MS = 2500; // teto duro: se a fala não der respiro, corta mesmo (com overlap p/ recuperar)
 
 /* --- Microfone: ganho + passa-alta + supressão + medidor (aplica ao que é gravado) --- */
 const micFx = Object.assign({ gain: 1, hp: 90, thresh: 0.015, ns: true, silenceHold: 700, minUtter: 350, contMax: 4500 },
@@ -1487,16 +1488,20 @@ function startChunk(st) {                           // marca o início do trecho
   // contínuo NÃO usa prévia ao vivo: o /api/stt-partial dobraria a carga de STT e
   // competiria com a tradução real -> pipeline atrasa. O texto traduzido aparece rápido.
 }
-function flushChunk(st, continuing) {               // fatia o PCM acumulado -> fila
+function flushChunk(st, continuing, clean = true) {  // fatia o PCM acumulado -> fila
   const g = micGraph; if (!g) { if (!continuing) { st.speaking = false; stopLive(); } return; }
   const sr = g.sr, dur = performance.now() - st.uttStart;
   const samples = grabPcm(g, st.chunkStart, g.head);
   // captura é contínua -> zero gap; só vira trecho se durou o mínimo e tem áudio real
   if (dur >= VAD.minUtterMs && samples.length > sr * 0.2)
     st.queue.push(encodeWav(samples, sr));          // WAV pronto (blobToWav reamostra p/ 24k)
-  if (continuing) { st.chunkStart = g.head; st.uttStart = performance.now(); st.wantCut = false; }  // segue, sem gap
-  else { st.speaking = false; stopLive(); }
-  trimPcm(g, g.head - Math.floor(0.5 * sr));         // mantém ~0.5s de cauda p/ pré-roll futuro
+  if (continuing) {
+    // corte LIMPO (numa pausa) começa exato; corte FORÇADO (meio de palavra) deixa
+    // 0.4s de overlap p/ a palavra dividida reaparecer inteira no próximo trecho.
+    st.chunkStart = clean ? g.head : Math.max(g.base, g.head - Math.floor(0.4 * sr));
+    st.uttStart = performance.now(); st.wantCut = false;
+  } else { st.speaking = false; stopLive(); }
+  trimPcm(g, g.head - Math.floor(0.6 * sr));         // mantém ~0.6s de cauda p/ overlap/pré-roll
 }
 function vadTick(st) {
   if (st.stop) return;
@@ -1511,14 +1516,14 @@ function vadTick(st) {
       // atraso infinito se a fala não der respiro.
       if (st.mode === "continuo") {
         const el = performance.now() - st.uttStart;
-        if (el >= CONT_MAX_MS + CONT_GRACE_MS) flushChunk(st, true);   // teto: corta mesmo assim
-        else if (el >= CONT_MAX_MS) st.wantCut = true;                 // alvo: corta no próximo respiro
+        if (el >= CONT_MAX_MS + CONT_GRACE_MS) flushChunk(st, true, false);  // teto: corta no meio + overlap
+        else if (el >= CONT_MAX_MS) st.wantCut = true;                       // alvo: corta no próximo respiro
       }
     }
   } else if (st.speaking) {
     st.silence += VAD.frameMs;
-    // já passou do alvo e veio um respiro entre palavras -> corta AQUI (borda limpa)
-    if (st.mode === "continuo" && st.wantCut && st.silence >= CONT_GAP_MS) flushChunk(st, true);
+    // já passou do alvo e veio um respiro REAL (>=250ms) -> corta AQUI (borda limpa de palavra)
+    if (st.mode === "continuo" && st.wantCut && st.silence >= CONT_GAP_MS) flushChunk(st, true, true);
     else if (st.silence >= VAD.silenceHoldMs) flushChunk(st, false);   // pausa longa -> fecha enunciado
   }
 }
