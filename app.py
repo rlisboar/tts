@@ -16,7 +16,7 @@ import uuid
 import wave
 from collections import OrderedDict
 from pathlib import Path
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -1903,8 +1903,71 @@ def openai_models():
     agora = int(time.time())
     return {"object": "list", "data": [
         {"id": m, "object": "model", "created": agora, "owned_by": "tts-rod"}
-        for m in ("tts-1", "tts-1-hd")
+        for m in ("tts-1", "tts-1-hd", "whisper-1")
     ]}
+
+
+def _ts_srt(x: float, sep: str = ",") -> str:
+    h = int(x // 3600); mm = int((x % 3600) // 60); s = x % 60
+    return f"{h:02d}:{mm:02d}:{s:06.3f}".replace(".", sep)
+
+
+def _segs_to_srt(segs) -> str:
+    return "\n".join(f"{i}\n{_ts_srt(s['start'])} --> {_ts_srt(s['end'])}\n{s['text']}\n"
+                     for i, s in enumerate(segs, 1))
+
+
+def _segs_to_vtt(segs) -> str:
+    body = "\n".join(f"{_ts_srt(s['start'], '.')} --> {_ts_srt(s['end'], '.')}\n{s['text']}\n" for s in segs)
+    return "WEBVTT\n\n" + body
+
+
+def _openai_stt(file, language, response_format, translate):
+    """STT OpenAI-compatível: áudio -> texto (+ segmentos). translate=True traduz p/ inglês."""
+    if file is None:
+        raise HTTPException(400, "Campo 'file' obrigatório")
+    tmp = OUTPUTS_DIR / f".stt-{uuid.uuid4().hex[:10]}"
+    tmp.write_bytes(file.file.read())
+    try:
+        r = _transcribe(tmp, language=(language or "auto").lower())
+    finally:
+        tmp.unlink(missing_ok=True)
+    text = (r.get("text") or "").strip()
+    lang = (r.get("language") or "").strip().lower()
+    segs = [{"start": float(s.get("start") or 0.0), "end": float(s.get("end") or 0.0),
+             "text": (s.get("text") or "").strip()} for s in (r.get("segments") or [])]
+    if translate and text:                       # /translations -> inglês (agrega; srt/vtt ficam no original)
+        text = _translate(text, "en")
+    rf = (response_format or "json").lower()
+    if rf == "text":
+        return Response(text + "\n", media_type="text/plain; charset=utf-8")
+    if rf == "srt":
+        return Response(_segs_to_srt(segs), media_type="application/x-subrip; charset=utf-8")
+    if rf == "vtt":
+        return Response(_segs_to_vtt(segs), media_type="text/vtt; charset=utf-8")
+    if rf == "verbose_json":
+        dur = max((s["end"] for s in segs), default=0.0)
+        return {"task": "translate" if translate else "transcribe", "language": lang,
+                "duration": round(dur, 3), "text": text,
+                "segments": [{"id": i, "start": s["start"], "end": s["end"], "text": s["text"]}
+                             for i, s in enumerate(segs)]}
+    return {"text": text}
+
+
+@app.post("/v1/audio/transcriptions")
+def openai_transcriptions(file: UploadFile = File(...), model: str = Form("whisper-1"),
+                          language: str = Form(None), prompt: str = Form(None),
+                          response_format: str = Form("json"), temperature: float = Form(0.0)):
+    """STT compatível com OpenAI Whisper. response_format: json|text|srt|verbose_json|vtt."""
+    return _openai_stt(file, language, response_format, translate=False)
+
+
+@app.post("/v1/audio/translations")
+def openai_translations(file: UploadFile = File(...), model: str = Form("whisper-1"),
+                        prompt: str = Form(None), response_format: str = Form("json"),
+                        temperature: float = Form(0.0)):
+    """STT + tradução p/ inglês (compatível com OpenAI). response_format igual ao de transcriptions."""
+    return _openai_stt(file, None, response_format, translate=True)
 
 
 @app.post("/v1/audio/speech")
