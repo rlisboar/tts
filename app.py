@@ -68,6 +68,7 @@ _SETTINGS_DEFAULTS = {
     "omni_layer_penalty_factor": 5.0, # penalidade por camada de codebook (0–20)
     "omni_t_shift": 0.1,              # deslocamento do cronograma de difusão (0–1)
     "omni_instruct": "",              # voice design textual (ex.: "female, low pitch")
+    "omni_seed": 42,                  # seed da geração: voz reprodutível (mesmo instruct=mesma voz). -1 = aleatório
     "omni_duration_s": None,          # força duração fixa em s (None = automático)
     "omni_ref_max_s": 10.0,           # quanto da amostra de referência usar (3–30 s)
     "omni_precision": "bf16",         # fp32 (repo F32) | bf16 (montado) | q8 | q4 (quantiza só o backbone)
@@ -446,6 +447,10 @@ def _generate_chunk(model, text: str, language: str, conds, ref_text, omni: dict
     # masked-diffusion não-AR: duração estimada internamente. Geramos na duração
     # natural (todas as palavras) e a velocidade vira time-stretch pós-geração.
     o = omni or {}
+    seed = o.get("seed")
+    if seed is not None and int(seed) >= 0:        # voz reprodutível (mesmo instruct+seed = mesma voz)
+        import mlx.core as mx
+        mx.random.seed(int(seed))
     results = model.generate(
         text=text,
         ref_tokens=conds,
@@ -724,6 +729,8 @@ def _resolve_omni(payload: dict) -> dict:
         "duration_s": (_resolve_duration_s(payload["duration_s"], _settings["omni_duration_s"])
                        if "duration_s" in payload else _settings["omni_duration_s"]),
         "speed": _clamp(payload.get("speed"), 0.25, 4.0, _settings["speed"]),
+        "seed": int(payload["seed"]) if str(payload.get("seed", "")).lstrip("-").isdigit()
+                else int(_settings.get("omni_seed", 42)),
     }
 
 
@@ -762,6 +769,11 @@ def update_settings(payload: dict):
         _settings["omni_t_shift"] = _clamp(payload["omni_t_shift"], 0.0, 1.0, 0.1)
     if "omni_instruct" in payload:
         _settings["omni_instruct"] = str(payload["omni_instruct"] or "").strip()[:300]
+    if "omni_seed" in payload:
+        try:
+            _settings["omni_seed"] = max(-1, min(2**31 - 1, int(payload["omni_seed"])))
+        except (TypeError, ValueError):
+            pass
     if "omni_duration_s" in payload:
         _settings["omni_duration_s"] = _resolve_duration_s(payload["omni_duration_s"], None)
     if "omni_ref_max_s" in payload:
@@ -1327,6 +1339,8 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
     }
     if (omni.get("instruct") or "").strip():
         body["instruct"] = omni["instruct"]
+    if omni.get("seed") is not None and int(omni["seed"]) >= 0:   # voz reprodutível no servidor
+        body["seed"] = int(omni["seed"])
     if omni.get("duration_s") is not None:
         body["duration_s"] = omni["duration_s"]
     if voice:
