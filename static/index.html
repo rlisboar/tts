@@ -465,6 +465,7 @@
             <option value="zh">traduzir → 中文</option>
           </select>
           <select id="transVoice" style="max-width:200px"></select>
+          <span id="transVdHint" class="hint" style="margin-top:0;display:none"></span>
           <select id="transEmo" style="max-width:210px" title="Detecta a emoção e aplica via tom (pitch) + velocidade — preserva o timbre da voz clonada (OmniVoice não tem emoção direta)">
             <option value="off">Emoção: off</option>
             <option value="light">Emoção: aplicar (prosódia)</option>
@@ -816,9 +817,20 @@ function vdParse() {
   $("vdAccent").value = toks.find(t => VD.accent.includes(t)) || "";
   $("vdWhisper").checked = toks.includes("whisper");
 }
-["vdGender", "vdAge", "vdPitch", "vdAccent"].forEach(id => $(id).onchange = vdBuild);
-$("vdWhisper").onchange = vdBuild;
-$("oInstruct").oninput = vdParse;
+["vdGender", "vdAge", "vdPitch", "vdAccent"].forEach(id => $(id).onchange = () => { vdBuild(); updateTransVdHint(); });
+$("vdWhisper").onchange = () => { vdBuild(); updateTransVdHint(); };
+$("oInstruct").oninput = () => { vdParse(); updateTransVdHint(); };
+
+// dica no tradutor quando a "voz" é Voice design (tags vêm de Configurações → Voice design)
+function updateTransVdHint() {
+  const el = $("transVdHint"); if (!el) return;
+  if ($("transVoice").value !== "__design__") { el.style.display = "none"; return; }
+  const tags = ($("oInstruct").value || "").trim();
+  el.style.display = "";
+  el.textContent = tags ? "🎨 " + tags : "⚠ defina tags em Configurações → Voice design";
+  el.style.color = tags ? "" : "var(--accent)";
+}
+$("transVoice").addEventListener("change", updateTransVdHint);
 
 /* ───────── Status do modelo ───────── */
 async function refreshStatus() {
@@ -983,6 +995,8 @@ async function refreshVoices() {
   const dopt = document.createElement("option");
   dopt.value = "__design__"; dopt.textContent = "Voice design (descrição → voz)";
   sel.appendChild(dopt);
+  const dopt2 = dopt.cloneNode(true);            // mesma opção no tradutor
+  sel2.appendChild(dopt2);
   list.innerHTML = voices.length ? "" : '<div class="empty">Nenhuma voz ainda — grave ao lado.</div>';
   for (const v of voices) {
     const virtual = v.preset && !v.materialized;  // voz padrão ainda não criada
@@ -1039,6 +1053,7 @@ async function refreshVoices() {
   }
   if (selected) sel.value = selected;
   if (selected2) sel2.value = selected2;
+  updateTransVdHint();
 }
 
 /* ───────── Síntese ───────── */
@@ -1412,6 +1427,7 @@ $("transRecBtn").onclick = async () => {
   const mode = $("transMode").value;
   if (mode === "manual") {                  // gravar / parar manual
     if (transRec && transRec.state === "recording") { transRec.stop(); return; }
+    if (!transVoiceOk()) return;
     if (auto) stopAuto();
     let g;
     try { g = await openProcessedMic(); }
@@ -1432,9 +1448,19 @@ $("transRecBtn").onclick = async () => {
   }
   // modos automáticos (VAD)
   if (auto) { stopAuto(); return; }
-  if (!$("transVoice").value) { toast("Escolha uma voz."); return; }
+  if (!transVoiceOk()) return;
   await startAuto(mode);
 };
+
+// valida a voz do tradutor (clone ou voice design com tags)
+function transVoiceOk() {
+  const v = $("transVoice").value;
+  if (!v) { toast("Escolha uma voz."); return false; }
+  if (v === "__design__" && !$("oInstruct").value.trim()) {
+    toast("Voice design vazio — defina as tags em Configurações → Voice design.", 6000); return false;
+  }
+  return true;
+}
 
 $("transMode").onchange = () => { if (auto) stopAuto(); if (transRec && transRec.state === "recording") transRec.stop(); };
 
@@ -1563,6 +1589,7 @@ async function requestTranslation(blob) {
   fd.append("source_lang", $("transSrc").value);
   fd.append("emotion_mode", $("transEmo").value);
   fd.append("voice_id", voice_id);
+  if (voice_id === "__design__") fd.append("instruct", $("oInstruct").value.trim());  // voz por descrição (tags)
   let r;
   try { r = await api("/api/translate-speech", { method: "POST", body: fd }); }
   catch (e) { toast("Erro: " + e.message, 6000); return null; }
