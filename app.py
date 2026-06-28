@@ -941,6 +941,27 @@ def voice_audio(voice_id: str):
     return FileResponse(path, media_type="audio/wav")
 
 
+@app.get("/api/voices/{voice_id}/peaks")
+def voice_peaks(voice_id: str, n: int = 160):
+    """Picos normalizados (0..1) p/ desenhar o waveform da voz salva."""
+    import numpy as np
+    import soundfile as sf
+
+    path = VOICES_DIR / f"{voice_id}.wav"
+    if not path.exists():
+        raise HTTPException(404, "Voz não encontrada")
+    n = int(_clamp(n, 20, 600, 160))
+    a, _sr = sf.read(str(path), dtype="float32")
+    if a.ndim > 1:
+        a = a.mean(axis=1)
+    if a.size == 0:
+        return {"peaks": [0.0] * n}
+    buckets = np.array_split(np.abs(a), n)
+    peaks = np.array([float(b.max()) if b.size else 0.0 for b in buckets])
+    mx = float(peaks.max()) or 1.0
+    return {"peaks": [round(p, 4) for p in (peaks / mx).tolist()]}
+
+
 @app.delete("/api/voices/{voice_id}")
 def delete_voice(voice_id: str):
     removed = False

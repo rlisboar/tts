@@ -197,6 +197,7 @@
   .item .grow { flex: 1; min-width: 140px; }
   .item .name { font-weight: 600; font-size: 13.5px; }
   .item .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .item .wave { display: block; width: 100%; height: 38px; margin-top: 7px; cursor: pointer; }
   .vid {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
     background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
@@ -1044,6 +1045,33 @@ $("saveVoiceBtn").onclick = async () => {
   } catch (e) { toast("Erro: " + e.message); }
 };
 
+/* desenha o waveform da voz (picos do backend) + destaca o trecho tocado */
+async function drawPeaks(canvas, id, buster) {
+  if (!canvas) return;
+  let peaks;
+  try { peaks = (await api(`/api/voices/${id}/peaks?n=180&_v=${buster}`)).peaks || []; }
+  catch { return; }
+  const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, mid = H / 2;
+  const cs = getComputedStyle(document.documentElement);
+  const accent = (cs.getPropertyValue("--accent") || "#18b9a6").trim();
+  const dim = (cs.getPropertyValue("--border") || "#3a4250").trim();
+  const n = peaks.length || 1, bw = W / n;
+  const render = (prog = 0) => {
+    ctx.clearRect(0, 0, W, H);
+    for (let i = 0; i < n; i++) {
+      const h = Math.max(2, peaks[i] * (H - 3));
+      ctx.fillStyle = (i / n) <= prog ? accent : dim;
+      ctx.fillRect(i * bw + bw * 0.15, mid - h / 2, Math.max(1, bw * 0.7), h);
+    }
+  };
+  render(0);
+  const au = canvas.closest(".item") && canvas.closest(".item").querySelector("audio");
+  if (au) {
+    au.ontimeupdate = () => render(au.duration ? au.currentTime / au.duration : 0);
+    au.onended = () => render(0);
+  }
+}
+
 /* ───────── Lista de vozes ───────── */
 async function refreshVoices() {
   const voices = await api("/api/voices");
@@ -1073,10 +1101,17 @@ async function refreshVoices() {
       const cleanBtn = v.preset ? "" : `<button class="ghost small clean">limpar</button>`;
       div.innerHTML = `
         <div class="grow"><div class="name">${tag}${v.name}</div>
-        <div class="meta">${v.duration}s · ${v.preset ? "voz padrão" : v.created_at}${limpa} · <code class="vid" title="clique p/ copiar o id">${v.id}</code></div></div>
+        <div class="meta">${v.duration}s · ${v.preset ? "voz padrão" : v.created_at}${limpa} · <code class="vid" title="clique p/ copiar o id">${v.id}</code></div>
+        <canvas class="wave" width="600" height="38" title="clique p/ tocar/pausar"></canvas></div>
         <audio controls preload="none" src="${k(`/api/voices/${v.id}/audio?_v=${buster}`)}"></audio>
         ${cleanBtn}
         <button class="danger">${v.preset ? "resetar" : "apagar"}</button>`;
+      const wave = div.querySelector(".wave");
+      drawPeaks(wave, v.id, buster);
+      if (wave) wave.onclick = () => {                 // tocar/pausar pelo waveform
+        const au = div.querySelector("audio");
+        if (au) { au.paused ? au.play() : au.pause(); }
+      };
       const cb = div.querySelector(".clean");
       if (cb) cb.onclick = async () => {
         cb.disabled = true; cb.textContent = "limpando…";
