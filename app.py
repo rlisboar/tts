@@ -92,6 +92,14 @@ _SETTINGS_DEFAULTS = {
     "remote_tts_url": "",             # URL completa do endpoint, ex.: http://solaris:8800/tts
     "remote_tts_engine": "omnivoice", # engine do TTS remoto: omnivoice | qwen3
     "remote_tts_url_qwen": "",        # URL do servidor Qwen3-TTS (ex.: http://solaris:8801/tts)
+    # params de geração do Qwen3-TTS (AR/LLM) — só valem com engine=qwen3
+    "qwen_temperature": 0.9,
+    "qwen_top_p": 1.0,
+    "qwen_top_k": 50,
+    "qwen_repetition_penalty": 1.05,
+    "qwen_max_new_tokens": 2048,
+    "qwen_x_vector_only": False,      # clona só pelo x-vector (rápido, menos fiel)
+    "qwen_non_streaming": False,      # geração não-streaming (mais qualidade)
     "remote_tts_voice": "",           # nome/preset da voz no servidor remoto (vai como `voice`)
     "remote_tts_extra": "",           # JSON com params extras do servidor (speed, num_steps…)
     "remote_tts_model": "tts-1",      # (compat OpenAI) nome do modelo, se o servidor usar
@@ -817,6 +825,17 @@ def update_settings(payload: dict):
     if "remote_tts_engine" in payload:
         e = str(payload["remote_tts_engine"] or "omnivoice").lower()
         _settings["remote_tts_engine"] = e if e in ("omnivoice", "qwen3") else "omnivoice"
+    for chave, lo, hi, df in (("qwen_temperature", 0.0, 2.0, 0.9), ("qwen_top_p", 0.0, 1.0, 1.0),
+                              ("qwen_repetition_penalty", 1.0, 2.0, 1.05)):
+        if chave in payload:
+            _settings[chave] = _clamp(payload[chave], lo, hi, df)
+    if "qwen_top_k" in payload:
+        _settings["qwen_top_k"] = int(_clamp(payload["qwen_top_k"], 0, 200, 50))
+    if "qwen_max_new_tokens" in payload:
+        _settings["qwen_max_new_tokens"] = int(_clamp(payload["qwen_max_new_tokens"], 128, 8192, 2048))
+    for chave in ("qwen_x_vector_only", "qwen_non_streaming"):
+        if chave in payload:
+            _settings[chave] = bool(payload[chave])
     if "remote_tts_voice" in payload:
         _settings["remote_tts_voice"] = str(payload["remote_tts_voice"] or "").strip()[:120]
     if "remote_tts_extra" in payload:
@@ -1546,7 +1565,14 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
     if engine == "qwen3" and qurl:
         # Qwen3-TTS (AR/LLM): params próprios; só clonagem (precisa de voice).
         url = qurl
-        body = {"text": text, "language": (language or "pt"), "speed": 1.0}
+        body = {"text": text, "language": (language or "pt"), "speed": 1.0,
+                "temperature": float(_settings.get("qwen_temperature", 0.9)),
+                "top_p": float(_settings.get("qwen_top_p", 1.0)),
+                "top_k": int(_settings.get("qwen_top_k", 50)),
+                "repetition_penalty": float(_settings.get("qwen_repetition_penalty", 1.05)),
+                "max_new_tokens": int(_settings.get("qwen_max_new_tokens", 2048)),
+                "x_vector_only_mode": bool(_settings.get("qwen_x_vector_only", False)),
+                "non_streaming_mode": bool(_settings.get("qwen_non_streaming", False))}
         if voice:
             body["voice"] = voice
     else:

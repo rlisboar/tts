@@ -40,10 +40,15 @@ def synth(text, language=None, voice=None, ref_text=None, gen=None):
     if not wav_path:
         raise HTTPException(400, f"voz '{voice}' nao encontrada (Qwen3-TTS so faz clonagem; escolha uma voz salva)")
     rt = ref_text or (open(txt, encoding="utf-8").read().strip() if txt else "")
-    kw = {}
-    for k in ("temperature", "top_p", "max_new_tokens", "repetition_penalty"):
-        if (gen or {}).get(k) is not None: kw[k] = gen[k]
-    out = MODEL.generate_voice_clone(text=text, language=_lang(language), ref_audio=wav_path, ref_text=rt, **kw)
+    g = gen or {}
+    kw = {}  # kwargs do generate (HF)
+    for k in ("temperature", "top_p", "top_k", "max_new_tokens", "repetition_penalty"):
+        if g.get(k) is not None:
+            kw[k] = g[k]
+    xvec = bool(g.get("x_vector_only_mode", False))       # clona só pelo x-vector (rápido, menos fiel)
+    nonstream = bool(g.get("non_streaming_mode", False))  # geração não-streaming (qualidade)
+    out = MODEL.generate_voice_clone(text=text, language=_lang(language), ref_audio=wav_path, ref_text=rt,
+                                     x_vector_only_mode=xvec, non_streaming_mode=nonstream, **kw)
     wav, sr = out if isinstance(out, tuple) else (out, SR)
     w = wav[0] if (hasattr(wav, "__len__") and not isinstance(wav, np.ndarray)) else wav
     a = np.asarray(w, dtype=np.float32).squeeze()

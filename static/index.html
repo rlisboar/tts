@@ -659,7 +659,7 @@
         </label>
       </section>
 
-      <section class="cfg-sec">
+      <section class="cfg-sec" id="secOmni">
         <h3 class="cfg-sec-h">OmniVoice — geração</h3>
         <div class="sliders">
           <label>Passos <output id="oNumStepsOut">16</output>
@@ -682,7 +682,7 @@
         <button id="oReset" class="ghost small" type="button" style="align-self:flex-start">↺ Restaurar padrões</button>
       </section>
 
-      <section class="cfg-sec">
+      <section class="cfg-sec" id="secVoiceDesign">
         <h3 class="cfg-sec-h">Voice design (tags fixas)</h3>
         <div class="row2">
           <label class="cfg-label">Gênero
@@ -707,6 +707,25 @@
         <p class="hint">Sem seed a voz muda a cada geração (timbre/sotaque). <b>Seed fixa = voz reprodutível.</b>
           "portuguese accent" é ambíguo (PT-europeu às vezes) — p/ BR, prefira sem sotaque e fixe a seed.
           Selecione a voz <b>"Voice design"</b> p/ usar. Só estas tags valem; texto livre é ignorado.</p>
+      </section>
+
+      <section class="cfg-sec" id="secQwen" style="display:none">
+        <h3 class="cfg-sec-h">Qwen3-TTS — geração</h3>
+        <div class="sliders">
+          <label>Temperature <output id="qTempOut">0.9</output>
+            <input type="range" id="qTemp" min="0" max="2" step="0.05" value="0.9"></label>
+          <label>Top-p <output id="qToppOut">1.0</output>
+            <input type="range" id="qTopp" min="0" max="1" step="0.05" value="1.0"></label>
+          <label>Top-k <output id="qTopkOut">50</output>
+            <input type="range" id="qTopk" min="0" max="100" step="1" value="50"></label>
+          <label>Repetition penalty <output id="qRepOut">1.05</output>
+            <input type="range" id="qRep" min="1" max="2" step="0.01" value="1.05"></label>
+        </div>
+        <label class="cfg-label">max_new_tokens
+          <input type="number" id="qMaxTok" min="128" max="8192" step="64" value="2048"></label>
+        <label class="check"><input type="checkbox" id="qXvec"> x-vector only (clona rápido, menos fiel)</label>
+        <label class="check"><input type="checkbox" id="qNonStream"> não-streaming (mais qualidade, mais lento)</label>
+        <p class="hint">Params do Qwen3-TTS (AR/LLM). Temperature/top-p/top-k controlam variação; repetition penalty evita repetição. Só clona (sem voice design por tags).</p>
       </section>
 
       <section class="cfg-sec">
@@ -1347,9 +1366,21 @@ async function refreshVoices() {
 /* ───────── Síntese ───────── */
 for (const [slider, out, dec] of [["oNumSteps", "oNumStepsOut", 0], ["oGuid", "oGuidOut", 1],
     ["oClassT", "oClassTOut", 2], ["oPosT", "oPosTOut", 1], ["oLayer", "oLayerOut", 1],
-    ["oTshift", "oTshiftOut", 2]]) {
+    ["oTshift", "oTshiftOut", 2],
+    ["qTemp", "qTempOut", 2], ["qTopp", "qToppOut", 2], ["qTopk", "qTopkOut", 0], ["qRep", "qRepOut", 2]]) {
   $(slider).oninput = () => $(out).textContent = parseFloat($(slider).value).toFixed(dec);
 }
+
+// engine selecionado decide quais params aparecem: Qwen3 (remoto ligado) esconde
+// OmniVoice/Voice design e mostra o bloco Qwen3; senão o contrário.
+function applyEngineUI() {
+  const qwen = $("remoteTts").checked && $("remoteTtsEngine").value === "qwen3";
+  $("secOmni").style.display = qwen ? "none" : "";
+  $("secVoiceDesign").style.display = qwen ? "none" : "";
+  $("secQwen").style.display = qwen ? "" : "none";
+}
+$("remoteTtsEngine").onchange = applyEngineUI;
+$("remoteTts").addEventListener("change", applyEngineUI);
 
 /* Restaura os controles do OmniVoice aos defaults da lib (não salva — clique em
    "Salvar configurações" para persistir). */
@@ -2067,6 +2098,15 @@ async function loadSettings() {
     $("remoteTtsUrlQwen").value = s.remote_tts_url_qwen || "";
     $("remoteTtsEngine").value = s.remote_tts_engine || "omnivoice";
     $("remoteTtsVoice").value = s.remote_tts_voice || "";
+    for (const [id, out, val, dec] of [["qTemp", "qTempOut", s.qwen_temperature ?? 0.9, 2],
+        ["qTopp", "qToppOut", s.qwen_top_p ?? 1.0, 2], ["qTopk", "qTopkOut", s.qwen_top_k ?? 50, 0],
+        ["qRep", "qRepOut", s.qwen_repetition_penalty ?? 1.05, 2]]) {
+      $(id).value = val; $(out).textContent = parseFloat(val).toFixed(dec);
+    }
+    $("qMaxTok").value = s.qwen_max_new_tokens ?? 2048;
+    $("qXvec").checked = !!s.qwen_x_vector_only;
+    $("qNonStream").checked = !!s.qwen_non_streaming;
+    applyEngineUI();
     $("remoteTtsExtra").value = s.remote_tts_extra || "";
     $("remoteBaseUrl").value = s.remote_base_url || "";
     $("remoteApiKey").value = s.remote_api_key || "";
@@ -2139,6 +2179,13 @@ $("cfgSave").onclick = async () => {
         remote_tts_url: $("remoteTtsUrl").value,
         remote_tts_url_qwen: $("remoteTtsUrlQwen").value,
         remote_tts_engine: $("remoteTtsEngine").value,
+        qwen_temperature: parseFloat($("qTemp").value),
+        qwen_top_p: parseFloat($("qTopp").value),
+        qwen_top_k: parseInt($("qTopk").value, 10),
+        qwen_repetition_penalty: parseFloat($("qRep").value),
+        qwen_max_new_tokens: parseInt($("qMaxTok").value, 10),
+        qwen_x_vector_only: $("qXvec").checked,
+        qwen_non_streaming: $("qNonStream").checked,
         remote_tts_voice: $("remoteTtsVoice").value,
         remote_tts_extra: $("remoteTtsExtra").value,
         remote_base_url: $("remoteBaseUrl").value,
