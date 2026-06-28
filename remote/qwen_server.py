@@ -58,30 +58,58 @@ def _gen_kwargs(g):
         kw["do_sample"] = bool(g["do_sample"])
     return kw
 
+def _extract(out):
+    wav, sr = out if isinstance(out, tuple) else (out, SR)
+    w = wav[0] if (hasattr(wav, "__len__") and not isinstance(wav, np.ndarray)) else wav
+    return np.asarray(w, dtype=np.float32).squeeze(), int(sr)
+
+# texto curto de referência (combina com o idioma) p/ "imprimir" a voz desenhada
+REF_BY_LANG = {"Portuguese": "Olá, esta é a minha voz. Vou narrar o seu texto com clareza.",
+               "English": "Hello, this is my voice. I will narrate your text clearly.",
+               "Spanish": "Hola, esta es mi voz. Voy a narrar tu texto con claridad."}
+
+# CACHE: voz desenhada (instruct+seed+idioma) -> prompt de clone reutilizável.
+# Sem isso, cada chunk re-inventa o timbre (parece outra pessoa). Com isso, a voz
+# é desenhada UMA vez e CLONADA em todos os chunks -> mesmo timbre.
+_design_cache = {}
+def _design_prompt(instruct, seed, lang):
+    key = (instruct, int(seed) if seed is not None else -1, lang)
+    p = _design_cache.get(key)
+    if p is None:
+        if seed is not None and int(seed) >= 0:
+            torch.manual_seed(int(seed)); torch.cuda.manual_seed_all(int(seed))
+        ref_txt = REF_BY_LANG.get(lang, REF_BY_LANG["English"])
+        ra, rsr = _extract(_vd_model().generate_voice_design(text=ref_txt, instruct=instruct,
+                                                             language=lang, non_streaming_mode=True))
+        p = MODEL.create_voice_clone_prompt(ref_audio=(ra, int(rsr)), ref_text=ref_txt)
+        _design_cache[key] = p
+        if len(_design_cache) > 32:
+            _design_cache.pop(next(iter(_design_cache)))
+    return p
+
 def synth(text, language=None, voice=None, ref_text=None, gen=None, instruct=None):
     g = gen or {}
     kw = _gen_kwargs(g)
     seed = g.get("seed")                       # voz reprodutível (mesmo seed = mesmo timbre). <0 = aleatório
     if seed is not None and int(seed) >= 0:
         torch.manual_seed(int(seed)); torch.cuda.manual_seed_all(int(seed))
+    lang = _lang(language)
+    nonstream = bool(g.get("non_streaming_mode", False))
     if voice:                                  # CLONAGEM (ref_audio)
         wav_path, txt = _voice_paths(voice)
         if not wav_path:
             raise HTTPException(400, f"voz '{voice}' nao encontrada (escolha uma voz salva)")
         rt = ref_text or (open(txt, encoding="utf-8").read().strip() if txt else "")
         xvec = bool(g.get("x_vector_only_mode", False))
-        nonstream = bool(g.get("non_streaming_mode", False))
-        out = MODEL.generate_voice_clone(text=text, language=_lang(language), ref_audio=wav_path, ref_text=rt,
+        out = MODEL.generate_voice_clone(text=text, language=lang, ref_audio=wav_path, ref_text=rt,
                                          x_vector_only_mode=xvec, non_streaming_mode=nonstream, **kw)
-    elif (instruct or "").strip():             # VOICE DESIGN (descrição livre)
-        nonstream = bool(g.get("non_streaming_mode", True))
-        out = _vd_model().generate_voice_design(text=text, instruct=instruct.strip(),
-                                                language=_lang(language), non_streaming_mode=nonstream, **kw)
+    elif (instruct or "").strip():             # VOICE DESIGN: desenha 1x e CLONA (timbre estável entre chunks)
+        prompt = _design_prompt(instruct.strip(), seed, lang)
+        out = MODEL.generate_voice_clone(text=text, language=lang, voice_clone_prompt=prompt,
+                                         non_streaming_mode=nonstream, **kw)
     else:
         raise HTTPException(400, "Qwen3: informe uma voz (clone) ou uma descrição (voice design)")
-    wav, sr = out if isinstance(out, tuple) else (out, SR)
-    w = wav[0] if (hasattr(wav, "__len__") and not isinstance(wav, np.ndarray)) else wav
-    a = np.asarray(w, dtype=np.float32).squeeze()
+    a, sr = _extract(out)
     pk = float(np.abs(a).max()) or 1.0
     return (a / pk * 0.95).astype(np.float32), int(sr)
 def wav_bytes(a, sr):
