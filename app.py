@@ -101,6 +101,7 @@ _SETTINGS_DEFAULTS = {
     "qwen_do_sample": True,           # False = greedy (determinístico; ignora temperature)
     "qwen_x_vector_only": False,      # clona só pelo x-vector (rápido, menos fiel)
     "qwen_non_streaming": False,      # geração não-streaming (mais qualidade)
+    "qwen_voice_design": "",          # voice design do Qwen = descrição em texto LIVRE (sem voz=design)
     "remote_tts_voice": "",           # nome/preset da voz no servidor remoto (vai como `voice`)
     "remote_tts_extra": "",           # JSON com params extras do servidor (speed, num_steps…)
     "remote_tts_model": "tts-1",      # (compat OpenAI) nome do modelo, se o servidor usar
@@ -837,6 +838,8 @@ def update_settings(payload: dict):
     for chave in ("qwen_do_sample", "qwen_x_vector_only", "qwen_non_streaming"):
         if chave in payload:
             _settings[chave] = bool(payload[chave])
+    if "qwen_voice_design" in payload:
+        _settings["qwen_voice_design"] = str(payload["qwen_voice_design"] or "").strip()[:500]
     if "remote_tts_voice" in payload:
         _settings["remote_tts_voice"] = str(payload["remote_tts_voice"] or "").strip()[:120]
     if "remote_tts_extra" in payload:
@@ -1287,7 +1290,9 @@ def synthesize(payload: dict):
 
     voice_path = VOICES_DIR / f"{voice_id}.wav"
     if voice_id == DESIGN_VOICE_ID:
-        if not (omni.get("instruct") or "").strip():
+        qwen = _use_remote_tts() and _settings.get("remote_tts_engine") == "qwen3"
+        ok = (omni.get("instruct") or "").strip() or (qwen and (_settings.get("qwen_voice_design") or "").strip())
+        if not ok:
             raise HTTPException(400, "Voice design vazio — descreva a voz no campo instruct")
     elif _use_remote_tts():
         pass  # o servidor remoto valida/mapeia a voz
@@ -1577,6 +1582,10 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
                 "non_streaming_mode": bool(_settings.get("qwen_non_streaming", False))}
         if voice:
             body["voice"] = voice
+        else:                                    # sem clone -> voice design por descrição livre
+            qdi = (_settings.get("qwen_voice_design") or "").strip()
+            if qdi:
+                body["instruct"] = qdi
     else:
         # OmniVoice (masked-diffusion): params canônicos do generate
         url = _settings["remote_tts_url"].strip()
@@ -2041,12 +2050,15 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
         raise HTTPException(400, "Áudio obrigatório")
     tgt = (target_lang or "en").lower()
     vid = voice_id or _settings["default_voice"]
-    design = (vid == DESIGN_VOICE_ID)                       # voz por descrição (tags), sem clone
+    design = (vid == DESIGN_VOICE_ID)                       # voz por descrição (tags OmniVoice / texto livre Qwen)
     des_instruct = _sanitize_instruct(instruct) if design else ""
     vpath = VOICES_DIR / f"{vid}.wav"
     if design:
-        if not des_instruct and not _sanitize_instruct(_settings.get("omni_instruct") or ""):
-            raise HTTPException(400, "Voice design vazio — descreva a voz (tags) p/ o tradutor")
+        qwen = _use_remote_tts() and _settings.get("remote_tts_engine") == "qwen3"
+        ok = des_instruct or _sanitize_instruct(_settings.get("omni_instruct") or "") \
+            or (qwen and (_settings.get("qwen_voice_design") or "").strip())
+        if not ok:
+            raise HTTPException(400, "Voice design vazio — descreva a voz p/ o tradutor")
     elif not vpath.exists() and vid not in OMNI_PRESETS:
         raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
 
