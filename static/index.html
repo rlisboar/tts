@@ -112,12 +112,15 @@
   }
   .cfg-sec-h { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
     color: var(--accent); font-weight: 700; margin-bottom: 1px; }
+  .cfg-sec, .cfg-sec * { min-width: 0; }                 /* deixa tudo encolher (sem vazar a coluna) */
   .cfg-sec .cfg-label { width: 100%; }
-  .cfg-sec select, .cfg-sec input[type=text], .cfg-sec input[type=number], .cfg-sec textarea { width: 100%; }
-  .cfg-sec .sliders { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; margin: 2px 0; }
+  /* TODOS os campos (inclui password/number) ocupam 100% e contam padding na largura */
+  .cfg-sec select, .cfg-sec input, .cfg-sec textarea { width: 100%; box-sizing: border-box; }
+  .cfg-sec .sliders { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px 14px; margin: 2px 0; }
   .cfg-sec .sliders label { font-size: 11.5px; }
-  .cfg-sec .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: end; }
+  .cfg-sec .row2 { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 10px; align-items: end; }
   .cfg-sec .check { margin: 1px 0; }
+  .cfg-sec .hint, .cfg-sec label { overflow-wrap: anywhere; }   /* rótulos/dicas longas quebram, não estouram */
   .cfg-sec .hint { margin-top: 2px; }
 
   /* ───────── Components ───────── */
