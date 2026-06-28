@@ -104,6 +104,7 @@ _SETTINGS_DEFAULTS = {
     "remote_stt_base_url": "",        # ex.: https://api.openai.com/v1 (OpenAI-compatível)
     "remote_stt_key": "",             # chave dessa API de STT (vazio = usa remote_api_key)
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
+    "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
 }
 _settings = dict(_SETTINGS_DEFAULTS)
 if SETTINGS_PATH.exists():
@@ -826,7 +827,10 @@ def update_settings(payload: dict):
             _settings[chave] = str(payload[chave] or "").strip()[:120]
     if "translate_model" in payload:   # repo MLX do tradutor local (recarrega sob demanda)
         _settings["translate_model"] = str(payload["translate_model"] or "").strip()[:120]
+    if "free_local_on_remote" in payload:
+        _settings["free_local_on_remote"] = bool(payload["free_local_on_remote"])
     _save_settings()
+    _autofree_local()                  # se ligado, descarrega já os locais agora redundantes
     return _settings
 
 
@@ -1221,6 +1225,51 @@ _mt_lock = threading.Lock()
 
 def _mt_repo() -> str:
     return (_settings.get("translate_model") or "").strip() or TRANSLATE_REPO
+
+
+def _unload_local_models(tts=True, stt=True, mt=True) -> dict:
+    """Libera RAM descarregando os modelos LOCAIS (MLX). Cada flag controla um motor."""
+    global _model
+    freed = []
+    if tts:
+        with _gen_lock:
+            if _model is not None:
+                _model = None
+                freed.append("omnivoice")
+            _conds_cache.clear()
+            _model_state.update(status="idle", error=None, progress=None)
+    if mt:
+        with _mt_lock:
+            if _mt.get("model") is not None:
+                _mt["model"] = _mt["tok"] = None
+                _mt["repo"] = None
+                freed.append("tradutor")
+    if stt:                                  # mlx-whisper cacheia o modelo em ModelHolder (classe)
+        try:
+            from mlx_whisper.transcribe import ModelHolder
+            if ModelHolder.model is not None:
+                ModelHolder.model = None
+                ModelHolder.model_path = None
+                freed.append("whisper")
+        except Exception:  # noqa: BLE001
+            pass
+    import gc
+    gc.collect()
+    try:                                     # devolve o pool de memória do MLX ao SO
+        import mlx.core as mx
+        clr = getattr(mx, "clear_cache", None) or getattr(getattr(mx, "metal", None), "clear_cache", None)
+        if clr:
+            clr()
+    except Exception:  # noqa: BLE001
+        pass
+    return {"unloaded": freed}
+
+
+def _autofree_local():
+    """Se a opção estiver ligada, descarrega os locais cujo remoto está ativo."""
+    if not _settings.get("free_local_on_remote"):
+        return
+    _unload_local_models(tts=_use_remote_tts(), stt=_use_remote_stt(), mt=_use_remote_translate())
 
 
 # alucinações comuns do Whisper em silêncio/ruído (pt + en). Comparadas após
@@ -1630,26 +1679,44 @@ def _emotion_instruct(path: Path, text: str, mode: str):
 def translate_warmup():
     """Carrega whisper + LLM de tradução em background — chamado quando o usuário
     abre/começa o tradutor, p/ os modelos ficarem quentes antes da 1ª frase."""
+    # não aquece o que vai pro remoto quando "liberar local" está ligado
+    skip_stt = _settings.get("free_local_on_remote") and _use_remote_stt()
+    skip_mt = _settings.get("free_local_on_remote") and _use_remote_translate()
+
     def _warm():
-        try:
-            import numpy as np
-            import mlx_whisper
-            with _stt_lock:
-                mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32),
-                                       path_or_hf_repo=WHISPER_REPO, language="pt")
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            from mlx_lm import load
-            repo = _mt_repo()
-            with _mt_lock:
-                if _mt["model"] is None or _mt.get("repo") != repo:
-                    _mt["model"], _mt["tok"] = load(repo)
-                    _mt["repo"] = repo
-        except Exception:  # noqa: BLE001
-            pass
+        if not skip_stt:
+            try:
+                import numpy as np
+                import mlx_whisper
+                with _stt_lock:
+                    mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32),
+                                           path_or_hf_repo=WHISPER_REPO, language="pt")
+            except Exception:  # noqa: BLE001
+                pass
+        if not skip_mt:
+            try:
+                from mlx_lm import load
+                repo = _mt_repo()
+                with _mt_lock:
+                    if _mt["model"] is None or _mt.get("repo") != repo:
+                        _mt["model"], _mt["tok"] = load(repo)
+                        _mt["repo"] = repo
+            except Exception:  # noqa: BLE001
+                pass
     threading.Thread(target=_warm, daemon=True).start()
     return {"ok": True}
+
+
+@app.post("/api/models/unload")
+def unload_models(payload: dict = None):
+    """Descarrega modelos LOCAIS (MLX) p/ liberar RAM. Sem corpo = todos os locais.
+    {"only_remote": true} = só os que têm remoto ativo."""
+    p = payload or {}
+    if p.get("only_remote"):
+        r = _unload_local_models(tts=_use_remote_tts(), stt=_use_remote_stt(), mt=_use_remote_translate())
+    else:
+        r = _unload_local_models()
+    return r
 
 
 @app.post("/api/stt-partial")

@@ -743,7 +743,11 @@
           <input type="password" id="remoteSttKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
         <p class="hint">Provedor OpenAI-compatível. Preencha URL/chave do STT só p/ rotear a
           <b>transcrição</b> a uma API externa (ex.: OpenAI/Groq) sem mexer no translate/TTS.</p>
-      </section>
+        <label class="check"><input type="checkbox" id="freeLocalOnRemote"> Liberar RAM: descarregar modelo local quando usar o remoto</label>
+        <div class="row2">
+          <button id="unloadModelsBtn" class="ghost small" type="button" title="descarrega agora os modelos locais (MLX) da memória">🧹 Descarregar locais agora</button>
+          <span id="unloadStatus" class="hint" style="margin-top:0"></span>
+        </div>
     </div>
   </aside>
 </div>
@@ -846,6 +850,17 @@ function updateTransVdHint() {
   el.style.color = tags ? "" : "var(--accent)";
 }
 $("transVoice").addEventListener("change", updateTransVdHint);
+
+// descarrega modelos locais (MLX) da RAM sob demanda
+$("unloadModelsBtn").onclick = async () => {
+  $("unloadStatus").textContent = "descarregando…";
+  try {
+    const r = await api("/api/models/unload", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const f = (r.unloaded || []);
+    $("unloadStatus").textContent = f.length ? "liberado: " + f.join(", ") : "nada carregado";
+    toast("🧹 modelos locais descarregados" + (f.length ? " (" + f.join(", ") + ")" : ""));
+  } catch (e) { $("unloadStatus").textContent = ""; toast("Erro: " + e.message); }
+};
 
 // 🎲 sorteia outra voz p/ o mesmo instruct e fixa (salva a seed na hora)
 $("oSeedRoll").onclick = async () => {
@@ -1831,6 +1846,7 @@ async function loadSettings() {
     $("remoteSttModel").value = s.remote_stt_model || "whisper-1";
     $("remoteSttBaseUrl").value = s.remote_stt_base_url || "";
     $("remoteSttKey").value = s.remote_stt_key || "";
+    $("freeLocalOnRemote").checked = !!s.free_local_on_remote;
     for (const [id, out, key, fmt] of STT_CTL) {
       if (s[key] !== undefined) { $(id).value = s[key]; $(out).textContent = fmt(s[key]); }
     }
@@ -1900,7 +1916,8 @@ $("cfgSave").onclick = async () => {
         remote_translate_model: $("remoteTranslateModel").value,
         remote_stt_model: $("remoteSttModel").value,
         remote_stt_base_url: $("remoteSttBaseUrl").value,
-        remote_stt_key: $("remoteSttKey").value
+        remote_stt_key: $("remoteSttKey").value,
+        free_local_on_remote: $("freeLocalOnRemote").checked
       })
     });
     $("cfgStatus").textContent = "salvo ✔ — já vale para a API";
