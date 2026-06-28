@@ -954,6 +954,22 @@ async function fetchYouTube(url, start, end) {
   return await r.blob();
 }
 
+// Transcreve a amostra importada e usa como TEXTO DE REFERÊNCIA do clone
+// (precisa bater com o áudio; o roteiro padrão não serve p/ áudio importado).
+async function autoRefText(blob, statusEl) {
+  try {
+    if (statusEl) statusEl.innerHTML = '<span class="spinner"></span>transcrevendo p/ texto de referência…';
+    const fd = new FormData();
+    fd.append("audio", blob, "ref.wav");   // source_lang = auto (default do backend)
+    const r = await api("/api/transcribe", { method: "POST", body: fd });
+    const txt = (r.text || "").trim();
+    if (txt) { $("voiceRefText").value = txt; toast("Texto de referência transcrito ✔ — confira"); return true; }
+    toast("Não consegui transcrever — escreva o texto manualmente.", 6000); return false;
+  } catch (e) {
+    toast("Transcrição automática falhou: " + e.message + " — edite o texto manualmente", 6000); return false;
+  }
+}
+
 $("ytImportBtn").onclick = async () => {
   const url = $("ytUrl").value.trim();
   if (!url) { toast("Cole o link do YouTube."); return; }
@@ -963,7 +979,8 @@ $("ytImportBtn").onclick = async () => {
     wavBlob = await fetchYouTube(url, $("ytStart").value.trim(), $("ytEnd").value.trim());
     $("previewAudio").src = URL.createObjectURL(wavBlob);
     $("previewRow").style.display = "flex";
-    $("ytStatus").textContent = "pronto — confira e Salvar voz";
+    await autoRefText(wavBlob, $("ytStatus"));   // preenche o texto de referência automaticamente
+    $("ytStatus").textContent = "pronto — confira o texto e Salvar voz";
   } catch (e) { $("ytStatus").textContent = ""; toast("Erro: " + e.message, 6000); }
   finally { $("ytImportBtn").disabled = false; }
 };
@@ -980,7 +997,8 @@ $("voiceFile").onchange = async (e) => {
     $("previewRow").style.display = "flex";
     if (!$("voiceName").value.trim())
       $("voiceName").value = f.name.replace(/\.[^.]+$/, "").slice(0, 40);
-    toast("Arquivo pronto — confira no player e clique Salvar voz.");
+    await autoRefText(wavBlob);                 // texto de referência = transcrição do arquivo
+    toast("Arquivo pronto — confira texto e player, e clique Salvar voz.");
   } catch (err) { toast("Falha ao ler o arquivo: " + err.message, 6000); }
 };
 
