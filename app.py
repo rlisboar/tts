@@ -1580,6 +1580,8 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
                 "do_sample": bool(_settings.get("qwen_do_sample", True)),
                 "x_vector_only_mode": bool(_settings.get("qwen_x_vector_only", False)),
                 "non_streaming_mode": bool(_settings.get("qwen_non_streaming", False))}
+        if omni.get("seed") is not None and int(omni["seed"]) >= 0:   # voz reprodutível (mesmo timbre)
+            body["seed"] = int(omni["seed"])
         if voice:
             body["voice"] = voice
         else:                                    # sem clone -> voice design por descrição livre

@@ -728,6 +728,12 @@
         <label class="check"><input type="checkbox" id="qNonStream"> não-streaming (mais qualidade, mais lento)</label>
         <label class="cfg-label">Voice design (descrição LIVRE — selecione a voz "Voice design")
           <textarea id="qVoiceDesign" style="min-height:46px" placeholder="ex.: voz feminina jovem, alegre e calorosa, tom suave, sotaque brasileiro"></textarea></label>
+        <div class="row2">
+          <label class="cfg-label">seed (voz fixa)
+            <input type="number" id="qSeed" min="-1" step="1" value="42" title="mesmo seed = mesma voz/timbre; -1 = aleatória a cada vez"></label>
+          <button id="qSeedRoll" class="ghost small" type="button" title="sorteia outra voz">🎲 nova voz</button>
+        </div>
+        <p class="hint" style="margin-top:2px">Sem seed fixa o <b>timbre muda a cada geração</b> (Qwen é estocástico). Seed fixa = voz reprodutível.</p>
         <div class="row" style="margin-top:4px"><button id="qReset" class="ghost small" type="button">↺ Restaurar padrões</button></div>
         <p class="hint">Params do Qwen3-TTS (AR/LLM). Temperature/top-p/top-k controlam variação; repetition penalty evita repetição. Voice design é por <b>texto livre</b> (acima) — selecione a voz "Voice design".</p>
       </section>
@@ -942,15 +948,19 @@ $("unloadModelsBtn").onclick = async () => {
 };
 
 // 🎲 sorteia outra voz p/ o mesmo instruct e fixa (salva a seed na hora)
-$("oSeedRoll").onclick = async () => {
+async function rollSeed() {            // seed compartilhado entre OmniVoice e Qwen (= omni_seed)
   const s = Math.floor(Math.random() * 1e9);
-  $("oSeed").value = s;
+  $("oSeed").value = s; $("qSeed").value = s;
   try {
     await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ omni_seed: s }) });
     toast("🎲 nova voz fixada (seed " + s + ")");
   } catch (e) { toast("Erro: " + e.message); }
-};
+}
+$("oSeedRoll").onclick = rollSeed;
+$("qSeedRoll").onclick = rollSeed;
+$("oSeed").oninput = () => { $("qSeed").value = $("oSeed").value; };   // mantém os dois em sincronia
+$("qSeed").oninput = () => { $("oSeed").value = $("qSeed").value; };
 
 /* ───────── Status do modelo ───────── */
 async function refreshStatus() {
@@ -2134,6 +2144,7 @@ async function loadSettings() {
     $("qXvec").checked = !!s.qwen_x_vector_only;
     $("qNonStream").checked = !!s.qwen_non_streaming;
     $("qVoiceDesign").value = s.qwen_voice_design || "";
+    $("qSeed").value = s.omni_seed ?? 42;       // seed compartilhado com o OmniVoice
     applyEngineUI();
     $("remoteTtsExtra").value = s.remote_tts_extra || "";
     $("remoteBaseUrl").value = s.remote_base_url || "";
