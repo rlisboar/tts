@@ -941,6 +941,116 @@ def voice_audio(voice_id: str):
     return FileResponse(path, media_type="audio/wav")
 
 
+def _eq_custom(audio, sr, low_db, mid_db, high_db):
+    import numpy as np
+    from scipy.signal import sosfilt
+
+    y = np.asarray(audio, dtype=np.float32)
+    bands = []
+    if abs(float(low_db)) >= 0.05:
+        bands.append(_biquad("lowshelf", 150.0, float(low_db), sr))
+    if abs(float(mid_db)) >= 0.05:
+        bands.append(_biquad("peak", 1500.0, float(mid_db), sr, 1.0))
+    if abs(float(high_db)) >= 0.05:
+        bands.append(_biquad("highshelf", 5000.0, float(high_db), sr))
+    for sos in bands:
+        y = sosfilt(np.array([sos], dtype=np.float64), y).astype(np.float32)
+    return y.astype(np.float32)
+
+
+@app.post("/api/audio/edit")
+def audio_edit(audio: UploadFile = File(...), op: str = Form(...)):
+    """Aplica UMA operação de edição num WAV e devolve o WAV processado.
+    op (JSON): {type: trim|cut|normalize|denoise|gain|fade|eq, ...params}."""
+    import io as _io
+    import json as _json
+
+    import numpy as np
+    import soundfile as sf
+
+    try:
+        a, sr = sf.read(_io.BytesIO(audio.file.read()), dtype="float32")
+    except Exception:
+        raise HTTPException(400, "Áudio inválido")
+    if a.ndim > 1:
+        a = a.mean(axis=1)
+    try:
+        o = _json.loads(op)
+    except Exception:
+        raise HTTPException(400, "op inválido (JSON)")
+    kind = o.get("type")
+    dur = len(a) / sr if sr else 0.0
+
+    if kind == "trim":                       # mantém só a seleção
+        i0 = max(0, int(float(o.get("start", 0.0)) * sr))
+        i1 = min(len(a), int(float(o.get("end", dur)) * sr))
+        if i1 - i0 < int(0.05 * sr):
+            raise HTTPException(400, "Seleção muito curta (mín. 50ms)")
+        a = a[i0:i1]
+    elif kind == "cut":                       # remove a seleção
+        i0 = max(0, int(float(o.get("start", 0.0)) * sr))
+        i1 = min(len(a), int(float(o.get("end", 0.0)) * sr))
+        a = np.concatenate([a[:i0], a[i1:]])
+        if a.size < int(0.05 * sr):
+            raise HTTPException(400, "Sobrou áudio de menos")
+    elif kind == "normalize":
+        a = _normalize(a)
+    elif kind == "denoise":
+        a = _denoise_audio(a, sr, _clamp(o.get("strength", 0.7), 0.0, 1.0, 0.7))
+    elif kind == "gain":
+        a = (a * float(10 ** (_clamp(o.get("db", 0.0), -24.0, 24.0, 0.0) / 20.0))).astype(np.float32)
+    elif kind == "fade":
+        a = _fade_edges(a, sr, _clamp(o.get("ms", 12.0), 0.0, 1000.0, 12.0))
+    elif kind == "eq":
+        a = _eq_custom(a, sr, o.get("low", 0.0), o.get("mid", 0.0), o.get("high", 0.0))
+    else:
+        raise HTTPException(400, f"op desconhecido: {kind}")
+
+    a = np.asarray(a, dtype=np.float32)
+    pk = float(np.abs(a).max()) if a.size else 0.0
+    if pk > 1.0:                              # trava de segurança
+        a = (a / pk * 0.99).astype(np.float32)
+    buf = _io.BytesIO()
+    sf.write(buf, a, sr, format="WAV", subtype="PCM_16")
+    return Response(content=buf.getvalue(), media_type="audio/wav",
+                    headers={"X-Duration": f"{len(a)/sr:.3f}" if sr else "0"})
+
+
+@app.post("/api/voices/{voice_id}/replace")
+def replace_voice_audio(voice_id: str, audio: UploadFile = File(...)):
+    """Substitui o áudio de uma voz existente (mantém o id) — usado pelo editor."""
+    import soundfile as sf
+
+    wav = VOICES_DIR / f"{voice_id}.wav"
+    if not wav.exists():
+        raise HTTPException(404, "Voz não encontrada")
+    tmp = VOICES_DIR / f".rep-{voice_id}"
+    tmp.write_bytes(audio.file.read())
+    try:
+        a, sr = sf.read(str(tmp), dtype="float32")
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(400, "Áudio inválido")
+    tmp.unlink(missing_ok=True)
+    if a.ndim > 1:
+        a = a.mean(axis=1)
+    sf.write(str(wav), a, sr, subtype="PCM_16")
+    dur = _wav_duration(wav)
+    if dur < 1:
+        raise HTTPException(400, f"Áudio muito curto ({dur}s)")
+    jp = VOICES_DIR / f"{voice_id}.json"
+    if jp.exists():
+        try:
+            m = json.loads(jp.read_text())
+            m["duration"] = dur
+            m["denoised"] = True
+            jp.write_text(json.dumps(m, ensure_ascii=False, indent=2))
+        except Exception:  # noqa: BLE001
+            pass
+    _conds_cache.clear()                      # invalida o clone em cache p/ esta voz
+    return {"ok": True, "duration": dur}
+
+
 @app.get("/api/voices/{voice_id}/peaks")
 def voice_peaks(voice_id: str, n: int = 160):
     """Picos normalizados (0..1) p/ desenhar o waveform da voz salva."""
