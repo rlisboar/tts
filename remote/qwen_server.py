@@ -61,6 +61,9 @@ def _gen_kwargs(g):
 def synth(text, language=None, voice=None, ref_text=None, gen=None, instruct=None):
     g = gen or {}
     kw = _gen_kwargs(g)
+    seed = g.get("seed")                       # voz reprodutível (mesmo seed = mesmo timbre). <0 = aleatório
+    if seed is not None and int(seed) >= 0:
+        torch.manual_seed(int(seed)); torch.cuda.manual_seed_all(int(seed))
     if voice:                                  # CLONAGEM (ref_audio)
         wav_path, txt = _voice_paths(voice)
         if not wav_path:
