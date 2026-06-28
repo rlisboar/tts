@@ -731,8 +731,16 @@
       <section class="cfg-sec">
         <h3 class="cfg-sec-h">TTS remoto (ex.: RTX)</h3>
         <label class="check"><input type="checkbox" id="remoteTts"> Síntese numa máquina remota</label>
-        <label class="cfg-label">URL do TTS remoto
+        <label class="cfg-label">Engine (modelo)
+          <select id="remoteTtsEngine">
+            <option value="omnivoice">OmniVoice — 646 idiomas, rápido</option>
+            <option value="qwen3">Qwen3-TTS — clonagem (10 idiomas)</option>
+          </select></label>
+        <label class="cfg-label">URL OmniVoice
           <input type="text" id="remoteTtsUrl" placeholder="http://solaris:8800/tts"></label>
+        <label class="cfg-label">URL Qwen3-TTS
+          <input type="text" id="remoteTtsUrlQwen" placeholder="http://solaris:8801/tts"></label>
+        <p class="hint">Os dois rodam na mesma RTX e compartilham as vozes — troque o engine p/ comparar a mesma voz. Qwen3 só clona (sem voice design por tags).</p>
         <label class="cfg-label">Voz remota (nome/preset)
           <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
         <label class="cfg-label">API key (opcional)
@@ -2056,6 +2064,8 @@ async function loadSettings() {
     $("remoteTranslate").checked = !!s.remote_translate;
     $("remoteStt").checked = !!s.remote_stt;
     $("remoteTtsUrl").value = s.remote_tts_url || "";
+    $("remoteTtsUrlQwen").value = s.remote_tts_url_qwen || "";
+    $("remoteTtsEngine").value = s.remote_tts_engine || "omnivoice";
     $("remoteTtsVoice").value = s.remote_tts_voice || "";
     $("remoteTtsExtra").value = s.remote_tts_extra || "";
     $("remoteBaseUrl").value = s.remote_base_url || "";
@@ -2127,6 +2137,8 @@ $("cfgSave").onclick = async () => {
         remote_translate: $("remoteTranslate").checked,
         remote_stt: $("remoteStt").checked,
         remote_tts_url: $("remoteTtsUrl").value,
+        remote_tts_url_qwen: $("remoteTtsUrlQwen").value,
+        remote_tts_engine: $("remoteTtsEngine").value,
         remote_tts_voice: $("remoteTtsVoice").value,
         remote_tts_extra: $("remoteTtsExtra").value,
         remote_base_url: $("remoteBaseUrl").value,

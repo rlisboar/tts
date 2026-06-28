@@ -90,6 +90,8 @@ _SETTINGS_DEFAULTS = {
     # base_url + api_key ficam locais (settings.json é gitignored). Vazio = local.
     "remote_tts": False,              # síntese (OmniVoice) numa máquina remota (ex.: RTX)
     "remote_tts_url": "",             # URL completa do endpoint, ex.: http://solaris:8800/tts
+    "remote_tts_engine": "omnivoice", # engine do TTS remoto: omnivoice | qwen3
+    "remote_tts_url_qwen": "",        # URL do servidor Qwen3-TTS (ex.: http://solaris:8801/tts)
     "remote_tts_voice": "",           # nome/preset da voz no servidor remoto (vai como `voice`)
     "remote_tts_extra": "",           # JSON com params extras do servidor (speed, num_steps…)
     "remote_tts_model": "tts-1",      # (compat OpenAI) nome do modelo, se o servidor usar
@@ -810,6 +812,11 @@ def update_settings(payload: dict):
             _settings[chave] = bool(payload[chave])
     if "remote_tts_url" in payload:
         _settings["remote_tts_url"] = str(payload["remote_tts_url"] or "").strip()[:300]
+    if "remote_tts_url_qwen" in payload:
+        _settings["remote_tts_url_qwen"] = str(payload["remote_tts_url_qwen"] or "").strip()[:300]
+    if "remote_tts_engine" in payload:
+        e = str(payload["remote_tts_engine"] or "omnivoice").lower()
+        _settings["remote_tts_engine"] = e if e in ("omnivoice", "qwen3") else "omnivoice"
     if "remote_tts_voice" in payload:
         _settings["remote_tts_voice"] = str(payload["remote_tts_voice"] or "").strip()[:120]
     if "remote_tts_extra" in payload:
@@ -1531,40 +1538,48 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
     import requests
     import soundfile as sf
 
-    url = _settings["remote_tts_url"].strip()
+    engine = (_settings.get("remote_tts_engine") or "omnivoice").lower()
+    qurl = (_settings.get("remote_tts_url_qwen") or "").strip()
     headers = {"Content-Type": "application/json"}
     if _settings.get("remote_api_key"):
         headers["Authorization"] = f"Bearer {_settings['remote_api_key']}"
-    # 1) params do OmniVoice configurados na UI (nomes canônicos do generate)
-    body = {
-        "num_steps": int(omni.get("num_steps") or OMNI_STEPS_FAST),
-        "guidance_scale": omni.get("guidance_scale", 2.0),
-        "class_temperature": omni.get("class_temperature", 0.0),
-        "position_temperature": omni.get("position_temperature", 5.0),
-        "layer_penalty_factor": omni.get("layer_penalty_factor", 5.0),
-        "t_shift": omni.get("t_shift", 0.1),
-        "speed": 1.0,   # servidor gera na duração natural; velocidade vira time-stretch local
-    }
-    if (omni.get("instruct") or "").strip():
-        body["instruct"] = omni["instruct"]
-    if omni.get("seed") is not None and int(omni["seed"]) >= 0:   # voz reprodutível no servidor
-        body["seed"] = int(omni["seed"])
-    if omni.get("duration_s") is not None:
-        body["duration_s"] = omni["duration_s"]
-    if voice:
-        body["voice"] = voice
-    # 2) JSON extra do usuário sobrepõe/adiciona (ex.: voice, ou renomear campos)
+    if engine == "qwen3" and qurl:
+        # Qwen3-TTS (AR/LLM): params próprios; só clonagem (precisa de voice).
+        url = qurl
+        body = {"text": text, "language": (language or "pt"), "speed": 1.0}
+        if voice:
+            body["voice"] = voice
+    else:
+        # OmniVoice (masked-diffusion): params canônicos do generate
+        url = _settings["remote_tts_url"].strip()
+        body = {
+            "num_steps": int(omni.get("num_steps") or OMNI_STEPS_FAST),
+            "guidance_scale": omni.get("guidance_scale", 2.0),
+            "class_temperature": omni.get("class_temperature", 0.0),
+            "position_temperature": omni.get("position_temperature", 5.0),
+            "layer_penalty_factor": omni.get("layer_penalty_factor", 5.0),
+            "t_shift": omni.get("t_shift", 0.1),
+            "speed": 1.0,   # servidor gera na duração natural; velocidade vira time-stretch local
+        }
+        if (omni.get("instruct") or "").strip():
+            body["instruct"] = omni["instruct"]
+        if omni.get("seed") is not None and int(omni["seed"]) >= 0:
+            body["seed"] = int(omni["seed"])
+        if omni.get("duration_s") is not None:
+            body["duration_s"] = omni["duration_s"]
+        if voice:
+            body["voice"] = voice
+        body["text"] = text
+        lang_name = LANG_DISPLAY.get((language or "").lower())
+        if lang_name and "language" not in body:
+            body["language"] = lang_name
+    # JSON extra do usuário sobrepõe/adiciona (vale p/ os dois engines)
     try:
         extra = json.loads(_settings.get("remote_tts_extra") or "{}")
         if isinstance(extra, dict):
             body.update(extra)
     except (ValueError, TypeError):
         pass
-    # 3) text/language por cima (text é sempre o trecho atual)
-    body["text"] = text
-    lang_name = LANG_DISPLAY.get((language or "").lower())
-    if lang_name and "language" not in body:   # extra pode fixar; senão usa o da UI
-        body["language"] = lang_name
     r = requests.post(url, headers=headers, json=body, timeout=300)
     if not r.ok:
         raise RuntimeError(f"TTS remoto falhou ({r.status_code}): {r.text[:200]}")
