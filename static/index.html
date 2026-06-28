@@ -415,11 +415,6 @@
             <input type="file" id="voiceFile" accept="audio/*" style="display:none">
             <span id="timer"></span>
           </div>
-          <div class="row" style="margin-top:10px">
-            <label class="check"><input type="checkbox" id="voiceDenoise" checked> Limpar ruído de fundo ao salvar</label>
-            <label class="cfg-label" style="flex:1; min-width:150px">Força da limpeza <output id="voiceDenoiseStrOut">0.7</output>
-              <input type="range" id="voiceDenoiseStr" min="0" max="1" step="0.05" value="0.7"></label>
-          </div>
           <details style="margin-top:10px">
             <summary>Importar do YouTube</summary>
             <input type="text" id="ytUrl" placeholder="link do YouTube" style="margin-top:10px">
@@ -440,18 +435,11 @@
             <button id="saveVoiceBtn">Salvar voz</button>
             <button id="discardBtn" class="ghost">Descartar</button>
           </div>
-          <details class="script-box">
-            <summary>Texto de treino — cobre os principais fonemas do português</summary>
-            <p class="script">
-              Olá! Meu nome é Rodrigo e gravo minha voz para criar um clone digital.
-              O sol dourado nasceu sobre as montanhas enquanto o vento frio soprava.
-              Que maravilha extraordinária! O velho pescador trouxe peixe fresco, pão quente e suco gelado.
-            </p>
-          </details>
           <p class="hint">
-            Leia o texto acima (ou o seu próprio) com naturalidade, em ambiente silencioso e sem eco —
-            e deixe o campo de transcrição <b>idêntico ao que você falou</b>. No OmniVoice, uma amostra
-            <b>curta e exata (≈10–20s)</b> com a transcrição correta clona melhor que uma longa.
+            Grave/importe com naturalidade, em ambiente silencioso e sem eco — e deixe o campo de
+            transcrição <b>idêntico ao que foi falado</b> (import preenche sozinho). No OmniVoice, uma
+            amostra <b>curta e exata (≈10–20s)</b> clona melhor que uma longa. Use <b>✂️ Editar</b> p/
+            cortar/normalizar/limpar antes de salvar.
           </p>
         </div>
         <div class="card col-scroll">
@@ -1080,9 +1068,6 @@ $("voiceFile").onchange = async (e) => {
   } catch (err) { toast("Falha ao ler o arquivo: " + err.message, 6000); }
 };
 
-$("voiceDenoiseStr").oninput = () =>
-  $("voiceDenoiseStrOut").textContent = parseFloat($("voiceDenoiseStr").value).toFixed(2);
-
 for (const [sl, out] of [["audGain", "audGainOut"], ["audLow", "audLowOut"], ["audMid", "audMidOut"], ["audHigh", "audHighOut"]])
   $(sl).oninput = () => $(out).textContent = `${(+$(sl).value).toFixed(1).replace(/\.0$/, "")} dB`;
 
@@ -1094,8 +1079,7 @@ $("saveVoiceBtn").onclick = async () => {
   fd.append("name", name);
   fd.append("audio", wavBlob, "voz.wav");
   fd.append("ref_text", $("voiceRefText").value.trim());
-  fd.append("denoise", $("voiceDenoise").checked ? "1" : "0");
-  fd.append("denoise_strength", $("voiceDenoiseStr").value);
+  fd.append("denoise", "0");                  // sem auto-limpeza no save; use ✂️ Editar p/ limpar
   try {
     await api("/api/voices", { method: "POST", body: fd });
     wavBlob = null; $("previewRow").style.display = "none"; $("voiceName").value = "";
@@ -1320,7 +1304,7 @@ async function refreshVoices() {
         try {
           await api(`/api/voices/${v.id}/denoise`, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ strength: parseFloat($("voiceDenoiseStr").value) })
+            body: JSON.stringify({ strength: 0.7 })
           });
           toast("Voz limpa ✔ — regenere a fala p/ ouvir o efeito");
           refreshVoices();
@@ -2063,9 +2047,6 @@ async function loadSettings() {
     $("oDur").value = s.omni_duration_s ?? "";
     $("oRefMax").value = s.omni_ref_max_s ?? 10;
     $("cfgPrecision").value = s.omni_precision || "bf16";
-    $("voiceDenoise").checked = s.voice_denoise ?? true;
-    $("voiceDenoiseStr").value = s.voice_denoise_strength ?? 0.7;
-    $("voiceDenoiseStrOut").textContent = parseFloat(s.voice_denoise_strength ?? 0.7).toFixed(2);
     for (const [sl, out, key] of [["audGain", "audGainOut", "audio_gain_db"], ["audLow", "audLowOut", "audio_eq_low_db"],
         ["audMid", "audMidOut", "audio_eq_mid_db"], ["audHigh", "audHighOut", "audio_eq_high_db"]]) {
       $(sl).value = s[key] ?? 0;
