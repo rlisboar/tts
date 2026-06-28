@@ -723,8 +723,10 @@
         </div>
         <label class="cfg-label">max_new_tokens
           <input type="number" id="qMaxTok" min="128" max="8192" step="64" value="2048"></label>
+        <label class="check"><input type="checkbox" id="qDoSample" checked> amostragem (do_sample; desligado = greedy/determinístico)</label>
         <label class="check"><input type="checkbox" id="qXvec"> x-vector only (clona rápido, menos fiel)</label>
         <label class="check"><input type="checkbox" id="qNonStream"> não-streaming (mais qualidade, mais lento)</label>
+        <div class="row" style="margin-top:4px"><button id="qReset" class="ghost small" type="button">↺ Restaurar padrões</button></div>
         <p class="hint">Params do Qwen3-TTS (AR/LLM). Temperature/top-p/top-k controlam variação; repetition penalty evita repetição. Só clona (sem voice design por tags).</p>
       </section>
 
@@ -1396,6 +1398,20 @@ $("oReset").onclick = () => {
   $("oDur").value = "";
   $("oRefMax").value = 10;
   toast("Padrões restaurados — clique em Salvar para aplicar");
+};
+
+const QWEN_DEFAULTS = [["qTemp", "qTempOut", 0.9, 2], ["qTopp", "qToppOut", 1.0, 2],
+  ["qTopk", "qTopkOut", 50, 0], ["qRep", "qRepOut", 1.05, 2]];
+$("qReset").onclick = () => {
+  for (const [id, out, val, dec] of QWEN_DEFAULTS) {
+    $(id).value = val;
+    $(out).textContent = parseFloat(val).toFixed(dec);
+  }
+  $("qMaxTok").value = 2048;
+  $("qDoSample").checked = true;
+  $("qXvec").checked = false;
+  $("qNonStream").checked = false;
+  toast("Padrões do Qwen3 restaurados — clique em Salvar para aplicar");
 };
 
 /* Player progressivo: busca cada trecho assim que o servidor termina e agenda
@@ -2104,6 +2120,7 @@ async function loadSettings() {
       $(id).value = val; $(out).textContent = parseFloat(val).toFixed(dec);
     }
     $("qMaxTok").value = s.qwen_max_new_tokens ?? 2048;
+    $("qDoSample").checked = s.qwen_do_sample ?? true;
     $("qXvec").checked = !!s.qwen_x_vector_only;
     $("qNonStream").checked = !!s.qwen_non_streaming;
     applyEngineUI();
@@ -2184,6 +2201,7 @@ $("cfgSave").onclick = async () => {
         qwen_top_k: parseInt($("qTopk").value, 10),
         qwen_repetition_penalty: parseFloat($("qRep").value),
         qwen_max_new_tokens: parseInt($("qMaxTok").value, 10),
+        qwen_do_sample: $("qDoSample").checked,
         qwen_x_vector_only: $("qXvec").checked,
         qwen_non_streaming: $("qNonStream").checked,
         remote_tts_voice: $("remoteTtsVoice").value,
