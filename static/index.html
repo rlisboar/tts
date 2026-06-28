@@ -197,7 +197,16 @@
   .item .grow { flex: 1; min-width: 140px; }
   .item .name { font-weight: 600; font-size: 13.5px; }
   .item .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
-  .item .wave { display: block; width: 100%; height: 38px; margin-top: 7px; cursor: pointer; }
+  .item .wrow { display: flex; align-items: center; gap: 9px; margin-top: 7px; }
+  .item .wave { flex: 1; min-width: 0; height: 38px; display: block; cursor: pointer; touch-action: none; }
+  .item .weng { display: none; }                  /* áudio = motor; navegação é o waveform */
+  .item .wplay {
+    flex: 0 0 auto; width: 30px; height: 30px; padding: 0; border-radius: 50%;
+    background: var(--accent); color: #04201c; border: 0; cursor: pointer;
+    font-size: 12px; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .item .wplay:hover { filter: brightness(1.08); }
+  .item .wtime { flex: 0 0 auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; min-width: 64px; text-align: right; }
   .vid {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
     background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
@@ -1045,8 +1054,11 @@ $("saveVoiceBtn").onclick = async () => {
   } catch (e) { toast("Erro: " + e.message); }
 };
 
-/* desenha o waveform da voz (picos do backend) + destaca o trecho tocado */
-async function drawPeaks(canvas, id, buster) {
+const fmtTime = s => (isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}` : "0:00");
+
+/* desenha o waveform (picos do backend) e o usa como BARRA DE NAVEGAÇÃO do áudio:
+   clique/arraste = seek; play/pause próprio; o trecho tocado acende. */
+async function drawPeaks(canvas, id, buster, au, btn, tEl) {
   if (!canvas) return;
   let peaks;
   try { peaks = (await api(`/api/voices/${id}/peaks?n=180&_v=${buster}`)).peaks || []; }
@@ -1064,12 +1076,29 @@ async function drawPeaks(canvas, id, buster) {
       ctx.fillRect(i * bw + bw * 0.15, mid - h / 2, Math.max(1, bw * 0.7), h);
     }
   };
+  const prog = () => (au && au.duration ? au.currentTime / au.duration : 0);
   render(0);
-  const au = canvas.closest(".item") && canvas.closest(".item").querySelector("audio");
-  if (au) {
-    au.ontimeupdate = () => render(au.duration ? au.currentTime / au.duration : 0);
-    au.onended = () => render(0);
-  }
+  if (!au) return;
+  au.addEventListener("timeupdate", () => {
+    render(prog());
+    if (tEl) tEl.textContent = `${fmtTime(au.currentTime)} / ${fmtTime(au.duration)}`;
+  });
+  au.addEventListener("play", () => { if (btn) btn.textContent = "⏸"; });
+  au.addEventListener("pause", () => { if (btn) btn.textContent = "▶"; });
+  au.addEventListener("ended", () => { render(0); if (btn) btn.textContent = "▶"; });
+  // seek por clique/arraste na onda
+  const seek = (clientX) => {
+    if (!au.duration) return;
+    const r = canvas.getBoundingClientRect();
+    au.currentTime = Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * au.duration;
+    render(prog());
+  };
+  canvas.addEventListener("pointerdown", e => {
+    canvas.setPointerCapture(e.pointerId); canvas._drag = true; seek(e.clientX);
+    if (au.paused) au.play();
+  });
+  canvas.addEventListener("pointermove", e => { if (canvas._drag) seek(e.clientX); });
+  canvas.addEventListener("pointerup", e => { canvas._drag = false; try { canvas.releasePointerCapture(e.pointerId); } catch {} });
 }
 
 /* ───────── Lista de vozes ───────── */
@@ -1102,16 +1131,18 @@ async function refreshVoices() {
       div.innerHTML = `
         <div class="grow"><div class="name">${tag}${v.name}</div>
         <div class="meta">${v.duration}s · ${v.preset ? "voz padrão" : v.created_at}${limpa} · <code class="vid" title="clique p/ copiar o id">${v.id}</code></div>
-        <canvas class="wave" width="600" height="38" title="clique p/ tocar/pausar"></canvas></div>
-        <audio controls preload="none" src="${k(`/api/voices/${v.id}/audio?_v=${buster}`)}"></audio>
+        <div class="wrow">
+          <button class="wplay" type="button" title="tocar/pausar">▶</button>
+          <canvas class="wave" width="600" height="38" title="clique/arraste p/ navegar"></canvas>
+          <span class="wtime">0:00 / ${v.duration ? fmtTime(v.duration) : "0:00"}</span>
+        </div></div>
+        <audio class="weng" preload="metadata" src="${k(`/api/voices/${v.id}/audio?_v=${buster}`)}"></audio>
         ${cleanBtn}
         <button class="danger">${v.preset ? "resetar" : "apagar"}</button>`;
-      const wave = div.querySelector(".wave");
-      drawPeaks(wave, v.id, buster);
-      if (wave) wave.onclick = () => {                 // tocar/pausar pelo waveform
-        const au = div.querySelector("audio");
-        if (au) { au.paused ? au.play() : au.pause(); }
-      };
+      const au = div.querySelector(".weng");
+      const wplay = div.querySelector(".wplay");
+      drawPeaks(div.querySelector(".wave"), v.id, buster, au, wplay, div.querySelector(".wtime"));
+      wplay.onclick = () => { au.paused ? au.play() : au.pause(); };
       const cb = div.querySelector(".clean");
       if (cb) cb.onclick = async () => {
         cb.disabled = true; cb.textContent = "limpando…";
