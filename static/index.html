@@ -207,6 +207,21 @@
   }
   .item .wplay:hover { filter: brightness(1.08); }
   .item .wtime { flex: 0 0 auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; min-width: 64px; text-align: right; }
+  /* editor de áudio */
+  .ed-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.62); display: flex;
+    align-items: center; justify-content: center; z-index: 100; padding: 16px; }
+  .ed-modal { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r-lg);
+    padding: 16px 18px; width: min(1040px, 95vw); max-height: 92vh; overflow: auto;
+    display: flex; flex-direction: column; gap: 12px; box-shadow: 0 24px 70px rgba(0,0,0,.55); }
+  .ed-head { display: flex; align-items: center; gap: 12px; }
+  .ed-head strong { font-size: 15px; }
+  .ed-wave { width: 100%; height: 170px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--r-md); cursor: crosshair; touch-action: none; display: block; }
+  .ed-transport { display: flex; align-items: center; gap: 10px; }
+  .ed-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .ed-tool { display: inline-flex; align-items: center; gap: 6px; }
+  .ed-tool input[type=range] { width: 100px; }
+  .ed-foot { display: flex; align-items: center; gap: 10px; padding-top: 4px; border-top: 1px solid var(--border-soft); }
   .vid {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
     background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
@@ -421,6 +436,7 @@
           </label>
           <div class="row" id="previewRow" style="display:none; margin-top:12px">
             <audio id="previewAudio" controls></audio>
+            <button id="editVoiceBtn" class="ghost">✂️ Editar</button>
             <button id="saveVoiceBtn">Salvar voz</button>
             <button id="discardBtn" class="ghost">Descartar</button>
           </div>
@@ -764,6 +780,40 @@
 
 <div id="toast" role="status" aria-live="polite"></div>
 
+<!-- ===== Editor de áudio ===== -->
+<div id="audioEditor" class="ed-overlay" style="display:none">
+  <div class="ed-modal">
+    <div class="ed-head">
+      <strong id="edTitle">Editor de áudio</strong>
+      <span id="edInfo" class="hint" style="margin:0"></span>
+      <button id="edClose" class="ghost small" style="margin-left:auto">✕ Fechar</button>
+    </div>
+    <canvas id="edWave" class="ed-wave" width="1000" height="170"></canvas>
+    <div class="ed-transport">
+      <button id="edPlay" class="wplay" type="button">▶</button>
+      <span id="edTime" class="wtime" style="min-width:90px">0:00 / 0:00</span>
+      <span id="edSel" class="hint" style="margin:0">arraste na onda p/ selecionar um trecho</span>
+    </div>
+    <div class="ed-tools">
+      <button id="edTrim" class="ghost small" type="button">✂️ Cortar (manter seleção)</button>
+      <button id="edCut" class="ghost small" type="button">🗑 Remover seleção</button>
+      <button id="edNorm" class="ghost small" type="button">📈 Normalizar</button>
+      <span class="ed-tool"><button id="edDenoise" class="ghost small" type="button">🧽 Limpar ruído</button>
+        <input id="edDnStr" type="range" min="0" max="1" step="0.05" value="0.7" title="força da limpeza"></span>
+      <span class="ed-tool"><button id="edGainApply" class="ghost small" type="button">🔊 Ganho</button>
+        <input id="edGain" type="range" min="-18" max="18" step="0.5" value="0"><output id="edGainOut">0 dB</output></span>
+      <button id="edFade" class="ghost small" type="button">🎚 Fade nas bordas</button>
+      <button id="edUndo" class="ghost small" type="button">↶ Desfazer</button>
+      <button id="edReset" class="ghost small" type="button">⟲ Reset</button>
+    </div>
+    <div class="ed-foot">
+      <span id="edStatus" class="hint" style="margin:0"></span>
+      <button id="edCancel" class="ghost" type="button" style="margin-left:auto">Cancelar</button>
+      <button id="edApply" type="button">Usar áudio</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 const TARGET_SR = 24000;
@@ -1101,6 +1151,104 @@ async function drawPeaks(canvas, id, buster, au, btn, tEl) {
   canvas.addEventListener("pointerup", e => { canvas._drag = false; try { canvas.releasePointerCapture(e.pointerId); } catch {} });
 }
 
+/* ───────── Editor de áudio (corte / normalização / limpeza) ───────── */
+const ED = { blob: null, peaks: [], sel: null, hist: [], onApply: null, au: null, dur: 0, dragging: false, anchor: 0 };
+let _edDecCtx = null;
+async function peaksFromBlob(blob, n) {
+  _edDecCtx = _edDecCtx || new OfflineAudioContext(1, 1, 24000);
+  const dec = await _edDecCtx.decodeAudioData(await blob.arrayBuffer());
+  const ch = dec.getChannelData(0), out = new Array(n).fill(0), step = ch.length / n;
+  for (let i = 0; i < n; i++) {
+    let mx = 0; const a = Math.floor(i * step), b = Math.floor((i + 1) * step);
+    for (let j = a; j < b; j++) { const v = Math.abs(ch[j]); if (v > mx) mx = v; }
+    out[i] = mx;
+  }
+  const m = Math.max(...out) || 1;
+  return { peaks: out.map(v => v / m), dur: dec.duration };
+}
+function edDraw() {
+  const c = $("edWave"), ctx = c.getContext("2d"), W = c.width, H = c.height, mid = H / 2;
+  ctx.clearRect(0, 0, W, H);
+  const cs = getComputedStyle(document.documentElement);
+  const accent = (cs.getPropertyValue("--accent") || "#18b9a6").trim();
+  const dim = (cs.getPropertyValue("--border") || "#3a4250").trim();
+  if (ED.sel) { ctx.fillStyle = "rgba(24,185,166,.18)"; ctx.fillRect(ED.sel.a * W, 0, (ED.sel.b - ED.sel.a) * W, H); }
+  const n = ED.peaks.length || 1, bw = W / n;
+  const prog = ED.au && ED.au.duration ? ED.au.currentTime / ED.au.duration : 0;
+  for (let i = 0; i < n; i++) {
+    const h = Math.max(2, ED.peaks[i] * (H - 8));
+    ctx.fillStyle = (i / n) <= prog ? accent : dim;
+    ctx.fillRect(i * bw + bw * 0.1, mid - h / 2, Math.max(1, bw * 0.8), h);
+  }
+  ctx.fillStyle = accent; ctx.fillRect(prog * W, 0, 1.5, H);   // cursor
+}
+async function edSetBlob(blob, pushHist) {
+  ED.blob = blob; if (pushHist) ED.hist.push(blob);
+  const { peaks, dur } = await peaksFromBlob(blob, 600);
+  ED.peaks = peaks; ED.dur = dur;
+  if (ED.au) { try { ED.au.pause(); URL.revokeObjectURL(ED.au.src); } catch {} }
+  ED.au = new Audio(URL.createObjectURL(blob)); ED.au.preload = "metadata";
+  ED.au.ontimeupdate = () => { edDraw(); $("edTime").textContent = `${fmtTime(ED.au.currentTime)} / ${fmtTime(ED.dur)}`; };
+  ED.au.onplay = () => $("edPlay").textContent = "⏸";
+  ED.au.onpause = () => $("edPlay").textContent = "▶";
+  ED.au.onended = () => { $("edPlay").textContent = "▶"; edDraw(); };
+  $("edTime").textContent = `0:00 / ${fmtTime(dur)}`;
+  $("edInfo").textContent = `${dur.toFixed(2)}s`;
+  edDraw();
+}
+async function openEditor(blob, onApply, title) {
+  ED.hist = []; ED.sel = null; ED.onApply = onApply;
+  $("edTitle").textContent = title || "Editor de áudio";
+  $("edSel").textContent = "arraste na onda p/ selecionar um trecho";
+  $("edStatus").textContent = "";
+  $("audioEditor").style.display = "flex";
+  await edSetBlob(blob, true);
+}
+function closeEditor() { if (ED.au) { try { ED.au.pause(); } catch {} } $("audioEditor").style.display = "none"; }
+async function edOp(op) {
+  if (!ED.blob) return;
+  $("edStatus").textContent = "processando…";
+  try {
+    const fd = new FormData(); fd.append("audio", ED.blob, "a.wav"); fd.append("op", JSON.stringify(op));
+    const r = await authFetch("/api/audio/edit", { method: "POST", body: fd });
+    if (!r.ok) { let d = r.statusText; try { d = (await r.json()).detail || d; } catch {} throw new Error(d); }
+    ED.sel = null; $("edSel").textContent = "arraste na onda p/ selecionar um trecho";
+    await edSetBlob(await r.blob(), true);
+    $("edStatus").textContent = "ok ✔";
+  } catch (e) { $("edStatus").textContent = ""; toast("Erro: " + e.message, 6000); }
+}
+(function () {
+  const c = $("edWave"); if (!c) return;
+  const frac = x => { const r = c.getBoundingClientRect(); return Math.min(1, Math.max(0, (x - r.left) / r.width)); };
+  c.addEventListener("pointerdown", e => { c.setPointerCapture(e.pointerId); ED.dragging = true; ED.anchor = frac(e.clientX); ED.sel = null; edDraw(); });
+  c.addEventListener("pointermove", e => {
+    if (!ED.dragging) return;
+    const f = frac(e.clientX), a = Math.min(ED.anchor, f), b = Math.max(ED.anchor, f);
+    if (b - a > 0.004) { ED.sel = { a, b }; $("edSel").textContent = `seleção ${(a * ED.dur).toFixed(2)}–${(b * ED.dur).toFixed(2)}s`; }
+    edDraw();
+  });
+  c.addEventListener("pointerup", e => {
+    ED.dragging = false; try { c.releasePointerCapture(e.pointerId); } catch {}
+    if (!ED.sel && ED.au && ED.dur) { ED.au.currentTime = ED.anchor * ED.dur; edDraw(); }   // clique = seek
+  });
+})();
+$("edPlay").onclick = () => { if (ED.au) ED.au.paused ? ED.au.play() : ED.au.pause(); };
+$("edClose").onclick = closeEditor; $("edCancel").onclick = closeEditor;
+$("edTrim").onclick = () => ED.sel ? edOp({ type: "trim", start: ED.sel.a * ED.dur, end: ED.sel.b * ED.dur }) : toast("Arraste na onda p/ selecionar.");
+$("edCut").onclick = () => ED.sel ? edOp({ type: "cut", start: ED.sel.a * ED.dur, end: ED.sel.b * ED.dur }) : toast("Arraste na onda p/ selecionar.");
+$("edNorm").onclick = () => edOp({ type: "normalize" });
+$("edDenoise").onclick = () => edOp({ type: "denoise", strength: parseFloat($("edDnStr").value) });
+$("edGain").oninput = () => $("edGainOut").textContent = (+$("edGain").value).toFixed(1).replace(/\.0$/, "") + " dB";
+$("edGainApply").onclick = () => edOp({ type: "gain", db: parseFloat($("edGain").value) });
+$("edFade").onclick = () => edOp({ type: "fade", ms: 15 });
+$("edUndo").onclick = async () => { if (ED.hist.length > 1) { ED.hist.pop(); ED.sel = null; await edSetBlob(ED.hist[ED.hist.length - 1], false); } };
+$("edReset").onclick = async () => { if (ED.hist.length) { const base = ED.hist[0]; ED.hist = [base]; ED.sel = null; await edSetBlob(base, false); } };
+$("edApply").onclick = () => { const b = ED.blob; closeEditor(); if (ED.onApply) ED.onApply(b); };
+$("editVoiceBtn").onclick = () => {
+  if (!wavBlob) { toast("Importe/grave um áudio primeiro."); return; }
+  openEditor(wavBlob, b => { wavBlob = b; $("previewAudio").src = URL.createObjectURL(b); toast("Áudio editado aplicado ✔"); }, "Editar amostra da voz");
+};
+
 /* ───────── Lista de vozes ───────── */
 async function refreshVoices() {
   const voices = await api("/api/voices");
@@ -1128,6 +1276,7 @@ async function refreshVoices() {
       const limpa = v.denoised ? " · limpa" : "";
       const buster = encodeURIComponent(`${v.duration || 0}-${v.denoised ? 1 : 0}`);
       const cleanBtn = v.preset ? "" : `<button class="ghost small clean">limpar</button>`;
+      const editBtn = v.preset ? "" : `<button class="ghost small edit">✂️ editar</button>`;
       div.innerHTML = `
         <div class="grow"><div class="name">${tag}${v.name}</div>
         <div class="meta">${v.duration}s · ${v.preset ? "voz padrão" : v.created_at}${limpa} · <code class="vid" title="clique p/ copiar o id">${v.id}</code></div>
@@ -1137,12 +1286,29 @@ async function refreshVoices() {
           <span class="wtime">0:00 / ${v.duration ? fmtTime(v.duration) : "0:00"}</span>
         </div></div>
         <audio class="weng" preload="metadata" src="${k(`/api/voices/${v.id}/audio?_v=${buster}`)}"></audio>
+        ${editBtn}
         ${cleanBtn}
         <button class="danger">${v.preset ? "resetar" : "apagar"}</button>`;
       const au = div.querySelector(".weng");
       const wplay = div.querySelector(".wplay");
       drawPeaks(div.querySelector(".wave"), v.id, buster, au, wplay, div.querySelector(".wtime"));
       wplay.onclick = () => { au.paused ? au.play() : au.pause(); };
+      const eb = div.querySelector(".edit");
+      if (eb) eb.onclick = async () => {
+        eb.disabled = true;
+        try {
+          const blob = await (await authFetch(k(`/api/voices/${v.id}/audio?_v=${buster}`))).blob();
+          openEditor(blob, async (b) => {
+            const fd = new FormData(); fd.append("audio", b, "voz.wav");
+            try {
+              await api(`/api/voices/${v.id}/replace`, { method: "POST", body: fd });
+              toast("Voz atualizada ✔ — regenere a fala p/ ouvir");
+              refreshVoices();
+            } catch (e) { toast("Erro ao salvar: " + e.message, 6000); }
+          }, `Editar voz: ${v.name}`);
+        } catch (e) { toast("Erro: " + e.message, 6000); }
+        finally { eb.disabled = false; }
+      };
       const cb = div.querySelector(".clean");
       if (cb) cb.onclick = async () => {
         cb.disabled = true; cb.textContent = "limpando…";
