@@ -98,6 +98,7 @@ _SETTINGS_DEFAULTS = {
     "qwen_top_k": 50,
     "qwen_repetition_penalty": 1.05,
     "qwen_max_new_tokens": 2048,
+    "qwen_do_sample": True,           # False = greedy (determinístico; ignora temperature)
     "qwen_x_vector_only": False,      # clona só pelo x-vector (rápido, menos fiel)
     "qwen_non_streaming": False,      # geração não-streaming (mais qualidade)
     "remote_tts_voice": "",           # nome/preset da voz no servidor remoto (vai como `voice`)
@@ -833,7 +834,7 @@ def update_settings(payload: dict):
         _settings["qwen_top_k"] = int(_clamp(payload["qwen_top_k"], 0, 200, 50))
     if "qwen_max_new_tokens" in payload:
         _settings["qwen_max_new_tokens"] = int(_clamp(payload["qwen_max_new_tokens"], 128, 8192, 2048))
-    for chave in ("qwen_x_vector_only", "qwen_non_streaming"):
+    for chave in ("qwen_do_sample", "qwen_x_vector_only", "qwen_non_streaming"):
         if chave in payload:
             _settings[chave] = bool(payload[chave])
     if "remote_tts_voice" in payload:
@@ -1571,6 +1572,7 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
                 "top_k": int(_settings.get("qwen_top_k", 50)),
                 "repetition_penalty": float(_settings.get("qwen_repetition_penalty", 1.05)),
                 "max_new_tokens": int(_settings.get("qwen_max_new_tokens", 2048)),
+                "do_sample": bool(_settings.get("qwen_do_sample", True)),
                 "x_vector_only_mode": bool(_settings.get("qwen_x_vector_only", False)),
                 "non_streaming_mode": bool(_settings.get("qwen_non_streaming", False))}
         if voice:

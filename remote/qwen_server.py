@@ -45,6 +45,8 @@ def synth(text, language=None, voice=None, ref_text=None, gen=None):
     for k in ("temperature", "top_p", "top_k", "max_new_tokens", "repetition_penalty"):
         if g.get(k) is not None:
             kw[k] = g[k]
+    if g.get("do_sample") is not None:        # False = greedy (determinístico)
+        kw["do_sample"] = bool(g["do_sample"])
     xvec = bool(g.get("x_vector_only_mode", False))       # clona só pelo x-vector (rápido, menos fiel)
     nonstream = bool(g.get("non_streaming_mode", False))  # geração não-streaming (qualidade)
     out = MODEL.generate_voice_clone(text=text, language=_lang(language), ref_audio=wav_path, ref_text=rt,
