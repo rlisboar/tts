@@ -998,7 +998,21 @@ def audio_edit(audio: UploadFile = File(...), op: str = Form(...)):
     elif kind == "denoise":
         a = _denoise_audio(a, sr, _clamp(o.get("strength", 0.7), 0.0, 1.0, 0.7))
     elif kind == "gain":
-        a = (a * float(10 ** (_clamp(o.get("db", 0.0), -24.0, 24.0, 0.0) / 20.0))).astype(np.float32)
+        g = float(10 ** (_clamp(o.get("db", 0.0), -24.0, 24.0, 0.0) / 20.0))
+        s, e = o.get("start"), o.get("end")
+        if s is not None and e is not None:          # ganho só na seleção (envelope com rampa)
+            i0 = max(0, int(float(s) * sr))
+            i1 = min(len(a), int(float(e) * sr))
+            if i1 > i0:
+                env = np.ones(len(a), dtype=np.float32)
+                env[i0:i1] = g
+                ramp = min(int(0.006 * sr), (i1 - i0) // 2)   # 6ms cross-fade nas bordas (sem click)
+                if ramp > 0:
+                    env[i0:i0 + ramp] = np.linspace(1.0, g, ramp, dtype=np.float32)
+                    env[i1 - ramp:i1] = np.linspace(g, 1.0, ramp, dtype=np.float32)
+                a = (a * env).astype(np.float32)
+        else:
+            a = (a * g).astype(np.float32)
     elif kind == "fade":
         a = _fade_edges(a, sr, _clamp(o.get("ms", 12.0), 0.0, 1000.0, 12.0))
     elif kind == "eq":
@@ -1007,9 +1021,13 @@ def audio_edit(audio: UploadFile = File(...), op: str = Form(...)):
         raise HTTPException(400, f"op desconhecido: {kind}")
 
     a = np.asarray(a, dtype=np.float32)
-    pk = float(np.abs(a).max()) if a.size else 0.0
-    if pk > 1.0:                              # trava de segurança
-        a = (a / pk * 0.99).astype(np.float32)
+    # trava: soft-limit (linear até 0.98, tanh acima) -> só dobra os picos que
+    # estouram; NÃO reescala o áudio inteiro (boost num trecho não baixa o resto).
+    over = np.abs(a) > 0.98
+    if over.any():
+        s = np.sign(a); mag = np.abs(a)
+        mag_lim = 0.98 + 0.02 * np.tanh((mag - 0.98) / 0.02)
+        a = np.where(over, s * mag_lim, a).astype(np.float32)
     buf = _io.BytesIO()
     sf.write(buf, a, sr, format="WAV", subtype="PCM_16")
     return Response(content=buf.getvalue(), media_type="audio/wav",

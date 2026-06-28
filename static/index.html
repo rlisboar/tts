@@ -1181,6 +1181,7 @@ function edDraw() {
     ctx.fillRect(i * bw + bw * 0.1, mid - h / 2, Math.max(1, bw * 0.8), h);
   }
   ctx.fillStyle = accent; ctx.fillRect(prog * W, 0, 1.5, H);   // cursor
+  const gb = $("edGainApply"); if (gb) gb.textContent = ED.sel ? "🔊 Ganho (trecho)" : "🔊 Ganho (tudo)";
 }
 async function edSetBlob(blob, pushHist) {
   ED.blob = blob; if (pushHist) ED.hist.push(blob);
@@ -1239,7 +1240,11 @@ $("edCut").onclick = () => ED.sel ? edOp({ type: "cut", start: ED.sel.a * ED.dur
 $("edNorm").onclick = () => edOp({ type: "normalize" });
 $("edDenoise").onclick = () => edOp({ type: "denoise", strength: parseFloat($("edDnStr").value) });
 $("edGain").oninput = () => $("edGainOut").textContent = (+$("edGain").value).toFixed(1).replace(/\.0$/, "") + " dB";
-$("edGainApply").onclick = () => edOp({ type: "gain", db: parseFloat($("edGain").value) });
+$("edGainApply").onclick = () => {
+  const op = { type: "gain", db: parseFloat($("edGain").value) };
+  if (ED.sel) { op.start = ED.sel.a * ED.dur; op.end = ED.sel.b * ED.dur; }   // ganho só no trecho
+  edOp(op);
+};
 $("edFade").onclick = () => edOp({ type: "fade", ms: 15 });
 $("edUndo").onclick = async () => { if (ED.hist.length > 1) { ED.hist.pop(); ED.sel = null; await edSetBlob(ED.hist[ED.hist.length - 1], false); } };
 $("edReset").onclick = async () => { if (ED.hist.length) { const base = ED.hist[0]; ED.hist = [base]; ED.sel = null; await edSetBlob(base, false); } };
