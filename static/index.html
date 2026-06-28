@@ -726,8 +726,10 @@
         <label class="check"><input type="checkbox" id="qDoSample" checked> amostragem (do_sample; desligado = greedy/determinístico)</label>
         <label class="check"><input type="checkbox" id="qXvec"> x-vector only (clona rápido, menos fiel)</label>
         <label class="check"><input type="checkbox" id="qNonStream"> não-streaming (mais qualidade, mais lento)</label>
+        <label class="cfg-label">Voice design (descrição LIVRE — selecione a voz "Voice design")
+          <textarea id="qVoiceDesign" style="min-height:46px" placeholder="ex.: voz feminina jovem, alegre e calorosa, tom suave, sotaque brasileiro"></textarea></label>
         <div class="row" style="margin-top:4px"><button id="qReset" class="ghost small" type="button">↺ Restaurar padrões</button></div>
-        <p class="hint">Params do Qwen3-TTS (AR/LLM). Temperature/top-p/top-k controlam variação; repetition penalty evita repetição. Só clona (sem voice design por tags).</p>
+        <p class="hint">Params do Qwen3-TTS (AR/LLM). Temperature/top-p/top-k controlam variação; repetition penalty evita repetição. Voice design é por <b>texto livre</b> (acima) — selecione a voz "Voice design".</p>
       </section>
 
       <section class="cfg-sec">
@@ -761,7 +763,7 @@
           <input type="text" id="remoteTtsUrl" placeholder="http://solaris:8800/tts"></label>
         <label class="cfg-label">URL Qwen3-TTS
           <input type="text" id="remoteTtsUrlQwen" placeholder="http://solaris:8801/tts"></label>
-        <p class="hint">Os dois rodam na mesma RTX e compartilham as vozes — troque o engine p/ comparar a mesma voz. Qwen3 só clona (sem voice design por tags).</p>
+        <p class="hint">Os dois rodam na mesma RTX e compartilham as vozes — troque o engine p/ comparar a mesma voz. Qwen3 também faz voice design (por texto livre, não tags).</p>
         <label class="cfg-label">Voz remota (nome/preset)
           <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
         <label class="cfg-label">API key (opcional)
@@ -1468,11 +1470,13 @@ $("ttsBtn").onclick = async () => {
   const text = $("ttsText").value.trim();
   const voice_id = $("voiceSelect").value;
   const designMode = voice_id === "__design__";
-  const designInstruct = $("oInstruct").value.trim();
+  const qwenEngine = $("remoteTts").checked && $("remoteTtsEngine").value === "qwen3";
+  const designInstruct = (qwenEngine ? $("qVoiceDesign").value : $("oInstruct").value).trim();
   if (!text) { toast("Digite um texto."); return; }
   if (!voice_id) { toast("Grave e salve uma voz primeiro."); return; }
   if (designMode && !designInstruct) {
-    toast("Voice design: descreva a voz em Configurações → Voice design.");
+    toast(qwenEngine ? "Voice design (Qwen): descreva a voz em Configurações → Qwen3 e Salve."
+                     : "Voice design: descreva a voz em Configurações → Voice design.");
     return;
   }
 
@@ -1791,8 +1795,14 @@ $("transRecBtn").onclick = async () => {
 function transVoiceOk() {
   const v = $("transVoice").value;
   if (!v) { toast("Escolha uma voz."); return false; }
-  if (v === "__design__" && !$("oInstruct").value.trim()) {
-    toast("Voice design vazio — defina as tags em Configurações → Voice design.", 6000); return false;
+  if (v === "__design__") {
+    const qwen = $("remoteTts").checked && $("remoteTtsEngine").value === "qwen3";
+    const txt = (qwen ? $("qVoiceDesign").value : $("oInstruct").value).trim();
+    if (!txt) {
+      toast(qwen ? "Voice design (Qwen): descreva a voz em Configurações → Qwen3 e Salve."
+                 : "Voice design vazio — defina as tags em Configurações → Voice design.", 6000);
+      return false;
+    }
   }
   return true;
 }
@@ -2123,6 +2133,7 @@ async function loadSettings() {
     $("qDoSample").checked = s.qwen_do_sample ?? true;
     $("qXvec").checked = !!s.qwen_x_vector_only;
     $("qNonStream").checked = !!s.qwen_non_streaming;
+    $("qVoiceDesign").value = s.qwen_voice_design || "";
     applyEngineUI();
     $("remoteTtsExtra").value = s.remote_tts_extra || "";
     $("remoteBaseUrl").value = s.remote_base_url || "";
@@ -2204,6 +2215,7 @@ $("cfgSave").onclick = async () => {
         qwen_do_sample: $("qDoSample").checked,
         qwen_x_vector_only: $("qXvec").checked,
         qwen_non_streaming: $("qNonStream").checked,
+        qwen_voice_design: $("qVoiceDesign").value,
         remote_tts_voice: $("remoteTtsVoice").value,
         remote_tts_extra: $("remoteTtsExtra").value,
         remote_base_url: $("remoteBaseUrl").value,
