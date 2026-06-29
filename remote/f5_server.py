@@ -23,7 +23,8 @@ def _voice_paths(v):
     return (w if os.path.exists(w) else None), (t if os.path.exists(t) else None)
 
 print("loading F5-TTS pt-br...", flush=True)
-MODEL = F5TTS(model="F5TTS_Base", ckpt_file=CKPT, device=DEV)
+# ode_method=midpoint -> integração de 2ª ordem (mais qualidade que euler)
+MODEL = F5TTS(model="F5TTS_Base", ckpt_file=CKPT, ode_method="midpoint", device=DEV)
 SR = 24000
 print("ready", flush=True)
 
