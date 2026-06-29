@@ -85,6 +85,8 @@ _SETTINGS_DEFAULTS = {
     "stt_max_no_speech": 0.6,         # rejeita se prob. de "sem fala" acima disto (0–1)
     "stt_min_logprob": -1.0,          # rejeita se confiança média abaixo disto (-5–0)
     "stt_max_compression": 2.4,       # rejeita se repetitivo demais (alucinação) (1–10)
+    "stt_beam": 5,                    # beam do STT remoto: 1=rápido, 5=padrão, 8=qualidade
+    "perf_priority": "equilibrio",    # preset qualidade | equilibrio | velocidade (ajusta num_steps + stt_beam)
     # Modelos remotos (API OpenAI-compatível). base_url deve terminar em /v1
     # (ex.: http://rtx-host:8000/v1). api_key opcional. Tudo local por padrão.
     # base_url + api_key ficam locais (settings.json é gitignored). Vazio = local.
@@ -817,6 +819,11 @@ def update_settings(payload: dict):
         _settings["stt_min_logprob"] = _clamp(payload["stt_min_logprob"], -5.0, 0.0, -1.0)
     if "stt_max_compression" in payload:
         _settings["stt_max_compression"] = _clamp(payload["stt_max_compression"], 1.0, 10.0, 2.4)
+    if "stt_beam" in payload:
+        _settings["stt_beam"] = int(_clamp(payload["stt_beam"], 1, 10, 5))
+    if "perf_priority" in payload:
+        p = str(payload["perf_priority"] or "equilibrio").lower()
+        _settings["perf_priority"] = p if p in ("qualidade", "equilibrio", "velocidade") else "equilibrio"
     for chave in ("remote_tts", "remote_translate", "remote_stt"):
         if chave in payload:
             _settings[chave] = bool(payload[chave])
@@ -1692,7 +1699,8 @@ def _transcribe_remote(audio_path: Path, language: str | None):
     base = (_settings.get("remote_stt_base_url") or _settings["remote_base_url"]).rstrip("/")
     key = _settings.get("remote_stt_key") or _settings.get("remote_api_key") or ""
     data = {"model": _settings.get("remote_stt_model") or "whisper-1",
-            "response_format": "verbose_json"}
+            "response_format": "verbose_json",
+            "beam_size": int(_settings.get("stt_beam", 5))}   # qualidade↔velocidade
     if language and language not in ("auto",):
         data["language"] = language
     headers = {"Authorization": f"Bearer {key}"} if key else {}
