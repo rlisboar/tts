@@ -90,16 +90,8 @@ _SETTINGS_DEFAULTS = {
     # base_url + api_key ficam locais (settings.json é gitignored). Vazio = local.
     "remote_tts": False,              # síntese (OmniVoice) numa máquina remota (ex.: RTX)
     "remote_tts_url": "",             # URL completa do endpoint, ex.: http://solaris:8800/tts
-    "remote_tts_engine": "omnivoice", # engine do TTS remoto: omnivoice | qwen3 | f5
+    "remote_tts_engine": "omnivoice", # engine do TTS remoto: omnivoice | qwen3
     "remote_tts_url_qwen": "",        # URL do servidor Qwen3-TTS (ex.: http://solaris:8801/tts)
-    "remote_tts_url_f5": "",          # URL do servidor F5-TTS pt-br (ex.: http://solaris:8802/tts)
-    # params do F5-TTS (flow-matching) — só valem com engine=f5
-    "f5_nfe_step": 32,
-    "f5_cfg_strength": 2.0,
-    "f5_sway": -1.0,
-    "f5_cross_fade": 0.15,
-    "f5_target_rms": 0.1,
-    "f5_remove_silence": False,
     # params de geração do Qwen3-TTS (AR/LLM) — só valem com engine=qwen3
     "qwen_temperature": 0.9,
     "qwen_top_p": 1.0,
@@ -832,19 +824,9 @@ def update_settings(payload: dict):
         _settings["remote_tts_url"] = str(payload["remote_tts_url"] or "").strip()[:300]
     if "remote_tts_url_qwen" in payload:
         _settings["remote_tts_url_qwen"] = str(payload["remote_tts_url_qwen"] or "").strip()[:300]
-    if "remote_tts_url_f5" in payload:
-        _settings["remote_tts_url_f5"] = str(payload["remote_tts_url_f5"] or "").strip()[:300]
     if "remote_tts_engine" in payload:
         e = str(payload["remote_tts_engine"] or "omnivoice").lower()
-        _settings["remote_tts_engine"] = e if e in ("omnivoice", "qwen3", "f5") else "omnivoice"
-    for chave, lo, hi, df in (("f5_cfg_strength", 0.0, 6.0, 2.0), ("f5_sway", -2.0, 2.0, -1.0),
-                              ("f5_cross_fade", 0.0, 1.0, 0.15), ("f5_target_rms", 0.0, 1.0, 0.1)):
-        if chave in payload:
-            _settings[chave] = _clamp(payload[chave], lo, hi, df)
-    if "f5_nfe_step" in payload:
-        _settings["f5_nfe_step"] = int(_clamp(payload["f5_nfe_step"], 4, 64, 32))
-    if "f5_remove_silence" in payload:
-        _settings["f5_remove_silence"] = bool(payload["f5_remove_silence"])
+        _settings["remote_tts_engine"] = e if e in ("omnivoice", "qwen3") else "omnivoice"
     for chave, lo, hi, df in (("qwen_temperature", 0.0, 2.0, 0.9), ("qwen_top_p", 0.0, 1.0, 1.0),
                               ("qwen_repetition_penalty", 1.0, 2.0, 1.05)):
         if chave in payload:
@@ -1586,22 +1568,7 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
     headers = {"Content-Type": "application/json"}
     if _settings.get("remote_api_key"):
         headers["Authorization"] = f"Bearer {_settings['remote_api_key']}"
-    f5url = (_settings.get("remote_tts_url_f5") or "").strip()
-    if engine == "f5" and f5url:
-        # F5-TTS pt-br (flow-matching): clonagem nativa em BR; params próprios.
-        url = f5url
-        body = {"text": text, "language": "pt", "speed": 1.0,
-                "nfe_step": int(_settings.get("f5_nfe_step", 32)),
-                "cfg_strength": float(_settings.get("f5_cfg_strength", 2.0)),
-                "sway_sampling_coef": float(_settings.get("f5_sway", -1.0)),
-                "cross_fade_duration": float(_settings.get("f5_cross_fade", 0.15)),
-                "target_rms": float(_settings.get("f5_target_rms", 0.1)),
-                "remove_silence": bool(_settings.get("f5_remove_silence", False))}
-        if omni.get("seed") is not None and int(omni["seed"]) >= 0:
-            body["seed"] = int(omni["seed"])
-        if voice:
-            body["voice"] = voice
-    elif engine == "qwen3" and qurl:
+    if engine == "qwen3" and qurl:
         # Qwen3-TTS (AR/LLM): params próprios; só clonagem (precisa de voice).
         url = qurl
         body = {"text": text, "language": (language or "pt"), "speed": 1.0,
