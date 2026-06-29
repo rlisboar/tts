@@ -833,6 +833,7 @@
         <label class="check"><input type="checkbox" id="remoteTranslate"> Tradução via API</label>
         <label class="cfg-label">Modelo de tradução
           <input type="text" id="remoteTranslateModel" placeholder="gpt-4o-mini"></label>
+        <p class="hint" style="margin-top:0">Na RTX: <code>qwen2.5-14b-instruct</code> (qualidade) ou <code>qwen2.5-7b-instruct</code> (rápido). A Prioridade troca automático.</p>
         <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
         <label class="cfg-label">Modelo de transcrição
           <input type="text" id="remoteSttModel" placeholder="whisper-1"></label>
@@ -1457,10 +1458,11 @@ const OMNI_DEFAULTS = [["oNumSteps", "oNumStepsOut", 16, 0], ["oGuid", "oGuidOut
   ["oClassT", "oClassTOut", 0, 2], ["oPosT", "oPosTOut", 5, 1], ["oLayer", "oLayerOut", 5, 1],
   ["oTshift", "oTshiftOut", 0.1, 2]];
 // Prioridade qualidade↔velocidade: ajusta passos do TTS + beam do STT
+// Preset cobre o pipeline TODO: STT (beam) + tradução (14B/7B) + TTS (passos)
 const PERF_PRESETS = {
-  qualidade:  { omni_num_steps: 24, stt_beam: 8 },
-  equilibrio: { omni_num_steps: 16, stt_beam: 5 },
-  velocidade: { omni_num_steps: 8,  stt_beam: 1 },
+  qualidade:  { omni_num_steps: 24, stt_beam: 8, remote_translate_model: "qwen2.5-14b-instruct" },
+  equilibrio: { omni_num_steps: 16, stt_beam: 5, remote_translate_model: "qwen2.5-14b-instruct" },
+  velocidade: { omni_num_steps: 8,  stt_beam: 1, remote_translate_model: "qwen2.5-7b-instruct" },
 };
 async function applyPerf() {
   const p = $("perfPriority").value, preset = PERF_PRESETS[p] || PERF_PRESETS.equilibrio;
@@ -1468,7 +1470,9 @@ async function applyPerf() {
     await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ perf_priority: p, ...preset }) });
     $("oNumSteps").value = preset.omni_num_steps; $("oNumStepsOut").textContent = preset.omni_num_steps;
-    toast("Prioridade: " + p + " · TTS " + preset.omni_num_steps + " passos · STT beam " + preset.stt_beam);
+    if ($("remoteTranslateModel")) $("remoteTranslateModel").value = preset.remote_translate_model;
+    const mt = preset.remote_translate_model.includes("7b") ? "7B (rápido)" : "14B (qualidade)";
+    toast("Prioridade: " + p + " · STT beam " + preset.stt_beam + " · tradutor " + mt + " · TTS " + preset.omni_num_steps + " passos");
   } catch (e) { toast("Erro: " + e.message); }
 }
 $("perfPriority").onchange = applyPerf;
