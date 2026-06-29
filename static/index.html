@@ -665,6 +665,13 @@
     <div class="config-body">
       <section class="cfg-sec">
         <h3 class="cfg-sec-h">Modelo &amp; geração</h3>
+        <label class="cfg-label">Prioridade (qualidade ↔ velocidade)
+          <select id="perfPriority">
+            <option value="qualidade">Qualidade (mais passos/beam, mais lento)</option>
+            <option value="equilibrio">Equilíbrio (padrão)</option>
+            <option value="velocidade">Velocidade (menos passos/beam, mais rápido)</option>
+          </select></label>
+        <p class="hint" style="margin-top:0">Ajusta os passos de geração do TTS e o beam do STT. Os filtros anti-ruído NÃO deixam mais lento (só checam o resultado).</p>
         <label class="cfg-label">Modelo
           <select id="cfgModel">
             <option value="omnivoice">OmniVoice — 646 idiomas</option>
@@ -1449,6 +1456,23 @@ $("remoteTts").addEventListener("change", applyEngineUI);
 const OMNI_DEFAULTS = [["oNumSteps", "oNumStepsOut", 16, 0], ["oGuid", "oGuidOut", 2, 1],
   ["oClassT", "oClassTOut", 0, 2], ["oPosT", "oPosTOut", 5, 1], ["oLayer", "oLayerOut", 5, 1],
   ["oTshift", "oTshiftOut", 0.1, 2]];
+// Prioridade qualidade↔velocidade: ajusta passos do TTS + beam do STT
+const PERF_PRESETS = {
+  qualidade:  { omni_num_steps: 24, stt_beam: 8 },
+  equilibrio: { omni_num_steps: 16, stt_beam: 5 },
+  velocidade: { omni_num_steps: 8,  stt_beam: 1 },
+};
+async function applyPerf() {
+  const p = $("perfPriority").value, preset = PERF_PRESETS[p] || PERF_PRESETS.equilibrio;
+  try {
+    await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ perf_priority: p, ...preset }) });
+    $("oNumSteps").value = preset.omni_num_steps; $("oNumStepsOut").textContent = preset.omni_num_steps;
+    toast("Prioridade: " + p + " · TTS " + preset.omni_num_steps + " passos · STT beam " + preset.stt_beam);
+  } catch (e) { toast("Erro: " + e.message); }
+}
+$("perfPriority").onchange = applyPerf;
+
 $("oReset").onclick = () => {
   for (const [id, out, val, dec] of OMNI_DEFAULTS) {
     $(id).value = val;
@@ -2190,6 +2214,7 @@ async function loadSettings() {
     $("oDur").value = s.omni_duration_s ?? "";
     $("oRefMax").value = s.omni_ref_max_s ?? 10;
     $("cfgPrecision").value = s.omni_precision || "bf16";
+    $("perfPriority").value = s.perf_priority || "equilibrio";
     for (const [sl, out, key] of [["audGain", "audGainOut", "audio_gain_db"], ["audLow", "audLowOut", "audio_eq_low_db"],
         ["audMid", "audMidOut", "audio_eq_mid_db"], ["audHigh", "audHighOut", "audio_eq_high_db"]]) {
       $(sl).value = s[key] ?? 0;

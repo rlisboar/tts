@@ -314,14 +314,15 @@ async def openai_speech(r: SpeechReq):
     return Response(content=data, media_type=media,
         headers={"X-Gen-Seconds":f"{dt:.3f}","X-Audio-Seconds":f"{dur:.2f}","X-RTF":f"{dt/max(dur,1e-9):.4f}"})
 
-async def _asr(file, task, language, response_format):
+async def _asr(file, task, language, response_format, beam=5):
     data = await file.read()
     suffix = os.path.splitext(file.filename or "a.wav")[1] or ".wav"
     def _write_tmp(b):
         tf=tempfile.NamedTemporaryFile(suffix=suffix, delete=False); tf.write(b); tf.close(); return tf.name
     path = await offload(IO_POOL, _write_tmp, data)
     try:
-        text, segs, info = await offload(ASR_POOL, run_asr, path, task, language)
+        beam = max(1, min(10, int(beam or 5)))   # 1=rápido, 5=padrão, 8+=qualidade
+        text, segs, info = await offload(ASR_POOL, run_asr, path, task, language, beam)
     finally:
         try: os.unlink(path)
         except OSError: pass
@@ -336,11 +337,12 @@ async def _asr(file, task, language, response_format):
 @app.post("/v1/audio/transcriptions")
 async def transcriptions(file: UploadFile = File(...), model: str = Form("whisper-1"),
                          language: str = Form(None), prompt: str = Form(None),
-                         response_format: str = Form("json"), temperature: float = Form(0.0)):
-    return await _asr(file, "transcribe", language, response_format)
+                         response_format: str = Form("json"), temperature: float = Form(0.0),
+                         beam_size: int = Form(5)):
+    return await _asr(file, "transcribe", language, response_format, beam_size)
 
 @app.post("/v1/audio/translations")
 async def translations(file: UploadFile = File(...), model: str = Form("whisper-1"),
                        prompt: str = Form(None), response_format: str = Form("json"),
-                       temperature: float = Form(0.0)):
-    return await _asr(file, "translate", None, response_format)
+                       temperature: float = Form(0.0), beam_size: int = Form(5)):
+    return await _asr(file, "translate", None, response_format, beam_size)
