@@ -174,29 +174,33 @@ except Exception as e: print("warmup err:", repr(e)[:160], flush=True)
 
 # ---------- MT: tradutor LLM (4-bit) — na 4070 ociosa (cuda:1), isolado do OmniVoice ----------
 # Carrega em thread separada: o TTS sobe na hora; a tradução fica pronta ~1-2 min depois.
+# Dois tradutores: 14B (qualidade, cuda:0/4090) e 7B (velocidade, cuda:1/4070).
+# /v1/chat/completions roteia pelo NOME do modelo ("7b" -> rápido).
 MT_REPO = os.getenv("OMNI_MT_REPO", "Qwen/Qwen2.5-14B-Instruct")
 MT_DEV  = os.getenv("OMNI_MT_DEV",  "cuda:1" if torch.cuda.device_count() > 1 else "cuda:0")
-mt = {"tok": None, "model": None, "ready": False, "err": None}
-def _load_mt():
+MT_FAST_REPO = os.getenv("OMNI_MT_FAST_REPO", "Qwen/Qwen2.5-7B-Instruct")
+MT_FAST_DEV  = os.getenv("OMNI_MT_FAST_DEV",  "cuda:1" if torch.cuda.device_count() > 1 else "cuda:0")
+mt      = {"tok": None, "model": None, "ready": False, "err": None, "repo": MT_REPO, "dev": MT_DEV}
+mt_fast = {"tok": None, "model": None, "ready": False, "err": None, "repo": MT_FAST_REPO, "dev": MT_FAST_DEV}
+def _load_into(slot):
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                                  bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
-        print(f"loading MT {MT_REPO} (4-bit) on {MT_DEV}...", flush=True)
-        tok = AutoTokenizer.from_pretrained(MT_REPO)
-        model = AutoModelForCausalLM.from_pretrained(
-            MT_REPO, quantization_config=bnb, device_map={"": MT_DEV}, torch_dtype=torch.bfloat16)
-        model.eval()
-        mt["tok"], mt["model"], mt["ready"] = tok, model, True
-        print(f"MT ready on {MT_DEV}", flush=True)
+        print(f"loading MT {slot['repo']} (4-bit) on {slot['dev']}...", flush=True)
+        slot["tok"] = AutoTokenizer.from_pretrained(slot["repo"])
+        slot["model"] = AutoModelForCausalLM.from_pretrained(
+            slot["repo"], quantization_config=bnb, device_map={"": slot["dev"]}, torch_dtype=torch.bfloat16)
+        slot["model"].eval(); slot["ready"] = True
+        print(f"MT ready: {slot['repo']} on {slot['dev']}", flush=True)
     except Exception as e:  # noqa: BLE001
-        mt["err"] = repr(e)[:200]; print("MT load failed:", mt["err"], flush=True)
+        slot["err"] = repr(e)[:200]; print("MT load failed:", slot["err"], flush=True)
 MT_SYS = ("You are a professional translation engine. Follow the user's instruction and "
           "translate into the requested target language ONLY. Render the meaning idiomatically, "
           "never word-for-word. Output ONLY the translation — no explanations, no quotes, and do "
           "NOT emit any other language or writing system (e.g. Chinese characters) than the requested target.")
-def mt_chat(messages, temperature=0.3, max_new_tokens=512):
-    tok, model = mt["tok"], mt["model"]
+def mt_chat(slot, messages, temperature=0.3, max_new_tokens=512):
+    tok, model = slot["tok"], slot["model"]
     if not messages or messages[0].get("role") != "system":   # injeta trava de idioma se faltar
         messages = [{"role": "system", "content": MT_SYS}] + list(messages)
     prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -210,7 +214,8 @@ def mt_chat(messages, temperature=0.3, max_new_tokens=512):
         out = model.generate(**inputs, **kw)
     return tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
 import threading as _th
-_th.Thread(target=_load_mt, daemon=True).start()
+_th.Thread(target=_load_into, args=(mt,), daemon=True).start()
+_th.Thread(target=_load_into, args=(mt_fast,), daemon=True).start()
 
 app = FastAPI(title="OmniVoice TTS + Whisper ASR + MT", version="2.4",
               description="OpenAI-compatible speech + transcription + chat(translation) on dual RTX, voice cloning + voice design")
@@ -244,25 +249,28 @@ class ChatReq(BaseModel):                       # OpenAI /v1/chat/completions (t
 def health():
     return {"status":"ok","gpu":torch.cuda.get_device_name(0),"tts_sr":SR,"asr_model":"large-v3",
             "mt":{"repo":MT_REPO,"dev":MT_DEV,"ready":mt["ready"],"err":mt["err"]},
+            "mt_fast":{"repo":MT_FAST_REPO,"dev":MT_FAST_DEV,"ready":mt_fast["ready"],"err":mt_fast["err"]},
             "pools":{"tts":TTS_WORKERS,"asr":ASR_WORKERS,"io":IO_WORKERS},
             "voices":len([f for f in os.listdir(VOICES_DIR) if f.endswith('.wav')]),
             "vram_mb":round(torch.cuda.memory_allocated()/1024/1024,1)}
 
 @app.get("/v1/models")
 def models():
-    ids=["omnivoice","tts-1","gpt-4o-mini-tts","whisper-1","large-v3","qwen2.5-14b-instruct"]
+    ids=["omnivoice","tts-1","gpt-4o-mini-tts","whisper-1","large-v3","qwen2.5-14b-instruct","qwen2.5-7b-instruct"]
     return {"object":"list","data":[{"id":i,"object":"model","owned_by":"local"} for i in ids]}
 
 @app.post("/v1/chat/completions")
 async def chat_completions(r: ChatReq):
-    if not mt["ready"]:
-        raise HTTPException(503, f"MT model not ready ({mt['err'] or 'loading'})")
+    fast = "7b" in str(r.model or "").lower()        # roteia: "...7b..." -> tradutor rápido
+    slot = mt_fast if fast else mt
+    if not slot["ready"]:
+        raise HTTPException(503, f"MT {'7B' if fast else '14B'} not ready ({slot['err'] or 'loading'})")
     msgs=[{"role":str(m.get("role","user")),"content":str(m.get("content",""))} for m in (r.messages or [])]
     if not msgs: raise HTTPException(400, "messages is required")
     t=time.time()
-    text=await offload(MT_POOL, mt_chat, msgs, float(r.temperature if r.temperature is not None else 0.3), int(r.max_tokens or 512))
+    text=await offload(MT_POOL, mt_chat, slot, msgs, float(r.temperature if r.temperature is not None else 0.3), int(r.max_tokens or 512))
     return {"id":"chatcmpl-local","object":"chat.completion","created":int(time.time()),
-            "model": r.model or MT_REPO,
+            "model": r.model or slot["repo"],
             "choices":[{"index":0,"message":{"role":"assistant","content":text},"finish_reason":"stop"}],
             "usage":{},"x_gen_seconds":round(time.time()-t,3)}
 
