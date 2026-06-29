@@ -66,10 +66,22 @@ try:
 except Exception as e:
     print("compile skip:", repr(e)[:120], flush=True)
 
-# ---------- ASR: faster-whisper large-v3 (float16) ----------
+# ---------- ASR: faster-whisper — large-v3 (qualidade) + large-v3-turbo (rápido) ----------
 print(f"loading Whisper large-v3 (float16, num_workers={ASR_WORKERS})...", flush=True)
 asr = WhisperModel("large-v3", device="cuda", device_index=0, compute_type="float16", num_workers=ASR_WORKERS)
-print("whisper ready", flush=True)
+print("whisper large-v3 ready", flush=True)
+asr_turbo = None
+def _load_turbo():
+    global asr_turbo
+    try:
+        print("loading Whisper large-v3-turbo (rápido)...", flush=True)
+        asr_turbo = WhisperModel("large-v3-turbo", device="cuda", device_index=0,
+                                 compute_type="float16", num_workers=ASR_WORKERS)
+        print("whisper turbo ready", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print("turbo load failed:", repr(e)[:160], flush=True)
+import threading as _tht
+_tht.Thread(target=_load_turbo, daemon=True).start()
 
 def _safe_name(name):
     return re.sub(r"[^a-zA-Z0-9_-]", "_", str(name or "").strip())[:64]
@@ -150,8 +162,9 @@ def to_srt(segs):
     return "\n".join(f"{i}\n{_ts(s['start'],',')} --> {_ts(s['end'],',')}\n{s['text'].strip()}\n" for i,s in enumerate(segs,1))
 def to_vtt(segs):
     return "WEBVTT\n\n"+"\n".join(f"{_ts(s['start'])} --> {_ts(s['end'])}\n{s['text'].strip()}\n" for s in segs)
-def run_asr(path, task, language, beam=5):
-    segments, info = asr.transcribe(
+def run_asr(path, task, language, beam=5, turbo=False):
+    eng = asr_turbo if (turbo and asr_turbo is not None) else asr
+    segments, info = eng.transcribe(
         path, task=task, language=language, beam_size=beam,
         temperature=0.0, condition_on_previous_text=False,
         no_speech_threshold=0.6, log_prob_threshold=-1.0, compression_ratio_threshold=2.4,
@@ -248,6 +261,7 @@ class ChatReq(BaseModel):                       # OpenAI /v1/chat/completions (t
 @app.get("/health")
 def health():
     return {"status":"ok","gpu":torch.cuda.get_device_name(0),"tts_sr":SR,"asr_model":"large-v3",
+            "asr_turbo_ready": asr_turbo is not None,
             "mt":{"repo":MT_REPO,"dev":MT_DEV,"ready":mt["ready"],"err":mt["err"]},
             "mt_fast":{"repo":MT_FAST_REPO,"dev":MT_FAST_DEV,"ready":mt_fast["ready"],"err":mt_fast["err"]},
             "pools":{"tts":TTS_WORKERS,"asr":ASR_WORKERS,"io":IO_WORKERS},
@@ -322,7 +336,7 @@ async def openai_speech(r: SpeechReq):
     return Response(content=data, media_type=media,
         headers={"X-Gen-Seconds":f"{dt:.3f}","X-Audio-Seconds":f"{dur:.2f}","X-RTF":f"{dt/max(dur,1e-9):.4f}"})
 
-async def _asr(file, task, language, response_format, beam=5):
+async def _asr(file, task, language, response_format, beam=5, model=""):
     data = await file.read()
     suffix = os.path.splitext(file.filename or "a.wav")[1] or ".wav"
     def _write_tmp(b):
@@ -330,7 +344,8 @@ async def _asr(file, task, language, response_format, beam=5):
     path = await offload(IO_POOL, _write_tmp, data)
     try:
         beam = max(1, min(10, int(beam or 5)))   # 1=rápido, 5=padrão, 8+=qualidade
-        text, segs, info = await offload(ASR_POOL, run_asr, path, task, language, beam)
+        turbo = "turbo" in str(model or "").lower()   # modelo "...turbo" -> ASR rápido
+        text, segs, info = await offload(ASR_POOL, run_asr, path, task, language, beam, turbo)
     finally:
         try: os.unlink(path)
         except OSError: pass
@@ -347,10 +362,10 @@ async def transcriptions(file: UploadFile = File(...), model: str = Form("whispe
                          language: str = Form(None), prompt: str = Form(None),
                          response_format: str = Form("json"), temperature: float = Form(0.0),
                          beam_size: int = Form(5)):
-    return await _asr(file, "transcribe", language, response_format, beam_size)
+    return await _asr(file, "transcribe", language, response_format, beam_size, model)
 
 @app.post("/v1/audio/translations")
 async def translations(file: UploadFile = File(...), model: str = Form("whisper-1"),
                        prompt: str = Form(None), response_format: str = Form("json"),
                        temperature: float = Form(0.0), beam_size: int = Form(5)):
-    return await _asr(file, "translate", None, response_format, beam_size)
+    return await _asr(file, "translate", None, response_format, beam_size, model)

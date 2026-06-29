@@ -837,6 +837,7 @@
         <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
         <label class="cfg-label">Modelo de transcrição
           <input type="text" id="remoteSttModel" placeholder="whisper-1"></label>
+        <p class="hint" style="margin-top:0">Na RTX: <code>whisper-large-v3</code> (qualidade) ou <code>whisper-large-v3-turbo</code> (rápido). A Prioridade troca automático.</p>
         <label class="cfg-label">URL do STT (proxy externo — opcional)
           <input type="text" id="remoteSttBaseUrl" placeholder="vazio = usa a URL base acima"></label>
         <label class="cfg-label">Chave do STT (opcional)
@@ -1460,9 +1461,9 @@ const OMNI_DEFAULTS = [["oNumSteps", "oNumStepsOut", 16, 0], ["oGuid", "oGuidOut
 // Prioridade qualidade↔velocidade: ajusta passos do TTS + beam do STT
 // Preset cobre o pipeline TODO: STT (beam) + tradução (14B/7B) + TTS (passos)
 const PERF_PRESETS = {
-  qualidade:  { omni_num_steps: 24, stt_beam: 8, remote_translate_model: "qwen2.5-14b-instruct" },
-  equilibrio: { omni_num_steps: 16, stt_beam: 5, remote_translate_model: "qwen2.5-14b-instruct" },
-  velocidade: { omni_num_steps: 8,  stt_beam: 1, remote_translate_model: "qwen2.5-7b-instruct" },
+  qualidade:  { omni_num_steps: 24, stt_beam: 8, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "whisper-large-v3" },
+  equilibrio: { omni_num_steps: 16, stt_beam: 5, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "whisper-large-v3" },
+  velocidade: { omni_num_steps: 8,  stt_beam: 1, remote_translate_model: "qwen2.5-7b-instruct",  remote_stt_model: "whisper-large-v3-turbo" },
 };
 async function applyPerf() {
   const p = $("perfPriority").value, preset = PERF_PRESETS[p] || PERF_PRESETS.equilibrio;
@@ -1471,8 +1472,10 @@ async function applyPerf() {
       body: JSON.stringify({ perf_priority: p, ...preset }) });
     $("oNumSteps").value = preset.omni_num_steps; $("oNumStepsOut").textContent = preset.omni_num_steps;
     if ($("remoteTranslateModel")) $("remoteTranslateModel").value = preset.remote_translate_model;
-    const mt = preset.remote_translate_model.includes("7b") ? "7B (rápido)" : "14B (qualidade)";
-    toast("Prioridade: " + p + " · STT beam " + preset.stt_beam + " · tradutor " + mt + " · TTS " + preset.omni_num_steps + " passos");
+    if ($("remoteSttModel")) $("remoteSttModel").value = preset.remote_stt_model;
+    const mt = preset.remote_translate_model.includes("7b") ? "7B" : "14B";
+    const stt = preset.remote_stt_model.includes("turbo") ? "turbo" : "large-v3";
+    toast("Prioridade: " + p + " · STT " + stt + "/beam " + preset.stt_beam + " · tradutor " + mt + " · TTS " + preset.omni_num_steps + " passos");
   } catch (e) { toast("Erro: " + e.message); }
 }
 $("perfPriority").onchange = applyPerf;
