@@ -350,6 +350,7 @@
       <button class="nav-item" data-view="gerar"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M19 5a9 9 0 0 1 0 14"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></span><span>Gerar fala</span></button>
       <button class="nav-item" data-view="vozes"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span><span>Vozes</span></button>
       <button class="nav-item" data-view="tradutor"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg></span><span>Tradutor</span></button>
+      <button class="nav-item" data-view="modificador"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/><path d="M3 21l3-3"/></svg></span><span>Modificador</span></button>
       <button class="nav-item" data-view="stt"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/></svg></span><span>Transcrição</span></button>
       <button class="nav-item" data-view="historico"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>Histórico</span></button>
     </nav>
@@ -548,6 +549,46 @@
           evitar realimentação). Ajuste o <b>Trecho do contínuo</b> em Microfone/filtros (menor = menos
           latência, menos contexto). <b>Conversa</b>: half-duplex, traduz e fala, só volta a escutar depois.
           A 1ª vez baixa os modelos (~3 GB).</p>
+      </div>
+    </section>
+
+    <!-- ===== Modificador (fala -> sua voz, sem traduzir) ===== -->
+    <section class="view" id="view-modificador">
+      <div class="view-head"><h1>Modificador de voz</h1><span class="muted small">fala → texto → sua voz (sem traduzir)</span></div>
+      <div class="card col-scroll" style="flex:1; min-height:0">
+        <div class="row">
+          <button id="modRecBtn">Falar</button>
+          <select id="modMode" style="max-width:160px">
+            <option value="manual">Modo: Manual</option>
+            <option value="continuo">Modo: Contínuo</option>
+            <option value="conversa">Modo: Conversa</option>
+          </select>
+          <select id="modSrc" style="max-width:190px">
+            <option value="auto">Idioma: auto</option>
+            <option value="pt" selected>Idioma: Português</option>
+            <option value="en">Idioma: English</option>
+            <option value="es">Idioma: Español</option>
+            <option value="fr">Idioma: Français</option>
+            <option value="de">Idioma: Deutsch</option>
+            <option value="it">Idioma: Italiano</option>
+            <option value="ja">Idioma: 日本語</option>
+            <option value="zh">Idioma: 中文</option>
+          </select>
+          <select id="modVoice" style="max-width:200px"></select>
+          <span id="modVdHint" class="hint" style="margin-top:0;display:none"></span>
+          <select id="modEmo" style="max-width:210px" title="Detecta a emoção e aplica via tom + velocidade">
+            <option value="off">Emoção: off</option>
+            <option value="light">Emoção: aplicar (prosódia)</option>
+            <option value="accurate">Emoção: aplicar (SER)</option>
+          </select>
+          <span id="modStatus" class="hint" style="margin-top:0"></span>
+        </div>
+        <div class="trans-head"><span class="lbl">Transcrição</span>
+          <button id="modClear" class="ghost small" type="button" style="margin-left:auto">Limpar</button></div>
+        <div id="modOut"></div>
+        <p class="hint">Igual ao tradutor, mas <b>fala exatamente o que você disse</b> na voz escolhida — sem traduzir.
+          Útil p/ trocar o timbre da sua fala em tempo real. Mic/filtros e anti-ruído são os mesmos do <b>Tradutor</b>
+          (ajuste lá). <b>Contínuo</b> = simultâneo; <b>Conversa</b> = half-duplex; <b>Manual</b> = clique e fale.</p>
       </div>
     </section>
 
@@ -881,7 +922,7 @@ function showView(id) {
 }
 document.querySelectorAll(".nav-item").forEach(b => b.onclick = () => {
   showView(b.dataset.view);
-  if (b.dataset.view === "tradutor") warmTranslator();  // pré-carrega modelos
+  if (b.dataset.view === "tradutor" || b.dataset.view === "modificador") warmTranslator();  // pré-carrega modelos
 });
 showView("gerar");
 
@@ -925,16 +966,20 @@ function vdParse() {
 $("vdWhisper").onchange = () => { vdBuild(); updateTransVdHint(); };
 $("oInstruct").oninput = () => { vdParse(); updateTransVdHint(); };
 
-// dica no tradutor quando a "voz" é Voice design (tags vêm de Configurações → Voice design)
+// dica (tradutor E modificador) quando a "voz" é Voice design
 function updateTransVdHint() {
-  const el = $("transVdHint"); if (!el) return;
-  if ($("transVoice").value !== "__design__") { el.style.display = "none"; return; }
-  const tags = ($("oInstruct").value || "").trim();
-  el.style.display = "";
-  el.textContent = tags ? "🎨 " + tags : "⚠ defina tags em Configurações → Voice design";
-  el.style.color = tags ? "" : "var(--accent)";
+  for (const [vsel, hsel] of [["transVoice", "transVdHint"], ["modVoice", "modVdHint"]]) {
+    const el = $(hsel); if (!el) continue;
+    if ($(vsel).value !== "__design__") { el.style.display = "none"; continue; }
+    const qwen = $("remoteTts").checked && $("remoteTtsEngine").value === "qwen3";
+    const tags = (qwen ? $("qVoiceDesign").value : $("oInstruct").value).trim();
+    el.style.display = "";
+    el.textContent = tags ? "🎨 " + tags : "⚠ defina a voz em Configurações → Voice design";
+    el.style.color = tags ? "" : "var(--accent)";
+  }
 }
 $("transVoice").addEventListener("change", updateTransVdHint);
+$("modVoice").addEventListener("change", updateTransVdHint);
 
 // descarrega modelos locais (MLX) da RAM sob demanda
 $("unloadModelsBtn").onclick = async () => {
@@ -1282,13 +1327,14 @@ $("editVoiceBtn").onclick = () => {
 /* ───────── Lista de vozes ───────── */
 async function refreshVoices() {
   const voices = await api("/api/voices");
-  const list = $("voiceList"), sel = $("voiceSelect"), sel2 = $("transVoice");
-  const selected = sel.value, selected2 = sel2.value;
-  sel.innerHTML = ""; sel2.innerHTML = "";
+  const list = $("voiceList"), sel = $("voiceSelect"), sel2 = $("transVoice"), sel3 = $("modVoice");
+  const selected = sel.value, selected2 = sel2.value, selected3 = sel3.value;
+  sel.innerHTML = ""; sel2.innerHTML = ""; sel3.innerHTML = "";
   // voz "virtual": gera a partir da descrição (campo Voice design), sem clone
   const dopt = document.createElement("option");
   dopt.value = "__design__"; dopt.textContent = "Voice design (descrição → voz)";
   sel.appendChild(dopt);
+  sel3.appendChild(dopt.cloneNode(true));        // mesma opção no modificador
   const dopt2 = dopt.cloneNode(true);            // mesma opção no tradutor
   sel2.appendChild(dopt2);
   list.innerHTML = voices.length ? "" : '<div class="empty">Nenhuma voz ainda — grave ao lado.</div>';
@@ -1371,9 +1417,11 @@ async function refreshVoices() {
     const opt2 = document.createElement("option");
     opt2.value = v.id; opt2.textContent = rotulo;
     sel2.appendChild(opt2);
+    sel3.appendChild(opt2.cloneNode(true));
   }
   if (selected) sel.value = selected;
   if (selected2) sel2.value = selected2;
+  if (selected3) sel3.value = selected3;
   updateTransVdHint();
 }
 
@@ -1553,6 +1601,18 @@ $("ttsBtn").onclick = async () => {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let transRec = null, transChunks = [];      // modo manual
 let auto = null;                            // modos contínuo/conversa (VAD)
+// Tradutor e Modificador compartilham o MESMO pipeline; FEAT diz qual está ativo
+// (quais controles ler/escrever e qual endpoint chamar).
+const FEATURES = {
+  translate: { ep: "/api/translate-speech", voice: "transVoice", mode: "transMode", src: "transSrc",
+    emo: "transEmo", status: "transStatus", out: "transOut", recBtn: "transRecBtn", vdHint: "transVdHint",
+    body: fd => fd.append("target_lang", $("transLang").value) },
+  modify: { ep: "/api/modify-speech", voice: "modVoice", mode: "modMode", src: "modSrc",
+    emo: "modEmo", status: "modStatus", out: "modOut", recBtn: "modRecBtn", vdHint: "modVdHint",
+    body: () => {} },
+};
+let FEAT = FEATURES.translate;
+const fEl = key => $(FEAT[key]);            // elemento do controle ativo
 const VAD = { thresh: 0.015, silenceHoldMs: 700, minUtterMs: 350, frameMs: 50 };
 let CONT_MAX_MS = 4500;   // contínuo: alvo de duração do trecho (mais contexto p/ o STT)
 const CONT_GAP_MS = 250;  // pausa mínima p/ cortar = borda real (250ms > oclusão de plosiva ~150ms,
@@ -1745,7 +1805,7 @@ function warmTranslator() {
 let live = null;  // { getChunks, lang, busy, timer, last }
 function startLive(getChunks) {
   stopLive();
-  live = { getChunks, lang: $("transSrc").value, busy: false, last: "" };
+  live = { getChunks, lang: fEl("src").value, out: FEAT.out, busy: false, last: "" };
   live.timer = setInterval(livePoll, 650);
 }
 function stopLive() {
@@ -1764,16 +1824,17 @@ async function livePoll() {
     const r = await api("/api/stt-partial", { method: "POST", body: fd });
     if (live && r.text && r.text !== live.last) {
       live.last = r.text;
-      $("transOut").innerHTML =
+      $(live.out).innerHTML =
         `<b>Você (ao vivo):</b> <span style="opacity:.75">${r.text}</span>`
         + `<span class="spinner" style="margin-left:6px"></span>`;
     }
   } catch {} finally { if (live) live.busy = false; }
 }
 
-$("transRecBtn").onclick = async () => {
+async function recClick(featName) {
+  FEAT = FEATURES[featName];                 // define qual feature está ativa
   warmTranslator();
-  const mode = $("transMode").value;
+  const mode = fEl("mode").value;
   if (mode === "manual") {                  // gravar / parar manual
     if (transRec && transRec.state === "recording") { transRec.stop(); return; }
     if (!transVoiceOk()) return;
@@ -1799,11 +1860,13 @@ $("transRecBtn").onclick = async () => {
   if (auto) { stopAuto(); return; }
   if (!transVoiceOk()) return;
   await startAuto(mode);
-};
+}
+$("transRecBtn").onclick = () => recClick("translate");
+$("modRecBtn").onclick = () => recClick("modify");
 
 // valida a voz do tradutor (clone ou voice design com tags)
 function transVoiceOk() {
-  const v = $("transVoice").value;
+  const v = fEl("voice").value;
   if (!v) { toast("Escolha uma voz."); return false; }
   if (v === "__design__") {
     const qwen = $("remoteTts").checked && $("remoteTtsEngine").value === "qwen3";
@@ -1817,11 +1880,14 @@ function transVoiceOk() {
   return true;
 }
 
-$("transMode").onchange = () => { if (auto) stopAuto(); if (transRec && transRec.state === "recording") transRec.stop(); };
+const onModeChange = () => { if (auto) stopAuto(); if (transRec && transRec.state === "recording") transRec.stop(); };
+$("transMode").onchange = onModeChange;
+$("modMode").onchange = onModeChange;
 
 function setRecBtn(on, label) {
-  $("transRecBtn").textContent = on ? (label || "■ Parar") : (label || "Falar");
-  $("transRecBtn").classList.toggle("rec", on);
+  const b = fEl("recBtn");
+  b.textContent = on ? (label || "■ Parar") : (label || "Falar");
+  b.classList.toggle("rec", on);
 }
 
 async function startAuto(mode) {
@@ -1835,7 +1901,7 @@ async function startAuto(mode) {
   if (mode === "continuo") pumpPipeline(auto);   // simultâneo (gera N+1 enquanto N toca)
   else pump(auto);                               // conversa: half-duplex, serial
   setRecBtn(true, "■ Parar escuta");
-  $("transStatus").innerHTML = '<span class="spinner"></span>escutando…';
+  fEl("status").innerHTML = '<span class="spinner"></span>escutando…';
 }
 
 function stopAuto() {
@@ -1851,7 +1917,7 @@ function stopAuto() {
   }
   closeProcessedMic();
   setRecBtn(false, "Falar");
-  $("transStatus").textContent = "parado";
+  fEl("status").textContent = "parado";
 }
 
 function vadLevel(st) {
@@ -1917,7 +1983,7 @@ async function pump(st) {                          // processa os trechos em fil
     await translateAndSpeak(blob);
     await waitPlaybackEnd();   // toca as traduções em ordem; no modo conversa, mantém o mic fechado até terminar
     st.busy = false;
-    if (!st.stop && !st.queue.length) $("transStatus").innerHTML = '<span class="spinner"></span>escutando…';
+    if (!st.stop && !st.queue.length) fEl("status").innerHTML = '<span class="spinner"></span>escutando…';
   }
 }
 
@@ -1933,35 +1999,36 @@ async function waitPlaybackEnd() {
 /* STT + tradução de um trecho. Devolve a resposta da API (job_id + textos) ou
    null (ruído/erro). NÃO toca — quem chama decide como reproduzir. */
 async function requestTranslation(blob) {
-  const voice_id = $("transVoice").value;
+  const voice_id = fEl("voice").value;
   if (!voice_id) { toast("Escolha uma voz."); return null; }
   let wav;
   try { wav = await blobToWav(blob); }
   catch (e) { toast("Falha ao processar áudio: " + e.message, 6000); return null; }
   const fd = new FormData();
   fd.append("audio", wav, "fala.wav");
-  fd.append("target_lang", $("transLang").value);
-  fd.append("source_lang", $("transSrc").value);
-  fd.append("emotion_mode", $("transEmo").value);
+  FEAT.body(fd);                                    // translate -> target_lang; modify -> nada
+  fd.append("source_lang", fEl("src").value);
+  fd.append("emotion_mode", fEl("emo").value);
   fd.append("voice_id", voice_id);
   if (voice_id === "__design__") fd.append("instruct", $("oInstruct").value.trim());  // voz por descrição (tags)
   let r;
-  try { r = await api("/api/translate-speech", { method: "POST", body: fd }); }
+  try { r = await api(FEAT.ep, { method: "POST", body: fd }); }
   catch (e) { toast("Erro: " + e.message, 6000); return null; }
   if (r.rejected) {
-    $("transStatus").textContent = `ignorado (${r.reason})` + (auto ? " — escutando…" : "");
+    fEl("status").textContent = `ignorado (${r.reason})` + (auto ? " — escutando…" : "");
     return null;
   }
   return r;
 }
 
 function showTrans(r) {
-  const out = $("transOut");
+  const out = fEl("out");
+  const same = (r.translation || "") === (r.source_text || "");   // modificador: mesmo texto
   const e = document.createElement("div");
   e.className = "trans-entry";
   e.innerHTML =
     `<div class="t-src"><span class="t-lang">${(r.source_lang || "?")}</span>${r.source_text || ""}</div>`
-    + `<div class="t-dst"><span class="t-lang">${r.target_lang || ""}</span>${r.translation || ""}</div>`
+    + (same ? "" : `<div class="t-dst"><span class="t-lang">${r.target_lang || ""}</span>${r.translation || ""}</div>`)
     + (r.emotion ? `<div class="t-emo">🎭 ${r.emotion}</div>` : "")
     + (r.emotion_error ? `<div class="t-emo" style="color:#c66">emoção indisponível: ${r.emotion_error}</div>` : "");
   out.appendChild(e);
@@ -1969,16 +2036,17 @@ function showTrans(r) {
   out.scrollTop = out.scrollHeight;                                    // auto-scroll p/ o mais recente
 }
 $("transClear").onclick = () => { $("transOut").innerHTML = ""; };
+$("modClear").onclick = () => { $("modOut").innerHTML = ""; };
 
-/* Manual / conversa: traduz e toca (reseta o player a cada trecho). */
+/* Manual / conversa: processa e toca (reseta o player a cada trecho). */
 async function translateAndSpeak(blob) {
-  $("transStatus").innerHTML = '<span class="spinner"></span>transcrevendo + traduzindo…';
+  fEl("status").innerHTML = '<span class="spinner"></span>transcrevendo…';
   const r = await requestTranslation(blob);
   if (!r) return;
   showTrans(r);
-  $("transStatus").innerHTML = '<span class="spinner"></span>falando traduzido…';
-  try { await streamJob(r.job_id, $("transStatus")); $("transStatus").textContent = "pronto ✔"; }
-  catch (e) { $("transStatus").textContent = ""; toast("Erro na fala: " + e.message, 6000); }
+  fEl("status").innerHTML = '<span class="spinner"></span>falando…';
+  try { await streamJob(r.job_id, fEl("status")); fEl("status").textContent = "pronto ✔"; }
+  catch (e) { fEl("status").textContent = ""; toast("Erro na fala: " + e.message, 6000); }
 }
 
 /* Agenda os trechos de áudio de um job numa timeline PERSISTENTE (pl), gapless,
@@ -2025,7 +2093,7 @@ async function pumpPipeline(st) {
     if (!r) continue;
     showTrans(r);
     const buf = Math.max(0, pl.nextTime - pl.ctx.currentTime);
-    $("transStatus").innerHTML = `<span class="spinner"></span>simultâneo · buffer ${buf.toFixed(1)}s`;
+    fEl("status").innerHTML = `<span class="spinner"></span>simultâneo · buffer ${buf.toFixed(1)}s`;
     try { await streamJobInto(r.job_id, pl); } catch (e) { /* trecho falhou: segue */ }
   }
 }
