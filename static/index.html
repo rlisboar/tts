@@ -738,6 +738,25 @@
         <p class="hint">Params do Qwen3-TTS (AR/LLM). Temperature/top-p/top-k controlam variação; repetition penalty evita repetição. Voice design é por <b>texto livre</b> (acima) — selecione a voz "Voice design".</p>
       </section>
 
+      <section class="cfg-sec" id="secF5" style="display:none">
+        <h3 class="cfg-sec-h">F5-TTS pt-br — geração</h3>
+        <div class="sliders">
+          <label>nfe_step (passos) <output id="f5NfeOut">32</output>
+            <input type="range" id="f5Nfe" min="4" max="64" step="1" value="32"></label>
+          <label>cfg_strength <output id="f5CfgOut">2.0</output>
+            <input type="range" id="f5Cfg" min="0" max="6" step="0.1" value="2"></label>
+          <label>sway_sampling <output id="f5SwayOut">-1.0</output>
+            <input type="range" id="f5Sway" min="-2" max="2" step="0.1" value="-1"></label>
+          <label>cross_fade (s) <output id="f5CrossOut">0.15</output>
+            <input type="range" id="f5Cross" min="0" max="0.6" step="0.05" value="0.15"></label>
+        </div>
+        <label class="cfg-label">target_rms <output id="f5RmsOut">0.10</output>
+          <input type="range" id="f5Rms" min="0.02" max="0.5" step="0.01" value="0.1"></label>
+        <label class="check"><input type="checkbox" id="f5RemSil"> remover silêncios</label>
+        <div class="row" style="margin-top:4px"><button id="f5Reset" class="ghost small" type="button">↺ Restaurar padrões</button></div>
+        <p class="hint">F5-TTS-pt-br (flow-matching) — clonagem nativa em <b>português brasileiro</b>. Só clona (sem voice design). nfe_step↑ = mais qualidade/lento; cfg_strength = aderência à voz.</p>
+      </section>
+
       <section class="cfg-sec">
         <h3 class="cfg-sec-h">Áudio (saída)</h3>
         <div class="sliders">
@@ -763,12 +782,15 @@
         <label class="cfg-label">Engine (modelo)
           <select id="remoteTtsEngine">
             <option value="omnivoice">OmniVoice — 646 idiomas, rápido</option>
-            <option value="qwen3">Qwen3-TTS — clonagem (10 idiomas)</option>
+            <option value="qwen3">Qwen3-TTS — clonagem + voice design</option>
+            <option value="f5">F5-TTS — pt-BR nativo (só clona)</option>
           </select></label>
         <label class="cfg-label">URL OmniVoice
           <input type="text" id="remoteTtsUrl" placeholder="http://solaris:8800/tts"></label>
         <label class="cfg-label">URL Qwen3-TTS
           <input type="text" id="remoteTtsUrlQwen" placeholder="http://solaris:8801/tts"></label>
+        <label class="cfg-label">URL F5-TTS (pt-BR)
+          <input type="text" id="remoteTtsUrlF5" placeholder="http://solaris:8802/tts"></label>
         <p class="hint">Os dois rodam na mesma RTX e compartilham as vozes — troque o engine p/ comparar a mesma voz. Qwen3 também faz voice design (por texto livre, não tags).</p>
         <label class="cfg-label">Voz remota (nome/preset)
           <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
@@ -1381,17 +1403,21 @@ async function refreshVoices() {
 for (const [slider, out, dec] of [["oNumSteps", "oNumStepsOut", 0], ["oGuid", "oGuidOut", 1],
     ["oClassT", "oClassTOut", 2], ["oPosT", "oPosTOut", 1], ["oLayer", "oLayerOut", 1],
     ["oTshift", "oTshiftOut", 2],
-    ["qTemp", "qTempOut", 2], ["qTopp", "qToppOut", 2], ["qTopk", "qTopkOut", 0], ["qRep", "qRepOut", 2]]) {
+    ["qTemp", "qTempOut", 2], ["qTopp", "qToppOut", 2], ["qTopk", "qTopkOut", 0], ["qRep", "qRepOut", 2],
+    ["f5Nfe", "f5NfeOut", 0], ["f5Cfg", "f5CfgOut", 1], ["f5Sway", "f5SwayOut", 1], ["f5Cross", "f5CrossOut", 2], ["f5Rms", "f5RmsOut", 2]]) {
   $(slider).oninput = () => $(out).textContent = parseFloat($(slider).value).toFixed(dec);
 }
 
 // engine selecionado decide quais params aparecem: Qwen3 (remoto ligado) esconde
 // OmniVoice/Voice design e mostra o bloco Qwen3; senão o contrário.
 function applyEngineUI() {
-  const qwen = $("remoteTts").checked && $("remoteTtsEngine").value === "qwen3";
-  $("secOmni").style.display = qwen ? "none" : "";
-  $("secVoiceDesign").style.display = qwen ? "none" : "";
+  const on = $("remoteTts").checked, eng = $("remoteTtsEngine").value;
+  const qwen = on && eng === "qwen3", f5 = on && eng === "f5";
+  const omni = !qwen && !f5;                     // local ou OmniVoice remoto
+  $("secOmni").style.display = omni ? "" : "none";
+  $("secVoiceDesign").style.display = omni ? "" : "none";
   $("secQwen").style.display = qwen ? "" : "none";
+  $("secF5").style.display = f5 ? "" : "none";
 }
 $("remoteTtsEngine").onchange = applyEngineUI;
 $("remoteTts").addEventListener("change", applyEngineUI);
@@ -1424,6 +1450,14 @@ $("qReset").onclick = () => {
   $("qXvec").checked = false;
   $("qNonStream").checked = false;
   toast("Padrões do Qwen3 restaurados — clique em Salvar para aplicar");
+};
+
+const F5_DEFAULTS = [["f5Nfe", "f5NfeOut", 32, 0], ["f5Cfg", "f5CfgOut", 2, 1],
+  ["f5Sway", "f5SwayOut", -1, 1], ["f5Cross", "f5CrossOut", 0.15, 2], ["f5Rms", "f5RmsOut", 0.1, 2]];
+$("f5Reset").onclick = () => {
+  for (const [id, out, val, dec] of F5_DEFAULTS) { $(id).value = val; $(out).textContent = parseFloat(val).toFixed(dec); }
+  $("f5RemSil").checked = false;
+  toast("Padrões do F5 restaurados — clique em Salvar para aplicar");
 };
 
 /* Player progressivo: busca cada trecho assim que o servidor termina e agenda
@@ -2145,6 +2179,13 @@ async function loadSettings() {
     $("qNonStream").checked = !!s.qwen_non_streaming;
     $("qVoiceDesign").value = s.qwen_voice_design || "";
     $("qSeed").value = s.omni_seed ?? 42;       // seed compartilhado com o OmniVoice
+    $("remoteTtsUrlF5").value = s.remote_tts_url_f5 || "";
+    for (const [id, out, val, dec] of [["f5Nfe", "f5NfeOut", s.f5_nfe_step ?? 32, 0],
+        ["f5Cfg", "f5CfgOut", s.f5_cfg_strength ?? 2, 1], ["f5Sway", "f5SwayOut", s.f5_sway ?? -1, 1],
+        ["f5Cross", "f5CrossOut", s.f5_cross_fade ?? 0.15, 2], ["f5Rms", "f5RmsOut", s.f5_target_rms ?? 0.1, 2]]) {
+      $(id).value = val; $(out).textContent = parseFloat(val).toFixed(dec);
+    }
+    $("f5RemSil").checked = !!s.f5_remove_silence;
     applyEngineUI();
     $("remoteTtsExtra").value = s.remote_tts_extra || "";
     $("remoteBaseUrl").value = s.remote_base_url || "";
@@ -2217,7 +2258,14 @@ $("cfgSave").onclick = async () => {
         remote_stt: $("remoteStt").checked,
         remote_tts_url: $("remoteTtsUrl").value,
         remote_tts_url_qwen: $("remoteTtsUrlQwen").value,
+        remote_tts_url_f5: $("remoteTtsUrlF5").value,
         remote_tts_engine: $("remoteTtsEngine").value,
+        f5_nfe_step: parseInt($("f5Nfe").value, 10),
+        f5_cfg_strength: parseFloat($("f5Cfg").value),
+        f5_sway: parseFloat($("f5Sway").value),
+        f5_cross_fade: parseFloat($("f5Cross").value),
+        f5_target_rms: parseFloat($("f5Rms").value),
+        f5_remove_silence: $("f5RemSil").checked,
         qwen_temperature: parseFloat($("qTemp").value),
         qwen_top_p: parseFloat($("qTopp").value),
         qwen_top_k: parseInt($("qTopk").value, 10),
