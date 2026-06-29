@@ -2128,6 +2128,78 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
             "emotion": emo_show, "emotion_error": emo_err}
 
 
+@app.post("/api/modify-speech")
+def modify_speech(audio: UploadFile = None, voice_id: str = Form(""),
+                  source_lang: str = Form("auto"), emotion_mode: str = Form("off"),
+                  instruct: str = Form("")):
+    """MODIFICADOR: fala -> transcreve -> TTS na voz escolhida, SEM traduzir (mesma
+    língua, mesmas palavras). Igual ao tradutor, mas sem o passo do LLM."""
+    if audio is None:
+        raise HTTPException(400, "Áudio obrigatório")
+    vid = voice_id or _settings["default_voice"]
+    design = (vid == DESIGN_VOICE_ID)
+    des_instruct = _sanitize_instruct(instruct) if design else ""
+    vpath = VOICES_DIR / f"{vid}.wav"
+    if design:
+        qwen = _use_remote_tts() and _settings.get("remote_tts_engine") == "qwen3"
+        ok = des_instruct or _sanitize_instruct(_settings.get("omni_instruct") or "") \
+            or (qwen and (_settings.get("qwen_voice_design") or "").strip())
+        if not ok:
+            raise HTTPException(400, "Voice design vazio — descreva a voz")
+    elif not vpath.exists() and vid not in OMNI_PRESETS:
+        raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
+
+    tmp = OUTPUTS_DIR / f".stt-{uuid.uuid4().hex[:10]}"
+    tmp.write_bytes(audio.file.read())
+    emo_label, emo_pitch, emo_speed, emo_err = "", "", 1.0, None
+    try:
+        r = _transcribe(tmp, language=(source_lang or "auto").lower())
+        src_text = (r.get("text") or "").strip()
+        src_lang = (r.get("language") or "").strip().lower()
+        ok, motivo = _stt_ok(r, src_text)
+        if not ok:
+            return {"rejected": True, "reason": motivo, "source_text": src_text}
+        exp = (source_lang or "auto").lower()
+        if exp not in ("", "auto") and src_lang and src_lang != exp:
+            return {"rejected": True, "reason": f"idioma errado (detectou {src_lang})",
+                    "source_text": src_text, "source_lang": src_lang}
+        modo = (emotion_mode or "off").lower()
+        if modo in ("light", "accurate"):
+            emo_label, emo_pitch, emo_speed, emo_err = _emotion_instruct(tmp, src_text, modo)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    out_text = src_text                                    # SEM tradução: fala o que foi dito
+    lang = exp if exp not in ("", "auto") else (src_lang or _settings["language"])
+    emotivo = bool(emo_label) and emo_label != "neutro"
+    omni = _resolve_omni({})
+    if design:
+        omni["instruct"] = des_instruct or _sanitize_instruct(_settings.get("omni_instruct") or "")
+    if emotivo:
+        ep = _sanitize_instruct(emo_pitch)
+        if ep and not design:
+            omni["instruct"] = ep
+        if emo_speed and abs(float(emo_speed) - 1.0) > 1e-3:
+            base = float(omni.get("speed") or 1.0)
+            omni["speed"] = round(_clamp(base * float(emo_speed), 0.5, 2.0, base), 3)
+        omni["guidance_scale"] = round(max(0.5, float(omni.get("guidance_scale") or 2.0) - 0.4), 2)
+        omni["position_temperature"] = round(min(20.0, float(omni.get("position_temperature") or 5.0) + 4.0), 1)
+
+    job_id = uuid.uuid4().hex[:10]
+    _jobs[job_id] = {"status": "running", "pieces": 0, "total": None, "progress": None,
+                     "output": None, "error": None, "text": out_text[:200]}
+    while len(_jobs) > _JOBS_MAX:
+        old_id, _ = _jobs.popitem(last=False)
+        shutil.rmtree(_piece_dir(old_id), ignore_errors=True)
+    threading.Thread(target=_run_tts_job, args=(job_id, out_text, vid, vpath, lang, omni), daemon=True).start()
+    emo_show = None
+    if emo_label and emo_label != "neutro":
+        bits = [b for b in (emo_pitch, f"{omni['speed']}×" if abs(float(omni.get('speed') or 1) - 1) > 1e-3 else "") if b]
+        emo_show = emo_label + (f" ({', '.join(bits)})" if bits else "")
+    return {"job_id": job_id, "source_text": src_text, "source_lang": src_lang,
+            "translation": out_text, "target_lang": lang, "emotion": emo_show, "emotion_error": emo_err}
+
+
 # ---------------------------------------------------------------------------
 # API compatível com OpenAI (POST /v1/audio/speech) — funciona com o SDK da
 # OpenAI e clientes xAI/Grok apontando base_url para http://127.0.0.1:7860/v1
