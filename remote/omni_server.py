@@ -75,12 +75,17 @@ def _load_turbo():
     global asr_turbo
     try:
         print("loading Whisper large-v3-turbo (rápido)...", flush=True)
-        asr_turbo = WhisperModel("large-v3-turbo", device="cuda", device_index=0,
-                                 compute_type="float16", num_workers=ASR_WORKERS)
+        with _LOAD_LOCK:
+            asr_turbo = WhisperModel("large-v3-turbo", device="cuda", device_index=0,
+                                     compute_type="float16", num_workers=ASR_WORKERS)
         print("whisper turbo ready", flush=True)
     except Exception as e:  # noqa: BLE001
         print("turbo load failed:", repr(e)[:160], flush=True)
 import threading as _tht
+# Lock global de CARGA de modelo: bitsandbytes 0.49.2 NÃO é thread-safe na
+# quantização 4-bit — carregar 2 modelos bnb em threads concorrentes corrompia
+# os pesos (saída em loop "片片片"/"protester"). Serializa toda carga de modelo.
+_LOAD_LOCK = _tht.Lock()
 _tht.Thread(target=_load_turbo, daemon=True).start()
 
 def _safe_name(name):
@@ -202,8 +207,9 @@ def _load_into(slot):
                                  bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
         print(f"loading MT {slot['repo']} (4-bit) on {slot['dev']}...", flush=True)
         slot["tok"] = AutoTokenizer.from_pretrained(slot["repo"])
-        slot["model"] = AutoModelForCausalLM.from_pretrained(
-            slot["repo"], quantization_config=bnb, device_map={"": slot["dev"]}, torch_dtype=torch.bfloat16)
+        with _LOAD_LOCK:   # serializa a quantização bnb (não é thread-safe)
+            slot["model"] = AutoModelForCausalLM.from_pretrained(
+                slot["repo"], quantization_config=bnb, device_map={"": slot["dev"]}, torch_dtype=torch.bfloat16)
         slot["model"].eval(); slot["ready"] = True
         print(f"MT ready: {slot['repo']} on {slot['dev']}", flush=True)
     except Exception as e:  # noqa: BLE001
@@ -216,8 +222,11 @@ def mt_chat(slot, messages, temperature=0.3, max_new_tokens=512):
     tok, model = slot["tok"], slot["model"]
     if not messages or messages[0].get("role") != "system":   # injeta trava de idioma se faltar
         messages = [{"role": "system", "content": MT_SYS}] + list(messages)
-    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = tok(prompt, return_tensors="pt").to(model.device)
+    # API tokenize-direto (transformers 5.x): o caminho 2-passos (tokenize=False ->
+    # tok(prompt)) gerava prompt malformado -> saída em loop até max_new_tokens.
+    inputs = tok.apply_chat_template(messages, add_generation_prompt=True,
+                                     return_tensors="pt", return_dict=True).to(model.device)
+    n = inputs["input_ids"].shape[1]
     # tradução: greedy por padrão (estável, não vaza idioma); só amostra se temp claramente alta
     sample = bool(temperature and temperature > 0.5)
     kw = dict(max_new_tokens=int(max_new_tokens), do_sample=sample,
@@ -225,7 +234,7 @@ def mt_chat(slot, messages, temperature=0.3, max_new_tokens=512):
     if sample: kw.update(temperature=float(temperature), top_p=0.9)
     with torch.inference_mode():
         out = model.generate(**inputs, **kw)
-    return tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+    return tok.decode(out[0][n:], skip_special_tokens=True).strip()
 import threading as _th
 _th.Thread(target=_load_into, args=(mt,), daemon=True).start()
 _th.Thread(target=_load_into, args=(mt_fast,), daemon=True).start()
