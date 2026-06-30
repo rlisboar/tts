@@ -757,35 +757,6 @@
           Selecione a voz <b>"Voice design"</b> p/ usar. Só estas tags valem; texto livre é ignorado.</p>
       </section>
 
-      <section class="cfg-sec" id="secQwen" style="display:none">
-        <h3 class="cfg-sec-h">Qwen3-TTS — geração</h3>
-        <div class="sliders">
-          <label>Temperature <output id="qTempOut">0.9</output>
-            <input type="range" id="qTemp" min="0" max="2" step="0.05" value="0.9"></label>
-          <label>Top-p <output id="qToppOut">1.0</output>
-            <input type="range" id="qTopp" min="0" max="1" step="0.05" value="1.0"></label>
-          <label>Top-k <output id="qTopkOut">50</output>
-            <input type="range" id="qTopk" min="0" max="100" step="1" value="50"></label>
-          <label>Repetition penalty <output id="qRepOut">1.05</output>
-            <input type="range" id="qRep" min="1" max="2" step="0.01" value="1.05"></label>
-        </div>
-        <label class="cfg-label">max_new_tokens
-          <input type="number" id="qMaxTok" min="128" max="8192" step="64" value="2048"></label>
-        <label class="check"><input type="checkbox" id="qDoSample" checked> amostragem (do_sample; desligado = greedy/determinístico)</label>
-        <label class="check"><input type="checkbox" id="qXvec"> x-vector only (clona rápido, menos fiel)</label>
-        <label class="check"><input type="checkbox" id="qNonStream"> não-streaming (mais qualidade, mais lento)</label>
-        <label class="cfg-label">Voice design (descrição LIVRE — selecione a voz "Voice design")
-          <textarea id="qVoiceDesign" style="min-height:46px" placeholder="ex.: voz feminina jovem, alegre e calorosa, tom suave, sotaque brasileiro"></textarea></label>
-        <div class="row2">
-          <label class="cfg-label">seed (voz fixa)
-            <input type="number" id="qSeed" min="-1" step="1" value="42" title="mesmo seed = mesma voz/timbre; -1 = aleatória a cada vez"></label>
-          <button id="qSeedRoll" class="ghost small" type="button" title="sorteia outra voz">🎲 nova voz</button>
-        </div>
-        <p class="hint" style="margin-top:2px">Sem seed fixa o <b>timbre muda a cada geração</b> (Qwen é estocástico). Seed fixa = voz reprodutível.</p>
-        <div class="row" style="margin-top:4px"><button id="qReset" class="ghost small" type="button">↺ Restaurar padrões</button></div>
-        <p class="hint">Params do Qwen3-TTS (AR/LLM). Temperature/top-p/top-k controlam variação; repetition penalty evita repetição. Voice design é por <b>texto livre</b> (acima) — selecione a voz "Voice design".</p>
-      </section>
-
       <section class="cfg-sec">
         <h3 class="cfg-sec-h">Áudio (saída)</h3>
         <div class="sliders">
@@ -803,21 +774,18 @@
           <select id="audioInDevice"><option value="">Padrão do sistema</option></select></label>
         <label class="cfg-label">Saída de som
           <select id="audioOutDevice"><option value="">Padrão do sistema</option></select></label>
+        <p class="hint">Falar com a voz do app em chamadas (Zoom/Meet/Discord)?
+          <a href="#" id="dlMicRouter">Baixar o roteador de microfone</a> — instale o
+          <code>BlackHole 2ch</code> (<code>brew install blackhole-2ch</code>) e escolha-o
+          acima em <b>Saída de som</b>. Veja o <code>README</code> no zip.</p>
       </section>
 
       <section class="cfg-sec">
         <h3 class="cfg-sec-h">TTS remoto (ex.: RTX)</h3>
         <label class="check"><input type="checkbox" id="remoteTts"> Síntese numa máquina remota</label>
-        <label class="cfg-label">Engine (modelo)
-          <select id="remoteTtsEngine">
-            <option value="omnivoice">OmniVoice — 646 idiomas, rápido</option>
-            <option value="qwen3">Qwen3-TTS — clonagem (10 idiomas)</option>
-          </select></label>
         <label class="cfg-label">URL OmniVoice
           <input type="text" id="remoteTtsUrl" placeholder="http://solaris:8800/tts"></label>
-        <label class="cfg-label">URL Qwen3-TTS
-          <input type="text" id="remoteTtsUrlQwen" placeholder="http://solaris:8801/tts"></label>
-        <p class="hint">Os dois rodam na mesma RTX e compartilham as vozes — troque o engine p/ comparar a mesma voz. Qwen3 também faz voice design (por texto livre, não tags).</p>
+        <p class="hint">Síntese remota no OmniVoice (646 idiomas, rápido).</p>
         <label class="cfg-label">Voz remota (nome/preset)
           <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
         <label class="cfg-label">API key (opcional)
@@ -980,8 +948,7 @@ function updateTransVdHint() {
   for (const [vsel, hsel] of [["transVoice", "transVdHint"], ["modVoice", "modVdHint"]]) {
     const el = $(hsel); if (!el) continue;
     if ($(vsel).value !== "__design__") { el.style.display = "none"; continue; }
-    const qwen = $("remoteTts").checked && $("remoteTtsEngine").value === "qwen3";
-    const tags = (qwen ? $("qVoiceDesign").value : $("oInstruct").value).trim();
+    const tags = $("oInstruct").value.trim();
     el.style.display = "";
     el.textContent = tags ? "🎨 " + tags : "⚠ defina a voz em Configurações → Voice design";
     el.style.color = tags ? "" : "var(--accent)";
@@ -1002,9 +969,9 @@ $("unloadModelsBtn").onclick = async () => {
 };
 
 // 🎲 sorteia outra voz p/ o mesmo instruct e fixa (salva a seed na hora)
-async function rollSeed() {            // seed compartilhado entre OmniVoice e Qwen (= omni_seed)
+async function rollSeed() {            // seed do OmniVoice (omni_seed) = voz reprodutível
   const s = Math.floor(Math.random() * 1e9);
-  $("oSeed").value = s; $("qSeed").value = s;
+  $("oSeed").value = s;
   try {
     await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ omni_seed: s }) });
@@ -1012,9 +979,6 @@ async function rollSeed() {            // seed compartilhado entre OmniVoice e Q
   } catch (e) { toast("Erro: " + e.message); }
 }
 $("oSeedRoll").onclick = rollSeed;
-$("qSeedRoll").onclick = rollSeed;
-$("oSeed").oninput = () => { $("qSeed").value = $("oSeed").value; };   // mantém os dois em sincronia
-$("qSeed").oninput = () => { $("oSeed").value = $("qSeed").value; };
 
 /* ───────── Status do modelo ───────── */
 async function refreshStatus() {
@@ -1437,21 +1401,9 @@ async function refreshVoices() {
 /* ───────── Síntese ───────── */
 for (const [slider, out, dec] of [["oNumSteps", "oNumStepsOut", 0], ["oGuid", "oGuidOut", 1],
     ["oClassT", "oClassTOut", 2], ["oPosT", "oPosTOut", 1], ["oLayer", "oLayerOut", 1],
-    ["oTshift", "oTshiftOut", 2],
-    ["qTemp", "qTempOut", 2], ["qTopp", "qToppOut", 2], ["qTopk", "qTopkOut", 0], ["qRep", "qRepOut", 2]]) {
+    ["oTshift", "oTshiftOut", 2]]) {
   $(slider).oninput = () => $(out).textContent = parseFloat($(slider).value).toFixed(dec);
 }
-
-// engine selecionado decide quais params aparecem: Qwen3 (remoto ligado) esconde
-// OmniVoice/Voice design e mostra o bloco Qwen3; senão o contrário.
-function applyEngineUI() {
-  const qwen = $("remoteTts").checked && $("remoteTtsEngine").value === "qwen3";
-  $("secOmni").style.display = qwen ? "none" : "";
-  $("secVoiceDesign").style.display = qwen ? "none" : "";
-  $("secQwen").style.display = qwen ? "" : "none";
-}
-$("remoteTtsEngine").onchange = applyEngineUI;
-$("remoteTts").addEventListener("change", applyEngineUI);
 
 /* Restaura os controles do OmniVoice aos defaults da lib (não salva — clique em
    "Salvar configurações" para persistir). */
@@ -1461,21 +1413,38 @@ const OMNI_DEFAULTS = [["oNumSteps", "oNumStepsOut", 16, 0], ["oGuid", "oGuidOut
 // Prioridade qualidade↔velocidade: ajusta passos do TTS + beam do STT
 // Preset cobre o pipeline TODO: STT (beam) + tradução (14B/7B) + TTS (passos)
 const PERF_PRESETS = {
-  qualidade:  { omni_num_steps: 24, stt_beam: 8, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "whisper-large-v3" },
-  equilibrio: { omni_num_steps: 16, stt_beam: 5, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "whisper-large-v3" },
-  velocidade: { omni_num_steps: 8,  stt_beam: 1, remote_translate_model: "qwen2.5-7b-instruct",  remote_stt_model: "whisper-large-v3-turbo" },
+  // seg = SEGMENTAÇÃO (o que define o "tempo até começar a processar"): silenceHold
+  // (pausa que fecha o trecho), contMax (corte do contínuo), minUtter (mínimo).
+  qualidade:  { omni_num_steps: 24, stt_beam: 8, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "whisper-large-v3",
+                seg: { silenceHold: 700, contMax: 4.5, minUtter: 350 } },
+  equilibrio: { omni_num_steps: 16, stt_beam: 5, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "whisper-large-v3",
+                seg: { silenceHold: 500, contMax: 3.0, minUtter: 300 } },
+  velocidade: { omni_num_steps: 8,  stt_beam: 1, remote_translate_model: "qwen2.5-7b-instruct",  remote_stt_model: "whisper-large-v3-turbo",
+                seg: { silenceHold: 300, contMax: 2.0, minUtter: 220 } },
 };
+function applySeg(seg) {   // aplica segmentação ao VAD + sliders + persiste
+  if (!seg) return;
+  micFx.silenceHold = seg.silenceHold; VAD.silenceHoldMs = seg.silenceHold;
+  micFx.minUtter = seg.minUtter; VAD.minUtterMs = seg.minUtter;
+  micFx.contMax = Math.round(seg.contMax * 1000); CONT_MAX_MS = micFx.contMax;
+  if ($("micSilence")) { $("micSilence").value = seg.silenceHold; $("micSilenceOut").textContent = seg.silenceHold + " ms"; }
+  if ($("micMinUtter")) { $("micMinUtter").value = seg.minUtter; $("micMinUtterOut").textContent = seg.minUtter + " ms"; }
+  if ($("micContMax")) { $("micContMax").value = seg.contMax; $("micContMaxOut").textContent = seg.contMax + " s"; }
+  saveMicFx();
+}
 async function applyPerf() {
   const p = $("perfPriority").value, preset = PERF_PRESETS[p] || PERF_PRESETS.equilibrio;
+  const { seg, ...modelPreset } = preset;
   try {
     await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ perf_priority: p, ...preset }) });
-    $("oNumSteps").value = preset.omni_num_steps; $("oNumStepsOut").textContent = preset.omni_num_steps;
-    if ($("remoteTranslateModel")) $("remoteTranslateModel").value = preset.remote_translate_model;
-    if ($("remoteSttModel")) $("remoteSttModel").value = preset.remote_stt_model;
-    const mt = preset.remote_translate_model.includes("7b") ? "7B" : "14B";
-    const stt = preset.remote_stt_model.includes("turbo") ? "turbo" : "large-v3";
-    toast("Prioridade: " + p + " · STT " + stt + "/beam " + preset.stt_beam + " · tradutor " + mt + " · TTS " + preset.omni_num_steps + " passos");
+      body: JSON.stringify({ perf_priority: p, ...modelPreset }) });
+    $("oNumSteps").value = modelPreset.omni_num_steps; $("oNumStepsOut").textContent = modelPreset.omni_num_steps;
+    if ($("remoteTranslateModel")) $("remoteTranslateModel").value = modelPreset.remote_translate_model;
+    if ($("remoteSttModel")) $("remoteSttModel").value = modelPreset.remote_stt_model;
+    applySeg(seg);   // <-- encurta a segmentação: reduz o tempo até COMEÇAR a processar
+    const mt = modelPreset.remote_translate_model.includes("7b") ? "7B" : "14B";
+    const stt = modelPreset.remote_stt_model.includes("turbo") ? "turbo" : "large-v3";
+    toast(`Prioridade: ${p} · pausa ${seg.silenceHold}ms · trecho ${seg.contMax}s · STT ${stt} · tradutor ${mt} · TTS ${modelPreset.omni_num_steps} passos`);
   } catch (e) { toast("Erro: " + e.message); }
 }
 $("perfPriority").onchange = applyPerf;
@@ -1491,19 +1460,6 @@ $("oReset").onclick = () => {
   toast("Padrões restaurados — clique em Salvar para aplicar");
 };
 
-const QWEN_DEFAULTS = [["qTemp", "qTempOut", 0.9, 2], ["qTopp", "qToppOut", 1.0, 2],
-  ["qTopk", "qTopkOut", 50, 0], ["qRep", "qRepOut", 1.05, 2]];
-$("qReset").onclick = () => {
-  for (const [id, out, val, dec] of QWEN_DEFAULTS) {
-    $(id).value = val;
-    $(out).textContent = parseFloat(val).toFixed(dec);
-  }
-  $("qMaxTok").value = 2048;
-  $("qDoSample").checked = true;
-  $("qXvec").checked = false;
-  $("qNonStream").checked = false;
-  toast("Padrões do Qwen3 restaurados — clique em Salvar para aplicar");
-};
 
 /* Player progressivo: busca cada trecho assim que o servidor termina e agenda
    no AudioContext em sequência — a fala começa no 1º trecho pronto. */
@@ -1533,7 +1489,7 @@ async function streamJob(job_id, statusEl) {
       if (j.status === "error") throw new Error(j.error || "falha na geração");
       while (buscados < j.pieces) {
         const buf = await (await authFetch(`/api/tts/jobs/${job_id}/pieces/${buscados}`)).arrayBuffer();
-        if (!meu.stopped) {
+        if (!meu.stopped && !ttsMuted) {   // virou "voz real" no meio -> para de agendar
           const audio = await meu.ctx.decodeAudioData(buf);
           const src = meu.ctx.createBufferSource();
           src.buffer = audio; src.connect(meu.ctx.destination);
@@ -1559,13 +1515,11 @@ $("ttsBtn").onclick = async () => {
   const text = $("ttsText").value.trim();
   const voice_id = $("voiceSelect").value;
   const designMode = voice_id === "__design__";
-  const qwenEngine = $("remoteTts").checked && $("remoteTtsEngine").value === "qwen3";
-  const designInstruct = (qwenEngine ? $("qVoiceDesign").value : $("oInstruct").value).trim();
+  const designInstruct = $("oInstruct").value.trim();
   if (!text) { toast("Digite um texto."); return; }
   if (!voice_id) { toast("Grave e salve uma voz primeiro."); return; }
   if (designMode && !designInstruct) {
-    toast(qwenEngine ? "Voice design (Qwen): descreva a voz em Configurações → Qwen3 e Salve."
-                     : "Voice design: descreva a voz em Configurações → Voice design.");
+    toast("Voice design: descreva a voz em Configurações → Voice design.");
     return;
   }
 
@@ -1630,6 +1584,10 @@ $("ttsBtn").onclick = async () => {
 
 /* ───────── Tradutor de voz: Manual / Contínuo / Conversa ───────── */
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// perf: mede onde está a latência (segmentação vs modelos). Ative com
+// localStorage.ttsPerf="1" (ou ?perf na URL) e recarregue — loga no console.
+const PERF_LOG = localStorage.getItem("ttsPerf") === "1" || location.search.includes("perf");
+const chunkMeta = new WeakMap();            // blob -> { onset, flush } p/ medir time-to-start
 let transRec = null, transChunks = [];      // modo manual
 let auto = null;                            // modos contínuo/conversa (VAD)
 // Tradutor e Modificador compartilham o MESMO pipeline; FEAT diz qual está ativo
@@ -1757,11 +1715,70 @@ let outDeviceId = localStorage.getItem("outDeviceId") || "";
 function micAudioConstraints(base) {
   return micDeviceId ? { ...base, deviceId: { exact: micDeviceId } } : base;
 }
+/* Gate de TTS: o cliente roteador de microfone publica o modo (via servidor de
+   controle local) — "voz real" (mic) ou "voz do app" (TTS). Em "voz real" o TTS
+   NÃO pode vazar pro BlackHole.
+
+   IMPORTANTE: não usar ctx.suspend() — isso congela o relógio do AudioContext e
+   guarda os trechos agendados, que tocariam em rajada ao voltar pra "voz do app".
+   Em vez disso: (1) ao entrar em "voz real", PARA e descarta tudo que está
+   tocando/agendado; (2) cada trecho é marcado com o modo no momento da CAPTURA e
+   é descartado na reprodução se foi captado em "voz real" (ver requestTranslation
+   /pumpPipeline/streamJobInto). Assim nada da fila da voz real é reproduzido. */
+let ttsMuted = false;
+function setTtsMuted(m) {
+  if (m === ttsMuted) return;
+  ttsMuted = m;
+  if (m) {
+    if (typeof stopPlayback === "function") stopPlayback();   // player manual (conversa/síntese)
+    if (auto) {
+      auto.queue = [];                                        // descarta trechos pendentes (não renderiza)
+      if (auto.player) {                                      // timeline do contínuo
+        auto.player.sources.forEach(s => { try { s.stop(); } catch {} });
+        auto.player.sources = [];
+        auto.player.nextTime = 0;
+      }
+    }
+  }
+}
 function mkCtx() {   // AudioContext de reprodução roteado p/ a saída escolhida
   const c = new AudioContext();
   if (outDeviceId && c.setSinkId) c.setSinkId(outDeviceId).catch(() => {});
   return c;
 }
+/* Canal do gate: o cliente roteador roda um servidor de controle em 127.0.0.1
+   (MESMA máquina que este navegador). Consultamos ele primeiro — loopback sempre
+   funciona, sem depender de rota até o servidor remoto (proxy/VPN/subnet). Se o
+   cliente não estiver rodando, caímos no canal do servidor (/api/mic-route). */
+const CTRL_PORTS = [7861, 7862, 7863, 7864, 7865];
+let ctrlBase = null, ctrlProbe = 0;
+async function pollMicRoute() {
+  // 1) descobre a porta do cliente local (uma vez; re-tenta no máx ~1.5s)
+  if (!ctrlBase && Date.now() - ctrlProbe > 1500) {
+    ctrlProbe = Date.now();
+    for (const p of CTRL_PORTS) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${p}/mode`, { cache: "no-store" });
+        if (r.ok) { ctrlBase = `http://127.0.0.1:${p}`; break; }
+      } catch {}
+    }
+  }
+  if (ctrlBase) {
+    try {
+      const r = await fetch(`${ctrlBase}/mode`, { cache: "no-store" });
+      if (r.ok) { setTtsMuted((await r.json()).mode === "real"); return; }
+      ctrlBase = null;
+    } catch { ctrlBase = null; }
+  }
+  // 2) fallback: canal pelo servidor (cliente na mesma máquina do server)
+  try {
+    const r = await authFetch("/api/mic-route");
+    if (r.ok) { setTtsMuted((await r.json()).mode === "real"); return; }
+  } catch {}
+  setTtsMuted(false);   // ninguém no controle -> TTS livre
+}
+setInterval(pollMicRoute, 350);
+pollMicRoute();
 function fillDevices(sel, devs, current) {
   sel.innerHTML = '<option value="">Padrão do sistema</option>';
   devs.forEach((d, i) => {
@@ -1792,6 +1809,20 @@ $("audioInDevice").onchange = () => { micDeviceId = $("audioInDevice").value; lo
   toast("Microfone trocado — vale na próxima gravação/escuta"); };
 $("audioOutDevice").onchange = () => { outDeviceId = $("audioOutDevice").value; localStorage.setItem("outDeviceId", outDeviceId);
   applyOutput(); toast("Saída de som trocada"); };
+
+$("dlMicRouter").onclick = async (e) => {     // baixa o cliente roteador (zip) via authFetch (local ou remoto)
+  e.preventDefault();
+  try {
+    const r = await authFetch("/api/client/mic-router");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = "tts-rod-mic-router.zip";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast("Baixando o roteador de microfone…");
+  } catch (err) { toast("Erro ao baixar: " + err.message, 5000); }
+};
 
 function initMicControls() {
   $("micGain").value = micFx.gain; $("micGainOut").textContent = micFx.gain.toFixed(1);
@@ -1900,11 +1931,9 @@ function transVoiceOk() {
   const v = fEl("voice").value;
   if (!v) { toast("Escolha uma voz."); return false; }
   if (v === "__design__") {
-    const qwen = $("remoteTts").checked && $("remoteTtsEngine").value === "qwen3";
-    const txt = (qwen ? $("qVoiceDesign").value : $("oInstruct").value).trim();
+    const txt = $("oInstruct").value.trim();
     if (!txt) {
-      toast(qwen ? "Voice design (Qwen): descreva a voz em Configurações → Qwen3 e Salve."
-                 : "Voice design vazio — defina as tags em Configurações → Voice design.", 6000);
+      toast("Voice design vazio — defina as tags em Configurações → Voice design.", 6000);
       return false;
     }
   }
@@ -1971,8 +2000,12 @@ function flushChunk(st, continuing, clean = true) {  // fatia o PCM acumulado ->
   const sr = g.sr, dur = performance.now() - st.uttStart;
   const samples = grabPcm(g, st.chunkStart, g.head);
   // captura é contínua -> zero gap; só vira trecho se durou o mínimo e tem áudio real
-  if (dur >= VAD.minUtterMs && samples.length > sr * 0.2)
-    st.queue.push(encodeWav(samples, sr));          // WAV pronto (blobToWav reamostra p/ 24k)
+  // em "voz real" (ttsMuted) nem enfileira -> não traduz nem sintetiza (zero RTX).
+  if (dur >= VAD.minUtterMs && samples.length > sr * 0.2 && !ttsMuted) {
+    const wav = encodeWav(samples, sr);             // WAV pronto (blobToWav reamostra p/ 24k)
+    chunkMeta.set(wav, { onset: st.uttStart, flush: performance.now() });
+    st.queue.push(wav);
+  }
   if (continuing) {
     // corte LIMPO (numa pausa) começa exato; corte FORÇADO (meio de palavra) deixa
     // 0.4s de overlap p/ a palavra dividida reaparecer inteira no próximo trecho.
@@ -2043,8 +2076,13 @@ async function requestTranslation(blob) {
   fd.append("voice_id", voice_id);
   if (voice_id === "__design__") fd.append("instruct", $("oInstruct").value.trim());  // voz por descrição (tags)
   let r;
+  const tSent = performance.now(), meta = chunkMeta.get(blob);
   try { r = await api(FEAT.ep, { method: "POST", body: fd }); }
   catch (e) { toast("Erro: " + e.message, 6000); return null; }
+  if (PERF_LOG && meta) {
+    console.log(`[perf] time-to-start(onset→envio)=${Math.round(tSent - meta.onset)}ms`
+      + ` · fila=${Math.round(tSent - meta.flush)}ms · STT+tradução(modelo)=${Math.round(performance.now() - tSent)}ms`);
+  }
   if (r.rejected) {
     fEl("status").textContent = `ignorado (${r.reason})` + (auto ? " — escutando…" : "");
     return null;
@@ -2074,6 +2112,10 @@ async function translateAndSpeak(blob) {
   fEl("status").innerHTML = '<span class="spinner"></span>transcrevendo…';
   const r = await requestTranslation(blob);
   if (!r) return;
+  if (ttsMuted) {   // virou "voz real" durante a tradução -> não reproduz
+    fEl("status").textContent = auto ? "escutando…" : "";
+    return;
+  }
   showTrans(r);
   fEl("status").innerHTML = '<span class="spinner"></span>falando…';
   try { await streamJob(r.job_id, fEl("status")); fEl("status").textContent = "pronto ✔"; }
@@ -2090,7 +2132,7 @@ async function streamJobInto(job_id, pl) {
     if (j.status === "error") throw new Error(j.error || "falha na geração");
     while (buscados < j.pieces) {
       const buf = await (await authFetch(`/api/tts/jobs/${job_id}/pieces/${buscados}`)).arrayBuffer();
-      if (!pl.stopped) {
+      if (!pl.stopped && !ttsMuted) {   // se virou "voz real" no meio, para de agendar (descarta)
         const audio = await pl.ctx.decodeAudioData(buf);
         const src = pl.ctx.createBufferSource();
         src.buffer = audio; src.connect(pl.ctx.destination);
@@ -2122,6 +2164,7 @@ async function pumpPipeline(st) {
     // dispara JÁ a tradução do trecho seguinte (STT+LLM em paralelo com este tocando)
     if (!st.stop && st.queue.length) pending = requestTranslation(st.queue.shift());
     if (!r) continue;
+    if (ttsMuted) continue;   // virou "voz real" durante a tradução -> não toca este trecho
     showTrans(r);
     const buf = Math.max(0, pl.nextTime - pl.ctx.currentTime);
     fEl("status").innerHTML = `<span class="spinner"></span>simultâneo · buffer ${buf.toFixed(1)}s`;
@@ -2231,21 +2274,7 @@ async function loadSettings() {
     $("remoteTranslate").checked = !!s.remote_translate;
     $("remoteStt").checked = !!s.remote_stt;
     $("remoteTtsUrl").value = s.remote_tts_url || "";
-    $("remoteTtsUrlQwen").value = s.remote_tts_url_qwen || "";
-    $("remoteTtsEngine").value = s.remote_tts_engine || "omnivoice";
     $("remoteTtsVoice").value = s.remote_tts_voice || "";
-    for (const [id, out, val, dec] of [["qTemp", "qTempOut", s.qwen_temperature ?? 0.9, 2],
-        ["qTopp", "qToppOut", s.qwen_top_p ?? 1.0, 2], ["qTopk", "qTopkOut", s.qwen_top_k ?? 50, 0],
-        ["qRep", "qRepOut", s.qwen_repetition_penalty ?? 1.05, 2]]) {
-      $(id).value = val; $(out).textContent = parseFloat(val).toFixed(dec);
-    }
-    $("qMaxTok").value = s.qwen_max_new_tokens ?? 2048;
-    $("qDoSample").checked = s.qwen_do_sample ?? true;
-    $("qXvec").checked = !!s.qwen_x_vector_only;
-    $("qNonStream").checked = !!s.qwen_non_streaming;
-    $("qVoiceDesign").value = s.qwen_voice_design || "";
-    $("qSeed").value = s.omni_seed ?? 42;       // seed compartilhado com o OmniVoice
-    applyEngineUI();
     $("remoteTtsExtra").value = s.remote_tts_extra || "";
     $("remoteBaseUrl").value = s.remote_base_url || "";
     $("remoteApiKey").value = s.remote_api_key || "";
@@ -2316,17 +2345,6 @@ $("cfgSave").onclick = async () => {
         remote_translate: $("remoteTranslate").checked,
         remote_stt: $("remoteStt").checked,
         remote_tts_url: $("remoteTtsUrl").value,
-        remote_tts_url_qwen: $("remoteTtsUrlQwen").value,
-        remote_tts_engine: $("remoteTtsEngine").value,
-        qwen_temperature: parseFloat($("qTemp").value),
-        qwen_top_p: parseFloat($("qTopp").value),
-        qwen_top_k: parseInt($("qTopk").value, 10),
-        qwen_repetition_penalty: parseFloat($("qRep").value),
-        qwen_max_new_tokens: parseInt($("qMaxTok").value, 10),
-        qwen_do_sample: $("qDoSample").checked,
-        qwen_x_vector_only: $("qXvec").checked,
-        qwen_non_streaming: $("qNonStream").checked,
-        qwen_voice_design: $("qVoiceDesign").value,
         remote_tts_voice: $("remoteTtsVoice").value,
         remote_tts_extra: $("remoteTtsExtra").value,
         remote_base_url: $("remoteBaseUrl").value,
