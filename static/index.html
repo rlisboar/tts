@@ -238,19 +238,26 @@
   #timer { font-variant-numeric: tabular-nums; font-size: 15px; color: var(--danger); font-weight: 800; }
   .hint { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 8px; }
   audio { height: 36px; max-width: 240px; width: 100%; border-radius: var(--r-md); }
-  #transOut { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r-md);
-    padding: 2px 14px; margin-top: 12px; line-height: 1.6; max-height: 300px; overflow-y: auto; }
-  #transOut:empty { display: none; }
+  #transOut, #modOut { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r-md);
+    padding: 4px 14px; margin-top: 12px; max-height: 340px; overflow-y: auto; }
+  #transOut:empty, #modOut:empty { display: none; }
   .trans-head { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
   .trans-head .lbl { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
-  .trans-entry { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
+  .trans-entry { padding: 12px 0; border-bottom: 1px solid var(--border-soft); animation: tIn .18s ease both; }
   .trans-entry:last-child { border-bottom: 0; }
-  .t-lang { display: inline-block; font-size: 10px; font-weight: 700; color: var(--accent);
-    border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-right: 7px;
-    text-transform: uppercase; vertical-align: 1px; }
-  .t-src { color: var(--muted); }
-  .t-dst { color: var(--text); margin-top: 4px; }
-  .t-emo { font-size: 11px; color: var(--faint); margin-top: 3px; }
+  @keyframes tIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  /* badge de idioma: contorno no original, preenchido no destino (texto falado) */
+  .t-lang { display: inline-block; font-size: 9.5px; font-weight: 800; letter-spacing: .04em;
+    border-radius: 5px; padding: 1px 6px; margin-right: 8px; text-transform: uppercase; vertical-align: 1.5px; }
+  .t-src .t-lang { color: var(--faint); border: 1px solid var(--border); }
+  .t-lang-dst { color: #06302b; background: var(--accent); border: 1px solid var(--accent); }
+  /* original = secundário; tradução (falada) = protagonista, com barra de destaque */
+  .t-src { color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .t-dst { color: var(--text); font-size: 15.5px; font-weight: 500; line-height: 1.55; margin-top: 6px;
+    padding-left: 11px; border-left: 2px solid var(--accent); }
+  .t-emo { display: inline-block; font-size: 10.5px; font-weight: 600; color: var(--accent-deep);
+    background: var(--accent-soft); border-radius: 999px; padding: 2px 9px; margin-top: 8px; }
+  .t-emo.err { color: var(--danger); background: rgba(220,90,90,.12); }
   .empty { color: var(--muted); font-size: 13px; padding: 28px 0; text-align: center; }
   #toast {
     position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(8px);
@@ -1415,11 +1422,13 @@ const OMNI_DEFAULTS = [["oNumSteps", "oNumStepsOut", 16, 0], ["oGuid", "oGuidOut
 const PERF_PRESETS = {
   // seg = SEGMENTAÇÃO (o que define o "tempo até começar a processar"): silenceHold
   // (pausa que fecha o trecho), contMax (corte do contínuo), minUtter (mínimo).
-  qualidade:  { omni_num_steps: 24, stt_beam: 8, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "whisper-large-v3",
+  // STT = Voxtral (fixo); tradutor = 14B (fixo). Os tiers variam só os passos do
+  // OmniVoice e a SEGMENTAÇÃO (tempo até começar). stt_beam é ignorado pelo Voxtral.
+  qualidade:  { omni_num_steps: 24, stt_beam: 8, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "voxtral",
                 seg: { silenceHold: 700, contMax: 4.5, minUtter: 350 } },
-  equilibrio: { omni_num_steps: 16, stt_beam: 5, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "whisper-large-v3",
+  equilibrio: { omni_num_steps: 16, stt_beam: 5, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "voxtral",
                 seg: { silenceHold: 500, contMax: 3.0, minUtter: 300 } },
-  velocidade: { omni_num_steps: 8,  stt_beam: 1, remote_translate_model: "qwen2.5-7b-instruct",  remote_stt_model: "whisper-large-v3-turbo",
+  velocidade: { omni_num_steps: 8,  stt_beam: 1, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "voxtral",
                 seg: { silenceHold: 300, contMax: 2.0, minUtter: 220 } },
 };
 function applySeg(seg) {   // aplica segmentação ao VAD + sliders + persiste
@@ -2090,16 +2099,24 @@ async function requestTranslation(blob) {
   return r;
 }
 
+const escHtml = s => (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 function showTrans(r) {
   const out = fEl("out");
-  const same = (r.translation || "") === (r.source_text || "");   // modificador: mesmo texto
+  const src = r.source_text || "", trans = r.translation || "";
+  const same = trans === src || !trans;             // modificador: sem tradução -> texto é o falado
   const e = document.createElement("div");
   e.className = "trans-entry";
-  e.innerHTML =
-    `<div class="t-src"><span class="t-lang">${(r.source_lang || "?")}</span>${r.source_text || ""}</div>`
-    + (same ? "" : `<div class="t-dst"><span class="t-lang">${r.target_lang || ""}</span>${r.translation || ""}</div>`)
-    + (r.emotion ? `<div class="t-emo">🎭 ${r.emotion}</div>` : "")
-    + (r.emotion_error ? `<div class="t-emo" style="color:#c66">emoção indisponível: ${r.emotion_error}</div>` : "");
+  // a linha FALADA (tradução, ou o próprio texto no modificador) é a protagonista (.t-dst);
+  // o original aparece menor/secundário só quando há tradução diferente.
+  const spoken = same ? src : trans;
+  const dstLang = same ? (r.source_lang || "") : (r.target_lang || "");
+  let html = "";
+  if (!same)
+    html += `<div class="t-src"><span class="t-lang">${escHtml(r.source_lang || "?")}</span>${escHtml(src)}</div>`;
+  html += `<div class="t-dst"><span class="t-lang t-lang-dst">${escHtml(dstLang)}</span>${escHtml(spoken)}</div>`;
+  if (r.emotion) html += `<div class="t-emo">🎭 ${escHtml(r.emotion)}</div>`;
+  if (r.emotion_error) html += `<div class="t-emo err">emoção indisponível: ${escHtml(r.emotion_error)}</div>`;
+  e.innerHTML = html;
   out.appendChild(e);
   while (out.children.length > 60) out.removeChild(out.firstChild);   // cap p/ não crescer sem fim
   out.scrollTop = out.scrollHeight;                                    // auto-scroll p/ o mais recente
