@@ -67,9 +67,15 @@ except Exception as e:
     print("compile skip:", repr(e)[:120], flush=True)
 
 # ---------- ASR: faster-whisper — large-v3 (qualidade) + large-v3-turbo (rápido) ----------
-print(f"loading Whisper large-v3 (float16, num_workers={ASR_WORKERS})...", flush=True)
-asr = WhisperModel("large-v3", device="cuda", device_index=0, compute_type="float16", num_workers=ASR_WORKERS)
-print("whisper large-v3 ready", flush=True)
+# OMNI_LOAD_WHISPER=0 desliga o Whisper (libera VRAM) quando o STT é externo (Voxtral).
+_LOAD_WHISPER = os.environ.get("OMNI_LOAD_WHISPER", "1") != "0"
+asr = None
+if _LOAD_WHISPER:
+    print(f"loading Whisper large-v3 (float16, num_workers={ASR_WORKERS})...", flush=True)
+    asr = WhisperModel("large-v3", device="cuda", device_index=0, compute_type="float16", num_workers=ASR_WORKERS)
+    print("whisper large-v3 ready", flush=True)
+else:
+    print("Whisper DESABILITADO (OMNI_LOAD_WHISPER=0) — STT externo (ex.: Voxtral)", flush=True)
 asr_turbo = None
 def _load_turbo():
     global asr_turbo
@@ -86,7 +92,8 @@ import threading as _tht
 # quantização 4-bit — carregar 2 modelos bnb em threads concorrentes corrompia
 # os pesos (saída em loop "片片片"/"protester"). Serializa toda carga de modelo.
 _LOAD_LOCK = _tht.Lock()
-_tht.Thread(target=_load_turbo, daemon=True).start()
+if _LOAD_WHISPER:
+    _tht.Thread(target=_load_turbo, daemon=True).start()
 
 def _safe_name(name):
     return re.sub(r"[^a-zA-Z0-9_-]", "_", str(name or "").strip())[:64]
@@ -237,7 +244,9 @@ def mt_chat(slot, messages, temperature=0.3, max_new_tokens=512):
     return tok.decode(out[0][n:], skip_special_tokens=True).strip()
 import threading as _th
 _th.Thread(target=_load_into, args=(mt,), daemon=True).start()
-_th.Thread(target=_load_into, args=(mt_fast,), daemon=True).start()
+# OMNI_LOAD_MT_FAST=0 desliga o tradutor 7B (libera VRAM no reshuffle do Voxtral).
+if os.environ.get("OMNI_LOAD_MT_FAST", "1") != "0":
+    _th.Thread(target=_load_into, args=(mt_fast,), daemon=True).start()
 
 app = FastAPI(title="OmniVoice TTS + Whisper ASR + MT", version="2.4",
               description="OpenAI-compatible speech + transcription + chat(translation) on dual RTX, voice cloning + voice design")
