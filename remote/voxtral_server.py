@@ -57,12 +57,18 @@ def _save_tmp(raw: bytes):
     return f.name
 
 
-def _speech_stats(path: str):
-    """(segundos de fala, proporção de fala, duração) via Silero VAD @ 16 kHz."""
+def _load16(path: str):
+    """Decodifica QUALQUER formato -> float32 mono @ 16 kHz. librosa usa soundfile
+    (WAV/FLAC/OGG) e cai no audioread/ffmpeg p/ mp3/m4a/webm (o processor do
+    Voxtral só lê WAV via soundfile -> por isso decodifico aqui)."""
     wav, _ = librosa.load(path, sr=16000, mono=True)
-    total = max(len(wav), 1)
-    t = torch.from_numpy(np.ascontiguousarray(wav, dtype=np.float32))
-    ts = get_speech_timestamps(t, _vad, sampling_rate=16000)
+    return np.ascontiguousarray(wav, dtype=np.float32)
+
+
+def _speech_stats(wav16):
+    """(segundos de fala, proporção de fala, duração) via Silero VAD @ 16 kHz."""
+    total = max(len(wav16), 1)
+    ts = get_speech_timestamps(torch.from_numpy(wav16), _vad, sampling_rate=16000)
     speech = sum(s["end"] - s["start"] for s in ts)
     return speech / 16000.0, speech / total, total / 16000.0
 
@@ -74,13 +80,15 @@ def _compression_ratio(text: str):
     return len(b) / max(len(zlib.compress(b)), 1)
 
 
-def _run(path: str, language):
-    """Transcreve. Passar o CAMINHO faz o load_audio_as carregar + reamostrar 16 kHz
-    + mono (precisa de librosa). Devolve (texto, avg_logprob da geração greedy)."""
+def _run(wav16, language):
+    """Transcreve um array float32 mono @ 16 kHz. Passar o ARRAY + format=["wav"]
+    faz o processor re-encodar num buffer WAV (evita o soundfile-only do
+    load_audio_as, que falha em mp3/m4a). Devolve (texto, avg_logprob greedy)."""
     lang = (language or "").strip().lower() or None
     if lang in ("auto", ""):
         lang = None
-    inputs = processor.apply_transcription_request(audio=path, model_id=REPO, language=lang)
+    inputs = processor.apply_transcription_request(audio=wav16, model_id=REPO, language=lang,
+                                                   sampling_rate=16000, format=["wav"])
     inputs = inputs.to(DEV, dtype=torch.bfloat16)   # casta só os floats (features); ids ficam int
     n = inputs["input_ids"].shape[1]
     with torch.inference_mode():
@@ -116,7 +124,8 @@ async def transcriptions(file: UploadFile = File(...), model: str = Form(None),
         raise HTTPException(400, "áudio vazio")
     path = _save_tmp(raw)
     try:
-        speech_s, ratio, dur = _speech_stats(path)
+        wav16 = _load16(path)                       # decode robusto (qualquer formato)
+        speech_s, ratio, dur = _speech_stats(wav16)
         nsp = round(1.0 - ratio, 3)
         if speech_s < MIN_SPEECH:
             # sem fala suficiente -> NÃO transcreve (Voxtral deliraria). no_speech alto
@@ -125,7 +134,7 @@ async def transcriptions(file: UploadFile = File(...), model: str = Form(None),
             dt = 0.0
         else:
             t = time.time()
-            text, alp = _run(path, language)
+            text, alp = _run(wav16, language)
             dt = time.time() - t
             seg = {"no_speech_prob": nsp, "avg_logprob": round(alp, 3),
                    "compression_ratio": round(_compression_ratio(text), 3)}
@@ -152,7 +161,7 @@ async def translations(file: UploadFile = File(...), model: str = Form(None),
     raw = await file.read()
     path = _save_tmp(raw)
     try:
-        text, _ = _run(path, "en")
+        text, _ = _run(_load16(path), "en")
     finally:
         try:
             os.unlink(path)

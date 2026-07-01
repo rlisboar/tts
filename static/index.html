@@ -238,9 +238,16 @@
   #timer { font-variant-numeric: tabular-nums; font-size: 15px; color: var(--danger); font-weight: 800; }
   .hint { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 8px; }
   audio { height: 36px; max-width: 240px; width: 100%; border-radius: var(--r-md); }
-  #transOut, #modOut { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r-md);
-    padding: 4px 14px; margin-top: 12px; max-height: 340px; overflow-y: auto; }
-  #transOut:empty, #modOut:empty { display: none; }
+  #tvOut { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r-md);
+    padding: 4px 14px; margin-top: 8px; height: 46vh; min-height: 240px; overflow-y: auto; }
+  .tv-split { display: flex; gap: 16px; margin-top: 10px; }
+  .tv-left { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .tv-right { width: 330px; flex-shrink: 0; height: calc(46vh + 34px); min-height: 274px;
+    overflow-y: auto; padding-right: 6px; }
+  .tv-right .cfg-sec-h { margin: 16px 0 2px; }
+  .tv-right .cfg-sec-h:first-child { margin-top: 4px; }
+  .tv-right .sliders { margin-top: 8px; }
+  @media (max-width: 900px) { .tv-split { flex-direction: column; } .tv-right { width: auto; } }
   .trans-head { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
   .trans-head .lbl { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
   .trans-entry { padding: 12px 0; border-bottom: 1px solid var(--border-soft); animation: tIn .18s ease both; }
@@ -356,9 +363,7 @@
     <nav class="nav">
       <button class="nav-item" data-view="gerar"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M19 5a9 9 0 0 1 0 14"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></span><span>Gerar fala</span></button>
       <button class="nav-item" data-view="vozes"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span><span>Vozes</span></button>
-      <button class="nav-item" data-view="tradutor"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg></span><span>Tradutor</span></button>
-      <button class="nav-item" data-view="modificador"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/><path d="M3 21l3-3"/></svg></span><span>Modificador</span></button>
-      <button class="nav-item" data-view="stt"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/></svg></span><span>Transcrição</span></button>
+      <button class="nav-item" data-view="tradutor"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg></span><span>Tradutor / Voz</span></button>
       <button class="nav-item" data-view="historico"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>Histórico</span></button>
     </nav>
     <div class="side-foot">
@@ -459,185 +464,139 @@
 
     <!-- ===== Tradutor ===== -->
     <section class="view" id="view-tradutor">
-      <div class="view-head"><h1>Tradutor de voz</h1><span class="muted small">fala → texto → tradução → sua voz</span></div>
-      <div class="card col-scroll" style="flex:1; min-height:0">
+      <div class="view-head"><h1>Tradutor / Modificador</h1><span class="muted small">fala &rarr; texto &rarr; (tradu&ccedil;&atilde;o) &rarr; sua voz</span></div>
+      <div class="card" style="flex:1; min-height:0; display:flex; flex-direction:column">
         <div class="row">
-          <button id="transRecBtn">Falar</button>
-          <select id="transMode" style="max-width:160px">
+          <button id="tvRecBtn">Falar</button>
+          <select id="tvKind" style="max-width:210px" title="Traduzir muda o idioma; Modificar mantem suas palavras e so troca a voz">
+            <option value="translate">Traduzir</option>
+            <option value="modify">Modificar (mesma lingua)</option>
+          </select>
+          <select id="tvMode" style="max-width:150px">
+            <option value="continuo" selected>Modo: Continuo</option>
             <option value="manual">Modo: Manual</option>
-            <option value="continuo">Modo: Contínuo</option>
             <option value="conversa">Modo: Conversa</option>
           </select>
-          <select id="transSrc" style="max-width:170px">
-            <option value="auto">De: qualquer idioma</option>
-            <option value="pt" selected>De: Português</option>
+          <select id="tvSrc" style="max-width:160px">
+            <option value="auto">De: qualquer</option>
+            <option value="pt" selected>De: Portugues</option>
             <option value="en">De: English</option>
-            <option value="es">De: Español</option>
-            <option value="fr">De: Français</option>
+            <option value="es">De: Espanol</option>
+            <option value="fr">De: Francais</option>
             <option value="de">De: Deutsch</option>
             <option value="it">De: Italiano</option>
             <option value="ja">De: 日本語</option>
             <option value="zh">De: 中文</option>
           </select>
-          <select id="transLang" style="max-width:170px">
-            <option value="en">traduzir → English</option>
-            <option value="es">traduzir → Español</option>
-            <option value="fr">traduzir → Français</option>
-            <option value="de">traduzir → Deutsch</option>
-            <option value="it">traduzir → Italiano</option>
-            <option value="pt">traduzir → Português</option>
-            <option value="ja">traduzir → 日本語</option>
-            <option value="zh">traduzir → 中文</option>
+          <select id="tvLang" style="max-width:170px">
+            <option value="en">&rarr; English</option>
+            <option value="es">&rarr; Espanol</option>
+            <option value="fr">&rarr; Francais</option>
+            <option value="de">&rarr; Deutsch</option>
+            <option value="it">&rarr; Italiano</option>
+            <option value="pt">&rarr; Portugues</option>
+            <option value="ja">&rarr; 日本語</option>
+            <option value="zh">&rarr; 中文</option>
           </select>
-          <select id="transVoice" style="max-width:200px"></select>
-          <span id="transVdHint" class="hint" style="margin-top:0;display:none"></span>
-          <select id="transEmo" style="max-width:210px" title="Detecta a emoção e aplica via tom (pitch) + velocidade — preserva o timbre da voz clonada (OmniVoice não tem emoção direta)">
-            <option value="off">Emoção: off</option>
-            <option value="light">Emoção: aplicar (prosódia)</option>
-            <option value="accurate">Emoção: aplicar (SER)</option>
+          <select id="tvVoice" style="max-width:190px"></select>
+          <span id="tvVdHint" class="hint" style="margin-top:0;display:none"></span>
+          <select id="tvEmo" style="max-width:200px" title="Detecta a emocao e aplica via tom (pitch) + velocidade">
+            <option value="off">Emocao: off</option>
+            <option value="light">Emocao: aplicar (prosodia)</option>
+            <option value="accurate">Emocao: aplicar (SER)</option>
           </select>
-          <span id="transStatus" class="hint" style="margin-top:0"></span>
+          <span id="tvStatus" class="hint" style="margin-top:0"></span>
         </div>
-        <div class="trans-head"><span class="lbl">Transcrição</span>
-          <button id="transClear" class="ghost small" type="button" style="margin-left:auto">Limpar</button></div>
-        <div id="transOut"></div>
-        <details>
-          <summary>Microfone / filtros</summary>
-          <div class="sliders" style="margin-top:10px">
-            <label>Ganho do mic <output id="micGainOut">1.0</output>
-              <input type="range" id="micGain" min="0" max="3" step="0.1" value="1"></label>
-            <label>Passa-alta · corta grave/zumbido <output id="micHpOut">90 Hz</output>
-              <input type="range" id="micHp" min="0" max="300" step="10" value="90"></label>
-            <label>Sensibilidade · ignora ruído <output id="micThreshOut">0.015</output>
-              <input type="range" id="micThresh" min="0.005" max="0.08" step="0.001" value="0.015"></label>
-            <label>Pausa = fim de frase <output id="micSilenceOut">700 ms</output>
-              <input type="range" id="micSilence" min="300" max="2000" step="50" value="700"></label>
-            <label>Duração mínima da fala <output id="micMinUtterOut">350 ms</output>
-              <input type="range" id="micMinUtter" min="100" max="1500" step="50" value="350"></label>
-            <label>Trecho do contínuo (latência×contexto) <output id="micContMaxOut">4.5 s</output>
-              <input type="range" id="micContMax" min="1.5" max="8" step="0.5" value="4.5"></label>
+
+        <div class="tv-split">
+          <div class="tv-left">
+            <div class="trans-head"><span class="lbl">Transcricao / Traducao</span>
+              <button id="tvClear" class="ghost small" type="button" style="margin-left:auto">Limpar</button></div>
+            <div id="tvOut"></div>
           </div>
-          <div class="row" style="margin-top:10px; align-items:center">
-            <label class="check"><input type="checkbox" id="micNs" checked> supressão de ruído (navegador)</label>
-            <div style="flex:1; min-width:180px">
-              <div class="hint" style="margin-bottom:2px; margin-top:0">nível do mic (a marca laranja é o limiar)</div>
+          <div class="tv-right">
+            <div class="cfg-sec-h">Microfone / filtros</div>
+            <div class="sliders">
+              <label>Ganho do mic <output id="micGainOut">1.0</output>
+                <input type="range" id="micGain" min="0" max="3" step="0.1" value="1"></label>
+              <label>Passa-alta &middot; corta grave/zumbido <output id="micHpOut">90 Hz</output>
+                <input type="range" id="micHp" min="0" max="300" step="10" value="90"></label>
+              <label>Sensibilidade &middot; ignora ruido <output id="micThreshOut">0.015</output>
+                <input type="range" id="micThresh" min="0.005" max="0.08" step="0.001" value="0.015"></label>
+              <label>Pausa = fim de frase <output id="micSilenceOut">700 ms</output>
+                <input type="range" id="micSilence" min="300" max="2000" step="50" value="700"></label>
+              <label>Duracao minima da fala <output id="micMinUtterOut">350 ms</output>
+                <input type="range" id="micMinUtter" min="100" max="1500" step="50" value="350"></label>
+              <label>Trecho do continuo (latencia x contexto) <output id="micContMaxOut">4.5 s</output>
+                <input type="range" id="micContMax" min="1.5" max="8" step="0.5" value="4.5"></label>
+            </div>
+            <label class="check" style="margin-top:10px"><input type="checkbox" id="micNs" checked> supressao de ruido (navegador)</label>
+            <div style="margin-top:8px">
+              <div class="hint" style="margin-bottom:2px; margin-top:0">nivel do mic (a marca laranja e o limiar)</div>
               <div id="micMeter" style="height:12px; background:#0c0e15; border-radius:6px; position:relative; overflow:hidden">
                 <div id="micMeterBar" style="height:100%; width:0; background:#666; transition:width .05s"></div>
                 <div id="micMeterMark" style="position:absolute; top:0; bottom:0; left:10%; width:2px; background:#fa0"></div>
               </div>
             </div>
+            <div class="cfg-sec-h">Anti-ruido da transcricao</div>
+            <div class="sliders">
+              <label>Min. de palavras <output id="sttWordsOut">1</output>
+                <input type="range" id="sttWords" min="0" max="6" step="1" value="1"></label>
+              <label>Min. de caracteres <output id="sttCharsOut">2</output>
+                <input type="range" id="sttChars" min="0" max="20" step="1" value="2"></label>
+              <label>Max. "sem fala" <output id="sttNoSpeechOut">0.60</output>
+                <input type="range" id="sttNoSpeech" min="0" max="1" step="0.05" value="0.6"></label>
+              <label>Min. confianca <output id="sttLogprobOut">-1.0</output>
+                <input type="range" id="sttLogprob" min="-5" max="0" step="0.1" value="-1"></label>
+              <label>Max. repeticao <output id="sttCompOut">2.4</output>
+                <input type="range" id="sttComp" min="1" max="10" step="0.1" value="2.4"></label>
+            </div>
+            <p class="hint">Continuo = simultaneo (corta em trechos curtos, traduz o proximo enquanto toca).
+              Ajuste o <b>Trecho do continuo</b> p/ latencia x contexto. Anti-ruido rejeita ruido/alucinacao.</p>
           </div>
-          <p class="hint">Suba o <b>ganho</b> se a voz sai baixa. Suba a <b>passa-alta</b> p/ cortar zumbido/ventilador/AC.
-          Ajuste a <b>sensibilidade</b> até a barra ficar verde só quando você fala (e cinza no silêncio). Os filtros
-          também limpam o áudio que vai pra transcrição.</p>
-        </details>
-        <details>
-          <summary>Anti-ruído da transcrição (rejeita ruído/alucinação)</summary>
-          <div class="sliders" style="margin-top:10px">
-            <label>Mín. de palavras <output id="sttWordsOut">1</output>
-              <input type="range" id="sttWords" min="0" max="6" step="1" value="1"></label>
-            <label>Mín. de caracteres <output id="sttCharsOut">2</output>
-              <input type="range" id="sttChars" min="0" max="20" step="1" value="2"></label>
-            <label>Máx. "sem fala" <output id="sttNoSpeechOut">0.60</output>
-              <input type="range" id="sttNoSpeech" min="0" max="1" step="0.05" value="0.6"></label>
-            <label>Mín. confiança <output id="sttLogprobOut">-1.0</output>
-              <input type="range" id="sttLogprob" min="-5" max="0" step="0.1" value="-1"></label>
-            <label>Máx. repetição <output id="sttCompOut">2.4</output>
-              <input type="range" id="sttComp" min="1" max="10" step="0.1" value="2.4"></label>
+        </div>
+        <details style="margin-top:12px">
+          <summary>📄 Transcrever arquivo &middot; gravar &middot; YouTube (so texto)</summary>
+          <div style="margin-top:10px">
+            <div class="toolbar">
+              <button id="sttRecBtn">&#9679; Gravar</button>
+              <button id="sttUploadBtn" class="ghost" type="button">Carregar arquivo</button>
+              <input type="file" id="sttFile" accept="audio/*" style="display:none">
+              <select id="sttSrcLang" style="max-width:190px">
+                <option value="auto" selected>Idioma: Auto (detecta)</option>
+                <option value="pt">Portugues</option>
+                <option value="en">English</option>
+                <option value="es">Espanol</option>
+                <option value="fr">Francais</option>
+                <option value="de">Deutsch</option>
+                <option value="it">Italiano</option>
+                <option value="ja">日本語</option>
+                <option value="zh">中文</option>
+              </select>
+              <span id="sttStatus" class="hint" style="margin-top:0"></span>
+            </div>
+            <details>
+              <summary>Importar do YouTube</summary>
+              <input type="text" id="sttYtUrl" placeholder="link do YouTube" style="margin-top:10px">
+              <div class="row" style="margin-top:8px">
+                <input type="text" id="sttYtStart" placeholder="inicio (ex.: 1:00)" style="max-width:150px">
+                <input type="text" id="sttYtEnd" placeholder="fim (ex.: 3:30)" style="max-width:150px">
+                <button id="sttYtBtn" class="ghost" type="button">Importar e transcrever</button>
+              </div>
+            </details>
+            <textarea id="sttText" class="hero-area" placeholder="O texto transcrito aparece aqui - edite a vontade."></textarea>
+            <div class="toolbar">
+              <button id="sttCopyBtn" class="ghost">Copiar</button>
+              <button id="sttDownloadBtn" class="ghost">Baixar .txt</button>
+              <button id="sttSrtBtn" class="ghost">Baixar .srt</button>
+              <span class="hint" style="margin-top:0">1a vez baixa o Whisper (~1,6 GB) se for local.</span>
+            </div>
           </div>
-          <p class="hint">Mais palavras/caracteres = ignora frases curtas de ruído. <b>Máx. "sem fala"</b> menor e
-          <b>mín. confiança</b> maior = mais rígido (rejeita mais). <b>Máx. repetição</b> menor corta alucinação
-          repetitiva. Salva automático. Mostra abaixo o motivo quando ignora.</p>
         </details>
-        <p class="hint">
-          <b>Manual</b>: clique Falar → diga → Parar. <b>Contínuo</b> (tradução simultânea): corta a fala em
-          trechos curtos (sem esperar pausa), e <b>enquanto um trecho toca já traduz o próximo</b> — áudio
-          emendado numa timeline contínua. Continua capturando o tempo todo (cancelamento de eco; use fone p/
-          evitar realimentação). Ajuste o <b>Trecho do contínuo</b> em Microfone/filtros (menor = menos
-          latência, menos contexto). <b>Conversa</b>: half-duplex, traduz e fala, só volta a escutar depois.
-          A 1ª vez baixa os modelos (~3 GB).</p>
       </div>
     </section>
 
-    <!-- ===== Modificador (fala -> sua voz, sem traduzir) ===== -->
-    <section class="view" id="view-modificador">
-      <div class="view-head"><h1>Modificador de voz</h1><span class="muted small">fala → texto → sua voz (sem traduzir)</span></div>
-      <div class="card col-scroll" style="flex:1; min-height:0">
-        <div class="row">
-          <button id="modRecBtn">Falar</button>
-          <select id="modMode" style="max-width:160px">
-            <option value="manual">Modo: Manual</option>
-            <option value="continuo">Modo: Contínuo</option>
-            <option value="conversa">Modo: Conversa</option>
-          </select>
-          <select id="modSrc" style="max-width:190px">
-            <option value="auto">Idioma: auto</option>
-            <option value="pt" selected>Idioma: Português</option>
-            <option value="en">Idioma: English</option>
-            <option value="es">Idioma: Español</option>
-            <option value="fr">Idioma: Français</option>
-            <option value="de">Idioma: Deutsch</option>
-            <option value="it">Idioma: Italiano</option>
-            <option value="ja">Idioma: 日本語</option>
-            <option value="zh">Idioma: 中文</option>
-          </select>
-          <select id="modVoice" style="max-width:200px"></select>
-          <span id="modVdHint" class="hint" style="margin-top:0;display:none"></span>
-          <select id="modEmo" style="max-width:210px" title="Detecta a emoção e aplica via tom + velocidade">
-            <option value="off">Emoção: off</option>
-            <option value="light">Emoção: aplicar (prosódia)</option>
-            <option value="accurate">Emoção: aplicar (SER)</option>
-          </select>
-          <span id="modStatus" class="hint" style="margin-top:0"></span>
-        </div>
-        <div class="trans-head"><span class="lbl">Transcrição</span>
-          <button id="modClear" class="ghost small" type="button" style="margin-left:auto">Limpar</button></div>
-        <div id="modOut"></div>
-        <p class="hint">Igual ao tradutor, mas <b>fala exatamente o que você disse</b> na voz escolhida — sem traduzir.
-          Útil p/ trocar o timbre da sua fala em tempo real. Mic/filtros e anti-ruído são os mesmos do <b>Tradutor</b>
-          (ajuste lá). <b>Contínuo</b> = simultâneo; <b>Conversa</b> = half-duplex; <b>Manual</b> = clique e fale.</p>
-      </div>
-    </section>
-
-    <!-- ===== Transcrição (STT) ===== -->
-    <section class="view" id="view-stt">
-      <div class="view-head"><h1>Transcrição</h1><span class="muted small">fala ou arquivo → texto (Whisper, local ou remoto)</span></div>
-      <div class="card grow-card">
-        <div class="toolbar">
-          <button id="sttRecBtn">● Gravar</button>
-          <button id="sttUploadBtn" class="ghost" type="button">Carregar arquivo</button>
-          <input type="file" id="sttFile" accept="audio/*" style="display:none">
-          <select id="sttSrcLang" style="max-width:190px">
-            <option value="auto" selected>Idioma: Auto (detecta)</option>
-            <option value="pt">Português</option>
-            <option value="en">English</option>
-            <option value="es">Español</option>
-            <option value="fr">Français</option>
-            <option value="de">Deutsch</option>
-            <option value="it">Italiano</option>
-            <option value="ja">日本語</option>
-            <option value="zh">中文</option>
-          </select>
-          <span id="sttStatus" class="hint" style="margin-top:0"></span>
-        </div>
-        <details>
-          <summary>Importar do YouTube</summary>
-          <input type="text" id="sttYtUrl" placeholder="link do YouTube" style="margin-top:10px">
-          <div class="row" style="margin-top:8px">
-            <input type="text" id="sttYtStart" placeholder="início (ex.: 1:00)" style="max-width:150px">
-            <input type="text" id="sttYtEnd" placeholder="fim (ex.: 3:30)" style="max-width:150px">
-            <button id="sttYtBtn" class="ghost" type="button">Importar e transcrever</button>
-          </div>
-        </details>
-        <textarea id="sttText" class="hero-area" placeholder="O texto transcrito aparece aqui — edite à vontade."></textarea>
-        <div class="toolbar">
-          <button id="sttCopyBtn" class="ghost">Copiar</button>
-          <button id="sttDownloadBtn" class="ghost">Baixar .txt</button>
-          <button id="sttSrtBtn" class="ghost">Baixar .srt</button>
-          <span class="hint" style="margin-top:0">1ª vez baixa o Whisper (~1,6 GB) se for local.</span>
-        </div>
-      </div>
-    </section>
+    <!-- ===== (Transcrição mesclada no Tradutor acima) ===== -->
 
     <!-- ===== Histórico ===== -->
     <section class="view" id="view-historico">
@@ -918,7 +877,7 @@ function showView(id) {
 }
 document.querySelectorAll(".nav-item").forEach(b => b.onclick = () => {
   showView(b.dataset.view);
-  if (b.dataset.view === "tradutor" || b.dataset.view === "modificador") warmTranslator();  // pré-carrega modelos
+  if (b.dataset.view === "tradutor") warmTranslator();  // pré-carrega modelos
 });
 showView("gerar");
 
@@ -964,7 +923,7 @@ $("oInstruct").oninput = () => { vdParse(); updateTransVdHint(); };
 
 // dica (tradutor E modificador) quando a "voz" é Voice design
 function updateTransVdHint() {
-  for (const [vsel, hsel] of [["transVoice", "transVdHint"], ["modVoice", "modVdHint"]]) {
+  for (const [vsel, hsel] of [["tvVoice", "tvVdHint"]]) {
     const el = $(hsel); if (!el) continue;
     if ($(vsel).value !== "__design__") { el.style.display = "none"; continue; }
     const tags = $("oInstruct").value.trim();
@@ -973,8 +932,7 @@ function updateTransVdHint() {
     el.style.color = tags ? "" : "var(--accent)";
   }
 }
-$("transVoice").addEventListener("change", updateTransVdHint);
-$("modVoice").addEventListener("change", updateTransVdHint);
+$("tvVoice").addEventListener("change", updateTransVdHint);
 
 // descarrega modelos locais (MLX) da RAM sob demanda
 $("unloadModelsBtn").onclick = async () => {
@@ -1337,16 +1295,14 @@ $("editVoiceBtn").onclick = () => {
 /* ───────── Lista de vozes ───────── */
 async function refreshVoices() {
   const voices = await api("/api/voices");
-  const list = $("voiceList"), sel = $("voiceSelect"), sel2 = $("transVoice"), sel3 = $("modVoice");
-  const selected = sel.value, selected2 = sel2.value, selected3 = sel3.value;
-  sel.innerHTML = ""; sel2.innerHTML = ""; sel3.innerHTML = "";
+  const list = $("voiceList"), sel = $("voiceSelect"), sel2 = $("tvVoice");
+  const selected = sel.value, selected2 = sel2.value;
+  sel.innerHTML = ""; sel2.innerHTML = "";
   // voz "virtual": gera a partir da descrição (campo Voice design), sem clone
   const dopt = document.createElement("option");
   dopt.value = "__design__"; dopt.textContent = "Voice design (descrição → voz)";
   sel.appendChild(dopt);
-  sel3.appendChild(dopt.cloneNode(true));        // mesma opção no modificador
-  const dopt2 = dopt.cloneNode(true);            // mesma opção no tradutor
-  sel2.appendChild(dopt2);
+  sel2.appendChild(dopt.cloneNode(true));        // opção design no tradutor/modificador
   list.innerHTML = voices.length ? "" : '<div class="empty">Nenhuma voz ainda — grave ao lado.</div>';
   for (const v of voices) {
     const virtual = v.preset && !v.materialized;  // voz padrão ainda não criada
@@ -1427,11 +1383,9 @@ async function refreshVoices() {
     const opt2 = document.createElement("option");
     opt2.value = v.id; opt2.textContent = rotulo;
     sel2.appendChild(opt2);
-    sel3.appendChild(opt2.cloneNode(true));
   }
   if (selected) sel.value = selected;
   if (selected2) sel2.value = selected2;
-  if (selected3) sel3.value = selected3;
   updateTransVdHint();
 }
 
@@ -1677,11 +1631,11 @@ let auto = null;                            // modos contínuo/conversa (VAD)
 // Tradutor e Modificador compartilham o MESMO pipeline; FEAT diz qual está ativo
 // (quais controles ler/escrever e qual endpoint chamar).
 const FEATURES = {
-  translate: { ep: "/api/translate-speech", voice: "transVoice", mode: "transMode", src: "transSrc",
-    emo: "transEmo", status: "transStatus", out: "transOut", recBtn: "transRecBtn", vdHint: "transVdHint",
-    body: fd => fd.append("target_lang", $("transLang").value) },
-  modify: { ep: "/api/modify-speech", voice: "modVoice", mode: "modMode", src: "modSrc",
-    emo: "modEmo", status: "modStatus", out: "modOut", recBtn: "modRecBtn", vdHint: "modVdHint",
+  translate: { ep: "/api/translate-speech", voice: "tvVoice", mode: "tvMode", src: "tvSrc",
+    emo: "tvEmo", status: "tvStatus", out: "tvOut", recBtn: "tvRecBtn", vdHint: "tvVdHint",
+    body: fd => fd.append("target_lang", $("tvLang").value) },
+  modify: { ep: "/api/modify-speech", voice: "tvVoice", mode: "tvMode", src: "tvSrc",
+    emo: "tvEmo", status: "tvStatus", out: "tvOut", recBtn: "tvRecBtn", vdHint: "tvVdHint",
     body: () => {} },
 };
 let FEAT = FEATURES.translate;
@@ -2007,8 +1961,10 @@ async function recClick(featName) {
   if (!transVoiceOk()) return;
   await startAuto(mode);
 }
-$("transRecBtn").onclick = () => recClick("translate");
-$("modRecBtn").onclick = () => recClick("modify");
+function tvKindApply() { $("tvLang").style.display = $("tvKind").value === "modify" ? "none" : ""; }
+$("tvKind").onchange = () => { onModeChange(); tvKindApply(); };
+tvKindApply();
+$("tvRecBtn").onclick = () => recClick($("tvKind").value);
 
 // valida a voz do tradutor (clone ou voice design com tags)
 function transVoiceOk() {
@@ -2025,8 +1981,7 @@ function transVoiceOk() {
 }
 
 const onModeChange = () => { if (auto) stopAuto(); if (transRec && transRec.state === "recording") transRec.stop(); };
-$("transMode").onchange = onModeChange;
-$("modMode").onchange = onModeChange;
+$("tvMode").onchange = onModeChange;
 
 function setRecBtn(on, label) {
   const b = fEl("recBtn");
@@ -2196,8 +2151,7 @@ function showTrans(r) {
   while (out.children.length > 60) out.removeChild(out.firstChild);   // cap p/ não crescer sem fim
   out.scrollTop = out.scrollHeight;                                    // auto-scroll p/ o mais recente
 }
-$("transClear").onclick = () => { $("transOut").innerHTML = ""; };
-$("modClear").onclick = () => { $("modOut").innerHTML = ""; };
+$("tvClear").onclick = () => { $("tvOut").innerHTML = ""; };
 
 /* Manual / conversa: processa e toca (reseta o player a cada trecho). */
 async function translateAndSpeak(blob) {
