@@ -759,6 +759,10 @@
             <input type="number" id="oSeed" min="-1" step="1" value="42" title="mesmo instruct + seed = sempre a mesma voz. -1 = aleatória a cada geração"></label>
           <button id="oSeedRoll" class="ghost small" type="button" title="sorteia outra voz para o mesmo instruct">🎲 nova voz</button>
         </div>
+        <div class="row2" style="margin-top:6px">
+          <input type="text" id="vdSaveName" placeholder="Nome p/ salvar esta voz…" style="width:100%">
+          <button id="vdSaveBtn" class="ghost small" type="button" title="materializa o design numa voz salva e reutilizável (aparece na lista de vozes e na API)">💾 Salvar como voz</button>
+        </div>
         <p class="hint">Sem seed a voz muda a cada geração (timbre/sotaque). <b>Seed fixa = voz reprodutível.</b>
           "portuguese accent" é ambíguo (PT-europeu às vezes) — p/ BR, prefira sem sotaque e fixe a seed.
           Selecione a voz <b>"Voice design"</b> p/ usar. Só estas tags valem; texto livre é ignorado.</p>
@@ -994,6 +998,24 @@ async function rollSeed() {            // seed do OmniVoice (omni_seed) = voz re
   } catch (e) { toast("Erro: " + e.message); }
 }
 $("oSeedRoll").onclick = rollSeed;
+
+// materializa o voice design (instruct+seed) numa voz salva/reutilizável
+$("vdSaveBtn").onclick = async () => {
+  const name = $("vdSaveName").value.trim();
+  const instruct = $("oInstruct").value.trim();
+  if (!name) { toast("Dê um nome para a voz."); return; }
+  if (!instruct) { toast("Defina o instruct (descrição) em Voice design primeiro.", 5000); return; }
+  const btn = $("vdSaveBtn"), old = btn.textContent;
+  btn.disabled = true; btn.textContent = "gerando amostra…";
+  try {
+    const r = await api("/api/voices/design", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, instruct, seed: parseInt($("oSeed").value, 10) }) });
+    toast(`Voz "${r.name}" salva ✔ — já aparece na lista e na API`);
+    $("vdSaveName").value = "";
+    refreshVoices();
+  } catch (e) { toast("Erro: " + e.message, 6000); }
+  finally { btn.disabled = false; btn.textContent = old; }
+};
 
 /* ───────── Status do modelo ───────── */
 async function refreshStatus() {

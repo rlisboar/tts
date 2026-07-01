@@ -925,6 +925,58 @@ def _truthy(v) -> bool:
     return str(v).strip().lower() in ("1", "true", "on", "yes", "sim")
 
 
+@app.post("/api/voices/design")
+def save_design_voice(payload: dict):
+    """Materializa uma voz de VOICE DESIGN (instruct + seed) numa voz SALVA/nomeada.
+
+    Gera uma amostra-semente com a descrição+seed e a salva como voz de referência
+    (clone), igual aos presets. A voz passa a aparecer no /api/voices e a ser usável
+    por id/nome (inclusive na API), com timbre estável (clonagem da amostra).
+    """
+    import numpy as np
+    import soundfile as sf
+
+    name = (payload.get("name") or "").strip()
+    instruct = _sanitize_instruct(payload.get("instruct") if payload.get("instruct")
+                                  else _settings.get("omni_instruct") or "")
+    if not name:
+        raise HTTPException(400, "name obrigatório")
+    if not instruct:
+        raise HTTPException(400, "instruct obrigatório (descrição da voz, ex.: 'female, young adult, high pitch')")
+    seed = (int(payload["seed"]) if str(payload.get("seed", "")).lstrip("-").isdigit()
+            else int(_settings.get("omni_seed", 42)))
+
+    omni = {"num_steps": OMNI_STEPS_HQ, "guidance_scale": _settings["omni_guidance_scale"],
+            "class_temperature": _settings["omni_class_temperature"],
+            "position_temperature": _settings["omni_position_temperature"],
+            "layer_penalty_factor": _settings["omni_layer_penalty_factor"],
+            "t_shift": _settings["omni_t_shift"], "instruct": instruct,
+            "duration_s": None, "speed": 1.0, "seed": seed}
+
+    remote = _use_remote_tts()
+    sr = 24000
+    try:
+        with (_NO_LOCK if remote else _gen_lock):
+            if remote:
+                audio = _tts_remote_chunk(OMNI_PRESET_SEED, _settings["language"], omni, sr, None)
+            else:
+                model = _get_model()
+                sr = getattr(model, "sample_rate", 24000)
+                audio = _generate_chunk(model, OMNI_PRESET_SEED, _settings["language"], None, None, omni)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"Falha ao gerar a amostra do design: {repr(e)[:200]}")
+
+    audio = _normalize(_trim_tail_silence(np.asarray(audio, dtype=np.float32), sr))
+    voice_id = uuid.uuid4().hex[:10]
+    sf.write(str(VOICES_DIR / f"{voice_id}.wav"), audio, sr, subtype="PCM_16")
+    meta = {"id": voice_id, "name": name, "from_design": True,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "duration": round(len(audio) / sr, 1), "ref_text": OMNI_PRESET_SEED,
+            "instruct": instruct, "seed": seed}
+    (VOICES_DIR / f"{voice_id}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+    return meta
+
+
 @app.post("/api/voices")
 def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str = Form(""),
                  denoise: str = Form("1"), denoise_strength: str = Form("")):
@@ -1248,15 +1300,29 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         # local: serializa no _gen_lock (MLX single-stream).
         with (_NO_LOCK if remote else _gen_lock):
             started = time.time()
+            # voz de VOICE DESIGN salva: REGENERA do instruct+seed (determinístico) em
+            # vez de clonar a amostra -> é EXATAMENTE a voz projetada, sem drift de clone.
+            is_design = voice_id == DESIGN_VOICE_ID
+            jpath = voice_path.with_suffix(".json")
+            if not is_design and jpath.exists():
+                try:
+                    _vm = json.loads(jpath.read_text())
+                    if _vm.get("from_design"):
+                        is_design = True
+                        omni = {**omni, "instruct": _vm.get("instruct") or omni.get("instruct"),
+                                "seed": _vm.get("seed", omni.get("seed"))}
+                except Exception:  # noqa: BLE001
+                    pass
             # voz padrão ainda não materializada: cria a amostra-semente 1x
             if remote:
                 conds = ref_text = None
-                # voz: campo "Voz remota" fixo OU sobe a voz local e usa o nome dela
-                rvoice = (_settings.get("remote_tts_voice") or "").strip() or None
-                if not rvoice and voice_id != DESIGN_VOICE_ID and voice_path.exists():
+                # voz de design: ignora a "Voz remota" fixa (o timbre vem do instruct+seed).
+                # senão: campo "Voz remota" fixo OU sobe a voz local e usa o nome dela
+                rvoice = None if is_design else ((_settings.get("remote_tts_voice") or "").strip() or None)
+                if not rvoice and not is_design and voice_path.exists():
                     job["progress"] = {"stage": "enviando voz ao servidor remoto…"}
                     rvoice = _ensure_remote_voice(voice_id, voice_path)
-            elif voice_id == DESIGN_VOICE_ID:
+            elif is_design:
                 ref_text = None       # sem ref de clone -> o timbre vem só do instruct
                 conds = None
             else:
