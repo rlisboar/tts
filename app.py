@@ -67,6 +67,11 @@ _SETTINGS_DEFAULTS = {
     "omni_position_temperature": 5.0, # temp. da escolha de posição a revelar (0–20)
     "omni_layer_penalty_factor": 5.0, # penalidade por camada de codebook (0–20)
     "omni_t_shift": 0.1,              # deslocamento do cronograma de difusão (0–1)
+    "omni_denoise": True,             # limpa ruído do áudio gerado (config do modelo)
+    "omni_preprocess_prompt": True,   # pré-processa o prompt/texto antes de gerar
+    "omni_postprocess_output": True,  # pós-processa o áudio de saída
+    "omni_audio_chunk_duration": 15.0,   # chunking interno de texto longo: duração (s)
+    "omni_audio_chunk_threshold": 30.0,  # chunking interno: limiar p/ dividir (s)
     "omni_instruct": "",              # voice design textual (ex.: "female, low pitch")
     "omni_seed": 42,                  # seed da geração: voz reprodutível (mesmo instruct=mesma voz). -1 = aleatório
     "omni_duration_s": None,          # força duração fixa em s (None = automático)
@@ -793,6 +798,11 @@ def _resolve_omni(payload: dict) -> dict:
         "position_temperature": _clamp(payload.get("position_temperature"), 0.0, 20.0, _settings["omni_position_temperature"]),
         "layer_penalty_factor": _clamp(payload.get("layer_penalty_factor"), 0.0, 20.0, _settings["omni_layer_penalty_factor"]),
         "t_shift": _clamp(payload.get("t_shift"), 0.0, 1.0, _settings["omni_t_shift"]),
+        "denoise": bool(payload["denoise"]) if "denoise" in payload else _settings.get("omni_denoise", True),
+        "preprocess_prompt": bool(payload["preprocess_prompt"]) if "preprocess_prompt" in payload else _settings.get("omni_preprocess_prompt", True),
+        "postprocess_output": bool(payload["postprocess_output"]) if "postprocess_output" in payload else _settings.get("omni_postprocess_output", True),
+        "audio_chunk_duration": _clamp(payload.get("audio_chunk_duration"), 1.0, 60.0, _settings.get("omni_audio_chunk_duration", 15.0)),
+        "audio_chunk_threshold": _clamp(payload.get("audio_chunk_threshold"), 5.0, 120.0, _settings.get("omni_audio_chunk_threshold", 30.0)),
         "instruct": _sanitize_instruct(payload["instruct"] if payload.get("instruct")
                                        else _settings["omni_instruct"]),
         "duration_s": (_resolve_duration_s(payload["duration_s"], _settings["omni_duration_s"])
@@ -836,6 +846,13 @@ def update_settings(payload: dict):
         _settings["omni_layer_penalty_factor"] = _clamp(payload["omni_layer_penalty_factor"], 0.0, 20.0, 5.0)
     if "omni_t_shift" in payload:
         _settings["omni_t_shift"] = _clamp(payload["omni_t_shift"], 0.0, 1.0, 0.1)
+    for chave in ("omni_denoise", "omni_preprocess_prompt", "omni_postprocess_output"):
+        if chave in payload:
+            _settings[chave] = bool(payload[chave])
+    if "omni_audio_chunk_duration" in payload:
+        _settings["omni_audio_chunk_duration"] = _clamp(payload["omni_audio_chunk_duration"], 1.0, 60.0, 15.0)
+    if "omni_audio_chunk_threshold" in payload:
+        _settings["omni_audio_chunk_threshold"] = _clamp(payload["omni_audio_chunk_threshold"], 5.0, 120.0, 30.0)
     if "omni_instruct" in payload:
         _settings["omni_instruct"] = str(payload["omni_instruct"] or "").strip()[:300]
     if "omni_seed" in payload:
@@ -1680,6 +1697,11 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
         "t_shift": omni.get("t_shift", 0.1),
         "speed": 1.0,   # servidor gera na duração natural; velocidade vira time-stretch local
     }
+    # params extras do OmniVoiceGenerationConfig (o server RTX faz whitelist)
+    for k in ("denoise", "preprocess_prompt", "postprocess_output",
+              "audio_chunk_duration", "audio_chunk_threshold"):
+        if omni.get(k) is not None:
+            body[k] = omni[k]
     if (omni.get("instruct") or "").strip():
         body["instruct"] = omni["instruct"]
     if omni.get("seed") is not None and int(omni["seed"]) >= 0:
