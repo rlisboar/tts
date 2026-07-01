@@ -10,7 +10,7 @@
     --panel: #151a20; --panel2: #1b2128; --panel3: #232a32;
     --text: #e9ebee; --muted: #9aa0a8; --faint: #7b818c;
     --accent: #18b9a6; --accent-deep: #0f9183; --accent-soft: rgba(24,185,166,.13);
-    --danger: #ef5b52; --ok: #35c98a; --warn: #e9a94a;
+    --danger: #ef5b52; --ok: #35c98a; --warn: #e9a94a; --on-accent: #04221e;
     --border: #272d35; --border-soft: #20262d; --ring: rgba(24,185,166,.30);
     --shadow: 0 10px 28px rgba(0,0,0,.38); --shadow-sm: 0 1px 2px rgba(0,0,0,.20);
     --r-sm: 8px; --r-md: 10px; --r-lg: 13px; --ctrl-h: 38px;
@@ -34,7 +34,7 @@
   ::-webkit-scrollbar-thumb:hover { background: var(--panel3); background-clip: content-box; }
 
   /* ───────── App shell ───────── */
-  .app { height: 100vh; display: flex; flex-direction: column; }
+  .app { height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
   .app-top { flex: 1; min-height: 0; display: flex; }
   .sidebar {
     width: 224px; flex-shrink: 0; background: var(--bg2);
@@ -86,7 +86,7 @@
   }
   .config-head {
     position: sticky; top: 0; z-index: 5; background: var(--bg2);
-    display: flex; align-items: center; gap: 12px; padding: 13px 0 11px;
+    display: flex; align-items: center; gap: 12px; padding: 13px 0 11px; flex-wrap: wrap; row-gap: 6px;
     border-bottom: 1px solid var(--border-soft); margin-bottom: 12px;
   }
   .config-head h1 { font-size: 17px; font-weight: 800; letter-spacing: -.02em; cursor: pointer; }
@@ -95,7 +95,7 @@
   .cfg-toggle {
     display: inline-flex; align-items: center; justify-content: center;
     width: 26px; height: 26px; padding: 0; border-radius: var(--r-sm);
-    background: var(--panel); border: 1px solid var(--border); color: var(--fg);
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
     cursor: pointer; font-size: 12px; line-height: 1; transition: transform .18s, background .15s;
   }
   .cfg-toggle:hover { background: var(--bg2); border-color: var(--accent); }
@@ -104,9 +104,10 @@
   .config-dock.collapsed .config-body { display: none; }
   .config-dock.collapsed .config-head { margin-bottom: 0; border-bottom: none; padding-bottom: 13px; }
   /* blocos auto-contidos lado a lado (usa a largura, sem fragmentar) */
-  .config-body { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+  .config-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 14px; align-items: start; }
+  .cfg-sec .row2 button { white-space: normal; line-height: 1.25; padding: 6px 10px; height: auto; overflow-wrap: anywhere; }
   .cfg-sec {
-    flex: 1 1 214px; max-width: 460px; min-width: 0;
+    flex: 1 1 214px; max-width: none; min-width: 0;
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg);
     padding: 13px 15px 15px; display: flex; flex-direction: column; gap: 9px;
   }
@@ -125,9 +126,6 @@
 
   /* ───────── Components ───────── */
   h2 { font-size: 12px; margin-bottom: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; font-weight: 700; }
-  .cfg-group { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .08em;
-    font-weight: 700; margin: 18px 0 2px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
-  .cfg-group:first-of-type { margin-top: 2px; padding-top: 0; border-top: 0; }
   .muted { color: var(--muted); }
   .small { font-size: 12px; }
   .card {
@@ -138,7 +136,7 @@
   .col-scroll { overflow: auto; min-height: 0; }
   button {
     display: inline-flex; align-items: center; justify-content: center; gap: 7px;
-    min-height: var(--ctrl-h); background: var(--accent); color: #04221e; border: 1px solid rgba(0,0,0,.12);
+    min-height: var(--ctrl-h); background: var(--accent); color: var(--on-accent); border: 1px solid rgba(0,0,0,.12);
     border-radius: var(--r-md); padding: 0 16px; font-size: 13px; cursor: pointer; font-weight: 650;
     letter-spacing: -.01em; box-shadow: var(--shadow-sm); white-space: nowrap;
     transition: background .15s, transform .06s, box-shadow .15s, opacity .15s, color .15s;
@@ -168,7 +166,7 @@
     background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8" viewBox="0 0 12 8"><path fill="none" stroke="%239aa0a8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M1.5 2l4.5 4 4.5-4"/></svg>');
     background-repeat: no-repeat; background-position: right 11px center;
   }
-  select:hover { border-color: var(--panel3); }
+  select:hover { border-color: var(--faint); }
   textarea { resize: vertical; }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -237,27 +235,36 @@
   .badge.err { color: var(--danger); border-color: rgba(240,86,76,.5); background: rgba(240,86,76,.10); }
   #timer { font-variant-numeric: tabular-nums; font-size: 15px; color: var(--danger); font-weight: 800; }
   .hint { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 8px; }
+  .row .hint, .toolbar .hint, .trans-head .hint { margin-top: 0; }
   audio { height: 36px; max-width: 240px; width: 100%; border-radius: var(--r-md); }
+  #outputList audio { max-width: 340px; flex: 1; }
   #tvOut { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r-md);
-    padding: 4px 14px; margin-top: 8px; height: 46vh; min-height: 240px; overflow-y: auto; }
-  .tv-split { display: flex; gap: 16px; margin-top: 10px; }
-  .tv-left { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .tv-right { width: 330px; flex-shrink: 0; height: calc(46vh + 34px); min-height: 274px;
+    padding: 4px 14px; margin-top: 8px; flex: 1; min-height: 180px; overflow-y: auto; }
+  .tv-split { display: flex; gap: 16px; margin-top: 10px; flex: 1; min-height: 300px; }
+  .tv-left { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .tv-right { width: 330px; flex-shrink: 0; max-height: 100%;
     overflow-y: auto; padding-right: 6px; }
   .tv-right .cfg-sec-h { margin: 16px 0 2px; }
   .tv-right .cfg-sec-h:first-child { margin-top: 4px; }
   .tv-right .sliders { margin-top: 8px; }
-  @media (max-width: 900px) { .tv-split { flex-direction: column; } .tv-right { width: auto; } }
+  /* ≤1100px: tradutor empilha (feed em cima, filtros embaixo) */
+  @media (max-width: 1100px) {
+    .tv-split { flex-direction: column; flex: none; min-height: 0; }   /* altura natural, o card rola */
+    .tv-left { flex: none; min-height: auto; }     /* altura natural: sem esmagar (o card rola) */
+    .tv-right { width: auto; height: auto; max-height: none; flex: none; }
+    #tvOut { height: 300px; min-height: 180px; flex: none; }
+    #view-tradutor .card { overflow-y: auto; }
+  }
   .trans-head { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
   .trans-head .lbl { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
   .trans-entry { padding: 12px 0; border-bottom: 1px solid var(--border-soft); animation: tIn .18s ease both; }
   .trans-entry:last-child { border-bottom: 0; }
   @keyframes tIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   /* badge de idioma: contorno no original, preenchido no destino (texto falado) */
-  .t-lang { display: inline-block; font-size: 9.5px; font-weight: 800; letter-spacing: .04em;
+  .t-lang { display: inline-block; font-size: 10.5px; font-weight: 800; letter-spacing: .04em;
     border-radius: 5px; padding: 1px 6px; margin-right: 8px; text-transform: uppercase; vertical-align: 1.5px; }
-  .t-src .t-lang { color: var(--faint); border: 1px solid var(--border); }
-  .t-lang-dst { color: #06302b; background: var(--accent); border: 1px solid var(--accent); }
+  .t-src .t-lang { color: var(--muted); border: 1px solid var(--border); }
+  .t-lang-dst { color: var(--on-accent); background: var(--accent); border: 1px solid var(--accent); }
   /* original = secundário; tradução (falada) = protagonista, com barra de destaque */
   .t-src { color: var(--muted); font-size: 13px; line-height: 1.5; }
   .t-dst { color: var(--text); font-size: 15.5px; font-weight: 500; line-height: 1.55; margin-top: 6px;
@@ -270,7 +277,7 @@
     position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(8px);
     background: var(--panel3); border: 1px solid var(--border); border-radius: var(--r-md);
     padding: 11px 18px; font-size: 13px; opacity: 0; pointer-events: none; max-width: 90%;
-    box-shadow: 0 8px 24px rgba(0,0,0,.35); z-index: 50; transition: opacity .18s, transform .18s;
+    box-shadow: 0 8px 24px rgba(0,0,0,.35); z-index: 200; transition: opacity .18s, transform .18s;
   }
   #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   .keybar {
@@ -285,13 +292,10 @@
   summary::before { content: ""; width: 7px; height: 7px; border-right: 1.6px solid var(--accent); border-bottom: 1.6px solid var(--accent); transform: rotate(-45deg); transition: transform .18s; flex-shrink: 0; margin-left: 2px; }
   details[open] > summary::before { transform: rotate(45deg); }
   .config-dock details[open] { box-shadow: inset 2px 0 0 var(--accent); }
-  .script {
-    background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
-    padding: 12px 14px; margin-top: 8px; font-size: 14px; line-height: 1.7;
-  }
   .sliders { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px 18px; margin-top: 10px; }
-  .sliders label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: var(--muted); }
-  .sliders output { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .sliders label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 7px 8px; font-size: 12px; color: var(--muted); }
+  .sliders label input[type=range] { grid-column: 1 / -1; }
+  .sliders output { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
   input[type=range] {
     -webkit-appearance: none; appearance: none; width: 100%; height: 5px; border-radius: 99px;
     background: var(--panel3); outline: none; cursor: pointer; padding: 0; min-height: 0;
@@ -319,7 +323,7 @@
   .check input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
   .check input[type=checkbox]:checked::after {
     content: ""; position: absolute; left: 5px; top: 1px; width: 5px; height: 10px;
-    border: solid #04221e; border-width: 0 2px 2px 0; transform: rotate(45deg);
+    border: solid var(--on-accent); border-width: 0 2px 2px 0; transform: rotate(45deg);
   }
   .check input[type=checkbox]:focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--ring); }
   .check input[type=number] { width: 64px; }
@@ -332,8 +336,11 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* ≤880px: sidebar vira rail de ícones */
   @media (max-width: 880px) {
     .sidebar { width: 64px; padding: 14px 8px; }
+    #shutdownBtn { padding: 0; font-size: 0; }
+    #shutdownBtn::before { content: "\23FB"; font-size: 15px; }
     .brand span, .nav-item span:not(.ic), .side-foot .badge { display: none; }
     .nav-item { justify-content: center; padding: 11px 0; }
     .side-foot { padding: 4px; }
@@ -359,12 +366,12 @@
   <div class="app-top">
   <!-- ───────── Sidebar ───────── -->
   <aside class="sidebar">
-    <div class="brand"><span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="#04221e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span> <span>TTS-Rod</span></div>
+    <div class="brand"><span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="var(--on-accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span> <span>TTS-Rod</span></div>
     <nav class="nav">
-      <button class="nav-item" data-view="gerar"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M19 5a9 9 0 0 1 0 14"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></span><span>Gerar fala</span></button>
-      <button class="nav-item" data-view="vozes"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span><span>Vozes</span></button>
-      <button class="nav-item" data-view="tradutor"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg></span><span>Tradutor / Voz</span></button>
-      <button class="nav-item" data-view="historico"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>Histórico</span></button>
+      <button class="nav-item" data-view="gerar" aria-label="Gerar fala"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M19 5a9 9 0 0 1 0 14"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></span><span>Gerar fala</span></button>
+      <button class="nav-item" data-view="vozes" aria-label="Vozes"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span><span>Vozes</span></button>
+      <button class="nav-item" data-view="tradutor" aria-label="Tradutor"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg></span><span>Tradutor</span></button>
+      <button class="nav-item" data-view="historico" aria-label="Histórico"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>Histórico</span></button>
     </nav>
     <div class="side-foot">
       <span id="status" class="badge">verificando…</span>
@@ -382,23 +389,23 @@
         <textarea id="ttsText" class="hero-area" placeholder="Digite o texto que será falado com a voz clonada…  (use as tags abaixo p/ riso, suspiro, etc.)"></textarea>
         <div class="tagbar" id="tagbar">
           <span class="tagbar-label">Tags</span>
-          <button class="chip" data-tag="[laughter]">riso</button>
-          <button class="chip" data-tag="[sigh]">suspiro</button>
-          <button class="chip" data-tag="[confirmation-en]">confirma</button>
-          <button class="chip" data-tag="[question-en]">pergunta</button>
-          <button class="chip" data-tag="[question-ah]">ah?</button>
-          <button class="chip" data-tag="[question-oh]">oh?</button>
-          <button class="chip" data-tag="[question-ei]">ei?</button>
-          <button class="chip" data-tag="[question-yi]">yi?</button>
-          <button class="chip" data-tag="[surprise-ah]">ah!</button>
-          <button class="chip" data-tag="[surprise-oh]">oh!</button>
-          <button class="chip" data-tag="[surprise-wa]">wa!</button>
-          <button class="chip" data-tag="[surprise-yo]">yo!</button>
-          <button class="chip" data-tag="[dissatisfaction-hnn]">hnn</button>
+          <button class="chip" data-tag="[laughter]" title="[laughter] — riso. Clique p/ inserir no cursor.">riso</button>
+          <button class="chip" data-tag="[sigh]" title="[sigh] — suspiro. Clique p/ inserir no cursor.">suspiro</button>
+          <button class="chip" data-tag="[confirmation-en]" title="[confirmation-en] — confirmacao (mhm). Clique p/ inserir no cursor.">confirma</button>
+          <button class="chip" data-tag="[question-en]" title="[question-en] — entonacao de pergunta. Clique p/ inserir no cursor.">pergunta</button>
+          <button class="chip" data-tag="[question-ah]" title="[question-ah] — pergunta ah?. Clique p/ inserir no cursor.">ah?</button>
+          <button class="chip" data-tag="[question-oh]" title="[question-oh] — pergunta oh?. Clique p/ inserir no cursor.">oh?</button>
+          <button class="chip" data-tag="[question-ei]" title="[question-ei] — pergunta ei?. Clique p/ inserir no cursor.">ei?</button>
+          <button class="chip" data-tag="[question-yi]" title="[question-yi] — pergunta yi?. Clique p/ inserir no cursor.">yi?</button>
+          <button class="chip" data-tag="[surprise-ah]" title="[surprise-ah] — surpresa ah!. Clique p/ inserir no cursor.">ah!</button>
+          <button class="chip" data-tag="[surprise-oh]" title="[surprise-oh] — surpresa oh!. Clique p/ inserir no cursor.">oh!</button>
+          <button class="chip" data-tag="[surprise-wa]" title="[surprise-wa] — surpresa wa!. Clique p/ inserir no cursor.">wa!</button>
+          <button class="chip" data-tag="[surprise-yo]" title="[surprise-yo] — surpresa yo!. Clique p/ inserir no cursor.">yo!</button>
+          <button class="chip" data-tag="[dissatisfaction-hnn]" title="[dissatisfaction-hnn] — insatisfacao hnn. Clique p/ inserir no cursor.">hnn</button>
         </div>
         <div class="toolbar">
-          <select id="voiceSelect"></select>
-          <select id="langSelect">
+          <select id="voiceSelect" aria-label="Voz"></select>
+          <select id="langSelect" aria-label="Idioma">
             <option value="auto" selected>Idioma: Auto (detecta)</option>
             <option value="pt">Português</option>
             <option value="en">English</option>
@@ -406,6 +413,8 @@
             <option value="fr">Français</option>
             <option value="de">Deutsch</option>
             <option value="it">Italiano</option>
+            <option value="ja">日本語</option>
+            <option value="zh">中文</option>
           </select>
           <button id="ttsBtn">Gerar e falar</button>
           <button id="stopBtn" class="ghost" style="display:none">■ Parar</button>
@@ -464,110 +473,111 @@
 
     <!-- ===== Tradutor ===== -->
     <section class="view" id="view-tradutor">
-      <div class="view-head"><h1>Tradutor / Modificador</h1><span class="muted small">fala &rarr; texto &rarr; (tradu&ccedil;&atilde;o) &rarr; sua voz</span></div>
-      <div class="card" style="flex:1; min-height:0; display:flex; flex-direction:column">
+      <div class="view-head"><h1>Tradutor / Modificador</h1><span class="muted small">fala → texto → (tradução) → sua voz</span></div>
+      <div class="card" style="flex:1; min-height:0; display:flex; flex-direction:column; overflow-y:auto">
         <div class="row">
           <button id="tvRecBtn">Falar</button>
-          <select id="tvKind" style="max-width:210px" title="Traduzir muda o idioma; Modificar mantem suas palavras e so troca a voz">
+          <select id="tvKind" aria-label="Traduzir ou modificar" style="max-width:210px" title="Traduzir muda o idioma; Modificar mantém suas palavras e só troca a voz">
             <option value="translate">Traduzir</option>
-            <option value="modify">Modificar (mesma lingua)</option>
+            <option value="modify">Modificar (mesma língua)</option>
           </select>
-          <select id="tvMode" style="max-width:150px">
-            <option value="continuo" selected>Modo: Continuo</option>
+          <select id="tvMode" aria-label="Modo de captura" style="max-width:150px">
+            <option value="continuo" selected>Modo: Contínuo</option>
             <option value="manual">Modo: Manual</option>
             <option value="conversa">Modo: Conversa</option>
           </select>
-          <select id="tvSrc" style="max-width:160px">
+          <select id="tvSrc" aria-label="Idioma de origem" style="max-width:160px">
             <option value="auto">De: qualquer</option>
-            <option value="pt" selected>De: Portugues</option>
+            <option value="pt" selected>De: Português</option>
             <option value="en">De: English</option>
-            <option value="es">De: Espanol</option>
-            <option value="fr">De: Francais</option>
+            <option value="es">De: Español</option>
+            <option value="fr">De: Français</option>
             <option value="de">De: Deutsch</option>
             <option value="it">De: Italiano</option>
             <option value="ja">De: 日本語</option>
             <option value="zh">De: 中文</option>
           </select>
-          <select id="tvLang" style="max-width:170px">
-            <option value="en">&rarr; English</option>
-            <option value="es">&rarr; Espanol</option>
-            <option value="fr">&rarr; Francais</option>
-            <option value="de">&rarr; Deutsch</option>
-            <option value="it">&rarr; Italiano</option>
-            <option value="pt">&rarr; Portugues</option>
-            <option value="ja">&rarr; 日本語</option>
-            <option value="zh">&rarr; 中文</option>
+          <select id="tvLang" aria-label="Idioma de destino" style="max-width:170px">
+            <option value="en">Para: English</option>
+            <option value="es">Para: Español</option>
+            <option value="fr">Para: Français</option>
+            <option value="de">Para: Deutsch</option>
+            <option value="it">Para: Italiano</option>
+            <option value="pt">Para: Português</option>
+            <option value="ja">Para: 日本語</option>
+            <option value="zh">Para: 中文</option>
           </select>
-          <select id="tvVoice" style="max-width:190px"></select>
+          <select id="tvVoice" aria-label="Voz" style="max-width:190px"></select>
           <span id="tvVdHint" class="hint" style="margin-top:0;display:none"></span>
-          <select id="tvEmo" style="max-width:200px" title="Detecta a emocao e aplica via tom (pitch) + velocidade">
-            <option value="off">Emocao: off</option>
-            <option value="light">Emocao: aplicar (prosodia)</option>
-            <option value="accurate">Emocao: aplicar (SER)</option>
+          <select id="tvEmo" aria-label="Emoção" style="max-width:200px" title="Detecta a emoção e aplica via tom (pitch) + velocidade">
+            <option value="off">Emoção: off</option>
+            <option value="light">Emoção: aplicar (prosódia)</option>
+            <option value="accurate">Emoção: aplicar (SER)</option>
           </select>
+          <button id="tvStopBtn" class="ghost" style="display:none">■ Parar</button>
           <span id="tvStatus" class="hint" style="margin-top:0"></span>
         </div>
 
         <div class="tv-split">
           <div class="tv-left">
-            <div class="trans-head"><span class="lbl">Transcricao / Traducao</span>
+            <div class="trans-head"><span class="lbl">Transcrição / Tradução</span>
               <button id="tvClear" class="ghost small" type="button" style="margin-left:auto">Limpar</button></div>
-            <div id="tvOut"></div>
+            <div id="tvOut"><div class="empty">Aperte <b>Falar</b> e fale — a transcrição aparece aqui.</div></div>
           </div>
           <div class="tv-right">
             <div class="cfg-sec-h">Microfone / filtros</div>
             <div class="sliders">
               <label>Ganho do mic <output id="micGainOut">1.0</output>
                 <input type="range" id="micGain" min="0" max="3" step="0.1" value="1"></label>
-              <label>Passa-alta &middot; corta grave/zumbido <output id="micHpOut">90 Hz</output>
+              <label>Passa-alta · corta grave/zumbido <output id="micHpOut">90 Hz</output>
                 <input type="range" id="micHp" min="0" max="300" step="10" value="90"></label>
-              <label>Sensibilidade &middot; ignora ruido <output id="micThreshOut">0.015</output>
+              <label>Sensibilidade · ignora ruído <output id="micThreshOut">0.015</output>
                 <input type="range" id="micThresh" min="0.005" max="0.08" step="0.001" value="0.015"></label>
               <label>Pausa = fim de frase <output id="micSilenceOut">700 ms</output>
                 <input type="range" id="micSilence" min="300" max="2000" step="50" value="700"></label>
-              <label>Duracao minima da fala <output id="micMinUtterOut">350 ms</output>
+              <label>Duração mínima da fala <output id="micMinUtterOut">350 ms</output>
                 <input type="range" id="micMinUtter" min="100" max="1500" step="50" value="350"></label>
-              <label>Trecho do continuo (latencia x contexto) <output id="micContMaxOut">4.5 s</output>
+              <label>Trecho do contínuo (latência × contexto) <output id="micContMaxOut">4.5 s</output>
                 <input type="range" id="micContMax" min="1.5" max="8" step="0.5" value="4.5"></label>
             </div>
-            <label class="check" style="margin-top:10px"><input type="checkbox" id="micNs" checked> supressao de ruido (navegador)</label>
+            <label class="check" style="margin-top:10px"><input type="checkbox" id="micNs" checked> supressão de ruído (navegador)</label>
             <div style="margin-top:8px">
-              <div class="hint" style="margin-bottom:2px; margin-top:0">nivel do mic (a marca laranja e o limiar)</div>
-              <div id="micMeter" style="height:12px; background:#0c0e15; border-radius:6px; position:relative; overflow:hidden">
-                <div id="micMeterBar" style="height:100%; width:0; background:#666; transition:width .05s"></div>
-                <div id="micMeterMark" style="position:absolute; top:0; bottom:0; left:10%; width:2px; background:#fa0"></div>
+              <div class="hint" style="margin-bottom:2px; margin-top:0">nível do mic (a marca laranja é o limiar)</div>
+              <div id="micMeter" style="height:12px; background:var(--panel2); border:1px solid var(--border-soft); border-radius:6px; position:relative; overflow:hidden">
+                <div id="micMeterBar" style="height:100%; width:0; background:var(--faint); transition:width .05s"></div>
+                <div id="micMeterMark" style="position:absolute; top:0; bottom:0; left:10%; width:2px; background:var(--warn)"></div>
               </div>
             </div>
-            <div class="cfg-sec-h">Anti-ruido da transcricao</div>
+            <div class="cfg-sec-h">Anti-ruído da transcrição</div>
             <div class="sliders">
-              <label>Min. de palavras <output id="sttWordsOut">1</output>
+              <label>Mín. de palavras <output id="sttWordsOut">1</output>
                 <input type="range" id="sttWords" min="0" max="6" step="1" value="1"></label>
-              <label>Min. de caracteres <output id="sttCharsOut">2</output>
+              <label>Mín. de caracteres <output id="sttCharsOut">2</output>
                 <input type="range" id="sttChars" min="0" max="20" step="1" value="2"></label>
-              <label>Max. "sem fala" <output id="sttNoSpeechOut">0.60</output>
+              <label>Máx. "sem fala" <output id="sttNoSpeechOut">0.60</output>
                 <input type="range" id="sttNoSpeech" min="0" max="1" step="0.05" value="0.6"></label>
-              <label>Min. confianca <output id="sttLogprobOut">-1.0</output>
+              <label>Mín. confiança <output id="sttLogprobOut">-1.0</output>
                 <input type="range" id="sttLogprob" min="-5" max="0" step="0.1" value="-1"></label>
-              <label>Max. repeticao <output id="sttCompOut">2.4</output>
+              <label>Máx. repetição <output id="sttCompOut">2.4</output>
                 <input type="range" id="sttComp" min="1" max="10" step="0.1" value="2.4"></label>
             </div>
-            <p class="hint">Continuo = simultaneo (corta em trechos curtos, traduz o proximo enquanto toca).
-              Ajuste o <b>Trecho do continuo</b> p/ latencia x contexto. Anti-ruido rejeita ruido/alucinacao.</p>
+            <p class="hint">Contínuo = simultâneo (corta em trechos curtos, traduz o próximo enquanto toca).
+              Ajuste o <b>Trecho do contínuo</b> p/ latência × contexto. Anti-ruído rejeita ruído/alucinação.</p>
           </div>
         </div>
         <details style="margin-top:12px">
-          <summary>📄 Transcrever arquivo &middot; gravar &middot; YouTube (so texto)</summary>
+          <summary>Transcrever arquivo · Gravar · YouTube (só texto)</summary>
           <div style="margin-top:10px">
             <div class="toolbar">
-              <button id="sttRecBtn">&#9679; Gravar</button>
+              <button id="sttRecBtn">● Gravar</button>
               <button id="sttUploadBtn" class="ghost" type="button">Carregar arquivo</button>
               <input type="file" id="sttFile" accept="audio/*" style="display:none">
               <select id="sttSrcLang" style="max-width:190px">
                 <option value="auto" selected>Idioma: Auto (detecta)</option>
-                <option value="pt">Portugues</option>
+                <option value="pt">Português</option>
                 <option value="en">English</option>
-                <option value="es">Espanol</option>
-                <option value="fr">Francais</option>
+                <option value="es">Español</option>
+                <option value="fr">Français</option>
                 <option value="de">Deutsch</option>
                 <option value="it">Italiano</option>
                 <option value="ja">日本語</option>
@@ -579,17 +589,17 @@
               <summary>Importar do YouTube</summary>
               <input type="text" id="sttYtUrl" placeholder="link do YouTube" style="margin-top:10px">
               <div class="row" style="margin-top:8px">
-                <input type="text" id="sttYtStart" placeholder="inicio (ex.: 1:00)" style="max-width:150px">
+                <input type="text" id="sttYtStart" placeholder="início (ex.: 1:00)" style="max-width:150px">
                 <input type="text" id="sttYtEnd" placeholder="fim (ex.: 3:30)" style="max-width:150px">
                 <button id="sttYtBtn" class="ghost" type="button">Importar e transcrever</button>
               </div>
             </details>
-            <textarea id="sttText" class="hero-area" placeholder="O texto transcrito aparece aqui - edite a vontade."></textarea>
+            <textarea id="sttText" class="hero-area" placeholder="O texto transcrito aparece aqui — edite à vontade."></textarea>
             <div class="toolbar">
               <button id="sttCopyBtn" class="ghost">Copiar</button>
               <button id="sttDownloadBtn" class="ghost">Baixar .txt</button>
               <button id="sttSrtBtn" class="ghost">Baixar .srt</button>
-              <span class="hint" style="margin-top:0">1a vez baixa o Whisper (~1,6 GB) se for local.</span>
+              <span class="hint" style="margin-top:0">1ª vez baixa o Whisper (~1,6 GB) se for local.</span>
             </div>
           </div>
         </details>
@@ -631,9 +641,6 @@
     <div class="config-body">
       <section class="cfg-sec">
         <h3 class="cfg-sec-h">Modelo &amp; geração</h3>
-        <label class="cfg-label">Beam do STT (Whisper) <output id="sttBeamOut">5</output>
-          <input type="range" id="sttBeam" min="1" max="8" step="1" value="5"></label>
-        <p class="hint" style="margin-top:0">Nº de hipóteses na decodificação do <b>Whisper</b> (1 = greedy/rápido; 8 = mais preciso/lento). <b>O Voxtral ignora</b> (é LLM greedy). Salva automático.</p>
         <label class="cfg-label">Modelo
           <select id="cfgModel">
             <option value="omnivoice">OmniVoice — 646 idiomas</option>
@@ -657,6 +664,7 @@
               <option value="pt">Português</option><option value="en">English</option>
               <option value="es">Español</option><option value="fr">Français</option>
               <option value="de">Deutsch</option><option value="it">Italiano</option>
+              <option value="ja">日本語</option><option value="zh">中文</option>
             </select>
           </label>
         </div>
@@ -672,17 +680,17 @@
       <section class="cfg-sec" id="secOmni">
         <h3 class="cfg-sec-h">OmniVoice — geração</h3>
         <div class="sliders">
-          <label>Passos <output id="oNumStepsOut">16</output>
+          <label title="mais passos = melhor qualidade, mais lento">Passos <output id="oNumStepsOut">16</output>
             <input type="range" id="oNumSteps" min="4" max="64" step="1" value="16"></label>
-          <label>Aderência <output id="oGuidOut">2.0</output>
+          <label title="guidance: alto = mais fiel ao texto/voz, baixo = mais natural">Aderência <output id="oGuidOut">2.0</output>
             <input type="range" id="oGuid" min="0" max="10" step="0.1" value="2"></label>
-          <label>Var. token <output id="oClassTOut">0.00</output>
+          <label title="temperatura de token: 0 = estável/determinístico">Var. token <output id="oClassTOut">0.00</output>
             <input type="range" id="oClassT" min="0" max="2" step="0.05" value="0"></label>
-          <label>Var. posição <output id="oPosTOut">5.0</output>
+          <label title="temperatura da ordem de revelação (diversidade)">Var. posição <output id="oPosTOut">5.0</output>
             <input type="range" id="oPosT" min="0" max="20" step="0.5" value="5"></label>
-          <label>Penalidade <output id="oLayerOut">5.0</output>
+          <label title="penalidade por camada de codebook (anti-artefato)">Penalidade <output id="oLayerOut">5.0</output>
             <input type="range" id="oLayer" min="0" max="20" step="0.5" value="5"></label>
-          <label>t_shift <output id="oTshiftOut">0.10</output>
+          <label title="desloca o cronograma de difusão (raro mexer)">t_shift <output id="oTshiftOut">0.10</output>
             <input type="range" id="oTshift" min="0" max="1" step="0.05" value="0.1"></label>
         </div>
         <div class="row2">
@@ -723,11 +731,11 @@
         <div class="row2">
           <label class="cfg-label">seed (voz fixa)
             <input type="number" id="oSeed" min="-1" step="1" value="42" title="mesmo instruct + seed = sempre a mesma voz. -1 = aleatória a cada geração"></label>
-          <button id="oSeedRoll" class="ghost small" type="button" title="sorteia outra voz para o mesmo instruct">🎲 nova voz</button>
+          <button id="oSeedRoll" class="ghost small" type="button" title="sorteia outra voz para o mesmo instruct">🎲 Nova voz</button>
         </div>
         <div class="row2" style="margin-top:6px">
           <input type="text" id="vdSaveName" placeholder="Nome p/ salvar esta voz…" style="width:100%">
-          <button id="vdSaveBtn" class="ghost small" type="button" title="materializa o design numa voz salva e reutilizável (aparece na lista de vozes e na API)">💾 Salvar como voz</button>
+          <button id="vdSaveBtn" class="small" type="button" title="materializa o design numa voz salva e reutilizável (aparece na lista de vozes e na API)">💾 Salvar como voz</button>
         </div>
         <p class="hint">Sem seed a voz muda a cada geração (timbre/sotaque). <b>Seed fixa = voz reprodutível.</b>
           "portuguese accent" é ambíguo (PT-europeu às vezes) — p/ BR, prefira sem sotaque e fixe a seed.
@@ -778,7 +786,7 @@
         <label class="check"><input type="checkbox" id="remoteTranslate"> Tradução via API</label>
         <label class="cfg-label">Modelo de tradução
           <input type="text" id="remoteTranslateModel" placeholder="gpt-4o-mini"></label>
-        <p class="hint" style="margin-top:0">Na RTX: <code>qwen2.5-14b-instruct</code> (qualidade) ou <code>qwen2.5-7b-instruct</code> (rápido). A Prioridade troca automático.</p>
+        <p class="hint" style="margin-top:0">Na RTX: <code>qwen2.5-14b-instruct</code> (qualidade) ou <code>qwen2.5-7b-instruct</code> (rápido) — digite o nome acima.</p>
         <label class="cfg-label">Modelo de transcrição (STT)
           <select id="sttEngine">
             <option value="voxtral">Voxtral 24B — RTX (qualidade pt-BR)</option>
@@ -787,6 +795,10 @@
             <option value="api">API externa (OpenAI-compat)</option>
           </select></label>
         <p class="hint" style="margin-top:0">Troca o STT na hora. <b>Voxtral</b> = qualidade. <b>Whisper-RTX</b> = mais rápido/leve. <b>Local</b> = no Mac, sem RTX. <b>API</b> = externo (campos abaixo).</p>
+        <label class="cfg-label">Beam do STT (Whisper) <output id="sttBeamOut">5</output>
+          <input type="range" id="sttBeam" min="1" max="8" step="1" value="5"></label>
+        <p class="hint" style="margin-top:0">Nº de hipóteses na decodificação do <b>Whisper</b> (1 = greedy/rápido; 8 = mais preciso/lento). <b>O Voxtral ignora</b> (é LLM greedy). Salva automático.</p>
+
         <div id="sttAdvanced">
           <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
           <label class="cfg-label">Nome do modelo
@@ -802,6 +814,7 @@
           <button id="unloadModelsBtn" class="ghost small" type="button" title="descarrega agora os modelos locais (MLX) da memória">🧹 Descarregar locais agora</button>
           <span id="unloadStatus" class="hint" style="margin-top:0"></span>
         </div>
+      </section>
     </div>
   </aside>
 </div>
@@ -809,7 +822,7 @@
 <div id="toast" role="status" aria-live="polite"></div>
 
 <!-- ===== Editor de áudio ===== -->
-<div id="audioEditor" class="ed-overlay" style="display:none">
+<div id="audioEditor" class="ed-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="edTitle">
   <div class="ed-modal">
     <div class="ed-head">
       <strong id="edTitle">Editor de áudio</strong>
@@ -827,7 +840,7 @@
       <button id="edCut" class="ghost small" type="button">🗑 Remover seleção</button>
       <button id="edNorm" class="ghost small" type="button">📈 Normalizar</button>
       <span class="ed-tool"><button id="edDenoise" class="ghost small" type="button">🧽 Limpar ruído</button>
-        <input id="edDnStr" type="range" min="0" max="1" step="0.05" value="0.7" title="força da limpeza"></span>
+        <input id="edDnStr" type="range" min="0" max="1" step="0.05" value="0.7" title="força da limpeza" oninput="this.nextElementSibling.textContent=(+this.value).toFixed(2)"><output>0.70</output></span>
       <span class="ed-tool"><button id="edGainApply" class="ghost small" type="button">🔊 Ganho</button>
         <input id="edGain" type="range" min="-18" max="18" step="0.5" value="0"><output id="edGainOut">0 dB</output></span>
       <button id="edFade" class="ghost small" type="button">🎚 Fade nas bordas</button>
@@ -936,7 +949,7 @@ function updateTransVdHint() {
     const tags = $("oInstruct").value.trim();
     el.style.display = "";
     el.textContent = tags ? "🎨 " + tags : "⚠ defina a voz em Configurações → Voice design";
-    el.style.color = tags ? "" : "var(--accent)";
+    el.style.color = tags ? "" : "var(--warn)";
   }
 }
 $("tvVoice").addEventListener("change", updateTransVdHint);
@@ -963,6 +976,12 @@ async function rollSeed() {            // seed do OmniVoice (omni_seed) = voz re
   } catch (e) { toast("Erro: " + e.message); }
 }
 $("oSeedRoll").onclick = rollSeed;
+$("oSeed").onchange = () => {
+  const v = parseInt($("oSeed").value, 10);
+  if (Number.isNaN(v)) return;
+  api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ omni_seed: v }) }).then(() => toast("seed fixada: " + v)).catch(() => {});
+};
 
 // materializa o voice design (instruct+seed) numa voz salva/reutilizável
 $("vdSaveBtn").onclick = async () => {
@@ -1243,14 +1262,29 @@ async function edSetBlob(blob, pushHist) {
   edDraw();
 }
 async function openEditor(blob, onApply, title) {
+  ED._prevFocus = document.activeElement;
   ED.hist = []; ED.sel = null; ED.onApply = onApply;
   $("edTitle").textContent = title || "Editor de áudio";
   $("edSel").textContent = "arraste na onda p/ selecionar um trecho";
   $("edStatus").textContent = "";
   $("audioEditor").style.display = "flex";
+  $("edClose").focus();          // evita Enter reabrir o modal por foco residual
   await edSetBlob(blob, true);
 }
-function closeEditor() { if (ED.au) { try { ED.au.pause(); } catch {} } $("audioEditor").style.display = "none"; }
+function closeEditor() {
+  if (ED.au) { try { ED.au.pause(); } catch {} }
+  $("audioEditor").style.display = "none";
+  ED._prevFocus?.focus?.(); ED._prevFocus = null;   // devolve o foco a quem abriu
+}
+// atalhos globais: Esc fecha o editor (ou para o áudio); Cmd/Ctrl+Enter gera a fala
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    if ($("audioEditor").style.display !== "none") closeEditor();
+    else stopPlayback();
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && e.target === $("ttsText")) $("ttsBtn").click();
+});
+$("keyInput").addEventListener("keydown", e => { if (e.key === "Enter") $("keySave").click(); });
 async function edOp(op) {
   if (!ED.blob) return;
   $("edStatus").textContent = "processando…";
@@ -1306,10 +1340,7 @@ async function refreshVoices() {
   const selected = sel.value, selected2 = sel2.value;
   sel.innerHTML = ""; sel2.innerHTML = "";
   // voz "virtual": gera a partir da descrição (campo Voice design), sem clone
-  const dopt = document.createElement("option");
-  dopt.value = "__design__"; dopt.textContent = "Voice design (descrição → voz)";
-  sel.appendChild(dopt);
-  sel2.appendChild(dopt.cloneNode(true));        // opção design no tradutor/modificador
+  // (a opção Voice design entra no FIM — assim o default cai numa voz real)
   list.innerHTML = voices.length ? "" : '<div class="empty">Nenhuma voz ainda — grave ao lado.</div>';
   for (const v of voices) {
     const virtual = v.preset && !v.materialized;  // voz padrão ainda não criada
@@ -1324,8 +1355,8 @@ async function refreshVoices() {
       const tag = v.preset ? "⭐ " : "";
       const limpa = v.denoised ? " · limpa" : "";
       const buster = encodeURIComponent(`${v.duration || 0}-${v.denoised ? 1 : 0}`);
-      const cleanBtn = v.preset ? "" : `<button class="ghost small clean">limpar</button>`;
-      const editBtn = v.preset ? "" : `<button class="ghost small edit">✂️ editar</button>`;
+      const cleanBtn = v.preset ? "" : `<button class="ghost small clean">Limpar</button>`;
+      const editBtn = v.preset ? "" : `<button class="ghost small edit">✂️ Editar</button>`;
       div.innerHTML = `
         <div class="grow"><div class="name">${tag}${v.name}</div>
         <div class="meta">${v.duration}s · ${v.preset ? "voz padrão" : v.created_at}${limpa} · <code class="vid" title="clique p/ copiar o id">${v.id}</code></div>
@@ -1337,7 +1368,7 @@ async function refreshVoices() {
         <audio class="weng" preload="metadata" src="${k(`/api/voices/${v.id}/audio?_v=${buster}`)}"></audio>
         ${editBtn}
         ${cleanBtn}
-        <button class="danger">${v.preset ? "resetar" : "apagar"}</button>`;
+        <button class="danger">${v.preset ? "Resetar" : "Apagar"}</button>`;
       const au = div.querySelector(".weng");
       const wplay = div.querySelector(".wplay");
       drawPeaks(div.querySelector(".wave"), v.id, buster, au, wplay, div.querySelector(".wtime"));
@@ -1391,8 +1422,25 @@ async function refreshVoices() {
     opt2.value = v.id; opt2.textContent = rotulo;
     sel2.appendChild(opt2);
   }
+  const dopt = document.createElement("option");
+  dopt.value = "__design__"; dopt.textContent = "Voice design (descrição → voz)";
+  sel.appendChild(dopt);
+  sel2.appendChild(dopt.cloneNode(true));        // opção design no tradutor/modificador
+  // mantém a "Voz padrão da API" (config) em dia com a lista
+  const cfgv = $("cfgVoice");
+  if (cfgv) {
+    const keep = cfgv.value;
+    cfgv.innerHTML = '<option value="">(voz mais recente)</option>';
+    for (const v of voices) {
+      const o = document.createElement("option");
+      o.value = v.id; o.textContent = v.name; cfgv.appendChild(o);
+    }
+    cfgv.value = keep; if (cfgv.selectedIndex < 0) cfgv.selectedIndex = 0;
+  }
   if (selected) sel.value = selected;
+  if (sel.selectedIndex < 0) sel.selectedIndex = 0;
   if (selected2) sel2.value = selected2;
+  if (sel2.selectedIndex < 0) sel2.selectedIndex = 0;
   updateTransVdHint();
 }
 
@@ -1420,8 +1468,14 @@ $("sttBeam").onchange = () => {
    manuais só no modo "API externa". */
 const VOXTRAL_URL = "http://192.168.200.32:8802/v1";
 const WHISPER_RTX_URL = "http://192.168.200.32:8800/v1";
+let prevSttEngine = null;   // p/ backup/restauração da config de API externa
 function applySttEngine(persist) {
   const eng = $("sttEngine").value;
+  // saiu do modo API -> guarda o que o usuário digitou (o preset vai sobrescrever os campos)
+  if (persist && prevSttEngine === "api" && eng !== "api") {
+    localStorage.setItem("sttApiBackup", JSON.stringify({
+      url: $("remoteSttBaseUrl").value, model: $("remoteSttModel").value, key: $("remoteSttKey").value }));
+  }
   let body;
   if (eng === "voxtral") {
     $("remoteStt").checked = true;
@@ -1442,6 +1496,10 @@ function applySttEngine(persist) {
     $("sttAdvanced").style.display = "none";
     body = { remote_stt: false };
   } else {   // api externa: revela os campos e usa o que o usuário preencheu
+    if (persist) {   // voltou pro modo API -> restaura o que tinha
+      try { const b = JSON.parse(localStorage.getItem("sttApiBackup") || "null");
+        if (b) { $("remoteSttBaseUrl").value = b.url; $("remoteSttModel").value = b.model; $("remoteSttKey").value = b.key; } } catch {}
+    }
     $("remoteStt").checked = true;
     $("sttAdvanced").style.display = "";
     body = { remote_stt: true, remote_stt_base_url: $("remoteSttBaseUrl").value.trim(),
@@ -1449,11 +1507,11 @@ function applySttEngine(persist) {
   }
   if (persist) {
     api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-      .then(() => toast("STT: " + ({ voxtral: "Voxtral (RTX)", local: "Whisper local (Mac)", api: "API externa" }[eng])))
+      .then(() => toast("STT: " + ({ voxtral: "Voxtral (RTX)", "whisper-rtx": "Whisper large-v3 (RTX)", local: "Whisper local (Mac)", api: "API externa" }[eng] || eng)))
       .catch(e => toast("Erro: " + e.message));
   }
 }
-$("sttEngine").onchange = () => applySttEngine(true);
+$("sttEngine").onchange = () => { applySttEngine(true); prevSttEngine = $("sttEngine").value; };
 function inferSttEngine(s) {
   if (!s.remote_stt) return "local";
   const url = s.remote_stt_base_url || "";
@@ -1468,6 +1526,7 @@ $("oReset").onclick = () => {
     $(out).textContent = parseFloat(val).toFixed(dec);
   }
   $("oInstruct").value = "";
+  vdParse(); updateTransVdHint();          // sincroniza os dropdowns do voice design
   $("oDur").value = "";
   $("oRefMax").value = 10;
   toast("Padrões restaurados — clique em Salvar para aplicar");
@@ -1485,8 +1544,10 @@ function stopPlayback() {
   if (player.ctx && player.ctx.state !== "closed") player.ctx.close();
   player = null;
   $("stopBtn").style.display = "none";
+  $("tvStopBtn").style.display = "none";
 }
 $("stopBtn").onclick = stopPlayback;
+$("tvStopBtn").onclick = stopPlayback;
 
 /* Toca um job de TTS por streaming (busca cada trecho e agenda no AudioContext).
    Usado pela síntese e pelo tradutor de voz. */
@@ -1495,6 +1556,7 @@ async function streamJob(job_id, statusEl) {
   player = { ctx: mkCtx(), nextTime: 0, sources: [], stopped: false };
   const meu = player;
   $("stopBtn").style.display = "";
+  $("tvStopBtn").style.display = "";
   let buscados = 0;
   try {
     while (true) {
@@ -1537,10 +1599,7 @@ $("ttsBtn").onclick = async () => {
   }
 
   stopPlayback();
-  player = { ctx: mkCtx(), nextTime: 0, sources: [], stopped: false };
-  const meu = player;
   $("ttsBtn").disabled = true;
-  $("stopBtn").style.display = "";
   $("ttsStatus").innerHTML = '<span class="spinner"></span>gerando… (1ª vez baixa e monta o OmniVoice, ~2 GB)';
 
   try {
@@ -1553,45 +1612,13 @@ $("ttsBtn").onclick = async () => {
         ...(designMode ? { instruct: designInstruct } : {})
       })
     });
-
-    let buscados = 0;
-    while (true) {
-      const j = await api(`/api/tts/jobs/${job_id}`);
-      if (j.status === "error") throw new Error(j.error || "falha na geração");
-
-      while (buscados < j.pieces) {
-        const buf = await (await authFetch(`/api/tts/jobs/${job_id}/pieces/${buscados}`)).arrayBuffer();
-        if (!meu.stopped) {
-          const audio = await meu.ctx.decodeAudioData(buf);
-          const src = meu.ctx.createBufferSource();
-          src.buffer = audio;
-          src.connect(meu.ctx.destination);
-          const t = Math.max(meu.ctx.currentTime + 0.05, meu.nextTime);
-          src.start(t);
-          meu.nextTime = t + audio.duration;
-          meu.sources.push(src);
-        }
-        buscados++;
-      }
-
-      if (j.status === "done") {
-        $("ttsStatus").textContent = `pronto em ${j.output.elapsed}s — salvo no histórico`;
-        refreshOutputs();
-        break;
-      }
-      if (j.progress) $("ttsStatus").innerHTML =
-        `<span class="spinner"></span>${buscados > 0 ? "falando + " : ""}gerando trecho ${j.progress.current}/${j.progress.total}…`;
-      await new Promise(r => setTimeout(r, 700));
-    }
+    // streamJob cuida de tocar (e respeita o gate "voz real" do roteador de mic)
+    const j = await streamJob(job_id, $("ttsStatus"));
+    $("ttsStatus").textContent = `pronto em ${j.output.elapsed}s — salvo no histórico`;
   } catch (e) { $("ttsStatus").textContent = ""; toast("Erro: " + e.message, 6000); }
   finally {
     $("ttsBtn").disabled = false;
     refreshStatus();
-    // esconde "Parar" quando o áudio agendado terminar
-    if (player === meu && !meu.stopped) {
-      const resta = Math.max(0, (meu.nextTime - meu.ctx.currentTime) * 1000) + 300;
-      setTimeout(() => { if (player === meu) stopPlayback(); }, resta);
-    }
   }
 };
 
@@ -1639,8 +1666,18 @@ const STT_CTL = [
 ];
 
 async function openProcessedMic() {
-  const raw = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints({
-    echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false }) });
+  let raw;
+  const base = { echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false };
+  try {
+    raw = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints(base) });
+  } catch (e) {
+    if (micDeviceId && (e.name === "OverconstrainedError" || e.name === "NotFoundError")) {
+      // o mic salvo não existe mais (desconectado) -> volta pro padrão
+      micDeviceId = ""; localStorage.removeItem("micDeviceId");
+      toast("Microfone salvo não encontrado — usando o padrão do sistema");
+      raw = await navigator.mediaDevices.getUserMedia({ audio: base });
+    } else { throw e; }
+  }
   refreshDevices();
   const ctx = new AudioContext();
   const src = ctx.createMediaStreamSource(raw);
@@ -1708,7 +1745,7 @@ function startMeter() {
     const r = Math.sqrt(s / micGraph.buf.length);
     const bar = $("micMeterBar");
     if (bar) { bar.style.width = Math.min(100, r / 0.15 * 100) + "%";
-               bar.style.background = r > VAD.thresh ? "#3a3" : "#666"; }
+               bar.style.background = r > VAD.thresh ? "var(--ok)" : "var(--faint)"; }
     meterRAF = requestAnimationFrame(loop);
   };
   loop();
@@ -1860,8 +1897,9 @@ function initMicControls() {
   $("micContMax").oninput = () => { micFx.contMax = Math.round(+$("micContMax").value * 1000); CONT_MAX_MS = micFx.contMax;
     $("micContMaxOut").textContent = (micFx.contMax / 1000).toFixed(1) + " s"; saveMicFx(); };
   for (const [id, out, key, fmt] of STT_CTL) {
-    $(id).oninput = async () => {
-      const v = parseFloat($(id).value); $(out).textContent = fmt(v);
+    $(id).oninput = () => { $(out).textContent = fmt(parseFloat($(id).value)); };   // feedback ao arrastar
+    $(id).onchange = async () => {                                                  // salva ao soltar (1 POST)
+      const v = parseFloat($(id).value);
       try { await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ [key]: v }) }); } catch {}
     };
@@ -1880,11 +1918,18 @@ function warmTranslator() {
 let live = null;  // { getChunks, lang, busy, timer, last }
 function startLive(getChunks) {
   stopLive();
-  live = { getChunks, lang: fEl("src").value, out: FEAT.out, busy: false, last: "" };
+  live = { getChunks, lang: fEl("src").value, out: FEAT.out, busy: false, last: "", el: null };
+  // entrada dedicada no feed (não sobrescreve o histórico)
+  live.el = document.createElement("div");
+  live.el.className = "trans-entry live";
+  live.el.innerHTML = '<b>Você (ao vivo):</b> <span class="lv-txt" style="opacity:.75"></span> <span class="spinner" style="margin-left:6px"></span>';
+  const out = $(live.out);
+  out.querySelector(".empty")?.remove();
+  out.appendChild(live.el);
   live.timer = setInterval(livePoll, 650);
 }
 function stopLive() {
-  if (live) { clearInterval(live.timer); live = null; }
+  if (live) { clearInterval(live.timer); live.el?.remove(); live = null; }
 }
 async function livePoll() {
   if (!live || live.busy) return;
@@ -1897,11 +1942,10 @@ async function livePoll() {
     fd.append("audio", wav, "p.wav");
     fd.append("source_lang", live.lang);
     const r = await api("/api/stt-partial", { method: "POST", body: fd });
-    if (live && r.text && r.text !== live.last) {
+    if (live && live.el && r.text && r.text !== live.last) {
       live.last = r.text;
-      $(live.out).innerHTML =
-        `<b>Você (ao vivo):</b> <span style="opacity:.75">${r.text}</span>`
-        + `<span class="spinner" style="margin-left:6px"></span>`;
+      live.el.querySelector(".lv-txt").textContent = r.text;   // textContent = sem injeção de HTML
+      const out = $(live.out); out.scrollTop = out.scrollHeight;
     }
   } catch {} finally { if (live) live.busy = false; }
 }
@@ -1955,8 +1999,11 @@ function transVoiceOk() {
   return true;
 }
 
-const onModeChange = () => { if (auto) stopAuto(); if (transRec && transRec.state === "recording") transRec.stop(); };
-$("tvMode").onchange = onModeChange;
+const TV_MODE_TIPS = { continuo: "simultâneo: corta em trechos curtos e traduz enquanto fala",
+  manual: "você aperta p/ gravar e aperta p/ parar", conversa: "espera você pausar, fala a tradução e volta a escutar" };
+const onModeChange = () => { if (auto) stopAuto(); if (transRec && transRec.state === "recording") transRec.stop();
+  $("tvMode").title = TV_MODE_TIPS[$("tvMode").value] || ""; };
+$("tvMode").onchange = onModeChange; onModeChange();
 
 function setRecBtn(on, label) {
   const b = fEl("recBtn");
@@ -2122,11 +2169,12 @@ function showTrans(r) {
   if (r.emotion) html += `<div class="t-emo">🎭 ${escHtml(r.emotion)}</div>`;
   if (r.emotion_error) html += `<div class="t-emo err">emoção indisponível: ${escHtml(r.emotion_error)}</div>`;
   e.innerHTML = html;
+  out.querySelector(".empty")?.remove();
   out.appendChild(e);
   while (out.children.length > 60) out.removeChild(out.firstChild);   // cap p/ não crescer sem fim
   out.scrollTop = out.scrollHeight;                                    // auto-scroll p/ o mais recente
 }
-$("tvClear").onclick = () => { $("tvOut").innerHTML = ""; };
+$("tvClear").onclick = () => { $("tvOut").innerHTML = '<div class="empty">Aperte <b>Falar</b> e fale — a transcrição aparece aqui.</div>'; };
 
 /* Manual / conversa: processa e toca (reseta o player a cada trecho). */
 async function translateAndSpeak(blob) {
@@ -2178,7 +2226,7 @@ async function pumpPipeline(st) {
     // se a geração não acompanha, descarta trechos atrasados -> fica em tempo real
     // buffer generoso: prefere atrasar (e recuperar nas pausas) a descartar palavras.
     // só corta se a fila ficar absurda (~30s) p/ não estourar memória/latência.
-    if (st.queue.length > 10) { st.queue.splice(0, st.queue.length - 10); st.dropped = (st.dropped || 0) + 1; }
+    if (st.queue.length > 10) { st.dropped = (st.dropped || 0) + (st.queue.length - 10); st.queue.splice(0, st.queue.length - 10); }
     if (!pending && st.queue.length) pending = requestTranslation(st.queue.shift());
     if (!pending) { await sleep(40); continue; }
     const r = await pending; pending = null;
@@ -2188,7 +2236,7 @@ async function pumpPipeline(st) {
     if (ttsMuted) continue;   // virou "voz real" durante a tradução -> não toca este trecho
     showTrans(r);
     const buf = Math.max(0, pl.nextTime - pl.ctx.currentTime);
-    fEl("status").innerHTML = `<span class="spinner"></span>simultâneo · buffer ${buf.toFixed(1)}s`;
+    fEl("status").innerHTML = `<span class="spinner"></span>simultâneo · buffer ${buf.toFixed(1)}s` + (st.dropped ? ` · ⚠ ${st.dropped} trecho(s) descartado(s)` : "");
     try { await streamJobInto(r.job_id, pl); } catch (e) { /* trecho falhou: segue */ }
   }
 }
@@ -2206,8 +2254,8 @@ async function refreshOutputs() {
       <div class="grow"><div class="name">${short}</div>
       <div class="meta">${o.duration}s · gerado em ${o.elapsed}s · ${o.created_at}</div></div>
       <audio controls preload="none" src="${k(`/api/outputs/${o.id}/audio`)}"></audio>
-      <a href="${k(`/api/outputs/${o.id}/audio`)}" download><button class="ghost small">baixar</button></a>
-      <button class="danger">apagar</button>`;
+      <a href="${k(`/api/outputs/${o.id}/audio`)}" download><button class="ghost small">Baixar</button></a>
+      <button class="danger">Apagar</button>`;
     div.querySelector(".danger").onclick = async () => {
       await api(`/api/outputs/${o.id}`, { method: "DELETE" });
       refreshOutputs();
@@ -2310,6 +2358,7 @@ async function loadSettings() {
     $("remoteSttKey").value = s.remote_stt_key || "";
     $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
     applySttEngine(false);
+    prevSttEngine = $("sttEngine").value;
     $("freeLocalOnRemote").checked = !!s.free_local_on_remote;
     for (const [id, out, key, fmt] of STT_CTL) {
       if (s[key] !== undefined) { $(id).value = s[key]; $(out).textContent = fmt(s[key]); }
@@ -2337,10 +2386,30 @@ async function loadSettings() {
   const toggle = () => setColl(!dock.classList.contains("collapsed"));
   $("cfgToggle").onclick = toggle;
   $("cfgTitle").onclick = toggle;
-  setColl(localStorage.getItem("ttsCfgCollapsed") === "1");   // restaura
+  setColl(localStorage.getItem("ttsCfgCollapsed") !== "0");   // padrão: colapsado (dá espaço às views); escolha persiste
 })();
 
+// marca "alterações não salvas" só nos campos que o cfgSave realmente posta
+// (sliders STT/beam/engine/seed auto-salvam e ficam de fora)
+const CFG_DIRTY_IDS = ["cfgModel","cfgModelCustom","cfgPrePrompt","cfgLang","cfgVoice","cfgChunk","cfgSpeed",
+  "cfgPrecision","oNumSteps","oGuid","oClassT","oPosT","oLayer","oTshift","oDenoise","oPreProc","oPostProc",
+  "oChunkDur","oChunkThr","oInstruct","oDur","oRefMax","audGain","audLow","audMid","audHigh",
+  "remoteTts","remoteTtsUrl","remoteTtsVoice","remoteTtsExtra","remoteBaseUrl","remoteApiKey",
+  "remoteTranslate","remoteTranslateModel","vdGender","vdAge","vdPitch","vdAccent","vdWhisper"];
+function markCfgDirty() {
+  $("cfgSave").textContent = "Salvar configurações •";
+  $("cfgStatus").textContent = "alterações não salvas";
+}
+CFG_DIRTY_IDS.forEach(id => { const el = $(id); if (el) { el.addEventListener("input", markCfgDirty); el.addEventListener("change", markCfgDirty); } });
+
 $("cfgSave").onclick = async () => {
+  // valida o JSON dos parâmetros extras antes de salvar
+  const extraEl = $("remoteTtsExtra");
+  extraEl.style.borderColor = "";
+  if (extraEl.value.trim()) {
+    try { JSON.parse(extraEl.value); }
+    catch { extraEl.style.borderColor = "var(--danger)"; toast("Parâmetros extra (JSON) inválidos — corrija antes de salvar", 5000); return; }
+  }
   const model = $("cfgModel").value === "__custom__"
     ? $("cfgModelCustom").value.trim() : $("cfgModel").value;
   try {
@@ -2389,6 +2458,7 @@ $("cfgSave").onclick = async () => {
         free_local_on_remote: $("freeLocalOnRemote").checked
       })
     });
+    $("cfgSave").textContent = "Salvar configurações";
     $("cfgStatus").textContent = "salvo ✔ — já vale para a API";
     setTimeout(() => $("cfgStatus").textContent = "", 4000);
   } catch (e) { toast("Erro ao salvar: " + e.message); }
