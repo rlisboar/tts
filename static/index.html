@@ -631,13 +631,9 @@
     <div class="config-body">
       <section class="cfg-sec">
         <h3 class="cfg-sec-h">Modelo &amp; geração</h3>
-        <label class="cfg-label">Prioridade (qualidade ↔ velocidade)
-          <select id="perfPriority">
-            <option value="qualidade">Qualidade (mais passos/beam, mais lento)</option>
-            <option value="equilibrio">Equilíbrio (padrão)</option>
-            <option value="velocidade">Velocidade (menos passos/beam, mais rápido)</option>
-          </select></label>
-        <p class="hint" style="margin-top:0">Ajusta os passos de geração do TTS e o beam do STT. Os filtros anti-ruído NÃO deixam mais lento (só checam o resultado).</p>
+        <label class="cfg-label">Beam do STT (Whisper) <output id="sttBeamOut">5</output>
+          <input type="range" id="sttBeam" min="1" max="8" step="1" value="5"></label>
+        <p class="hint" style="margin-top:0">Nº de hipóteses na decodificação do <b>Whisper</b> (1 = greedy/rápido; 8 = mais preciso/lento). <b>O Voxtral ignora</b> (é LLM greedy). Salva automático.</p>
         <label class="cfg-label">Modelo
           <select id="cfgModel">
             <option value="omnivoice">OmniVoice — 646 idiomas</option>
@@ -693,6 +689,17 @@
           <label class="cfg-label">Duração fixa (s) <input type="number" id="oDur" min="0.5" max="60" step="0.5" placeholder="auto"></label>
           <label class="cfg-label">Ref. da amostra (s) <input type="number" id="oRefMax" min="3" max="30" step="1"></label>
         </div>
+        <details style="margin-top:6px">
+          <summary>Avançado (OmniVoiceGenerationConfig)</summary>
+          <label class="check" style="margin-top:8px"><input type="checkbox" id="oDenoise" checked> denoise — limpa ruído do áudio gerado</label>
+          <label class="check"><input type="checkbox" id="oPreProc" checked> preprocess_prompt — pré-processa o texto</label>
+          <label class="check"><input type="checkbox" id="oPostProc" checked> postprocess_output — pós-processa o áudio</label>
+          <div class="row2" style="margin-top:6px">
+            <label class="cfg-label">Chunk texto longo · duração (s) <input type="number" id="oChunkDur" min="1" max="60" step="1" value="15"></label>
+            <label class="cfg-label">Chunk · limiar (s) <input type="number" id="oChunkThr" min="5" max="120" step="1" value="30"></label>
+          </div>
+          <p class="hint" style="margin-top:4px">Params extras do modelo. Denoise/pre/post = ligados por padrão. Chunk = divisão interna de texto longo (raro mexer). Só valem no OmniVoice.</p>
+        </details>
         <button id="oReset" class="ghost small" type="button" style="align-self:flex-start">↺ Restaurar padrões</button>
       </section>
 
@@ -1401,45 +1408,13 @@ for (const [slider, out, dec] of [["oNumSteps", "oNumStepsOut", 0], ["oGuid", "o
 const OMNI_DEFAULTS = [["oNumSteps", "oNumStepsOut", 16, 0], ["oGuid", "oGuidOut", 2, 1],
   ["oClassT", "oClassTOut", 0, 2], ["oPosT", "oPosTOut", 5, 1], ["oLayer", "oLayerOut", 5, 1],
   ["oTshift", "oTshiftOut", 0.1, 2]];
-// Prioridade qualidade↔velocidade: ajusta passos do TTS + beam do STT
-// Preset cobre o pipeline TODO: STT (beam) + tradução (14B/7B) + TTS (passos)
-const PERF_PRESETS = {
-  // seg = SEGMENTAÇÃO (o que define o "tempo até começar a processar"): silenceHold
-  // (pausa que fecha o trecho), contMax (corte do contínuo), minUtter (mínimo).
-  // STT = Voxtral (fixo); tradutor = 14B (fixo). Os tiers variam só os passos do
-  // OmniVoice e a SEGMENTAÇÃO (tempo até começar). stt_beam é ignorado pelo Voxtral.
-  qualidade:  { omni_num_steps: 24, stt_beam: 8, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "voxtral",
-                seg: { silenceHold: 700, contMax: 4.5, minUtter: 350 } },
-  equilibrio: { omni_num_steps: 16, stt_beam: 5, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "voxtral",
-                seg: { silenceHold: 500, contMax: 3.0, minUtter: 300 } },
-  velocidade: { omni_num_steps: 8,  stt_beam: 1, remote_translate_model: "qwen2.5-14b-instruct", remote_stt_model: "voxtral",
-                seg: { silenceHold: 300, contMax: 2.0, minUtter: 220 } },
+// Beam do STT (Whisper). Voxtral ignora (é LLM greedy). Salva na hora.
+$("sttBeam").oninput = () => { $("sttBeamOut").textContent = $("sttBeam").value; };
+$("sttBeam").onchange = () => {
+  api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stt_beam: parseInt($("sttBeam").value, 10) }) })
+    .then(() => toast("Beam do STT: " + $("sttBeam").value)).catch(e => toast("Erro: " + e.message));
 };
-function applySeg(seg) {   // aplica segmentação ao VAD + sliders + persiste
-  if (!seg) return;
-  micFx.silenceHold = seg.silenceHold; VAD.silenceHoldMs = seg.silenceHold;
-  micFx.minUtter = seg.minUtter; VAD.minUtterMs = seg.minUtter;
-  micFx.contMax = Math.round(seg.contMax * 1000); CONT_MAX_MS = micFx.contMax;
-  if ($("micSilence")) { $("micSilence").value = seg.silenceHold; $("micSilenceOut").textContent = seg.silenceHold + " ms"; }
-  if ($("micMinUtter")) { $("micMinUtter").value = seg.minUtter; $("micMinUtterOut").textContent = seg.minUtter + " ms"; }
-  if ($("micContMax")) { $("micContMax").value = seg.contMax; $("micContMaxOut").textContent = seg.contMax + " s"; }
-  saveMicFx();
-}
-async function applyPerf() {
-  const p = $("perfPriority").value, preset = PERF_PRESETS[p] || PERF_PRESETS.equilibrio;
-  const { seg, ...modelPreset } = preset;
-  try {
-    await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ perf_priority: p, ...modelPreset }) });
-    $("oNumSteps").value = modelPreset.omni_num_steps; $("oNumStepsOut").textContent = modelPreset.omni_num_steps;
-    if ($("remoteTranslateModel")) $("remoteTranslateModel").value = modelPreset.remote_translate_model;
-    if ($("remoteSttModel")) $("remoteSttModel").value = modelPreset.remote_stt_model;
-    applySeg(seg);   // <-- encurta a segmentação: reduz o tempo até COMEÇAR a processar
-    const mt = modelPreset.remote_translate_model.includes("7b") ? "7B" : "14B";
-    toast(`Prioridade: ${p} · pausa ${seg.silenceHold}ms · trecho ${seg.contMax}s · tradutor ${mt} · TTS ${modelPreset.omni_num_steps} passos`);
-  } catch (e) { toast("Erro: " + e.message); }
-}
-$("perfPriority").onchange = applyPerf;
 
 /* Seletor de engine de STT: aplica na hora (sem o Salvar) e mostra os campos
    manuais só no modo "API externa". */
@@ -2305,12 +2280,17 @@ async function loadSettings() {
       $(id).value = val;
       $(out).textContent = parseFloat(val).toFixed(dec);
     }
+    $("oDenoise").checked = s.omni_denoise ?? true;
+    $("oPreProc").checked = s.omni_preprocess_prompt ?? true;
+    $("oPostProc").checked = s.omni_postprocess_output ?? true;
+    $("oChunkDur").value = s.omni_audio_chunk_duration ?? 15;
+    $("oChunkThr").value = s.omni_audio_chunk_threshold ?? 30;
     $("oInstruct").value = s.omni_instruct || ""; vdParse(); updateTransVdHint();
     $("oSeed").value = s.omni_seed ?? 42;
     $("oDur").value = s.omni_duration_s ?? "";
     $("oRefMax").value = s.omni_ref_max_s ?? 10;
     $("cfgPrecision").value = s.omni_precision || "bf16";
-    $("perfPriority").value = s.perf_priority || "equilibrio";
+    if ($("sttBeam")) { $("sttBeam").value = s.stt_beam ?? 5; $("sttBeamOut").textContent = s.stt_beam ?? 5; }
     for (const [sl, out, key] of [["audGain", "audGainOut", "audio_gain_db"], ["audLow", "audLowOut", "audio_eq_low_db"],
         ["audMid", "audMidOut", "audio_eq_mid_db"], ["audHigh", "audHighOut", "audio_eq_high_db"]]) {
       $(sl).value = s[key] ?? 0;
@@ -2380,6 +2360,11 @@ $("cfgSave").onclick = async () => {
         omni_position_temperature: parseFloat($("oPosT").value),
         omni_layer_penalty_factor: parseFloat($("oLayer").value),
         omni_t_shift: parseFloat($("oTshift").value),
+        omni_denoise: $("oDenoise").checked,
+        omni_preprocess_prompt: $("oPreProc").checked,
+        omni_postprocess_output: $("oPostProc").checked,
+        omni_audio_chunk_duration: parseFloat($("oChunkDur").value) || 15,
+        omni_audio_chunk_threshold: parseFloat($("oChunkThr").value) || 30,
         omni_instruct: $("oInstruct").value,
         omni_seed: parseInt($("oSeed").value, 10),
         omni_duration_s: $("oDur").value === "" ? null : parseFloat($("oDur").value),
