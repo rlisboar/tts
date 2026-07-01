@@ -122,6 +122,7 @@ def _gen_config(params):
     try: return OmniVoiceGenerationConfig(**kw)
     except Exception: return None
 
+_TTS_GEN_LOCK = _tht.Lock()   # serializa seed+generate (RNG global, senão trechos concorrentes se atropelam)
 def synth(text, language=None, speed=None, voice=None, instruct=None, ref_text=None, gen_params=None):
     kw = {"text": text, "language": language}
     if speed and abs(float(speed)-1.0) > 1e-3: kw["speed"] = float(speed)
@@ -131,14 +132,16 @@ def synth(text, language=None, speed=None, voice=None, instruct=None, ref_text=N
         rt = ref_text or (open(txt, encoding="utf-8").read().strip() if txt else "")
         if rt: kw["ref_text"] = rt
     if instruct: kw["instruct"] = instruct   # voice design textual
-    # seed: voz reprodutível (mesmo instruct/seed -> mesmo timbre/sotaque). <0 = aleatório.
-    seed = (gen_params or {}).get("seed")
-    if seed is not None and int(seed) >= 0:
-        torch.manual_seed(int(seed)); torch.cuda.manual_seed_all(int(seed))
+    seed = (gen_params or {}).get("seed")    # voz reprodutível (mesmo instruct/seed -> mesmo timbre)
     gc = _gen_config(gen_params)
     if gc is not None: kw["generation_config"] = gc
-    try: audio = m.generate(**kw)
-    except Exception: audio = m.generate(text=text, language=language)
+    # torch.manual_seed é GLOBAL -> concorrência atropela a seed (voz muda por trecho).
+    # Lock torna seed+generate atômico -> reproduzível. TTS é rápido (RTF ~0.03), fila irrelevante.
+    with _TTS_GEN_LOCK:
+        if seed is not None and int(seed) >= 0:
+            torch.manual_seed(int(seed)); torch.cuda.manual_seed_all(int(seed))
+        try: audio = m.generate(**kw)
+        except Exception: audio = m.generate(text=text, language=language)
     a = audio[0] if isinstance(audio,(list,tuple)) else audio
     a = np.asarray(a, dtype=np.float32).squeeze()
     pk = float(np.abs(a).max()) or 1.0
