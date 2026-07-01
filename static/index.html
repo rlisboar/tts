@@ -809,16 +809,24 @@
         <label class="cfg-label">Modelo de tradução
           <input type="text" id="remoteTranslateModel" placeholder="gpt-4o-mini"></label>
         <p class="hint" style="margin-top:0">Na RTX: <code>qwen2.5-14b-instruct</code> (qualidade) ou <code>qwen2.5-7b-instruct</code> (rápido). A Prioridade troca automático.</p>
-        <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
-        <label class="cfg-label">Modelo de transcrição
-          <input type="text" id="remoteSttModel" placeholder="whisper-1"></label>
-        <p class="hint" style="margin-top:0">Na RTX: <code>whisper-large-v3</code> (qualidade) ou <code>whisper-large-v3-turbo</code> (rápido). A Prioridade troca automático.</p>
-        <label class="cfg-label">URL do STT (proxy externo — opcional)
-          <input type="text" id="remoteSttBaseUrl" placeholder="vazio = usa a URL base acima"></label>
-        <label class="cfg-label">Chave do STT (opcional)
-          <input type="password" id="remoteSttKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
-        <p class="hint">Provedor OpenAI-compatível. Preencha URL/chave do STT só p/ rotear a
-          <b>transcrição</b> a uma API externa (ex.: OpenAI/Groq) sem mexer no translate/TTS.</p>
+        <label class="cfg-label">Modelo de transcrição (STT)
+          <select id="sttEngine">
+            <option value="voxtral">Voxtral 24B — RTX (qualidade pt-BR)</option>
+            <option value="whisper-rtx">Whisper large-v3 — RTX (mais rápido)</option>
+            <option value="local">Whisper local — Mac (offline)</option>
+            <option value="api">API externa (OpenAI-compat)</option>
+          </select></label>
+        <p class="hint" style="margin-top:0">Troca o STT na hora. <b>Voxtral</b> = qualidade. <b>Whisper-RTX</b> = mais rápido/leve. <b>Local</b> = no Mac, sem RTX. <b>API</b> = externo (campos abaixo).</p>
+        <div id="sttAdvanced">
+          <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
+          <label class="cfg-label">Nome do modelo
+            <input type="text" id="remoteSttModel" placeholder="ex.: gpt-4o-mini-transcribe"></label>
+          <label class="cfg-label">URL do STT (termina em /v1)
+            <input type="text" id="remoteSttBaseUrl" placeholder="https://api.openai.com/v1"></label>
+          <label class="cfg-label">Chave do STT (opcional)
+            <input type="password" id="remoteSttKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
+          <p class="hint">Provedor OpenAI-compatível (ex.: <code>gpt-4o-mini-transcribe</code>). Roteia só a transcrição, sem mexer no translate/TTS.</p>
+        </div>
         <label class="check"><input type="checkbox" id="freeLocalOnRemote"> Liberar RAM: descarregar modelo local quando usar o remoto</label>
         <div class="row2">
           <button id="unloadModelsBtn" class="ghost small" type="button" title="descarrega agora os modelos locais (MLX) da memória">🧹 Descarregar locais agora</button>
@@ -1452,11 +1460,56 @@ async function applyPerf() {
     if ($("remoteSttModel")) $("remoteSttModel").value = modelPreset.remote_stt_model;
     applySeg(seg);   // <-- encurta a segmentação: reduz o tempo até COMEÇAR a processar
     const mt = modelPreset.remote_translate_model.includes("7b") ? "7B" : "14B";
-    const stt = modelPreset.remote_stt_model.includes("turbo") ? "turbo" : "large-v3";
-    toast(`Prioridade: ${p} · pausa ${seg.silenceHold}ms · trecho ${seg.contMax}s · STT ${stt} · tradutor ${mt} · TTS ${modelPreset.omni_num_steps} passos`);
+    toast(`Prioridade: ${p} · pausa ${seg.silenceHold}ms · trecho ${seg.contMax}s · tradutor ${mt} · TTS ${modelPreset.omni_num_steps} passos`);
   } catch (e) { toast("Erro: " + e.message); }
 }
 $("perfPriority").onchange = applyPerf;
+
+/* Seletor de engine de STT: aplica na hora (sem o Salvar) e mostra os campos
+   manuais só no modo "API externa". */
+const VOXTRAL_URL = "http://192.168.200.32:8802/v1";
+const WHISPER_RTX_URL = "http://192.168.200.32:8800/v1";
+function applySttEngine(persist) {
+  const eng = $("sttEngine").value;
+  let body;
+  if (eng === "voxtral") {
+    $("remoteStt").checked = true;
+    $("remoteSttBaseUrl").value = VOXTRAL_URL;
+    $("remoteSttModel").value = "voxtral";
+    $("remoteSttKey").value = "";
+    $("sttAdvanced").style.display = "none";
+    body = { remote_stt: true, remote_stt_base_url: VOXTRAL_URL, remote_stt_model: "voxtral", remote_stt_key: "" };
+  } else if (eng === "whisper-rtx") {
+    $("remoteStt").checked = true;
+    $("remoteSttBaseUrl").value = WHISPER_RTX_URL;
+    $("remoteSttModel").value = "whisper-large-v3";
+    $("remoteSttKey").value = "";
+    $("sttAdvanced").style.display = "none";
+    body = { remote_stt: true, remote_stt_base_url: WHISPER_RTX_URL, remote_stt_model: "whisper-large-v3", remote_stt_key: "" };
+  } else if (eng === "local") {
+    $("remoteStt").checked = false;
+    $("sttAdvanced").style.display = "none";
+    body = { remote_stt: false };
+  } else {   // api externa: revela os campos e usa o que o usuário preencheu
+    $("remoteStt").checked = true;
+    $("sttAdvanced").style.display = "";
+    body = { remote_stt: true, remote_stt_base_url: $("remoteSttBaseUrl").value.trim(),
+             remote_stt_model: $("remoteSttModel").value.trim(), remote_stt_key: $("remoteSttKey").value };
+  }
+  if (persist) {
+    api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(() => toast("STT: " + ({ voxtral: "Voxtral (RTX)", local: "Whisper local (Mac)", api: "API externa" }[eng])))
+      .catch(e => toast("Erro: " + e.message));
+  }
+}
+$("sttEngine").onchange = () => applySttEngine(true);
+function inferSttEngine(s) {
+  if (!s.remote_stt) return "local";
+  const url = s.remote_stt_base_url || "";
+  if (s.remote_stt_model === "voxtral" || url.includes(":8802")) return "voxtral";
+  if (url.includes(":8800") || (s.remote_stt_model || "").includes("whisper-large")) return "whisper-rtx";
+  return "api";
+}
 
 $("oReset").onclick = () => {
   for (const [id, out, val, dec] of OMNI_DEFAULTS) {
@@ -2299,6 +2352,8 @@ async function loadSettings() {
     $("remoteSttModel").value = s.remote_stt_model || "whisper-1";
     $("remoteSttBaseUrl").value = s.remote_stt_base_url || "";
     $("remoteSttKey").value = s.remote_stt_key || "";
+    $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
+    applySttEngine(false);
     $("freeLocalOnRemote").checked = !!s.free_local_on_remote;
     for (const [id, out, key, fmt] of STT_CTL) {
       if (s[key] !== undefined) { $(id).value = s[key]; $(out).textContent = fmt(s[key]); }
