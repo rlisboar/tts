@@ -2229,6 +2229,10 @@ _AUDIO_FORMATS = {
 
 def _resolve_voice(voice) -> str:
     """Aceita id ou nome; desconhecida cai na voz padrão do dashboard ou na mais recente."""
+    # voz virtual de VOICE DESIGN: gera só do instruct (sem clone). Aceita
+    # "__design__" ou "design" -> a API pode pedir uma voz projetada por texto.
+    if voice and str(voice).strip().lower() in (DESIGN_VOICE_ID, "design"):
+        return DESIGN_VOICE_ID
     voices = list_voices()
     if not voices:
         raise HTTPException(404, "Nenhuma voz gravada — grave uma na UI primeiro")
@@ -2355,6 +2359,9 @@ def openai_speech(payload: dict):
     voice_id = _resolve_voice(payload.get("voice"))
     language = (payload.get("language") or _settings["language"]).lower()
     omni = _resolve_omni(payload)  # inclui speed -> aplicado nativamente pelo modelo
+    if voice_id == DESIGN_VOICE_ID and not (omni.get("instruct") or "").strip():
+        raise HTTPException(400, "voice='__design__' exige 'instruct' (descrição da voz) — "
+                                 "ex.: 'female, young adult, high pitch' — ou defina omni_instruct nas settings")
     # tts-1-hd força mais passos de difusão (qualidade); senão vale o padrão/override
     if str(payload.get("model", "tts-1")).endswith("-hd") and "num_steps" not in payload:
         omni["num_steps"] = OMNI_STEPS_HQ

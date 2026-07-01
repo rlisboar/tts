@@ -92,7 +92,9 @@ import threading as _tht
 # quantização 4-bit — carregar 2 modelos bnb em threads concorrentes corrompia
 # os pesos (saída em loop "片片片"/"protester"). Serializa toda carga de modelo.
 _LOAD_LOCK = _tht.Lock()
-if _LOAD_WHISPER:
+# turbo separado do large-v3: OMNI_LOAD_TURBO=0 carrega só o large-v3 (economiza
+# VRAM ao coexistir com o Voxtral no mesmo 4090).
+if _LOAD_WHISPER and os.environ.get("OMNI_LOAD_TURBO", "1") != "0":
     _tht.Thread(target=_load_turbo, daemon=True).start()
 
 def _safe_name(name):
