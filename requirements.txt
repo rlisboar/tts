@@ -1,6 +1,11 @@
 mlx-audio
 mlx-whisper
 mlx-lm
+# transformers 5.6+ quebra mlx-lm 0.31.3: AutoTokenizer.register() passa uma
+# string como config_class e o transformers novo faz key.__module__ -> derruba o
+# import de mlx_lm, o audio_tokenizer (codec) nao carrega e a TTS sai MUDA (zeros).
+# 5.5.0 = ultima versao verificada gerando audio real. Nao subir sem testar sintese.
+transformers==5.5.0
 torch
 soundfile
 fastapi
