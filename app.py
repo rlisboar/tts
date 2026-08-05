@@ -1,12 +1,14 @@
-"""TTS-Rod — clonagem de voz local com gravação e gerenciamento de vozes.
+"""TTS-STUDIO — clonagem de voz local com gravação e gerenciamento de vozes.
 
-Servidor FastAPI + OmniVoice (Xiaomi/k2-fsa) quantizado em MLX (Apple Silicon).
+Servidor FastAPI + backends TTS via MLX (Apple Silicon): OmniVoice, Qwen3-TTS,
+Fish S2, Chatterbox, Kokoro, PocketTTS, VoxCPM2, Voxtral, etc.
 Tudo local: nenhum áudio ou texto sai da máquina.
 """
 
 import json
 import os
 import re
+import secrets as _secrets
 import shutil
 import subprocess
 import threading
@@ -21,9 +23,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from backends import generate_with_backend, list_backends, resolve_backend
+
 BASE = Path(__file__).resolve().parent
 VOICES_DIR = BASE / "voices"
 OUTPUTS_DIR = BASE / "outputs"
+APIKEYS_PATH = BASE / ".apikeys.json"
+LEGACY_APIKEY_PATH = BASE / ".apikey"
 VOICES_DIR.mkdir(exist_ok=True)
 OUTPUTS_DIR.mkdir(exist_ok=True)
 
@@ -31,16 +37,16 @@ OUTPUTS_DIR.mkdir(exist_ok=True)
 for _d in OUTPUTS_DIR.glob(".job-*"):
     shutil.rmtree(_d, ignore_errors=True)
 
-# OmniVoice é o único backend. As conversões MLX publicadas vêm quebradas: o repo
-# "-bf16" tem o audio_tokenizer sem o encoder semântico (HuBERT) e o "-4bit" não
-# quantiza no load_model. Montamos um dir local = backbone bf16 + audio_tokenizer
-# COMPLETO do repo sem sufixo (que traz o HuBERT). Feito uma vez em .omnivoice-bf16/.
+# OmniVoice: as conversões MLX publicadas vêm quebradas — o repo "-bf16" perde o
+# encoder semântico do tokenizer e o "-4bit" não quantiza no load_model. Montamos
+# um dir local = backbone bf16 + audio_tokenizer COMPLETO (HuBERT) em .omnivoice-bf16/.
+# Outros backends (Qwen3, Fish, Chatterbox…) usam o repo MLX direto (ver backends.py).
 OMNI_BACKBONE_REPO = os.environ.get("TTS_ROD_OMNI_BACKBONE", "mlx-community/OmniVoice-bf16")
 OMNI_TOKENIZER_REPO = os.environ.get("TTS_ROD_OMNI_TOKENIZER", "mlx-community/OmniVoice")
 # repo fp32 completo (backbone F32 + tokenizer) — carrega direto, sem montagem
 OMNI_FP32_REPO = os.environ.get("TTS_ROD_OMNI_FP32", "mlx-community/OmniVoice-fp32")
 OMNI_ASSEMBLED = BASE / ".omnivoice-bf16"
-# "omnivoice" (default) = monta o bf16 acima; ou um id/dir MLX de OmniVoice já pronto
+# atalho de backends.py (omnivoice, qwen3-0.6b, fish-s2…) ou id/dir MLX livre
 MODEL_ID = os.environ.get("TTS_ROD_MODEL", "omnivoice")
 OMNI_ALIASES = {"", "omnivoice", "omni", "omnivoice-bf16"}
 # voz "virtual": gera só a partir da descrição textual (instruct), sem ref de clone
@@ -52,7 +58,7 @@ DESIGN_VOICE_ID = "__design__"
 # ---------------------------------------------------------------------------
 SETTINGS_PATH = BASE / "settings.json"
 _SETTINGS_DEFAULTS = {
-    "model": MODEL_ID,         # "omnivoice" ou um id/dir MLX de OmniVoice
+    "model": MODEL_ID,         # atalho (omnivoice, qwen3-0.6b…) ou id/dir MLX
     "pre_prompt": "",          # texto falado antes de toda geração
     "language": "auto",        # "auto" = OmniVoice detecta o idioma do texto (recomendado)
     "default_voice": None,     # id; None = voz mais recente
@@ -77,6 +83,20 @@ _SETTINGS_DEFAULTS = {
     "omni_duration_s": None,          # força duração fixa em s (None = automático)
     "omni_ref_max_s": 10.0,           # quanto da amostra de referência usar (3–30 s)
     "omni_precision": "bf16",         # fp32 (repo F32) | bf16 (montado) | q8 | q4 (quantiza só o backbone)
+    # Controles genéricos multi-backend (mapeados em _resolve_omni / generate_with_backend)
+    "gen_temperature": 0.8,           # sampling AR (Qwen/Fish/Chatterbox/Pocket/Voxtral)
+    "gen_top_p": 0.95,
+    "gen_top_k": 50,
+    "gen_repetition_penalty": 1.1,
+    "gen_max_tokens": 2048,
+    "gen_exaggeration": 0.5,          # Chatterbox expressividade
+    "gen_cfg_weight": 0.5,            # Chatterbox CFG
+    "gen_min_p": 0.05,                # Chatterbox min-p
+    "gen_chunk_length": 300,          # Fish S2
+    "gen_speaker": "Ryan",            # Qwen3 CustomVoice
+    "gen_kokoro_voice": "af_heart",
+    "gen_pocket_voice": "alba",
+    "gen_voxtral_voice": "casual_male",
     "voice_denoise": True,            # limpa ruído de fundo da amostra ao salvar a voz
     "voice_denoise_strength": 0.7,    # agressividade do spectral gating (0–1)
     # Áudio de saída (pós-geração): ganho + EQ 3 bandas (dB)
@@ -112,6 +132,13 @@ _SETTINGS_DEFAULTS = {
     "remote_stt_key": "",             # chave dessa API de STT (vazio = usa remote_api_key)
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
+    # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
+    "idle_unload_minutes": 10,
+    # Fila de falas: vários sistemas pedem TTS ao mesmo tempo sem sobrepor o áudio.
+    # A espera principal = duração real do último áudio entregue; gap é só folga
+    # extra (silêncio) entre uma fala e a próxima.
+    "speech_queue": True,             # ligado por padrão (vários clientes na rede)
+    "speech_queue_gap_s": 0.35,       # folga extra após a duração da fala (0–5 s)
 }
 _settings = dict(_SETTINGS_DEFAULTS)
 if SETTINGS_PATH.exists():
@@ -123,7 +150,26 @@ if SETTINGS_PATH.exists():
 
 
 def _save_settings():
-    SETTINGS_PATH.write_text(json.dumps(_settings, ensure_ascii=False, indent=2))
+    """Persiste settings.json com TODAS as chaves conhecidas (defaults + overrides)."""
+    # garante booleans/números estáveis (JSON true/false, não null)
+    _settings["speech_queue"] = bool(_settings.get("speech_queue"))
+    try:
+        _settings["speech_queue_gap_s"] = float(_settings.get("speech_queue_gap_s") or 0.35)
+    except (TypeError, ValueError):
+        _settings["speech_queue_gap_s"] = 0.35
+    payload = {k: _settings.get(k, v) for k, v in _SETTINGS_DEFAULTS.items()}
+    SETTINGS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
+# materializa chaves novas (ex.: speech_queue) no arquivo se ainda não existirem
+try:
+    _salvo_keys = set()
+    if SETTINGS_PATH.exists():
+        _salvo_keys = set(json.loads(SETTINGS_PATH.read_text()).keys())
+    if "speech_queue" not in _salvo_keys or "speech_queue_gap_s" not in _salvo_keys:
+        _save_settings()
+except Exception:  # noqa: BLE001
+    pass
 
 # Textos maiores são gerados em trechos. OmniVoice é masked-diffusion não-AR (sem o
 # problema de EOS do backend antigo), mas dividir permite tocar trecho-a-trecho — a
@@ -191,12 +237,180 @@ LANG_DISPLAY = {
     "ru": "Russian", "ko": "Korean", "ar": "Arabic", "nl": "Dutch",
 }
 
-# Chave de API: protege /api/* e /v1/*. Aceita Authorization: Bearer,
-# X-API-Key ou ?api_key= (necessário para <audio src> na UI, que não envia header).
-API_KEY = os.environ.get("TTS_ROD_API_KEY")
+# ---------------------------------------------------------------------------
+# Chaves de API (multi): protegem /api/* e /v1/* na rede. Loopback (127.0.0.1)
+# não exige chave. Aceita Authorization: Bearer, X-API-Key ou ?api_key=
+# (necessário p/ <audio src> na UI). Persistidas em .apikeys.json; migra de
+# .apikey / TTS_ROD_API_KEY. Gestão na UI (Configurações → Acesso).
+# ---------------------------------------------------------------------------
+_ENV_API_KEY = (os.environ.get("TTS_ROD_API_KEY") or "").strip()
+_apikeys_lock = threading.Lock()
+_apikeys: dict = {"enabled": True, "keys": []}  # keys: id, name, secret, created_at
+
+
+def _new_api_secret() -> str:
+    return _secrets.token_hex(24)
+
+
+def _mask_secret(secret: str) -> str:
+    s = secret or ""
+    if len(s) <= 10:
+        return "••••••••"
+    return f"{s[:4]}…{s[-4:]}"
+
+
+def _sync_legacy_apikey_file():
+    """Mantém .apikey = 1ª chave gerenciada (compat run.sh / scripts)."""
+    try:
+        keys = _apikeys.get("keys") or []
+        if keys:
+            LEGACY_APIKEY_PATH.write_text(keys[0]["secret"] + "\n")
+            try:
+                os.chmod(LEGACY_APIKEY_PATH, 0o600)
+            except Exception:  # noqa: BLE001
+                pass
+        elif LEGACY_APIKEY_PATH.exists() and not _ENV_API_KEY:
+            # sem chaves gerenciadas e sem env: remove legado p/ não reabrir auth fantasma
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _save_apikeys():
+    payload = {
+        "enabled": bool(_apikeys.get("enabled", True)),
+        "keys": [
+            {
+                "id": k["id"],
+                "name": k.get("name") or "sem nome",
+                "secret": k["secret"],
+                "created_at": k.get("created_at") or "",
+            }
+            for k in (_apikeys.get("keys") or [])
+            if k.get("secret")
+        ],
+    }
+    APIKEYS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    try:
+        os.chmod(APIKEYS_PATH, 0o600)
+    except Exception:  # noqa: BLE001
+        pass
+    _sync_legacy_apikey_file()
+
+
+def _load_apikeys():
+    """Carrega .apikeys.json; migra .apikey/env; gera chave padrão se vazio."""
+    global _apikeys
+    keys = []
+    enabled = True
+    if APIKEYS_PATH.exists():
+        try:
+            data = json.loads(APIKEYS_PATH.read_text())
+            enabled = bool(data.get("enabled", True))
+            for raw in data.get("keys") or []:
+                sec = str(raw.get("secret") or "").strip()
+                if not sec:
+                    continue
+                keys.append({
+                    "id": str(raw.get("id") or uuid.uuid4().hex[:10]),
+                    "name": str(raw.get("name") or "chave")[:64],
+                    "secret": sec,
+                    "created_at": str(raw.get("created_at") or ""),
+                })
+        except Exception:  # noqa: BLE001
+            keys = []
+
+    if not keys:
+        # migra chave legada (.apikey) ou env
+        legacy = ""
+        if LEGACY_APIKEY_PATH.exists():
+            try:
+                legacy = LEGACY_APIKEY_PATH.read_text().strip()
+            except Exception:  # noqa: BLE001
+                legacy = ""
+        seed = legacy or _ENV_API_KEY
+        if seed:
+            keys.append({
+                "id": uuid.uuid4().hex[:10],
+                "name": "padrão",
+                "secret": seed,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        else:
+            keys.append({
+                "id": uuid.uuid4().hex[:10],
+                "name": "padrão",
+                "secret": _new_api_secret(),
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        _apikeys = {"enabled": True, "keys": keys}
+        _save_apikeys()
+        return
+
+    _apikeys = {"enabled": enabled, "keys": keys}
+    # se veio só do arquivo antigo sem .apikeys, já salvamos acima; se veio do
+    # .apikeys.json, só sincroniza .apikey p/ run.sh
+    _sync_legacy_apikey_file()
+
+
+def _auth_enabled() -> bool:
+    """Auth na rede se enabled e existe ao menos uma chave (arquivo ou env)."""
+    with _apikeys_lock:
+        if not _apikeys.get("enabled", True):
+            return False
+        if _apikeys.get("keys"):
+            return True
+    return bool(_ENV_API_KEY)
+
+
+def _extract_request_key(request) -> str:
+    auth = request.headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return (request.headers.get("x-api-key")
+            or request.query_params.get("api_key")
+            or "").strip()
+
+
+def _key_is_valid(provided: str) -> bool:
+    if not provided:
+        return False
+    if _ENV_API_KEY and provided == _ENV_API_KEY:
+        return True
+    with _apikeys_lock:
+        return any(k.get("secret") == provided for k in (_apikeys.get("keys") or []))
+
+
+def _primary_api_key() -> str:
+    """Chave principal p/ clientes empacotados (mic-router etc.)."""
+    with _apikeys_lock:
+        keys = _apikeys.get("keys") or []
+        if keys:
+            return keys[0]["secret"]
+    return _ENV_API_KEY or ""
+
+
+def _public_key_row(k: dict, *, reveal: bool = False) -> dict:
+    row = {
+        "id": k["id"],
+        "name": k.get("name") or "sem nome",
+        "masked": _mask_secret(k.get("secret") or ""),
+        "created_at": k.get("created_at") or "",
+        "readonly": bool(k.get("readonly")),
+    }
+    if reveal:
+        row["secret"] = k.get("secret") or ""
+    return row
+
+
+_load_apikeys()
+
+# compat: scripts antigos / mic-router que leem API_KEY no módulo
+API_KEY = _primary_api_key() or _ENV_API_KEY or None
+
 FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 
-app = FastAPI(title="TTS-Rod")
+app = FastAPI(title="TTS-STUDIO")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -208,13 +422,10 @@ app.add_middleware(
 @app.middleware("http")
 async def _exige_chave(request, call_next):
     protegido = request.url.path.startswith(("/api/", "/v1/"))
-    if API_KEY and protegido and request.method != "OPTIONS":
+    if protegido and request.method != "OPTIONS" and _auth_enabled():
         # loopback = processo no próprio Mac; chave só para a rede
         local = request.client and request.client.host in ("127.0.0.1", "::1")
-        ok = (local
-              or request.headers.get("authorization") == f"Bearer {API_KEY}"
-              or request.headers.get("x-api-key") == API_KEY
-              or request.query_params.get("api_key") == API_KEY)
+        ok = local or _key_is_valid(_extract_request_key(request))
         if not ok:
             from fastapi.responses import JSONResponse
             return JSONResponse({"detail": "Não autorizado"}, status_code=401)
@@ -262,21 +473,35 @@ def _assemble_omnivoice_path() -> str:
     return str(OMNI_ASSEMBLED)
 
 
+def _current_backend() -> dict:
+    """Metadados do backend selecionado em settings['model']."""
+    return resolve_backend(_settings.get("model") or "omnivoice")
+
+
+def _is_omnivoice() -> bool:
+    return _current_backend()["family"] == "omnivoice"
+
+
 def _resolve_model_path() -> str:
-    """'omnivoice' (alias) -> monta o bf16 (ou baixa o fp32 se precisão=fp32);
-    senão usa o id/dir MLX informado."""
-    if str(_settings["model"] or "").strip().lower() in OMNI_ALIASES:
+    """Resolve settings['model'] → path/id p/ load_model.
+
+    OmniVoice: monta bf16 local (ou repo fp32). Outros atalhos: repo MLX do catálogo.
+    String livre (HF/dir): repassada como está.
+    """
+    be = _current_backend()
+    if be["family"] == "omnivoice" and (
+            be["is_shortcut"] or str(be["path"]).strip().lower() in OMNI_ALIASES):
         if str(_settings.get("omni_precision", "bf16")).lower() == "fp32":
-            return OMNI_FP32_REPO   # repo completo F32, carrega direto
+            return OMNI_FP32_REPO
         return _assemble_omnivoice_path()
-    return _settings["model"]
+    return be["path"]
 
 
 def _quantize_backbone(model, bits: int):
     """Quantiza in-place SÓ o backbone (transformer) p/ q8/q4 — reduz RAM e acelera
     matmul. NÃO toca no audio_tokenizer (codec, preserva timbre) nem nos audio_heads
     (vocab 1025, não divisível pelo group_size). Camadas com última dim não múltipla
-    de 64 são puladas pelo predicate (ficam em bf16)."""
+    de 64 são puladas pelo predicate (ficam em bf16). Só OmniVoice."""
     import mlx.nn as nn
 
     gs = 64
@@ -285,6 +510,8 @@ def _quantize_backbone(model, bits: int):
         w = getattr(module, "weight", None)
         return w is not None and w.ndim >= 2 and w.shape[-1] % gs == 0
 
+    if not hasattr(model, "backbone"):
+        return
     nn.quantize(model.backbone, group_size=gs, bits=bits, class_predicate=pred)
 
 
@@ -292,37 +519,111 @@ def _get_model():
     global _model
     with _model_lock:
         prec = str(_settings.get("omni_precision", "bf16")).lower()
+        be = _current_backend()
         if (_model is not None and _model_state.get("model") == _settings["model"]
-                and _model_state.get("precision") == prec):
+                and _model_state.get("precision") == prec
+                and _model_state.get("family") == be["family"]):
+            _touch_use("tts")
             return _model
-        # troca de modelo/precisão no dashboard: descarrega o atual e carrega o novo
+        # troca de modelo/precisão: libera o anterior com agressividade (Metal)
+        old = _model
         _model = None
         _conds_cache.clear()
-        _model_state.update(status="loading", device="mlx", model=_settings["model"],
-                            precision=prec)
+        path = _resolve_model_path()
+        label = be["meta"].get("label") or path
+        _model_state.update(
+            status="loading", device="mlx", model=_settings["model"],
+            precision=prec, family=be["family"], path=path,
+            progress=f"carregando {label}…",
+            backend_id=be.get("id"), backend_label=be["meta"].get("label"),
+        )
         try:
-            import gc
-
-            import mlx.core as mx
-            gc.collect()
+            del old
+            _release_mlx_memory(aggressive=True)
             from mlx_audio.tts.utils import load_model
 
-            _model = load_model(_resolve_model_path())
-            if prec in ("q8", "q4"):
+            _model = load_model(path)
+            # quantização in-place só faz sentido no OmniVoice (backbone próprio)
+            if be["family"] == "omnivoice" and prec in ("q8", "q4"):
+                import mlx.core as mx
                 _model_state.update(progress=f"quantizando backbone p/ {prec}…")
                 _quantize_backbone(_model, 8 if prec == "q8" else 4)
                 mx.eval(_model.parameters())
             _model_state.update(status="ready", error=None, progress=None)
+            _touch_use("tts")
             return _model
         except Exception as exc:  # noqa: BLE001
-            _model_state.update(status="error", error=str(exc))
+            _model = None
+            _model_state.update(status="error", error=str(exc), progress=None)
             raise
 
 
 # ref_tokens por voz custam ~1,5s para preparar; cache LRU evita repetir.
-# Chave inclui mtime (regravação invalida a voz).
+# Chave inclui mtime (regravação invalida a voz). Cache pequeno: cada cond
+# guarda tensores MLX (prompt acústico+semântico) que ficam na RAM/Metal.
 _conds_cache: "OrderedDict[tuple, object]" = OrderedDict()
-_CONDS_CACHE_MAX = 8
+_CONDS_CACHE_MAX = 4
+
+# Último uso de cada motor (timestamp) — idle unload descarrega o ocioso.
+_last_use = {"tts": 0.0, "stt": 0.0, "mt": 0.0, "ser": 0.0}
+
+
+def _touch_use(*keys: str):
+    now = time.time()
+    for k in keys:
+        _last_use[k] = now
+
+
+def _release_mlx_memory(aggressive: bool = False):
+    """Devolve pool de alocação MLX/Metal ao SO e força GC do Python.
+
+    MLX mantém um cache de blocos GPU/unified memory; sem clear_cache a RAM
+    sobe a cada trecho gerado e não desce. aggressive=True faz 2 passagens
+    (pós-job / unload).
+    """
+    import gc
+
+    gc.collect()
+    try:
+        import mlx.core as mx
+        # mx.clear_cache (API atual); metal.clear_cache está deprecado
+        clr = getattr(mx, "clear_cache", None)
+        if clr is not None:
+            clr()
+    except Exception:  # noqa: BLE001
+        pass
+    if aggressive:
+        gc.collect()
+        try:
+            import mlx.core as mx
+            clr = getattr(mx, "clear_cache", None)
+            if clr is not None:
+                clr()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _write_wav_concat(piece_dir: Path, n: int, out_path: Path, sr: int) -> float:
+    """Monta o WAV final lendo trecho a trecho (sem carregar tudo na RAM).
+
+    Retorna duração em segundos. Evita np.concatenate de N arrays float32
+    (textos longos estouravam dezenas/centenas de MB de pico).
+    """
+    import numpy as np
+    import soundfile as sf
+
+    total_frames = 0
+    with sf.SoundFile(str(out_path), mode="w", samplerate=sr, channels=1,
+                      subtype="PCM_16") as out:
+        for i in range(n):
+            piece = piece_dir / f"{i}.wav"
+            data, _ = sf.read(str(piece), dtype="float32")
+            if getattr(data, "ndim", 1) > 1:
+                data = data.mean(axis=1)
+            out.write(np.asarray(data, dtype=np.float32))
+            total_frames += len(data)
+            del data
+    return round(total_frames / sr, 1) if sr else 0.0
 
 
 def _cond_for(model, voice_id: str, voice_path: Path):
@@ -446,42 +747,43 @@ def _time_stretch(audio, speed: float, n_fft: int = 1024, hop: int = 256):
         dp = np.angle(D[:, k + 1]) - np.angle(D[:, k]) - omega
         dp -= 2.0 * np.pi * np.round(dp / (2.0 * np.pi))      # phase unwrap
         phase = phase + omega + dp
+    del D
     y = istft(out)
+    del out
     peak = float(np.abs(y).max() or 0.0)
     if peak > 0.99:
         y *= 0.99 / peak
     return y.astype(np.float32)
 
 
-def _generate_chunk(model, text: str, language: str, conds, ref_text, omni: dict):
-    import numpy as np
+# backends que aplicam `speed` nativamente no generate() — NÃO reaplicar time-stretch
+_NATIVE_SPEED_FAMILIES = frozenset({
+    "qwen3_tts", "qwen3_custom", "fish", "chatterbox", "kokoro",
+})
 
-    # masked-diffusion não-AR: duração estimada internamente. Geramos na duração
-    # natural (todas as palavras) e a velocidade vira time-stretch pós-geração.
+
+def _generate_chunk(model, text: str, language: str, conds, ref_text, omni: dict,
+                    ref_audio: str | None = None, family: str | None = None,
+                    meta: dict | None = None):
+    """Gera um trecho com o adapter da família do backend ativo."""
     o = omni or {}
-    seed = o.get("seed")
-    if seed is not None and int(seed) >= 0:        # voz reprodutível (mesmo instruct+seed = mesma voz)
-        import mlx.core as mx
-        mx.random.seed(int(seed))
-    results = model.generate(
-        text=text,
-        ref_tokens=conds,
+    be_family = family or _current_backend()["family"]
+    be_meta = meta if meta is not None else _current_backend().get("meta") or {}
+    # OmniVoice: passa o language cru (generate_with_backend resolve "None"/códigos).
+    # Outros: passa o valor da UI (pt/en/auto).
+    audio = generate_with_backend(
+        model, be_family, text,
+        language=language,
+        ref_audio=ref_audio,
         ref_text=ref_text,
-        language=_omni_language(language),
-        num_steps=int(o.get("num_steps") or OMNI_STEPS_FAST),
-        guidance_scale=o.get("guidance_scale", 2.0),
-        class_temperature=o.get("class_temperature", 0.0),
-        position_temperature=o.get("position_temperature", 5.0),
-        layer_penalty_factor=o.get("layer_penalty_factor", 5.0),
-        t_shift=o.get("t_shift", 0.1),
-        instruct=o.get("instruct") or "None",
-        duration_s=o.get("duration_s"),
+        ref_tokens=conds,
+        omni=o,
+        meta=be_meta,
     )
-    pieces = [np.array(r.audio, dtype=np.float32) for r in results]
-    audio = np.concatenate(pieces)
-    # velocidade: time-stretch preserva tom e todas as palavras (não trunca)
+    # velocidade: time-stretch só se o backend NÃO aplicou speed nativo
+    # (senão fish/chatterbox/qwen ficavam com velocidade²)
     speed = float(o.get("speed") or 1.0)
-    if abs(speed - 1.0) > 1e-3:
+    if abs(speed - 1.0) > 1e-3 and be_family not in _NATIVE_SPEED_FAMILIES:
         audio = _time_stretch(audio, speed)
     return audio
 
@@ -667,7 +969,155 @@ def _wav_duration(path: Path) -> float:
 
 @app.get("/api/status")
 def status():
-    return _model_state
+    st = dict(_model_state)
+    try:
+        be = _current_backend()
+        st.setdefault("family", be["family"])
+        st.setdefault("backend_id", be["id"])
+        st["backend_label"] = be["meta"].get("label")
+    except Exception:  # noqa: BLE001
+        pass
+    # fila de falas: útil p/ clientes e UI verem se há espera
+    st["speech_queue"] = bool(_settings.get("speech_queue"))
+    st["speech_queue_depth"] = _speech_gate.depth if st["speech_queue"] else 0
+    st["speech_queue_free_in"] = round(_speech_gate.free_in, 1) if st["speech_queue"] else 0.0
+    st["speech_queue_last_duration"] = (
+        round(_speech_gate.last_duration, 2) if st["speech_queue"] else 0.0
+    )
+    st["api_auth_enabled"] = _auth_enabled()
+    with _apikeys_lock:
+        st["api_keys_count"] = len(_apikeys.get("keys") or [])
+    return st
+
+
+# ---------------------------------------------------------------------------
+# Gestão de chaves de API (UI: Configurações → Acesso)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/apikeys")
+def list_apikeys(request: Request, reveal: bool = False):
+    """Lista chaves. `reveal=1` devolve o secret completo (só localhost)."""
+    local = request.client and request.client.host in ("127.0.0.1", "::1")
+    do_reveal = bool(reveal) and bool(local)
+    with _apikeys_lock:
+        rows = [_public_key_row(k, reveal=do_reveal) for k in (_apikeys.get("keys") or [])]
+        enabled = bool(_apikeys.get("enabled", True))
+    env_row = None
+    if _ENV_API_KEY:
+        # só lista o env se não estiver já entre as chaves gerenciadas
+        with _apikeys_lock:
+            already = any(k.get("secret") == _ENV_API_KEY for k in (_apikeys.get("keys") or []))
+        if not already:
+            env_row = _public_key_row({
+                "id": "__env__",
+                "name": "TTS_ROD_API_KEY (ambiente)",
+                "secret": _ENV_API_KEY,
+                "created_at": "",
+                "readonly": True,
+            }, reveal=do_reveal)
+    return {
+        "enabled": enabled,
+        "auth_active": _auth_enabled(),
+        "keys": rows,
+        "env_key": env_row,
+        "can_reveal": bool(local),
+    }
+
+
+@app.post("/api/apikeys")
+def create_apikey(payload: dict):
+    """Cria chave. Devolve o secret completo uma vez."""
+    payload = payload or {}
+    name = str(payload.get("name") or "nova chave").strip()[:64] or "nova chave"
+    kid = uuid.uuid4().hex[:10]
+    secret = _new_api_secret()
+    row = {
+        "id": kid,
+        "name": name,
+        "secret": secret,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    with _apikeys_lock:
+        _apikeys.setdefault("keys", []).append(row)
+        _save_apikeys()
+    global API_KEY
+    API_KEY = _primary_api_key() or _ENV_API_KEY or None
+    return {"ok": True, "key": _public_key_row(row, reveal=True)}
+
+
+@app.patch("/api/apikeys/{key_id}")
+def rename_apikey(key_id: str, payload: dict):
+    payload = payload or {}
+    name = str(payload.get("name") or "").strip()[:64]
+    if not name:
+        raise HTTPException(400, "Nome vazio")
+    if key_id == "__env__":
+        raise HTTPException(400, "Chave de ambiente não pode ser renomeada")
+    with _apikeys_lock:
+        for k in _apikeys.get("keys") or []:
+            if k["id"] == key_id:
+                k["name"] = name
+                _save_apikeys()
+                return {"ok": True, "key": _public_key_row(k)}
+    raise HTTPException(404, "Chave não encontrada")
+
+
+@app.post("/api/apikeys/{key_id}/rotate")
+def rotate_apikey(key_id: str):
+    """Gera novo secret. A chave antiga deixa de valer na hora."""
+    if key_id == "__env__":
+        raise HTTPException(400, "Chave de ambiente não pode ser rotacionada pela UI")
+    with _apikeys_lock:
+        for k in _apikeys.get("keys") or []:
+            if k["id"] == key_id:
+                k["secret"] = _new_api_secret()
+                k["created_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                _save_apikeys()
+                global API_KEY
+                API_KEY = _primary_api_key() or _ENV_API_KEY or None
+                return {"ok": True, "key": _public_key_row(k, reveal=True)}
+    raise HTTPException(404, "Chave não encontrada")
+
+
+@app.delete("/api/apikeys/{key_id}")
+def delete_apikey(key_id: str):
+    if key_id == "__env__":
+        raise HTTPException(400, "Chave de ambiente não pode ser apagada pela UI")
+    with _apikeys_lock:
+        keys = _apikeys.get("keys") or []
+        kept = [k for k in keys if k["id"] != key_id]
+        if len(kept) == len(keys):
+            raise HTTPException(404, "Chave não encontrada")
+        _apikeys["keys"] = kept
+        _save_apikeys()
+    global API_KEY
+    API_KEY = _primary_api_key() or _ENV_API_KEY or None
+    return {"ok": True, "remaining": len(kept), "auth_active": _auth_enabled()}
+
+
+@app.post("/api/apikeys/enabled")
+def set_apikeys_enabled(payload: dict):
+    """Liga/desliga a exigência de chave na rede."""
+    payload = payload or {}
+    if "enabled" not in payload:
+        raise HTTPException(400, "Campo 'enabled' obrigatório")
+    with _apikeys_lock:
+        _apikeys["enabled"] = bool(payload["enabled"])
+        _save_apikeys()
+        enabled = bool(_apikeys["enabled"])
+    return {"ok": True, "enabled": enabled, "auth_active": _auth_enabled()}
+
+
+@app.get("/api/backends")
+def api_backends():
+    """Catálogo de backends TTS disponíveis (atalhos da UI + metadados)."""
+    current = _current_backend()
+    return {
+        "current": current["id"],
+        "current_family": current["family"],
+        "current_path": current["path"],
+        "backends": list_backends(),
+    }
 
 
 # Estado do roteador de microfone: "app" = a chamada ouve o TTS (voz do app);
@@ -710,7 +1160,7 @@ def download_mic_router(request: Request):
 
     host = request.headers.get("host") or "127.0.0.1:7860"
     scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
-    cfg = {"server_url": f"{scheme}://{host}", "api_key": API_KEY or ""}
+    cfg = {"server_url": f"{scheme}://{host}", "api_key": _primary_api_key() or ""}
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -728,13 +1178,13 @@ def download_mic_router(request: Request):
     return Response(
         content=buf.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="tts-rod-mic-router.zip"'},
+        headers={"Content-Disposition": 'attachment; filename="tts-studio-mic-router.zip"'},
     )
 
 
 @app.post("/api/shutdown")
 def shutdown():
-    """Desliga o servidor (botão na UI). Reiniciar: dois cliques em TTS-Rod.command."""
+    """Desliga o servidor (botão na UI). Reiniciar: dois cliques em TTS-STUDIO.command."""
     def _stop():
         time.sleep(0.4)  # deixa a resposta HTTP voltar antes de sair
         os._exit(0)
@@ -789,27 +1239,69 @@ def _sanitize_instruct(s) -> str:
     return ", ".join(out)
 
 
-def _resolve_omni(payload: dict) -> dict:
-    """Resolve os controles do OmniVoice: override no request, senão settings."""
+def _resolve_omni(payload: dict, family: str | None = None) -> dict:
+    """Resolve controles de geração p/ todos os backends.
+
+    Campos OmniVoice (num_steps, guidance…) + gen_* multi-backend (temperature,
+    top_p, exaggeration, speakers…). instruct: tags fechadas só no OmniVoice.
+    `family` opcional — quando o request sobrescreve o modelo.
+    """
+    fam = family or _current_backend()["family"]
+    raw_instruct = payload["instruct"] if payload.get("instruct") is not None \
+        else _settings.get("omni_instruct", "")
+    if fam == "omnivoice":
+        instruct = _sanitize_instruct(raw_instruct)
+    else:
+        instruct = str(raw_instruct or "").strip()[:500]
+
+    def _pick(key, setting_key, lo, hi, default, as_int=False):
+        """payload[key] > settings[setting_key] > default, com clamp."""
+        if key in payload and payload[key] is not None:
+            v = payload[key]
+        elif setting_key in payload and payload[setting_key] is not None:
+            v = payload[setting_key]
+        else:
+            v = _settings.get(setting_key, default)
+        n = _clamp(v, lo, hi, default)
+        return int(n) if as_int else n
+
     return {
-        "num_steps": int(_clamp(payload.get("num_steps"), 4, 64, _settings["omni_num_steps"])),
-        "guidance_scale": _clamp(payload.get("guidance_scale"), 0.0, 10.0, _settings["omni_guidance_scale"]),
-        "class_temperature": _clamp(payload.get("class_temperature"), 0.0, 2.0, _settings["omni_class_temperature"]),
-        "position_temperature": _clamp(payload.get("position_temperature"), 0.0, 20.0, _settings["omni_position_temperature"]),
-        "layer_penalty_factor": _clamp(payload.get("layer_penalty_factor"), 0.0, 20.0, _settings["omni_layer_penalty_factor"]),
-        "t_shift": _clamp(payload.get("t_shift"), 0.0, 1.0, _settings["omni_t_shift"]),
+        # OmniVoice / VoxCPM2
+        "num_steps": _pick("num_steps", "omni_num_steps", 4, 64, 16, as_int=True),
+        "guidance_scale": _pick("guidance_scale", "omni_guidance_scale", 0.0, 10.0, 2.0),
+        "class_temperature": _pick("class_temperature", "omni_class_temperature", 0.0, 2.0, 0.0),
+        "position_temperature": _pick("position_temperature", "omni_position_temperature", 0.0, 20.0, 5.0),
+        "layer_penalty_factor": _pick("layer_penalty_factor", "omni_layer_penalty_factor", 0.0, 20.0, 5.0),
+        "t_shift": _pick("t_shift", "omni_t_shift", 0.0, 1.0, 0.1),
         "denoise": bool(payload["denoise"]) if "denoise" in payload else _settings.get("omni_denoise", True),
         "preprocess_prompt": bool(payload["preprocess_prompt"]) if "preprocess_prompt" in payload else _settings.get("omni_preprocess_prompt", True),
         "postprocess_output": bool(payload["postprocess_output"]) if "postprocess_output" in payload else _settings.get("omni_postprocess_output", True),
-        "audio_chunk_duration": _clamp(payload.get("audio_chunk_duration"), 1.0, 60.0, _settings.get("omni_audio_chunk_duration", 15.0)),
-        "audio_chunk_threshold": _clamp(payload.get("audio_chunk_threshold"), 5.0, 120.0, _settings.get("omni_audio_chunk_threshold", 30.0)),
-        "instruct": _sanitize_instruct(payload["instruct"] if payload.get("instruct")
-                                       else _settings["omni_instruct"]),
+        "audio_chunk_duration": _pick("audio_chunk_duration", "omni_audio_chunk_duration", 1.0, 60.0, 15.0),
+        "audio_chunk_threshold": _pick("audio_chunk_threshold", "omni_audio_chunk_threshold", 5.0, 120.0, 30.0),
+        "instruct": instruct,
         "duration_s": (_resolve_duration_s(payload["duration_s"], _settings["omni_duration_s"])
                        if "duration_s" in payload else _settings["omni_duration_s"]),
         "speed": _clamp(payload.get("speed"), 0.25, 4.0, _settings["speed"]),
         "seed": int(payload["seed"]) if str(payload.get("seed", "")).lstrip("-").isdigit()
                 else int(_settings.get("omni_seed", 42)),
+        # multi-backend
+        "temperature": _pick("temperature", "gen_temperature", 0.0, 2.0, 0.8),
+        "top_p": _pick("top_p", "gen_top_p", 0.05, 1.0, 0.95),
+        "top_k": _pick("top_k", "gen_top_k", 0, 500, 50, as_int=True),
+        "repetition_penalty": _pick("repetition_penalty", "gen_repetition_penalty", 1.0, 2.5, 1.1),
+        "max_tokens": _pick("max_tokens", "gen_max_tokens", 64, 8192, 2048, as_int=True),
+        "exaggeration": _pick("exaggeration", "gen_exaggeration", 0.0, 2.0, 0.5),
+        "cfg_weight": _pick("cfg_weight", "gen_cfg_weight", 0.0, 1.0, 0.5),
+        "min_p": _pick("min_p", "gen_min_p", 0.0, 0.5, 0.05),
+        "chunk_length": _pick("chunk_length", "gen_chunk_length", 50, 600, 300, as_int=True),
+        "speaker": str(payload.get("speaker") or payload.get("gen_speaker")
+                       or _settings.get("gen_speaker") or "Ryan"),
+        "kokoro_voice": str(payload.get("kokoro_voice") or payload.get("gen_kokoro_voice")
+                            or _settings.get("gen_kokoro_voice") or "af_heart"),
+        "pocket_voice": str(payload.get("pocket_voice") or payload.get("gen_pocket_voice")
+                            or _settings.get("gen_pocket_voice") or "alba"),
+        "voxtral_voice": str(payload.get("voxtral_voice") or payload.get("gen_voxtral_voice")
+                             or _settings.get("gen_voxtral_voice") or "casual_male"),
     }
 
 
@@ -867,6 +1359,33 @@ def update_settings(payload: dict):
     if "omni_precision" in payload:
         p = str(payload["omni_precision"] or "bf16").lower()
         _settings["omni_precision"] = p if p in ("fp32", "bf16", "q8", "q4") else "bf16"
+    # multi-backend
+    if "gen_temperature" in payload:
+        _settings["gen_temperature"] = _clamp(payload["gen_temperature"], 0.0, 2.0, 0.8)
+    if "gen_top_p" in payload:
+        _settings["gen_top_p"] = _clamp(payload["gen_top_p"], 0.05, 1.0, 0.95)
+    if "gen_top_k" in payload:
+        _settings["gen_top_k"] = int(_clamp(payload["gen_top_k"], 0, 500, 50))
+    if "gen_repetition_penalty" in payload:
+        _settings["gen_repetition_penalty"] = _clamp(payload["gen_repetition_penalty"], 1.0, 2.5, 1.1)
+    if "gen_max_tokens" in payload:
+        _settings["gen_max_tokens"] = int(_clamp(payload["gen_max_tokens"], 64, 8192, 2048))
+    if "gen_exaggeration" in payload:
+        _settings["gen_exaggeration"] = _clamp(payload["gen_exaggeration"], 0.0, 2.0, 0.5)
+    if "gen_cfg_weight" in payload:
+        _settings["gen_cfg_weight"] = _clamp(payload["gen_cfg_weight"], 0.0, 1.0, 0.5)
+    if "gen_min_p" in payload:
+        _settings["gen_min_p"] = _clamp(payload["gen_min_p"], 0.0, 0.5, 0.05)
+    if "gen_chunk_length" in payload:
+        _settings["gen_chunk_length"] = int(_clamp(payload["gen_chunk_length"], 50, 600, 300))
+    if "gen_speaker" in payload:
+        _settings["gen_speaker"] = str(payload["gen_speaker"] or "Ryan").strip()[:64]
+    if "gen_kokoro_voice" in payload:
+        _settings["gen_kokoro_voice"] = str(payload["gen_kokoro_voice"] or "af_heart").strip()[:64]
+    if "gen_pocket_voice" in payload:
+        _settings["gen_pocket_voice"] = str(payload["gen_pocket_voice"] or "alba").strip()[:64]
+    if "gen_voxtral_voice" in payload:
+        _settings["gen_voxtral_voice"] = str(payload["gen_voxtral_voice"] or "casual_male").strip()[:64]
     if "voice_denoise" in payload:
         _settings["voice_denoise"] = bool(payload["voice_denoise"])
     if "voice_denoise_strength" in payload:
@@ -915,6 +1434,13 @@ def update_settings(payload: dict):
         _settings["translate_model"] = str(payload["translate_model"] or "").strip()[:120]
     if "free_local_on_remote" in payload:
         _settings["free_local_on_remote"] = bool(payload["free_local_on_remote"])
+    if "idle_unload_minutes" in payload:
+        # 0 = nunca descarrega por ociosidade; máx. 24 h
+        _settings["idle_unload_minutes"] = int(_clamp(payload["idle_unload_minutes"], 0, 1440, 10))
+    if "speech_queue" in payload:
+        _settings["speech_queue"] = bool(payload["speech_queue"])
+    if "speech_queue_gap_s" in payload:
+        _settings["speech_queue_gap_s"] = _clamp(payload["speech_queue_gap_s"], 0.0, 5.0, 0.4)
     _save_settings()
     _autofree_local()                  # se ligado, descarrega já os locais agora redundantes
     return _settings
@@ -1251,6 +1777,204 @@ def delete_voice(voice_id: str):
 _jobs: "OrderedDict[str, dict]" = OrderedDict()
 _JOBS_MAX = 20
 
+# ---------------------------------------------------------------------------
+# Fila de falas (speech_queue): gate serial por ticket.
+# - Vários jobs podem GERAR em paralelo (quando remoto / após liberar gen_lock).
+# - Só um job ENTREGA por vez, na ordem de chegada.
+# - Após entregar, bloqueia a próxima pela duração REAL do WAV (+ folga).
+# - Trechos (pieces) só contam no job depois da entrega — endpoint também barra.
+# ---------------------------------------------------------------------------
+
+def _wav_duration_precise(path: Path) -> float:
+    """Duração em segundos a partir do WAV (precisão de frames; 0 se falhar)."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            rate = w.getframerate() or 0
+            if rate <= 0:
+                return 0.0
+            return w.getnframes() / float(rate)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _pieces_duration(job_id: str) -> float:
+    """Soma a duração dos trechos .wav do job (fallback se o final ainda não existe)."""
+    pdir = _piece_dir(job_id)
+    if not pdir.is_dir():
+        return 0.0
+    total = 0.0
+    for p in sorted(pdir.glob("*.wav")):
+        if not p.stem.isdigit():
+            continue
+        total += _wav_duration_precise(p)
+    return total
+
+
+def _resolve_speech_duration(duration_s=None, job_id: str | None = None,
+                             output_meta: dict | None = None) -> float:
+    """Duração da fala: prefere o maior valor confiável (WAV final / trechos / meta)."""
+    candidates: list[float] = []
+
+    def _add(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return
+        if f > 0:
+            candidates.append(f)
+
+    _add(duration_s)
+    if output_meta:
+        _add(output_meta.get("duration"))
+        oid = output_meta.get("id")
+        if oid:
+            _add(_wav_duration_precise(OUTPUTS_DIR / f"{oid}.wav"))
+    if job_id:
+        _add(_pieces_duration(job_id))
+    return max(candidates) if candidates else 0.0
+
+
+class _SpeechGate:
+    """Gate FIFO de entrega: ticket + espera pela duração da fala anterior."""
+
+    def __init__(self):
+        self._cv = threading.Condition()
+        self._ticket_seq = 0
+        self._next_ticket = 0
+        self._free_at = 0.0
+        self._last_dur = 0.0
+        self._depth = 0
+
+    @property
+    def depth(self) -> int:
+        with self._cv:
+            return int(self._depth)
+
+    @property
+    def free_in(self) -> float:
+        with self._cv:
+            return max(0.0, self._free_at - time.time())
+
+    @property
+    def last_duration(self) -> float:
+        with self._cv:
+            return float(self._last_dur)
+
+    def begin(self, job_id: str):
+        if not _settings.get("speech_queue"):
+            return None
+        with self._cv:
+            ticket = self._ticket_seq
+            self._ticket_seq += 1
+            self._depth += 1
+            free_in = max(0.0, self._free_at - time.time())
+            last = self._last_dur
+            ahead = ticket - self._next_ticket
+        token = {"ticket": ticket, "job_id": job_id, "done": False}
+        job = _jobs.get(job_id)
+        if job is not None:
+            job["queued"] = True
+            job["status"] = "queued"
+            job["queue_ticket"] = ticket
+            if ahead > 0 or free_in > 0.05:
+                job["progress"] = {
+                    "stage": (
+                        f"na fila (#{ahead + 1}"
+                        + (f", ~{free_in:.0f}s" if free_in > 0.05 else "")
+                        + (f", última {last:.1f}s" if last > 0 else "")
+                        + ")…"
+                    ),
+                }
+            else:
+                job["progress"] = {"stage": "na fila de falas…"}
+        return token
+
+    def deliver(self, token, duration_s: float = 0.0,
+                output_meta: dict | None = None) -> None:
+        if not token or token.get("done"):
+            return
+        job_id = token.get("job_id") or ""
+        job = _jobs.get(job_id)
+        try:
+            gap = max(0.0, min(5.0, float(_settings.get("speech_queue_gap_s") or 0.35)))
+        except (TypeError, ValueError):
+            gap = 0.35
+
+        dur = _resolve_speech_duration(duration_s, job_id=job_id, output_meta=output_meta)
+        if dur <= 0 and job is not None:
+            text = (job.get("text") or "") if isinstance(job.get("text"), str) else ""
+            if text:
+                dur = max(0.8, min(120.0, len(text) / 14.0))
+        # margem mínima: evita overlap por latência de rede/player do cliente
+        if dur > 0:
+            dur = max(dur, 0.4)
+
+        with self._cv:
+            # 1) ordem FIFO estrita
+            while token["ticket"] != self._next_ticket:
+                if job is not None:
+                    pos = token["ticket"] - self._next_ticket + 1
+                    job["progress"] = {"stage": f"na fila (posição {max(1, pos)})…"}
+                self._cv.wait(timeout=0.4)
+
+            # 2) espera o fim da fala anterior (duração medida na entrega anterior)
+            while True:
+                wait = self._free_at - time.time()
+                if wait <= 0:
+                    break
+                if job is not None:
+                    job["progress"] = {
+                        "stage": (
+                            f"aguardando fim da fala anterior "
+                            f"(~{wait:.0f}s; durou {self._last_dur:.1f}s)…"
+                        ),
+                    }
+                self._cv.wait(timeout=min(0.4, max(0.05, wait)))
+
+            now = time.time()
+            self._free_at = now + dur + gap
+            self._last_dur = dur
+            self._next_ticket += 1
+            self._depth = max(0, self._depth - 1)
+            token["done"] = True
+            token["duration_s"] = dur
+            if job is not None:
+                job.pop("queued", None)
+                job["speech_duration_s"] = round(dur, 3)
+            self._cv.notify_all()
+
+    def abort(self, token) -> None:
+        """Erro: avança o ticket sem reservar tempo de áudio."""
+        if not token or token.get("done"):
+            return
+        job_id = token.get("job_id") or ""
+        with self._cv:
+            while token["ticket"] != self._next_ticket:
+                self._cv.wait(timeout=0.4)
+            self._next_ticket += 1
+            self._depth = max(0, self._depth - 1)
+            token["done"] = True
+            self._cv.notify_all()
+        job = _jobs.get(job_id)
+        if job is not None:
+            job.pop("queued", None)
+
+
+_speech_gate = _SpeechGate()
+
+
+def _speech_queue_begin(job_id: str):
+    return _speech_gate.begin(job_id)
+
+
+def _speech_queue_deliver(token, duration_s: float = 0.0,
+                          output_meta: dict | None = None) -> None:
+    _speech_gate.deliver(token, duration_s=duration_s, output_meta=output_meta)
+
+
+def _speech_queue_abort(token) -> None:
+    _speech_gate.abort(token)
+
 
 def _piece_dir(job_id: str) -> Path:
     return OUTPUTS_DIR / f".job-{job_id}"
@@ -1297,26 +2021,257 @@ def _materialize_preset(model, sr: int, pid: str):
     (VOICES_DIR / f"{pid}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
 
 
+# Famílias que rodam em PROCESSO FILHO (SIGSEGV do Metal/Qwen não derruba o servidor).
+# OmniVoice e PocketTTS ficam in-process (estáveis + mais rápidos no 2º request).
+_ISOLATED_FAMILIES = frozenset({
+    "qwen3_tts", "qwen3_custom", "qwen3_design",
+    "fish", "chatterbox", "voxcpm2", "voxtral_tts",
+    "kokoro", "moss_nano", "indextts", "generic",
+})
+
+
+def _unload_local_tts():
+    """Libera o modelo MLX do processo principal (antes de spawnar worker)."""
+    global _model
+    with _model_lock:
+        _model = None
+        _conds_cache.clear()
+        _release_mlx_memory(aggressive=True)
+        if _model_state.get("status") != "error":
+            _model_state.update(status="idle", progress=None, model=_settings.get("model"))
+
+
+def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Path,
+                          language: str, omni: dict, be: dict, sq=None):
+    """Síntese em subprocesso: crash nativo (SIGSEGV) só mata o worker."""
+    import subprocess
+    import sys
+
+    job = _jobs[job_id]
+    pdir = _piece_dir(job_id)
+    pdir.mkdir(exist_ok=True)
+    status_path = pdir / "status.json"
+    cfg_path = pdir / "config.json"
+    label = (be.get("meta") or {}).get("label") or be.get("id")
+    family = be["family"]
+    hold_pieces = sq is not None  # fila ligada: não publica trechos até entregar
+
+    # libera RAM do modelo in-process antes do filho carregar o Qwen/etc.
+    _unload_local_tts()
+    _model_state.update(
+        status="loading", device="mlx-worker", model=_settings.get("model"),
+        family=family, progress=f"worker: {label}…",
+        backend_id=be.get("id"), backend_label=label,
+    )
+    job.update(status="running",
+               progress={"stage": f"iniciando worker ({label})…",
+                         "backend": be.get("id"), "family": family})
+
+    cfg = {
+        "job_id": job_id,
+        "text": text,
+        "voice_id": voice_id,
+        "voice_path": str(voice_path) if voice_path else "",
+        "language": language,
+        "omni": omni,
+        "model": _settings.get("model") or "omnivoice",
+        "settings": {
+            "chunk_max_chars": _settings.get("chunk_max_chars", 140),
+            "omni_ref_max_s": _settings.get("omni_ref_max_s", 10.0),
+            "omni_precision": _settings.get("omni_precision", "bf16"),
+            "audio_gain_db": _settings.get("audio_gain_db", 0.0),
+        },
+        "piece_dir": str(pdir),
+        "outputs_dir": str(OUTPUTS_DIR),
+        "voices_dir": str(VOICES_DIR),
+        "base_dir": str(BASE),
+        "status_path": str(status_path),
+    }
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False))
+    py = str(BASE / ".venv-mlx" / "bin" / "python")
+    if not Path(py).exists():
+        py = sys.executable
+    worker = str(BASE / "tts_worker.py")
+
+    log_path = pdir / "worker.log"
+    # serializa workers (um modelo pesado por vez no Metal)
+    with _gen_lock:
+        log_f = open(log_path, "w", encoding="utf-8")  # noqa: SIM115
+        try:
+            proc = subprocess.Popen(
+                [py, worker, str(cfg_path)],
+                cwd=str(BASE),
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,  # grupo próprio: kill limpo se preciso
+            )
+        except Exception as exc:  # noqa: BLE001
+            log_f.close()
+            _speech_queue_abort(sq)
+            job.update(status="error", error=f"falha ao iniciar worker: {exc}", progress=None)
+            _model_state.update(status="idle", progress=None)
+            return
+
+        # poll status do filho enquanto gera (UI recebe pieces progressivos;
+        # com fila de falas só publica trechos na entrega)
+        last_pieces = 0
+
+        def _finish_ok(st: dict) -> None:
+            out = st.get("output") or {}
+            pieces = int(st["pieces"]) if st.get("pieces") is not None else last_pieces
+            if st.get("total") is not None:
+                job["total"] = int(st["total"])
+            if sq is not None:
+                job["progress"] = {"stage": "aguardando vez na fila…"}
+                _speech_queue_deliver(sq, out.get("duration"), output_meta=out)
+            job["pieces"] = pieces
+            job.update(status="done", output=out, progress=None, error=None)
+            _model_state.update(status="ready", progress=None,
+                                device="mlx-worker",
+                                model=_settings.get("model"),
+                                family=family,
+                                backend_id=be.get("id"),
+                                backend_label=label)
+
+        def _finish_err(msg: str) -> None:
+            _speech_queue_abort(sq)
+            job.update(status="error", error=msg, progress=None, pieces=last_pieces)
+            _model_state.update(status="idle", progress=None, error=None)
+
+        try:
+            while True:
+                rc = proc.poll()
+                if status_path.exists():
+                    try:
+                        st = json.loads(status_path.read_text())
+                        if st.get("pieces") is not None:
+                            last_pieces = int(st["pieces"])
+                            if not hold_pieces:
+                                job["pieces"] = last_pieces
+                        if st.get("total") is not None:
+                            job["total"] = int(st["total"])
+                        if st.get("progress") is not None and not hold_pieces:
+                            job["progress"] = st["progress"]
+                            stage = (st["progress"] or {}).get("stage")
+                            if stage:
+                                _model_state["progress"] = stage
+                        elif st.get("progress") is not None and hold_pieces:
+                            # ainda gera: mostra estágio sem liberar trechos
+                            stage = (st["progress"] or {}).get("stage")
+                            if stage:
+                                job["progress"] = {"stage": stage, "backend": be.get("id"),
+                                                   "family": family}
+                                _model_state["progress"] = stage
+                        if st.get("status") == "done" and st.get("output"):
+                            try:
+                                proc.wait(timeout=30)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            _finish_ok(st)
+                            return
+                        if st.get("status") == "error":
+                            try:
+                                proc.wait(timeout=10)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            _finish_err(st.get("error") or "erro no worker")
+                            return
+                    except Exception:  # noqa: BLE001
+                        pass
+                if rc is not None:
+                    break
+                time.sleep(0.35)
+        finally:
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                except Exception:  # noqa: BLE001
+                    try:
+                        proc.kill()
+                    except Exception:  # noqa: BLE001
+                        pass
+            try:
+                log_f.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        # processo saiu sem status done
+        rc = proc.returncode
+        err_tail = ""
+        try:
+            if log_path.exists():
+                err_tail = log_path.read_text(encoding="utf-8", errors="replace")[-500:]
+        except Exception:  # noqa: BLE001
+            pass
+        if status_path.exists():
+            try:
+                st = json.loads(status_path.read_text())
+                if st.get("status") == "done" and st.get("output"):
+                    _finish_ok(st)
+                    return
+                if st.get("status") == "error":
+                    _finish_err(st.get("error") or "erro no worker")
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+        if rc == -11 or rc == 139:  # SIGSEGV
+            msg = ("Worker crashou (SIGSEGV / Metal-MLX) ao gerar com "
+                   f"{label}. O servidor continua no ar — tente qwen3-0.6b, "
+                   "PocketTTS ou OmniVoice, ou reinicie e tente de novo.")
+        elif rc and rc < 0:
+            msg = f"Worker morto por sinal {-rc} ({label}). Servidor OK."
+        else:
+            msg = f"Worker saiu com código {rc} ({label})."
+        if err_tail:
+            msg += " | " + err_tail.replace("\n", " ")[:300]
+        _finish_err(msg)
+
+
 def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
-                 language: str, omni: dict):
+                 language: str, omni: dict, model_override: str | None = None):
     import numpy as np
     import soundfile as sf
 
     job = _jobs[job_id]
+    remote = False
+    sq = _speech_queue_begin(job_id)
+    hold_pieces = sq is not None  # com fila: grava trechos mas só libera na entrega
+    # model_override já deve ter sido aplicado em settings pelo /api/tts
     try:
         remote = _use_remote_tts()
-        model = None if remote else _get_model()
-        sr = 24000 if remote else getattr(model, "sample_rate", 24000)
+        be = _current_backend()
+        family = be["family"]
+        be_meta = be.get("meta") or {}
+
+        # Qwen/Fish/etc.: processo isolado (não trava/derruba o servidor)
+        if not remote and family in _ISOLATED_FAMILIES:
+            _run_tts_job_isolated(job_id, text, voice_id, voice_path, language, omni, be, sq=sq)
+            # worker morreu: garante pool Metal limpo no pai + apaga trechos depois
+            _release_mlx_memory(aggressive=True)
+            st = job.get("status")
+            _schedule_job_cleanup(job_id, delay_s=90 if st == "done" else 30)
+            return
+
         chunks = _split_text(_sanitize_text(text), max_chars=_settings["chunk_max_chars"])
-        silence = np.zeros(int(CHUNK_SILENCE_S * sr), dtype=np.float32)
         job["total"] = len(chunks)
         pdir = _piece_dir(job_id)
         pdir.mkdir(exist_ok=True)
 
         # remoto: sem lock global -> jobs concorrentes (o servidor RTX paraleliza);
-        # local: serializa no _gen_lock (MLX single-stream).
+        # local: serializa load+gen no _gen_lock (evita 2 modelos MLX em paralelo / segfault).
         with (_NO_LOCK if remote else _gen_lock):
             started = time.time()
+            job["status"] = "running"
+            if not remote:
+                job["progress"] = {
+                    "stage": f"carregando {be['meta'].get('label') or be['id']}…",
+                    "backend": be.get("id"), "family": family,
+                }
+                _model_state["progress"] = job["progress"]["stage"]
+            model = None if remote else _get_model()
+            sr = 24000 if remote else int(getattr(model, "sample_rate", 24000) or 24000)
+            silence = np.zeros(int(CHUNK_SILENCE_S * sr), dtype=np.float32)
             # voz de VOICE DESIGN salva: REGENERA do instruct+seed (determinístico) em
             # vez de clonar a amostra -> é EXATAMENTE a voz projetada, sem drift de clone.
             is_design = voice_id == DESIGN_VOICE_ID
@@ -1330,9 +2285,12 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                                 "seed": _vm.get("seed", omni.get("seed"))}
                 except Exception:  # noqa: BLE001
                     pass
-            # voz padrão ainda não materializada: cria a amostra-semente 1x
+            # voz padrão ainda não materializada: cria a amostra-semente 1x (só OmniVoice)
+            conds = None
+            ref_text = None
+            ref_audio = None
+            rvoice = None
             if remote:
-                conds = ref_text = None
                 # voz de design: ignora a "Voz remota" fixa (o timbre vem do instruct+seed).
                 # senão: campo "Voz remota" fixo OU sobe a voz local e usa o nome dela
                 rvoice = None if is_design else ((_settings.get("remote_tts_voice") or "").strip() or None)
@@ -1342,14 +2300,32 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             elif is_design:
                 ref_text = None       # sem ref de clone -> o timbre vem só do instruct
                 conds = None
-            else:
+            elif family == "omnivoice":
                 if voice_id in OMNI_PRESETS and not voice_path.exists():
                     job["progress"] = {"stage": "criando voz padrão…"}
                     _materialize_preset(model, sr, voice_id)
                 ref_text = _voice_ref_text(voice_id)
                 conds = _cond_for(model, voice_id, voice_path)
+            else:
+                # demais backends: passam o .wav da voz (se houver) como ref_audio
+                if voice_path.exists():
+                    ref_audio = str(voice_path)
+                    ref_text = _voice_ref_text(voice_id)
+                elif family in ("kokoro", "qwen3_custom", "pocket_tts", "voxtral_tts"):
+                    # preset interno do modelo — sem amostra
+                    pass
+                elif family in ("qwen3_design",) or be_meta.get("voice_design"):
+                    pass  # instruct basta
+                elif voice_id in OMNI_PRESETS and family == "omnivoice":
+                    pass
+                else:
+                    # backend exige clone mas não há sample: tenta mesmo assim (preset)
+                    pass
             for i, chunk in enumerate(chunks):
-                job["progress"] = {"current": i + 1, "total": len(chunks)}
+                job["progress"] = {
+                    "current": i + 1, "total": len(chunks),
+                    "backend": be.get("id"), "family": family,
+                }
                 # trecho sem pontuação terminal (quebra por vírgula) ganha ponto
                 if chunk[-1] not in ".!?…":
                     chunk = chunk.rstrip(" ,;:") + "."
@@ -1358,43 +2334,66 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                     audio = _tts_remote_chunk(chunk, language, omni, sr, rvoice)
                 else:
                     for tentativa in (1, 2):
-                        audio = _generate_chunk(model, chunk, language, conds, ref_text, omni)
+                        audio = _generate_chunk(
+                            model, chunk, language, conds, ref_text, omni,
+                            ref_audio=ref_audio, family=family, meta=be_meta,
+                        )
                         if not _anomalo(audio, sr, chunk):
                             break
                         job["retries"] = job.get("retries", 0) + 1
+                        # retry: limpa tensores intermediários do generate falho
+                        _release_mlx_memory()
                 audio = _fade_edges(_apply_audio_fx(_normalize(_trim_tail_silence(audio, sr)), sr), sr)
                 if i < len(chunks) - 1:
                     audio = np.concatenate([audio, silence])
                 sf.write(pdir / f"{i}.wav", audio, sr, subtype="PCM_16")
-                job["pieces"] = i + 1  # publica só depois do arquivo no disco
+                del audio
+                if not hold_pieces:
+                    job["pieces"] = i + 1  # publica só depois do arquivo no disco
+                # MLX acumula blocos no pool Metal; sem clear a RAM sobe a cada trecho
+                if not remote:
+                    _release_mlx_memory()
+                    _touch_use("tts")
         elapsed = round(time.time() - started, 1)
 
-        # arquivo final do histórico = exatamente o que foi tocado
-        full = np.concatenate([sf.read(pdir / f"{i}.wav", dtype="float32")[0]
-                               for i in range(len(chunks))])
+        # arquivo final do histórico = exatamente o que foi tocado (stream, sem concat total)
         out_id = uuid.uuid4().hex[:10]
-        sf.write(OUTPUTS_DIR / f"{out_id}.wav", full, sr, subtype="PCM_16")
+        duration = _write_wav_concat(pdir, len(chunks), OUTPUTS_DIR / f"{out_id}.wav", sr)
         meta = {
             "id": out_id,
             "text": text,
             "voice_id": voice_id,
-            "language": _omni_language(language),
+            "language": _omni_language(language) if family == "omnivoice" else language,
+            "backend": be.get("id"),
+            "family": family,
             "num_steps": int(omni.get("num_steps") or OMNI_STEPS_FAST),
             "guidance_scale": omni.get("guidance_scale"),
             "class_temperature": omni.get("class_temperature"),
             "instruct": omni.get("instruct") or "",
             "chunks": len(chunks),
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "duration": round(len(full) / sr, 1),
+            "duration": duration,
             "elapsed": elapsed,
         }
         (OUTPUTS_DIR / f"{out_id}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+        # fila: espera o fim da fala anterior (duração real do último WAV) antes de entregar
+        if sq is not None:
+            job["progress"] = {"stage": "aguardando vez na fila…"}
+            _speech_queue_deliver(sq, duration, output_meta=meta)
+            job["pieces"] = len(chunks)
         job.update(status="done", output=meta)
+        # trechos já gravados no final: limpa após graça p/ o cliente terminar o stream
+        _schedule_job_cleanup(job_id, delay_s=90)
     except Exception as exc:  # noqa: BLE001
+        _speech_queue_abort(sq)
         job.update(status="error", error=str(exc))
+        _schedule_job_cleanup(job_id, delay_s=30)
     finally:
         job["progress"] = None
-        _model_state["progress"] = None
+        if _model_state.get("status") != "error":
+            _model_state["progress"] = None
+        if not remote:
+            _release_mlx_memory(aggressive=True)
 
 
 @app.post("/api/tts")
@@ -1402,22 +2401,65 @@ def synthesize(payload: dict):
     text = (payload.get("text") or "").strip()
     if _settings["pre_prompt"]:
         text = f"{_settings['pre_prompt']} {text}".strip()
-    voice_id = payload.get("voice_id") or _settings["default_voice"]
     language = (payload.get("language") or _settings["language"]).lower()
-    omni = _resolve_omni(payload)
+    # model no body: aplica na hora (e grava em settings p/ UI/API ficarem alinhados)
+    model_override = None
+    if payload.get("model"):
+        m = str(payload["model"]).strip()
+        if m and m != "__custom__":
+            model_override = m
+            if _settings.get("model") != m:
+                _settings["model"] = m
+                try:
+                    _save_settings()
+                except Exception:  # noqa: BLE001
+                    pass
+    be = _current_backend()
+    family = be["family"]
+    be_meta = be.get("meta") or {}
+    omni = _resolve_omni(payload, family=family)
     if not text:
         raise HTTPException(400, "Texto vazio")
     if len(text) > 5000:
         raise HTTPException(400, "Texto longo demais (máx. 5000 caracteres)")
+    # preset internos (sem sample) ou design
+    no_sample_ok = family in (
+        "kokoro", "qwen3_custom", "qwen3_design", "pocket_tts", "voxtral_tts",
+    ) or be_meta.get("voice_design")
+    raw_voice = payload.get("voice_id") or _settings["default_voice"]
+    if raw_voice == DESIGN_VOICE_ID or (isinstance(raw_voice, str)
+            and raw_voice.strip().lower() in (DESIGN_VOICE_ID, "design")):
+        voice_id = DESIGN_VOICE_ID
+    elif raw_voice and (VOICES_DIR / f"{raw_voice}.wav").exists():
+        voice_id = raw_voice
+    elif raw_voice in OMNI_PRESETS:
+        voice_id = raw_voice
+    elif no_sample_ok and not raw_voice:
+        voice_id = DESIGN_VOICE_ID  # backend com voz interna
+    else:
+        # clone backends: resolve por nome/id ou cai na voz mais recente
+        try:
+            voice_id = _resolve_voice(raw_voice)
+        except HTTPException:
+            if no_sample_ok:
+                voice_id = DESIGN_VOICE_ID
+            else:
+                raise
 
     voice_path = VOICES_DIR / f"{voice_id}.wav"
     if voice_id == DESIGN_VOICE_ID:
-        if not (omni.get("instruct") or "").strip():
-            raise HTTPException(400, "Voice design vazio — descreva a voz no campo instruct")
+        if not (omni.get("instruct") or "").strip() and not be_meta.get("voice_design") \
+                and family not in ("qwen3_design", "qwen3_custom", "kokoro", "pocket_tts"):
+            # design sem instruct em OmniVoice: usa instruct das settings se houver
+            if family == "omnivoice" and not (omni.get("instruct") or "").strip():
+                raise HTTPException(400, "Voice design vazio — descreva a voz no campo instruct")
     elif _use_remote_tts():
         pass  # o servidor remoto valida/mapeia a voz
     elif not voice_path.exists() and voice_id not in OMNI_PRESETS:
-        raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
+        if no_sample_ok:
+            pass
+        else:
+            raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
 
     job_id = uuid.uuid4().hex[:10]
     _jobs[job_id] = {"status": "running", "pieces": 0, "total": None,
@@ -1429,10 +2471,10 @@ def synthesize(payload: dict):
 
     threading.Thread(
         target=_run_tts_job,
-        args=(job_id, text, voice_id, voice_path, language, omni),
+        args=(job_id, text, voice_id, voice_path, language, omni, model_override),
         daemon=True,
     ).start()
-    return {"job_id": job_id}
+    return {"job_id": job_id, "backend": be.get("id"), "family": family}
 
 
 @app.get("/api/tts/jobs/{job_id}")
@@ -1445,8 +2487,19 @@ def job_status(job_id: str):
 
 @app.get("/api/tts/jobs/{job_id}/pieces/{index}")
 def job_piece(job_id: str, index: int):
+    """Só devolve trecho se o job já liberou `pieces` (fila de falas respeitada)."""
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job não encontrado")
+    # com fila: pieces fica 0 até a entrega — impede stream/cliente de tocar cedo
+    try:
+        liberados = int(job.get("pieces") or 0)
+    except (TypeError, ValueError):
+        liberados = 0
+    if index < 0 or index >= liberados:
+        raise HTTPException(404, "Trecho ainda não liberado")
     path = _piece_dir(job_id) / f"{index}.wav"
-    if job_id not in _jobs or not path.exists():
+    if not path.exists():
         raise HTTPException(404, "Trecho não encontrado")
     return FileResponse(path, media_type="audio/wav")
 
@@ -1463,7 +2516,7 @@ def output_audio(out_id: str):
     path = OUTPUTS_DIR / f"{out_id}.wav"
     if not path.exists():
         raise HTTPException(404, "Áudio não encontrado")
-    return FileResponse(path, media_type="audio/wav", filename=f"tts-rod-{out_id}.wav")
+    return FileResponse(path, media_type="audio/wav", filename=f"tts-studio-{out_id}.wav")
 
 
 @app.delete("/api/outputs")
@@ -1499,6 +2552,7 @@ def _auto_cleanup_loop():
 
 
 threading.Thread(target=_auto_cleanup_loop, daemon=True).start()
+# idle unload sobe depois que _ser/_mt existem (ver fim do bloco de modelos)
 
 
 @app.delete("/api/outputs/{out_id}")
@@ -1528,17 +2582,19 @@ def _mt_repo() -> str:
     return (_settings.get("translate_model") or "").strip() or TRANSLATE_REPO
 
 
-def _unload_local_models(tts=True, stt=True, mt=True) -> dict:
-    """Libera RAM descarregando os modelos LOCAIS (MLX). Cada flag controla um motor."""
+def _unload_local_models(tts=True, stt=True, mt=True, ser=True) -> dict:
+    """Libera RAM descarregando os modelos LOCAIS (MLX/torch). Cada flag controla um motor."""
     global _model
     freed = []
     if tts:
         with _gen_lock:
-            if _model is not None:
-                _model = None
-                freed.append("omnivoice")
-            _conds_cache.clear()
-            _model_state.update(status="idle", error=None, progress=None)
+            with _model_lock:
+                if _model is not None:
+                    _model = None
+                    freed.append("tts")
+                _conds_cache.clear()
+                if _model_state.get("status") != "error":
+                    _model_state.update(status="idle", error=None, progress=None)
     if mt:
         with _mt_lock:
             if _mt.get("model") is not None:
@@ -1554,23 +2610,79 @@ def _unload_local_models(tts=True, stt=True, mt=True) -> dict:
                 freed.append("whisper")
         except Exception:  # noqa: BLE001
             pass
-    import gc
-    gc.collect()
-    try:                                     # devolve o pool de memória do MLX ao SO
-        import mlx.core as mx
-        clr = getattr(mx, "clear_cache", None) or getattr(getattr(mx, "metal", None), "clear_cache", None)
-        if clr:
-            clr()
+    if ser:
+        with _ser_lock:
+            if _ser.get("clf") is not None:
+                _ser["clf"] = None
+                freed.append("ser")
+    _release_mlx_memory(aggressive=True)
+    # pipeline SER / transformers às vezes puxa torch — tenta soltar cache MPS/CPU
+    try:
+        import torch
+        if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+            torch.mps.empty_cache()
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001
         pass
     return {"unloaded": freed}
+
+
+def _schedule_job_cleanup(job_id: str, delay_s: float = 90):
+    """Remove .job-* (trechos WAV) depois da graça — cliente já tem o áudio final."""
+    def _clean():
+        time.sleep(max(5.0, delay_s))
+        shutil.rmtree(_piece_dir(job_id), ignore_errors=True)
+    threading.Thread(target=_clean, daemon=True).start()
+
+
+def _idle_unload_loop():
+    """Descarrega motores ociosos após idle_unload_minutes (0 = desligado)."""
+    while True:
+        time.sleep(30)
+        try:
+            mins = float(_settings.get("idle_unload_minutes") or 0)
+            if mins <= 0:
+                continue
+            limit = mins * 60.0
+            now = time.time()
+            # não descarrega TTS no meio de um job
+            busy_tts = any(
+                j.get("status") == "running" for j in _jobs.values()
+            ) if _jobs else False
+            tts_idle = (not busy_tts) and _last_use["tts"] > 0 and (now - _last_use["tts"]) >= limit
+            stt_idle = _last_use["stt"] > 0 and (now - _last_use["stt"]) >= limit
+            mt_idle = _last_use["mt"] > 0 and (now - _last_use["mt"]) >= limit
+            ser_idle = _last_use["ser"] > 0 and (now - _last_use["ser"]) >= limit
+            if not (tts_idle or stt_idle or mt_idle or ser_idle):
+                continue
+            # só descarrega o que realmente está carregado e ocioso
+            need_tts = tts_idle and _model is not None
+            need_stt = stt_idle
+            need_mt = mt_idle and _mt.get("model") is not None
+            need_ser = ser_idle and _ser.get("clf") is not None
+            # whisper: ModelHolder pode ter modelo sem _last_use se nunca tocou — ok
+            if need_tts or need_stt or need_mt or need_ser:
+                r = _unload_local_models(
+                    tts=need_tts, stt=need_stt, mt=need_mt, ser=need_ser,
+                )
+                if r.get("unloaded"):
+                    for k, flag in (("tts", need_tts), ("stt", need_stt),
+                                    ("mt", need_mt), ("ser", need_ser)):
+                        if flag:
+                            _last_use[k] = 0.0
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _autofree_local():
     """Se a opção estiver ligada, descarrega os locais cujo remoto está ativo."""
     if not _settings.get("free_local_on_remote"):
         return
-    _unload_local_models(tts=_use_remote_tts(), stt=_use_remote_stt(), mt=_use_remote_translate())
+    _unload_local_models(
+        tts=_use_remote_tts(), stt=_use_remote_stt(),
+        mt=_use_remote_translate(), ser=False,
+    )
 
 
 # alucinações comuns do Whisper em silêncio/ruído (pt + en). Comparadas após
@@ -1832,6 +2944,9 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
             logprob_threshold=_settings["stt_min_logprob"],
             compression_ratio_threshold=_settings["stt_max_compression"],
         )
+    del audio
+    _touch_use("stt")
+    _release_mlx_memory()
     return r
 
 
@@ -1892,6 +3007,8 @@ def _translate(text: str, target: str, emotion: str | None = None) -> str:
         msgs = [{"role": "user", "content": _translate_prompt(text, target, emotion)}]
         prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
         out = generate(model, tok, prompt=prompt, max_tokens=512, verbose=False)
+    _touch_use("mt")
+    _release_mlx_memory()
     return _clean_translation(out)
 
 
@@ -1957,6 +3074,8 @@ def _emotion_accurate(path: Path):
             from transformers import pipeline
             _ser["clf"] = pipeline("audio-classification", model=SER_REPO)
         res = _ser["clf"]({"raw": audio, "sampling_rate": 16000}, top_k=None)
+    del audio
+    _touch_use("ser")
     if not res:
         return ("neutro", "", 1.0)
     top = max(res, key=lambda x: x.get("score", 0.0))
@@ -1997,6 +3116,8 @@ def translate_warmup():
                 with _stt_lock:
                     mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32),
                                            path_or_hf_repo=WHISPER_REPO, language="pt")
+                _touch_use("stt")
+                _release_mlx_memory()
             except Exception:  # noqa: BLE001
                 pass
         if not skip_mt:
@@ -2007,6 +3128,7 @@ def translate_warmup():
                     if _mt["model"] is None or _mt.get("repo") != repo:
                         _mt["model"], _mt["tok"] = load(repo)
                         _mt["repo"] = repo
+                _touch_use("mt")
             except Exception:  # noqa: BLE001
                 pass
     threading.Thread(target=_warm, daemon=True).start()
@@ -2363,7 +3485,7 @@ def _encode_audio(wav_path: Path, fmt: str, speed: float) -> tuple[bytes, str]:
 def openai_models():
     agora = int(time.time())
     return {"object": "list", "data": [
-        {"id": m, "object": "model", "created": agora, "owned_by": "tts-rod"}
+        {"id": m, "object": "model", "created": agora, "owned_by": "tts-studio"}
         for m in ("tts-1", "tts-1-hd", "whisper-1")
     ]}
 
@@ -2479,6 +3601,9 @@ def openai_speech(payload: dict):
     data, mime = _encode_audio(wav_path, fmt, 1.0)
     return Response(content=data, media_type=mime)
 
+
+# descarrega TTS/STT/tradutor/SER ociosos (idle_unload_minutes; 0 = off)
+threading.Thread(target=_idle_unload_loop, daemon=True).start()
 
 # UI estática (registrada por último para não engolir /api/* e /v1/*)
 app.mount("/", StaticFiles(directory=BASE / "static", html=True), name="static")

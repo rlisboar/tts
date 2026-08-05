@@ -1,4 +1,4 @@
-# TTS-Rod · Roteador de microfone
+# TTS-STUDIO · Roteador de microfone
 
 Janela com um botão que alimenta um **microfone virtual** (BlackHole). Os apps de
 chamada (Zoom, Meet, Discord, OBS…) selecionam esse mic virtual como entrada e
@@ -6,7 +6,7 @@ você troca a fonte só clicando no botão — sem mexer nas configs da chamada:
 
 - **Voz real** (padrão): o microfone real passa direto pro mic virtual.
 - **Voz do app**: o cliente cala a boca e quem alimenta o mic virtual é o
-  navegador do TTS-Rod (voz traduzida), com a saída de áudio dele apontada pro
+  navegador do TTS-STUDIO (voz traduzida), com a saída de áudio dele apontada pro
   `BlackHole 2ch`.
 
 Ao trocar de modo, o cliente avisa o servidor; o navegador (em polling) **silencia
@@ -28,9 +28,9 @@ brew install blackhole-2ch
 Depois reinicie os apps de áudio (ou faça logout/login). Vai aparecer um
 dispositivo **"BlackHole 2ch"** como entrada **e** saída.
 
-## 2. Apontar o TTS-Rod pro mic virtual
+## 2. Apontar o TTS-STUDIO pro mic virtual
 
-No navegador do TTS-Rod, em **Configurações → Saída de som**, escolha
+No navegador do TTS-STUDIO, em **Configurações → Saída de som**, escolha
 **BlackHole 2ch**. A voz traduzida do tradutor/modificador passa a tocar no mic
 virtual. **Recarregue a aba** depois de baixar/atualizar (o JS do gate é novo).
 

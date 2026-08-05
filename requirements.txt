@@ -13,3 +13,7 @@ uvicorn
 python-multipart
 yt-dlp
 imageio-ffmpeg
+# backends opcionais (Kokoro / fonemas)
+misaki[en]
+espeakng-loader
+phonemizer-fork

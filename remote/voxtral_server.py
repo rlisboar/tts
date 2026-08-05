@@ -2,7 +2,7 @@
 """Voxtral STT — servidor compatível com a API OpenAI (/v1/audio/transcriptions).
 
 Mistral Voxtral-Small-24B (4-bit bnb) como STT de QUALIDADE em pt-BR, substituindo
-o Whisper no pipeline do TTS-Rod. Roda na RTX 4090 (CUDA_VISIBLE_DEVICES=1 +
+o Whisper no pipeline do TTS-STUDIO. Roda na RTX 4090 (CUDA_VISIBLE_DEVICES=1 +
 CUDA_DEVICE_ORDER=PCI_BUS_ID). O app aponta `remote_stt_base_url` p/ este servidor.
 
 ANTI-ALUCINAÇÃO: Voxtral (LLM-ASR) DELIRA em ruído. Como ele não dá os sinais do

@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Roteador de microfone do TTS-Rod. Dois cliques no Finder abrem a janela.
+# Roteador de microfone do TTS-STUDIO. Dois cliques no Finder abrem a janela.
 # (1ª vez: clique direito > Abrir, para autorizar no Gatekeeper)
 # Cria um venv local, instala sounddevice/numpy e roda a janela.
 cd "$(dirname "$0")"
@@ -20,7 +20,7 @@ sys.exit(0 if ok else 1)
 PY
 then
   echo "BlackHole não encontrado. Instale com:  brew install blackhole-2ch"
-  osascript -e 'display notification "Instale o BlackHole: brew install blackhole-2ch" with title "TTS-Rod · mic"' 2>/dev/null
+  osascript -e 'display notification "Instale o BlackHole: brew install blackhole-2ch" with title "TTS-STUDIO · mic"' 2>/dev/null
 fi
 
 exec "$VENV/bin/python" mic_router.py

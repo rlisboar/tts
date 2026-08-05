@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""TTS-Rod — Roteador de microfone (janela + botão).
+"""TTS-STUDIO — Roteador de microfone (janela + botão).
 
 Alimenta um MICROFONE VIRTUAL (BlackHole) que os apps de chamada (Zoom/Meet/
 Discord) selecionam como entrada. O botão alterna a FONTE desse mic virtual:
 
   • DESLIGADO (padrão) -> microfone REAL passa direto pro BlackHole (sua voz).
   • LIGADO            -> o cliente fica em silêncio; quem alimenta o BlackHole é
-                         o navegador do TTS-Rod (voz traduzida), com a saída de
+                         o navegador do TTS-STUDIO (voz traduzida), com a saída de
                          áudio dele apontada pro "BlackHole 2ch".
 
 Assim você deixa "BlackHole 2ch" fixo como microfone na chamada e troca entre
@@ -77,7 +77,7 @@ CFG_PATH = Path(__file__).resolve().parent / "config.json"
 
 
 def _load_config():
-    """Endereço + chave do server TTS-Rod. Prioridade: env > config.json > default.
+    """Endereço + chave do server TTS-STUDIO. Prioridade: env > config.json > default.
     O config.json vem do download (com o IP do server + a chave) e é editável."""
     url = os.environ.get("TTS_ROD_URL", "")
     key = os.environ.get("TTS_ROD_API_KEY", "")
@@ -208,7 +208,7 @@ class Router:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("TTS-Rod · Roteador de microfone")
+        self.title("TTS-STUDIO · Roteador de microfone")
         self.configure(bg="#0f1115")
         self.resizable(False, False)
         self.router = Router()
@@ -321,7 +321,7 @@ class App(tk.Tk):
         else:
             self.btn.config(text="🗣  Voz do app  (clique p/ voz real)",
                             bg="#3358cc", activebackground="#2b49a8", fg="#fff")
-            self.status.config(text="Chamada ouve o TTS-Rod (saída do navegador = BlackHole).")
+            self.status.config(text="Chamada ouve o TTS-STUDIO (saída do navegador = BlackHole).")
 
     def _tick(self):
         # medidor: barra proporcional ao nível, só quando passando a voz real

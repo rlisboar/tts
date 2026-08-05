@@ -1,4 +1,4 @@
-# TTS-Rod
+# TTS-STUDIO
 
 Clonagem de voz 100% local para Mac (Apple Silicon). Grava sua voz pelo navegador,
 gerencia perfis de voz e gera fala natural com o **OmniVoice (Xiaomi/k2-fsa)

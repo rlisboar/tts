@@ -10,7 +10,7 @@
 # (bitsandbytes nf4) como tradutor — carregado em thread separada na 4070.
 # API OpenAI-compatível: POST /v1/audio/speech, /v1/audio/transcriptions, /v1/audio/translations,
 # /v1/chat/completions (tradução); além de POST /tts simples e /voices (CRUD de clones).
-# O app TTS-Rod (Mac, MLX) conecta como cliente em Configurações → Modelos remotos.
+# O app TTS-STUDIO (Mac, MLX) conecta como cliente em Configurações → Modelos remotos.
 #
 # mt_chat força greedy + injeta um system prompt que trava o idioma de saída (sem vazar
 # para outro idioma/escrita, ex.: chinês) — corrige instabilidade do 4-bit.
