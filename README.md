@@ -163,3 +163,20 @@ curl -s http://127.0.0.1:7860/v1/audio/speech \
 
 O pipeline MLX **não embute marca-d'água** nos áudios gerados. Use apenas com a
 sua própria voz ou com consentimento explícito da pessoa clonada.
+
+## Desenvolvimento
+
+```bash
+# testes (funções puras + API via TestClient, sem carregar MLX)
+./.venv-mlx/bin/python -m pytest tests/ -q
+
+# análise estática — nomes indefinidos em funções só explodem em runtime
+./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py \
+    tests/*.py client/mic_router.py
+```
+
+Pre-commit opcional (pyflakes + pytest antes de cada commit):
+
+```bash
+git config core.hooksPath .githooks
+```

@@ -1,0 +1,10 @@
+#!/bin/zsh
+# Pre-commit do TTS-STUDIO: análise estática + testes antes de cada commit.
+# Ativar (uma vez):  git config core.hooksPath .githooks
+cd "$(git rev-parse --show-toplevel)" || exit 1
+PY=.venv-mlx/bin/python
+[ -x "$PY" ] || PY=python3
+
+"$PY" -m pyflakes app.py common.py tts_worker.py backends.py \
+    tests/*.py client/mic_router.py || exit 1
+"$PY" -m pytest tests/ -q || exit 1

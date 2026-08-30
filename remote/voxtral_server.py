@@ -24,7 +24,6 @@ import zlib
 
 import librosa
 import numpy as np
-import soundfile as sf
 import torch
 import torch.nn.functional as F
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile

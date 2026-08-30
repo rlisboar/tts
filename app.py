@@ -1399,12 +1399,18 @@ def export_voices():
     )
 
 
+# teto do TOTAL descomprimido no import (zip bomba: o limite por entrada não
+# protege contra muitas entradas grandes)
+_IMPORT_MAX_TOTAL = 512 * 1024 * 1024
+
+
 @app.post("/api/voices/import")
 async def import_voices(zip_file: UploadFile = File(...)):
     """Restaura um backup gerado por /api/voices/export (zip com .wav + .json).
 
     Sobrescreve vozes com o mesmo id (é um restore). Só extrai .wav/.json com
-    nome seguro (achata subpastas); o resto do zip é ignorado.
+    nome seguro (achata subpastas); o resto do zip é ignorado. Arquivos órfãos
+    (wav sem json ou vice-versa) entram, mas são avisados no response.
     """
     import io
     import re as _re
@@ -1415,9 +1421,16 @@ async def import_voices(zip_file: UploadFile = File(...)):
     except zipfile.BadZipFile:
         raise HTTPException(400, "Arquivo não é um zip válido")
     importados, ignorados = [], []
+    total = 0
     with zf:
         for info in zf.infolist():
-            if info.is_dir() or info.file_size > 100 * 1024 * 1024:
+            if info.is_dir():
+                continue
+            total += info.file_size
+            if total > _IMPORT_MAX_TOTAL:
+                raise HTTPException(400, "Zip grande demais (total descomprimido > 512 MB)")
+            if info.file_size > 100 * 1024 * 1024:
+                ignorados.append(info.filename)
                 continue
             nome = Path(info.filename).name
             if not _re.fullmatch(r"[A-Za-z0-9_-]+\.(wav|json)", nome):
@@ -1427,11 +1440,15 @@ async def import_voices(zip_file: UploadFile = File(...)):
             importados.append(nome)
     if not importados:
         raise HTTPException(400, "Nenhuma voz (.wav/.json) encontrada no zip")
+    # órfãos: .wav sem .json (voz some da lista) ou .json sem .wav (clonagem quebra)
+    wav_stems = {Path(n).stem for n in importados if n.endswith(".wav")}
+    json_stems = {Path(n).stem for n in importados if n.endswith(".json")}
+    orfaos = sorted((wav_stems - json_stems) | (json_stems - wav_stems))
     # restore pode ter sobrescrito amostras em uso -> invalida o cache de refs
     _conds_cache.clear()
     return {"ok": True, "importados": len(importados),
-            "vozes": len({n[:-4] for n in importados}),
-            "ignorados": ignorados[:10]}
+            "vozes": len(wav_stems & json_stems),
+            "orfaos": orfaos[:10], "ignorados": ignorados[:10]}
 
 
 def _eq_custom(audio, sr, low_db, mid_db, high_db):

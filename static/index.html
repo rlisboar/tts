@@ -3350,6 +3350,7 @@ $("voicesImportFile").onchange = async (e) => {
   try {
     const r = await api("/api/voices/import", { method: "POST", body: fd });
     toast(`✔ ${r.vozes} voz(es) importada(s) (${r.importados} arquivos)`
+          + (r.orfaos?.length ? ` · ⚠ ${r.orfaos.length} órfão(s) sem par wav/json` : "")
           + (r.ignorados?.length ? ` · ${r.ignorados.length} ignorado(s)` : ""));
     refreshVoices();
   } catch (err) {
@@ -3363,6 +3364,11 @@ async function refreshVoices() {
   const voices = await api("/api/voices");
   const list = $("voiceList"), sel = $("voiceSelect"), sel2 = $("tvVoice");
   const selected = sel.value, selected2 = sel2.value;
+  // preserve o playback: refresh recria os <audio> e cortaria o que toca
+  const tocando = [...list.querySelectorAll("audio")].find(a => !a.paused && !a.ended);
+  const tocandoInfo = tocando
+    ? { vid: new URL(tocando.src).pathname.split("/")[3], t: tocando.currentTime }
+    : null;
   sel.innerHTML = ""; sel2.innerHTML = "";
   // voz "virtual": gera a partir da descrição (campo Voice design), sem clone
   // (a opção Voice design entra no FIM — assim o default cai numa voz real)
@@ -3468,6 +3474,14 @@ async function refreshVoices() {
   if (sel.selectedIndex < 0) sel.selectedIndex = 0;
   if (selected2) sel2.value = selected2;
   if (sel2.selectedIndex < 0) sel2.selectedIndex = 0;
+  // retoma o playback que o refresh teria cortado (UI sincroniza via eventos)
+  if (tocandoInfo) {
+    const a = list.querySelector(`audio[src*="/api/voices/${tocandoInfo.vid}/"]`);
+    if (a) {
+      a.currentTime = tocandoInfo.t;
+      a.play().catch(() => {});
+    }
+  }
   updateTransVdHint();
 }
 
