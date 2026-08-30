@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from backends import generate_with_backend, list_backends, resolve_backend
 from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,
                     resolve_omni_source, write_json_atomic,
+                    atempo_chain as _atempo_chain,
                     fade_edges as _fade_edges,
                     normalize as _normalize,
                     release_mlx_memory as _release_mlx_memory,
@@ -584,7 +585,7 @@ def _cond_for(model, voice_id: str, voice_path: Path):
 
 def _generate_chunk(model, text: str, language: str, conds, ref_text, omni: dict,
                     ref_audio: str | None = None, family: str | None = None,
-                    meta: dict | None = None):
+                    meta: dict | None = None, sr: int | None = None):
     """Gera um trecho com o adapter da família do backend ativo."""
     o = omni or {}
     be_family = family or _current_backend()["family"]
@@ -601,10 +602,11 @@ def _generate_chunk(model, text: str, language: str, conds, ref_text, omni: dict
         meta=be_meta,
     )
     # velocidade: time-stretch só se o backend NÃO aplicou speed nativo
-    # (senão fish/chatterbox/qwen ficavam com velocidade²)
+    # (senão fish/chatterbox/qwen ficavam com velocidade²). Com sr, usa o
+    # atempo do ffmpeg (qualidade >> phase vocoder em fala).
     speed = float(o.get("speed") or 1.0)
     if abs(speed - 1.0) > 1e-3 and be_family not in NATIVE_SPEED_FAMILIES:
-        audio = _time_stretch(audio, speed)
+        audio = _time_stretch(audio, speed, sr)
     return audio
 
 
@@ -1290,7 +1292,8 @@ def save_design_voice(payload: dict):
             else:
                 model = _get_model()
                 sr = getattr(model, "sample_rate", 24000)
-                audio = _generate_chunk(model, OMNI_PRESET_SEED, _settings["language"], None, None, omni)
+                audio = _generate_chunk(model, OMNI_PRESET_SEED, _settings["language"],
+                                        None, None, omni, sr=sr)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"Falha ao gerar a amostra do design: {repr(e)[:200]}")
 
@@ -2234,7 +2237,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                                     o_try["temperature"] = 0.7
                         audio = _generate_chunk(
                             model, chunk, language, conds, ref_text, o_try,
-                            ref_audio=ref_audio, family=family, meta=be_meta,
+                            ref_audio=ref_audio, family=family, meta=be_meta, sr=sr,
                         )
                         if not _anomalo(audio, sr, chunk):
                             break
@@ -2767,7 +2770,7 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
     # velocidade: time-stretch (preserva tom, não pula palavras), igual ao local
     speed = float(omni.get("speed") or 1.0)
     if abs(speed - 1.0) > 1e-3:
-        data = _time_stretch(data, speed)
+        data = _time_stretch(data, speed, sr)
     return data
 
 
@@ -3421,18 +3424,6 @@ def _resolve_voice(voice) -> str:
     if padrao and any(v["id"] == padrao for v in voices):
         return padrao
     return voices[0]["id"]  # mais recente
-
-
-def _atempo_chain(speed: float) -> str:
-    fatores = []
-    while speed > 2.0:
-        fatores.append(2.0)
-        speed /= 2.0
-    while speed < 0.5:
-        fatores.append(0.5)
-        speed /= 0.5
-    fatores.append(speed)
-    return ",".join(f"atempo={f:g}" for f in fatores)
 
 
 def _encode_audio(wav_path: Path, fmt: str, speed: float) -> tuple[bytes, str]:

@@ -159,6 +159,19 @@ def test_time_stretch_equivalente_ao_referencia_em_laco():
     assert float(np.abs(got - ref).max()) < 1e-4
 
 
+def test_time_stretch_ffmpeg_atempo():
+    """Caminho primário (sr dado): ffmpeg atempo — duração escala e o tom fica."""
+    pytest.importorskip("imageio_ffmpeg")
+    sr, freq = 24000, 300.0
+    t = np.arange(sr, dtype=np.float32) / sr
+    x = (0.6 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+    y = time_stretch(x, 1.5, sr)
+    assert abs(len(y) - len(x) / 1.5) <= sr * 0.05     # duração ≈ 1/1.5 (±50 ms)
+    spec = np.abs(np.fft.rfft(y * np.hanning(len(y))))
+    pico = float(np.fft.rfftfreq(len(y), 1 / sr)[int(np.argmax(spec))])
+    assert pico == pytest.approx(freq, abs=15)
+
+
 def test_time_stretch_edge_flutuante_nao_estoura():
     """Regressão: arange com passo 1.4 gerava último índice fora dos bounds
     (IndexError) na versão em laço — o clamp precisa cobrir este caso."""

@@ -159,7 +159,7 @@ def main() -> int:
             )
             speed = float(omni.get("speed") or 1.0)
             if abs(speed - 1.0) > 1e-3 and family not in NATIVE_SPEED_FAMILIES:
-                audio = time_stretch(audio, speed)
+                audio = time_stretch(audio, speed, sr)
             audio = fade_edges(normalize(trim_tail_silence(audio, sr)), sr)
             if i < len(chunks) - 1:
                 audio = np.concatenate([audio, silence])

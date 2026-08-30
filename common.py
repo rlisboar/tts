@@ -165,21 +165,63 @@ def fade_edges(audio, sr: int, ms: float = 8.0):
     return a
 
 
-def time_stretch(audio, speed: float, n_fft: int = 1024, hop: int = 256):
-    """Muda a velocidade SEM mexer no tom (phase vocoder). speed>1 = mais rápido
-    (mais curto); <1 = mais lento. Preserva TODAS as palavras — ao contrário de
-    forçar duration_s, que corta slots de token e pula palavras.
+def atempo_chain(speed: float) -> str:
+    """Cadeia de filtros atempo do ffmpeg (cada instância aceita 0.5–2.0)."""
+    fatores = []
+    speed = float(speed)
+    while speed > 2.0:
+        fatores.append(2.0)
+        speed /= 2.0
+    while speed < 0.5:
+        fatores.append(0.5)
+        speed /= 0.5
+    fatores.append(speed)
+    return ",".join(f"atempo={f:g}" for f in fatores)
 
-    Vetorizado (equivalente à versão em laço que havia aqui, validada por
-    teste): STFT por janelas deslizantes, fase acumulada com cumsum e
-    overlap-add por classes de offset — áudio longo não fica mais lento.
+
+def _ffmpeg_stretch(x, speed: float, sr: int):
+    """Time-stretch via ffmpeg atempo (WSOLA) — muito melhor que phase vocoder
+    em fala:     preserva transientes, sem smearing de fase (som metálico/robótico)."""
+    import subprocess
+
+    import imageio_ffmpeg
+    import numpy as np
+
+    ff = imageio_ffmpeg.get_ffmpeg_exe()
+    cmd = [ff, "-hide_banner", "-loglevel", "error",
+           "-f", "f32le", "-ar", str(int(sr)), "-ac", "1", "-i", "pipe:0",
+           "-filter:a", atempo_chain(speed),
+           "-f", "f32le", "-ar", str(int(sr)), "-ac", "1", "pipe:1"]
+    p = subprocess.run(cmd, input=np.asarray(x, dtype=np.float32).tobytes(),
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    if p.returncode != 0 or not p.stdout:
+        raise RuntimeError(f"ffmpeg atempo falhou: {p.stderr.decode(errors='replace')[:120]}")
+    y = np.frombuffer(p.stdout, dtype=np.float32).copy()
+    return y if y.size else x
+
+
+def time_stretch(audio, speed: float, sr: int | None = None, n_fft: int = 1024, hop: int = 256):
+    """Muda a velocidade SEM mexer no tom. speed>1 = mais rápido (mais curto);
+    <1 = mais lento. Preserva TODAS as palavras — ao contrário de forçar
+    duration_s, que corta slots de token e pula palavras.
+
+    Com `sr`, usa o atempo do ffmpeg (WSOLA — qualidade bem melhor em fala;
+    o OmniVoice não tem speed nativa e dependia disto). Sem `sr`/sem ffmpeg,
+    cai no phase vocoder vetorial (fallback).
+
+    Vetorizado (equivalente à versão em laço anterior, validada por teste).
     """
     import numpy as np
     from numpy.lib.stride_tricks import sliding_window_view
 
     x = np.asarray(audio, dtype=np.float32)
-    if abs(speed - 1.0) < 1e-3 or x.size < n_fft * 2:
+    if abs(speed - 1.0) < 1e-3 or x.size == 0:
         return x
+    if sr:
+        try:
+            return _ffmpeg_stretch(x, speed, sr)
+        except Exception:  # noqa: BLE001 — degrada p/ PV em vez de falhar o job
+            pass
     win = np.hanning(n_fft).astype(np.float32)
 
     # STFT (bins, frames) — mesma contagem de frames da versão em laço
