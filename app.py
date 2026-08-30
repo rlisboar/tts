@@ -3184,6 +3184,14 @@ def _parse_time(v) -> "float | None":
         return None
 
 
+def _yt_retryable(exc: BaseException) -> bool:
+    """403/SABR: o client InnerTube escolhido devolveu URL que o CDN recusa.
+    Outros erros (vídeo privado, indisponível) não valem retry."""
+    msg = str(exc).lower()
+    return any(s in msg for s in ("403", "forbidden", "unable to download video data",
+                                  "sign in to confirm"))
+
+
 def _youtube_audio(url: str, start_s: float, end_s: float) -> bytes:
     """Baixa o áudio do YouTube (yt-dlp) e recorta [start,end] em WAV 24k mono com
     o ffmpeg estático (imageio-ffmpeg) — não depende de ffmpeg do sistema."""
@@ -3197,15 +3205,47 @@ def _youtube_audio(url: str, start_s: float, end_s: float) -> bytes:
     ff = imageio_ffmpeg.get_ffmpeg_exe()
     d = tempfile.mkdtemp(prefix="yt-")
     try:
-        opts = {"format": "bestaudio/best", "outtmpl": os.path.join(d, "src.%(ext)s"),
-                "quiet": True, "no_warnings": True, "noplaylist": True,
-                "socket_timeout": 30,            # não trava em conexão lenta/parada
-                "max_filesize": 300 * 1024 * 1024}  # guarda contra vídeo gigante
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(url, download=True)
-        srcs = glob.glob(os.path.join(d, "src.*"))
-        if not srcs:
-            raise RuntimeError("nada baixado (vídeo indisponível ou maior que o limite)")
+        outtmpl = os.path.join(d, "src.%(ext)s")
+        # YouTube SABR (2026-08): android_vr/web_safari devolvem URL sem stream
+        # direto e o CDN responde 403. yt-dlp >= 2026.08.19 troca o default
+        # (visionos); se ainda 403, cai para android/mweb/ios.
+        # ejs:github resolve os desafios JS (n/sig) — sem isso faltam formatos.
+        client_attempts = (None, ["android"], ["mweb"], ["ios"])
+        last_err = None
+        srcs = []
+        for clients in client_attempts:
+            for leftover in glob.glob(os.path.join(d, "src.*")):
+                try:
+                    os.remove(leftover)
+                except OSError:
+                    pass
+            opts = {
+                "format": "bestaudio/best",
+                "outtmpl": outtmpl,
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                "socket_timeout": 30,
+                "max_filesize": 300 * 1024 * 1024,
+                "retries": 3,
+                "remote_components": ["ejs:github"],
+            }
+            if clients:
+                opts["extractor_args"] = {"youtube": {"player_client": clients}}
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.extract_info(url, download=True)
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                if not _yt_retryable(exc):
+                    raise
+                continue
+            srcs = glob.glob(os.path.join(d, "src.*"))
+            if srcs:
+                break
+            last_err = RuntimeError("nada baixado (vídeo indisponível ou maior que o limite)")
+        else:
+            raise last_err or RuntimeError("nada baixado (vídeo indisponível ou maior que o limite)")
         out = os.path.join(d, "out.wav")
         cmd = [ff, "-y", "-hide_banner", "-loglevel", "error",
                "-ss", f"{start_s}", "-t", f"{end_s - start_s}", "-i", srcs[0],
@@ -3244,7 +3284,14 @@ def youtube_audio(payload: dict):
     try:
         data = _youtube_audio(url, start, end)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(400, f"Falha ao extrair do YouTube: {str(exc)[:200]}")
+        msg = str(exc).strip()[:240]
+        if _yt_retryable(exc):
+            raise HTTPException(
+                400,
+                "YouTube recusou o download (403). Atualize o yt-dlp "
+                "(pip install -U 'yt-dlp>=2026.08.19') e tente de novo.",
+            ) from exc
+        raise HTTPException(400, f"Falha ao extrair do YouTube: {msg}") from exc
     return Response(content=data, media_type="audio/wav")
 
 

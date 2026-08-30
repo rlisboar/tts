@@ -11,7 +11,8 @@ soundfile
 fastapi
 uvicorn
 python-multipart
-yt-dlp
+# < 2026.08.19: YouTube SABR devolve 403 no download (android_vr default).
+yt-dlp>=2026.08.19
 imageio-ffmpeg
 # backends opcionais (Kokoro / fonemas)
 misaki[en]

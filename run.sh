@@ -10,6 +10,13 @@ if [ ! -d .venv-mlx ]; then
   ./.venv-mlx/bin/pip install -r requirements.txt
 fi
 
+# YouTube quebra clients antigos do yt-dlp (HTTP 403). Garante o piso do
+# requirements sem reresolver o resto do venv a cada subida.
+if ! ./.venv-mlx/bin/python -c "import yt_dlp; v=tuple(int(x) for x in yt_dlp.version.__version__.split('.')[:2]); raise SystemExit(0 if v>=(2026,8) else 1)"; then
+  echo "Atualizando yt-dlp (YouTube 403 em versões antigas)…"
+  ./.venv-mlx/bin/pip install -q 'yt-dlp>=2026.08.19'
+fi
+
 # Chaves de API: geridas na UI (Configurações → Acesso) e em .apikeys.json.
 # .apikey / TTS_ROD_API_KEY ainda bootstrapam na 1ª subida e valem como chave extra.
 if [ -z "$TTS_ROD_API_KEY" ] && [ -f .apikey ]; then
