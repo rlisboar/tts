@@ -1,6 +1,8 @@
-mlx-audio
-mlx-whisper
-mlx-lm
+# Pinos = versões instaladas e verificadas no M3 (síntese OK). mlx-* quebram
+# com frequência em upgrade — não subir sem testar síntese + transcrição.
+mlx-audio==0.4.4
+mlx-whisper==0.4.3
+mlx-lm==0.31.3
 # transformers 5.6+ quebra mlx-lm 0.31.3: AutoTokenizer.register() passa uma
 # string como config_class e o transformers novo faz key.__module__ -> derruba o
 # import de mlx_lm, o audio_tokenizer (codec) nao carrega e a TTS sai MUDA (zeros).
@@ -18,3 +20,5 @@ imageio-ffmpeg
 misaki[en]
 espeakng-loader
 phonemizer-fork
+# dev: testes (tests/)
+pytest

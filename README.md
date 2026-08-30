@@ -37,7 +37,12 @@ e guarda no navegador. Aceita `Authorization: Bearer`, `X-API-Key` ou `?api_key=
 | Caminho             | Conteúdo                                    |
 |---------------------|---------------------------------------------|
 | `app.py`            | Servidor FastAPI (API + síntese MLX)        |
+| `backends.py`       | Catálogo de backends TTS + adapter unificado|
+| `tts_worker.py`     | Worker isolado (crash do Metal não derruba) |
+| `common.py`         | Texto/DSP/modelo compartilhados app↔worker  |
 | `static/index.html` | Interface web (gravação e gerenciamento)    |
+| `remote/`           | Servidores RTX opcionais (OmniVoice, Voxtral)|
+| `client/`           | Roteador de microfone (BlackHole)           |
 | `voices/`           | Amostras de voz gravadas (`.wav` + `.json`) |
 | `outputs/`          | Áudios gerados                              |
 | `.venv-mlx/`        | Ambiente Python (MLX)                       |
@@ -68,7 +73,9 @@ TTS_ROD_OMNI_TOKENIZER=mlx-community/OmniVoice ./run.sh
 ```
 
 Para usar um id/dir MLX de OmniVoice já pronto, defina `TTS_ROD_MODEL` (ou o
-campo "modelo" no dashboard).
+campo "modelo" no dashboard). Se um vídeo do YouTube exigir login
+("sign in to confirm"), exporte cookies do navegador (formato Netscape) e
+aponte `TTS_ROD_YT_COOKIES=/caminho/cookies.txt` antes do `./run.sh`.
 
 ### Controles de geração
 

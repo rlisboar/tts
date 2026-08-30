@@ -13,7 +13,6 @@ import shutil
 import subprocess
 import threading
 import time
-import unicodedata
 import uuid
 import wave
 from collections import OrderedDict
@@ -24,6 +23,11 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from backends import generate_with_backend, list_backends, resolve_backend
+from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,
+                    PEAK_LIMIT, TARGET_RMS, fade_edges, normalize,
+                    release_mlx_memory, resolve_omni_source, sanitize_text,
+                    split_text, time_stretch, trim_tail_silence,
+                    write_wav_concat)
 
 BASE = Path(__file__).resolve().parent
 VOICES_DIR = BASE / "voices"
@@ -37,18 +41,11 @@ OUTPUTS_DIR.mkdir(exist_ok=True)
 for _d in OUTPUTS_DIR.glob(".job-*"):
     shutil.rmtree(_d, ignore_errors=True)
 
-# OmniVoice: as conversões MLX publicadas vêm quebradas — o repo "-bf16" perde o
-# encoder semântico do tokenizer e o "-4bit" não quantiza no load_model. Montamos
-# um dir local = backbone bf16 + audio_tokenizer COMPLETO (HuBERT) em .omnivoice-bf16/.
-# Outros backends (Qwen3, Fish, Chatterbox…) usam o repo MLX direto (ver backends.py).
-OMNI_BACKBONE_REPO = os.environ.get("TTS_ROD_OMNI_BACKBONE", "mlx-community/OmniVoice-bf16")
-OMNI_TOKENIZER_REPO = os.environ.get("TTS_ROD_OMNI_TOKENIZER", "mlx-community/OmniVoice")
-# repo fp32 completo (backbone F32 + tokenizer) — carrega direto, sem montagem
-OMNI_FP32_REPO = os.environ.get("TTS_ROD_OMNI_FP32", "mlx-community/OmniVoice-fp32")
-OMNI_ASSEMBLED = BASE / ".omnivoice-bf16"
+# OmniVoice: as conversões MLX publicadas vêm quebradas — app e worker usam o
+# dir montado por common.assemble_omnivoice_path (backbone bf16 + audio_tokenizer
+# COMPLETO em .omnivoice-bf16/). Outros backends usam o repo MLX direto (backends.py).
 # atalho de backends.py (omnivoice, qwen3-0.6b, fish-s2…) ou id/dir MLX livre
 MODEL_ID = os.environ.get("TTS_ROD_MODEL", "omnivoice")
-OMNI_ALIASES = {"", "omnivoice", "omni", "omnivoice-bf16"}
 # voz "virtual": gera só a partir da descrição textual (instruct), sem ref de clone
 DESIGN_VOICE_ID = "__design__"
 
@@ -175,11 +172,6 @@ except Exception:  # noqa: BLE001
 # problema de EOS do backend antigo), mas dividir permite tocar trecho-a-trecho — a
 # fala começa após o 1º trecho, não no fim.
 CHUNK_MAX_CHARS = 140
-CHUNK_SILENCE_S = 0.25
-
-# O modelo sai com volume baixo (RMS ~0,10); normaliza para nível de fala.
-TARGET_RMS = 0.15
-PEAK_LIMIT = 0.95
 
 # OmniVoice (masked-diffusion não-AR): passos de unmasking iterativo. 16 = rápido
 # (RTF ~0,8 no M3 com ref cacheada), 32 = qualidade (default da lib).
@@ -444,33 +436,9 @@ _model_state = {"status": "idle", "device": None, "model": _settings["model"],
                 "error": None, "progress": None}
 
 
-def _assemble_omnivoice_path() -> str:
-    """Monta (uma vez) o dir local que conserta a conversão bf16 do OmniVoice.
-
-    backbone bf16 (sem o audio_tokenizer quebrado) + audio_tokenizer completo
-    (com HuBERT) do repo sem sufixo, ligados por symlink em .omnivoice-bf16/.
-    """
-    from huggingface_hub import snapshot_download
-
-    pronto = ((OMNI_ASSEMBLED / "model.safetensors").exists()
-              and (OMNI_ASSEMBLED / "audio_tokenizer" / "model.safetensors").exists())
-    if pronto:
-        return str(OMNI_ASSEMBLED)
-    _model_state.update(progress="baixando OmniVoice (backbone + tokenizer)…")
-    backbone = Path(snapshot_download(OMNI_BACKBONE_REPO, ignore_patterns=["audio_tokenizer/*"]))
-    tokrepo = Path(snapshot_download(OMNI_TOKENIZER_REPO, allow_patterns=["audio_tokenizer/*"]))
-    OMNI_ASSEMBLED.mkdir(exist_ok=True)
-    for f in backbone.iterdir():
-        if f.name == "audio_tokenizer":
-            continue
-        dst = OMNI_ASSEMBLED / f.name
-        if not dst.exists():
-            os.symlink(f.resolve(), dst)
-    atok = OMNI_ASSEMBLED / "audio_tokenizer"
-    if not atok.exists():
-        os.symlink((tokrepo / "audio_tokenizer").resolve(), atok)
-    _model_state.update(progress=None)
-    return str(OMNI_ASSEMBLED)
+def _model_state_progress(msg):
+    """Callback de progresso p/ download/montagem do modelo (common.py)."""
+    _model_state.update(progress=msg)
 
 
 def _current_backend() -> dict:
@@ -491,9 +459,7 @@ def _resolve_model_path() -> str:
     be = _current_backend()
     if be["family"] == "omnivoice" and (
             be["is_shortcut"] or str(be["path"]).strip().lower() in OMNI_ALIASES):
-        if str(_settings.get("omni_precision", "bf16")).lower() == "fp32":
-            return OMNI_FP32_REPO
-        return _assemble_omnivoice_path()
+        return resolve_omni_source(_settings, BASE, progress=_model_state_progress)
     return be["path"]
 
 
@@ -574,58 +540,6 @@ def _touch_use(*keys: str):
         _last_use[k] = now
 
 
-def _release_mlx_memory(aggressive: bool = False):
-    """Devolve pool de alocação MLX/Metal ao SO e força GC do Python.
-
-    MLX mantém um cache de blocos GPU/unified memory; sem clear_cache a RAM
-    sobe a cada trecho gerado e não desce. aggressive=True faz 2 passagens
-    (pós-job / unload).
-    """
-    import gc
-
-    gc.collect()
-    try:
-        import mlx.core as mx
-        # mx.clear_cache (API atual); metal.clear_cache está deprecado
-        clr = getattr(mx, "clear_cache", None)
-        if clr is not None:
-            clr()
-    except Exception:  # noqa: BLE001
-        pass
-    if aggressive:
-        gc.collect()
-        try:
-            import mlx.core as mx
-            clr = getattr(mx, "clear_cache", None)
-            if clr is not None:
-                clr()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def _write_wav_concat(piece_dir: Path, n: int, out_path: Path, sr: int) -> float:
-    """Monta o WAV final lendo trecho a trecho (sem carregar tudo na RAM).
-
-    Retorna duração em segundos. Evita np.concatenate de N arrays float32
-    (textos longos estouravam dezenas/centenas de MB de pico).
-    """
-    import numpy as np
-    import soundfile as sf
-
-    total_frames = 0
-    with sf.SoundFile(str(out_path), mode="w", samplerate=sr, channels=1,
-                      subtype="PCM_16") as out:
-        for i in range(n):
-            piece = piece_dir / f"{i}.wav"
-            data, _ = sf.read(str(piece), dtype="float32")
-            if getattr(data, "ndim", 1) > 1:
-                data = data.mean(axis=1)
-            out.write(np.asarray(data, dtype=np.float32))
-            total_frames += len(data)
-            del data
-    return round(total_frames / sr, 1) if sr else 0.0
-
-
 def _cond_for(model, voice_id: str, voice_path: Path):
     ref_max = _clamp(_settings["omni_ref_max_s"], 3.0, 30.0, OMNI_REF_MAX_S)
     key = (voice_id, voice_path.stat().st_mtime_ns, round(ref_max, 1))
@@ -650,118 +564,6 @@ def _cond_for(model, voice_id: str, voice_path: Path):
     return cond
 
 
-def _sanitize_text(text: str) -> str:
-    """Limpeza leve para o tokenizer multilíngue (Qwen3) do OmniVoice.
-
-    O Qwen3 lida com acentos, pontuação rica e colchetes (tags não-verbais como
-    [laughter]); só normalizamos forma Unicode, expandimos símbolos com leitura
-    natural e garantimos pontuação terminal estável.
-    """
-    # acentos digitados em forma decomposta (NFD, comum no macOS) viram o composto
-    text = unicodedata.normalize("NFC", text)
-    # símbolos com leitura natural em pt
-    text = (text.replace("%", " por cento").replace("&", " e ")
-                .replace("+", " mais ").replace("°", " graus ")
-                .replace("=", " igual a ").replace("/", " ou "))
-    text = re.sub(r"\s{2,}", " ", text).strip()
-    # final sem pontuação terminal desestabiliza a duração estimada
-    if text and text[-1] not in ".!?…":
-        text += "."
-    return text
-
-
-def _split_text(text: str, max_chars: int = CHUNK_MAX_CHARS) -> list[str]:
-    """Divide por sentenças (e vírgulas, em último caso) em trechos de até max_chars."""
-
-    def pack(parts: list[str]) -> list[str]:
-        out, cur = [], ""
-        for p in parts:
-            if cur and len(cur) + len(p) + 1 > max_chars:
-                out.append(cur)
-                cur = p
-            else:
-                cur = f"{cur} {p}".strip()
-        if cur:
-            out.append(cur)
-        return out
-
-    def burst(c: str) -> list[str]:
-        return pack(re.split(r"(?<=[,;:])\s+", c)) if len(c) > max_chars else [c]
-
-    sentences = [s for s in re.split(r"(?<=[.!?…])\s+", text.strip()) if s.strip()]
-    if not sentences:
-        return []
-    # 1ª sentença fica sozinha: trecho menor → a fala começa mais cedo
-    final = burst(sentences[0])
-    for c in pack(sentences[1:]):
-        final.extend(burst(c))
-    final = [c for c in final if c.strip()]
-    # trecho minúsculo (ex.: "Disparo:" sobrando de ponto órfão) desestabiliza
-    # o modelo — funde com o vizinho
-    merged: list[str] = []
-    for c in final:
-        if merged and (len(c) < 15 or len(merged[-1]) < 15) \
-                and len(merged[-1]) + len(c) + 1 <= max_chars:
-            merged[-1] = f"{merged[-1]} {c}"
-        else:
-            merged.append(c)
-    return merged
-
-
-def _time_stretch(audio, speed: float, n_fft: int = 1024, hop: int = 256):
-    """Muda a velocidade SEM mexer no tom (phase vocoder). speed>1 = mais rápido
-    (mais curto); <1 = mais lento. Preserva TODAS as palavras — ao contrário de
-    forçar duration_s, que corta slots de token e pula palavras."""
-    import numpy as np
-
-    x = np.asarray(audio, dtype=np.float32)
-    if abs(speed - 1.0) < 1e-3 or x.size < n_fft * 2:
-        return x
-    win = np.hanning(n_fft).astype(np.float32)
-
-    def stft(sig):
-        n = 1 + (len(sig) - n_fft) // hop
-        return np.stack([np.fft.rfft(sig[i*hop:i*hop+n_fft] * win) for i in range(n)], axis=1)
-
-    def istft(D):
-        frames = D.shape[1]
-        out = np.zeros((frames - 1) * hop + n_fft, dtype=np.float32)
-        wsum = np.zeros_like(out)
-        for i in range(frames):
-            seg = np.fft.irfft(D[:, i], n_fft).astype(np.float32) * win
-            out[i*hop:i*hop+n_fft] += seg
-            wsum[i*hop:i*hop+n_fft] += win * win
-        wsum[wsum < 1e-8] = 1e-8
-        return out / wsum
-
-    D = stft(x)
-    bins = D.shape[0]
-    omega = 2.0 * np.pi * hop * np.arange(bins) / n_fft       # avanço de fase esperado/hop
-    steps = np.arange(0, D.shape[1] - 1, speed)
-    out = np.zeros((bins, len(steps)), dtype=np.complex64)
-    phase = np.angle(D[:, 0])
-    for i, stp in enumerate(steps):
-        k = int(np.floor(stp)); frac = stp - k
-        mag = (1.0 - frac) * np.abs(D[:, k]) + frac * np.abs(D[:, k + 1])
-        out[:, i] = mag * np.exp(1j * phase)
-        dp = np.angle(D[:, k + 1]) - np.angle(D[:, k]) - omega
-        dp -= 2.0 * np.pi * np.round(dp / (2.0 * np.pi))      # phase unwrap
-        phase = phase + omega + dp
-    del D
-    y = istft(out)
-    del out
-    peak = float(np.abs(y).max() or 0.0)
-    if peak > 0.99:
-        y *= 0.99 / peak
-    return y.astype(np.float32)
-
-
-# backends que aplicam `speed` nativamente no generate() — NÃO reaplicar time-stretch
-_NATIVE_SPEED_FAMILIES = frozenset({
-    "qwen3_tts", "qwen3_custom", "fish", "chatterbox", "kokoro",
-})
-
-
 def _generate_chunk(model, text: str, language: str, conds, ref_text, omni: dict,
                     ref_audio: str | None = None, family: str | None = None,
                     meta: dict | None = None):
@@ -783,22 +585,9 @@ def _generate_chunk(model, text: str, language: str, conds, ref_text, omni: dict
     # velocidade: time-stretch só se o backend NÃO aplicou speed nativo
     # (senão fish/chatterbox/qwen ficavam com velocidade²)
     speed = float(o.get("speed") or 1.0)
-    if abs(speed - 1.0) > 1e-3 and be_family not in _NATIVE_SPEED_FAMILIES:
+    if abs(speed - 1.0) > 1e-3 and be_family not in NATIVE_SPEED_FAMILIES:
         audio = _time_stretch(audio, speed)
     return audio
-
-
-def _trim_tail_silence(audio, sr: int, limiar: float = 0.006, pad_s: float = 0.3):
-    """Corta cauda silenciosa (sobra típica de geração que estourou o teto)."""
-    import numpy as np
-
-    win = int(0.05 * sr)
-    fim = len(audio)
-    while fim > win:
-        if float(np.sqrt(np.mean(audio[fim - win:fim] ** 2))) >= limiar:
-            break
-        fim -= win
-    return audio[:min(len(audio), fim + int(pad_s * sr))]
 
 
 def _denoise_audio(audio, sr: int, strength: float = 0.7):
@@ -854,22 +643,6 @@ def _denoise_audio(audio, sr: int, strength: float = 0.7):
     return y
 
 
-def _fade_edges(audio, sr: int, ms: float = 8.0):
-    """Aplica fade-in/out curto (rampa linear) nas bordas — leva início e fim a
-    zero, eliminando o 'click'/estalo de descontinuidade entre trechos. 8ms é
-    inaudível na fala."""
-    import numpy as np
-
-    n = int(sr * ms / 1000.0)
-    if n < 1 or audio.size < 2 * n:
-        return audio
-    a = np.asarray(audio, dtype=np.float32).copy()
-    ramp = np.linspace(0.0, 1.0, n, dtype=np.float32)
-    a[:n] *= ramp
-    a[-n:] *= ramp[::-1]
-    return a
-
-
 def _anomalo(audio, sr: int, chunk: str) -> bool:
     """Geração descarrilada = inaudível ou curta demais para o texto.
 
@@ -882,23 +655,6 @@ def _anomalo(audio, sr: int, chunk: str) -> bool:
     if float(np.sqrt(np.mean(audio**2))) < 0.01:  # inaudível
         return True
     return len(audio) / sr < len(chunk) / 45  # truncamento grosseiro
-
-
-def _normalize(audio, target_rms: float = TARGET_RMS, peak_limit: float = PEAK_LIMIT):
-    """Ganho LINEAR p/ o RMS alvo, mas limitado para o pico não passar de
-    peak_limit. 100% transparente (sem soft-clip) — não esmaga transientes nem
-    distorce. Áudio com muito transiente fica só um pouco mais baixo."""
-    import numpy as np
-
-    audio = np.asarray(audio, dtype=np.float32)
-    rms = float(np.sqrt(np.mean(audio**2)))
-    if rms <= 1e-6:
-        return audio
-    gain = target_rms / rms
-    peak = float(np.abs(audio).max()) * gain
-    if peak > peak_limit:
-        gain *= peak_limit / peak     # teto de pico (linear, sem distorção)
-    return (audio * gain).astype(np.float32)
 
 
 def _biquad(kind: str, f0: float, gain_db: float, sr: int, q: float = 0.707):
@@ -1440,7 +1196,7 @@ def update_settings(payload: dict):
     if "speech_queue" in payload:
         _settings["speech_queue"] = bool(payload["speech_queue"])
     if "speech_queue_gap_s" in payload:
-        _settings["speech_queue_gap_s"] = _clamp(payload["speech_queue_gap_s"], 0.0, 5.0, 0.4)
+        _settings["speech_queue_gap_s"] = _clamp(payload["speech_queue_gap_s"], 0.0, 5.0, 0.35)
     _save_settings()
     _autofree_local()                  # se ligado, descarrega já os locais agora redundantes
     return _settings
@@ -1451,7 +1207,12 @@ def list_voices():
     voices = []
     existentes = set()
     for meta_file in sorted(VOICES_DIR.glob("*.json")):
-        m = json.loads(meta_file.read_text())
+        try:
+            m = json.loads(meta_file.read_text())
+            if not isinstance(m, dict) or not m.get("id"):
+                continue
+        except Exception:  # noqa: BLE001 — meta corrompido não pode derrubar a API
+            continue
         voices.append(m)
         existentes.add(m["id"])
     voices.sort(key=lambda v: v.get("created_at", ""), reverse=True)
@@ -1725,7 +1486,7 @@ def replace_voice_audio(voice_id: str, audio: UploadFile = File(...)):
         try:
             m = json.loads(jp.read_text())
             m["duration"] = dur
-            m["denoised"] = True
+            # denoised NÃO é marcado: o áudio veio do editor, sem denoise garantido
             jp.write_text(json.dumps(m, ensure_ascii=False, indent=2))
         except Exception:  # noqa: BLE001
             pass
@@ -1978,6 +1739,23 @@ def _speech_queue_abort(token) -> None:
 
 def _piece_dir(job_id: str) -> Path:
     return OUTPUTS_DIR / f".job-{job_id}"
+
+
+def _evict_jobs():
+    """Mantém no máximo _JOBS_MAX jobs no histórico.
+
+    Evict prefere jobs terminados (done/error): apagar trechos de um job em
+    execução/na fila deixaria o cliente sem stream. Running só sai na força
+    (todos os 20 em voo) — comportamento antigo, último recurso.
+    """
+    while len(_jobs) > _JOBS_MAX:
+        alvo = next((jid for jid, j in _jobs.items()
+                     if j.get("status") not in ("running", "queued")),
+                    next(iter(_jobs), None))
+        if alvo is None:
+            break
+        _jobs.pop(alvo, None)
+        shutil.rmtree(_piece_dir(alvo), ignore_errors=True)
 
 
 def _voice_ref_text(voice_id: str):
@@ -2334,8 +2112,24 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                     audio = _tts_remote_chunk(chunk, language, omni, sr, rvoice)
                 else:
                     for tentativa in (1, 2):
+                        o_try = omni
+                        if tentativa > 1:
+                            o_try = dict(omni)
+                            # 2ª tentativa: com seed fixa + temp 0 (greedy) a
+                            # regeneração reproduz o MESMO áudio anômalo. Jitter
+                            # só em voz de CLONE (timbre vem da ref, não do
+                            # seed); em voice design o seed ancora o timbre e
+                            # não pode mudar entre trechos.
+                            if not is_design:
+                                seed = o_try.get("seed")
+                                if seed is not None and int(seed) >= 0:
+                                    o_try["seed"] = int(seed) + tentativa
+                                if not float(o_try.get("class_temperature") or 0):
+                                    o_try["class_temperature"] = 0.4
+                                if float(o_try.get("temperature") or 0) < 0.5:
+                                    o_try["temperature"] = 0.7
                         audio = _generate_chunk(
-                            model, chunk, language, conds, ref_text, omni,
+                            model, chunk, language, conds, ref_text, o_try,
                             ref_audio=ref_audio, family=family, meta=be_meta,
                         )
                         if not _anomalo(audio, sr, chunk):
@@ -2465,9 +2259,7 @@ def synthesize(payload: dict):
     _jobs[job_id] = {"status": "running", "pieces": 0, "total": None,
                      "progress": None, "output": None, "error": None,
                      "text": text[:200]}  # facilita depurar relatos de áudio mudo
-    while len(_jobs) > _JOBS_MAX:
-        old_id, _ = _jobs.popitem(last=False)
-        shutil.rmtree(_piece_dir(old_id), ignore_errors=True)
+    _evict_jobs()
 
     threading.Thread(
         target=_run_tts_job,
@@ -2506,8 +2298,15 @@ def job_piece(job_id: str, index: int):
 
 @app.get("/api/outputs")
 def list_outputs():
-    outputs = [json.loads(f.read_text()) for f in OUTPUTS_DIR.glob("*.json")]
-    outputs.sort(key=lambda o: o["created_at"], reverse=True)
+    outputs = []
+    for f in OUTPUTS_DIR.glob("*.json"):
+        try:
+            o = json.loads(f.read_text())
+        except Exception:  # noqa: BLE001 — meta corrompido não pode derrubar a API
+            continue
+        if isinstance(o, dict):
+            outputs.append(o)
+    outputs.sort(key=lambda o: o.get("created_at", ""), reverse=True)
     return outputs
 
 
@@ -3232,6 +3031,13 @@ def _youtube_audio(url: str, start_s: float, end_s: float) -> bytes:
             }
             if clients:
                 opts["extractor_args"] = {"youtube": {"player_client": clients}}
+            # vídeos que exigem login ("sign in to confirm"): cookies exportados
+            # do navegador (formato Netscape) via TTS_ROD_YT_COOKIES=/caminho.txt
+            cookies = (os.environ.get("TTS_ROD_YT_COOKIES") or "").strip()
+            if cookies:
+                ck = Path(cookies).expanduser()
+                if ck.exists():
+                    opts["cookiefile"] = str(ck)
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.extract_info(url, download=True)
@@ -3381,9 +3187,7 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
     _jobs[job_id] = {"status": "running", "pieces": 0, "total": None,
                      "progress": None, "output": None, "error": None,
                      "text": translation[:200]}
-    while len(_jobs) > _JOBS_MAX:
-        old_id, _ = _jobs.popitem(last=False)
-        shutil.rmtree(_piece_dir(old_id), ignore_errors=True)
+    _evict_jobs()
     threading.Thread(
         target=_run_tts_job,
         args=(job_id, translation, vid, vpath, tgt, omni),
@@ -3456,9 +3260,7 @@ def modify_speech(audio: UploadFile = None, voice_id: str = Form(""),
     job_id = uuid.uuid4().hex[:10]
     _jobs[job_id] = {"status": "running", "pieces": 0, "total": None, "progress": None,
                      "output": None, "error": None, "text": out_text[:200]}
-    while len(_jobs) > _JOBS_MAX:
-        old_id, _ = _jobs.popitem(last=False)
-        shutil.rmtree(_piece_dir(old_id), ignore_errors=True)
+    _evict_jobs()
     threading.Thread(target=_run_tts_job, args=(job_id, out_text, vid, vpath, lang, omni), daemon=True).start()
     emo_show = None
     if emo_label and emo_label != "neutro":
@@ -3602,6 +3404,10 @@ def openai_translations(file: UploadFile = File(...), model: str = Form("whisper
 
 @app.post("/v1/audio/speech")
 def openai_speech(payload: dict):
+    # NOTA: síncrono por design — o SDK OpenAI espera o áudio na resposta. O
+    # t.join() abaixo segura 1 thread do threadpool do Starlette (40 por
+    # default) até 10 min por request; a fila de falas serializa clientes em
+    # série, então o pool não esgota no uso normal (LAN).
     text = (payload.get("input") or "").strip()
     if not text:
         raise HTTPException(400, "Campo 'input' vazio")
