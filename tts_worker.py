@@ -31,7 +31,7 @@ from backends import generate_with_backend, resolve_backend  # noqa: E402
 from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,  # noqa: E402
                     fade_edges, normalize, resolve_omni_source,  # noqa: E402
                     sanitize_text, split_text, time_stretch,  # noqa: E402
-                    trim_tail_silence, write_wav_concat,  # noqa: E402
+                    trim_tail_silence, write_wav_concat, write_json_atomic,  # noqa: E402
                     release_mlx_memory as _release_mlx_memory)  # noqa: E402
 
 DESIGN_VOICE_ID = "__design__"
@@ -193,7 +193,7 @@ def main() -> int:
             "elapsed": elapsed,
             "isolated": True,
         }
-        (outputs_dir / f"{out_id}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+        write_json_atomic(outputs_dir / f"{out_id}.json", meta)
         # solta modelo + pool antes de sair (o SO recupera o processo, mas
         # reduz pico se o pai ainda estiver vivo e o Metal for compartilhado)
         try:

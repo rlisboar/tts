@@ -74,6 +74,27 @@ def test_tts_texto_longo_400(client):
     assert r.status_code == 400
 
 
+def test_settings_clamp_e_restauracao(client):
+    # usa o settings.json real: captura os valores atuais e restaura no fim
+    orig = client.get("/api/settings", headers=auth_headers(client)).json()
+    try:
+        r = client.post("/api/settings", headers=auth_headers(client), json={
+            "omni_num_steps": 999, "speed": 99, "chunk_max_chars": 10,
+            "perf_priority": "invalido", "omni_seed": -50,
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["omni_num_steps"] == 64
+        assert body["speed"] == 4.0
+        assert body["chunk_max_chars"] == 60
+        assert body["perf_priority"] == "equilibrio"
+        assert body["omni_seed"] == -1
+    finally:
+        client.post("/api/settings", headers=auth_headers(client), json=orig)
+    atual = client.get("/api/settings", headers=auth_headers(client)).json()
+    assert atual["omni_num_steps"] == orig["omni_num_steps"]
+
+
 # ---------------------------------------------------------------------------
 # Export/import de vozes (dirs temporários — não toca em voices/ real)
 # ---------------------------------------------------------------------------

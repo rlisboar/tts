@@ -335,7 +335,7 @@ BACKENDS: dict[str, dict[str, Any]] = {
         "notes": "Clone multilíngue. Inclui PT em muitos setups.",
     },
     "kokoro": {
-        "label": "Kokoro 82M — leve (sem clone) ⚠ bug MLX",
+        "label": "Kokoro 82M — leve (sem clone)",
         "repo": "mlx-community/Kokoro-82M-bf16",
         "family": "kokoro",
         "clone": False,
@@ -343,7 +343,7 @@ BACKENDS: dict[str, dict[str, Any]] = {
         "langs": "EN (+ multi parcial)",
         "size": "82M / ~300 MB",
         "license": "Apache-2.0",
-        "notes": "Vozes preset. Em mlx-audio 0.4.4 o decoder falha (broadcast_shapes).",
+        "notes": "Vozes preset (PT/EN verificados). Ultra-leve e rápido; sem clonagem.",
         "default_voice": "af_heart",
     },
     "pocket-tts": {

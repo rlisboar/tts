@@ -8,6 +8,7 @@ sobe rápido no servidor e no worker.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import unicodedata
@@ -43,6 +44,16 @@ NATIVE_SPEED_FAMILIES = frozenset({
 # ---------------------------------------------------------------------------
 # Texto
 # ---------------------------------------------------------------------------
+
+def write_json_atomic(path, payload) -> None:
+    """Escrita atômica de JSON (tmp + os.replace): crash no meio da escrita não
+    deixa arquivo truncado/corrompido. Use para settings, chaves e metas — um
+    arquivo corrompido reseta defaults/gera chave nova silenciosamente."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    tmp.replace(path)
+
 
 def sanitize_text(text: str) -> str:
     """Limpeza leve para o tokenizer multilíngue (Qwen3) do OmniVoice.

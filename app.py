@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backends import generate_with_backend, list_backends, resolve_backend
 from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,
-                    resolve_omni_source,
+                    resolve_omni_source, write_json_atomic,
                     fade_edges as _fade_edges,
                     normalize as _normalize,
                     release_mlx_memory as _release_mlx_memory,
@@ -147,8 +147,14 @@ if SETTINGS_PATH.exists():
     try:
         salvo = json.loads(SETTINGS_PATH.read_text())
         _settings.update({k: salvo[k] for k in _SETTINGS_DEFAULTS if k in salvo})
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # corrompido (crash na escrita): preserva p/ recuperação, segue com defaults
+        try:
+            SETTINGS_PATH.replace(SETTINGS_PATH.with_name("settings.json.corrupt"))
+        except OSError:
+            pass
+        print(f"⚠ settings.json corrompido — backup em settings.json.corrupt; "
+              f"usando defaults: {exc}", flush=True)
 
 
 def _save_settings():
@@ -160,7 +166,7 @@ def _save_settings():
     except (TypeError, ValueError):
         _settings["speech_queue_gap_s"] = 0.35
     payload = {k: _settings.get(k, v) for k, v in _SETTINGS_DEFAULTS.items()}
-    SETTINGS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    write_json_atomic(SETTINGS_PATH, payload)
 
 
 # materializa chaves novas (ex.: speech_queue) no arquivo se ainda não existirem
@@ -287,7 +293,7 @@ def _save_apikeys():
             if k.get("secret")
         ],
     }
-    APIKEYS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    write_json_atomic(APIKEYS_PATH, payload)
     try:
         os.chmod(APIKEYS_PATH, 0o600)
     except Exception:  # noqa: BLE001
@@ -314,8 +320,15 @@ def _load_apikeys():
                     "secret": sec,
                     "created_at": str(raw.get("created_at") or ""),
                 })
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             keys = []
+            # corrompido: preserva p/ recuperação — abaixo uma chave nova é gerada
+            try:
+                APIKEYS_PATH.replace(APIKEYS_PATH.with_name(".apikeys.json.corrupt"))
+            except OSError:
+                pass
+            print(f"⚠ .apikeys.json corrompido — backup em .apikeys.json.corrupt; "
+                  f"uma chave nova será gerada: {exc}", flush=True)
 
     if not keys:
         # migra chave legada (.apikey) ou env
@@ -1288,7 +1301,7 @@ def save_design_voice(payload: dict):
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "duration": round(len(audio) / sr, 1), "ref_text": OMNI_PRESET_SEED,
             "instruct": instruct, "seed": seed}
-    (VOICES_DIR / f"{voice_id}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+    write_json_atomic(VOICES_DIR / f"{voice_id}.json", meta)
     return meta
 
 
@@ -1337,7 +1350,7 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
     # transcrição opcional da amostra: clonagem do OmniVoice fica mais estável
     if ref_text.strip():
         meta["ref_text"] = ref_text.strip()[:500]
-    (VOICES_DIR / f"{voice_id}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+    write_json_atomic(VOICES_DIR / f"{voice_id}.json", meta)
     return meta
 
 
@@ -1363,7 +1376,7 @@ def denoise_voice(voice_id: str, payload: dict = None):
             m = json.loads(jp.read_text())
             m["duration"] = duration
             m["denoised"] = True
-            jp.write_text(json.dumps(m, ensure_ascii=False, indent=2))
+            write_json_atomic(jp, m)
         except Exception:  # noqa: BLE001
             pass
     return {"ok": True, "duration": duration}
@@ -1572,7 +1585,7 @@ def replace_voice_audio(voice_id: str, audio: UploadFile = File(...)):
             m = json.loads(jp.read_text())
             m["duration"] = dur
             # denoised NÃO é marcado: o áudio veio do editor, sem denoise garantido
-            jp.write_text(json.dumps(m, ensure_ascii=False, indent=2))
+            write_json_atomic(jp, m)
         except Exception:  # noqa: BLE001
             pass
     _conds_cache.clear()                      # invalida o clone em cache p/ esta voz
@@ -1881,7 +1894,7 @@ def _materialize_preset(model, sr: int, pid: str):
         "duration": round(len(audio) / sr, 1),
         "ref_text": OMNI_PRESET_SEED, "instruct": p["instruct"],
     }
-    (VOICES_DIR / f"{pid}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+    write_json_atomic(VOICES_DIR / f"{pid}.json", meta)
 
 
 # Famílias que rodam em PROCESSO FILHO (SIGSEGV do Metal/Qwen não derruba o servidor).
@@ -1950,7 +1963,7 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
         "base_dir": str(BASE),
         "status_path": str(status_path),
     }
-    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False))
+    write_json_atomic(cfg_path, cfg)
     py = str(BASE / ".venv-mlx" / "bin" / "python")
     if not Path(py).exists():
         py = sys.executable
@@ -2260,7 +2273,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             "duration": duration,
             "elapsed": elapsed,
         }
-        (OUTPUTS_DIR / f"{out_id}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+        write_json_atomic(OUTPUTS_DIR / f"{out_id}.json", meta)
         # fila: espera o fim da fala anterior (duração real do último WAV) antes de entregar
         if sq is not None:
             job["progress"] = {"stage": "aguardando vez na fila…"}
