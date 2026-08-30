@@ -50,7 +50,9 @@ e guarda no navegador. Aceita `Authorization: Bearer`, `X-API-Key` ou `?api_key=
 
 **Backup das vozes**: `voices/` é gitignored e contém as gravações (o dado mais
 valioso do app). Na UI: **Vozes → Vozes salvas → ⬇ Backup** (zip com `.wav` +
-`.json`), ou programaticamente `GET /api/voices/export`.
+`.json`), ou programaticamente `GET /api/voices/export`. Para restaurar em
+outra máquina (ou depois de um apagão): **⬆ Importar** selecionando o zip
+(`POST /api/voices/import` — sobrescreve vozes com o mesmo id).
 
 ## Configurações (dashboard ⚙️)
 

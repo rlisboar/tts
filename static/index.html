@@ -2105,8 +2105,11 @@
         <div class="card col-scroll">
           <div class="card-head">
             <h2>Vozes salvas</h2>
+            <button id="importVoicesBtn" class="ghost small" type="button"
+                    title="Restaura um zip de backup (sobrescreve vozes com o mesmo id)">⬆ Importar</button>
             <button id="exportVoicesBtn" class="ghost small" type="button"
                     title="Baixa todas as vozes (.wav + .json) num zip — guarde em local seguro">⬇ Backup</button>
+            <input type="file" id="voicesImportFile" accept=".zip" style="display:none">
           </div>
           <div id="voiceList"><div class="empty">Nenhuma voz ainda — grave ou importe ao lado.</div></div>
         </div>
@@ -3333,6 +3336,27 @@ $("editVoiceBtn").onclick = () => {
 /* ───────── Lista de vozes ───────── */
 $("exportVoicesBtn").onclick = () => {
   window.location.href = k("/api/voices/export");
+};
+$("importVoicesBtn").onclick = () => $("voicesImportFile").click();
+$("voicesImportFile").onchange = async (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f) return;
+  if (!confirm(`Importar "${f.name}"? Vozes com o mesmo id serão sobrescritas.`)) return;
+  const fd = new FormData();
+  fd.append("zip_file", f, f.name);
+  const btn = $("importVoicesBtn"), old = btn.textContent;
+  btn.textContent = "importando…"; btn.disabled = true;
+  try {
+    const r = await api("/api/voices/import", { method: "POST", body: fd });
+    toast(`✔ ${r.vozes} voz(es) importada(s) (${r.importados} arquivos)`
+          + (r.ignorados?.length ? ` · ${r.ignorados.length} ignorado(s)` : ""));
+    refreshVoices();
+  } catch (err) {
+    toast("Erro: " + err.message);
+  } finally {
+    btn.textContent = old; btn.disabled = false;
+  }
 };
 
 async function refreshVoices() {

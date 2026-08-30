@@ -1399,6 +1399,41 @@ def export_voices():
     )
 
 
+@app.post("/api/voices/import")
+async def import_voices(zip_file: UploadFile = File(...)):
+    """Restaura um backup gerado por /api/voices/export (zip com .wav + .json).
+
+    Sobrescreve vozes com o mesmo id (é um restore). Só extrai .wav/.json com
+    nome seguro (achata subpastas); o resto do zip é ignorado.
+    """
+    import io
+    import re as _re
+    import zipfile
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(await zip_file.read()))
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "Arquivo não é um zip válido")
+    importados, ignorados = [], []
+    with zf:
+        for info in zf.infolist():
+            if info.is_dir() or info.file_size > 100 * 1024 * 1024:
+                continue
+            nome = Path(info.filename).name
+            if not _re.fullmatch(r"[A-Za-z0-9_-]+\.(wav|json)", nome):
+                ignorados.append(info.filename)
+                continue
+            (VOICES_DIR / nome).write_bytes(zf.read(info))
+            importados.append(nome)
+    if not importados:
+        raise HTTPException(400, "Nenhuma voz (.wav/.json) encontrada no zip")
+    # restore pode ter sobrescrito amostras em uso -> invalida o cache de refs
+    _conds_cache.clear()
+    return {"ok": True, "importados": len(importados),
+            "vozes": len({n[:-4] for n in importados}),
+            "ignorados": ignorados[:10]}
+
+
 def _eq_custom(audio, sr, low_db, mid_db, high_db):
     import numpy as np
     from scipy.signal import sosfilt
