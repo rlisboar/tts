@@ -127,7 +127,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:7860/v1", api_key="<chave do .apikey>")
 resp = client.audio.speech.create(
     model="tts-1",            # tts-1-hd = mais passos de difusão (qualidade)
-    voice="Rodrigo",          # nome ou id de uma voz gravada na UI
+    voice="Minha voz",        # nome ou id de uma voz gravada na UI
     input="Olá, mundo!",
     response_format="mp3",    # mp3 | wav | flac | aac | opus | pcm
     speed=1.0,                # 0.25–4.0
@@ -142,7 +142,7 @@ um sobrepõe o default do dashboard só naquela requisição.
 ```bash
 curl -s http://127.0.0.1:7860/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"model":"tts-1","voice":"Rodrigo","input":"Olá!","response_format":"mp3"}' \
+  -d '{"model":"tts-1","voice":"Minha voz","input":"Olá!","response_format":"mp3"}' \
   -o fala.mp3
 ```
 
