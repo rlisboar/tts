@@ -19,5 +19,8 @@ imageio-ffmpeg
 misaki[en]
 espeakng-loader
 phonemizer-fork
-# dev: testes (tests/)
+# dev: testes + análise estática (nomes indefinidos em funções só explodem em
+# runtime — pyflakes pegou 4 desses; rodar após refactors:
+#   ./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py tests/*.py client/mic_router.py
 pytest
+pyflakes

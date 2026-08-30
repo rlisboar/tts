@@ -88,7 +88,6 @@ def test_gate_fifo_ordem_e_espera(gate_rapido):
 
     th1 = threading.Thread(target=entrega, args=(t1, "a", 0.0))
     th2 = threading.Thread(target=entrega, args=(t2, "b", 0.0))
-    t0 = time.time()
     th1.start()
     time.sleep(0.05)                     # garante que "a" chega primeiro no gate
     th2.start()

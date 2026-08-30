@@ -29,9 +29,10 @@ if str(BASE) not in sys.path:
 
 from backends import generate_with_backend, resolve_backend  # noqa: E402
 from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,  # noqa: E402
-                    fade_edges, normalize, release_mlx_memory,  # noqa: E402
-                    resolve_omni_source, sanitize_text, split_text,  # noqa: E402
-                    time_stretch, trim_tail_silence, write_wav_concat)  # noqa: E402
+                    fade_edges, normalize, resolve_omni_source,  # noqa: E402
+                    sanitize_text, split_text, time_stretch,  # noqa: E402
+                    trim_tail_silence, write_wav_concat,  # noqa: E402
+                    release_mlx_memory as _release_mlx_memory)  # noqa: E402
 
 DESIGN_VOICE_ID = "__design__"
 
