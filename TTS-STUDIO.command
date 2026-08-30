@@ -5,8 +5,11 @@
 # (na 1ª vez: clique direito > Abrir, para autorizar no Gatekeeper)
 cd "$(dirname "$0")"
 
-if pgrep -f "uvicorn app:app" >/dev/null 2>&1; then
-  pkill -f "uvicorn app:app"
+# mata só quem ESCUTA na 7860 (o app deste projeto) — pgrep -f genérico
+# derrubaria uvicorns "app:app" de outros projetos
+PID=$(lsof -ti :7860 -sTCP:LISTEN 2>/dev/null | head -1)
+if [ -n "$PID" ]; then
+  kill "$PID"
   osascript -e 'display notification "Servidor parado" with title "TTS-STUDIO"' 2>/dev/null
   echo "TTS-STUDIO parado."
 else

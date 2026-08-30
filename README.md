@@ -48,6 +48,10 @@ e guarda no navegador. Aceita `Authorization: Bearer`, `X-API-Key` ou `?api_key=
 | `.venv-mlx/`        | Ambiente Python (MLX)                       |
 | `.omnivoice-bf16/`  | Modelo montado (symlinks p/ o cache do HF)  |
 
+**Backup das vozes**: `voices/` é gitignored e contém as gravações (o dado mais
+valioso do app). Na UI: **Vozes → Vozes salvas → ⬇ Backup** (zip com `.wav` +
+`.json`), ou programaticamente `GET /api/voices/export`.
+
 ## Configurações (dashboard ⚙️)
 
 Card "Configurações padrão" na UI: modelo, idioma (Auto = detecta do texto),

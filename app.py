@@ -723,6 +723,12 @@ def _wav_duration(path: Path) -> float:
 # ---------------------------------------------------------------------------
 
 
+@app.get("/health")
+def health():
+    """Liveness p/ monitoramento externo — sem auth, sem detalhe interno."""
+    return {"ok": True}
+
+
 @app.get("/api/status")
 def status():
     st = dict(_model_state)
@@ -1364,6 +1370,28 @@ def voice_audio(voice_id: str):
     if not path.exists():
         raise HTTPException(404, "Voz não encontrada")
     return FileResponse(path, media_type="audio/wav")
+
+
+@app.get("/api/voices/export")
+def export_voices():
+    """Backup: zip com todas as vozes (.wav + .json). Botão '⬇ Backup' na UI.
+
+    voices/ é gitignored e é o dado mais valioso do app (gravações + presets
+    materializados) — sem isso, apagar o dir perde as vozes para sempre.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in sorted(VOICES_DIR.iterdir()):
+            if p.is_file() and p.suffix in (".wav", ".json"):
+                z.write(p, f"voices/{p.name}")
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="tts-studio-vozes.zip"'},
+    )
 
 
 def _eq_custom(audio, sr, low_db, mid_db, high_db):
@@ -2075,6 +2103,12 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                 if not rvoice and not is_design and voice_path.exists():
                     job["progress"] = {"stage": "enviando voz ao servidor remoto…"}
                     rvoice = _ensure_remote_voice(voice_id, voice_path)
+                    if not rvoice:
+                        # upload falhou (rede/endpoint): o job segue com a voz
+                        # PADRÃO do servidor remoto — avisar, senão parece voz errada
+                        job["warning"] = ("voz local não pôde ser enviada ao "
+                                          "servidor remoto — usando voz padrão")
+                        job["progress"] = {"stage": "⚠ " + job["warning"]}
             elif is_design:
                 ref_text = None       # sem ref de clone -> o timbre vem só do instruct
                 conds = None
@@ -2632,9 +2666,24 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
             body.update(extra)
     except (ValueError, TypeError):
         pass
-    r = requests.post(url, headers=headers, json=body, timeout=300)
-    if not r.ok:
-        raise RuntimeError(f"TTS remoto falhou ({r.status_code}): {r.text[:200]}")
+    # 1 retry p/ falha transitória (rede/Wi-Fi/5xx): um erro no trecho 20 de 30
+    # não pode matar o job inteiro
+    r = None
+    for tentativa in (1, 2):
+        try:
+            r = requests.post(url, headers=headers, json=body, timeout=300)
+        except requests.RequestException as exc:
+            r = None
+            if tentativa == 2:
+                raise RuntimeError(f"TTS remoto inacessível (2 tentativas): {exc}") from exc
+            time.sleep(2.0)
+            continue
+        if r.status_code < 500 or tentativa == 2:
+            break
+        time.sleep(2.0)   # 5xx: servidor ocupado/carregando modelo — tenta de novo
+    if r is None or not r.ok:
+        raise RuntimeError(f"TTS remoto falhou ({getattr(r, 'status_code', '?')}): "
+                           f"{getattr(r, 'text', '')[:200]}")
     data, src_sr = sf.read(io.BytesIO(r.content), dtype="float32")
     if data.ndim > 1:
         data = data.mean(axis=1)

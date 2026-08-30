@@ -2103,7 +2103,11 @@
           <p class="hint">Ambiente silencioso. Transcrição <b>idêntica ao falado</b>. Amostra curta (≈10–20s) clona melhor.</p>
         </div>
         <div class="card col-scroll">
-          <div class="card-head"><h2>Vozes salvas</h2></div>
+          <div class="card-head">
+            <h2>Vozes salvas</h2>
+            <button id="exportVoicesBtn" class="ghost small" type="button"
+                    title="Baixa todas as vozes (.wav + .json) num zip — guarde em local seguro">⬇ Backup</button>
+          </div>
           <div id="voiceList"><div class="empty">Nenhuma voz ainda — grave ou importe ao lado.</div></div>
         </div>
       </div>
@@ -3327,6 +3331,10 @@ $("editVoiceBtn").onclick = () => {
 };
 
 /* ───────── Lista de vozes ───────── */
+$("exportVoicesBtn").onclick = () => {
+  window.location.href = k("/api/voices/export");
+};
+
 async function refreshVoices() {
   const voices = await api("/api/voices");
   const list = $("voiceList"), sel = $("voiceSelect"), sel2 = $("tvVoice");
@@ -3341,8 +3349,8 @@ async function refreshVoices() {
     div.className = "item";
     if (virtual) {
       div.innerHTML = `
-        <div class="grow"><div class="name">⭐ ${v.name}</div>
-        <div class="meta"><span class="badge-soft">preset</span><span class="dot">${v.instruct || ""}</span><code class="vid" title="clique p/ copiar o id">${v.id}</code></div></div>
+        <div class="grow"><div class="name">⭐ ${esc(v.name)}</div>
+        <div class="meta"><span class="badge-soft">preset</span><span class="dot">${esc(v.instruct || "")}</span><code class="vid" title="clique p/ copiar o id">${esc(v.id)}</code></div></div>
         <span class="hint">criada ao gerar pela 1ª vez</span>`;
     } else {
       const tag = v.preset ? "⭐ " : "";
@@ -3351,7 +3359,7 @@ async function refreshVoices() {
       const cleanBtn = v.preset ? "" : `<button class="ghost small clean">Limpar</button>`;
       const editBtn = v.preset ? "" : `<button class="ghost small edit">✂️ Editar</button>`;
       div.innerHTML = `
-        <div class="grow"><div class="name">${tag}${v.name}</div>
+        <div class="grow"><div class="name">${tag}${esc(v.name)}</div>
         <div class="meta"><span>${v.duration}s</span><span class="dot">${v.preset ? "voz padrão" : v.created_at}</span>${limpa ? '<span class="badge-soft">limpa</span>' : ''}<code class="vid" title="clique p/ copiar o id">${v.id}</code></div>
         <div class="wrow">
           <button class="wplay" type="button" title="tocar/pausar">▶</button>
@@ -3574,7 +3582,8 @@ async function streamJob(job_id, statusEl) {
           msg = `${buscados > 0 ? "falando + " : ""}gerando trecho ${j.progress.current}/${j.progress.total}…`;
         else msg = "gerando…";
         if (j.progress.backend) msg += ` [${j.progress.backend}]`;
-        statusEl.innerHTML = `<span class="spinner"></span>${msg}`;
+        if (j.warning) msg = `⚠ ${j.warning} — ` + msg;
+        statusEl.innerHTML = `<span class="spinner"></span>${esc(msg)}`;
       }
       await new Promise(r => setTimeout(r, 700));
     }
@@ -4264,7 +4273,7 @@ async function refreshOutputs() {
     div.className = "item";
     const short = o.text.length > 90 ? o.text.slice(0, 90) + "…" : o.text;
     div.innerHTML = `
-      <div class="grow"><div class="name">${short}</div>
+      <div class="grow"><div class="name">${esc(short)}</div>
       <div class="meta"><span>${o.duration}s</span><span class="dot">gerado em ${o.elapsed}s</span><span class="dot">${o.created_at}</span></div></div>
       <audio controls preload="none" src="${k(`/api/outputs/${o.id}/audio`)}"></audio>
       <div class="item-actions">
