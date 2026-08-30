@@ -663,18 +663,20 @@ def _denoise_audio(audio, sr: int, strength: float = 0.7):
     return y
 
 
-def _anomalo(audio, sr: int, chunk: str) -> bool:
+def _anomalo(audio, sr: int, chunk: str, speed: float = 1.0) -> bool:
     """Geração descarrilada = inaudível ou curta demais para o texto.
 
     OmniVoice é masked-diffusion não-AR (sem teto de tokens nem EOS frágil): a
     duração é estimada internamente e varia mais legitimamente, então só
-    truncamento grosseiro e áudio inaudível pedem nova tentativa.
+    truncamento grosseiro e áudio inaudível pedem nova tentativa. Com speed>1
+    o time-stretch encurta o áudio — o limiar acompanha, senão velocidade alta
+    falsifica 'truncamento' e dispara retry (com jitter de seed) à toa.
     """
     import numpy as np
 
     if float(np.sqrt(np.mean(audio**2))) < 0.01:  # inaudível
         return True
-    return len(audio) / sr < len(chunk) / 45  # truncamento grosseiro
+    return len(audio) / sr < len(chunk) / 45 / max(1.0, float(speed or 1.0))
 
 
 def _biquad(kind: str, f0: float, gain_db: float, sr: int, q: float = 0.707):
@@ -1406,7 +1408,8 @@ def export_voices():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for p in sorted(VOICES_DIR.iterdir()):
-            if p.is_file() and p.suffix in (".wav", ".json"):
+            # só wav/json de voz; ignora temporários de upload (.up-*/.rep-*)
+            if p.is_file() and p.suffix in (".wav", ".json") and not p.name.startswith("."):
                 z.write(p, f"voices/{p.name}")
     return Response(
         content=buf.getvalue(),
@@ -1432,6 +1435,10 @@ async def import_voices(zip_file: UploadFile = File(...)):
     import re as _re
     import zipfile
 
+    # teto do arquivo RECEBIDO (read() carrega tudo na RAM; o cap de conteúdo
+    # descomprimido vem depois)
+    if zip_file.size and zip_file.size > _IMPORT_MAX_TOTAL:
+        raise HTTPException(400, "Zip grande demais (máx. 512 MB)")
     try:
         zf = zipfile.ZipFile(io.BytesIO(await zip_file.read()))
     except zipfile.BadZipFile:
@@ -2239,7 +2246,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                             model, chunk, language, conds, ref_text, o_try,
                             ref_audio=ref_audio, family=family, meta=be_meta, sr=sr,
                         )
-                        if not _anomalo(audio, sr, chunk):
+                        if not _anomalo(audio, sr, chunk, speed=float(omni.get("speed") or 1.0)):
                             break
                         job["retries"] = job.get("retries", 0) + 1
                         # retry: limpa tensores intermediários do generate falho

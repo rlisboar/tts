@@ -3,6 +3,7 @@
 import threading
 import time
 
+import numpy as np
 import pytest
 
 import app
@@ -120,6 +121,18 @@ def test_gate_duracao_estimada_por_texto(gate_rapido):
 # ---------------------------------------------------------------------------
 # Evict de jobs
 # ---------------------------------------------------------------------------
+
+def test_anomalo_considera_speed():
+    sr = 24000
+    # 3s de áudio, texto de 100 chars → limiar base 100/45 ≈ 2.22s
+    audio = np.full(3 * sr, 0.2, dtype=np.float32)
+    assert not app._anomalo(audio, sr, "x" * 100)              # ok a speed 1
+    assert app._anomalo(np.zeros(1, dtype=np.float32), sr, "x" * 100)  # inaudível
+    # speed 2 encurta o áudio pela metade (1.5s < limiar 2.22): NÃO é truncamento
+    curto = audio[:int(1.5 * sr)]
+    assert app._anomalo(curto, sr, "x" * 100, speed=1.0)        # falso-positivo antigo
+    assert not app._anomalo(curto, sr, "x" * 100, speed=2.0)    # corrigido
+
 
 def test_evict_jobs_preserva_running(monkeypatch):
     orig = dict(app._jobs)

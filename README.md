@@ -173,6 +173,9 @@ sua própria voz ou com consentimento explícito da pessoa clonada.
 # análise estática — nomes indefinidos em funções só explodem em runtime
 ./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py \
     tests/*.py client/mic_router.py
+
+# smoke test do worker isolado (lento ~1 min, carrega Kokoro real)
+TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest tests/test_worker.py -q
 ```
 
 Pre-commit opcional (pyflakes + pytest antes de cada commit):

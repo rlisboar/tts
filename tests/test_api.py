@@ -137,6 +137,16 @@ def test_export_import_roundtrip(client, voices_tmp):
     assert (voices_tmp / "testeabc123.json").exists()
 
 
+def test_export_nao_inclui_temporarios(client, voices_tmp):
+    _voz_fake(voices_tmp)
+    (voices_tmp / ".up-lixo.wav").write_bytes(b"\x00" * 32)     # upload crashado
+    (voices_tmp / ".rep-lixo.wav").write_bytes(b"\x00" * 32)
+    r = client.get("/api/voices/export", headers=auth_headers(client))
+    names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
+    assert "voices/testeabc123.wav" in names
+    assert not any(n.startswith("voices/.") for n in names)
+
+
 def test_import_avisa_orfaos(client, voices_tmp):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
