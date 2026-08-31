@@ -5149,13 +5149,6 @@ $("cvSnrLim").oninput = () => {
 };
 let cvSilenceMs = parseInt(localStorage.getItem("cvSilenceMs") || "1400", 10);
 const CV_MAX_MS = 30000;   // corte de segurança
-$("cvSnrLim").value = cvSnrLim;
-$("cvSnrLimOut").textContent = cvSnrLim;
-$("cvSnrLim").oninput = () => {
-  cvSnrLim = parseFloat($("cvSnrLim").value);
-  localStorage.setItem("cvSnrLim", cvSnrLim);
-  $("cvSnrLimOut").textContent = cvSnrLim;
-};
 
 function cvAdd(quem, txt) {
   const d = document.createElement("div");
