@@ -5083,7 +5083,7 @@ $("sttDownloadBtn").onclick = () => {
 /* ───────── Conversa: escuta contínua com VAD (fala/pausa automáticas) ───────── */
 const cvDbg = m => api("/api/chat-debug", {
   method: "POST", headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ msg: m, v: 3 })
+  body: JSON.stringify({ msg: m, v: 4 })
 }).catch(() => {});
 window.addEventListener("error", e => {
   if (e.filename && e.filename.includes("index")) return;  // erros de outros scripts
@@ -5165,6 +5165,7 @@ function cvStopListening() {
 async function cvSpeak(text) {
   // sintetiza e toca a resposta da IA; mic em mudo durante a fala
   cvBusy = true; cvMute = true;
+  cvDbg("cvSpeak início");
   cvStatus("🔊 sintetizando resposta…");
   try {
     const body = { model: "tts-1", input: text, response_format: "wav" };
@@ -5198,6 +5199,7 @@ async function cvSend(text) {
   if (!cvSid || !text.trim()) return;
   cvAdd("você", text);
   cvStatus("IA pensando…");
+  cvDbg("cvSend sid=" + cvSid + " v4");
   cvBusy = true;
   try {
     const r = await api(`/api/chat/${cvSid}`, {
