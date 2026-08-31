@@ -2315,12 +2315,12 @@
           <div id="cvFinal" style="display:none; margin-top:10px">
             <p class="hint" style="margin:0 0 6px"><b>Texto final aprovado:</b></p>
             <code id="cvFinalText" class="api-key-secret"></code>
-            <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center">
+            <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap">
               <button type="button" id="cvCopy" class="small">Copiar</button>
               <button type="button" id="cvSynth" class="small">Sintetizar</button>
-              <audio id="cvAudio" controls style="width:100%; margin-top:6px"></audio>
             </div>
           </div>
+          <audio id="cvAudio" controls style="width:100%; display:none; margin-top:10px"></audio>
         </div>
       </div>
     </section>
@@ -5170,6 +5170,7 @@ async function cvSpeak(text) {
     const body = { model: "tts-1", input: text, response_format: "wav" };
     const voz = $("cvVoice")?.value;
     if (voz) body.voice = voz;
+    cvDbg("tts synth voz=" + (voz || "padrão"));
     const r = await fetch(APP_BASE + "/v1/audio/speech", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-API-Key": KEY },
@@ -5177,10 +5178,19 @@ async function cvSpeak(text) {
     });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const el = $("cvAudio");
+    el.style.display = "";
     el.src = URL.createObjectURL(await r.blob());
     cvStatus("🔊 falando…");
-    await new Promise(res => { el.onended = res; el.play().catch(res); });
-  } catch (e) { cvStatus("✖ TTS: " + e.message); }
+    await new Promise((res, rej) => {
+      el.onended = res;
+      el.onerror = () => rej(new Error("erro no player"));
+      el.play().catch(() => rej(new Error("play bloqueado pelo navegador")));
+    });
+    cvDbg("tts fim");
+  } catch (e) {
+    cvDbg("✖ tts: " + e.message);
+    cvStatus("🔊 (não toquei: " + e.message + ")");
+  }
   cvUtter = [];        // descarta o que o mic pegou enquanto a IA falava
   cvMute = false; cvBusy = false;
 }
