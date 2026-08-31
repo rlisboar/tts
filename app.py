@@ -141,6 +141,7 @@ _SETTINGS_DEFAULTS = {
     "chat_base_url": "",              # ex.: https://api.openai.com/v1
     "chat_model": "",                 # ex.: gpt-4o-mini
     "chat_api_key": "",               # vazio = usa remote_api_key
+    "chat_system": "",                # instruções da IA (preprompt); vazio = prompt padrão
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
     # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
@@ -1117,7 +1118,8 @@ def _chat_worker(sid: str) -> None:
                 hist = s["messages"][:]
                 if len(hist) > CHAT_MAX_MSGS + 1:
                     hist = [hist[0]] + hist[-(CHAT_MAX_MSGS + 1):]
-            reply = _chat_llm([{"role": "system", "content": CHAT_SYSTEM}] + hist)
+            sys_prompt = (_settings.get("chat_system") or "").strip() or CHAT_SYSTEM
+            reply = _chat_llm([{"role": "system", "content": sys_prompt}] + hist)
             parsed = _chat_parse(reply)
             with _chat_lock:
                 s = _chat_sessions.get(sid)
@@ -1126,6 +1128,7 @@ def _chat_worker(sid: str) -> None:
                 if parsed.get("final") and parsed.get("text"):
                     s["status"], s["text"] = "confirmed", str(parsed["text"])
                     s["reply"] = s["text"]
+                    s["last_text"] = s["text"]   # último texto aprovado (persiste entre rodadas)
                 else:
                     s["reply"] = str(parsed.get("reply") or "")
                     s["messages"].append({"role": "assistant", "content": s["reply"]})
@@ -1166,7 +1169,7 @@ def chat_start(payload: dict):
         _chat_purge(now)
         _chat_sessions[sid] = {"objective": objetivo, "context": contexto,
                                "messages": msgs, "status": "chatting", "text": "",
-                               "reply": "", "thinking": True, "error": "",
+                               "reply": "", "thinking": True, "error": "", "last_text": "",
                                "created": now, "updated": now}
     threading.Thread(target=_chat_worker, args=(sid,), daemon=True).start()
     return {"session_id": sid, "status": "thinking"}
@@ -1199,6 +1202,7 @@ def chat_get(sid: str):
         status = "thinking" if s.get("thinking") else s["status"]
         return {"session_id": sid, "status": status, "text": s["text"],
                 "reply": s.get("reply", ""), "error": s.get("error", ""),
+                "last_text": s.get("last_text", ""),
                 "objective": s["objective"],
                 "messages": [{"role": m["role"], "content": m["content"]} for m in s["messages"]]}
 
@@ -1582,6 +1586,8 @@ def update_settings(payload: dict):
         _settings["chat_model"] = str(payload["chat_model"] or "").strip()[:80]
     if "chat_api_key" in payload:
         _settings["chat_api_key"] = str(payload["chat_api_key"] or "").strip()[:300]
+    if "chat_system" in payload:
+        _settings["chat_system"] = str(payload["chat_system"] or "").strip()[:4000]
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
             _settings[chave] = str(payload[chave] or "").strip()[:120]

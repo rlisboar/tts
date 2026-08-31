@@ -2312,13 +2312,23 @@
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
           </div>
           <p class="hint" id="cvStatus" style="margin-top:6px"></p>
+          <details style="margin-top:10px">
+            <summary class="hint" style="cursor:pointer">Instruções da IA (preprompt)</summary>
+            <textarea id="cvSystem" style="width:100%; min-height:70px; font-size:12px; margin-top:6px; font-family:var(--mono)" placeholder="vazio = instruções padrão (decidir o texto final, perguntar, confirmar)"></textarea>
+            <div class="row" style="gap:8px; margin-top:6px">
+              <button type="button" id="cvSystemSave" class="small">Salvar instruções</button>
+              <button type="button" id="cvSystemReset" class="ghost small">Restaurar padrão</button>
+            </div>
+          </details>
           <div id="cvFinal" style="display:none; margin-top:10px">
-            <p class="hint" style="margin:0 0 6px"><b>Texto final aprovado:</b></p>
+            <p class="hint" style="margin:0 0 6px"><b>Texto aprovado (último):</b></p>
             <code id="cvFinalText" class="api-key-secret"></code>
             <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap">
               <button type="button" id="cvCopy" class="small">Copiar</button>
               <button type="button" id="cvSynth" class="small">Sintetizar</button>
             </div>
+          </div>
+          <audio id="cvAudio" controls style="width:100%; display:none; margin-top:10px"></audio>
           </div>
           <audio id="cvAudio" controls style="width:100%; display:none; margin-top:10px"></audio>
         </div>
@@ -5320,8 +5330,7 @@ async function cvSend(text, _retry = true) {
       if (d.status === "confirmed") {
         cvAdd("IA", "✅ " + d.text);
         cvFinalShow(d.text);
-        cvStatus("confirmado — escuta encerrada");
-        cvStopListening();
+        cvStatus("✅ texto aprovado — a conversa continua (fale para ajustar)");
         await cvSpeak(d.text);
         return;
       }
@@ -5353,6 +5362,32 @@ async function cvTranscribeEEnvia(blob) {
 $("cvCutBtn").onclick = () => {   // envio manual: contorna o VAD se ele não cortar
   if (cvListening && !cvBusy) { cvBusy = true; cvCut(); }
 };
+async function cvLoadSystem() {
+  try {
+    const s = await api("/api/settings");
+    $("cvSystem").value = s.chat_system || "";
+  } catch (e) {}
+}
+$("cvSystemSave").onclick = async () => {
+  try {
+    await api("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_system: $("cvSystem").value })
+    });
+    toast("Instruções salvas ✔");
+  } catch (e) { toast("Erro: " + e.message, 5000); }
+};
+$("cvSystemReset").onclick = async () => {
+  try {
+    await api("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_system: "" })
+    });
+    $("cvSystem").value = "";
+    toast("Instruções restauradas (padrão)");
+  } catch (e) { toast("Erro: " + e.message, 5000); }
+};
+cvLoadSystem();
 $("cvEnd").onclick = async () => {
   if (!cvSid) { cvStopListening(); return; }
   try { await api(`/api/chat/${cvSid}`, { method: "DELETE" }); } catch (e) {}

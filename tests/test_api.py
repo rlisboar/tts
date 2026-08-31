@@ -270,6 +270,7 @@ def test_chat_fluxo_confirma(client, auth, monkeypatch):
     respostas = iter([
         '{"final": false, "reply": "Qual o tom?"}',
         '{"final": true, "text": "Bem-vindos ao episódio 5!"}',
+        '{"final": false, "reply": "ok, ajusto"}',
     ])
     monkeypatch.setattr(app, "_chat_llm", lambda msgs: respostas.__next__())
     r = client.post("/api/chat/start", headers=auth, json={"objective": "fala de abertura"})
@@ -290,7 +291,26 @@ def test_chat_fluxo_confirma(client, auth, monkeypatch):
             break
         _t.sleep(0.05)
     assert d["status"] == "confirmed" and "episódio 5" in d["text"]
+    # a conversa NÃO para: nova fala reabre a rodada e o último texto aprovado persiste
+    r = client.post(f"/api/chat/{sid}", headers=auth, json={"message": "muda o tom"})
+    assert r.status_code == 200 and r.json()["status"] == "thinking"
+    for _ in range(40):
+        d = client.get(f"/api/chat/{sid}", headers=auth).json()
+        if d["status"] != "thinking":
+            break
+        _t.sleep(0.05)
+    assert d["status"] == "chatting"
+    assert client.get(f"/api/chat/{sid}", headers=auth).json()["last_text"] == "Bem-vindos ao episódio 5!"
     assert client.delete(f"/api/chat/{sid}", headers=auth).status_code == 200
+
+
+def test_chat_system_setting(client, auth):
+    r = client.post("/api/settings", headers=auth,
+                    json={"chat_system": "instruções customizadas de teste"})
+    assert r.status_code == 200
+    s = client.get("/api/settings", headers=auth).json()
+    assert s["chat_system"] == "instruções customizadas de teste"
+    client.post("/api/settings", headers=auth, json={"chat_system": ""})
 
 
 def test_chat_start_sem_objetivo_400(client, auth):
