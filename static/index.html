@@ -5420,7 +5420,8 @@ $("cvMic").onclick = async () => {
         const dur = agora - cvUtterStart;
         if ((agora - cvSilenceSince > cvSilenceMs && dur > 600) || dur > CV_MAX_MS) {
           cvBusy = true;                               // trava até a IA responder
-          cvDbg("corte dur=" + Math.round(dur) + "ms voiced=" + Math.round(100 * cvUtterVoiced / Math.max(1, cvUtterFrames)) + "%");
+          cvLastVoiced = cvUtterVoiced / Math.max(1, cvUtterFrames);
+          cvDbg("corte dur=" + Math.round(dur) + "ms voiced=" + Math.round(100 * cvLastVoiced) + "%");
           cvCut();
         }
       }
