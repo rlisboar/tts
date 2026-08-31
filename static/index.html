@@ -2351,11 +2351,13 @@
             </div>
           </details>
           <div id="cvFinal" style="display:none; margin-top:10px">
-            <p class="hint" style="margin:0 0 6px"><b>Texto aprovado (último):</b></p>
+            <p class="hint" style="margin:0 0 6px"><b>Texto proposto:</b></p>
             <code id="cvFinalText" class="api-key-secret"></code>
             <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap">
-              <button type="button" id="cvCopy" class="small">Copiar</button>
+              <button type="button" id="cvApprove" class="small">✅ Aprovar</button>
+              <button type="button" id="cvSpeakBtn" class="small">🔊 Ouvir</button>
               <button type="button" id="cvSynth" class="small">Sintetizar</button>
+              <button type="button" id="cvCopy" class="small">Copiar</button>
             </div>
           </div>
           <audio id="cvAudio" controls style="width:100%; display:none; margin-top:10px"></audio>
@@ -5286,10 +5288,9 @@ async function cvSend(text, _retry = true) {
       if (d.status === "thinking") continue;
       if (d.error) { cvStatus("✖ " + d.error); cvBusy = false; return; }
       if (d.status === "confirmed") {
-        cvAdd("IA", "✅ " + d.text);
+        cvAdd("IA", "📝 " + d.text);
         cvFinalShow(d.text);
-        cvStatus("✅ texto aprovado — a conversa continua (fale para ajustar)");
-        await cvSpeak(d.text);
+        cvStatus("📝 proposta pronta — toque ✅ Aprovar para fechar, ou continue falando");
         return;
       }
       cvAdd("IA", d.reply);
@@ -5432,6 +5433,13 @@ $("cvEnd").onclick = async () => {
 };
 $("cvCopy").onclick = () => {
   navigator.clipboard?.writeText($("cvFinalText").textContent || "").then(() => toast("Copiado ✔")).catch(() => {});
+};
+$("cvApprove").onclick = async () => {
+  const texto = $("cvFinalText").textContent || "";
+  if (!texto.trim()) { toast("Sem proposta para aprovar."); return; }
+  cvStatus("✅ aprovado — sintetizando para conferir…");
+  await cvSpeak(texto);
+  cvStatus("✅ aprovado — texto pronto para o agente");
 };
 $("cvSynth").onclick = async () => {
   const texto = $("cvFinalText").textContent || "";

@@ -998,11 +998,14 @@ _chat_lock = threading.Lock()
 CHAT_SYSTEM = (
     "Você ajuda a decidir o TEXTO FINAL que será falado por um agente de voz (TTS). "
     "Converse em português, curto e objetivo: entenda o objetivo, faça perguntas de "
-    "esclarecimento, proponha rascunhos e incorpore o feedback. Quando a mensagem mais "
-    "recente do usuário for uma confirmação (ex.: 'pode', 'manda', 'perfeito'), responda "
-    "APENAS com JSON: {\"final\": true, \"text\": \"<texto aprovado, pronto p/ fala>\"}. "
-    "Enquanto não houver confirmação, responda APENAS com JSON: "
+    "esclarecimento, proponha rascunhos e incorpore o feedback. FLUXO OBRIGATÓRIO: "
+    "1) proponha o rascunho e pergunte se está aprovado; 2) só marque final=true "
+    "quando o usuário disser EXPLICITAMENTE para enviar (ex.: 'pode mandar', 'envia', "
+    "'aprovado') DEPOIS de você ter proposto um rascunho. Comentários, ajustes e "
+    "frases ambíguas NÃO são confirmação — nesses casos responda APENAS com JSON: "
     "{\"final\": false, \"reply\": \"<sua mensagem conversacional>\"}. "
+    "Confirmação explícita → APENAS com JSON: "
+    "{\"final\": true, \"text\": \"<texto aprovado, pronto p/ fala>\"}. "
     "O texto final deve conter só o que será falado — sem comentários sobre a conversa."
 )
 
