@@ -443,6 +443,26 @@ async def _exige_chave(request, call_next):
             return JSONResponse({"detail": "Não autorizado"}, status_code=401)
     return await call_next(request)
 
+
+# Proxy reverso por PATH (ex.: https://dominio/ttsproxy/... atrás de nginx/CF):
+# remove o prefixo antes do roteamento — requisições locais (sem prefixo) são
+# intocadas. Registrado DEPOIS da auth => roda ANTES: a auth vê /api/... limpo
+# e a exigência de chave vale também pelo proxy (origem = IP de LAN, não loopback).
+_BASE_PATH = os.environ.get("TTS_ROD_BASE_PATH", "/ttsproxy").rstrip("/")
+
+
+@app.middleware("http")
+async def _strip_base_path(request, call_next):
+    if _BASE_PATH and (request.url.path == _BASE_PATH
+                       or request.url.path.startswith(_BASE_PATH + "/")):
+        # preserva o path ORIGINAL (com prefixo) p/ handlers que precisam
+        # reconstruir URLs absolutas (ex.: zip do mic-router)
+        request.scope["tts_prefix_path"] = request.url.path
+        rest = request.url.path[len(_BASE_PATH):] or "/"
+        request.scope["path"] = rest
+        request.scope["raw_path"] = rest.encode()
+    return await call_next(request)
+
 # ---------------------------------------------------------------------------
 # Modelo (carregamento preguiçoso — primeira síntese baixa/monta os pesos)
 # ---------------------------------------------------------------------------
@@ -894,7 +914,9 @@ def download_mic_router(request: Request):
 
     Injeta um config.json com o ENDEREÇO deste servidor (o header Host = como o
     navegador chegou aqui, já é o IP/hostname certo p/ a outra máquina) + a chave
-    da API, pra o cliente avisar o modo sem config manual."""
+    da API, pra o cliente avisar o modo sem config manual. Sob proxy por path
+    (ex.: /ttsproxy), o prefixo vem no próprio path e é preservado na URL.
+    """
     import io
     import zipfile
 
@@ -904,7 +926,10 @@ def download_mic_router(request: Request):
 
     host = request.headers.get("host") or "127.0.0.1:7860"
     scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
-    cfg = {"server_url": f"{scheme}://{host}", "api_key": _primary_api_key() or ""}
+    url_path = request.scope.get("tts_prefix_path") or request.url.path
+    sufixo = "/api/client/mic-router"
+    prefixo = url_path[: -len(sufixo)] if url_path.endswith(sufixo) else ""
+    cfg = {"server_url": f"{scheme}://{host}{prefixo}", "api_key": _primary_api_key() or ""}
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:

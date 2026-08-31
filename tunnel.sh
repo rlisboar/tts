@@ -43,9 +43,14 @@ case "$cmd" in
   install)
     [ -n "$DEST" ] || { echo "uso: $0 install usuario@vps [porta]"; exit 1; }
     [ -f "$KEY" ] || ssh-keygen -t ed25519 -N "" -C tts-tunnel -f "$KEY" -q
+    # launchd não lê ~/Documents (TCC) — instala uma cópia fora da proteção
+    RUNTIME="$HOME/.tts-studio/tunnel.sh"
+    mkdir -p "$HOME/.tts-studio" && cp "$SELF" "$RUNTIME" && chmod +x "$RUNTIME"
+    # NOTA: 'restrict' quebra o forward em alguns OpenSSH ("server has disabled
+    # port forwarding") — hardening equivalente com no-* + permitlisten/permitopen
     echo "Chave pública — adicione na VPS (~/.ssh/authorized_keys), numa única linha:"
     echo
-    echo "restrict,permitlisten=\"127.0.0.1:${RPORT}\" $(cat "$KEY.pub")"
+    echo "command=\"\",no-pty,no-agent-forwarding,no-X11-forwarding,permitlisten=\"127.0.0.1:${RPORT}\",permitopen=\"127.0.0.1:${RPORT}\" $(cat "$KEY.pub")"
     echo
     mkdir -p "$HOME/Library/LaunchAgents"
     cat > "$PLIST" <<EOF
@@ -54,7 +59,7 @@ case "$cmd" in
 <plist version="1.0"><dict>
   <key>Label</key><string>$PLIST_LABEL</string>
   <key>ProgramArguments</key><array>
-    <string>/bin/zsh</string><string>$SELF</string><string>$DEST</string><string>$RPORT</string>
+    <string>/bin/zsh</string><string>$RUNTIME</string><string>$DEST</string><string>$RPORT</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

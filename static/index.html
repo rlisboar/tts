@@ -2590,12 +2590,14 @@ function toast(msg, ms = 3500) {
 }
 
 let KEY = localStorage.getItem("ttsStudioKey") || localStorage.getItem("ttsRodKey") || "";
+// proxy por path (ex.: https://dominio/ttsproxy): prefixa todas as chamadas
+const APP_BASE = /^\/ttsproxy(\/|$)/.test(location.pathname) ? "/ttsproxy" : "";
 // <audio src>/<a download> não enviam header — chave vai na query string
-const k = u => KEY ? u + (u.includes("?") ? "&" : "?") + "api_key=" + encodeURIComponent(KEY) : u;
+const k = u => APP_BASE + u + (KEY ? (u.includes("?") ? "&" : "?") + "api_key=" + encodeURIComponent(KEY) : "");
 
 function authFetch(path, opts = {}) {
   opts.headers = { ...(opts.headers || {}), "X-API-Key": KEY };
-  return fetch(path, opts);
+  return fetch(APP_BASE + path, opts);
 }
 
 async function api(path, opts = {}) {

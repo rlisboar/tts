@@ -155,11 +155,13 @@ curl -s http://127.0.0.1:7860/v1/audio/speech \
 
 Dá para consumir a API de fora de casa mantendo o processamento no Mac: um
 **túnel reverso SSH** faz o Mac se conectar PRA FORA à VPS (nada de abrir
-portas no roteador) e a VPS publica o serviço com TLS via nginx:
+portas no roteador) e a VPS publica o serviço com TLS via nginx. O modelo
+recomendado é **proxy por path** num domínio que a VPS já atende (sem DNS
+novo, sem abrir porta no cloud):
 
 ```
-internet ─▶ https://seu-dominio (nginx na VPS) ─▶ 127.0.0.1:PORTA (VPS)
-         ─▶ túnel SSH (Mac conecta pra fora)    ─▶ IP-LAN-do-Mac:7860
+internet ─▶ https://seu-dominio/ttsproxy/... (nginx na VPS)
+         ─▶ túnel SSH (Mac conecta pra fora) ─▶ IP-LAN-do-Mac:7860
 ```
 
 > **Atenção à autenticação:** a API dispensa chave no loopback (`127.0.0.1`).
@@ -167,37 +169,46 @@ internet ─▶ https://seu-dominio (nginx na VPS) ─▶ 127.0.0.1:PORTA (VPS)
 > — via loopback, a internet entraria **sem chave**. Aponte o túnel pelo
 > `tunnel.sh` (ele resolve o IP da LAN sozinho) e mantenha as chaves ativas.
 
+### No app (já pronto)
+
+O servidor remove o prefixo `/ttsproxy` (configurável via
+`TTS_ROD_BASE_PATH`) antes do roteamento, e a UI detecta o prefixo pela URL
+e prefixa as próprias chamadas — o mesmo binário atende LAN e internet.
+
 ### Na VPS (uma vez)
 
 1. Chave do túnel (a linha exata é impressa por `./tunnel.sh install`):
 
 ```sh
-echo 'restrict,permitlisten="127.0.0.1:7860" ssh-ed25519 AAAA... tts-tunnel' \
+echo 'command="",no-pty,no-agent-forwarding,no-X11-forwarding,permitlisten="127.0.0.1:7860",permitopen="127.0.0.1:7860" ssh-ed25519 AAAA... tts-tunnel' \
   >> ~/.ssh/authorized_keys
 ```
 
-2. nginx com TLS (certbot) na frente do túnel:
+> Não use `restrict` nessa linha: em algumas versões do OpenSSH ele desliga
+> o forward por completo ("Server has disabled port forwarding"), mesmo com
+> `permitlisten`. O conjunto `no-*` acima endurece o mesmo ponto.
+
+2. Dentro do bloco `server` 443 do domínio, um `location` (use `^~` para o
+   prefixo vencer as regex de assets):
 
 ```nginx
-server {
-    listen 443 ssl http2;
-    server_name tts.seudominio.com;
-    ssl_certificate     /etc/letsencrypt/live/tts.seudominio.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/tts.seudominio.com/privkey.pem;
-
+location = /ttsproxy { return 301 /ttsproxy/; }
+location ^~ /ttsproxy/ {
+    proxy_pass http://127.0.0.1:7860;   # sem barra no fim: o app tira o prefixo
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 600s;            # /v1/audio/speech pode levar minutos
+    proxy_send_timeout 600s;
+    proxy_buffering off;                # streaming dos trechos de áudio
     client_max_body_size 600m;          # import de vozes (até 512 MB)
-    location / {
-        proxy_pass http://127.0.0.1:7860;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 600s;        # /v1/audio/speech pode levar minutos
-        proxy_send_timeout 600s;
-        proxy_buffering off;            # streaming dos trechos de áudio
-    }
 }
 ```
+
+3. **Se o nginx usar `sites-enabled` com arquivos físicos** (não symlinks),
+   edite o arquivo de lá — e não deixe `.bak` dentro de `sites-enabled`
+   (o include `*` carrega duplicatas e o `nginx -t` falha).
 
 ### No Mac
 
@@ -206,10 +217,13 @@ server {
 # ou apenas em foreground:  ./tunnel.sh ubuntu@ip-da-vps
 ```
 
-Teste: `https://tts.seudominio.com/health` → `{"ok":true}`. A UI abre pelo
-domínio normalmente (a chave da API é pedida uma vez). O zip do mic-router
-baixado pelo domínio já sai com a URL certa. `TTS_TUNNEL_IF=enX` sobrescreve
-a interface de rede detectada; `./tunnel.sh uninstall` remove o agente.
+Teste: `https://seu-dominio/ttsproxy/health` → `{"ok":true}`. A UI abre em
+`/ttsproxy/` (a chave da API é pedida uma vez) e o zip do mic-router baixado
+pelo proxy já sai com `server_url` incluindo o prefixo. Clientes OpenAI:
+`base_url = https://seu-dominio/ttsproxy/v1`. Variante com subdomínio
+próprio (server block dedicado + `location /`) também funciona, sem o
+prefixo. `TTS_TUNNEL_IF=enX` sobrescreve a interface de rede detectada;
+`./tunnel.sh uninstall` remove o agente.
 
 ## Dicas de qualidade
 
