@@ -2339,6 +2339,8 @@
               <input type="number" id="cvFiltHz" min="0" max="300" step="10" value="90"></label>
             <label class="cfg-label">Pausa para cortar (ms)
               <input type="number" id="cvSilenceMs" min="800" max="3000" step="100" value="1400"></label>
+            <label class="cfg-label">Flatness máx. (ruído "flat" vs voz "peaky")
+              <input type="number" id="cvFlatLim" min="0.3" max="0.95" step="0.02" value="0.62"></label>
             <p class="hint">Aplicados ao LIGAR novamente. O servidor também remove ruído (ffmpeg) nos uploads.</p>
           </details>
           <p class="hint" id="cvStatus" style="margin-top:6px"></p>
@@ -5137,11 +5139,17 @@ let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null, cv
 let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0;
 let cvUtterFrames = 0, cvUtterVoiced = 0, cvLastVoiced = 1;
 let cvVadTimer = null, cvSpeakingLogged = false;
+$("cvFlatLim").value = cvFlatLim;
+$("cvFlatLim").onchange = () => {
+  cvFlatLim = parseFloat($("cvFlatLim").value) || 0.62;
+  localStorage.setItem("cvFlatLim", cvFlatLim);
+};
 let cvSpec = new Float32Array(512);
 const cvPiso = { low: 1e-4, mid: 1e-4, high: 1e-5 };
 let cvCalibrandoAte = 0;
 function cvMetersVisible() { const v = document.getElementById('view-conversa'); return !!v && v.classList.contains('active'); }
 let cvSnrLim = parseFloat(localStorage.getItem("cvSnrLim") || "3");
+let cvFlatLim = parseFloat(localStorage.getItem("cvFlatLim") || "0.62");
 $("cvSnrLim").value = cvSnrLim;
 $("cvSnrLimOut").textContent = cvSnrLim;
 $("cvSnrLim").oninput = () => {
