@@ -2304,8 +2304,8 @@
             <p class="hint" id="cvHint">🎙 Aperte <b>Falar</b> e descreva o que você quer. A IA pergunta o que faltar — quando estiver bom, confirme ("pode mandar").</p>
           </div>
           <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
-            <button type="button" id="cvMic" class="primary">🎙 Falar</button>
-            <span id="cvRec" style="display:none" class="hint">⏺ gravando…</span>
+            <button type="button" id="cvMic" class="primary">🎙 Ligar</button>
+            <span id="cvRec" style="display:none" class="hint">🎧 escutando…</span>
             <span style="flex:1"></span>
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
           </div>
@@ -5078,9 +5078,13 @@ $("sttDownloadBtn").onclick = () => {
   _dl("transcricao.txt", $("sttText").value, "text/plain");
 };
 
-/* ───────── Conversa: decidir o texto por voz ───────── */
-let cvSid = null, cvRec = null, cvChunks = [], cvStream = null;
-const CV_HINT = "🎙 Aperte <b>Falar</b> e descreva o que você quer. A IA pergunta o que faltar — quando estiver bom, confirme (\"pode mandar\").";
+/* ───────── Conversa: escuta contínua com VAD (fala/pausa automáticas) ───────── */
+const CV_HINT = "🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar — quando estiver bom, confirme (\"pode mandar\").";
+let cvSid = null, cvListening = false, cvBusy = false;
+let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null;
+let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0;
+const CV_SILENCE_MS = 1400;   // silêncio que fecha a fala
+const CV_MAX_MS = 30000;      // corte de segurança
 function cvAdd(quem, txt) {
   const d = document.createElement("div");
   d.className = "cv-msg " + (quem === "você" ? "eu" : "ia");
@@ -5093,10 +5097,35 @@ function cvFinalShow(text) {
   $("cvFinalText").textContent = text;
   $("cvFinal").style.display = "";
 }
+function cvRms() {
+  const buf = new Float32Array(cvAnalyser.fftSize);
+  cvAnalyser.getFloatTimeDomainData(buf);
+  let s = 0;
+  for (const v of buf) s += v * v;
+  return Math.sqrt(s / buf.length);
+}
+function cvStartUtterance() {
+  cvUtter = []; cvSpeaking = false; cvSilenceSince = 0; cvUtterStart = performance.now();
+  cvMediaRec = new MediaRecorder(cvStream);
+  cvMediaRec.ondataavailable = e => { if (e.data.size && cvSpeaking) cvUtter.push(e.data); };
+  cvMediaRec.start(250);
+}
+function cvCut() {
+  if (cvMediaRec && cvMediaRec.state !== "inactive") cvMediaRec.stop();
+}
+function cvStopListening() {
+  cvListening = false; cvBusy = false;
+  if (cvMediaRec && cvMediaRec.state !== "inactive") cvMediaRec.stop();
+  if (cvStream) cvStream.getTracks().forEach(t => t.stop());
+  if (cvAudioCtx) { cvAudioCtx.close().catch(() => {}); cvAudioCtx = null; }
+  $("cvMic").textContent = "🎙 Ligar";
+  $("cvRec").style.display = "none";
+}
 async function cvSend(text) {
   if (!cvSid || !text.trim()) return;
   cvAdd("você", text);
   cvStatus("IA pensando…");
+  cvBusy = true;
   try {
     const r = await api(`/api/chat/${cvSid}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -5105,62 +5134,104 @@ async function cvSend(text) {
     if (r.status === "confirmed") {
       cvAdd("IA", "✅ " + r.text);
       cvFinalShow(r.text);
-      cvStatus("confirmado — pronto para enviar ao agente");
-    } else { cvAdd("IA", r.reply); cvStatus(""); }
+      cvStatus("confirmado — escuta encerrada. Ligue de novo para nova conversa.");
+      cvStopListening();
+      return;
+    }
+    cvAdd("IA", r.reply);
+    cvStatus("🎧 ouvindo…");
   } catch (e) { cvStatus("✖ " + e.message); }
+  cvBusy = false;
+}
+async function cvTranscribeEEnvia() {
+  cvStatus("transcrevendo…");
+  let wav;
+  const blob = new Blob(cvUtter, { type: cvMediaRec.mimeType || "audio/webm" });
+  try { wav = await blobToWav(blob); } catch (e) { wav = blob; }
+  const fd = new FormData();
+  fd.append("audio", wav, "a.wav");
+  fd.append("source_lang", "pt");
+  let texto = "";
+  try {
+    const r = await api("/api/transcribe", { method: "POST", body: fd });
+    texto = (r.text || "").trim();
+  } catch (e) { cvStatus("✖ STT: " + e.message); cvBusy = false; return; }
+  if (!texto) { cvStatus("não entendi — fale de novo"); cvBusy = false; return; }
+  if (!cvSid) {
+    // primeira fala = objetivo da sessão
+    cvAdd("você", texto);
+    cvStatus("iniciando…");
+    try {
+      const r = await api("/api/chat/start", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ objective: texto })
+      });
+      cvSid = r.session_id;
+      if (r.status === "confirmed") {
+        cvAdd("IA", "✅ " + r.text);
+        cvFinalShow(r.text);
+        cvStatus("confirmado ✔");
+        cvStopListening();
+        return;
+      }
+      cvAdd("IA", r.reply);
+      cvStatus("🎧 ouvindo…");
+    } catch (e) {
+      cvStatus("✖ " + e.message + " — confira a IA em Configurações → Rede");
+      cvBusy = false;
+    }
+  } else {
+    await cvSend(texto);
+  }
 }
 $("cvMic").onclick = async () => {
-  if (cvRec && cvRec.state === "recording") { cvRec.stop(); return; }
+  if (cvListening) { cvStopListening(); cvStatus("escuta desligada"); return; }
   try {
-    cvStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    cvStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
   } catch { toast("Sem acesso ao microfone."); return; }
-  cvChunks = [];
-  cvRec = new MediaRecorder(cvStream);
-  cvRec.ondataavailable = e => { if (e.data.size) cvChunks.push(e.data); };
-  cvRec.onstop = async () => {
-    cvStream.getTracks().forEach(t => t.stop());
-    $("cvRec").style.display = "none";
-    $("cvMic").textContent = "🎙 Falar";
-    cvStatus("transcrevendo…");
-    let wav;
-    const blob = new Blob(cvChunks, { type: cvRec.mimeType || "audio/webm" });
-    try { wav = await blobToWav(blob); } catch (e) { wav = blob; }
-    const fd = new FormData();
-    fd.append("audio", wav, "a.wav");
-    fd.append("source_lang", "pt");
-    let texto = "";
-    try {
-      const r = await api("/api/transcribe", { method: "POST", body: fd });
-      texto = (r.text || "").trim();
-    } catch (e) { cvStatus("✖ STT: " + e.message); return; }
-    if (!texto) { cvStatus("não entendi — fale de novo"); return; }
-    if (!cvSid) {
-      // primeira fala = objetivo da sessão
-      cvAdd("você", texto);
-      cvStatus("iniciando…");
-      try {
-        const r = await api("/api/chat/start", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ objective: texto })
-        });
-        cvSid = r.session_id;
-        if (r.status === "confirmed") { cvAdd("IA", "✅ " + r.text); cvFinalShow(r.text); cvStatus("confirmado ✔"); }
-        else cvAdd("IA", r.reply);
-      } catch (e) {
-        cvStatus("✖ " + e.message + " — confira a IA em Configurações → Rede");
-      }
-    } else {
-      await cvSend(texto);
-    }
-  };
-  cvRec.start();
+  cvListening = true; cvBusy = false;
+  $("cvMic").textContent = "⏹ Desligar";
   $("cvRec").style.display = "";
-  $("cvMic").textContent = "■ Parar";
+  cvAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = cvAudioCtx.createMediaStreamSource(cvStream);
+  cvAnalyser = cvAudioCtx.createAnalyser();
+  cvAnalyser.fftSize = 1024;
+  src.connect(cvAnalyser);
+  cvStartUtterance();
+  cvStatus("🎧 ouvindo… fale o objetivo");
+  cvMediaRec.onstop = async () => {
+    const tinhaVoz = cvUtter.length > 0;
+    const blob = new Blob(cvUtter, { type: cvMediaRec.mimeType || "audio/webm" });
+    cvUtter = [];
+    if (tinhaVoz && cvListening) await cvTranscribeEEnvia();
+    if (cvListening) cvStartUtterance();
+  };
+  (function vad() {
+    if (!cvListening) return;
+    const nivel = cvRms();
+    const agora = performance.now();
+    if (!cvBusy) {
+      if (nivel > 0.015) {                       // voz detectada
+        cvSpeaking = true;
+        cvSilenceSince = 0;
+      } else if (cvSpeaking) {                   // pausa pós-fala
+        if (!cvSilenceSince) cvSilenceSince = agora;
+        const dur = agora - cvUtterStart;
+        if ((agora - cvSilenceSince > CV_SILENCE_MS && dur > 600) || dur > CV_MAX_MS) {
+          cvBusy = true;                         // trava até a IA responder
+          cvCut();
+        }
+      }
+    }
+    requestAnimationFrame(vad);
+  })();
 };
 $("cvEnd").onclick = async () => {
-  if (!cvSid) return;
+  if (!cvSid) { cvStopListening(); return; }
   try { await api(`/api/chat/${cvSid}`, { method: "DELETE" }); } catch (e) {}
   cvSid = null;
+  cvStopListening();
   $("cvLog").innerHTML = `<p class="hint" id="cvHint">${CV_HINT}</p>`;
   $("cvFinal").style.display = "none";
   cvStatus("");
