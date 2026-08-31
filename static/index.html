@@ -5117,7 +5117,7 @@ window.addEventListener("unhandledrejection", e => {
   if (el && cvListening) el.textContent = "✖ promise: " + (e.reason?.message || e.reason);
 });
 const CV_HINT = "🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar — quando estiver bom, confirme (\"pode mandar\").";
-let cvSid = null, cvListening = false, cvBusy = false, cvMute = false;
+let cvSid = null, cvListening = false, cvBusy = false, cvPlaying = false, cvBargeSince = 0;
 let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null;
 let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0, cvNoise = 0;
 let cvVadTimer = null, cvSpeakingLogged = false;
@@ -5175,7 +5175,7 @@ function cvStopListening() {
 }
 async function cvSpeak(text) {
   // sintetiza e toca a resposta da IA; mic em mudo durante a fala
-  cvBusy = true; cvMute = true;
+  cvBusy = true; cvPlaying = true; cvBargeSince = 0;
   cvDbg("cvSpeak início");
   cvStatus("🔊 sintetizando resposta…");
   try {
@@ -5198,11 +5198,12 @@ async function cvSpeak(text) {
     const el = $("cvAudio");
     el.style.display = "";
     el.src = URL.createObjectURL(await r.blob());
-    cvStatus("🔊 falando…");
+    cvStatus("🔊 falando… fale por cima para interromper");
     await new Promise((res, rej) => {
       el.onended = res;
+      el.onpause = () => res("barge-in");
       el.onerror = () => rej(new Error("erro no player"));
-      el.play().catch(() => rej(new Error("play bloqueado pelo navegador")));
+      el.play().catch(err => rej(err));
     });
     cvDbg("tts fim");
   } catch (e) {
@@ -5210,7 +5211,7 @@ async function cvSpeak(text) {
     cvStatus("🔊 (não toquei: " + e.message + ")");
   }
   cvUtter = [];        // descarta o que o mic pegou enquanto a IA falava
-  cvMute = false; cvBusy = false;
+  cvPlaying = false; cvBusy = false;
 }
 $("cvMic").onclick = async () => {
   if (cvListening) { cvStopListening(); cvStatus("escuta desligada"); return; }
@@ -5241,9 +5242,20 @@ $("cvMic").onclick = async () => {
     const limEnd = limStart * 0.55;
     const barras = "▮".repeat(Math.min(10, Math.round((nivel / (limStart * 2)) * 10)));
     if ($("cvRec")) $("cvRec").textContent =
-      (cvSpeaking ? "🗣 fala " : "🎧 amb ") + nivel.toFixed(3) + " / lim " + limStart.toFixed(3) + " " + barras;
+      (cvPlaying ? "🔊 IA falando — fale por cima p/ interromper" : (cvSpeaking ? "🗣 fala " : "🎧 amb ") + nivel.toFixed(3) + " / lim " + limStart.toFixed(3) + " " + barras);
     if (cvSpeaking && !cvSpeakingLogged) { cvSpeakingLogged = true; cvDbg("voz detectada lim=" + limStart.toFixed(3)); }
     if (!cvSpeaking) cvSpeakingLogged = false;
+    if (cvPlaying) {   // barge-in: voz do humano sustentada interrompe a IA
+      if (nivel > limStart) {
+        cvBargeSince = cvBargeSince || agora;
+        if (agora - cvBargeSince > 400) {
+          cvDbg("barge-in");
+          cvSpeaking = true; cvSilenceSince = 0;
+          $("cvAudio").pause();
+        }
+      } else cvBargeSince = 0;
+      return;
+    }
     if (!cvBusy) {
       if (nivel > limStart) {                          // voz acima do ruído do ambiente
         cvSpeaking = true;
