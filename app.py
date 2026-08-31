@@ -3480,10 +3480,9 @@ def unload_models(payload: dict = None):
 
 
 def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
-    """Grava um UploadFile de áudio em outputs/ com a EXTENSÃO certa e, quando
-    não é WAV, decodifica via ffmpeg. O browser manda webm/mp4/ogg (MediaRecorder)
-    e o libsndfile usado pelo STT não abre esses formatos — sem isso o STT só
-    funciona com WAV."""
+    """Grava um UploadFile de áudio e devolve um WAV 16k mono limpo pro STT:
+    decodifica qualquer formato via ffmpeg + denoise espectral (afftdn) +
+    trim de silêncio nas pontas — o Whisper alucina em ruído puro."""
     ctype = (upload.content_type or "").split(";")[0].strip().lower()
     por_ctype = {"audio/webm": ".webm", "audio/ogg": ".ogg", "audio/mpeg": ".mp3",
                  "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".aac",
@@ -3505,19 +3504,23 @@ def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
     dados = upload.file.read(limite_mb * 1024 * 1024 + 1)
     if len(dados) > limite_mb * 1024 * 1024:
         raise HTTPException(413, f"Áudio maior que {limite_mb} MB")
-    raw = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}{suffix}"
     if not dados:
         raise HTTPException(400, "Áudio vazio")
+    raw = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}{suffix}"
     raw.write_bytes(dados)
-    if suffix == ".wav":
-        return raw
     wav = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}.wav"
     try:
-        p = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(raw), str(wav)],
+        # denoise espectral (afftdn) + trim de silêncio nas pontas + 16k mono:
+        # o Whisper alucina em ruído puro — sem isso o "nada" vira "E aí"
+        filtro = ("highpass=f=80,afftdn=nr=12,"
+                  "silenceremove=start_periods=1:start_threshold=-45dB,"
+                  "areverse,silenceremove=start_periods=1:start_threshold=-45dB,areverse")
+        p = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(raw),
+                            "-af", filtro, "-ar", "16000", "-ac", "1", str(wav)],
                            capture_output=True, timeout=120, text=True)
         stderr = (p.stderr or "").strip()
         if p.returncode != 0 or not wav.exists() or wav.stat().st_size == 0:
-            print(f"[stt] ffmpeg falhou ({ctype}, {len(dados)}B): {stderr[:160]}", flush=True)
+            print(f"[stt] ffmpeg ({ctype}, {len(dados)}B): {stderr[:160]}", flush=True)
             raise RuntimeError(stderr[:160] or "ffmpeg não produziu saída")
     except HTTPException:
         raise
