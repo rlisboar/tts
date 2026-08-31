@@ -5080,6 +5080,15 @@ $("sttDownloadBtn").onclick = () => {
 };
 
 /* ───────── Conversa: escuta contínua com VAD (fala/pausa automáticas) ───────── */
+window.addEventListener("error", e => {
+  if (e.filename && e.filename.includes("index")) return;  // erros de outros scripts
+  const el = $("cvStatus");
+  if (el && cvListening) el.textContent = "✖ JS: " + e.message;
+});
+window.addEventListener("unhandledrejection", e => {
+  const el = $("cvStatus");
+  if (el && cvListening) el.textContent = "✖ promise: " + (e.reason?.message || e.reason);
+});
 const CV_HINT = "🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar — quando estiver bom, confirme (\"pode mandar\").";
 let cvSid = null, cvListening = false, cvBusy = false;
 let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null;
