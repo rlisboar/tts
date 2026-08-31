@@ -468,7 +468,11 @@ async def _strip_base_path(request, call_next):
         rest = request.url.path[len(_BASE_PATH):] or "/"
         request.scope["path"] = rest
         request.scope["raw_path"] = rest.encode()
-    return await call_next(request)
+    resp = await call_next(request)
+    # cabeçalhos de segurança básicos em todas as respostas
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return resp
 
 # ---------------------------------------------------------------------------
 # Modelo (carregamento preguiçoso — primeira síntese baixa/monta os pesos)
