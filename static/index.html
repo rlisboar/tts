@@ -2311,6 +2311,9 @@
             <span style="flex:1"></span>
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
           </div>
+          <label class="cfg-label" style="margin-top:8px">Sensibilidade do microfone <output id="cvSensOut">5</output>
+            <input type="range" id="cvSens" min="1" max="10" step="1" value="5" style="width:100%"></label>
+          <p class="hint" style="margin-top:2px">Abaixe se sua voz não é detectada; suba se o ruído dispara sem você falar. Ajuste enquanto observa o medidor.</p>
           <p class="hint" id="cvStatus" style="margin-top:6px"></p>
           <details style="margin-top:10px">
             <summary class="hint" style="cursor:pointer">Instruções da IA (preprompt)</summary>
@@ -5132,6 +5135,7 @@ let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null;
 let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0, cvNoise = 0;
 let cvUtterFrames = 0, cvUtterVoiced = 0, cvLastVoiced = 1;
 let cvVadTimer = null, cvSpeakingLogged = false;
+let cvSens = parseInt(localStorage.getItem("cvSens") || "5", 10);
 const CV_SILENCE_MS = 1400;   // silêncio que fecha a fala
 const CV_MAX_MS = 30000;      // corte de segurança
 function cvAdd(quem, txt) {
@@ -5250,7 +5254,7 @@ $("cvMic").onclick = async () => {
     const agora = performance.now();
     // limiar adaptativo: aprende o ruído do ambiente, mas SÓ abaixo do limiar
     // (a fala não pode puxar o piso pra cima, senão ruído vira "fala")
-    const limStart = Math.max(0.02, cvNoise * 3);
+    const limStart = Math.max(0.015, cvNoise * (5.5 - cvSens * 0.5));
     if (!cvSpeaking && nivel < limStart) cvNoise = Math.max(0.006, (cvNoise || nivel) * 0.95 + nivel * 0.05);
     cvUtterFrames++;
     if (nivel > limStart) cvUtterVoiced++;
@@ -5461,6 +5465,13 @@ async function cvLoadVoices() {
   } catch (e) {}
 }
 cvLoadVoices();
+$("cvSens").value = cvSens;
+$("cvSensOut").textContent = cvSens;
+$("cvSens").oninput = () => {
+  cvSens = parseInt($("cvSens").value, 10);
+  localStorage.setItem("cvSens", cvSens);
+  $("cvSensOut").textContent = cvSens;
+};
 $("sttSrtBtn").onclick = () => {
   if (!sttSegs.length) { toast("Sem segmentos — baixe como .txt."); return; }
   const ts = x => {
