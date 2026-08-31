@@ -5083,6 +5083,7 @@ const CV_HINT = "🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar
 let cvSid = null, cvListening = false, cvBusy = false;
 let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null;
 let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0;
+let cvVadTimer = null;
 const CV_SILENCE_MS = 1400;   // silêncio que fecha a fala
 const CV_MAX_MS = 30000;      // corte de segurança
 function cvAdd(quem, txt) {
@@ -5115,6 +5116,7 @@ function cvCut() {
 }
 function cvStopListening() {
   cvListening = false; cvBusy = false;
+  if (cvVadTimer) { clearInterval(cvVadTimer); cvVadTimer = null; }
   if (cvMediaRec && cvMediaRec.state !== "inactive") cvMediaRec.stop();
   if (cvStream) cvStream.getTracks().forEach(t => t.stop());
   if (cvAudioCtx) { cvAudioCtx.close().catch(() => {}); cvAudioCtx = null; }
@@ -5199,6 +5201,7 @@ $("cvMic").onclick = async () => {
   $("cvMic").textContent = "⏹ Desligar";
   $("cvRec").style.display = "";
   cvAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (cvAudioCtx.resume) await cvAudioCtx.resume();  // política de autoplay dos browsers
   const src = cvAudioCtx.createMediaStreamSource(cvStream);
   cvAnalyser = cvAudioCtx.createAnalyser();
   cvAnalyser.fftSize = 1024;
@@ -5212,25 +5215,27 @@ $("cvMic").onclick = async () => {
     if (tinhaVoz && cvListening) await cvTranscribeEEnvia();
     if (cvListening) cvStartUtterance();
   };
-  (function vad() {
-    if (!cvListening) return;
+  if (cvVadTimer) clearInterval(cvVadTimer);
+  cvVadTimer = setInterval(() => {                     // interval: rAF congela em aba de fundo
+    if (!cvListening) { clearInterval(cvVadTimer); return; }
     const nivel = cvRms();
     const agora = performance.now();
+    const barras = "▮".repeat(Math.min(10, Math.round(nivel * 120)));
+    if ($("cvRec")) $("cvRec").textContent = "🎧 " + (barras || "▮");
     if (!cvBusy) {
-      if (nivel > 0.015) {                       // voz detectada
+      if (nivel > 0.01) {                              // voz detectada
         cvSpeaking = true;
         cvSilenceSince = 0;
-      } else if (cvSpeaking) {                   // pausa pós-fala
+      } else if (cvSpeaking) {                         // pausa pós-fala
         if (!cvSilenceSince) cvSilenceSince = agora;
         const dur = agora - cvUtterStart;
         if ((agora - cvSilenceSince > CV_SILENCE_MS && dur > 600) || dur > CV_MAX_MS) {
-          cvBusy = true;                         // trava até a IA responder
+          cvBusy = true;                               // trava até a IA responder
           cvCut();
         }
       }
     }
-    requestAnimationFrame(vad);
-  })();
+  }, 60);
 };
 $("cvEnd").onclick = async () => {
   if (!cvSid) { cvStopListening(); return; }
