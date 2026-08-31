@@ -5090,7 +5090,7 @@ window.addEventListener("unhandledrejection", e => {
   if (el && cvListening) el.textContent = "✖ promise: " + (e.reason?.message || e.reason);
 });
 const CV_HINT = "🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar — quando estiver bom, confirme (\"pode mandar\").";
-let cvSid = null, cvListening = false, cvBusy = false;
+let cvSid = null, cvListening = false, cvBusy = false, cvMute = false;
 let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null;
 let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0, cvNoise = 0;
 let cvVadTimer = null;
@@ -5145,6 +5145,25 @@ function cvStopListening() {
   $("cvMic").textContent = "🎙 Ligar";
   $("cvRec").style.display = "none";
 }
+async function cvSpeak(text) {
+  // sintetiza e toca a resposta da IA; mic em mudo durante a fala
+  cvBusy = true; cvMute = true;
+  cvStatus("🔊 sintetizando resposta…");
+  try {
+    const r = await fetch(APP_BASE + "/v1/audio/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": KEY },
+      body: JSON.stringify({ model: "tts-1", input: text, response_format: "wav" })
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const el = $("cvAudio");
+    el.src = URL.createObjectURL(await r.blob());
+    cvStatus("🔊 falando…");
+    await new Promise(res => { el.onended = res; el.play().catch(res); });
+  } catch (e) { cvStatus("✖ TTS: " + e.message); }
+  cvUtter = [];        // descarta o que o mic pegou enquanto a IA falava
+  cvMute = false; cvBusy = false;
+}
 async function cvSend(text) {
   if (!cvSid || !text.trim()) return;
   cvAdd("você", text);
@@ -5160,9 +5179,11 @@ async function cvSend(text) {
       cvFinalShow(r.text);
       cvStatus("confirmado — escuta encerrada. Ligue de novo para nova conversa.");
       cvStopListening();
+      await cvSpeak(r.text);
       return;
     }
     cvAdd("IA", r.reply);
+    await cvSpeak(r.reply);
     cvStatus("🎧 ouvindo…");
   } catch (e) { cvStatus("✖ " + e.message); }
   cvBusy = false;
