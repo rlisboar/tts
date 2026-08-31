@@ -2314,7 +2314,7 @@
           <p class="hint" id="cvStatus" style="margin-top:6px"></p>
           <details style="margin-top:10px">
             <summary class="hint" style="cursor:pointer">Instruções da IA (preprompt)</summary>
-            <textarea id="cvSystem" style="width:100%; min-height:70px; font-size:12px; margin-top:6px; font-family:var(--mono)" placeholder="vazio = instruções padrão (decidir o texto final, perguntar, confirmar)"></textarea>
+            <textarea id="cvSystem" style="width:100%; min-height:70px; font-size:12px; margin-top:6px; font-family:var(--mono)" placeholder="instruções da IA…"></textarea>
             <div class="row" style="gap:8px; margin-top:6px">
               <button type="button" id="cvSystemSave" class="small">Salvar instruções</button>
               <button type="button" id="cvSystemReset" class="ghost small">Restaurar padrão</button>
@@ -5365,7 +5365,7 @@ $("cvCutBtn").onclick = () => {   // envio manual: contorna o VAD se ele não co
 async function cvLoadSystem() {
   try {
     const s = await api("/api/settings");
-    $("cvSystem").value = s.chat_system || "";
+    $("cvSystem").value = s.chat_system || s.chat_system_default || "";
   } catch (e) {}
 }
 $("cvSystemSave").onclick = async () => {
@@ -5379,11 +5379,12 @@ $("cvSystemSave").onclick = async () => {
 };
 $("cvSystemReset").onclick = async () => {
   try {
+    const s = await api("/api/settings");
+    $("cvSystem").value = s.chat_system_default || "";
     await api("/api/settings", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_system: "" })
+      body: JSON.stringify({ chat_system: $("cvSystem").value })
     });
-    $("cvSystem").value = "";
     toast("Instruções restauradas (padrão)");
   } catch (e) { toast("Erro: " + e.message, 5000); }
 };

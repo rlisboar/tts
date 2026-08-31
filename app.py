@@ -1351,7 +1351,9 @@ def shutdown():
 
 @app.get("/api/settings")
 def get_settings():
-    return _settings
+    st = dict(_settings)
+    st["chat_system_default"] = CHAT_SYSTEM  # p/ a UI exibir o preprompt padrão
+    return st
 
 
 def _clamp(value, lo, hi, default):
