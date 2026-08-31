@@ -3144,6 +3144,46 @@ def unload_models(payload: dict = None):
     return r
 
 
+def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
+    """Grava um UploadFile de áudio em outputs/ com a EXTENSÃO certa e, quando
+    não é WAV, decodifica via ffmpeg. O browser manda webm/mp4/ogg (MediaRecorder)
+    e o libsndfile usado pelo STT não abre esses formatos — sem isso o STT só
+    funciona com WAV."""
+    ctype = (upload.content_type or "").split(";")[0].strip().lower()
+    por_ctype = {"audio/webm": ".webm", "audio/ogg": ".ogg", "audio/mpeg": ".mp3",
+                 "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".aac",
+                 "audio/flac": ".flac", "audio/wav": ".wav", "audio/x-wav": ".wav",
+                 "audio/wave": ".wav"}
+    nome = (upload.filename or "").lower()
+    suffix = por_ctype.get(ctype)
+    if not suffix:
+        for ext, sfx in (".webm", ".webm"), (".m4a", ".m4a"), (".mp4", ".m4a"), \
+                         (".mp3", ".mp3"), (".ogg", ".ogg"), (".flac", ".flac"), (".wav", ".wav"):
+            if nome.endswith(ext):
+                suffix = sfx
+                break
+        else:
+            suffix = ".wav"
+    raw = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}{suffix}"
+    raw.write_bytes(upload.file.read())
+    if suffix == ".wav":
+        return raw
+    wav = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}.wav"
+    try:
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(raw), str(wav)],
+                       capture_output=True, timeout=120)
+        if not wav.exists() or wav.stat().st_size == 0:
+            raise RuntimeError("ffmpeg não produziu saída")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raw.unlink(missing_ok=True)
+        wav.unlink(missing_ok=True)
+        raise HTTPException(400, f"Formato de áudio não suportado ({ctype or 'desconhecido'})") from e
+    raw.unlink(missing_ok=True)
+    return wav
+
+
 @app.post("/api/stt-partial")
 def stt_partial(audio: UploadFile = None, source_lang: str = Form("auto")):
     """Transcrição parcial e rápida (sem tradução/TTS) — usada para mostrar as
@@ -3151,8 +3191,7 @@ def stt_partial(audio: UploadFile = None, source_lang: str = Form("auto")):
     prévia ao vivo, a versão final vem do /api/translate-speech."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
-    tmp = OUTPUTS_DIR / f".pstt-{uuid.uuid4().hex[:8]}"
-    tmp.write_bytes(audio.file.read())
+    tmp = _save_audio_upload(audio, ".pstt")
     try:
         r = _transcribe(tmp, language=(source_lang or "auto").lower())
     except Exception:  # noqa: BLE001 — prévia: nunca derruba a UI
@@ -3305,8 +3344,7 @@ def transcribe_audio(audio: UploadFile = None, source_lang: str = Form("auto")):
     Whisper local ou remoto, conforme as configurações de modelos remotos."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
-    tmp = OUTPUTS_DIR / f".stt-{uuid.uuid4().hex[:10]}"
-    tmp.write_bytes(audio.file.read())
+    tmp = _save_audio_upload(audio)
     try:
         r = _transcribe(tmp, language=(source_lang or "auto").lower())
     finally:
@@ -3338,8 +3376,7 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
     elif not vpath.exists() and vid not in OMNI_PRESETS:
         raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
 
-    tmp = OUTPUTS_DIR / f".stt-{uuid.uuid4().hex[:10]}"
-    tmp.write_bytes(audio.file.read())
+    tmp = _save_audio_upload(audio)
     emo_label, emo_pitch, emo_speed, emo_err = "", "", 1.0, None
     try:
         r = _transcribe(tmp, language=(source_lang or "auto").lower())
@@ -3419,8 +3456,7 @@ def modify_speech(audio: UploadFile = None, voice_id: str = Form(""),
     elif not vpath.exists() and vid not in OMNI_PRESETS:
         raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
 
-    tmp = OUTPUTS_DIR / f".stt-{uuid.uuid4().hex[:10]}"
-    tmp.write_bytes(audio.file.read())
+    tmp = _save_audio_upload(audio)
     emo_label, emo_pitch, emo_speed, emo_err = "", "", 1.0, None
     try:
         r = _transcribe(tmp, language=(source_lang or "auto").lower())
@@ -3544,8 +3580,7 @@ def _openai_stt(file, language, response_format, translate):
     """STT OpenAI-compatível: áudio -> texto (+ segmentos). translate=True traduz p/ inglês."""
     if file is None:
         raise HTTPException(400, "Campo 'file' obrigatório")
-    tmp = OUTPUTS_DIR / f".stt-{uuid.uuid4().hex[:10]}"
-    tmp.write_bytes(file.file.read())
+    tmp = _save_audio_upload(file)
     try:
         r = _transcribe(tmp, language=(language or "auto").lower())
     finally:

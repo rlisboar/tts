@@ -4967,7 +4967,7 @@ async function sttTranscribe(blob) {
   $("sttStatus").innerHTML = '<span class="spinner"></span>transcrevendo…';
   let wav;
   try { wav = await blobToWav(blob); }
-  catch (e) { $("sttStatus").textContent = ""; toast("Falha no áudio: " + e.message, 6000); return; }
+  catch (e) { wav = blob; }  // browser não decodificou (Safari/iOS) — servidor converte via ffmpeg
   const fd = new FormData();
   fd.append("audio", wav, "a.wav");
   fd.append("source_lang", $("sttSrcLang").value);
