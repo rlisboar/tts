@@ -135,6 +135,11 @@ _SETTINGS_DEFAULTS = {
     # vazio = usa remote_base_url/remote_api_key compartilhados.
     "remote_stt_base_url": "",        # ex.: https://api.openai.com/v1 (OpenAI-compatível)
     "remote_stt_key": "",             # chave dessa API de STT (vazio = usa remote_api_key)
+    # Conversa (decide o texto por chat com IA). Provedor OpenAI-compatível;
+    # vazio = herda remote_base_url/remote_api_key/remote_translate_model.
+    "chat_base_url": "",              # ex.: https://api.openai.com/v1
+    "chat_model": "",                 # ex.: gpt-4o-mini
+    "chat_api_key": "",               # vazio = usa remote_api_key
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
     # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
@@ -977,6 +982,172 @@ def download_mic_router(request: Request):
     )
 
 
+# ── Conversa: decide por voz/chat o texto que o agente vai falar ───────────
+# Consumo principal: The Dudes (agentes) — mas a tela de teste usa o mesmo contrato.
+# Sessões stateful: start → posts até status "confirmed" → text.
+CHAT_TTL = 3600          # sessão expira 1h sem uso
+CHAT_MAX_MSGS = 60       # teto de mensagens enviadas ao LLM por rodada
+_chat_sessions: dict = {}
+_chat_lock = threading.Lock()
+
+CHAT_SYSTEM = (
+    "Você ajuda a decidir o TEXTO FINAL que será falado por um agente de voz (TTS). "
+    "Converse em português, curto e objetivo: entenda o objetivo, faça perguntas de "
+    "esclarecimento, proponha rascunhos e incorpore o feedback. Quando a mensagem mais "
+    "recente do usuário for uma confirmação (ex.: 'pode', 'manda', 'perfeito'), responda "
+    "APENAS com JSON: {\"final\": true, \"text\": \"<texto aprovado, pronto p/ fala>\"}. "
+    "Enquanto não houver confirmação, responda APENAS com JSON: "
+    "{\"final\": false, \"reply\": \"<sua mensagem conversacional>\"}. "
+    "O texto final deve conter só o que será falado — sem comentários sobre a conversa."
+)
+
+
+def _chat_provider() -> tuple[str, str, str]:
+    """(base_url, model, api_key) efetivos — chat_* com fallback p/ tradução."""
+    base = (_settings.get("chat_base_url") or "").strip() \
+        or (_settings.get("remote_base_url") or "").strip()
+    model = (_settings.get("chat_model") or "").strip() \
+        or (_settings.get("remote_translate_model") or "gpt-4o-mini")
+    key = (_settings.get("chat_api_key") or "").strip() \
+        or (_settings.get("remote_api_key") or "").strip()
+    if not base:
+        raise HTTPException(400, "Provedor de conversa não configurado "
+                                 "(Configurações → Rede: Base URL OpenAI-compat)")
+    return base.rstrip("/"), model, key
+
+
+def _chat_llm(messages: list) -> str:
+    """Chama /chat/completions do provedor e devolve o conteúdo da resposta."""
+    import urllib.request
+    base, model, key = _chat_provider()
+    corpo = json.dumps({"model": model, "messages": messages, "temperature": 0.4}).encode()
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(f"{base}/chat/completions", data=corpo,
+                                 method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            dados = json.loads(resp.read())
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Provedor de conversa falhou: {e}")
+    try:
+        return dados["choices"][0]["message"]["content"] or ""
+    except Exception:
+        raise HTTPException(502, "Resposta do provedor sem o formato esperado")
+
+
+def _chat_parse(conteudo: str) -> dict:
+    """Extrai o JSON da resposta (tolerante a ```json e texto solto)."""
+    txt = (conteudo or "").strip()
+    m = re.search(r"```(?:json)?\s*(.+?)\s*```", txt, re.S)
+    if m:
+        txt = m.group(1)
+    try:
+        d = json.loads(txt)
+        if isinstance(d, dict):
+            return d
+    except Exception:
+        pass
+    i, j = (conteudo or "").find("{"), (conteudo or "").rfind("}")
+    if 0 <= i < j:
+        try:
+            d = json.loads(conteudo[i:j + 1])
+            if isinstance(d, dict):
+                return d
+        except Exception:
+            pass
+    return {"final": False, "reply": (conteudo or "").strip()}
+
+
+def _chat_get(sid: str) -> dict:
+    with _chat_lock:
+        s = _chat_sessions.get(sid)
+        if not s:
+            raise HTTPException(404, "Sessão de conversa não encontrada (expirou?)")
+        if time.time() - s["updated"] > CHAT_TTL:
+            _chat_sessions.pop(sid, None)
+            raise HTTPException(404, "Sessão de conversa expirou")
+        s["updated"] = time.time()
+        return s
+
+
+def _chat_purge(now: float) -> None:
+    for sid in [k for k, d in _chat_sessions.items() if now - d["updated"] > CHAT_TTL]:
+        _chat_sessions.pop(sid, None)
+
+
+@app.post("/api/chat/start")
+def chat_start(payload: dict):
+    """Abre sessão p/ decidir, conversando, o texto que o agente vai falar."""
+    objetivo = str((payload or {}).get("objective") or "").strip()
+    if not objetivo:
+        raise HTTPException(400, "Campo 'objective' obrigatório")
+    contexto = str((payload or {}).get("context") or "").strip()
+    sid = uuid.uuid4().hex[:12]
+    msgs = [{"role": "user",
+             "content": f"Objetivo: {objetivo}" + (f"\nContexto: {contexto}" if contexto else "")}]
+    reply = _chat_llm([{"role": "system", "content": CHAT_SYSTEM}] + msgs)
+    parsed = _chat_parse(reply)
+    now = time.time()
+    s = {"objective": objetivo, "context": contexto,
+         "messages": msgs + [{"role": "assistant", "content": reply}],
+         "status": "chatting", "text": "", "created": now, "updated": now}
+    if parsed.get("final") and parsed.get("text"):
+        s["status"], s["text"] = "confirmed", str(parsed["text"])
+    with _chat_lock:
+        _chat_purge(now)
+        _chat_sessions[sid] = s
+    return {"session_id": sid, "status": s["status"],
+            "reply": str(parsed.get("reply") or parsed.get("text") or ""),
+            "text": s["text"]}
+
+
+@app.post("/api/chat/{sid}")
+def chat_message(sid: str, payload: dict):
+    """Fala nova do humano (transcrição do STT). Devolve a réplica da IA e,
+    quando houver confirmação, o texto final aprovado."""
+    s = _chat_get(sid)
+    msg = str((payload or {}).get("message") or "").strip()
+    if not msg:
+        raise HTTPException(400, "Campo 'message' obrigatório")
+    with _chat_lock:
+        s["messages"].append({"role": "user", "content": msg})
+        s["status"], s["text"] = "chatting", ""   # mandar de novo reabre a rodada
+        hist = s["messages"][:]
+    if len(hist) > CHAT_MAX_MSGS + 1:
+        hist = [hist[0]] + hist[-(CHAT_MAX_MSGS + 1):]
+    reply = _chat_llm([{"role": "system", "content": CHAT_SYSTEM}] + hist)
+    parsed = _chat_parse(reply)
+    if parsed.get("final") and parsed.get("text"):
+        s["status"], s["text"] = "confirmed", str(parsed["text"])
+        reply_content = s["text"]
+    else:
+        reply_content = str(parsed.get("reply") or "")
+    with _chat_lock:
+        s["messages"].append({"role": "assistant", "content": reply_content})
+    return {"reply": reply_content, "status": s["status"], "text": s["text"]}
+
+
+@app.get("/api/chat/{sid}")
+def chat_get(sid: str):
+    s = _chat_get(sid)
+    return {"session_id": sid, "status": s["status"], "text": s["text"],
+            "objective": s["objective"],
+            "messages": [{"role": m["role"], "content": m["content"]} for m in s["messages"]]}
+
+
+@app.delete("/api/chat/{sid}")
+def chat_delete(sid: str):
+    with _chat_lock:
+        removida = _chat_sessions.pop(sid, None)
+    if removida is None:
+        raise HTTPException(404, "Sessão de conversa não encontrada")
+    return {"ok": True}
+
+
 # ── Túnel / acesso pela internet (proxy por path) ──────────────────────────
 TUNNEL_LABEL = "studio.tts.tunnel"
 
@@ -1330,6 +1501,12 @@ def update_settings(payload: dict):
         _settings["remote_stt_base_url"] = str(payload["remote_stt_base_url"] or "").strip()[:300]
     if "remote_stt_key" in payload:
         _settings["remote_stt_key"] = str(payload["remote_stt_key"] or "").strip()[:300]
+    if "chat_base_url" in payload:
+        _settings["chat_base_url"] = str(payload["chat_base_url"] or "").strip()[:300]
+    if "chat_model" in payload:
+        _settings["chat_model"] = str(payload["chat_model"] or "").strip()[:80]
+    if "chat_api_key" in payload:
+        _settings["chat_api_key"] = str(payload["chat_api_key"] or "").strip()[:300]
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
             _settings[chave] = str(payload[chave] or "").strip()[:120]

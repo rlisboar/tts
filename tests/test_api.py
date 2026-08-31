@@ -263,3 +263,29 @@ def test_tunnel_status_estrutura(client, auth, monkeypatch):
     assert d["public_check"]["ok"] is True
     d = client.get("/api/tunnel/status", headers=auth).json()
     assert d["public_check"] is None
+
+
+def test_chat_fluxo_confirma(client, auth, monkeypatch):
+    respostas = iter([
+        '{"final": false, "reply": "Qual o tom?"}',
+        '{"final": true, "text": "Bem-vindos ao episódio 5!"}',
+    ])
+    monkeypatch.setattr(app, "_chat_llm", lambda msgs: respostas.__next__())
+    r = client.post("/api/chat/start", headers=auth, json={"objective": "fala de abertura"})
+    assert r.status_code == 200 and r.json()["status"] == "chatting"
+    sid = r.json()["session_id"]
+    r = client.post(f"/api/chat/{sid}", headers=auth, json={"message": "pode mandar"})
+    d = r.json()
+    assert d["status"] == "confirmed" and "episódio 5" in d["text"]
+    d = client.get(f"/api/chat/{sid}", headers=auth).json()
+    assert d["status"] == "confirmed" and len(d["messages"]) >= 4
+    assert client.delete(f"/api/chat/{sid}", headers=auth).status_code == 200
+
+
+def test_chat_start_sem_objetivo_400(client, auth):
+    assert client.post("/api/chat/start", headers=auth, json={}).status_code == 400
+
+
+def test_chat_sessao_inexistente_404(client, auth):
+    assert client.post("/api/chat/deadbeef", headers=auth,
+                       json={"message": "oi"}).status_code == 404

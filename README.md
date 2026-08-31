@@ -225,6 +225,30 @@ próprio (server block dedicado + `location /`) também funciona, sem o
 prefixo. `TTS_TUNNEL_IF=enX` sobrescreve a interface de rede detectada;
 `./tunnel.sh uninstall` remove o agente.
 
+## Conversa (decidir o texto com IA)
+
+Sessões de conversa para decidir, com IA, o texto que um agente vai falar.
+Provedor OpenAI-compat configurável nas settings (`chat_base_url`,
+`chat_model`, `chat_api_key` — vazio herda `remote_base_url`).
+
+```sh
+# 1) abre a sessão com o objetivo
+SID=$(curl -s -X POST $BASE/api/chat/start -H "X-API-Key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"objective":"fala de abertura do episódio 5","context":"tom informal"}' | jq -r .session_id)
+
+# 2) cada fala do humano (transcrição do STT) vira um POST
+curl -s -X POST $BASE/api/chat/$SID -H "X-API-Key: $KEY" \
+  -H "Content-Type: application/json" -d '{"message":"pode mandar!"}'
+# → {"reply":"...","status":"chatting"|"confirmed","text":"..."}
+
+# 3) status "confirmed" traz o texto final aprovado em "text"
+# GET /api/chat/$SID (estado/histórico) · DELETE encerra a sessão
+```
+
+Sessões expiram em 1h sem uso; o LLM só conversa (não executa nada) — a
+confirmação explícita do humano é o gatilho do `text` final.
+
 ## Dicas de qualidade
 
 - Quanto mais limpa a gravação (sem eco, sem ruído), mais parecida a voz clonada.
