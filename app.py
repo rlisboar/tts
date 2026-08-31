@@ -1021,13 +1021,20 @@ def _chat_llm(messages: list) -> str:
     import urllib.request
     base, model, key = _chat_provider()
     corpo = json.dumps({"model": model, "messages": messages, "temperature": 0.4}).encode()
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json",
+               "User-Agent": "Mozilla/5.0 (compatible; tts-studio/1.0)"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     req = urllib.request.Request(f"{base}/chat/completions", data=corpo,
                                  method="POST", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        import ssl
+        try:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception:  # noqa: BLE001 — sem certifi, segue com o trust store padrão
+            ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=120, context=ctx) as resp:
             dados = json.loads(resp.read())
     except HTTPException:
         raise
