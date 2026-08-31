@@ -151,6 +151,66 @@ curl -s http://127.0.0.1:7860/v1/audio/speech \
 - Conversão de formato/velocidade usa `ffmpeg` (`brew install ffmpeg`).
 - `GET /v1/models` lista `tts-1` e `tts-1-hd`.
 
+## Acesso pela internet (VPS como proxy)
+
+Dá para consumir a API de fora de casa mantendo o processamento no Mac: um
+**túnel reverso SSH** faz o Mac se conectar PRA FORA à VPS (nada de abrir
+portas no roteador) e a VPS publica o serviço com TLS via nginx:
+
+```
+internet ─▶ https://seu-dominio (nginx na VPS) ─▶ 127.0.0.1:PORTA (VPS)
+         ─▶ túnel SSH (Mac conecta pra fora)    ─▶ IP-LAN-do-Mac:7860
+```
+
+> **Atenção à autenticação:** a API dispensa chave no loopback (`127.0.0.1`).
+> Por isso o túnel aponta para o **IP de LAN do Mac** e não para `127.0.0.1`
+> — via loopback, a internet entraria **sem chave**. Aponte o túnel pelo
+> `tunnel.sh` (ele resolve o IP da LAN sozinho) e mantenha as chaves ativas.
+
+### Na VPS (uma vez)
+
+1. Chave do túnel (a linha exata é impressa por `./tunnel.sh install`):
+
+```sh
+echo 'restrict,permitlisten="127.0.0.1:7860" ssh-ed25519 AAAA... tts-tunnel' \
+  >> ~/.ssh/authorized_keys
+```
+
+2. nginx com TLS (certbot) na frente do túnel:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name tts.seudominio.com;
+    ssl_certificate     /etc/letsencrypt/live/tts.seudominio.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tts.seudominio.com/privkey.pem;
+
+    client_max_body_size 600m;          # import de vozes (até 512 MB)
+    location / {
+        proxy_pass http://127.0.0.1:7860;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;        # /v1/audio/speech pode levar minutos
+        proxy_send_timeout 600s;
+        proxy_buffering off;            # streaming dos trechos de áudio
+    }
+}
+```
+
+### No Mac
+
+```sh
+./tunnel.sh install ubuntu@ip-da-vps   # gera chave + LaunchAgent (sobe no login)
+# ou apenas em foreground:  ./tunnel.sh ubuntu@ip-da-vps
+```
+
+Teste: `https://tts.seudominio.com/health` → `{"ok":true}`. A UI abre pelo
+domínio normalmente (a chave da API é pedida uma vez). O zip do mic-router
+baixado pelo domínio já sai com a URL certa. `TTS_TUNNEL_IF=enX` sobrescreve
+a interface de rede detectada; `./tunnel.sh uninstall` remove o agente.
+
 ## Dicas de qualidade
 
 - Quanto mais limpa a gravação (sem eco, sem ruído), mais parecida a voz clonada.
