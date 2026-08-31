@@ -5080,6 +5080,21 @@ $("sttDownloadBtn").onclick = () => {
 };
 
 /* ───────── Conversa: escuta contínua com VAD (fala/pausa automáticas) ───────── */
+const cvDbg = m => api("/api/chat-debug", {
+  method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ msg: m, v: 3 })
+}).catch(() => {});
+window.addEventListener("error", e => {
+  if (e.filename && e.filename.includes("index")) return;  // erros de outros scripts
+  const el = $("cvStatus");
+  if (el && cvListening) el.textContent = "✖ JS: " + e.message;
+  cvDbg("✖ JS: " + e.message);
+});
+window.addEventListener("unhandledrejection", e => {
+  const el = $("cvStatus");
+  if (el && cvListening) el.textContent = "✖ promise: " + (e.reason?.message || e.reason);
+  cvDbg("✖ promise: " + (e.reason?.message || e.reason));
+});
 window.addEventListener("error", e => {
   if (e.filename && e.filename.includes("index")) return;  // erros de outros scripts
   const el = $("cvStatus");
@@ -5093,7 +5108,7 @@ const CV_HINT = "🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar
 let cvSid = null, cvListening = false, cvBusy = false, cvMute = false;
 let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null;
 let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0, cvNoise = 0;
-let cvVadTimer = null;
+let cvVadTimer = null, cvSpeakingLogged = false;
 const CV_SILENCE_MS = 1400;   // silêncio que fecha a fala
 const CV_MAX_MS = 30000;      // corte de segurança
 function cvAdd(quem, txt) {
@@ -5127,6 +5142,7 @@ function cvStartUtterance() {
     const blob = new Blob(cvUtter, { type: cvMediaRec.mimeType || "audio/webm" });
     cvUtter = [];
     cvStatus(`onstop: ${tinhaVoz ? "voz" : "sem voz"}, ${blob.size}B`);
+    cvDbg("onstop voz=" + tinhaVoz + " " + blob.size + "B");
     if (tinhaVoz && cvListening) await cvTranscribeEEnvia(blob);
     if (cvListening) cvStartUtterance();
   };
@@ -5174,6 +5190,7 @@ async function cvSend(text) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text })
     });
+    cvDbg("ia respondeu status=" + r.status);
     if (r.status === "confirmed") {
       cvAdd("IA", "✅ " + r.text);
       cvFinalShow(r.text);
@@ -5199,6 +5216,7 @@ async function cvTranscribeEEnvia(blob) {
   try {
     const r = await api("/api/transcribe", { method: "POST", body: fd });
     texto = (r.text || "").trim();
+    cvDbg("stt ok: " + texto.slice(0, 50));
   } catch (e) { cvStatus("✖ STT: " + e.message); cvBusy = false; return; }
   if (!texto) { cvStatus("não entendi — fale de novo"); cvBusy = false; return; }
   if (!cvSid) {
@@ -5234,7 +5252,7 @@ $("cvMic").onclick = async () => {
     cvStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
   } catch { toast("Sem acesso ao microfone."); return; }
-  cvListening = true; cvBusy = false; cvNoise = 0;
+  cvListening = true; cvBusy = false; cvNoise = 0; cvDbg("ligar");
   $("cvMic").textContent = "⏹ Desligar";
   $("cvRec").style.display = "";
   cvAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -5258,6 +5276,8 @@ $("cvMic").onclick = async () => {
     const barras = "▮".repeat(Math.min(10, Math.round((nivel / (limStart * 2)) * 10)));
     if ($("cvRec")) $("cvRec").textContent =
       (cvSpeaking ? "🗣 fala " : "🎧 amb ") + nivel.toFixed(3) + " / lim " + limStart.toFixed(3) + " " + barras;
+    if (cvSpeaking && !cvSpeakingLogged) { cvSpeakingLogged = true; cvDbg("voz detectada lim=" + limStart.toFixed(3)); }
+    if (!cvSpeaking) cvSpeakingLogged = false;
     if (!cvBusy) {
       if (nivel > limStart) {                          // voz acima do ruído do ambiente
         cvSpeaking = true;

@@ -1158,6 +1158,17 @@ def chat_delete(sid: str):
     return {"ok": True}
 
 
+@app.post("/api/chat-debug")
+def chat_debug(payload: dict):
+    """Telemetria temporária do fluxo Conversa no navegador (diagnóstico)."""
+    try:
+        with open("/tmp/tts-chat-debug.log", "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {json.dumps(payload, ensure_ascii=False)}\n")
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True}
+
+
 # ── Túnel / acesso pela internet (proxy por path) ──────────────────────────
 TUNNEL_LABEL = "studio.tts.tunnel"
 
