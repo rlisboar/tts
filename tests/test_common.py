@@ -159,6 +159,18 @@ def test_time_stretch_equivalente_ao_referencia_em_laco():
     assert float(np.abs(got - ref).max()) < 1e-4
 
 
+def test_atempo_chain_extremos():
+    """Speed 0.25–4.0 passa de uma instância de atempo (0.5–2.0) — cadeia correta."""
+    from common import atempo_chain
+
+    assert atempo_chain(1.0) == "atempo=1"
+    assert atempo_chain(1.5) == "atempo=1.5"
+    assert atempo_chain(0.25) == "atempo=0.5,atempo=0.5"
+    assert atempo_chain(4.0) == "atempo=2,atempo=2"
+    assert atempo_chain(3.0) == "atempo=2,atempo=1.5"
+    assert atempo_chain(0.3) == "atempo=0.5,atempo=0.6"
+
+
 def test_time_stretch_ffmpeg_atempo():
     """Caminho primário (sr dado): ffmpeg atempo — duração escala e o tom fica."""
     pytest.importorskip("imageio_ffmpeg")

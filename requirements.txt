@@ -24,3 +24,5 @@ phonemizer-fork
 #   ./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py tests/*.py client/mic_router.py
 pytest
 pyflakes
+# TestClient (tests/test_api.py) exige httpx — sem isto, venv novo quebra nos testes
+httpx

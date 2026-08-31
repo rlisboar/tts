@@ -15,6 +15,8 @@ __pycache__/
 
 # estado de runtime (regenerado a partir dos defaults em app.py)
 settings.json
+# backups de recuperação gerados quando o load encontra JSON corrompido
+*.corrupt
 
 # artefatos de PoC / teste
 poc-*.wav
