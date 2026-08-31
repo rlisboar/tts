@@ -5110,6 +5110,14 @@ function cvStartUtterance() {
   cvUtter = []; cvSpeaking = false; cvSilenceSince = 0; cvUtterStart = performance.now();
   cvMediaRec = new MediaRecorder(cvStream);
   cvMediaRec.ondataavailable = e => { if (e.data.size && cvSpeaking) cvUtter.push(e.data); };
+  cvMediaRec.onstop = async () => {   // cada gravador criado leva o handler — sem isso,
+    // do 2º turno em diante o corte não enviava nada
+    const tinhaVoz = cvUtter.length > 0;
+    const blob = new Blob(cvUtter, { type: cvMediaRec.mimeType || "audio/webm" });
+    cvUtter = [];
+    if (tinhaVoz && cvListening) await cvTranscribeEEnvia();
+    if (cvListening) cvStartUtterance();
+  };
   cvMediaRec.start(250);
 }
 function cvCut() {
@@ -5211,13 +5219,6 @@ $("cvMic").onclick = async () => {
   cvStartUtterance();
   $("cvCutBtn").style.display = "";
   cvStatus("🎧 ouvindo… fale o objetivo");
-  cvMediaRec.onstop = async () => {
-    const tinhaVoz = cvUtter.length > 0;
-    const blob = new Blob(cvUtter, { type: cvMediaRec.mimeType || "audio/webm" });
-    cvUtter = [];
-    if (tinhaVoz && cvListening) await cvTranscribeEEnvia();
-    if (cvListening) cvStartUtterance();
-  };
   if (cvVadTimer) clearInterval(cvVadTimer);
   cvVadTimer = setInterval(() => {                     // interval: rAF congela em aba de fundo
     if (!cvListening) { clearInterval(cvVadTimer); return; }
