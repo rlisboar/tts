@@ -2311,9 +2311,18 @@
             <span style="flex:1"></span>
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
           </div>
-          <label class="cfg-label" style="margin-top:8px">Sensibilidade do microfone <output id="cvSensOut">5</output>
-            <input type="range" id="cvSens" min="1" max="10" step="1" value="5" style="width:100%"></label>
-          <p class="hint" style="margin-top:2px">Abaixe se sua voz não é detectada; suba se o ruído dispara sem você falar. Ajuste enquanto observa o medidor.</p>
+          <label class="cfg-label" style="margin-top:8px">Limiar de voz (SNR) <output id="cvSnrLimOut">3</output>
+            <input type="range" id="cvSnrLim" min="1.5" max="6" step="0.5" value="3" style="width:100%"></label>
+          <p class="hint" style="margin-top:2px">Abaixe se sua voz não é detectada; suba se o ruído dispara sem você falar. Veja o snr ao vivo no medidor.</p>
+          <details style="margin-top:6px">
+            <summary class="hint" style="cursor:pointer">🎚 Ajustes avançados de áudio</summary>
+            <label class="check" style="margin-top:6px"><input type="checkbox" id="cvGate"> Filtro de ruído na gravação (highpass + gate suave)</label>
+            <label class="cfg-label">Corte de graves (Hz)
+              <input type="number" id="cvFiltHz" min="0" max="300" step="10" value="90"></label>
+            <label class="cfg-label">Pausa para cortar (ms)
+              <input type="number" id="cvSilenceMs" min="800" max="3000" step="100" value="1400"></label>
+            <p class="hint">Aplicados ao LIGAR novamente. O servidor também remove ruído (ffmpeg) nos uploads.</p>
+          </details>
           <p class="hint" id="cvStatus" style="margin-top:6px"></p>
           <details style="margin-top:10px">
             <summary class="hint" style="cursor:pointer">Instruções da IA (preprompt)</summary>
@@ -5093,51 +5102,28 @@ $("sttDownloadBtn").onclick = () => {
   _dl("transcricao.txt", $("sttText").value, "text/plain");
 };
 
-/* ───────── Conversa: escuta contínua com VAD (fala/pausa automáticas) ───────── */
+/* ───────── Conversa: escuta contínua com VAD espectral ───────── */
 window.addEventListener("error", e => {
-  let b = document.getElementById("jsErrBanner");
-  if (!b) {
-    b = document.createElement("div");
-    b.id = "jsErrBanner";
-    b.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;background:#a00;color:#fff;padding:4px 10px;font-size:12px";
-    (document.body || document.documentElement).appendChild(b);
-  }
-  b.textContent = "⚠ JS: " + e.message + " (linha " + (e.lineno || "?") + ")";
+  const b = document.getElementById("jsErrBanner");
+  if (b) b.textContent = "⚠ JS: " + e.message + " (linha " + (e.lineno || "?") + ")";
 });
-
-const cvDbg = m => api("/api/chat-debug", {
-  method: "POST", headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ msg: m, v: 4 })
-}).catch(() => {});
-window.addEventListener("error", e => {
-  if (e.filename && e.filename.includes("index")) return;  // erros de outros scripts
-  const el = $("cvStatus");
-  if (el && cvListening) el.textContent = "✖ JS: " + e.message;
-  cvDbg("✖ JS: " + e.message);
-});
-window.addEventListener("unhandledrejection", e => {
-  const el = $("cvStatus");
-  if (el && cvListening) el.textContent = "✖ promise: " + (e.reason?.message || e.reason);
-  cvDbg("✖ promise: " + (e.reason?.message || e.reason));
-});
-window.addEventListener("error", e => {
-  if (e.filename && e.filename.includes("index")) return;  // erros de outros scripts
-  const el = $("cvStatus");
-  if (el && cvListening) el.textContent = "✖ JS: " + e.message;
-});
-window.addEventListener("unhandledrejection", e => {
-  const el = $("cvStatus");
-  if (el && cvListening) el.textContent = "✖ promise: " + (e.reason?.message || e.reason);
-});
-const CV_HINT = "🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar — quando estiver bom, confirme (\"pode mandar\").";
+const CV_HINT = '🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar — quando estiver bom, confirme ("pode mandar").';
 let cvSid = null, cvListening = false, cvBusy = false, cvPlaying = false, cvBargeSince = 0;
-let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null;
-let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0, cvNoise = 0;
+let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null, cvStreamDest = null;
+let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0;
 let cvUtterFrames = 0, cvUtterVoiced = 0, cvLastVoiced = 1;
 let cvVadTimer = null, cvSpeakingLogged = false;
-let cvSens = parseInt(localStorage.getItem("cvSens") || "5", 10);
-const CV_SILENCE_MS = 1400;   // silêncio que fecha a fala
-const CV_MAX_MS = 30000;      // corte de segurança
+let cvSpec = new Float32Array(512);
+const cvPiso = { low: 1e-4, mid: 1e-4, high: 1e-5 };
+let cvSnrLim = parseFloat(localStorage.getItem("cvSnrLim") || "3");
+$("cvSnrLim").value = cvSnrLim;
+$("cvSnrLimOut").textContent = cvSnrLim;
+$("cvSnrLim").oninput = () => {
+  cvSnrLim = parseFloat($("cvSnrLim").value);
+  localStorage.setItem("cvSnrLim", cvSnrLim);
+  $("cvSnrLimOut").textContent = cvSnrLim;
+};
+
 function cvAdd(quem, txt) {
   const d = document.createElement("div");
   d.className = "cv-msg " + (quem === "você" ? "eu" : "ia");
@@ -5150,27 +5136,44 @@ function cvFinalShow(text) {
   $("cvFinalText").textContent = text;
   $("cvFinal").style.display = "";
 }
-function cvRms() {
-  const buf = new Float32Array(cvAnalyser.fftSize);
-  cvAnalyser.getFloatTimeDomainData(buf);
-  let s = 0;
-  for (const v of buf) s += v * v;
-  return Math.sqrt(s / buf.length);
+function cvAnalise() {
+  // análise espectral: energia por banda (low/mid/high) + flatness espectral.
+  // Voz tem energia concentrada em 85-3400Hz e espectro "peaky"; ruído é
+  // broadband e flat — snr espectral é muito mais confiável que RMS.
+  const bins = cvAnalyser.frequencyBinCount;
+  const binHz = cvAudioCtx.sampleRate / (bins * 2);
+  cvAnalyser.getFloatFrequencyData(cvSpec);
+  let low = 0, lN = 0, mid = 0, mN = 0, high = 0, hN = 0;
+  let logSum = 0, linSum = 0, c = 0;
+  for (let i = 1; i < bins; i++) {
+    const hz = i * binHz;
+    const lin = Math.pow(10, cvSpec[i] / 10);
+    if (hz < 300) { low += lin; lN++; }
+    else if (hz < 3400) { mid += lin; mN++; }
+    else if (hz < 8000) { high += lin; hN++; }
+    if (hz >= 85 && hz <= 4000) {
+      const a = Math.max(1e-10, lin);
+      logSum += Math.log(a); linSum += a; c++;
+    }
+  }
+  return {
+    low: Math.max(1e-10, low / Math.max(1, lN)),
+    mid: Math.max(1e-10, mid / Math.max(1, mN)),
+    high: Math.max(1e-10, high / Math.max(1, hN)),
+    flat: c ? Math.exp(logSum / c) / (linSum / c) : 1
+  };
 }
 function cvStartUtterance() {
   cvUtter = []; cvSpeaking = false; cvSilenceSince = 0; cvUtterStart = performance.now();
   cvUtterFrames = 0; cvUtterVoiced = 0;
-  cvMediaRec = new MediaRecorder(cvStream);
+  cvMediaRec = new MediaRecorder(cvStreamDest ? cvStreamDest.stream : cvStream);
   // coleta TODOS os chunks: o primeiro traz o header EBML — filtrar por
   // cvSpeaking gerava webm sem cabeçalho ("EBML header parsing failed")
   cvMediaRec.ondataavailable = e => { if (e.data.size) cvUtter.push(e.data); };
-  cvMediaRec.onstop = async () => {   // cada gravador criado leva o handler — sem isso,
-    // do 2º turno em diante o corte não enviava nada
+  cvMediaRec.onstop = async () => {
     const tinhaVoz = cvUtter.length > 0;
     const blob = new Blob(cvUtter, { type: cvMediaRec.mimeType || "audio/webm" });
     cvUtter = [];
-    cvStatus(`onstop: ${tinhaVoz ? "voz" : "sem voz"}, ${blob.size}B`);
-    cvDbg("onstop voz=" + tinhaVoz + " " + blob.size + "B");
     if (tinhaVoz && cvListening) await cvTranscribeEEnvia(blob);
     if (cvListening) cvStartUtterance();
   };
@@ -5190,26 +5193,19 @@ function cvStopListening() {
   $("cvRec").style.display = "none";
 }
 async function cvSpeak(text) {
-  // sintetiza e toca a resposta da IA; mic em mudo durante a fala
+  // sintetiza e toca a resposta da IA; o VAD detecta barge-in (fale por cima)
   cvBusy = true; cvPlaying = true; cvBargeSince = 0;
-  cvDbg("cvSpeak início");
   cvStatus("🔊 sintetizando resposta…");
   try {
     const body = { model: "tts-1", input: text, response_format: "wav" };
     const voz = $("cvVoice")?.value;
     if (voz) body.voice = voz;
     cvDbg("tts synth voz=" + (voz || "padrão"));
-    let r;
-    for (let tent = 0; tent < 2; tent++) {
-      r = await fetch(APP_BASE + "/v1/audio/speech", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": KEY },
-        body: JSON.stringify(body)
-      });
-      if (r.ok) break;
-      cvDbg("tts " + r.status + " tent=" + tent);
-      if (tent === 0) await new Promise(res => setTimeout(res, 800));
-    }
+    const r = await fetch(APP_BASE + "/v1/audio/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": KEY },
+      body: JSON.stringify(body)
+    });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const el = $("cvAudio");
     el.style.display = "";
@@ -5229,74 +5225,6 @@ async function cvSpeak(text) {
   cvUtter = [];        // descarta o que o mic pegou enquanto a IA falava
   cvPlaying = false; cvBusy = false;
 }
-$("cvMic").onclick = async () => {
-  if (cvListening) { cvStopListening(); cvStatus("escuta desligada"); return; }
-  try {
-    cvStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-  } catch { toast("Sem acesso ao microfone."); return; }
-  cvListening = true; cvBusy = false; cvNoise = 0;
-  $("cvMic").textContent = "⏹ Desligar";
-  $("cvRec").style.display = "";
-  cvAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (cvAudioCtx.resume) await cvAudioCtx.resume();  // política de autoplay dos browsers
-  const src = cvAudioCtx.createMediaStreamSource(cvStream);
-  cvAnalyser = cvAudioCtx.createAnalyser();
-  cvAnalyser.fftSize = 1024;
-  src.connect(cvAnalyser);
-  cvStartUtterance();
-  $("cvCutBtn").style.display = "";
-  cvStatus("🎧 ouvindo… fale o objetivo");
-  if (cvVadTimer) clearInterval(cvVadTimer);
-  cvVadTimer = setInterval(() => {                     // interval: rAF congela em aba de fundo
-    if (!cvListening) { clearInterval(cvVadTimer); return; }
-    const nivel = cvRms();
-    const agora = performance.now();
-    // limiar adaptativo: aprende o ruído do ambiente, mas SÓ abaixo do limiar
-    // (a fala não pode puxar o piso pra cima, senão ruído vira "fala")
-    const limStart = Math.max(0.015, cvNoise * (5.5 - cvSens * 0.5));
-    if (!cvSpeaking && nivel < limStart) cvNoise = Math.max(0.006, (cvNoise || nivel) * 0.95 + nivel * 0.05);
-    cvUtterFrames++;
-    if (nivel > limStart) cvUtterVoiced++;
-    const limEnd = limStart * 0.55;
-    const barras = "▮".repeat(Math.min(10, Math.round((nivel / (limStart * 2)) * 10)));
-    if ($("cvRec")) $("cvRec").textContent =
-      (cvPlaying ? "🔊 IA falando — fale por cima p/ interromper" : (cvSpeaking ? "🗣 fala " : "🎧 amb ") + nivel.toFixed(3) + " / lim " + limStart.toFixed(3) + " " + barras);
-    if (cvSpeaking && !cvSpeakingLogged) { cvSpeakingLogged = true; cvDbg("voz detectada lim=" + limStart.toFixed(3)); }
-    if (!cvSpeaking) cvSpeakingLogged = false;
-    if (cvPlaying) {   // barge-in: voz do humano sustentada interrompe a IA
-      if (nivel > limStart) {
-        cvBargeSince = cvBargeSince || agora;
-        if (agora - cvBargeSince > 400) {
-          cvDbg("barge-in");
-          cvSpeaking = true; cvSilenceSince = 0;
-          cvUtterFrames = 0; cvUtterVoiced = 0;   // a fala do humano começa aqui
-          $("cvAudio").pause();
-        }
-      } else cvBargeSince = 0;
-      return;
-    }
-    if (!cvBusy) {
-      if (nivel > limStart) {                          // voz acima do ruído do ambiente
-        cvSpeaking = true;
-        cvSilenceSince = 0;
-      } else if (cvSpeaking) {                         // abaixo do limiar de fala
-        if (nivel > limEnd) cvSilenceSince = 0;        // pausa curta não corta
-        else {
-          if (!cvSilenceSince) cvSilenceSince = agora;
-          const dur = agora - cvUtterStart;
-          const voiced = cvUtterVoiced / Math.max(1, cvUtterFrames);
-          if ((agora - cvSilenceSince > CV_SILENCE_MS && dur > 1000) || dur > CV_MAX_MS) {
-            cvBusy = true;                             // trava até a IA responder
-            cvLastVoiced = voiced;
-            cvDbg("corte dur=" + Math.round(dur) + "ms voiced=" + Math.round(voiced * 100) + "% frags=" + cvUtter.length);
-            cvCut();
-          }
-        }
-      }
-    }
-  }, 60);
-};
 async function cvSend(text, _retry = true) {
   if (!text.trim()) return;
   cvAdd("você", text);
@@ -5327,16 +5255,7 @@ async function cvSend(text, _retry = true) {
     for (let i = 0; i < 120; i++) {
       await new Promise(res => setTimeout(res, 1500));
       if (!cvSid) { cvBusy = false; return; }
-      let d;
-      try { d = await api(`/api/chat/${cvSid}`); }
-      catch (e) {
-        if (_retry && /encontrada|expirou/i.test(e.message)) {
-          cvDbg("sessão perdida no poll — reabrindo");
-          cvSid = null; cvBusy = false;
-          return cvSend(text, false);
-        }
-        throw e;
-      }
+      const d = await api(`/api/chat/${cvSid}`);
       if (d.status === "thinking") continue;
       if (d.error) { cvStatus("✖ " + d.error); cvBusy = false; return; }
       if (d.status === "confirmed") {
@@ -5377,36 +5296,90 @@ async function cvTranscribeEEnvia(blob) {
   if (!texto) { cvStatus("não entendi — fale de novo"); cvBusy = false; return; }
   await cvSend(texto);
 }
+$("cvMic").onclick = async () => {
+  if (cvListening) { cvStopListening(); cvStatus("escuta desligada"); return; }
+  try {
+    cvStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch { toast("Sem acesso ao microfone."); return; }
+  cvListening = true; cvBusy = false;
+  $("cvMic").textContent = "⏹ Desligar";
+  $("cvRec").style.display = "";
+  cvAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (cvAudioCtx.resume) await cvAudioCtx.resume();  // política de autoplay dos browsers
+  const src = cvAudioCtx.createMediaStreamSource(cvStream);
+  // cadeia de filtros: highpass (rumble) + compressor (gate suave) quando ligado
+  let node = src;
+  if (localStorage.getItem("cvGate") !== "0") {
+    const hp = cvAudioCtx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = parseInt(localStorage.getItem("cvFiltHz") || "90", 10) || 90;
+    const comp = cvAudioCtx.createDynamicsCompressor();
+    comp.threshold.value = -50; comp.ratio.value = 6;
+    comp.attack.value = 0.003; comp.release.value = 0.25;
+    node.connect(hp); hp.connect(comp); node = comp;
+  }
+  const dest = cvAudioCtx.createMediaStreamDestination();
+  node.connect(dest);
+  cvStreamDest = dest;
+  cvAnalyser = cvAudioCtx.createAnalyser();
+  cvAnalyser.fftSize = 1024;
+  node.connect(cvAnalyser);
+  cvStartUtterance();
+  $("cvCutBtn").style.display = "";
+  cvStatus("🎧 ouvindo… fale o objetivo");
+  if (cvVadTimer) clearInterval(cvVadTimer);
+  cvVadTimer = setInterval(() => {                     // interval: rAF congela em aba de fundo
+    if (!cvListening) { clearInterval(cvVadTimer); return; }
+    const sp = cvAnalise();
+    // pisos de ruído por banda: calibram só quando o snr está baixo (sem fala)
+    const snr = (sp.mid + 0.5 * sp.low) / (cvPiso.mid + 0.5 * cvPiso.low + 1e-10);
+    if (snr < 2) {
+      cvPiso.low += (sp.low - cvPiso.low) * 0.05;
+      cvPiso.mid += (sp.mid - cvPiso.mid) * 0.05;
+      cvPiso.high += (sp.high - cvPiso.high) * 0.05;
+    }
+    const falando = snr > cvSnrLim && sp.flat < 0.62;
+    if ($("cvRec")) $("cvRec").textContent =
+      (cvPlaying ? "🔊 IA falando — fale por cima p/ interromper" :
+        (falando ? "🗣 fala " : "🎧 amb ") + "snr " + snr.toFixed(1) + " · flat " + sp.flat.toFixed(2));
+    if (cvSpeaking && !cvSpeakingLogged) { cvSpeakingLogged = true; cvDbg("voz detectada"); }
+    if (!cvSpeaking) cvSpeakingLogged = false;
+    if (cvPlaying) {   // barge-in: voz do humano sustentada interrompe a IA
+      cvUtterFrames++;
+      if (falando) cvUtterVoiced++;
+      if (falando) {
+        cvBargeSince = cvBargeSince || performance.now();
+        if (performance.now() - cvBargeSince > 400) {
+          cvDbg("barge-in");
+          cvSpeaking = true; cvSilenceSince = 0;
+          cvUtterFrames = 0; cvUtterVoiced = 0;
+          $("cvAudio").pause();
+        }
+      } else cvBargeSince = 0;
+      return;
+    }
+    if (!cvBusy) {
+      cvUtterFrames++;
+      if (falando) {
+        cvUtterVoiced++;
+        if (!cvSpeaking) { cvSpeaking = true; cvSilenceSince = 0; }
+        cvSilenceSince = 0;
+      } else if (cvSpeaking) {                         // abaixo do limiar de fala
+        if (!cvSilenceSince) cvSilenceSince = agora;
+        const dur = agora - cvUtterStart;
+        if ((agora - cvSilenceSince > cvSilenceMs && dur > 600) || dur > CV_MAX_MS) {
+          cvBusy = true;                               // trava até a IA responder
+          cvDbg("corte dur=" + Math.round(dur) + "ms voiced=" + Math.round(100 * cvUtterVoiced / Math.max(1, cvUtterFrames)) + "%");
+          cvCut();
+        }
+      }
+    }
+  }, 60);
+};
 $("cvCutBtn").onclick = () => {   // envio manual: contorna o VAD se ele não cortar
   if (cvListening && !cvBusy) { cvBusy = true; cvCut(); }
 };
-async function cvLoadSystem() {
-  try {
-    const s = await api("/api/settings");
-    $("cvSystem").value = s.chat_system || s.chat_system_default || "";
-  } catch (e) {}
-}
-$("cvSystemSave").onclick = async () => {
-  try {
-    await api("/api/settings", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_system: $("cvSystem").value })
-    });
-    toast("Instruções salvas ✔");
-  } catch (e) { toast("Erro: " + e.message, 5000); }
-};
-$("cvSystemReset").onclick = async () => {
-  try {
-    const s = await api("/api/settings");
-    $("cvSystem").value = s.chat_system_default || "";
-    await api("/api/settings", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_system: $("cvSystem").value })
-    });
-    toast("Instruções restauradas (padrão)");
-  } catch (e) { toast("Erro: " + e.message, 5000); }
-};
-cvLoadSystem();
 $("cvEnd").onclick = async () => {
   if (!cvSid) { cvStopListening(); return; }
   try { await api(`/api/chat/${cvSid}`, { method: "DELETE" }); } catch (e) {}
@@ -5441,6 +5414,32 @@ $("cvSynth").onclick = async () => {
   } catch (e) { cvStatus("✖ " + e.message); }
   $("cvSynth").disabled = false;
 };
+async function cvLoadSystem() {
+  try {
+    const s = await api("/api/settings");
+    $("cvSystem").value = s.chat_system || s.chat_system_default || "";
+  } catch (e) {}
+}
+$("cvSystemSave").onclick = async () => {
+  try {
+    await api("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_system: $("cvSystem").value })
+    });
+    toast("Instruções salvas ✔");
+  } catch (e) { toast("Erro: " + e.message, 5000); }
+};
+$("cvSystemReset").onclick = async () => {
+  try {
+    const s = await api("/api/settings");
+    $("cvSystem").value = s.chat_system_default || "";
+    await api("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_system: $("cvSystem").value })
+    });
+    toast("Instruções restauradas (padrão)");
+  } catch (e) { toast("Erro: " + e.message, 5000); }
+};
 async function cvLoadVoices() {
   const sel = $("cvVoice");
   if (!sel) return;
@@ -5465,13 +5464,7 @@ async function cvLoadVoices() {
   } catch (e) {}
 }
 cvLoadVoices();
-$("cvSens").value = cvSens;
-$("cvSensOut").textContent = cvSens;
-$("cvSens").oninput = () => {
-  cvSens = parseInt($("cvSens").value, 10);
-  localStorage.setItem("cvSens", cvSens);
-  $("cvSensOut").textContent = cvSens;
-};
+
 $("sttSrtBtn").onclick = () => {
   if (!sttSegs.length) { toast("Sem segmentos — baixe como .txt."); return; }
   const ts = x => {
