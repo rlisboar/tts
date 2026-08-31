@@ -5139,17 +5139,17 @@ let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null, cv
 let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0;
 let cvUtterFrames = 0, cvUtterVoiced = 0, cvLastVoiced = 1;
 let cvVadTimer = null, cvSpeakingLogged = false;
-$("cvFlatLim").value = cvFlatLim;
-$("cvFlatLim").onchange = () => {
-  cvFlatLim = parseFloat($("cvFlatLim").value) || 0.62;
-  localStorage.setItem("cvFlatLim", cvFlatLim);
-};
 let cvSpec = new Float32Array(512);
 const cvPiso = { low: 1e-4, mid: 1e-4, high: 1e-5 };
 let cvCalibrandoAte = 0;
 function cvMetersVisible() { const v = document.getElementById('view-conversa'); return !!v && v.classList.contains('active'); }
 let cvSnrLim = parseFloat(localStorage.getItem("cvSnrLim") || "3");
 let cvFlatLim = parseFloat(localStorage.getItem("cvFlatLim") || "0.62");
+$("cvFlatLim").value = cvFlatLim;
+$("cvFlatLim").onchange = () => {
+  cvFlatLim = parseFloat($("cvFlatLim").value) || 0.62;
+  localStorage.setItem("cvFlatLim", cvFlatLim);
+};
 $("cvSnrLim").value = cvSnrLim;
 $("cvSnrLimOut").textContent = cvSnrLim;
 $("cvSnrLim").oninput = () => {
