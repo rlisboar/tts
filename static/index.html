@@ -2306,6 +2306,7 @@
           <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
             <button type="button" id="cvMic" class="primary">🎙 Ligar</button>
             <button type="button" id="cvCutBtn" class="small" style="display:none" title="Corta e envia agora">⏎ Enviar</button>
+            <select id="cvVoice" title="Voz da resposta da IA e da síntese" style="max-width:200px"></select>
             <span id="cvRec" style="display:none" class="hint">🎧 escutando…</span>
             <span style="flex:1"></span>
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
@@ -5166,10 +5167,13 @@ async function cvSpeak(text) {
   cvBusy = true; cvMute = true;
   cvStatus("🔊 sintetizando resposta…");
   try {
+    const body = { model: "tts-1", input: text, response_format: "wav" };
+    const voz = $("cvVoice")?.value;
+    if (voz) body.voice = voz;
     const r = await fetch(APP_BASE + "/v1/audio/speech", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-API-Key": KEY },
-      body: JSON.stringify({ model: "tts-1", input: text, response_format: "wav" })
+      body: JSON.stringify(body)
     });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const el = $("cvAudio");
@@ -5207,10 +5211,10 @@ async function cvSend(text) {
 }
 async function cvTranscribeEEnvia(blob) {
   cvStatus(`transcrevendo ${blob.size}B…`);
-  let wav;
-  try { wav = await blobToWav(blob); } catch (e) { wav = blob; }
+  // manda o formato cru do browser (webm/mp4) — o servidor decodifica via ffmpeg
+  const ext = (blob.type.split("/")[1] || "webm").split(";")[0];
   const fd = new FormData();
-  fd.append("audio", wav, "a.wav");
+  fd.append("audio", blob, "fala." + ext);
   fd.append("source_lang", "pt");
   let texto = "";
   try {
@@ -5317,10 +5321,13 @@ $("cvSynth").onclick = async () => {
   $("cvSynth").disabled = true;
   cvStatus("sintetizando…");
   try {
+    const body = { model: "tts-1", input: texto, response_format: "wav" };
+    const voz = $("cvVoice")?.value;
+    if (voz) body.voice = voz;
     const r = await fetch(APP_BASE + "/v1/audio/speech", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-API-Key": KEY },
-      body: JSON.stringify({ model: "tts-1", input: texto, response_format: "wav" })
+      body: JSON.stringify(body)
     });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const blob = await r.blob();
@@ -5330,6 +5337,25 @@ $("cvSynth").onclick = async () => {
   } catch (e) { cvStatus("✖ " + e.message); }
   $("cvSynth").disabled = false;
 };
+async function cvLoadVoices() {
+  const sel = $("cvVoice");
+  if (!sel) return;
+  try {
+    const vs = await api("/api/voices");
+    if (!Array.isArray(vs)) return;
+    sel.innerHTML = "";
+    const o0 = document.createElement("option");
+    o0.value = ""; o0.textContent = "voz padrão do servidor";
+    sel.appendChild(o0);
+    vs.forEach(v => {
+      const o = document.createElement("option");
+      o.value = v.id;
+      o.textContent = v.name || v.id;
+      sel.appendChild(o);
+    });
+  } catch (e) {}
+}
+cvLoadVoices();
 $("sttSrtBtn").onclick = () => {
   if (!sttSegs.length) { toast("Sem segmentos — baixe como .txt."); return; }
   const ts = x => {
