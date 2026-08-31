@@ -26,3 +26,4 @@ pytest
 pyflakes
 # TestClient (tests/test_api.py) exige httpx — sem isto, venv novo quebra nos testes
 httpx
+silero-vad

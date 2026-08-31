@@ -3256,9 +3256,44 @@ def _transcribe_remote(audio_path: Path, language: str | None):
             "segments": j.get("segments") or []}
 
 
+_vad_model = None
+
+
+def _vad_load():
+    """Silero VAD carregado sob demanda (~1MB, CPU, roda em tempo real)."""
+    global _vad_model
+    if _vad_model is None:
+        from silero_vad import load_silero_vad
+        _vad_model = load_silero_vad()
+    return _vad_model
+
+
+def _vad_tem_fala(audio_path: Path, minimo_s: float = 0.3) -> bool:
+    """Silero VAD: True se o wav tem fala de verdade (não ruído).
+    Em caso de erro no Silero, devolve True (não bloqueia o pipeline)."""
+    try:
+        import soundfile as sf
+        import torch
+        from silero_vad import get_speech_timestamps
+        audio, sr = sf.read(str(audio_path), dtype="float32")
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        speech = get_speech_timestamps(torch.from_numpy(audio), _vad_load(),
+                                       sampling_rate=sr, threshold=0.6, speech_pad_ms=100)
+        dur_fala = sum((t["end"] - t["start"]) for t in speech) / sr
+        return dur_fala >= minimo_s
+    except Exception:  # noqa: BLE001 — Silero indisponível não bloqueia o STT
+        return True
+
+
 def _transcribe(audio_path: Path, language: str | None = None, allow_remote: bool = True):
     if allow_remote and _use_remote_stt():
         return _transcribe_remote(audio_path, language)
+
+    # Silero VAD: se o áudio não tem fala, o Whisper nem roda (mata alucinação)
+    fala = _vad_tem_fala(audio_path)
+    if not fala:
+        return {"text": "", "language": "", "segments": []}
 
     import mlx_whisper
 
