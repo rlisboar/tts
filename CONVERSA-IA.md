@@ -15,7 +15,7 @@ dele).
 ## Base URL e autenticação
 
 ```
-LAN:     http://192.168.1.50:7860
+LAN:     http://IP-DO-SERVIDOR:7860
 Internet: https://SEU-DOMINIO.com/ttsproxy
 ```
 
