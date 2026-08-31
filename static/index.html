@@ -2305,6 +2305,7 @@
           </div>
           <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
             <button type="button" id="cvMic" class="primary">🎙 Ligar</button>
+            <button type="button" id="cvCutBtn" class="small" style="display:none" title="Corta e envia agora">⏎ Enviar</button>
             <span id="cvRec" style="display:none" class="hint">🎧 escutando…</span>
             <span style="flex:1"></span>
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
@@ -5117,6 +5118,7 @@ function cvCut() {
 function cvStopListening() {
   cvListening = false; cvBusy = false;
   if (cvVadTimer) { clearInterval(cvVadTimer); cvVadTimer = null; }
+  if ($("cvCutBtn")) $("cvCutBtn").style.display = "none";
   if (cvMediaRec && cvMediaRec.state !== "inactive") cvMediaRec.stop();
   if (cvStream) cvStream.getTracks().forEach(t => t.stop());
   if (cvAudioCtx) { cvAudioCtx.close().catch(() => {}); cvAudioCtx = null; }
@@ -5207,6 +5209,7 @@ $("cvMic").onclick = async () => {
   cvAnalyser.fftSize = 1024;
   src.connect(cvAnalyser);
   cvStartUtterance();
+  $("cvCutBtn").style.display = "";
   cvStatus("🎧 ouvindo… fale o objetivo");
   cvMediaRec.onstop = async () => {
     const tinhaVoz = cvUtter.length > 0;
@@ -5225,7 +5228,8 @@ $("cvMic").onclick = async () => {
     const limStart = Math.max(0.02, cvNoise * 3);
     const limEnd = limStart * 0.55;
     const barras = "▮".repeat(Math.min(10, Math.round((nivel / (limStart * 2)) * 10)));
-    if ($("cvRec")) $("cvRec").textContent = (cvSpeaking ? "🗣 " : "🎧 ") + (barras || "▮");
+    if ($("cvRec")) $("cvRec").textContent =
+      (cvSpeaking ? "🗣 fala " : "🎧 amb ") + nivel.toFixed(3) + " / lim " + limStart.toFixed(3) + " " + barras;
     if (!cvBusy) {
       if (nivel > limStart) {                          // voz acima do ruído do ambiente
         cvSpeaking = true;
@@ -5243,6 +5247,9 @@ $("cvMic").onclick = async () => {
       }
     }
   }, 60);
+};
+$("cvCutBtn").onclick = () => {   // envio manual: contorna o VAD se ele não cortar
+  if (cvListening && !cvBusy) { cvBusy = true; cvCut(); }
 };
 $("cvEnd").onclick = async () => {
   if (!cvSid) { cvStopListening(); return; }
