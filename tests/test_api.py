@@ -74,6 +74,14 @@ def test_tts_texto_longo_400(client):
     assert r.status_code == 400
 
 
+def test_settings_perf_priority_foi_removida(client):
+    """Setting órfã (UI removeu o seletor) não deve mais existir nem voltar."""
+    r = client.post("/api/settings", headers=auth_headers(client),
+                    json={"perf_priority": "qualidade"})
+    assert r.status_code == 200
+    assert "perf_priority" not in r.json()
+
+
 def test_settings_clamp_e_restauracao(client):
     # usa o settings.json real: captura os valores atuais e restaura no fim
     orig = client.get("/api/settings", headers=auth_headers(client)).json()
@@ -87,7 +95,6 @@ def test_settings_clamp_e_restauracao(client):
         assert body["omni_num_steps"] == 64
         assert body["speed"] == 4.0
         assert body["chunk_max_chars"] == 60
-        assert body["perf_priority"] == "equilibrio"
         assert body["omni_seed"] == -1
     finally:
         client.post("/api/settings", headers=auth_headers(client), json=orig)

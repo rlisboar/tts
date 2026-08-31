@@ -89,6 +89,20 @@ def test_fade_edges_zera_bordas():
     assert float(y[len(y) // 2]) == pytest.approx(1.0)
 
 
+def test_apply_audio_fx_identidade_ganho_e_limiter():
+    from common import apply_audio_fx
+
+    sr = 8000
+    t = np.arange(sr, dtype=np.float32) / sr
+    x = (0.1 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    assert np.array_equal(apply_audio_fx(x, sr), x)            # zeros → intocatado
+    y = apply_audio_fx(x, sr, gain_db=6.0)                     # +6 dB ≈ ×2
+    rms_x = float(np.sqrt(np.mean(x ** 2)))
+    assert float(np.sqrt(np.mean(y ** 2))) == pytest.approx(2 * rms_x, rel=0.15)
+    z = apply_audio_fx(x, sr, gain_db=24.0)                    # limiter segura o pico
+    assert float(np.abs(z).max()) <= 0.98
+
+
 def test_time_stretch_identity_e_dimensao():
     x = _sinal()
     assert time_stretch(x, 1.0) is x

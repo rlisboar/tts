@@ -25,7 +25,9 @@ from fastapi.staticfiles import StaticFiles
 from backends import generate_with_backend, list_backends, resolve_backend
 from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,
                     resolve_omni_source, write_json_atomic,
+                    apply_audio_fx,
                     atempo_chain as _atempo_chain,
+                    biquad as _biquad,
                     fade_edges as _fade_edges,
                     normalize as _normalize,
                     release_mlx_memory as _release_mlx_memory,
@@ -114,7 +116,6 @@ _SETTINGS_DEFAULTS = {
     "stt_min_logprob": -1.0,          # rejeita se confiança média abaixo disto (-5–0)
     "stt_max_compression": 2.4,       # rejeita se repetitivo demais (alucinação) (1–10)
     "stt_beam": 5,                    # beam do STT remoto: 1=rápido, 5=padrão, 8=qualidade
-    "perf_priority": "equilibrio",    # preset qualidade | equilibrio | velocidade (ajusta num_steps + stt_beam)
     # Modelos remotos (API OpenAI-compatível). base_url deve terminar em /v1
     # (ex.: http://rtx-host:8000/v1). api_key opcional. Tudo local por padrão.
     # base_url + api_key ficam locais (settings.json é gitignored). Vazio = local.
@@ -679,57 +680,16 @@ def _anomalo(audio, sr: int, chunk: str, speed: float = 1.0) -> bool:
     return len(audio) / sr < len(chunk) / 45 / max(1.0, float(speed or 1.0))
 
 
-def _biquad(kind: str, f0: float, gain_db: float, sr: int, q: float = 0.707):
-    """Coeficientes RBJ (1 seção SOS) p/ shelf/peaking EQ."""
-    import numpy as np
-
-    A = 10.0 ** (gain_db / 40.0)
-    w0 = 2.0 * np.pi * f0 / sr
-    cw, sw = np.cos(w0), np.sin(w0)
-    alpha = sw / (2.0 * q)
-    if kind == "peak":
-        b0, b1, b2 = 1 + alpha * A, -2 * cw, 1 - alpha * A
-        a0, a1, a2 = 1 + alpha / A, -2 * cw, 1 - alpha / A
-    elif kind == "lowshelf":
-        s = 2.0 * np.sqrt(A) * alpha
-        b0 = A * ((A + 1) - (A - 1) * cw + s); b1 = 2 * A * ((A - 1) - (A + 1) * cw); b2 = A * ((A + 1) - (A - 1) * cw - s)
-        a0 = (A + 1) + (A - 1) * cw + s; a1 = -2 * ((A - 1) + (A + 1) * cw); a2 = (A + 1) + (A - 1) * cw - s
-    else:  # highshelf
-        s = 2.0 * np.sqrt(A) * alpha
-        b0 = A * ((A + 1) + (A - 1) * cw + s); b1 = -2 * A * ((A - 1) + (A + 1) * cw); b2 = A * ((A + 1) + (A - 1) * cw - s)
-        a0 = (A + 1) - (A - 1) * cw + s; a1 = 2 * ((A - 1) - (A + 1) * cw); a2 = (A + 1) - (A - 1) * cw - s
-    return [b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]
-
-
 def _apply_audio_fx(audio, sr: int):
-    """EQ 3 bandas (grave/médio/agudo) + ganho de saída configuráveis. Limiter de
-    segurança só se o usuário empurrar além de 0 dBFS."""
-    import numpy as np
-
-    g_low = float(_settings.get("audio_eq_low_db", 0.0))
-    g_mid = float(_settings.get("audio_eq_mid_db", 0.0))
-    g_high = float(_settings.get("audio_eq_high_db", 0.0))
-    gain_db = float(_settings.get("audio_gain_db", 0.0))
-    if max(abs(g_low), abs(g_mid), abs(g_high), abs(gain_db)) < 0.05:
-        return audio
-
-    from scipy.signal import sosfilt
-    y = np.asarray(audio, dtype=np.float32)
-    bands = []
-    if abs(g_low) >= 0.05:
-        bands.append(_biquad("lowshelf", 150.0, g_low, sr))
-    if abs(g_mid) >= 0.05:
-        bands.append(_biquad("peak", 1500.0, g_mid, sr, 1.0))
-    if abs(g_high) >= 0.05:
-        bands.append(_biquad("highshelf", 5000.0, g_high, sr))
-    for sos in bands:
-        y = sosfilt(np.array([sos], dtype=np.float64), y).astype(np.float32)
-    if abs(gain_db) >= 0.05:
-        y = y * (10.0 ** (gain_db / 20.0))
-    peak = float(np.abs(y).max() or 0.0)
-    if peak > 0.97:                       # só clipa se o usuário pediu ganho/realce demais
-        y = (0.97 * np.tanh(y / 0.97)).astype(np.float32)
-    return y.astype(np.float32)
+    """EQ/ganho das settings (ver common.apply_audio_fx) — worker e remoto
+    recebem os mesmos valores via cfg/omni."""
+    return apply_audio_fx(
+        audio, sr,
+        g_low=float(_settings.get("audio_eq_low_db", 0.0)),
+        g_mid=float(_settings.get("audio_eq_mid_db", 0.0)),
+        g_high=float(_settings.get("audio_eq_high_db", 0.0)),
+        gain_db=float(_settings.get("audio_gain_db", 0.0)),
+    )
 
 
 def _wav_duration(path: Path) -> float:
@@ -1191,9 +1151,6 @@ def update_settings(payload: dict):
         _settings["stt_max_compression"] = _clamp(payload["stt_max_compression"], 1.0, 10.0, 2.4)
     if "stt_beam" in payload:
         _settings["stt_beam"] = int(_clamp(payload["stt_beam"], 1, 10, 5))
-    if "perf_priority" in payload:
-        p = str(payload["perf_priority"] or "equilibrio").lower()
-        _settings["perf_priority"] = p if p in ("qualidade", "equilibrio", "velocidade") else "equilibrio"
     for chave in ("remote_tts", "remote_translate", "remote_stt"):
         if chave in payload:
             _settings[chave] = bool(payload[chave])
@@ -1965,7 +1922,11 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
             "chunk_max_chars": _settings.get("chunk_max_chars", 140),
             "omni_ref_max_s": _settings.get("omni_ref_max_s", 10.0),
             "omni_precision": _settings.get("omni_precision", "bf16"),
+            # FX de saída (o worker aplica o mesmo EQ/ganho do caminho local)
             "audio_gain_db": _settings.get("audio_gain_db", 0.0),
+            "audio_eq_low_db": _settings.get("audio_eq_low_db", 0.0),
+            "audio_eq_mid_db": _settings.get("audio_eq_mid_db", 0.0),
+            "audio_eq_high_db": _settings.get("audio_eq_high_db", 0.0),
         },
         "piece_dir": str(pdir),
         "outputs_dir": str(OUTPUTS_DIR),

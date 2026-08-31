@@ -132,13 +132,20 @@ FAMILY_CONTROLS: dict[str, list[dict]] = {
         _REF_MAX,
         # seed e instruct ficam no painel Voice design (tags + seed dedicados)
         _INSTRUCT_OMNI,
-        _c("omni_denoise", "denoise — limpa ruído do áudio gerado", default=True),
-        _c("omni_preprocess_prompt", "preprocess_prompt — pré-processa o texto", default=True),
-        _c("omni_postprocess_output", "postprocess_output — pós-processa o áudio", default=True),
-        _n("omni_audio_chunk_duration", "Chunk texto longo · duração (s)",
-           min_v=1, max_v=60, step=1, default=15, section="advanced"),
-        _n("omni_audio_chunk_threshold", "Chunk · limiar (s)",
-           min_v=5, max_v=120, step=1, default=30, section="advanced"),
+        # toggles finais: o MLX local só usa o denoise implícito (has_ref) —
+        # estes campos são do OmniVoiceGenerationConfig do servidor PyTorch (RTX)
+        _c("omni_denoise", "denoise — limpa ruído do áudio gerado (remoto)",
+           default=True, hint="Sem efeito no MLX local (o modelo decide por has_ref)"),
+        _c("omni_preprocess_prompt", "preprocess_prompt — pré-processa o texto (remoto)",
+           default=True, hint="Sem efeito no MLX local"),
+        _c("omni_postprocess_output", "postprocess_output — pós-processa o áudio (remoto)",
+           default=True, hint="Sem efeito no MLX local"),
+        _n("omni_audio_chunk_duration", "Chunk texto longo · duração (s, remoto)",
+           min_v=1, max_v=60, step=1, default=15, section="advanced",
+           hint="Chunking interno do servidor remoto; o local usa chunk_max_chars"),
+        _n("omni_audio_chunk_threshold", "Chunk · limiar (s, remoto)",
+           min_v=5, max_v=120, step=1, default=30, section="advanced",
+           hint="Sem efeito no MLX local"),
     ],
     "qwen3_tts": [
         _AR_TEMP, _AR_TOP_P, _AR_TOP_K, _AR_REP, _AR_MAX,

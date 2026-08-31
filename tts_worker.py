@@ -29,9 +29,10 @@ if str(BASE) not in sys.path:
 
 from backends import generate_with_backend, resolve_backend  # noqa: E402
 from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,  # noqa: E402
-                    fade_edges, normalize, resolve_omni_source,  # noqa: E402
-                    sanitize_text, split_text, time_stretch,  # noqa: E402
-                    trim_tail_silence, write_wav_concat, write_json_atomic,  # noqa: E402
+                    apply_audio_fx, fade_edges, normalize,  # noqa: E402
+                    resolve_omni_source, sanitize_text, split_text,  # noqa: E402
+                    time_stretch, trim_tail_silence, write_wav_concat,  # noqa: E402
+                    write_json_atomic,  # noqa: E402
                     release_mlx_memory as _release_mlx_memory)  # noqa: E402
 
 DESIGN_VOICE_ID = "__design__"
@@ -160,7 +161,14 @@ def main() -> int:
             speed = float(omni.get("speed") or 1.0)
             if abs(speed - 1.0) > 1e-3 and family not in NATIVE_SPEED_FAMILIES:
                 audio = time_stretch(audio, speed, sr)
-            audio = fade_edges(normalize(trim_tail_silence(audio, sr)), sr)
+            # mesma ordem do caminho local: trim → normalize → FX (EQ/ganho) → fade
+            audio = fade_edges(apply_audio_fx(
+                normalize(trim_tail_silence(audio, sr)), sr,
+                g_low=float(settings.get("audio_eq_low_db", 0.0)),
+                g_mid=float(settings.get("audio_eq_mid_db", 0.0)),
+                g_high=float(settings.get("audio_eq_high_db", 0.0)),
+                gain_db=float(settings.get("audio_gain_db", 0.0)),
+            ), sr)
             if i < len(chunks) - 1:
                 audio = np.concatenate([audio, silence])
             sf.write(piece_dir / f"{i}.wav", audio, sr, subtype="PCM_16")

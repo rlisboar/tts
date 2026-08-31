@@ -55,6 +55,60 @@ def write_json_atomic(path, payload) -> None:
     tmp.replace(path)
 
 
+# ---------------------------------------------------------------------------
+# FX de saída (EQ 3 bandas + ganho) — compartilhado entre app e worker
+# ---------------------------------------------------------------------------
+
+def biquad(kind: str, f0: float, gain_db: float, sr: int, q: float = 0.707):
+    """Coeficientes RBJ (1 seção SOS) p/ shelf/peaking EQ."""
+    import numpy as np
+
+    A = 10.0 ** (gain_db / 40.0)
+    w0 = 2.0 * np.pi * f0 / sr
+    cw, sw = np.cos(w0), np.sin(w0)
+    alpha = sw / (2.0 * q)
+    if kind == "peak":
+        b0, b1, b2 = 1 + alpha * A, -2 * cw, 1 - alpha * A
+        a0, a1, a2 = 1 + alpha / A, -2 * cw, 1 - alpha / A
+    elif kind == "lowshelf":
+        s = 2.0 * np.sqrt(A) * alpha
+        b0 = A * ((A + 1) - (A - 1) * cw + s); b1 = 2 * A * ((A - 1) - (A + 1) * cw); b2 = A * ((A + 1) - (A - 1) * cw - s)
+        a0 = (A + 1) + (A - 1) * cw + s; a1 = -2 * ((A - 1) + (A + 1) * cw); a2 = (A + 1) + (A - 1) * cw - s
+    else:  # highshelf
+        s = 2.0 * np.sqrt(A) * alpha
+        b0 = A * ((A + 1) + (A - 1) * cw + s); b1 = -2 * A * ((A - 1) + (A + 1) * cw); b2 = A * ((A + 1) + (A - 1) * cw - s)
+        a0 = (A + 1) - (A - 1) * cw + s; a1 = 2 * ((A - 1) - (A + 1) * cw); a2 = (A + 1) - (A - 1) * cw - s
+    return [b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]
+
+
+def apply_audio_fx(audio, sr: int, g_low: float = 0.0, g_mid: float = 0.0,
+                   g_high: float = 0.0, gain_db: float = 0.0):
+    """EQ 3 bandas (grave 150 Hz / médio 1.5 kHz / agudo 5 kHz) + ganho de
+    saída. Limiter de segurança só se o resultado empurrar além de 0 dBFS.
+    App (settings) e worker (cfg do job) chamam com os valores explícitos."""
+    import numpy as np
+    from scipy.signal import sosfilt
+
+    if max(abs(g_low), abs(g_mid), abs(g_high), abs(gain_db)) < 0.05:
+        return audio
+    y = np.asarray(audio, dtype=np.float32)
+    bands = []
+    if abs(g_low) >= 0.05:
+        bands.append(biquad("lowshelf", 150.0, g_low, sr))
+    if abs(g_mid) >= 0.05:
+        bands.append(biquad("peak", 1500.0, g_mid, sr, 1.0))
+    if abs(g_high) >= 0.05:
+        bands.append(biquad("highshelf", 5000.0, g_high, sr))
+    for sos in bands:
+        y = sosfilt(np.array([sos], dtype=np.float64), y).astype(np.float32)
+    if abs(gain_db) >= 0.05:
+        y = y * (10.0 ** (gain_db / 20.0))
+    peak = float(np.abs(y).max() or 0.0)
+    if peak > 0.97:                       # só clipa se o usuário pediu ganho demais
+        y = (0.97 * np.tanh(y / 0.97)).astype(np.float32)
+    return y.astype(np.float32)
+
+
 def sanitize_text(text: str) -> str:
     """Limpeza leve para o tokenizer multilíngue (Qwen3) do OmniVoice.
 
