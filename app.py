@@ -11,6 +11,7 @@ import re
 import secrets as _secrets
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -120,7 +121,7 @@ _SETTINGS_DEFAULTS = {
     # (ex.: http://rtx-host:8000/v1). api_key opcional. Tudo local por padrão.
     # base_url + api_key ficam locais (settings.json é gitignored). Vazio = local.
     "remote_tts": False,              # síntese (OmniVoice) numa máquina remota (ex.: RTX)
-    "remote_tts_url": "",             # URL completa do endpoint, ex.: http://rtx-host:8800/tts
+    "remote_tts_url": "",             # URL completa do endpoint, ex.: http://192.168.1.50:8800/tts
     "remote_tts_voice": "",           # nome/preset da voz no servidor remoto (vai como `voice`)
     "remote_tts_extra": "",           # JSON com params extras do servidor (speed, num_steps…)
     "remote_tts_model": "tts-1",      # (compat OpenAI) nome do modelo, se o servidor usar
@@ -949,6 +950,88 @@ def download_mic_router(request: Request):
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="tts-studio-mic-router.zip"'},
     )
+
+
+# ── Túnel / acesso pela internet (proxy por path) ──────────────────────────
+TUNNEL_LABEL = "studio.tts.tunnel"
+
+
+def _tunnel_proc_running() -> bool:
+    """Há um processo ssh do túnel (-R 127.0.0.1:7860) vivo nesta máquina?"""
+    try:
+        r = subprocess.run(
+            ["pgrep", "-f", r"ssh .*-R 127\.0\.0\.1:7860"],
+            capture_output=True, timeout=5,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _tunnel_launchd_loaded() -> bool | None:
+    """LaunchAgent do túnel carregado? None se não for macOS/sem launchctl."""
+    if sys.platform != "darwin" or not hasattr(os, "getuid"):
+        return None
+    try:
+        r = subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{TUNNEL_LABEL}"],
+            capture_output=True, timeout=5,
+        )
+        return r.returncode == 0
+    except Exception:
+        return None
+
+
+def _public_proxy_check(url: str, timeout: float = 6.0) -> dict:
+    """Checa a URL pública do proxy a partir daqui (ida e volta completa:
+    Mac → VPS → túnel → Mac). Responde {ok, status_code, latency_ms, error}."""
+    url = (url or "").strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        return {"ok": False, "error": "URL inválida (use http/https)"}
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"{url}/health", method="GET")
+        req.add_header("User-Agent", "tts-studio-tunnel-check")
+        t0 = time.monotonic()
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read(200)
+            lat = round((time.monotonic() - t0) * 1000)
+            ok = resp.status == 200 and b'"ok"' in body
+            return {"ok": ok, "status_code": resp.status,
+                    "latency_ms": lat, "error": None if ok else "resposta inesperada"}
+    except Exception as e:
+        return {"ok": False, "latency_ms": None, "error": str(e)[:200]}
+
+
+@app.get("/api/tunnel/status")
+def tunnel_status(url: str = ""):
+    """Status do acesso pela internet: processo do túnel, LaunchAgent e
+    checagem fim a fim da URL pública (passada pela UI)."""
+    pub = _public_proxy_check(url) if url.strip() else None
+    return {
+        "tunnel_running": _tunnel_proc_running(),
+        "launchd_loaded": _tunnel_launchd_loaded(),
+        "public_check": pub,
+    }
+
+
+@app.post("/api/tunnel/restart")
+def tunnel_restart():
+    """Reinicia o LaunchAgent do túnel (kickstart). Exige macOS + agente."""
+    if sys.platform != "darwin" or not hasattr(os, "getuid"):
+        raise HTTPException(400, "Disponível apenas no macOS com o LaunchAgent instalado (tunnel.sh install)")
+    try:
+        r = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{TUNNEL_LABEL}"],
+            capture_output=True, timeout=10, text=True,
+        )
+        if r.returncode != 0:
+            raise HTTPException(500, f"launchctl: {(r.stderr or r.stdout or 'erro').strip()[:200]}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Falha ao reiniciar: {e}")
+    return {"ok": True, "msg": "Túnel reiniciado (aguarde ~5s e reavalie o status)"}
 
 
 @app.post("/api/shutdown")

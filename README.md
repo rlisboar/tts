@@ -20,7 +20,7 @@ Nenhum áudio ou texto sai da máquina.
 
 Abra <http://127.0.0.1:7860> no navegador. O servidor escuta em `0.0.0.0`:
 outros dispositivos da rede acessam por `http://Mac-mini.local:7860` (Apple)
-ou pelo IP do Mac (ex.: `http://192.168.15.177:7860`).
+ou pelo IP do Mac (ex.: `http://192.168.1.20:7860`).
 
 Toda a API (`/api/*` e `/v1/*`) exige chave. O `run.sh` gera uma na primeira
 execução, salva em `.apikey` e imprime no terminal. A UI pede a chave uma vez

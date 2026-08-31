@@ -2477,20 +2477,34 @@
         </div>
         <p class="hint" id="clientApiKeyStatus" style="margin-top:6px"></p>
       </section>
+<section class="cfg-sec">
+        <h3 class="cfg-sec-h">Acesso pela internet (proxy)</h3>
+        <p class="hint">URL pública do estúdio atrás de um proxy (ex.: VPS com túnel SSH —
+          veja o README). Fica salva só neste navegador.</p>
+        <label class="cfg-label">URL pública
+          <input type="text" id="proxyUrl" placeholder="https://seu-dominio/ttsproxy" autocomplete="off"></label>
+        <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:6px">
+          <button type="button" id="proxyTest" class="small">Testar conexão</button>
+          <button type="button" id="proxyTunnelStatus" class="ghost small">Status do túnel</button>
+          <button type="button" id="proxyTunnelRestart" class="ghost small">Reiniciar túnel</button>
+          <button type="button" id="proxyCopyApi" class="ghost small" title="base_url para SDKs OpenAI-compat">Copiar base_url API</button>
+        </div>
+        <p class="hint" id="proxyStatus" style="margin-top:6px"></p>
+      </section>
             </div>
             <div class="settings-pane" data-spane="rede">
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">TTS remoto (ex.: RTX)</h3>
         <label class="check"><input type="checkbox" id="remoteTts"> Síntese numa máquina remota</label>
         <label class="cfg-label">URL OmniVoice
-          <input type="text" id="remoteTtsUrl" placeholder="http://rtx-host:8800/tts"></label>
+          <input type="text" id="remoteTtsUrl" placeholder="http://192.168.1.50:8800/tts"></label>
         <p class="hint">Síntese remota no OmniVoice (646 idiomas, rápido).</p>
         <label class="cfg-label">Voz remota (nome/preset)
           <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
         <label class="cfg-label">API key (opcional)
           <input type="password" id="remoteApiKey" placeholder="vazio se não exigir" autocomplete="off"></label>
         <label class="cfg-label">Parâmetros extra (JSON)
-          <textarea id="remoteTtsExtra" style="min-height:42px; font-family:var(--mono); font-size:12px" placeholder='{"voice":"rodrigo"}'></textarea></label>
+          <textarea id="remoteTtsExtra" style="min-height:42px; font-family:var(--mono); font-size:12px" placeholder='{"voice":"alloy"}'></textarea></label>
       </section>
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">Tradução / STT · memória</h3>
@@ -4542,6 +4556,62 @@ if ($("clientApiKeyToggle")) $("clientApiKeyToggle").onclick = () => {
   const show = el.type === "password";
   el.type = show ? "text" : "password";
   $("clientApiKeyToggle").textContent = show ? "Ocultar" : "Mostrar";
+};
+
+/* ───────── Acesso pela internet (proxy) ───────── */
+const proxyUrlEl = $("proxyUrl");
+const proxyStatusEl = $("proxyStatus");
+const proxyUrlNorm = () => (proxyUrlEl?.value || "").trim().replace(/\/+$/, "");
+const setProxyStatus = t => { if (proxyStatusEl) proxyStatusEl.textContent = t; };
+if (proxyUrlEl) {
+  proxyUrlEl.value = localStorage.getItem("ttsProxyUrl") || "";
+  proxyUrlEl.addEventListener("change", () => localStorage.setItem("ttsProxyUrl", proxyUrlNorm()));
+}
+if ($("proxyTest")) $("proxyTest").onclick = async () => {
+  const base = proxyUrlNorm();
+  if (!base) { setProxyStatus("Informe a URL pública primeiro."); return; }
+  localStorage.setItem("ttsProxyUrl", base);
+  setProxyStatus("Testando…");
+  const t0 = performance.now();
+  try {
+    const r = await fetch(`${base}/health`, { cache: "no-store" });
+    const ms = Math.round(performance.now() - t0);
+    const d = await r.json().catch(() => ({}));
+    setProxyStatus(r.ok && d.ok
+      ? `✔ Conectado pelo proxy (${ms} ms) — o estúdio responde pela internet`
+      : `⚠ Resposta inesperada: HTTP ${r.status}`);
+  } catch (e) {
+    setProxyStatus(`✖ Falhou: ${e.message} — confira túnel e proxy`);
+  }
+};
+if ($("proxyTunnelStatus")) $("proxyTunnelStatus").onclick = async () => {
+  setProxyStatus("Verificando túnel…");
+  try {
+    const base = proxyUrlNorm();
+    const q = base ? `?url=${encodeURIComponent(base)}` : "";
+    const d = await api(`/api/tunnel/status${q}`);
+    const parts = [d.tunnel_running ? "✔ túnel rodando" : "✖ túnel parado"];
+    if (d.launchd_loaded === true) parts.push("✔ LaunchAgent carregado");
+    else if (d.launchd_loaded === false) parts.push("✖ LaunchAgent ausente (tunnel.sh install)");
+    if (d.public_check) {
+      const c = d.public_check;
+      parts.push(c.ok ? `✔ internet OK (${c.latency_ms} ms)` : `✖ internet falhou: ${c.error || "?"}`);
+    }
+    setProxyStatus(parts.join(" · "));
+  } catch (e) { setProxyStatus(`✖ Erro: ${e.message}`); }
+};
+if ($("proxyTunnelRestart")) $("proxyTunnelRestart").onclick = async () => {
+  if (!confirm("Reiniciar o túnel SSH? O acesso pela internet cai por ~5s.")) return;
+  try {
+    await api("/api/tunnel/restart", { method: "POST" });
+    toast("Túnel reiniciado — aguarde ~5s");
+    $("proxyTunnelStatus")?.click();
+  } catch (e) { toast("Erro: " + e.message, 5000); }
+};
+if ($("proxyCopyApi")) $("proxyCopyApi").onclick = () => {
+  const base = proxyUrlNorm();
+  if (!base) { setProxyStatus("Informe a URL pública primeiro."); return; }
+  navigator.clipboard?.writeText(`${base}/v1`).then(() => toast("base_url copiada ✔")).catch(() => {});
 };
 
 /* ───────── Limpeza de áudios ───────── */
