@@ -5130,6 +5130,7 @@ const CV_HINT = "🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar
 let cvSid = null, cvListening = false, cvBusy = false, cvPlaying = false, cvBargeSince = 0;
 let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null;
 let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0, cvNoise = 0;
+let cvUtterFrames = 0, cvUtterVoiced = 0, cvLastVoiced = 1;
 let cvVadTimer = null, cvSpeakingLogged = false;
 const CV_SILENCE_MS = 1400;   // silêncio que fecha a fala
 const CV_MAX_MS = 30000;      // corte de segurança
@@ -5154,6 +5155,7 @@ function cvRms() {
 }
 function cvStartUtterance() {
   cvUtter = []; cvSpeaking = false; cvSilenceSince = 0; cvUtterStart = performance.now();
+  cvUtterFrames = 0; cvUtterVoiced = 0;
   cvMediaRec = new MediaRecorder(cvStream);
   // coleta TODOS os chunks: o primeiro traz o header EBML — filtrar por
   // cvSpeaking gerava webm sem cabeçalho ("EBML header parsing failed")
@@ -5246,9 +5248,12 @@ $("cvMic").onclick = async () => {
     if (!cvListening) { clearInterval(cvVadTimer); return; }
     const nivel = cvRms();
     const agora = performance.now();
-    // limiar adaptativo: aprende o ruído do ambiente quando não estamos falando
-    if (!cvSpeaking) cvNoise = Math.max(0.006, (cvNoise || nivel) * 0.95 + nivel * 0.05);
+    // limiar adaptativo: aprende o ruído do ambiente, mas SÓ abaixo do limiar
+    // (a fala não pode puxar o piso pra cima, senão ruído vira "fala")
     const limStart = Math.max(0.02, cvNoise * 3);
+    if (!cvSpeaking && nivel < limStart) cvNoise = Math.max(0.006, (cvNoise || nivel) * 0.95 + nivel * 0.05);
+    cvUtterFrames++;
+    if (nivel > limStart) cvUtterVoiced++;
     const limEnd = limStart * 0.55;
     const barras = "▮".repeat(Math.min(10, Math.round((nivel / (limStart * 2)) * 10)));
     if ($("cvRec")) $("cvRec").textContent =
@@ -5261,6 +5266,7 @@ $("cvMic").onclick = async () => {
         if (agora - cvBargeSince > 400) {
           cvDbg("barge-in");
           cvSpeaking = true; cvSilenceSince = 0;
+          cvUtterFrames = 0; cvUtterVoiced = 0;   // a fala do humano começa aqui
           $("cvAudio").pause();
         }
       } else cvBargeSince = 0;
@@ -5275,9 +5281,11 @@ $("cvMic").onclick = async () => {
         else {
           if (!cvSilenceSince) cvSilenceSince = agora;
           const dur = agora - cvUtterStart;
-          if ((agora - cvSilenceSince > CV_SILENCE_MS && dur > 600) || dur > CV_MAX_MS) {
+          const voiced = cvUtterVoiced / Math.max(1, cvUtterFrames);
+          if ((agora - cvSilenceSince > CV_SILENCE_MS && dur > 1000) || dur > CV_MAX_MS) {
             cvBusy = true;                             // trava até a IA responder
-            cvDbg("corte dur=" + Math.round(dur) + "ms frags=" + cvUtter.length);
+            cvLastVoiced = voiced;
+            cvDbg("corte dur=" + Math.round(dur) + "ms voiced=" + Math.round(voiced * 100) + "% frags=" + cvUtter.length);
             cvCut();
           }
         }
@@ -5345,6 +5353,12 @@ async function cvSend(text, _retry = true) {
   cvBusy = false;
 }
 async function cvTranscribeEEnvia(blob) {
+  if (cvLastVoiced < 0.35) {   // majoritariamente ruído — nem manda pro STT
+    cvStatus("🔇 ruído ignorado");
+    cvDbg("ignorado: energia de fala insuficiente");
+    cvBusy = false;
+    return;
+  }
   cvStatus(`transcrevendo ${blob.size}B…`);
   const ext = (blob.type.split("/")[1] || "webm").split(";")[0];
   const fd = new FormData();
