@@ -229,3 +229,10 @@ def test_guarda_traversal_ids(client, auth):
     # nunca conteúdo de fora de outputs/
     r = client.get("/api/tts/jobs/a..b/pieces/0", headers=auth)
     assert r.status_code == 404
+
+
+def test_status_traz_versao(client, auth):
+    r = client.get("/api/status", headers=auth)
+    assert r.status_code == 200
+    v = r.json().get("version")
+    assert isinstance(v, str) and len(v) >= 3

@@ -738,9 +738,24 @@ def health():
     return {"ok": True}
 
 
+def _git_version() -> str:
+    """Hash curto do commit em execução — cai para 'dev' fora de um repo."""
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], capture_output=True,
+            text=True, timeout=3, cwd=BASE,
+        ).stdout.strip() or "dev"
+    except Exception:  # noqa: BLE001
+        return "dev"
+
+
+_VERSION = _git_version()
+
+
 @app.get("/api/status")
 def status():
     st = dict(_model_state)
+    st["version"] = _VERSION
     try:
         be = _current_backend()
         st.setdefault("family", be["family"])
@@ -2535,6 +2550,18 @@ def _auto_cleanup_once():
             meta.with_suffix(".wav").unlink(missing_ok=True)
             meta.unlink(missing_ok=True)
             removidos += 1
+    # diretórios de jobs (sínteses longas): a limpeza de *.json/*.wav não os
+    # alcança e órfãos se acumulam. Pula jobs ativos (apagar trechos no meio
+    # da síntese quebraria o stream) e o resto sai por idade.
+    for d in OUTPUTS_DIR.glob(".job-*"):
+        if not d.is_dir() or d.stat().st_mtime >= limite:
+            continue
+        jid = d.name[len(".job-"):]
+        j = _jobs.get(jid)
+        if j and (j.get("status") == "running" or j.get("status") == "queued"):
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        removidos += 1
     return removidos
 
 
