@@ -5115,7 +5115,8 @@ function cvStartUtterance() {
     const tinhaVoz = cvUtter.length > 0;
     const blob = new Blob(cvUtter, { type: cvMediaRec.mimeType || "audio/webm" });
     cvUtter = [];
-    if (tinhaVoz && cvListening) await cvTranscribeEEnvia();
+    cvStatus(`onstop: ${tinhaVoz ? "voz" : "sem voz"}, ${blob.size}B`);
+    if (tinhaVoz && cvListening) await cvTranscribeEEnvia(blob);
     if (cvListening) cvStartUtterance();
   };
   cvMediaRec.start(250);
@@ -5155,15 +5156,9 @@ async function cvSend(text) {
   } catch (e) { cvStatus("✖ " + e.message); }
   cvBusy = false;
 }
-async function cvTranscribeEEnvia() {
-  cvStatus("transcrevendo…");
+async function cvTranscribeEEnvia(blob) {
+  cvStatus(`transcrevendo ${blob.size}B…`);
   let wav;
-  const blob = new Blob(cvUtter, { type: cvMediaRec.mimeType || "audio/webm" });
-  if (blob.size < 200) {  // fragmento minúsculo (ruído) — não vale STT; onstop religa
-    cvStatus("");
-    cvBusy = false;
-    return;
-  }
   try { wav = await blobToWav(blob); } catch (e) { wav = blob; }
   const fd = new FormData();
   fd.append("audio", wav, "a.wav");
