@@ -474,7 +474,10 @@ async def _strip_base_path(request, call_next):
         request.scope["path"] = rest
         request.scope["raw_path"] = rest.encode()
     resp = await call_next(request)
-    # cabeçalhos de segurança básicos em todas as respostas
+    # HTML sempre revalidado (ETag) — updates da UI chegam no refresh;
+    # cabeçalhos de segurança básicos
+    if (resp.headers.get("content-type") or "").startswith("text/html"):
+        resp.headers["Cache-Control"] = "no-cache"
     resp.headers.setdefault("Referrer-Policy", "no-referrer")
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     return resp
