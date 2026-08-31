@@ -5212,6 +5212,57 @@ async function cvSpeak(text) {
   cvUtter = [];        // descarta o que o mic pegou enquanto a IA falava
   cvMute = false; cvBusy = false;
 }
+$("cvMic").onclick = async () => {
+  if (cvListening) { cvStopListening(); cvStatus("escuta desligada"); return; }
+  try {
+    cvStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch { toast("Sem acesso ao microfone."); return; }
+  cvListening = true; cvBusy = false; cvNoise = 0;
+  $("cvMic").textContent = "⏹ Desligar";
+  $("cvRec").style.display = "";
+  cvAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (cvAudioCtx.resume) await cvAudioCtx.resume();  // política de autoplay dos browsers
+  const src = cvAudioCtx.createMediaStreamSource(cvStream);
+  cvAnalyser = cvAudioCtx.createAnalyser();
+  cvAnalyser.fftSize = 1024;
+  src.connect(cvAnalyser);
+  cvStartUtterance();
+  $("cvCutBtn").style.display = "";
+  cvStatus("🎧 ouvindo… fale o objetivo");
+  if (cvVadTimer) clearInterval(cvVadTimer);
+  cvVadTimer = setInterval(() => {                     // interval: rAF congela em aba de fundo
+    if (!cvListening) { clearInterval(cvVadTimer); return; }
+    const nivel = cvRms();
+    const agora = performance.now();
+    // limiar adaptativo: aprende o ruído do ambiente quando não estamos falando
+    if (!cvSpeaking) cvNoise = Math.max(0.006, (cvNoise || nivel) * 0.95 + nivel * 0.05);
+    const limStart = Math.max(0.02, cvNoise * 3);
+    const limEnd = limStart * 0.55;
+    const barras = "▮".repeat(Math.min(10, Math.round((nivel / (limStart * 2)) * 10)));
+    if ($("cvRec")) $("cvRec").textContent =
+      (cvSpeaking ? "🗣 fala " : "🎧 amb ") + nivel.toFixed(3) + " / lim " + limStart.toFixed(3) + " " + barras;
+    if (cvSpeaking && !cvSpeakingLogged) { cvSpeakingLogged = true; cvDbg("voz detectada lim=" + limStart.toFixed(3)); }
+    if (!cvSpeaking) cvSpeakingLogged = false;
+    if (!cvBusy) {
+      if (nivel > limStart) {                          // voz acima do ruído do ambiente
+        cvSpeaking = true;
+        cvSilenceSince = 0;
+      } else if (cvSpeaking) {                         // abaixo do limiar de fala
+        if (nivel > limEnd) cvSilenceSince = 0;        // pausa curta não corta
+        else {
+          if (!cvSilenceSince) cvSilenceSince = agora;
+          const dur = agora - cvUtterStart;
+          if ((agora - cvSilenceSince > CV_SILENCE_MS && dur > 600) || dur > CV_MAX_MS) {
+            cvBusy = true;                             // trava até a IA responder
+            cvDbg("corte dur=" + Math.round(dur) + "ms frags=" + cvUtter.length);
+            cvCut();
+          }
+        }
+      }
+    }
+  }, 60);
+};
 async function cvSend(text, _retry = true) {
   if (!text.trim()) return;
   cvAdd("você", text);
