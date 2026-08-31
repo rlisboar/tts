@@ -1460,7 +1460,7 @@ def denoise_voice(voice_id: str, payload: dict = None):
 
 @app.get("/api/voices/{voice_id}/audio")
 def voice_audio(voice_id: str):
-    path = VOICES_DIR / f"{voice_id}.wav"
+    path = VOICES_DIR / f"{_safe_id(voice_id)}.wav"
     if not path.exists():
         raise HTTPException(404, "Voz não encontrada")
     return FileResponse(path, media_type="audio/wav")
@@ -1917,7 +1917,16 @@ def _speech_queue_abort(token) -> None:
 
 
 def _piece_dir(job_id: str) -> Path:
-    return OUTPUTS_DIR / f".job-{job_id}"
+    return OUTPUTS_DIR / f".job-{_safe_id(job_id)}"
+
+
+def _safe_id(v: str) -> str:
+    """Valida id vindo da rota antes de montar Path — defesa em profundidade
+    contra path traversal em downloads (o roteador já impede '/', isto aqui
+    garante mesmo se o roteamento mudar)."""
+    if not v or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v):
+        raise HTTPException(404, "Id inválido")
+    return v
 
 
 def _evict_jobs():
@@ -2501,7 +2510,7 @@ def list_outputs():
 
 @app.get("/api/outputs/{out_id}/audio")
 def output_audio(out_id: str):
-    path = OUTPUTS_DIR / f"{out_id}.wav"
+    path = OUTPUTS_DIR / f"{_safe_id(out_id)}.wav"
     if not path.exists():
         raise HTTPException(404, "Áudio não encontrado")
     return FileResponse(path, media_type="audio/wav", filename=f"tts-studio-{out_id}.wav")

@@ -217,3 +217,15 @@ def test_upload_stt_cap_413(client, auth, monkeypatch):
 def test_chave_invalida_continua_401(client):
     r = client.get("/api/status", headers={"X-API-Key": "x" * 64})
     assert r.status_code == 401
+
+
+def test_guarda_traversal_ids(client, auth):
+    # ids com "." ou comprimento excessivo são rejeitados antes de montar Path
+    r = client.get("/api/outputs/a..b/audio", headers=auth)
+    assert r.status_code == 404 and r.json()["detail"] == "Id inválido"
+    r = client.get("/api/voices/" + "a" * 200 + "/audio", headers=auth)
+    assert r.status_code == 404 and r.json()["detail"] == "Id inválido"
+    # jobs: endpoint valida existência do job antes — 404 em qualquer caso,
+    # nunca conteúdo de fora de outputs/
+    r = client.get("/api/tts/jobs/a..b/pieces/0", headers=auth)
+    assert r.status_code == 404
