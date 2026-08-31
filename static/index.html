@@ -2295,7 +2295,7 @@
       <div class="view-head">
         <div class="view-head-main">
           <h1>Conversa</h1>
-          <p class="muted">Fale o objetivo, refine com a IA e confirme — o texto final vai para o agente.</p>
+          <p class="muted">Fale o objetivo, refine com a IA e confirme — o texto final vai para o agente. <span id="cvBuild"></span></p>
         </div>
       </div>
       <div class="view-scroll">
@@ -5081,6 +5081,17 @@ $("sttDownloadBtn").onclick = () => {
 };
 
 /* ───────── Conversa: escuta contínua com VAD (fala/pausa automáticas) ───────── */
+window.addEventListener("error", e => {
+  let b = document.getElementById("jsErrBanner");
+  if (!b) {
+    b = document.createElement("div");
+    b.id = "jsErrBanner";
+    b.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;background:#a00;color:#fff;padding:4px 10px;font-size:12px";
+    (document.body || document.documentElement).appendChild(b);
+  }
+  b.textContent = "⚠ JS: " + e.message + " (linha " + (e.lineno || "?") + ")";
+});
+
 const cvDbg = m => api("/api/chat-debug", {
   method: "POST", headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ msg: m, v: 4 })
@@ -5316,6 +5327,11 @@ $("cvSynth").onclick = async () => {
 async function cvLoadVoices() {
   const sel = $("cvVoice");
   if (!sel) return;
+  try {
+    const st = await api("/api/status");
+    const b = $("cvBuild");
+    if (b) b.textContent = "· build " + (st.version || "?");
+  } catch (e) {}
   try {
     const vs = await api("/api/voices");
     if (!Array.isArray(vs)) return;
