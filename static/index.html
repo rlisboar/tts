@@ -2311,9 +2311,27 @@
             <span style="flex:1"></span>
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
           </div>
+          <div id="cvMeters" style="display:none; margin-top:10px; font-size:11px; font-family:var(--mono)">
+            <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px">
+              <span style="width:44px">🎤 voz</span>
+              <div style="flex:1; height:14px; background:var(--surface); border:1px solid var(--border); border-radius:7px; position:relative; overflow:hidden">
+                <div id="cvMSnr" style="height:100%; width:0%; background:var(--accent); border-radius:7px"></div>
+                <div id="cvMSnrLim" style="position:absolute; top:0; bottom:0; width:2px; background:#f80"></div>
+              </div>
+              <span id="cvMSnrTxt" style="width:96px; text-align:right; white-space:nowrap"></span>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px">
+              <span style="width:44px">flat</span>
+              <div style="flex:1; height:10px; background:var(--surface); border:1px solid var(--border); border-radius:5px; position:relative; overflow:hidden">
+                <div id="cvMFlat" style="height:100%; width:0%; background:var(--accent); border-radius:5px"></div>
+                <div id="cvMFlatLim" style="position:absolute; top:0; bottom:0; width:2px; background:#f80"></div>
+              </div>
+              <span id="cvMFlatTxt" style="width:96px; text-align:right; white-space:nowrap"></span>
+            </div>
+          </div>
           <label class="cfg-label" style="margin-top:8px">Limiar de voz (SNR) <output id="cvSnrLimOut">3</output>
             <input type="range" id="cvSnrLim" min="1.5" max="6" step="0.5" value="3" style="width:100%"></label>
-          <p class="hint" style="margin-top:2px">Abaixe se sua voz não é detectada; suba se o ruído dispara sem você falar. Veja o snr ao vivo no medidor.</p>
+          <p class="hint" style="margin-top:2px">🎤 barra acima da linha laranja = voz detectada. Ajuste o limiar para o seu mic.</p>
           <details style="margin-top:6px">
             <summary class="hint" style="cursor:pointer">🎚 Ajustes avançados de áudio</summary>
             <label class="check" style="margin-top:6px"><input type="checkbox" id="cvGate"> Filtro de ruído na gravação (highpass + gate suave)</label>
@@ -5115,6 +5133,7 @@ let cvUtterFrames = 0, cvUtterVoiced = 0, cvLastVoiced = 1;
 let cvVadTimer = null, cvSpeakingLogged = false;
 let cvSpec = new Float32Array(512);
 const cvPiso = { low: 1e-4, mid: 1e-4, high: 1e-5 };
+function cvMetersVisible() { const v = document.getElementById('view-conversa'); return !!v && v.classList.contains('active'); }
 let cvSnrLim = parseFloat(localStorage.getItem("cvSnrLim") || "3");
 $("cvSnrLim").value = cvSnrLim;
 $("cvSnrLimOut").textContent = cvSnrLim;
@@ -5191,6 +5210,7 @@ function cvStopListening() {
   if (cvAudioCtx) { cvAudioCtx.close().catch(() => {}); cvAudioCtx = null; }
   $("cvMic").textContent = "🎙 Ligar";
   $("cvRec").style.display = "none";
+  if ($("cvMeters")) $("cvMeters").style.display = "none";
 }
 async function cvSpeak(text) {
   // sintetiza e toca a resposta da IA; o VAD detecta barge-in (fale por cima)
@@ -5305,6 +5325,7 @@ $("cvMic").onclick = async () => {
   cvListening = true; cvBusy = false;
   $("cvMic").textContent = "⏹ Desligar";
   $("cvRec").style.display = "";
+  if ($("cvMeters")) $("cvMeters").style.display = "";
   cvAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (cvAudioCtx.resume) await cvAudioCtx.resume();  // política de autoplay dos browsers
   const src = cvAudioCtx.createMediaStreamSource(cvStream);
@@ -5343,6 +5364,16 @@ $("cvMic").onclick = async () => {
     if ($("cvRec")) $("cvRec").textContent =
       (cvPlaying ? "🔊 IA falando — fale por cima p/ interromper" :
         (falando ? "🗣 fala " : "🎧 amb ") + "snr " + snr.toFixed(1) + " · flat " + sp.flat.toFixed(2));
+    if ($("cvMeters") && cvMetersVisible()) {
+      $("cvMSnr").style.width = Math.min(100, snr / 12 * 100) + "%";
+      $("cvMSnr").style.background = falando ? "var(--accent)" : "var(--text)";
+      $("cvMSnrLim").style.left = Math.min(99, cvSnrLim / 12 * 100) + "%";
+      $("cvMSnrTxt").textContent = "snr " + snr.toFixed(1) + " / " + cvSnrLim.toFixed(1);
+      $("cvMFlat").style.width = Math.min(100, sp.flat * 100) + "%";
+      $("cvMFlat").style.background = sp.flat < 0.62 ? "var(--accent)" : "#a55";
+      $("cvMFlatLim").style.left = "62%";
+      $("cvMFlatTxt").textContent = "flat " + sp.flat.toFixed(2);
+    }
     if (cvSpeaking && !cvSpeakingLogged) { cvSpeakingLogged = true; cvDbg("voz detectada"); }
     if (!cvSpeaking) cvSpeakingLogged = false;
     if (cvPlaying) {   // barge-in: voz do humano sustentada interrompe a IA
