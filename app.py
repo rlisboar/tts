@@ -3430,21 +3430,25 @@ def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
     if len(dados) > limite_mb * 1024 * 1024:
         raise HTTPException(413, f"Áudio maior que {limite_mb} MB")
     raw = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}{suffix}"
+    if not dados:
+        raise HTTPException(400, "Áudio vazio")
     raw.write_bytes(dados)
     if suffix == ".wav":
         return raw
     wav = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}.wav"
     try:
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(raw), str(wav)],
-                       capture_output=True, timeout=120)
-        if not wav.exists() or wav.stat().st_size == 0:
-            raise RuntimeError("ffmpeg não produziu saída")
+        p = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(raw), str(wav)],
+                           capture_output=True, timeout=120, text=True)
+        stderr = (p.stderr or "").strip()
+        if p.returncode != 0 or not wav.exists() or wav.stat().st_size == 0:
+            print(f"[stt] ffmpeg falhou ({ctype}, {len(dados)}B): {stderr[:160]}", flush=True)
+            raise RuntimeError(stderr[:160] or "ffmpeg não produziu saída")
     except HTTPException:
         raise
     except Exception as e:
         raw.unlink(missing_ok=True)
         wav.unlink(missing_ok=True)
-        raise HTTPException(400, f"Formato de áudio não suportado ({ctype or 'desconhecido'})") from e
+        raise HTTPException(400, f"Formato de áudio não suportado ({ctype or 'desconhecido'}): {e}") from e
     raw.unlink(missing_ok=True)
     return wav
 

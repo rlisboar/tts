@@ -5147,6 +5147,11 @@ async function cvTranscribeEEnvia() {
   cvStatus("transcrevendo…");
   let wav;
   const blob = new Blob(cvUtter, { type: cvMediaRec.mimeType || "audio/webm" });
+  if (blob.size < 200) {  // fragmento minúsculo (ruído) — não vale STT; onstop religa
+    cvStatus("");
+    cvBusy = false;
+    return;
+  }
   try { wav = await blobToWav(blob); } catch (e) { wav = blob; }
   const fd = new FormData();
   fd.append("audio", wav, "a.wav");
