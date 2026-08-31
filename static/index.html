@@ -5109,7 +5109,9 @@ function cvRms() {
 function cvStartUtterance() {
   cvUtter = []; cvSpeaking = false; cvSilenceSince = 0; cvUtterStart = performance.now();
   cvMediaRec = new MediaRecorder(cvStream);
-  cvMediaRec.ondataavailable = e => { if (e.data.size && cvSpeaking) cvUtter.push(e.data); };
+  // coleta TODOS os chunks: o primeiro traz o header EBML — filtrar por
+  // cvSpeaking gerava webm sem cabeçalho ("EBML header parsing failed")
+  cvMediaRec.ondataavailable = e => { if (e.data.size) cvUtter.push(e.data); };
   cvMediaRec.onstop = async () => {   // cada gravador criado leva o handler — sem isso,
     // do 2º turno em diante o corte não enviava nada
     const tinhaVoz = cvUtter.length > 0;
