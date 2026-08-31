@@ -5,6 +5,7 @@ Fish S2, Chatterbox, Kokoro, PocketTTS, VoxCPM2, Voxtral, etc.
 Tudo local: nenhum áudio ou texto sai da máquina.
 """
 
+import concurrent.futures
 import json
 import os
 import re
@@ -1102,35 +1103,51 @@ def _chat_purge(now: float) -> None:
 
 
 def _chat_worker(sid: str) -> None:
-    """Chama o LLM em background e atualiza a sessão (status thinking → reply)."""
-    try:
-        with _chat_lock:
-            s = _chat_sessions.get(sid)
-            if not s:
-                return
-            hist = s["messages"][:]
-            if len(hist) > CHAT_MAX_MSGS + 1:
-                hist = [hist[0]] + hist[-(CHAT_MAX_MSGS + 1):]
-        reply = _chat_llm([{"role": "system", "content": CHAT_SYSTEM}] + hist)
-        parsed = _chat_parse(reply)
-        with _chat_lock:
-            s = _chat_sessions.get(sid)
-            if not s:
-                return
-            if parsed.get("final") and parsed.get("text"):
-                s["status"], s["text"] = "confirmed", str(parsed["text"])
-                s["reply"] = s["text"]
-            else:
-                s["reply"] = str(parsed.get("reply") or "")
-                s["messages"].append({"role": "assistant", "content": s["reply"]})
-            s["thinking"] = False
-            s["updated"] = time.time()
-    except Exception as e:  # noqa: BLE001 — erro vai pra sessão, não derruba o server
-        with _chat_lock:
-            s = _chat_sessions.get(sid)
-            if s:
-                s["error"] = str(e)[:200]
+    """Chama o LLM em background e atualiza a sessão (status thinking → reply).
+    Com teto hard de 150s: provedor pendurado não deixa a sessão em 'thinking'
+    para sempre."""
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    def _rodar() -> None:
+        try:
+            with _chat_lock:
+                s = _chat_sessions.get(sid)
+                if not s:
+                    return
+                hist = s["messages"][:]
+                if len(hist) > CHAT_MAX_MSGS + 1:
+                    hist = [hist[0]] + hist[-(CHAT_MAX_MSGS + 1):]
+            reply = _chat_llm([{"role": "system", "content": CHAT_SYSTEM}] + hist)
+            parsed = _chat_parse(reply)
+            with _chat_lock:
+                s = _chat_sessions.get(sid)
+                if not s:
+                    return
+                if parsed.get("final") and parsed.get("text"):
+                    s["status"], s["text"] = "confirmed", str(parsed["text"])
+                    s["reply"] = s["text"]
+                else:
+                    s["reply"] = str(parsed.get("reply") or "")
+                    s["messages"].append({"role": "assistant", "content": s["reply"]})
                 s["thinking"] = False
+                s["updated"] = time.time()
+        except Exception as e:  # noqa: BLE001 — erro vai pra sessão, não derruba o server
+            with _chat_lock:
+                s = _chat_sessions.get(sid)
+                if s:
+                    s["error"] = str(e)[:200]
+                    s["thinking"] = False
+
+    try:
+        ex.submit(_rodar).result(timeout=150)
+    except concurrent.futures.TimeoutError:
+        with _chat_lock:
+            s = _chat_sessions.get(sid)
+            if s and s.get("thinking"):
+                s["error"] = "Provedor de IA demorou demais (150s) — tente de novo"
+                s["thinking"] = False
+    finally:
+        ex.shutdown(wait=False)
 
 
 @app.post("/api/chat/start")
