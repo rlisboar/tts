@@ -5362,16 +5362,16 @@ $("cvMic").onclick = async () => {
     if (!cvListening) { clearInterval(cvVadTimer); return; }
     const agora = performance.now();
     const sp = cvAnalise();
-    // pisos de ruído por banda: calibram só quando o snr está baixo (sem fala)
+    // pisos de ruído por banda: adaptação lenta contínua (segue o ambiente sem
+    // deixar a fala poluir) + rápida na calibração inicial (snr < 2)
     const snr = (sp.mid + 0.5 * sp.low) / (cvPiso.mid + 0.5 * cvPiso.low + 1e-10);
-    // calibração (1,5s ao ligar) ou adaptação lenta fora da fala
     const calibrando = performance.now() < cvCalibrandoAte;
     if (!cvSpeaking && (calibrando || snr < 2)) {
       cvPiso.low += (sp.low - cvPiso.low) * 0.05;
       cvPiso.mid += (sp.mid - cvPiso.mid) * 0.05;
       cvPiso.high += (sp.high - cvPiso.high) * 0.05;
     }
-    const falando = snr > cvSnrLim && sp.flat < 0.62;
+    const falando = snr > cvSnrLim && sp.flat < cvFlatLim;
     if ($("cvRec")) $("cvRec").textContent =
       (cvPlaying ? "🔊 IA falando — fale por cima p/ interromper" :
         (falando ? "🗣 fala " : "🎧 amb ") + "snr " + snr.toFixed(1) + " · flat " + sp.flat.toFixed(2));
