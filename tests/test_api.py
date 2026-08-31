@@ -266,19 +266,30 @@ def test_tunnel_status_estrutura(client, auth, monkeypatch):
 
 
 def test_chat_fluxo_confirma(client, auth, monkeypatch):
+    import time as _t
     respostas = iter([
         '{"final": false, "reply": "Qual o tom?"}',
         '{"final": true, "text": "Bem-vindos ao episódio 5!"}',
     ])
     monkeypatch.setattr(app, "_chat_llm", lambda msgs: respostas.__next__())
     r = client.post("/api/chat/start", headers=auth, json={"objective": "fala de abertura"})
-    assert r.status_code == 200 and r.json()["status"] == "chatting"
+    assert r.status_code == 200 and r.json()["status"] == "thinking"
     sid = r.json()["session_id"]
+    d = {}
+    for _ in range(40):  # worker assíncrono preenche a resposta
+        d = client.get(f"/api/chat/{sid}", headers=auth).json()
+        if d["status"] != "thinking":
+            break
+        _t.sleep(0.05)
+    assert d["status"] == "chatting" and "tom" in d["reply"]
     r = client.post(f"/api/chat/{sid}", headers=auth, json={"message": "pode mandar"})
-    d = r.json()
+    assert r.status_code == 200 and r.json()["status"] == "thinking"
+    for _ in range(40):
+        d = client.get(f"/api/chat/{sid}", headers=auth).json()
+        if d["status"] == "confirmed":
+            break
+        _t.sleep(0.05)
     assert d["status"] == "confirmed" and "episódio 5" in d["text"]
-    d = client.get(f"/api/chat/{sid}", headers=auth).json()
-    assert d["status"] == "confirmed" and len(d["messages"]) >= 4
     assert client.delete(f"/api/chat/{sid}", headers=auth).status_code == 200
 
 

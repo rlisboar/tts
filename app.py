@@ -1101,9 +1101,42 @@ def _chat_purge(now: float) -> None:
         _chat_sessions.pop(sid, None)
 
 
+def _chat_worker(sid: str) -> None:
+    """Chama o LLM em background e atualiza a sessão (status thinking → reply)."""
+    try:
+        with _chat_lock:
+            s = _chat_sessions.get(sid)
+            if not s:
+                return
+            hist = s["messages"][:]
+            if len(hist) > CHAT_MAX_MSGS + 1:
+                hist = [hist[0]] + hist[-(CHAT_MAX_MSGS + 1):]
+        reply = _chat_llm([{"role": "system", "content": CHAT_SYSTEM}] + hist)
+        parsed = _chat_parse(reply)
+        with _chat_lock:
+            s = _chat_sessions.get(sid)
+            if not s:
+                return
+            if parsed.get("final") and parsed.get("text"):
+                s["status"], s["text"] = "confirmed", str(parsed["text"])
+                s["reply"] = s["text"]
+            else:
+                s["reply"] = str(parsed.get("reply") or "")
+                s["messages"].append({"role": "assistant", "content": s["reply"]})
+            s["thinking"] = False
+            s["updated"] = time.time()
+    except Exception as e:  # noqa: BLE001 — erro vai pra sessão, não derruba o server
+        with _chat_lock:
+            s = _chat_sessions.get(sid)
+            if s:
+                s["error"] = str(e)[:200]
+                s["thinking"] = False
+
+
 @app.post("/api/chat/start")
 def chat_start(payload: dict):
-    """Abre sessão p/ decidir, conversando, o texto que o agente vai falar."""
+    """Abre sessão p/ decidir, conversando, o texto que o agente vai falar.
+    Assíncrono: responde na hora e a fala da IA chega via GET (polling)."""
     objetivo = str((payload or {}).get("objective") or "").strip()
     if not objetivo:
         raise HTTPException(400, "Campo 'objective' obrigatório")
@@ -1111,54 +1144,46 @@ def chat_start(payload: dict):
     sid = uuid.uuid4().hex[:12]
     msgs = [{"role": "user",
              "content": f"Objetivo: {objetivo}" + (f"\nContexto: {contexto}" if contexto else "")}]
-    reply = _chat_llm([{"role": "system", "content": CHAT_SYSTEM}] + msgs)
-    parsed = _chat_parse(reply)
     now = time.time()
-    s = {"objective": objetivo, "context": contexto,
-         "messages": msgs + [{"role": "assistant", "content": reply}],
-         "status": "chatting", "text": "", "created": now, "updated": now}
-    if parsed.get("final") and parsed.get("text"):
-        s["status"], s["text"] = "confirmed", str(parsed["text"])
     with _chat_lock:
         _chat_purge(now)
-        _chat_sessions[sid] = s
-    return {"session_id": sid, "status": s["status"],
-            "reply": str(parsed.get("reply") or parsed.get("text") or ""),
-            "text": s["text"]}
+        _chat_sessions[sid] = {"objective": objetivo, "context": contexto,
+                               "messages": msgs, "status": "chatting", "text": "",
+                               "reply": "", "thinking": True, "error": "",
+                               "created": now, "updated": now}
+    threading.Thread(target=_chat_worker, args=(sid,), daemon=True).start()
+    return {"session_id": sid, "status": "thinking"}
 
 
 @app.post("/api/chat/{sid}")
 def chat_message(sid: str, payload: dict):
-    """Fala nova do humano (transcrição do STT). Devolve a réplica da IA e,
-    quando houver confirmação, o texto final aprovado."""
+    """Fala nova do humano (transcrição do STT). A resposta da IA chega pelo
+    GET — assíncrono p/ não estourar timeouts de proxy/Cloudflare."""
     s = _chat_get(sid)
     msg = str((payload or {}).get("message") or "").strip()
     if not msg:
         raise HTTPException(400, "Campo 'message' obrigatório")
     with _chat_lock:
+        if s.get("thinking"):
+            raise HTTPException(409, "IA ainda processando a fala anterior")
         s["messages"].append({"role": "user", "content": msg})
-        s["status"], s["text"] = "chatting", ""   # mandar de novo reabre a rodada
-        hist = s["messages"][:]
-    if len(hist) > CHAT_MAX_MSGS + 1:
-        hist = [hist[0]] + hist[-(CHAT_MAX_MSGS + 1):]
-    reply = _chat_llm([{"role": "system", "content": CHAT_SYSTEM}] + hist)
-    parsed = _chat_parse(reply)
-    if parsed.get("final") and parsed.get("text"):
-        s["status"], s["text"] = "confirmed", str(parsed["text"])
-        reply_content = s["text"]
-    else:
-        reply_content = str(parsed.get("reply") or "")
-    with _chat_lock:
-        s["messages"].append({"role": "assistant", "content": reply_content})
-    return {"reply": reply_content, "status": s["status"], "text": s["text"]}
+        s["status"], s["text"] = "chatting", ""
+        s["reply"], s["error"] = "", ""
+        s["thinking"] = True
+        s["updated"] = time.time()
+    threading.Thread(target=_chat_worker, args=(sid,), daemon=True).start()
+    return {"ok": True, "status": "thinking"}
 
 
 @app.get("/api/chat/{sid}")
 def chat_get(sid: str):
     s = _chat_get(sid)
-    return {"session_id": sid, "status": s["status"], "text": s["text"],
-            "objective": s["objective"],
-            "messages": [{"role": m["role"], "content": m["content"]} for m in s["messages"]]}
+    with _chat_lock:
+        status = "thinking" if s.get("thinking") else s["status"]
+        return {"session_id": sid, "status": status, "text": s["text"],
+                "reply": s.get("reply", ""), "error": s.get("error", ""),
+                "objective": s["objective"],
+                "messages": [{"role": m["role"], "content": m["content"]} for m in s["messages"]]}
 
 
 @app.delete("/api/chat/{sid}")

@@ -5196,34 +5196,51 @@ async function cvSpeak(text) {
   cvMute = false; cvBusy = false;
 }
 async function cvSend(text) {
-  if (!cvSid || !text.trim()) return;
+  if (!text.trim()) return;
   cvAdd("você", text);
   cvStatus("IA pensando…");
-  cvDbg("cvSend sid=" + cvSid + " v4");
   cvBusy = true;
   try {
-    const r = await api(`/api/chat/${cvSid}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text })
-    });
-    cvDbg("ia respondeu status=" + r.status);
-    if (r.status === "confirmed") {
-      cvAdd("IA", "✅ " + r.text);
-      cvFinalShow(r.text);
-      cvStatus("confirmado — escuta encerrada. Ligue de novo para nova conversa.");
-      cvStopListening();
-      await cvSpeak(r.text);
+    if (!cvSid) {
+      const r = await api("/api/chat/start", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ objective: text })
+      });
+      cvSid = r.session_id;
+      cvDbg("start " + cvSid);
+    } else {
+      await api(`/api/chat/${cvSid}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text })
+      });
+    }
+    // resposta chega por polling (chat assíncrono no servidor)
+    for (let i = 0; i < 120; i++) {
+      await new Promise(res => setTimeout(res, 1500));
+      if (!cvSid) { cvBusy = false; return; }
+      const d = await api(`/api/chat/${cvSid}`);
+      if (d.status === "thinking") continue;
+      if (d.error) { cvStatus("✖ " + d.error); cvBusy = false; return; }
+      if (d.status === "confirmed") {
+        cvAdd("IA", "✅ " + d.text);
+        cvFinalShow(d.text);
+        cvStatus("confirmado — escuta encerrada");
+        cvStopListening();
+        await cvSpeak(d.text);
+        return;
+      }
+      cvAdd("IA", d.reply);
+      await cvSpeak(d.reply);
+      cvStatus("🎧 ouvindo…");
+      cvBusy = false;
       return;
     }
-    cvAdd("IA", r.reply);
-    await cvSpeak(r.reply);
-    cvStatus("🎧 ouvindo…");
+    cvStatus("⏱ IA demorou demais — tente de novo");
   } catch (e) { cvStatus("✖ " + e.message); }
   cvBusy = false;
 }
 async function cvTranscribeEEnvia(blob) {
   cvStatus(`transcrevendo ${blob.size}B…`);
-  // manda o formato cru do browser (webm/mp4) — o servidor decodifica via ffmpeg
   const ext = (blob.type.split("/")[1] || "webm").split(";")[0];
   const fd = new FormData();
   fd.append("audio", blob, "fala." + ext);
@@ -5233,85 +5250,10 @@ async function cvTranscribeEEnvia(blob) {
     const r = await api("/api/transcribe", { method: "POST", body: fd });
     texto = (r.text || "").trim();
     cvDbg("stt ok: " + texto.slice(0, 50));
-  } catch (e) { cvStatus("✖ STT: " + e.message); cvBusy = false; return; }
+  } catch (e) { cvDbg("✖ stt: " + e.message); cvStatus("✖ STT: " + e.message); cvBusy = false; return; }
   if (!texto) { cvStatus("não entendi — fale de novo"); cvBusy = false; return; }
-  if (!cvSid) {
-    // primeira fala = objetivo da sessão
-    cvAdd("você", texto);
-    cvStatus("iniciando…");
-    try {
-      const r = await api("/api/chat/start", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ objective: texto })
-      });
-      cvSid = r.session_id;
-      if (r.status === "confirmed") {
-        cvAdd("IA", "✅ " + r.text);
-        cvFinalShow(r.text);
-        cvStatus("confirmado ✔");
-        cvStopListening();
-        return;
-      }
-      cvAdd("IA", r.reply);
-      cvStatus("🎧 ouvindo…");
-    } catch (e) {
-      cvStatus("✖ " + e.message + " — confira a IA em Configurações → Rede");
-      cvBusy = false;
-    }
-  } else {
-    await cvSend(texto);
-  }
+  await cvSend(texto);
 }
-$("cvMic").onclick = async () => {
-  if (cvListening) { cvStopListening(); cvStatus("escuta desligada"); return; }
-  try {
-    cvStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-  } catch { toast("Sem acesso ao microfone."); return; }
-  cvListening = true; cvBusy = false; cvNoise = 0; cvDbg("ligar");
-  $("cvMic").textContent = "⏹ Desligar";
-  $("cvRec").style.display = "";
-  cvAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (cvAudioCtx.resume) await cvAudioCtx.resume();  // política de autoplay dos browsers
-  const src = cvAudioCtx.createMediaStreamSource(cvStream);
-  cvAnalyser = cvAudioCtx.createAnalyser();
-  cvAnalyser.fftSize = 1024;
-  src.connect(cvAnalyser);
-  cvStartUtterance();
-  $("cvCutBtn").style.display = "";
-  cvStatus("🎧 ouvindo… fale o objetivo");
-  if (cvVadTimer) clearInterval(cvVadTimer);
-  cvVadTimer = setInterval(() => {                     // interval: rAF congela em aba de fundo
-    if (!cvListening) { clearInterval(cvVadTimer); return; }
-    const nivel = cvRms();
-    const agora = performance.now();
-    // limiar adaptativo: aprende o ruído do ambiente quando não estamos falando
-    if (!cvSpeaking) cvNoise = Math.max(0.006, (cvNoise || nivel) * 0.95 + nivel * 0.05);
-    const limStart = Math.max(0.02, cvNoise * 3);
-    const limEnd = limStart * 0.55;
-    const barras = "▮".repeat(Math.min(10, Math.round((nivel / (limStart * 2)) * 10)));
-    if ($("cvRec")) $("cvRec").textContent =
-      (cvSpeaking ? "🗣 fala " : "🎧 amb ") + nivel.toFixed(3) + " / lim " + limStart.toFixed(3) + " " + barras;
-    if (cvSpeaking && !cvSpeakingLogged) { cvSpeakingLogged = true; cvDbg("voz detectada lim=" + limStart.toFixed(3)); }
-    if (!cvSpeaking) cvSpeakingLogged = false;
-    if (!cvBusy) {
-      if (nivel > limStart) {                          // voz acima do ruído do ambiente
-        cvSpeaking = true;
-        cvSilenceSince = 0;
-      } else if (cvSpeaking) {                         // abaixo do limiar de fala
-        if (nivel > limEnd) cvSilenceSince = 0;        // pausa curta não corta
-        else {
-          if (!cvSilenceSince) cvSilenceSince = agora;
-          const dur = agora - cvUtterStart;
-          if ((agora - cvSilenceSince > CV_SILENCE_MS && dur > 600) || dur > CV_MAX_MS) {
-            cvBusy = true;                             // trava até a IA responder
-            cvCut();
-          }
-        }
-      }
-    }
-  }, 60);
-};
 $("cvCutBtn").onclick = () => {   // envio manual: contorna o VAD se ele não cortar
   if (cvListening && !cvBusy) { cvBusy = true; cvCut(); }
 };
