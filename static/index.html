@@ -2479,6 +2479,8 @@
       </section>
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">Acesso pela internet (proxy)</h3>
+        <label class="check"><input type="checkbox" id="proxyTunnelOn"> Túnel ativo — estúdio acessível pela internet</label>
+        <p class="hint" style="margin-top:2px">Desligado: só a rede local alcança o estúdio (a URL pública para de responder).</p>
         <p class="hint">URL pública do estúdio atrás de um proxy (ex.: VPS com túnel SSH —
           veja o README). Fica salva só neste navegador.</p>
         <label class="cfg-label">URL pública
@@ -4613,6 +4615,37 @@ if ($("proxyCopyApi")) $("proxyCopyApi").onclick = () => {
   if (!base) { setProxyStatus("Informe a URL pública primeiro."); return; }
   navigator.clipboard?.writeText(`${base}/v1`).then(() => toast("base_url copiada ✔")).catch(() => {});
 };
+async function syncTunnelToggle() {
+  const el = $("proxyTunnelOn");
+  if (!el) return;
+  try {
+    const d = await api("/api/tunnel/status");
+    el.disabled = false;
+    el.checked = !!(d.launchd_loaded || d.tunnel_running);
+  } catch (e) { el.disabled = true; el.checked = false; }
+}
+if ($("proxyTunnelOn")) {
+  syncTunnelToggle();
+  $("proxyTunnelOn").onchange = async () => {
+    const el = $("proxyTunnelOn");
+    const ligar = el.checked;
+    if (!confirm(ligar
+      ? "Ligar o acesso pela internet?"
+      : "Desligar o acesso pela internet? A URL pública para de responder.")) {
+      el.checked = !ligar;
+      return;
+    }
+    try {
+      const r = await api(ligar ? "/api/tunnel/start" : "/api/tunnel/stop", { method: "POST" });
+      toast(r.msg || "Feito");
+      setProxyStatus(r.msg || "");
+    } catch (e) {
+      toast("Erro: " + e.message, 5000);
+      el.checked = !ligar;
+    }
+    syncTunnelToggle();
+  };
+}
 
 /* ───────── Limpeza de áudios ───────── */
 $("clearAll").onclick = async () => {

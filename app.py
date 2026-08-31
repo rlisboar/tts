@@ -1036,23 +1036,52 @@ def tunnel_status(url: str = ""):
     }
 
 
-@app.post("/api/tunnel/restart")
-def tunnel_restart():
-    """Reinicia o LaunchAgent do túnel (kickstart). Exige macOS + agente."""
-    if sys.platform != "darwin" or not hasattr(os, "getuid"):
-        raise HTTPException(400, "Disponível apenas no macOS com o LaunchAgent instalado (tunnel.sh install)")
+def _tunnel_plist() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{TUNNEL_LABEL}.plist"
+
+
+def _launchctl(args: list, timeout: int = 10) -> None:
+    """launchctl com tratamento comum: erro -> HTTPException 500."""
     try:
-        r = subprocess.run(
-            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{TUNNEL_LABEL}"],
-            capture_output=True, timeout=10, text=True,
-        )
+        r = subprocess.run(args, capture_output=True, timeout=timeout, text=True)
         if r.returncode != 0:
             raise HTTPException(500, f"launchctl: {(r.stderr or r.stdout or 'erro').strip()[:200]}")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Falha ao reiniciar: {e}")
+        raise HTTPException(500, f"Falha no launchctl: {e}")
+
+
+def _tunnel_exige_macos() -> None:
+    if sys.platform != "darwin" or not hasattr(os, "getuid"):
+        raise HTTPException(400, "Disponível apenas no macOS com o LaunchAgent instalado (tunnel.sh install)")
+
+
+@app.post("/api/tunnel/restart")
+def tunnel_restart():
+    """Reinicia o LaunchAgent do túnel (kickstart). Exige macOS + agente."""
+    _tunnel_exige_macos()
+    _launchctl(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{TUNNEL_LABEL}"])
     return {"ok": True, "msg": "Túnel reiniciado (aguarde ~5s e reavalie o status)"}
+
+
+@app.post("/api/tunnel/stop")
+def tunnel_stop():
+    """Desliga o acesso pela internet: faz bootout do LaunchAgent (o processo
+    ssh morre e o KeepAlive não reergue). A rede local continua valendo."""
+    _tunnel_exige_macos()
+    _launchctl(["launchctl", "bootout", f"gui/{os.getuid()}/{TUNNEL_LABEL}"])
+    return {"ok": True, "msg": "Túnel desligado — URL pública fora do ar"}
+
+
+@app.post("/api/tunnel/start")
+def tunnel_start():
+    """Religa o acesso pela internet: bootstrap do LaunchAgent."""
+    _tunnel_exige_macos()
+    if not _tunnel_plist().exists():
+        raise HTTPException(400, "LaunchAgent não instalado — rode ./tunnel.sh install")
+    _launchctl(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(_tunnel_plist())])
+    return {"ok": True, "msg": "Túnel ligado — aguarde ~5s e teste a URL pública"}
 
 
 @app.post("/api/shutdown")

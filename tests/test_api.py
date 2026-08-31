@@ -236,3 +236,30 @@ def test_status_traz_versao(client, auth):
     assert r.status_code == 200
     v = r.json().get("version")
     assert isinstance(v, str) and len(v) >= 3
+
+
+def test_tunnel_start_stop_chamam_launchctl(client, auth, monkeypatch):
+    chamadas = []
+
+    def fake_run(args, **kw):
+        chamadas.append(args)
+        class R: returncode, stderr, stdout = 0, "", ""
+        return R()
+
+    monkeypatch.setattr(app.subprocess, "run", fake_run)
+    r = client.post("/api/tunnel/stop", headers=auth)
+    assert r.status_code == 200 and r.json()["ok"] is True
+    r = client.post("/api/tunnel/start", headers=auth)
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert any("bootout" in c for c in chamadas) and any("bootstrap" in c for c in chamadas)
+
+
+def test_tunnel_status_estrutura(client, auth, monkeypatch):
+    monkeypatch.setattr(app, "_tunnel_proc_running", lambda: True)
+    monkeypatch.setattr(app, "_tunnel_launchd_loaded", lambda: True)
+    monkeypatch.setattr(app, "_public_proxy_check", lambda url, timeout=6.0: {"ok": True, "latency_ms": 10})
+    d = client.get("/api/tunnel/status?url=https://x/ttsproxy", headers=auth).json()
+    assert d["tunnel_running"] is True and d["launchd_loaded"] is True
+    assert d["public_check"]["ok"] is True
+    d = client.get("/api/tunnel/status", headers=auth).json()
+    assert d["public_check"] is None
