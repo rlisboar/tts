@@ -5082,7 +5082,7 @@ $("sttDownloadBtn").onclick = () => {
 const CV_HINT = "🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar — quando estiver bom, confirme (\"pode mandar\").";
 let cvSid = null, cvListening = false, cvBusy = false;
 let cvMediaRec = null, cvStream = null, cvAudioCtx = null, cvAnalyser = null;
-let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0;
+let cvUtter = [], cvSpeaking = false, cvSilenceSince = 0, cvUtterStart = 0, cvNoise = 0;
 let cvVadTimer = null;
 const CV_SILENCE_MS = 1400;   // silêncio que fecha a fala
 const CV_MAX_MS = 30000;      // corte de segurança
@@ -5197,7 +5197,7 @@ $("cvMic").onclick = async () => {
     cvStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
   } catch { toast("Sem acesso ao microfone."); return; }
-  cvListening = true; cvBusy = false;
+  cvListening = true; cvBusy = false; cvNoise = 0;
   $("cvMic").textContent = "⏹ Desligar";
   $("cvRec").style.display = "";
   cvAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -5220,18 +5220,25 @@ $("cvMic").onclick = async () => {
     if (!cvListening) { clearInterval(cvVadTimer); return; }
     const nivel = cvRms();
     const agora = performance.now();
-    const barras = "▮".repeat(Math.min(10, Math.round(nivel * 120)));
-    if ($("cvRec")) $("cvRec").textContent = "🎧 " + (barras || "▮");
+    // limiar adaptativo: aprende o ruído do ambiente quando não estamos falando
+    if (!cvSpeaking) cvNoise = Math.max(0.006, (cvNoise || nivel) * 0.95 + nivel * 0.05);
+    const limStart = Math.max(0.02, cvNoise * 3);
+    const limEnd = limStart * 0.55;
+    const barras = "▮".repeat(Math.min(10, Math.round((nivel / (limStart * 2)) * 10)));
+    if ($("cvRec")) $("cvRec").textContent = (cvSpeaking ? "🗣 " : "🎧 ") + (barras || "▮");
     if (!cvBusy) {
-      if (nivel > 0.01) {                              // voz detectada
+      if (nivel > limStart) {                          // voz acima do ruído do ambiente
         cvSpeaking = true;
         cvSilenceSince = 0;
-      } else if (cvSpeaking) {                         // pausa pós-fala
-        if (!cvSilenceSince) cvSilenceSince = agora;
-        const dur = agora - cvUtterStart;
-        if ((agora - cvSilenceSince > CV_SILENCE_MS && dur > 600) || dur > CV_MAX_MS) {
-          cvBusy = true;                               // trava até a IA responder
-          cvCut();
+      } else if (cvSpeaking) {                         // abaixo do limiar de fala
+        if (nivel > limEnd) cvSilenceSince = 0;        // pausa curta não corta
+        else {
+          if (!cvSilenceSince) cvSilenceSince = agora;
+          const dur = agora - cvUtterStart;
+          if ((agora - cvSilenceSince > CV_SILENCE_MS && dur > 600) || dur > CV_MAX_MS) {
+            cvBusy = true;                             // trava até a IA responder
+            cvCut();
+          }
         }
       }
     }
