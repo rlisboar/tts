@@ -5172,11 +5172,17 @@ async function cvSpeak(text) {
     const voz = $("cvVoice")?.value;
     if (voz) body.voice = voz;
     cvDbg("tts synth voz=" + (voz || "padrão"));
-    const r = await fetch(APP_BASE + "/v1/audio/speech", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-API-Key": KEY },
-      body: JSON.stringify(body)
-    });
+    let r;
+    for (let tent = 0; tent < 2; tent++) {
+      r = await fetch(APP_BASE + "/v1/audio/speech", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": KEY },
+        body: JSON.stringify(body)
+      });
+      if (r.ok) break;
+      cvDbg("tts " + r.status + " tent=" + tent);
+      if (tent === 0) await new Promise(res => setTimeout(res, 800));
+    }
     if (!r.ok) throw new Error("HTTP " + r.status);
     const el = $("cvAudio");
     el.style.display = "";
@@ -5195,7 +5201,7 @@ async function cvSpeak(text) {
   cvUtter = [];        // descarta o que o mic pegou enquanto a IA falava
   cvMute = false; cvBusy = false;
 }
-async function cvSend(text) {
+async function cvSend(text, _retry = true) {
   if (!text.trim()) return;
   cvAdd("você", text);
   cvStatus("IA pensando…");
@@ -5212,13 +5218,29 @@ async function cvSend(text) {
       await api(`/api/chat/${cvSid}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text })
+      }).catch(async e => {   // sessão morreu no restart do servidor: reabre
+        if (_retry && /encontrada|expirou/i.test(e.message)) {
+          cvDbg("sessão perdida — reabrindo");
+          cvSid = null;
+          return cvSend(text, false);
+        }
+        throw e;
       });
     }
     // resposta chega por polling (chat assíncrono no servidor)
     for (let i = 0; i < 120; i++) {
       await new Promise(res => setTimeout(res, 1500));
       if (!cvSid) { cvBusy = false; return; }
-      const d = await api(`/api/chat/${cvSid}`);
+      let d;
+      try { d = await api(`/api/chat/${cvSid}`); }
+      catch (e) {
+        if (_retry && /encontrada|expirou/i.test(e.message)) {
+          cvDbg("sessão perdida no poll — reabrindo");
+          cvSid = null; cvBusy = false;
+          return cvSend(text, false);
+        }
+        throw e;
+      }
       if (d.status === "thinking") continue;
       if (d.error) { cvStatus("✖ " + d.error); cvBusy = false; return; }
       if (d.status === "confirmed") {
