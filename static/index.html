@@ -2295,37 +2295,28 @@
       <div class="view-head">
         <div class="view-head-main">
           <h1>Conversa</h1>
-          <p class="muted">Fale e refine com a IA o texto que o agente vai falar. Confirme para fechar.</p>
+          <p class="muted">Fale o objetivo, refine com a IA e confirme — o texto final vai para o agente.</p>
         </div>
       </div>
       <div class="view-scroll">
         <div class="card">
-          <div id="cvStart">
-            <label class="cfg-label">Objetivo da fala
-              <input type="text" id="cvObjective" placeholder="ex.: fala de abertura do episódio 5" maxlength="300"></label>
-            <label class="cfg-label">Contexto (opcional)
-              <input type="text" id="cvContext" placeholder="ex.: podcast sobre X, público leigo, tom informal" maxlength="500"></label>
-            <div class="row" style="margin-top:10px">
-              <button type="button" id="cvStartBtn" class="primary">Iniciar conversa</button>
-            </div>
+          <div class="cv-log" id="cvLog">
+            <p class="hint" id="cvHint">🎙 Aperte <b>Falar</b> e descreva o que você quer. A IA pergunta o que faltar — quando estiver bom, confirme ("pode mandar").</p>
           </div>
-          <div id="cvChat" style="display:none">
-            <div id="cvLog" class="cv-log"></div>
-            <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
-              <button type="button" id="cvMic" class="primary">🎙 Falar</button>
-              <span id="cvRec" style="display:none" class="hint">⏺ gravando…</span>
-              <span style="flex:1"></span>
-              <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
-            </div>
-            <p class="hint" id="cvStatus" style="margin-top:6px"></p>
-            <div id="cvFinal" style="display:none; margin-top:10px">
-              <p class="hint" style="margin:0 0 6px"><b>Texto final aprovado:</b></p>
-              <code id="cvFinalText" class="api-key-secret"></code>
-              <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center">
-                <button type="button" id="cvCopy" class="small">Copiar</button>
-                <button type="button" id="cvSynth" class="small">Sintetizar</button>
-                <audio id="cvAudio" controls style="width:100%; margin-top:6px"></audio>
-              </div>
+          <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
+            <button type="button" id="cvMic" class="primary">🎙 Falar</button>
+            <span id="cvRec" style="display:none" class="hint">⏺ gravando…</span>
+            <span style="flex:1"></span>
+            <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
+          </div>
+          <p class="hint" id="cvStatus" style="margin-top:6px"></p>
+          <div id="cvFinal" style="display:none; margin-top:10px">
+            <p class="hint" style="margin:0 0 6px"><b>Texto final aprovado:</b></p>
+            <code id="cvFinalText" class="api-key-secret"></code>
+            <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center">
+              <button type="button" id="cvCopy" class="small">Copiar</button>
+              <button type="button" id="cvSynth" class="small">Sintetizar</button>
+              <audio id="cvAudio" controls style="width:100%; margin-top:6px"></audio>
             </div>
           </div>
         </div>
@@ -2589,6 +2580,14 @@
             <input type="password" id="remoteSttKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
           <p class="hint">Provedor OpenAI-compatível. Roteia só a transcrição.</p>
         </div>
+        <div class="divider"></div>
+        <label class="cfg-label">IA da Conversa — Base URL (termina em /v1)
+          <input type="text" id="chatBaseUrl" placeholder="vazio = usa a Base URL de tradução"></label>
+        <label class="cfg-label">Modelo da Conversa
+          <input type="text" id="chatModel" placeholder="vazio = usa o modelo de tradução"></label>
+        <label class="cfg-label">Chave da Conversa (opcional)
+          <input type="password" id="chatApiKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
+        <p class="hint">Provedor que conduz a aba Conversa. Vazio = herda o de tradução.</p>
         <div class="divider"></div>
         <label class="check"><input type="checkbox" id="freeLocalOnRemote"> Liberar RAM: descarregar local quando usar remoto</label>
         <label class="cfg-label">Descarregar por ociosidade (min)
@@ -4880,6 +4879,9 @@ async function loadSettings() {
     $("remoteSttModel").value = s.remote_stt_model || "whisper-1";
     $("remoteSttBaseUrl").value = s.remote_stt_base_url || "";
     $("remoteSttKey").value = s.remote_stt_key || "";
+    $("chatBaseUrl").value = s.chat_base_url || "";
+    $("chatModel").value = s.chat_model || "";
+    $("chatApiKey").value = s.chat_api_key || "";
     $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
     applySttEngine(false);
     prevSttEngine = $("sttEngine").value;
@@ -4986,6 +4988,9 @@ $("cfgSave").onclick = async () => {
       remote_stt_model: $("remoteSttModel").value,
       remote_stt_base_url: $("remoteSttBaseUrl").value,
       remote_stt_key: $("remoteSttKey").value,
+      chat_base_url: $("chatBaseUrl")?.value || "",
+      chat_model: $("chatModel")?.value || "",
+      chat_api_key: $("chatApiKey")?.value || "",
       free_local_on_remote: $("freeLocalOnRemote").checked,
       idle_unload_minutes: parseInt($("idleUnloadMin")?.value, 10) || 0,
       speech_queue: !!$("speechQueue")?.checked,
@@ -5075,6 +5080,7 @@ $("sttDownloadBtn").onclick = () => {
 
 /* ───────── Conversa: decidir o texto por voz ───────── */
 let cvSid = null, cvRec = null, cvChunks = [], cvStream = null;
+const CV_HINT = "🎙 Aperte <b>Falar</b> e descreva o que você quer. A IA pergunta o que faltar — quando estiver bom, confirme (\"pode mandar\").";
 function cvAdd(quem, txt) {
   const d = document.createElement("div");
   d.className = "cv-msg " + (quem === "você" ? "eu" : "ia");
@@ -5087,26 +5093,6 @@ function cvFinalShow(text) {
   $("cvFinalText").textContent = text;
   $("cvFinal").style.display = "";
 }
-$("cvStartBtn").onclick = async () => {
-  const objective = $("cvObjective").value.trim();
-  if (!objective) { toast("Descreva o objetivo da fala."); return; }
-  $("cvStartBtn").disabled = true;
-  cvStatus("iniciando…");
-  try {
-    const r = await api("/api/chat/start", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ objective, context: $("cvContext").value.trim() })
-    });
-    cvSid = r.session_id;
-    $("cvLog").innerHTML = "";
-    $("cvStart").style.display = "none";
-    $("cvChat").style.display = "";
-    $("cvFinal").style.display = "none";
-    if (r.status === "confirmed") { cvAdd("IA", r.text); cvFinalShow(r.text); cvStatus("confirmado ✔"); }
-    else cvAdd("IA", r.reply);
-  } catch (e) { toast("Erro: " + e.message, 6000); }
-  $("cvStartBtn").disabled = false;
-};
 async function cvSend(text) {
   if (!cvSid || !text.trim()) return;
   cvAdd("você", text);
@@ -5142,12 +5128,30 @@ $("cvMic").onclick = async () => {
     const fd = new FormData();
     fd.append("audio", wav, "a.wav");
     fd.append("source_lang", "pt");
+    let texto = "";
     try {
       const r = await api("/api/transcribe", { method: "POST", body: fd });
-      const texto = (r.text || "").trim();
-      if (!texto) { cvStatus("não entendi — fale de novo"); return; }
+      texto = (r.text || "").trim();
+    } catch (e) { cvStatus("✖ STT: " + e.message); return; }
+    if (!texto) { cvStatus("não entendi — fale de novo"); return; }
+    if (!cvSid) {
+      // primeira fala = objetivo da sessão
+      cvAdd("você", texto);
+      cvStatus("iniciando…");
+      try {
+        const r = await api("/api/chat/start", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ objective: texto })
+        });
+        cvSid = r.session_id;
+        if (r.status === "confirmed") { cvAdd("IA", "✅ " + r.text); cvFinalShow(r.text); cvStatus("confirmado ✔"); }
+        else cvAdd("IA", r.reply);
+      } catch (e) {
+        cvStatus("✖ " + e.message + " — confira a IA em Configurações → Rede");
+      }
+    } else {
       await cvSend(texto);
-    } catch (e) { cvStatus("✖ " + e.message); }
+    }
   };
   cvRec.start();
   $("cvRec").style.display = "";
@@ -5157,9 +5161,7 @@ $("cvEnd").onclick = async () => {
   if (!cvSid) return;
   try { await api(`/api/chat/${cvSid}`, { method: "DELETE" }); } catch (e) {}
   cvSid = null;
-  $("cvChat").style.display = "none";
-  $("cvStart").style.display = "";
-  $("cvLog").innerHTML = "";
+  $("cvLog").innerHTML = `<p class="hint" id="cvHint">${CV_HINT}</p>`;
   $("cvFinal").style.display = "none";
   cvStatus("");
 };
