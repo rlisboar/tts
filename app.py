@@ -1023,30 +1023,42 @@ def _chat_llm(messages: list) -> str:
     """Chama /chat/completions do provedor e devolve o conteúdo da resposta."""
     import urllib.request
     base, model, key = _chat_provider()
-    corpo = json.dumps({"model": model, "messages": messages, "temperature": 0.4}).encode()
     headers = {"Content-Type": "application/json",
                "User-Agent": "Mozilla/5.0 (compatible; tts-studio/1.0)"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    req = urllib.request.Request(f"{base}/chat/completions", data=corpo,
-                                 method="POST", headers=headers)
+
+    def _corpo(effort: str | None) -> bytes:
+        corpo = {"model": model, "messages": messages, "temperature": 0.4}
+        if effort:  # GLM/vLLM queimam tokens em reasoning — low = resposta rápida
+            corpo["reasoning_effort"] = effort
+        return json.dumps(corpo).encode()
+
+    import ssl
     try:
-        import ssl
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa: BLE001 — sem certifi, segue com o trust store padrão
+        ctx = ssl.create_default_context()
+
+    ultimo_erro = ""
+    for effort in ("low", None):  # 1ª tenta com reasoning baixo; 2ª sem o campo
+        req = urllib.request.Request(f"{base}/chat/completions", data=_corpo(effort),
+                                     method="POST", headers=headers)
         try:
-            import certifi
-            ctx = ssl.create_default_context(cafile=certifi.where())
-        except Exception:  # noqa: BLE001 — sem certifi, segue com o trust store padrão
-            ctx = ssl.create_default_context()
-        with urllib.request.urlopen(req, timeout=120, context=ctx) as resp:
-            dados = json.loads(resp.read())
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(502, f"Provedor de conversa falhou: {e}")
-    try:
-        return dados["choices"][0]["message"]["content"] or ""
-    except Exception:
-        raise HTTPException(502, "Resposta do provedor sem o formato esperado")
+            with urllib.request.urlopen(req, timeout=120, context=ctx) as resp:
+                dados = json.loads(resp.read())
+            return dados["choices"][0]["message"]["content"] or ""
+        except urllib.error.HTTPError as e:
+            ultimo_erro = f"HTTP {e.code}"
+            if e.code not in (400, 422):
+                raise HTTPException(502, f"Provedor de conversa falhou: HTTP {e.code}")
+            # 400/422: provedor não aceita reasoning_effort — tenta sem o campo
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(502, f"Provedor de conversa falhou: {e}")
+    raise HTTPException(502, f"Provedor de conversa falhou: {ultimo_erro}")
 
 
 def _chat_parse(conteudo: str) -> dict:
