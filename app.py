@@ -388,10 +388,11 @@ def _extract_request_key(request) -> str:
 def _key_is_valid(provided: str) -> bool:
     if not provided:
         return False
-    if _ENV_API_KEY and provided == _ENV_API_KEY:
+    if _ENV_API_KEY and _secrets.compare_digest(provided, _ENV_API_KEY):
         return True
     with _apikeys_lock:
-        return any(k.get("secret") == provided for k in (_apikeys.get("keys") or []))
+        return any(_secrets.compare_digest(provided, k.get("secret") or "")
+                   for k in (_apikeys.get("keys") or []))
 
 
 def _primary_api_key() -> str:
@@ -434,10 +435,15 @@ app.add_middleware(
 
 @app.middleware("http")
 async def _exige_chave(request, call_next):
+    # loopback = processo no próprio Mac; chave só para a rede
+    local = request.client and request.client.host in ("127.0.0.1", "::1")
     protegido = request.url.path.startswith(("/api/", "/v1/"))
+    # docs/openapi revelam o mapa completo da API: abertos no Mac por conveniência,
+    # mas exigem chave quando o acesso vem pela internet (proxy)
+    if not local and request.url.path in ("/openapi.json", "/docs", "/redoc",
+                                          "/docs/oauth2-redirect"):
+        protegido = True
     if protegido and request.method != "OPTIONS" and _auth_enabled():
-        # loopback = processo no próprio Mac; chave só para a rede
-        local = request.client and request.client.host in ("127.0.0.1", "::1")
         ok = local or _key_is_valid(_extract_request_key(request))
         if not ok:
             from fastapi.responses import JSONResponse
@@ -3164,8 +3170,14 @@ def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
                 break
         else:
             suffix = ".wav"
+    # cap de tamanho: leitura limitada (sem confiar em Content-Length) —
+    # evita encher disco/memória com upload gigante de quem tem a chave
+    limite_mb = int(os.environ.get("TTS_MAX_UPLOAD_MB", "600"))
+    dados = upload.file.read(limite_mb * 1024 * 1024 + 1)
+    if len(dados) > limite_mb * 1024 * 1024:
+        raise HTTPException(413, f"Áudio maior que {limite_mb} MB")
     raw = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}{suffix}"
-    raw.write_bytes(upload.file.read())
+    raw.write_bytes(dados)
     if suffix == ".wav":
         return raw
     wav = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}.wav"

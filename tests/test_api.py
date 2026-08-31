@@ -190,3 +190,30 @@ def test_import_sem_auth_401(client, voices_tmp):
     r = client.post("/api/voices/import",
                     files={"zip_file": ("b.zip", b"x", "application/zip")})
     assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Endurecimento da exposição pela internet (proxy)
+# ---------------------------------------------------------------------------
+
+def test_docs_exigem_chave_da_rede(client, auth):
+    # host do TestClient não é loopback → docs/openapi exigem chave
+    r = client.get("/openapi.json")
+    assert r.status_code == 401
+    r = client.get("/docs")
+    assert r.status_code == 401
+    r = client.get("/openapi.json", headers=auth)
+    assert r.status_code == 200
+
+
+def test_upload_stt_cap_413(client, auth, monkeypatch):
+    monkeypatch.setenv("TTS_MAX_UPLOAD_MB", "0")
+    r = client.post("/api/transcribe", headers=auth,
+                    files={"audio": ("a.wav", b"x" * 16, "audio/wav")},
+                    data={"source_lang": "pt"})
+    assert r.status_code == 413
+
+
+def test_chave_invalida_continua_401(client):
+    r = client.get("/api/status", headers={"X-API-Key": "x" * 64})
+    assert r.status_code == 401
