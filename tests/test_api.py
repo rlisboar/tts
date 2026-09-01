@@ -448,6 +448,24 @@ def test_stt_whisper_repo_setting(client, auth):
     client.post("/api/settings", headers=auth, json={"stt_whisper_repo": ""})
 
 
+def test_transcribe_filtra_alucinacao(client, auth, monkeypatch):
+    # ruído transcrito como "E aí" (blacklist) → rejeitado, sem virar mensagem
+    monkeypatch.setattr(app, "_vad_tem_fala", lambda p: True)
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+                        {"text": "E aí", "language": "pt", "segments": []})
+    r = client.post("/api/transcribe", headers=auth, data={"source_lang": "pt"},
+                    files={"audio": ("a.wav", b"x", "audio/wav")})
+    d = r.json()
+    assert d["rejected"] and d["text"] == ""
+    # fala real → passa
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+                        {"text": "pode mandar o texto", "language": "pt", "segments": []})
+    r = client.post("/api/transcribe", headers=auth, data={"source_lang": "pt"},
+                    files={"audio": ("a.wav", b"x", "audio/wav")})
+    assert r.json()["text"] == "pode mandar o texto"
+
+
 def test_chat_sessao_inexistente_404(client, auth):
     assert client.post("/api/chat/deadbeef", headers=auth,
                        json={"message": "oi"}).status_code == 404

@@ -3986,6 +3986,12 @@ def transcribe_audio(audio: UploadFile = None, source_lang: str = Form("auto")):
         r = _transcribe(tmp, language=(source_lang or "auto").lower())
     finally:
         tmp.unlink(missing_ok=True)
+    # filtro anti-alucinação (blacklist "e aí", fragmentos, sem-fala): o
+    # /api/transcribe alimenta a Conversa — ruído não vira mensagem
+    texto = (r.get("text") or "").strip()
+    ok, motivo = _stt_ok(r, texto)
+    if not ok:
+        return {"rejected": True, "reason": motivo, "text": ""}
     segs = r.get("segments") or []
     out = {"text": (r.get("text") or "").strip(),
            "language": (r.get("language") or "").strip().lower(),
