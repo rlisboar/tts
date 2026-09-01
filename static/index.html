@@ -2600,9 +2600,15 @@
             <option value="api">API externa (OpenAI-compat)</option>
           </select></label>
         <p class="hint" style="margin-top:0"><b>Voxtral</b> = qualidade · <b>Whisper-RTX</b> = rápido · <b>Local</b> = offline · <b>API</b> = externo</p>
+        <p class="hint" style="margin-top:0">Beam p/ Whisper remoto (API/RTX). O local no Mac roda greedy — p/ mais precisão lá, use o large-v3 completo.</p>
+        <label class="cfg-label">Modelo Whisper local (Mac)
+          <select id="sttWhisperModel">
+            <option value="">large-v3-turbo — rápido (padrão)</option>
+            <option value="mlx-community/whisper-large-v3-mlx">large-v3 completo — máxima precisão (~3× mais lento)</option>
+          </select></label>
         <label class="cfg-label">Beam do STT (Whisper) <output id="sttBeamOut">5</output>
           <input type="range" id="sttBeam" min="1" max="8" step="1" value="5"></label>
-        <p class="hint" style="margin-top:0">1 = greedy/rápido · 8 = mais preciso. Voxtral ignora (LLM greedy).</p>
+        <p class="hint" style="margin-top:0">Beam p/ Whisper remoto (API/RTX); o local no Mac roda greedy — p/ mais precisão, use o large-v3 completo.</p>
 
         <div id="sttAdvanced">
           <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
@@ -4941,6 +4947,7 @@ async function loadSettings() {
     $("chatApiKey").value = s.chat_api_key || "";
     $("chatExtra").value = s.chat_extra || "";
     if ($("speakerGate")) $("speakerGate").value = s.speaker_gate || "off";
+    if ($("sttWhisperModel")) $("sttWhisperModel").value = s.stt_whisper_repo || "";
     if ($("spThr")) { $("spThr").value = s.speaker_threshold ?? 0.75; $("spThrOut").textContent = (+($("spThr").value)).toFixed(2); }
     if (typeof refreshSpProfiles === "function") refreshSpProfiles();
     $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
@@ -5114,6 +5121,7 @@ $("cfgSave").onclick = async () => {
       chat_extra: $("chatExtra")?.value || "",
       speaker_gate: $("speakerGate")?.value || "off",
       speaker_threshold: parseFloat($("spThr")?.value) || 0.75,
+      stt_whisper_repo: $("sttWhisperModel")?.value || "",
       free_local_on_remote: $("freeLocalOnRemote").checked,
       idle_unload_minutes: parseInt($("idleUnloadMin")?.value, 10) || 0,
       speech_queue: !!$("speechQueue")?.checked,

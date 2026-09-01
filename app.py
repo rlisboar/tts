@@ -119,6 +119,7 @@ _SETTINGS_DEFAULTS = {
     "stt_min_logprob": -1.0,          # rejeita se confiança média abaixo disto (-5–0)
     "stt_max_compression": 2.4,       # rejeita se repetitivo demais (alucinação) (1–10)
     "stt_local_engine": "whisper",    # STT local no Mac: whisper | parakeet
+    "stt_whisper_repo": "",           # repo HF do Whisper local; vazio = large-v3-turbo
     "stt_beam": 5,                    # beam do STT remoto: 1=rápido, 5=padrão, 8=qualidade
     # Modelos remotos (API OpenAI-compatível). base_url deve terminar em /v1
     # (ex.: http://rtx-host:8000/v1). api_key opcional. Tudo local por padrão.
@@ -1590,6 +1591,11 @@ def update_settings(payload: dict):
         if eng not in ("whisper", "parakeet"):
             raise HTTPException(400, "stt_local_engine inválido (whisper|parakeet)")
         _settings["stt_local_engine"] = eng
+    if "stt_whisper_repo" in payload:
+        repo = str(payload["stt_whisper_repo"] or "").strip()[:200]
+        if repo and (not re.fullmatch(r"[\w.\-/]+", repo) or "whisper" not in repo.lower()):
+            raise HTTPException(400, "stt_whisper_repo inválido (esperado repo HF do whisper)")
+        _settings["stt_whisper_repo"] = repo
     if "stt_beam" in payload:
         _settings["stt_beam"] = int(_clamp(payload["stt_beam"], 1, 10, 5))
     for chave in ("remote_tts", "remote_translate", "remote_stt"):
@@ -3333,6 +3339,12 @@ def _vad_tem_fala(audio_path: Path, minimo_s: float = 0.3) -> bool:
         return True
 
 
+def _whisper_repo() -> str:
+    """Repo HF do Whisper local: setting (ex. large-v3 completo p/ máxima
+    precisão) com fallback p/ o default do env."""
+    return (_settings.get("stt_whisper_repo") or "").strip() or WHISPER_REPO
+
+
 def _transcribe(audio_path: Path, language: str | None = None, allow_remote: bool = True):
     if allow_remote and _use_remote_stt():
         return _transcribe_remote(audio_path, language)
@@ -3352,10 +3364,10 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
     lang = language if language and language not in ("auto",) else None
     audio = _wav_to_mono16k(audio_path)
     with _stt_lock:
-        # opções que reduzem alucinação: greedy, sem condicionar no texto anterior,
-        # e os limiares de no-speech / confiança / repetição configuráveis
+        # opções que reduzem alucinação: greedy (beam ainda não existe no
+        # mlx-whisper), sem condicionar no texto anterior, limiares configuráveis
         r = mlx_whisper.transcribe(
-            audio, path_or_hf_repo=WHISPER_REPO, language=lang,
+            audio, path_or_hf_repo=_whisper_repo(), language=lang,
             temperature=0.0, condition_on_previous_text=False,
             no_speech_threshold=_settings["stt_max_no_speech"],
             logprob_threshold=_settings["stt_min_logprob"],
@@ -3554,7 +3566,7 @@ def translate_warmup():
                 import mlx_whisper
                 with _stt_lock:
                     mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32),
-                                           path_or_hf_repo=WHISPER_REPO, language="pt")
+                                           path_or_hf_repo=_whisper_repo(), language="pt")
                 _touch_use("stt")
                 _release_mlx_memory()
             except Exception:  # noqa: BLE001

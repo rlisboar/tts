@@ -431,6 +431,23 @@ def test_stt_local_engine_setting_valida(client, auth):
     client.post("/api/settings", headers=auth, json={"stt_local_engine": "whisper"})
 
 
+def test_stt_whisper_repo_setting(client, auth):
+    # vazio = default (turbo)
+    app._settings["stt_whisper_repo"] = ""
+    assert app._whisper_repo() == app.WHISPER_REPO
+    # repo custom (máxima precisão) é respeitado
+    r = client.post("/api/settings", headers=auth,
+                    json={"stt_whisper_repo": "mlx-community/whisper-large-v3"})
+    assert r.status_code == 200
+    assert app._whisper_repo() == "mlx-community/whisper-large-v3"
+    # repo inválido → 400
+    r = client.post("/api/settings", headers=auth, json={"stt_whisper_repo": "repo estranho x"})
+    assert r.status_code == 400
+    r = client.post("/api/settings", headers=auth, json={"stt_whisper_repo": "gpt-4"})
+    assert r.status_code == 400
+    client.post("/api/settings", headers=auth, json={"stt_whisper_repo": ""})
+
+
 def test_chat_sessao_inexistente_404(client, auth):
     assert client.post("/api/chat/deadbeef", headers=auth,
                        json={"message": "oi"}).status_code == 404
