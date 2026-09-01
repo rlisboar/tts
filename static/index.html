@@ -5117,6 +5117,18 @@ const cvDbg = m => api("/api/chat-debug", {
 }).catch(() => {});
 const CV_HINT = '🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar — quando estiver bom, confirme ("pode mandar").';
 let cvSid = null, cvPlaying = false, cvVad = null, cvVadLigado = false;
+let cvUltimaFala = "", cvUltimaFalaAt = 0;
+
+function cvEco(txt) {
+  // fala dita logo após a IA falar, com palavras em comum = eco do alto-falante
+  if (!cvUltimaFala || Date.now() - cvUltimaFalaAt > 12000) return false;
+  const norm = s => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(w => w.length > 2);
+  const a = norm(txt);
+  if (!a.length) return false;
+  const b = new Set(norm(cvUltimaFala));
+  return a.filter(w => b.has(w)).length / a.length >= 0.6;
+}
 
 function cvAdd(quem, txt) {
   const d = document.createElement("div");
@@ -5124,6 +5136,12 @@ function cvAdd(quem, txt) {
   d.textContent = (quem === "você" ? "🎙 " : "🤖 ") + txt;
   $("cvLog").appendChild(d);
   $("cvLog").scrollTop = $("cvLog").scrollHeight;
+}
+function cvAddIA(txt) {
+  // dedupe: mesma resposta 2x seguida (race de polling) não vira duas bolhas
+  const ult = $("cvLog").querySelector(".cv-msg.ia:last-child");
+  if (ult && ult.textContent === "🤖 " + txt) { cvDbg("dup skip"); return; }
+  cvAdd("IA", txt);
 }
 function cvStatus(t) { if ($("cvStatus")) $("cvStatus").textContent = t || ""; }
 function cvFinalShow(text) {
@@ -5133,6 +5151,7 @@ function cvFinalShow(text) {
 async function cvSpeak(text) {
   // sintetiza FRASE A FRASE e toca em sequência; fale por cima = barge-in
   cvBusy = true; cvPlaying = true;
+  cvUltimaFala = text; cvUltimaFalaAt = Date.now();
   cvStatus("🔊 sintetizando resposta…");
   try {
     const frases = (text.match(/[^.!?]+[.!?]+/g) || [text]).map(f => f.trim()).filter(f => f);
@@ -5178,17 +5197,27 @@ async function cvSend(text, _retry = true) {
       cvSid = r.session_id;
       cvDbg("start " + cvSid);
     } else {
-      await api(`/api/chat/${cvSid}`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text })
-      }).catch(async e => {
+      try {
+        await api(`/api/chat/${cvSid}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text })
+        });
+      } catch (e) {
         if (_retry && /encontrada|expirou/i.test(e.message)) {
+          // sessão perdida: reabre com o mesmo texto — sem recursão (o fluxo
+          // de fora continuaria e duplicaria a resposta)
           cvDbg("sessão perdida — reabrindo");
           cvSid = null;
-          return cvSend(text, false);
+          const r = await api("/api/chat/start", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ objective: text })
+          });
+          cvSid = r.session_id;
+          cvDbg("start " + cvSid);
+        } else {
+          throw e;
         }
-        throw e;
-      });
+      }
     }
     for (let i = 0; i < 120; i++) {
       await new Promise(res => setTimeout(res, 1500));
@@ -5203,7 +5232,7 @@ async function cvSend(text, _retry = true) {
         await cvSpeak(d.text);
         return;
       }
-      cvAdd("IA", d.reply);
+      cvAddIA(d.reply);
       await cvSpeak(d.reply);
       cvStatus("🎧 ouvindo…");
       cvBusy = false;
@@ -5226,6 +5255,7 @@ async function cvTranscribeEEnvia(blob) {
     cvDbg("stt ok: " + texto.slice(0, 50));
   } catch (e) { cvDbg("✖ stt: " + e.message); cvStatus("✖ STT: " + e.message); cvBusy = false; return; }
   if (!texto) { cvStatus("não entendi — fale de novo"); cvBusy = false; return; }
+  if (cvEco(texto)) { cvDbg("eco ignorado: " + texto.slice(0, 40)); cvStatus("🔊 (eco da IA ignorado — fale de novo)"); cvBusy = false; return; }
   await cvSend(texto);
 }
 $("cvMic").onclick = async () => {
