@@ -149,7 +149,7 @@ _SETTINGS_DEFAULTS = {
     # Verificação de locutor (biometria de voz): off | enforce (só vozes
     # cadastradas) | label (transcreve todos e etiqueta quem falou)
     "speaker_gate": "off",
-    "speaker_threshold": 0.75,        # rigor: similaridade cosseno mínima (0.5–0.95)
+    "speaker_threshold": 0.6,         # rigor: similaridade cosseno mínima (0.35–0.9)
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
     # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
@@ -1638,7 +1638,7 @@ def update_settings(payload: dict):
             raise HTTPException(400, "speaker_gate inválido (off|enforce|label)")
         _settings["speaker_gate"] = g
     if "speaker_threshold" in payload:
-        _settings["speaker_threshold"] = _clamp(payload["speaker_threshold"], 0.5, 0.95, 0.75)
+        _settings["speaker_threshold"] = _clamp(payload["speaker_threshold"], 0.35, 0.9, 0.6)
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
             _settings[chave] = str(payload[chave] or "").strip()[:120]

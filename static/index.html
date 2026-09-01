@@ -2638,14 +2638,16 @@
             <option value="enforce">Só vozes cadastradas</option>
             <option value="label">Todos, etiquetando quem fala</option>
           </select></label>
-        <label class="cfg-label">Rigor <output id="spThrOut">0.75</output>
-          <input type="range" id="spThr" min="0.55" max="0.95" step="0.05" value="0.75"></label>
-        <p class="hint">Alto rejeita mais intrusos — e pode rejeitar você resfriado/afastado do mic. Padrão 0.75.</p>
+        <label class="cfg-label">Rigor <output id="spThrOut">0.60</output>
+          <input type="range" id="spThr" min="0.35" max="0.9" step="0.05" value="0.6"></label>
+        <p class="hint">Sua voz costuma dar <b>0.65–0.85</b>; outra pessoa, <b>0.40–0.55</b>. Padrão 0.60 — rejeita intrusos sem rejeitar você (resfriado/afastado do mic).</p>
         <div class="row2" style="gap:8px; margin-top:6px">
           <input type="text" id="spName" placeholder="nome do perfil (ex.: você)" style="flex:1; min-width:120px">
           <button type="button" id="spEnroll" class="small">🎙 Cadastrar (8s)</button>
+          <button type="button" id="spTest" class="small">🔍 Testar</button>
         </div>
         <p class="hint" id="spStatus" style="margin-top:4px"></p>
+        <p class="hint" style="margin-top:2px">Cadastre <b>3–5 amostras</b> (cliques) p/ o perfil ficar estável — falando em velocidades/distâncias diferentes.</p>
         <div id="spProfiles" class="hint" style="margin-top:4px"></div>
         <div class="divider"></div>
         <label class="check"><input type="checkbox" id="freeLocalOnRemote"> Liberar RAM: descarregar local quando usar remoto</label>
@@ -5020,6 +5022,23 @@ async function refreshSpProfiles() {
   } catch {}
 }
 $("spThr")?.addEventListener("input", () => { $("spThrOut").textContent = (+$("spThr").value).toFixed(2); });
+async function spGravar(segundos, st) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const rec = new MediaRecorder(stream);
+  const pedacos = [];
+  rec.ondataavailable = ev => ev.data.size && pedacos.push(ev.data);
+  rec.start();
+  let faltam = segundos;
+  st.textContent = `🔴 gravando… ${faltam}s`;
+  const t = setInterval(() => {
+    faltam--;
+    if (faltam > 0) st.textContent = `🔴 gravando… ${faltam}s`;
+    else { clearInterval(t); rec.stop(); }
+  }, 1000);
+  await new Promise(res => rec.onstop = () => { res(); stream.getTracks().forEach(tr => tr.stop()); });
+  return new Blob(pedacos, { type: rec.mimeType || "audio/webm" });
+}
+
 $("spEnroll")?.addEventListener("click", async () => {
   const btn = $("spEnroll"), nome = ($("spName")?.value || "").trim();
   const st = $("spStatus");
@@ -5028,27 +5047,38 @@ $("spEnroll")?.addEventListener("click", async () => {
   btn.disabled = true;
   try {
     st.textContent = "🔴 gravando… fale naturalmente por 8s";
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const rec = new MediaRecorder(stream);
-    const pedacos = [];
-    rec.ondataavailable = ev => ev.data.size && pedacos.push(ev.data);
-    rec.start();
-    let faltam = 8;
-    st.textContent = "🔴 gravando… 8s";
-    const t = setInterval(() => {
-      faltam--;
-      if (faltam > 0) st.textContent = `🔴 gravando… ${faltam}s`;
-      else { clearInterval(t); rec.stop(); }
-    }, 1000);
-    await new Promise(res => rec.onstop = () => { res(); stream.getTracks().forEach(tr => tr.stop()); });
+    const blob = await spGravar(8, st);
     st.textContent = "analisando timbre…";
     const fd = new FormData();
     fd.append("name", nome);
-    fd.append("audio", new Blob(pedacos, { type: rec.mimeType || "audio/webm" }), "voz.webm");
+    fd.append("audio", blob, "voz.webm");
     const r = await api("/api/speaker/enroll", { method: "POST", body: fd });
-    st.textContent = `✔ ${nome}: ${r.samples} amostra(s) — salve as configurações`;
+    st.textContent = `✔ ${nome}: ${r.samples} amostra(s)` +
+      (r.samples < 3 ? " — cadastre mais 2–4 amostras p/ estabilizar" : " — salve as configurações");
     toast(`Voz "${nome}" cadastrada`);
     refreshSpProfiles();
+  } catch (e) {
+    st.textContent = "";
+    toast("✖ " + e.message, 5000);
+  }
+  btn.disabled = false;
+});
+
+$("spTest")?.addEventListener("click", async () => {
+  const btn = $("spTest"), st = $("spStatus");
+  if (!navigator.mediaDevices?.getUserMedia) { toast("Mic indisponível", 4000); return; }
+  btn.disabled = true;
+  try {
+    st.textContent = "🔴 gravando… fale naturalmente por 6s";
+    const blob = await spGravar(6, st);
+    st.textContent = "comparando com os perfis…";
+    const fd = new FormData();
+    fd.append("audio", blob, "voz.webm");
+    const r = await api("/api/speaker/check", { method: "POST", body: fd });
+    if (!r.speaker) { st.textContent = "❌ não pareceu com nenhum perfil (sim " + (r.sim || 0).toFixed(2) + ")"; return; }
+    const lim = parseFloat($("spThr")?.value) || 0.6;
+    st.textContent = `${r.speaker}: sim ${r.sim.toFixed(2)} — ` +
+      (r.sim >= lim ? "✅ passa no rigor atual" : `🔻 abaixo do rigor (${lim.toFixed(2)})`);
   } catch (e) {
     st.textContent = "";
     toast("✖ " + e.message, 5000);
