@@ -142,6 +142,7 @@ _SETTINGS_DEFAULTS = {
     "chat_model": "",                 # ex.: gpt-4o-mini
     "chat_api_key": "",               # vazio = usa remote_api_key
     "chat_system": "",                # instruções da IA (preprompt); vazio = prompt padrão
+    "chat_extra": "",                 # JSON com params extras do LLM (reasoning_effort, top_p…)
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
     # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
@@ -1034,9 +1035,17 @@ def _chat_llm(messages: list) -> str:
     if key:
         headers["Authorization"] = f"Bearer {key}"
 
+    # JSON extra do usuário sobrepõe/adiciona (reasoning_effort, top_p…)
+    try:
+        extra = json.loads(_settings.get("chat_extra") or "{}")
+        if not isinstance(extra, dict):
+            extra = {}
+    except (ValueError, TypeError):
+        extra = {}
+
     def _corpo(effort: str | None) -> bytes:
-        corpo = {"model": model, "messages": messages, "temperature": 0.4}
-        if effort:  # GLM/vLLM queimam tokens em reasoning — low = resposta rápida
+        corpo = {"model": model, "messages": messages, "temperature": 0.4, **extra}
+        if effort and "reasoning_effort" not in corpo:  # GLM/vLLM queimam tokens em reasoning
             corpo["reasoning_effort"] = effort
         return json.dumps(corpo).encode()
 
@@ -1048,7 +1057,8 @@ def _chat_llm(messages: list) -> str:
         ctx = ssl.create_default_context()
 
     ultimo_erro = ""
-    for effort in ("low", None):  # 1ª tenta com reasoning baixo; 2ª sem o campo
+    # com reasoning_effort fixado pelo usuário não há retry (corpo idêntico não muda nada)
+    for effort in ((None,) if "reasoning_effort" in extra else ("low", None)):
         req = urllib.request.Request(f"{base}/chat/completions", data=_corpo(effort),
                                      method="POST", headers=headers)
         try:
@@ -1594,6 +1604,15 @@ def update_settings(payload: dict):
         _settings["chat_api_key"] = str(payload["chat_api_key"] or "").strip()[:300]
     if "chat_system" in payload:
         _settings["chat_system"] = str(payload["chat_system"] or "").strip()[:4000]
+    if "chat_extra" in payload:
+        txt = str(payload["chat_extra"] or "").strip()[:2000]
+        if txt:  # valida: precisa ser JSON objeto
+            try:
+                if not isinstance(json.loads(txt), dict):
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise HTTPException(400, "Extras do LLM: informe um JSON válido de objeto, ex. {\"reasoning_effort\": \"low\"}")
+        _settings["chat_extra"] = txt
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
             _settings[chave] = str(payload[chave] or "").strip()[:120]

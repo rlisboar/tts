@@ -2614,6 +2614,9 @@
           <input type="text" id="chatModel" placeholder="vazio = usa o modelo de tradução"></label>
         <label class="cfg-label">Chave da Conversa (opcional)
           <input type="password" id="chatApiKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
+        <label class="cfg-label">Extras do LLM (JSON)
+          <textarea id="chatExtra" rows="2" style="font-family:var(--mono); font-size:12px" placeholder='{"reasoning_effort": "low"}'></textarea></label>
+        <p class="hint">Mesclado no body de cada chamada. Ex.: <code>{"reasoning_effort": "low", "top_p": 0.9}</code>. Vazio = padrão.</p>
         <p class="hint">Provedor que conduz a aba Conversa. Vazio = herda o de tradução.</p>
         <div class="divider"></div>
         <label class="check"><input type="checkbox" id="freeLocalOnRemote"> Liberar RAM: descarregar local quando usar remoto</label>
@@ -4909,6 +4912,7 @@ async function loadSettings() {
     $("chatBaseUrl").value = s.chat_base_url || "";
     $("chatModel").value = s.chat_model || "";
     $("chatApiKey").value = s.chat_api_key || "";
+    $("chatExtra").value = s.chat_extra || "";
     $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
     applySttEngine(false);
     prevSttEngine = $("sttEngine").value;
@@ -5018,6 +5022,7 @@ $("cfgSave").onclick = async () => {
       chat_base_url: $("chatBaseUrl")?.value || "",
       chat_model: $("chatModel")?.value || "",
       chat_api_key: $("chatApiKey")?.value || "",
+      chat_extra: $("chatExtra")?.value || "",
       free_local_on_remote: $("freeLocalOnRemote").checked,
       idle_unload_minutes: parseInt($("idleUnloadMin")?.value, 10) || 0,
       speech_queue: !!$("speechQueue")?.checked,

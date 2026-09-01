@@ -310,7 +310,87 @@ def test_chat_system_setting(client, auth):
     assert r.status_code == 200
     s = client.get("/api/settings", headers=auth).json()
     assert s["chat_system"] == "instruções customizadas de teste"
-    client.post("/api/settings", headers=auth, json={"chat_system": ""})
+
+
+def test_chat_extra_setting_valida_json(client, auth):
+    # JSON válido é persistido
+    r = client.post("/api/settings", headers=auth,
+                    json={"chat_extra": '{"reasoning_effort": "low"}'})
+    assert r.status_code == 200
+    assert client.get("/api/settings", headers=auth).json()["chat_extra"] \
+        == '{"reasoning_effort": "low"}'
+    # JSON inválido → 400
+    r = client.post("/api/settings", headers=auth, json={"chat_extra": "reasoning=low"})
+    assert r.status_code == 400
+    # JSON não-objeto → 400
+    r = client.post("/api/settings", headers=auth, json={"chat_extra": "[1,2]"})
+    assert r.status_code == 400
+    # vazio limpa
+    r = client.post("/api/settings", headers=auth, json={"chat_extra": ""})
+    assert r.status_code == 200 and client.get("/api/settings", headers=auth).json()["chat_extra"] == ""
+
+
+def test_chat_llm_mescla_chat_extra(monkeypatch):
+    import urllib.request
+    app._settings["chat_base_url"] = "https://provedor.teste/v1"
+    app._settings["chat_extra"] = '{"reasoning_effort": "high", "top_p": 0.5}'
+    capturado = {}
+
+    class RespFake:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def read(self):
+            return _json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(req, timeout=None, context=None):
+        capturado["body"] = _json.loads(req.data)
+        return RespFake()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    try:
+        out = app._chat_llm([{"role": "user", "content": "oi"}])
+    finally:
+        app._settings["chat_extra"] = ""
+        app._settings["chat_base_url"] = ""
+    assert out == "ok"
+    # extras mesclados no body…
+    assert capturado["body"]["reasoning_effort"] == "high"
+    assert capturado["body"]["top_p"] == 0.5
+    # …e com effort fixo no extra, NÃO há retry (uma única chamada)
+    assert "temperature" in capturado["body"]
+
+
+def test_chat_llm_injeta_reasoning_baixo_sem_extra(monkeypatch):
+    import urllib.request
+    app._settings["chat_base_url"] = "https://provedor.teste/v1"
+    app._settings["chat_extra"] = ""
+    capturado = {}
+
+    class RespFake:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def read(self):
+            return _json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(req, timeout=None, context=None):
+        capturado["body"] = _json.loads(req.data)
+        return RespFake()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    try:
+        app._chat_llm([{"role": "user", "content": "oi"}])
+    finally:
+        app._settings["chat_base_url"] = ""
+        app._settings["chat_extra"] = ""
+    assert capturado["body"]["reasoning_effort"] == "low"
 
 
 def test_chat_start_sem_objetivo_400(client, auth):
