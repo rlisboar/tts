@@ -3625,8 +3625,13 @@ if ($("sttBeam")) {
 
 /* Seletor de engine de STT: aplica na hora (sem o Salvar) e mostra os campos
    manuais só no modo "API externa". */
-const VOXTRAL_URL = "http://192.168.1.50:8802/v1";
-const WHISPER_RTX_URL = "http://192.168.1.50:8800/v1";
+// host do RTX = o mesmo do TTS/tradução remota (remote_base_url); fallback: IP fixo
+function rtxHost() {
+  const m = ($("remoteBaseUrl")?.value || "").match(/^https?:\/\/([^\/\s]+)/);
+  return m ? m[1] : "192.168.200.32";
+}
+const VOXTRAL_URL = () => `http://${rtxHost()}:8802/v1`;
+const WHISPER_RTX_URL = () => `http://${rtxHost()}:8800/v1`;
 let prevSttEngine = null;   // p/ backup/restauração da config de API externa
 function applySttEngine(persist) {
   const eng = $("sttEngine").value;
@@ -3638,18 +3643,18 @@ function applySttEngine(persist) {
   let body;
   if (eng === "voxtral") {
     $("remoteStt").checked = true;
-    $("remoteSttBaseUrl").value = VOXTRAL_URL;
+    $("remoteSttBaseUrl").value = VOXTRAL_URL();
     $("remoteSttModel").value = "voxtral";
     $("remoteSttKey").value = "";
     $("sttAdvanced").style.display = "none";
-    body = { remote_stt: true, remote_stt_base_url: VOXTRAL_URL, remote_stt_model: "voxtral", remote_stt_key: "" };
+    body = { remote_stt: true, remote_stt_base_url: VOXTRAL_URL(), remote_stt_model: "voxtral", remote_stt_key: "" };
   } else if (eng === "whisper-rtx") {
     $("remoteStt").checked = true;
-    $("remoteSttBaseUrl").value = WHISPER_RTX_URL;
+    $("remoteSttBaseUrl").value = WHISPER_RTX_URL();
     $("remoteSttModel").value = "whisper-large-v3";
     $("remoteSttKey").value = "";
     $("sttAdvanced").style.display = "none";
-    body = { remote_stt: true, remote_stt_base_url: WHISPER_RTX_URL, remote_stt_model: "whisper-large-v3", remote_stt_key: "" };
+    body = { remote_stt: true, remote_stt_base_url: WHISPER_RTX_URL(), remote_stt_model: "whisper-large-v3", remote_stt_key: "" };
   } else if (eng === "local") {
     $("remoteStt").checked = false;
     $("sttAdvanced").style.display = "none";

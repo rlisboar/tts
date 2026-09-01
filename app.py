@@ -3300,7 +3300,7 @@ def _transcribe_remote(audio_path: Path, language: str | None):
         r = requests.post(
             f"{base}/audio/transcriptions",
             headers=headers,
-            files={"file": ("audio.wav", fh, "audio/wav")}, data=data, timeout=120,
+            files={"file": ("audio.wav", fh, "audio/wav")}, data=data, timeout=(5, 60),
         )
     if not r.ok:
         raise RuntimeError(f"transcrição remota falhou ({r.status_code}): {r.text[:200]}")
@@ -3347,7 +3347,10 @@ def _whisper_repo() -> str:
 
 def _transcribe(audio_path: Path, language: str | None = None, allow_remote: bool = True):
     if allow_remote and _use_remote_stt():
-        return _transcribe_remote(audio_path, language)
+        try:
+            return _transcribe_remote(audio_path, language)
+        except Exception as e:  # noqa: BLE001 — RTX fora do ar cai pro local
+            print(f"[stt] remoto indisponível ({str(e)[:120]}) — usando local", flush=True)
 
     # Silero VAD: se o áudio não tem fala, o STT nem roda (mata alucinação)
     fala = _vad_tem_fala(audio_path)
