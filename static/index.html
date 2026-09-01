@@ -5394,8 +5394,18 @@ async function cvTranscribeEEnvia(blob) {
   if (cvEco(texto)) { cvDbg("eco ignorado: " + texto.slice(0, 40)); cvStatus("🔊 (eco da IA ignorado — fale de novo)"); cvBusy = false; return; }
   await cvSend(texto, true, cvLocutor);
 }
+function cvSetMic(ligado) {
+  cvVadLigado = ligado;
+  $("cvMic").textContent = ligado ? "⏹ Desligar" : "🎙 Ligar";
+  $("cvRec").style.display = ligado ? "" : "none";
+}
 $("cvMic").onclick = async () => {
-  if (cvVadLigado) { cvVad.pause(); cvVadLigado = false; cvStatus("escuta desligada"); return; }
+  if (cvVadLigado) {
+    if (cvVad) cvVad.pause();
+    cvSetMic(false);
+    cvStatus("escuta desligada");
+    return;
+  }
   try {
     if (!cvVad) {
       cvVad = await vad.MicVAD.new({
@@ -5412,20 +5422,17 @@ $("cvMic").onclick = async () => {
       });
     }
     await cvVad.start();
-    cvVadLigado = true;
-    $("cvMic").textContent = "⏹ Desligar";
-    $("cvRec").style.display = "";
+    cvSetMic(true);
     cvStatus("🎧 ouvindo… fale o objetivo");
   } catch (e) { cvStatus("✖ " + e.message); }
 };
 $("cvCutBtn").onclick = () => {};
 $("cvEnd").onclick = async () => {
-  if (!cvSid) { if (cvVad) cvVad.pause(); cvVadLigado = false; return; }
+  if (!cvSid) { if (cvVad) cvVad.pause(); cvSetMic(false); return; }
   try { await api(`/api/chat/${cvSid}`, { method: "DELETE" }); } catch (e) {}
   cvSid = null;
   if (cvVad) cvVad.pause();
-  cvVadLigado = false;
-  $("cvMic").textContent = "🎙 Ligar";
+  cvSetMic(false);
   $("cvLog").innerHTML = `<p class="hint" id="cvHint">${CV_HINT}</p>`;
   $("cvFinal").style.display = "none";
   cvStatus("");
