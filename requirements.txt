@@ -28,3 +28,4 @@ pyflakes
 httpx
 silero-vad
 resemblyzer
+parakeet-mlx

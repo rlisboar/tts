@@ -398,6 +398,39 @@ def test_chat_start_sem_objetivo_400(client, auth):
     assert client.post("/api/chat/start", headers=auth, json={}).status_code == 400
 
 
+def test_stt_local_engine_dispatch(monkeypatch):
+    import sys
+    import types
+    import numpy as np
+    chamado = {}
+    monkeypatch.setattr(app, "_vad_tem_fala", lambda p: True)
+    monkeypatch.setattr(app, "_transcribe_parakeet",
+                        lambda p: chamado.update(engine="parakeet") or
+                        {"text": "ok", "language": "", "segments": []})
+    app._settings["stt_local_engine"] = "parakeet"
+    r = app._transcribe(Path("x.wav"), language="pt", allow_remote=False)
+    assert chamado["engine"] == "parakeet" and r["text"] == "ok"
+    # whisper: parakeet NÃO é chamado (mlx_whisper fake via sys.modules)
+    chamado.clear()
+    fake = types.ModuleType("mlx_whisper")
+    fake.transcribe = lambda *a, **k: {"text": "w", "language": "", "segments": []}
+    monkeypatch.setitem(sys.modules, "mlx_whisper", fake)
+    monkeypatch.setattr(app, "_wav_to_mono16k", lambda p: np.zeros(16000, dtype=np.float32))
+    app._settings["stt_local_engine"] = "whisper"
+    r = app._transcribe(Path("x.wav"), language="pt", allow_remote=False)
+    assert r["text"] == "w" and "engine" not in chamado
+    app._settings["stt_local_engine"] = "whisper"
+
+
+def test_stt_local_engine_setting_valida(client, auth):
+    r = client.post("/api/settings", headers=auth, json={"stt_local_engine": "grok"})
+    assert r.status_code == 400
+    r = client.post("/api/settings", headers=auth, json={"stt_local_engine": "parakeet"})
+    assert r.status_code == 200
+    assert client.get("/api/settings", headers=auth).json()["stt_local_engine"] == "parakeet"
+    client.post("/api/settings", headers=auth, json={"stt_local_engine": "whisper"})
+
+
 def test_chat_sessao_inexistente_404(client, auth):
     assert client.post("/api/chat/deadbeef", headers=auth,
                        json={"message": "oi"}).status_code == 404

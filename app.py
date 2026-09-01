@@ -118,6 +118,7 @@ _SETTINGS_DEFAULTS = {
     "stt_max_no_speech": 0.6,         # rejeita se prob. de "sem fala" acima disto (0–1)
     "stt_min_logprob": -1.0,          # rejeita se confiança média abaixo disto (-5–0)
     "stt_max_compression": 2.4,       # rejeita se repetitivo demais (alucinação) (1–10)
+    "stt_local_engine": "whisper",    # STT local no Mac: whisper | parakeet
     "stt_beam": 5,                    # beam do STT remoto: 1=rápido, 5=padrão, 8=qualidade
     # Modelos remotos (API OpenAI-compatível). base_url deve terminar em /v1
     # (ex.: http://rtx-host:8000/v1). api_key opcional. Tudo local por padrão.
@@ -248,6 +249,8 @@ def _omni_language(lang) -> str:
 
 # Tradutor de voz (PoC): STT (mlx-whisper) + tradução (mlx-lm) -> TTS na voz clonada.
 WHISPER_REPO = os.environ.get("TTS_ROD_WHISPER", "mlx-community/whisper-large-v3-turbo")
+# STT alternativo local: NVIDIA Parakeet TDT 0.6B v3 (multilíngue, ~30x tempo real)
+PARAKEET_REPO = os.environ.get("TTS_ROD_PARAKEET", "mlx-community/parakeet-tdt-0.6b-v3")
 TRANSLATE_REPO = os.environ.get("TTS_ROD_TRANSLATE", "mlx-community/Qwen2.5-3B-Instruct-4bit")
 # código -> nome em inglês (para o prompt de tradução e o lang do OmniVoice)
 LANG_DISPLAY = {
@@ -1582,6 +1585,11 @@ def update_settings(payload: dict):
         _settings["stt_min_logprob"] = _clamp(payload["stt_min_logprob"], -5.0, 0.0, -1.0)
     if "stt_max_compression" in payload:
         _settings["stt_max_compression"] = _clamp(payload["stt_max_compression"], 1.0, 10.0, 2.4)
+    if "stt_local_engine" in payload:
+        eng = str(payload["stt_local_engine"] or "whisper").strip().lower()
+        if eng not in ("whisper", "parakeet"):
+            raise HTTPException(400, "stt_local_engine inválido (whisper|parakeet)")
+        _settings["stt_local_engine"] = eng
     if "stt_beam" in payload:
         _settings["stt_beam"] = int(_clamp(payload["stt_beam"], 1, 10, 5))
     for chave in ("remote_tts", "remote_translate", "remote_stt"):
@@ -2962,6 +2970,10 @@ def _unload_local_models(tts=True, stt=True, mt=True, ser=True) -> dict:
                 freed.append("whisper")
         except Exception:  # noqa: BLE001
             pass
+        if _pk["model"] is not None:
+            _pk["model"] = None
+            _pk["repo"] = ""
+            freed.append("parakeet")
     if ser:
         with _ser_lock:
             if _ser.get("clf") is not None:
@@ -3325,10 +3337,13 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
     if allow_remote and _use_remote_stt():
         return _transcribe_remote(audio_path, language)
 
-    # Silero VAD: se o áudio não tem fala, o Whisper nem roda (mata alucinação)
+    # Silero VAD: se o áudio não tem fala, o STT nem roda (mata alucinação)
     fala = _vad_tem_fala(audio_path)
     if not fala:
         return {"text": "", "language": "", "segments": []}
+
+    if (_settings.get("stt_local_engine") or "whisper").lower() == "parakeet":
+        return _transcribe_parakeet(audio_path)
 
     import mlx_whisper
 
@@ -3350,6 +3365,28 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
     _touch_use("stt")
     _release_mlx_memory()
     return r
+
+
+_pk = {"model": None, "repo": ""}
+
+
+def _transcribe_parakeet(audio_path: Path) -> dict:
+    """STT local com NVIDIA Parakeet TDT 0.6B v3 (multilíngue, ~30x tempo real):
+    pontuação/acento nativos, timestamps por sentença. Sem probs de no-speech —
+    os filtros de alucinação são VAD + tamanho do texto + blacklist (_stt_ok)."""
+    from parakeet_mlx import from_pretrained
+
+    with _stt_lock:
+        if _pk["model"] is None or _pk["repo"] != PARAKEET_REPO:
+            _pk["model"] = from_pretrained(PARAKEET_REPO)
+            _pk["repo"] = PARAKEET_REPO
+        r = _pk["model"].transcribe(audio_path)
+    _touch_use("stt")
+    _release_mlx_memory()
+    return {"text": (r.text or "").strip(),
+            "language": "",
+            "segments": [{"start": float(s.start), "end": float(s.end),
+                          "text": (s.text or "").strip()} for s in (r.sentences or [])]}
 
 
 def _stt_ok(r: dict, text: str):

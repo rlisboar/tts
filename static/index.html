@@ -2596,6 +2596,7 @@
             <option value="voxtral">Voxtral 24B — RTX (qualidade pt-BR)</option>
             <option value="whisper-rtx">Whisper large-v3 — RTX (mais rápido)</option>
             <option value="local">Whisper local — Mac (offline)</option>
+            <option value="local-parakeet">Parakeet 0.6B — Mac (offline, ~30×)</option>
             <option value="api">API externa (OpenAI-compat)</option>
           </select></label>
         <p class="hint" style="margin-top:0"><b>Voxtral</b> = qualidade · <b>Whisper-RTX</b> = rápido · <b>Local</b> = offline · <b>API</b> = externo</p>
@@ -3646,7 +3647,11 @@ function applySttEngine(persist) {
   } else if (eng === "local") {
     $("remoteStt").checked = false;
     $("sttAdvanced").style.display = "none";
-    body = { remote_stt: false };
+    body = { remote_stt: false, stt_local_engine: "whisper" };
+  } else if (eng === "local-parakeet") {
+    $("remoteStt").checked = false;
+    $("sttAdvanced").style.display = "none";
+    body = { remote_stt: false, stt_local_engine: "parakeet" };
   } else {   // api externa: revela os campos e usa o que o usuário preencheu
     if (persist) {   // voltou pro modo API -> restaura o que tinha
       try { const b = JSON.parse(localStorage.getItem("sttApiBackup") || "null");
@@ -3659,13 +3664,13 @@ function applySttEngine(persist) {
   }
   if (persist) {
     api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-      .then(() => toast("STT: " + ({ voxtral: "Voxtral (RTX)", "whisper-rtx": "Whisper large-v3 (RTX)", local: "Whisper local (Mac)", api: "API externa" }[eng] || eng)))
+      .then(() => toast("STT: " + ({ voxtral: "Voxtral (RTX)", "whisper-rtx": "Whisper large-v3 (RTX)", local: "Whisper local (Mac)", "local-parakeet": "Parakeet local (Mac)", api: "API externa" }[eng] || eng)))
       .catch(e => toast("Erro: " + e.message));
   }
 }
 $("sttEngine").onchange = () => { applySttEngine(true); prevSttEngine = $("sttEngine").value; };
 function inferSttEngine(s) {
-  if (!s.remote_stt) return "local";
+  if (!s.remote_stt) return s.stt_local_engine === "parakeet" ? "local-parakeet" : "local";
   const url = s.remote_stt_base_url || "";
   if (s.remote_stt_model === "voxtral" || url.includes(":8802")) return "voxtral";
   if (url.includes(":8800") || (s.remote_stt_model || "").includes("whisper-large")) return "whisper-rtx";
