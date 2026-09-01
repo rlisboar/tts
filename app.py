@@ -43,6 +43,7 @@ BASE = Path(__file__).resolve().parent
 VOICES_DIR = BASE / "voices"
 OUTPUTS_DIR = BASE / "outputs"
 APIKEYS_PATH = BASE / ".apikeys.json"
+SPEAKER_PATH = BASE / ".speaker-profiles.json"   # embeddings de voz (fora do git)
 LEGACY_APIKEY_PATH = BASE / ".apikey"
 VOICES_DIR.mkdir(exist_ok=True)
 OUTPUTS_DIR.mkdir(exist_ok=True)
@@ -143,6 +144,10 @@ _SETTINGS_DEFAULTS = {
     "chat_api_key": "",               # vazio = usa remote_api_key
     "chat_system": "",                # instruções da IA (preprompt); vazio = prompt padrão
     "chat_extra": "",                 # JSON com params extras do LLM (reasoning_effort, top_p…)
+    # Verificação de locutor (biometria de voz): off | enforce (só vozes
+    # cadastradas) | label (transcreve todos e etiqueta quem falou)
+    "speaker_gate": "off",
+    "speaker_threshold": 0.75,        # rigor: similaridade cosseno mínima (0.5–0.95)
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
     # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
@@ -1613,6 +1618,13 @@ def update_settings(payload: dict):
             except (ValueError, TypeError):
                 raise HTTPException(400, "Extras do LLM: informe um JSON válido de objeto, ex. {\"reasoning_effort\": \"low\"}")
         _settings["chat_extra"] = txt
+    if "speaker_gate" in payload:
+        g = str(payload["speaker_gate"] or "off").strip().lower()
+        if g not in ("off", "enforce", "label"):
+            raise HTTPException(400, "speaker_gate inválido (off|enforce|label)")
+        _settings["speaker_gate"] = g
+    if "speaker_threshold" in payload:
+        _settings["speaker_threshold"] = _clamp(payload["speaker_threshold"], 0.5, 0.95, 0.75)
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
             _settings[chave] = str(payload[chave] or "").strip()[:120]
@@ -3744,6 +3756,170 @@ def youtube_audio(payload: dict):
     return Response(content=data, media_type="audio/wav")
 
 
+# ---------------------------------------------------------------------------
+# Verificação de locutor (biometria de voz, opcional): cadastra perfis com
+# embeddings (Resemblyzer/GE2E, CPU) e usa no gate do STT — só vozes
+# autorizadas são transcritas, ou etiqueta quem falou.
+
+SPEAKER_MAX_SAMPLES = 5      # embeddings por perfil (média robuza o timbre)
+_speaker_lock = threading.Lock()
+_speaker_encoder = None      # VoiceEncoder carregado sob demanda
+
+
+def _speaker_embed(wav_path: Path) -> list[float] | None:
+    """Embedding 256-d do wav 16k mono. None = lib ausente/áudio curto demais."""
+    try:
+        from resemblyzer import VoiceEncoder, preprocess_wav
+        global _speaker_encoder
+        if _speaker_encoder is None:
+            _speaker_encoder = VoiceEncoder()
+        f32 = preprocess_wav(wav_path)  # carrega 16k mono + trim VAD próprio
+        if len(f32) < 16000 * 0.6:      # < 0.6s não gera embedding confiável
+            return None
+        return [float(x) for x in _speaker_encoder.embed_utterance(f32)]
+    except Exception as e:  # noqa: BLE001 — sem o gate não derruba o STT
+        print(f"[speaker] embedding falhou: {e}", flush=True)
+        return None
+
+
+def _cos_sim(a, b) -> float:
+    import math
+    num = sum(x * y for x, y in zip(a, b))
+    da = math.sqrt(sum(x * x for x in a))
+    db = math.sqrt(sum(x * x for x in b))
+    return num / (da * db) if da and db else 0.0
+
+
+def _speaker_load() -> dict:
+    try:
+        d = json.loads(SPEAKER_PATH.read_text())
+        return d if isinstance(d, dict) else {}
+    except Exception:  # noqa: BLE001 — arquivo ausente/corrompido = vazio
+        return {}
+
+
+def _speaker_save(perfis: dict) -> None:
+    SPEAKER_PATH.write_text(json.dumps(perfis))
+    try:
+        SPEAKER_PATH.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _speaker_identify(wav_path: Path) -> tuple[str | None, float]:
+    """Quem fala no wav: (nome, melhor_sim) ou (None, melhor_sim) se ninguém."""
+    emb = _speaker_embed(wav_path)
+    if not emb:
+        return None, 0.0
+    melhor, sim = None, 0.0
+    for nome, p in _speaker_load().items():
+        for vec in p.get("vecs", []):
+            s = _cos_sim(emb, vec)
+            if s > sim:
+                melhor, sim = nome, s
+    return melhor, sim
+
+
+def _speaker_gate_ok(wav_path: Path) -> dict:
+    """Aplica o gate configurado. Devolve dict p/ enriquecer a resposta:
+    rejected=True bloqueia; speaker=<nome> etiqueta o locutor."""
+    gate = (_settings.get("speaker_gate") or "off").lower()
+    if gate == "off":
+        return {}
+    perfis = _speaker_load()
+    if not perfis:
+        return {}  # sem perfis cadastrados: gate inerte
+    emb = _speaker_embed(wav_path)
+    if not emb:
+        # sem embedding (áudio curto/erro): enforce rejeita, label segue
+        return ({"rejected": True, "reason": "áudio curto p/ identificar a voz"}
+                if gate == "enforce" else {})
+    melhor, sim = None, 0.0
+    for nome, p in perfis.items():
+        for vec in p.get("vecs", []):
+            s = _cos_sim(emb, vec)
+            if s > sim:
+                melhor, sim = nome, s
+    lim = float(_settings.get("speaker_threshold") or 0.75)
+    autorizado = melhor is not None and sim >= lim
+    out: dict = {}
+    if gate == "enforce" and not autorizado:
+        out["rejected"] = True
+        out["reason"] = (f"voz não autorizada (melhor: {melhor or 'ninguém'} "
+                         f"{sim:.2f} < {lim:.2f})" if melhor else
+                         f"voz não reconhecida ({sim:.2f} < {lim:.2f})")
+    if gate == "label" and autorizado:
+        out["speaker"] = melhor
+        out["speaker_sim"] = round(sim, 3)
+    return out
+
+
+@app.post("/api/speaker/enroll")
+async def speaker_enroll(name: str = Form(...), audio: UploadFile = None):
+    """Cadastra/atualiza um perfil de voz com o áudio enviado (8–30 s de fala)."""
+    nome = (name or "").strip()[:40]
+    if not nome:
+        raise HTTPException(400, "Nome do perfil obrigatório")
+    if audio is None:
+        raise HTTPException(400, "Áudio obrigatório")
+    tmp = _save_audio_upload(audio, ".voz")
+    try:
+        emb = _speaker_embed(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+    if not emb:
+        raise HTTPException(400, "Não deu para extrair a voz — grave 8s+ falando")
+    with _speaker_lock:
+        perfis = _speaker_load()
+        p = perfis.get(nome, {"vecs": [], "updated": 0})
+        vecs = p.get("vecs", [])
+        vecs.append(emb)
+        p["vecs"] = vecs[-SPEAKER_MAX_SAMPLES:]
+        p["updated"] = time.time()
+        perfis[nome] = p
+        _speaker_save(perfis)
+    return {"ok": True, "name": nome, "samples": len(p["vecs"])}
+
+
+@app.get("/api/speaker/profiles")
+def speaker_profiles():
+    with _speaker_lock:
+        perfis = _speaker_load()
+    return [{"name": n, "samples": len(p.get("vecs", [])),
+             "updated": p.get("updated", 0)} for n, p in sorted(perfis.items())]
+
+
+@app.delete("/api/speaker/{name}")
+def speaker_delete(name: str):
+    with _speaker_lock:
+        perfis = _speaker_load()
+        if perfis.pop(name, None) is None:
+            raise HTTPException(404, "Perfil não encontrado")
+        _speaker_save(perfis)
+    return {"ok": True}
+
+
+@app.post("/api/speaker/check")
+async def speaker_check(audio: UploadFile = None):
+    """Diagnóstico: quem é a voz do áudio e a similaridade (sem gate)."""
+    if audio is None:
+        raise HTTPException(400, "Áudio obrigatório")
+    tmp = _save_audio_upload(audio, ".vozchk")
+    try:
+        emb = _speaker_embed(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+    if not emb:
+        raise HTTPException(400, "Áudio curto demais p/ identificar (grave 8s+)")
+    melhor, sim = None, 0.0
+    for nome, p in _speaker_load().items():
+        for vec in p.get("vecs", []):
+            s = _cos_sim(emb, vec)
+            if s > sim:
+                melhor, sim = nome, s
+    return {"speaker": melhor, "sim": round(sim, 3)}
+
+
 @app.post("/api/transcribe")
 def transcribe_audio(audio: UploadFile = None, source_lang: str = Form("auto")):
     """Transcrição pura (sem tradução/TTS): áudio -> texto + segmentos. Usa o
@@ -3752,15 +3928,22 @@ def transcribe_audio(audio: UploadFile = None, source_lang: str = Form("auto")):
         raise HTTPException(400, "Áudio obrigatório")
     tmp = _save_audio_upload(audio)
     try:
+        gate = _speaker_gate_ok(tmp)
+        if gate.get("rejected"):
+            return {"rejected": True, "reason": gate["reason"], "text": ""}
         r = _transcribe(tmp, language=(source_lang or "auto").lower())
     finally:
         tmp.unlink(missing_ok=True)
     segs = r.get("segments") or []
-    return {"text": (r.get("text") or "").strip(),
-            "language": (r.get("language") or "").strip().lower(),
-            "segments": [{"start": float(s.get("start") or 0.0),
-                          "end": float(s.get("end") or 0.0),
-                          "text": (s.get("text") or "").strip()} for s in segs]}
+    out = {"text": (r.get("text") or "").strip(),
+           "language": (r.get("language") or "").strip().lower(),
+           "segments": [{"start": float(s.get("start") or 0.0),
+                         "end": float(s.get("end") or 0.0),
+                         "text": (s.get("text") or "").strip()} for s in segs]}
+    if gate.get("speaker"):
+        out["speaker"] = gate["speaker"]
+        out["speaker_sim"] = gate.get("speaker_sim")
+    return out
 
 
 @app.post("/api/translate-speech")
@@ -3783,6 +3966,10 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
         raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
 
     tmp = _save_audio_upload(audio)
+    gate = _speaker_gate_ok(tmp)
+    if gate.get("rejected"):
+        tmp.unlink(missing_ok=True)
+        return {"rejected": True, "reason": gate["reason"], "source_text": ""}
     emo_label, emo_pitch, emo_speed, emo_err = "", "", 1.0, None
     try:
         r = _transcribe(tmp, language=(source_lang or "auto").lower())
@@ -3840,7 +4027,8 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
         emo_show = emo_label + (f" ({', '.join(bits)})" if bits else "")
     return {"job_id": job_id, "source_text": src_text, "source_lang": src_lang,
             "translation": translation, "target_lang": tgt,
-            "emotion": emo_show, "emotion_error": emo_err}
+            "emotion": emo_show, "emotion_error": emo_err,
+            **({"speaker": gate["speaker"]} if gate.get("speaker") else {})}
 
 
 @app.post("/api/modify-speech")

@@ -1,6 +1,7 @@
 # segredos e dados pessoais — NUNCA versionar
 .apikey
 .apikeys.json
+.speaker-profiles.json
 client/config.json
 voices/
 outputs/

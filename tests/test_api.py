@@ -7,6 +7,7 @@ que só rodam em runtime/request).
 import io
 import json as _json
 import zipfile
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -400,3 +401,71 @@ def test_chat_start_sem_objetivo_400(client, auth):
 def test_chat_sessao_inexistente_404(client, auth):
     assert client.post("/api/chat/deadbeef", headers=auth,
                        json={"message": "oi"}).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Biometria de voz (gate de locutor)
+
+
+@pytest.fixture()
+def perfis_vazios(monkeypatch):
+    monkeypatch.setattr(app, "_speaker_load", lambda: {})
+    monkeypatch.setattr(app, "_speaker_save", lambda p: None)
+
+
+def test_speaker_gate_off_nao_bloqueia(client, auth, perfis_vazios):
+    app._settings["speaker_gate"] = "off"
+    assert app._speaker_gate_ok(Path("x.wav")) == {}
+
+
+def test_speaker_enforce_rejeita_e_aceita(client, auth, monkeypatch):
+    VEC_A, VEC_B = [1.0, 0.0], [0.0, 1.0]
+    perfis = {"eu": {"vecs": [VEC_A], "updated": 0}}
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_speaker_embed", lambda p: list(VEC_A))
+    app._settings["speaker_gate"] = "enforce"
+    app._settings["speaker_threshold"] = 0.75
+    # mesma voz → passa
+    assert app._speaker_gate_ok(Path("x.wav")) == {}
+    # outra voz (similaridade 0) → rejeitada
+    monkeypatch.setattr(app, "_speaker_embed", lambda p: list(VEC_B))
+    out = app._speaker_gate_ok(Path("x.wav"))
+    assert out["rejected"] and "não" in out["reason"]
+    # modo etiqueta: reconhece e rotula
+    monkeypatch.setattr(app, "_speaker_embed", lambda p: list(VEC_A))
+    app._settings["speaker_gate"] = "label"
+    out = app._speaker_gate_ok(Path("x.wav"))
+    assert out["speaker"] == "eu" and out["speaker_sim"] >= 0.99
+    # sem perfis cadastrados: gate inerte
+    app._settings["speaker_gate"] = "enforce"
+    monkeypatch.setattr(app, "_speaker_load", lambda: {})
+    assert app._speaker_gate_ok(Path("x.wav")) == {}
+    app._settings["speaker_gate"] = "off"
+    app._settings["speaker_threshold"] = 0.75
+
+
+def test_speaker_enroll_lista_e_apaga(client, auth, monkeypatch):
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".voz": Path("falso.wav"))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p: [0.5, 0.5])
+    store = {}
+    monkeypatch.setattr(app, "_speaker_load", lambda: store)
+    monkeypatch.setattr(app, "_speaker_save", lambda p: None)  # store é mutado pelo endpoint
+    r = client.post("/api/speaker/enroll", headers=auth,
+                    data={"name": "eu"}, files={"audio": ("voz.wav", b"x", "audio/wav")})
+    assert r.status_code == 200 and r.json()["samples"] == 1
+    lista = client.get("/api/speaker/profiles", headers=auth).json()
+    assert lista and lista[0]["name"] == "eu"
+    # apagar existente 200 / inexistente 404
+    assert client.delete("/api/speaker/eu", headers=auth).status_code == 200
+    assert client.delete("/api/speaker/eu", headers=auth).status_code == 404
+
+
+def test_speaker_settings_validam(client, auth):
+    r = client.post("/api/settings", headers=auth, json={"speaker_gate": "maluco"})
+    assert r.status_code == 400
+    r = client.post("/api/settings", headers=auth,
+                    json={"speaker_gate": "enforce", "speaker_threshold": 0.9})
+    assert r.status_code == 200
+    s = client.get("/api/settings", headers=auth).json()
+    assert s["speaker_gate"] == "enforce" and abs(s["speaker_threshold"] - 0.9) < 1e-6
+    client.post("/api/settings", headers=auth, json={"speaker_gate": "off"})

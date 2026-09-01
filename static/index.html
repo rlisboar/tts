@@ -477,6 +477,12 @@
     filter: none;
   }
   .chip:active { transform: translateY(1px); }
+  .sp-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 99px;
+    padding: 2px 10px; font-size: 12px; color: var(--muted);
+  }
+  .sp-chip button { min-height: 0; padding: 0 4px; border: 0; background: none; }
 
   .cols2 {
     flex: 1; min-height: 0;
@@ -2618,6 +2624,22 @@
           <textarea id="chatExtra" rows="2" style="font-family:var(--mono); font-size:12px" placeholder='{"reasoning_effort": "low"}'></textarea></label>
         <p class="hint">Mesclado no body de cada chamada. Ex.: <code>{"reasoning_effort": "low", "top_p": 0.9}</code>. Vazio = padrão.</p>
         <p class="hint">Provedor que conduz a aba Conversa. Vazio = herda o de tradução.</p>
+        <div class="divider"></div>
+        <label class="cfg-label">Biometria de voz — quem pode falar
+          <select id="speakerGate">
+            <option value="off">Todos (desligado)</option>
+            <option value="enforce">Só vozes cadastradas</option>
+            <option value="label">Todos, etiquetando quem fala</option>
+          </select></label>
+        <label class="cfg-label">Rigor <output id="spThrOut">0.75</output>
+          <input type="range" id="spThr" min="0.55" max="0.95" step="0.05" value="0.75"></label>
+        <p class="hint">Alto rejeita mais intrusos — e pode rejeitar você resfriado/afastado do mic. Padrão 0.75.</p>
+        <div class="row2" style="gap:8px; margin-top:6px">
+          <input type="text" id="spName" placeholder="nome do perfil (ex.: você)" style="flex:1; min-width:120px">
+          <button type="button" id="spEnroll" class="small">🎙 Cadastrar (8s)</button>
+        </div>
+        <p class="hint" id="spStatus" style="margin-top:4px"></p>
+        <div id="spProfiles" class="hint" style="margin-top:4px"></div>
         <div class="divider"></div>
         <label class="check"><input type="checkbox" id="freeLocalOnRemote"> Liberar RAM: descarregar local quando usar remoto</label>
         <label class="cfg-label">Descarregar por ociosidade (min)
@@ -4913,6 +4935,9 @@ async function loadSettings() {
     $("chatModel").value = s.chat_model || "";
     $("chatApiKey").value = s.chat_api_key || "";
     $("chatExtra").value = s.chat_extra || "";
+    if ($("speakerGate")) $("speakerGate").value = s.speaker_gate || "off";
+    if ($("spThr")) { $("spThr").value = s.speaker_threshold ?? 0.75; $("spThrOut").textContent = (+($("spThr").value)).toFixed(2); }
+    if (typeof refreshSpProfiles === "function") refreshSpProfiles();
     $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
     applySttEngine(false);
     prevSttEngine = $("sttEngine").value;
@@ -4954,6 +4979,65 @@ async function loadSettings() {
   const saved = localStorage.getItem("ttsCfgTab") || "modelo";
   show(saved);
 })();
+
+// ── Biometria de voz (perfis autorizados) ──
+async function refreshSpProfiles() {
+  const el = $("spProfiles");
+  if (!el) return;
+  try {
+    const lista = await api("/api/speaker/profiles");
+    el.innerHTML = lista.length
+      ? "Cadastradas: " + lista.map(p =>
+          `<span class="sp-chip" data-nome="${p.name.replace(/"/g, "&quot;")}">` +
+          `${p.name} (${p.samples}) <button type="button" class="ghost small" ` +
+          `data-del="${p.name.replace(/"/g, "&quot;")}" title="remover perfil">🗑</button></span>`
+        ).join(" · ")
+      : "Nenhuma voz cadastrada ainda.";
+    el.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+      try {
+        await api("/api/speaker/" + encodeURIComponent(b.dataset.del), { method: "DELETE" });
+        toast("Perfil removido");
+        refreshSpProfiles();
+      } catch (e) { toast("✖ " + e.message, 4000); }
+    });
+  } catch {}
+}
+$("spThr")?.addEventListener("input", () => { $("spThrOut").textContent = (+$("spThr").value).toFixed(2); });
+$("spEnroll")?.addEventListener("click", async () => {
+  const btn = $("spEnroll"), nome = ($("spName")?.value || "").trim();
+  const st = $("spStatus");
+  if (!nome) { toast("Dê um nome ao perfil (ex.: você)", 4000); return; }
+  if (!navigator.mediaDevices?.getUserMedia) { toast("Mic indisponível", 4000); return; }
+  btn.disabled = true;
+  try {
+    st.textContent = "🔴 gravando… fale naturalmente por 8s";
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const rec = new MediaRecorder(stream);
+    const pedacos = [];
+    rec.ondataavailable = ev => ev.data.size && pedacos.push(ev.data);
+    rec.start();
+    let faltam = 8;
+    st.textContent = "🔴 gravando… 8s";
+    const t = setInterval(() => {
+      faltam--;
+      if (faltam > 0) st.textContent = `🔴 gravando… ${faltam}s`;
+      else { clearInterval(t); rec.stop(); }
+    }, 1000);
+    await new Promise(res => rec.onstop = () => { res(); stream.getTracks().forEach(tr => tr.stop()); });
+    st.textContent = "analisando timbre…";
+    const fd = new FormData();
+    fd.append("name", nome);
+    fd.append("audio", new Blob(pedacos, { type: rec.mimeType || "audio/webm" }), "voz.webm");
+    const r = await api("/api/speaker/enroll", { method: "POST", body: fd });
+    st.textContent = `✔ ${nome}: ${r.samples} amostra(s) — salve as configurações`;
+    toast(`Voz "${nome}" cadastrada`);
+    refreshSpProfiles();
+  } catch (e) {
+    st.textContent = "";
+    toast("✖ " + e.message, 5000);
+  }
+  btn.disabled = false;
+});
 
 // contador de caracteres em Gerar fala
 (() => {
@@ -5023,6 +5107,8 @@ $("cfgSave").onclick = async () => {
       chat_model: $("chatModel")?.value || "",
       chat_api_key: $("chatApiKey")?.value || "",
       chat_extra: $("chatExtra")?.value || "",
+      speaker_gate: $("speakerGate")?.value || "off",
+      speaker_threshold: parseFloat($("spThr")?.value) || 0.75,
       free_local_on_remote: $("freeLocalOnRemote").checked,
       idle_unload_minutes: parseInt($("idleUnloadMin")?.value, 10) || 0,
       speech_queue: !!$("speechQueue")?.checked,
@@ -5183,9 +5269,9 @@ async function cvSpeak(text) {
   }
   cvPlaying = false; cvBusy = false;
 }
-async function cvSend(text, _retry = true) {
+async function cvSend(text, _retry = true, quem = null) {
   if (!text.trim()) return;
-  cvAdd("você", text);
+  cvAdd("você", (quem ? `[${quem}] ` : "") + text);
   cvStatus("IA pensando…");
   cvBusy = true;
   try {
@@ -5248,15 +5334,17 @@ async function cvTranscribeEEnvia(blob) {
   const fd = new FormData();
   fd.append("audio", blob, "fala." + ext);
   fd.append("source_lang", "pt");
-  let texto = "";
+  let texto = "", cvLocutor = null;
   try {
     const r = await api("/api/transcribe", { method: "POST", body: fd });
+    if (r.rejected) { cvStatus("🔇 " + (r.reason || "sem fala")); cvBusy = false; return; }
     texto = (r.text || "").trim();
+    cvLocutor = r.speaker || null;
     cvDbg("stt ok: " + texto.slice(0, 50));
   } catch (e) { cvDbg("✖ stt: " + e.message); cvStatus("✖ STT: " + e.message); cvBusy = false; return; }
   if (!texto) { cvStatus("não entendi — fale de novo"); cvBusy = false; return; }
   if (cvEco(texto)) { cvDbg("eco ignorado: " + texto.slice(0, 40)); cvStatus("🔊 (eco da IA ignorado — fale de novo)"); cvBusy = false; return; }
-  await cvSend(texto);
+  await cvSend(texto, true, cvLocutor);
 }
 $("cvMic").onclick = async () => {
   if (cvVadLigado) { cvVad.pause(); cvVadLigado = false; cvStatus("escuta desligada"); return; }
