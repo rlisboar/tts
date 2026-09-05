@@ -5309,6 +5309,12 @@ function cvPararAudio() {
   if (el) { try { el.pause(); } catch (e) {} }
   if (cvFalaRes) { const f = cvFalaRes; cvFalaRes = null; f("corte"); }
   if (cvUrlFala) { URL.revokeObjectURL(cvUrlFala); cvUrlFala = null; }
+  // aborta a síntese adiantada do pipeline: sem isso o cvSpeak fica preso no
+  // `await prox` até a frase seguinte terminar de sintetizar (~4s) antes de
+  // notar o corte. O servidor ainda termina o chunk em curso (MLX não é
+  // interrompível), mas o navegador não espera por áudio que ninguém vai ouvir.
+  // Só cai aqui com a IA já falando: o polling do chat desse turno já acabou.
+  if (cvPlaying && cvAbort) { try { cvAbort.abort(); } catch (e) {} cvAbort = null; }
   cvPlaying = false;
 }
 
