@@ -5299,6 +5299,15 @@ let cvBusy = false, cvSpeakingLogged = false;
 // com a nova.
 let cvTurno = 0;         // epoch do turno
 let cvCortaFala = false; // corta a fila de frases em reprodução
+// Barge-in só com VOZ SUSTENTADA. O onSpeechStart do Silero dispara no primeiro
+// frame acima de 0,5, então batida na mesa, clique de mouse ou estalo já
+// calavam a IA. Frame = 1536 amostras a 16 kHz = 96 ms.
+// Fala sussurrada pode não passar de 0,85 e não cortar na hora: nesse caso o
+// corte ainda acontece no fim da frase, quando o STT confirma e cvSend chama
+// cvCancelarTurno. Perde-se responsividade, nunca o barge-in.
+const CV_BARGE_PROB = 0.85;   // probabilidade de fala exigida no frame
+const CV_BARGE_FRAMES = 4;    // frames seguidos (~380 ms de voz contínua)
+let cvFramesVoz = 0;          // contador de frames de voz enquanto a IA fala
 let cvFalaRes = null;    // resolve da frase que está tocando agora
 let cvAbort = null;      // aborta os fetch (chat + TTS) do turno em voo
 let cvUrlFala = null;    // objectURL da frase atual
@@ -5526,6 +5535,7 @@ async function cvTranscribeEEnvia(blob) {
 }
 function cvSetMic(ligado) {
   cvVadLigado = ligado;
+  if (!ligado) cvFramesVoz = 0;
   $("cvMic").textContent = ligado ? "⏹ Desligar" : "🎙 Ligar";
   $("cvRec").style.display = ligado ? "" : "none";
 }
@@ -5540,17 +5550,31 @@ $("cvMic").onclick = async () => {
     if (!cvVad) {
       cvVad = await vad.MicVAD.new({
         baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/",
-        onSpeechStart: () => {
-          cvSpeakingLogged = true;
-          // barge-in: cala a IA na hora (frase atual + resto da fila). O turno
-          // velho só é descartado de fato quando o STT confirmar a fala nova.
-          if (cvPlaying) { cvPararAudio(); cvStatus("✋ interrompi — pode falar"); }
+        // corte da fala da IA decidido aqui, frame a frame — não no
+        // onSpeechStart (que dispara em qualquer ruído de um frame só)
+        onFrameProcessed: probs => {
+          if (!cvPlaying) { cvFramesVoz = 0; return; }
+          const p = (probs && typeof probs.isSpeech === "number") ? probs.isSpeech : 0;
+          if (p < CV_BARGE_PROB) {
+            if (cvFramesVoz) cvFramesVoz--;   // tolera 1 frame fraco no meio da fala
+            return;
+          }
+          if (++cvFramesVoz < CV_BARGE_FRAMES) return;
+          cvFramesVoz = 0;
+          cvDbg("barge-in: voz sustentada p=" + p.toFixed(2));
+          // cala a IA (frase atual + resto da fila). O turno velho só é
+          // descartado de fato quando o STT confirmar a fala nova.
+          cvPararAudio();
+          cvStatus("✋ interrompi — pode falar");
         },
+        onSpeechStart: () => { cvSpeakingLogged = true; },
         onSpeechEnd: async audio => {
+          cvFramesVoz = 0;
           const blob = encodeWav(audio, 16000);
           cvDbg("fala " + blob.size + "B");
           await cvTranscribeEEnvia(blob);
         },
+        onVADMisfire: () => { cvFramesVoz = 0; cvDbg("vad misfire (ruído curto)"); },
       });
     }
     await cvVad.start();
