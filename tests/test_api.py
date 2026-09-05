@@ -365,6 +365,32 @@ def test_chat_fluxo_confirma(client, auth, monkeypatch):
     assert client.delete(f"/api/chat/{sid}", headers=auth).status_code == 200
 
 
+def test_speech_queue_bypass(client, auth, monkeypatch, tmp_path):
+    """queue=false tira a fala da fila do servidor (a Conversa faz o pipeline no
+    navegador); sem a flag o contrato antigo continua usando a fila."""
+    import wave
+    vistos = []
+
+    def _fake_job(job_id, text, voice_id, voice_path, language, omni,
+                  model_override=None, use_queue=True):
+        vistos.append(use_queue)
+        oid = "t" + job_id
+        wav = app.OUTPUTS_DIR / f"{oid}.wav"
+        with wave.open(str(wav), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
+            w.writeframes(b"\x00\x00" * 2400)
+        app._jobs[job_id].update(status="done", output={"id": oid, "duration": 0.1})
+
+    monkeypatch.setattr(app, "_run_tts_job", _fake_job)
+    monkeypatch.setattr(app, "_resolve_voice", lambda v: "voz-teste")
+
+    corpo = {"model": "tts-1", "input": "oi", "response_format": "wav"}
+    assert client.post("/v1/audio/speech", headers=auth, json=corpo).status_code == 200
+    assert client.post("/v1/audio/speech", headers=auth,
+                       json={**corpo, "queue": False}).status_code == 200
+    assert vistos == [True, False]
+
+
 def test_chat_interrupt_descarta_resposta_em_voo(client, auth, monkeypatch):
     """Barge-in: fala nova enquanto a IA pensa não toma 409 e a resposta velha
     (que chega depois) não entra na sessão."""

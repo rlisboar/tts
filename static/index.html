@@ -5348,30 +5348,58 @@ function cvFinalShow(text) {
   $("cvFinalText").textContent = text;
   $("cvFinal").style.display = "";
 }
+// Síntese custa ~2,4 s fixos por request + ~0,45 s por segundo de áudio, então
+// frase curtinha ("Beleza.") paga o fixo à toa — junta só as bem curtas. Não
+// agrupa mais que isso: bloco grande atrasa o PRIMEIRO som (medido: bloco de
+// 145 ch = 9,3 s até falar, contra 4,1 s frase a frase) e o pipeline abaixo já
+// esconde o custo das frases seguintes.
+const CV_BLOCO_MAX = 60;
+function cvBlocos(text, max = CV_BLOCO_MAX) {
+  const frases = (text.match(/[^.!?…]+[.!?…]+/g) || [text]).map(f => f.trim()).filter(f => f);
+  const out = [];
+  for (const f of frases) {
+    if (out.length && (out[out.length - 1] + " " + f).length <= max) out[out.length - 1] += " " + f;
+    else out.push(f);
+  }
+  return out.length ? out : [text.trim()];
+}
+
+function cvSintetiza(frase, sinal) {
+  // queue:false — quem manda no tempo da fala é o player aqui, não a fila do
+  // servidor (que reservaria a duração da fala anterior e dobraria o silêncio)
+  const body = { model: "tts-1", input: frase, response_format: "wav", queue: false };
+  const voz = $("cvVoice")?.value;
+  if (voz) body.voice = voz;
+  const p = fetch(APP_BASE + "/v1/audio/speech", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": KEY },
+    body: JSON.stringify(body), signal: sinal
+  }).then(r => {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.blob();
+  });
+  p.catch(() => {});   // marca tratada: se o turno morrer antes do await, sem unhandled
+  return p;
+}
+
 async function cvSpeak(text, gen, sinal) {
-  // sintetiza FRASE A FRASE e toca em sequência; fale por cima = barge-in
-  // (corta a frase atual E o resto da fila — nada do turno velho sobrevive)
+  // PIPELINE: sintetiza o bloco N+1 enquanto o N toca — sem isso o silêncio
+  // entre frases era a síntese inteira da próxima (~3 s).
+  // Barge-in corta o bloco atual E o resto da fila: nada do turno velho sobra.
   const vivo = () => gen === cvTurno && !cvCortaFala;
   cvBusy = true; cvPlaying = true; cvCortaFala = false;
   cvUltimaFala = text; cvUltimaFalaAt = Date.now();
   cvStatus("🔊 sintetizando resposta…");
+  const el = $("cvAudio");
+  el.style.display = "";
+  const blocos = cvBlocos(text);
+  let prox = cvSintetiza(blocos[0], sinal);
   try {
-    const frases = (text.match(/[^.!?]+[.!?]+/g) || [text]).map(f => f.trim()).filter(f => f);
-    const el = $("cvAudio");
-    el.style.display = "";
-    for (const frase of frases) {
+    for (let i = 0; i < blocos.length; i++) {
+      const blob = await prox;
       if (!vivo()) break;
-      const body = { model: "tts-1", input: frase, response_format: "wav" };
-      const voz = $("cvVoice")?.value;
-      if (voz) body.voice = voz;
-      const r = await fetch(APP_BASE + "/v1/audio/speech", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": KEY },
-        body: JSON.stringify(body), signal: sinal
-      });
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const blob = await r.blob();
-      if (!vivo()) break;
+      // dispara a próxima ANTES de tocar esta
+      prox = (i + 1 < blocos.length) ? cvSintetiza(blocos[i + 1], sinal) : null;
       if (cvUrlFala) URL.revokeObjectURL(cvUrlFala);
       cvUrlFala = URL.createObjectURL(blob);
       el.src = cvUrlFala;

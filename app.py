@@ -2672,13 +2672,18 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
 
 
 def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
-                 language: str, omni: dict, model_override: str | None = None):
+                 language: str, omni: dict, model_override: str | None = None,
+                 use_queue: bool = True):
+    """use_queue=False pula a fila de falas: quem controla o tempo é o cliente.
+    A Conversa toca frase a frase no navegador — se o gate também segurasse a
+    entrega, a reserva (duração da fala anterior) viraria silêncio em dobro, e
+    depois de um barge-in ficaria reservando uma fala que ninguém ouviu."""
     import numpy as np
     import soundfile as sf
 
     job = _jobs[job_id]
     remote = False
-    sq = _speech_queue_begin(job_id)
+    sq = _speech_queue_begin(job_id) if use_queue else None
     hold_pieces = sq is not None  # com fila: grava trechos mas só libera na entrega
     # model_override já deve ter sido aplicado em settings pelo /api/tts
     try:
@@ -4418,6 +4423,11 @@ def openai_speech(payload: dict):
     if str(payload.get("model", "tts-1")).endswith("-hd") and "num_steps" not in payload:
         omni["num_steps"] = OMNI_STEPS_HQ
 
+    # queue=false: cliente controla o tempo da fala (Conversa faz pipeline no
+    # navegador). Default true — o contrato do SDK OpenAI não muda.
+    q = payload.get("queue", payload.get("speech_queue", True))
+    use_queue = q is not False and str(q).lower() not in ("false", "0", "no")
+
     # reusa o pipeline de jobs de forma síncrona (histórico incluso)
     job_id = uuid.uuid4().hex[:10]
     _jobs[job_id] = {"status": "running", "pieces": 0, "total": None,
@@ -4428,6 +4438,7 @@ def openai_speech(payload: dict):
     t = threading.Thread(
         target=_run_tts_job,
         args=(job_id, text, voice_id, VOICES_DIR / f"{voice_id}.wav", language, omni),
+        kwargs={"use_queue": use_queue},
         daemon=True,
     )
     t.start()
