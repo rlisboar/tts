@@ -22,8 +22,13 @@ fi
 if [ -z "$TTS_ROD_API_KEY" ] && [ -f .apikey ]; then
   export TTS_ROD_API_KEY="$(tr -d '[:space:]' < .apikey)"
 fi
+LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
+echo "UI local:  http://127.0.0.1:7860"
+if [ -n "$LAN_IP" ]; then
+  echo "UI rede:   http://$LAN_IP:7860  (outros dispositivos precisam da chave)"
+fi
 if [ -n "$TTS_ROD_API_KEY" ]; then
-  echo "Chave da API (env/.apikey): $TTS_ROD_API_KEY"
+  echo "Chave da API (cole no outro dispositivo): $TTS_ROD_API_KEY"
 else
   echo "Chaves da API: gerencie em Configurações → Acesso (UI)"
 fi

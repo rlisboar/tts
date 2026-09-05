@@ -218,6 +218,65 @@ def test_upload_stt_cap_413(client, auth, monkeypatch):
 def test_chave_invalida_continua_401(client):
     r = client.get("/api/status", headers={"X-API-Key": "x" * 64})
     assert r.status_code == 401
+    body = r.json()
+    assert body["detail"] == "Não autorizado"
+    assert "hint" in body
+
+
+def test_apikeys_reveal_com_chave_valida(client, auth):
+    # TestClient não é loopback, mas chave válida libera o secret
+    r = client.get("/api/apikeys?reveal=1", headers=auth)
+    assert r.status_code == 200
+    d = r.json()
+    assert d["local"] is False
+    assert d["can_reveal"] is True
+    assert d["keys"] and d["keys"][0].get("secret")
+    assert isinstance(d.get("lan_urls"), list)
+
+
+def test_apikeys_cria_autentica_e_apaga(client, auth):
+    snap_enabled = app._apikeys.get("enabled", True)
+    snap_keys = [dict(k) for k in (app._apikeys.get("keys") or [])]
+    try:
+        r = client.post("/api/apikeys", headers=auth, json={"name": "pytest-tmp"})
+        assert r.status_code == 200
+        secret = r.json()["key"]["secret"]
+        kid = r.json()["key"]["id"]
+        assert secret and kid
+        assert client.get("/api/status", headers={"X-API-Key": secret}).status_code == 200
+        assert client.delete(f"/api/apikeys/{kid}", headers=auth).status_code == 200
+        assert client.get("/api/status", headers={"X-API-Key": secret}).status_code == 401
+    finally:
+        with app._apikeys_lock:
+            app._apikeys = {"enabled": snap_enabled, "keys": [dict(k) for k in snap_keys]}
+            app._save_apikeys()
+        app.API_KEY = app._primary_api_key() or app._ENV_API_KEY or None
+
+
+def test_auth_ip_deste_mac_dispensa_chave(monkeypatch):
+    monkeypatch.setattr(app, "_own_ips", lambda: {"192.168.15.31"})
+    c = TestClient(app.app, raise_server_exceptions=False, client=("192.168.15.31", 50000))
+    assert c.get("/api/status").status_code == 200
+    d = c.get("/api/apikeys?reveal=1").json()
+    assert d["local"] is True and d["can_reveal"] is True
+    assert d["keys"] and d["keys"][0].get("secret")
+
+
+def test_auth_outro_ip_exige_chave_e_bloqueia_cadastro(monkeypatch):
+    monkeypatch.setattr(app, "_own_ips", lambda: {"192.168.15.31"})
+    c = TestClient(app.app, raise_server_exceptions=False, client=("192.168.15.177", 50000))
+    assert c.get("/api/status").status_code == 401
+    assert c.post("/api/apikeys", json={"name": "invasor"}).status_code == 401
+    snap_keys = [dict(k) for k in (app._apikeys.get("keys") or [])]
+    try:
+        key = app._primary_api_key()
+        r = c.post("/api/apikeys", headers={"X-API-Key": key}, json={"name": "pytest-lan"})
+        assert r.status_code == 200 and r.json()["key"]["secret"]
+    finally:
+        with app._apikeys_lock:
+            app._apikeys["keys"] = snap_keys
+            app._save_apikeys()
+        app.API_KEY = app._primary_api_key() or app._ENV_API_KEY or None
 
 
 def test_guarda_traversal_ids(client, auth):
@@ -237,6 +296,7 @@ def test_status_traz_versao(client, auth):
     assert r.status_code == 200
     v = r.json().get("version")
     assert isinstance(v, str) and len(v) >= 3
+    assert isinstance(r.json().get("lan_urls"), list)
 
 
 def test_tunnel_start_stop_chamam_launchctl(client, auth, monkeypatch):
@@ -303,6 +363,54 @@ def test_chat_fluxo_confirma(client, auth, monkeypatch):
     assert d["status"] == "chatting"
     assert client.get(f"/api/chat/{sid}", headers=auth).json()["last_text"] == "Bem-vindos ao episódio 5!"
     assert client.delete(f"/api/chat/{sid}", headers=auth).status_code == 200
+
+
+def test_chat_interrupt_descarta_resposta_em_voo(client, auth, monkeypatch):
+    """Barge-in: fala nova enquanto a IA pensa não toma 409 e a resposta velha
+    (que chega depois) não entra na sessão."""
+    import time as _t
+    import threading as _th
+    solta = _th.Event()
+    chamadas = []
+
+    def _llm(msgs):
+        chamadas.append([m["content"] for m in msgs if m["role"] == "user"])
+        if len(chamadas) == 1:
+            solta.wait(5)                       # 1ª resposta fica pendurada
+            return '{"final": false, "reply": "RESPOSTA VELHA"}'
+        return '{"final": false, "reply": "RESPOSTA NOVA"}'
+
+    monkeypatch.setattr(app, "_chat_llm", _llm)
+    sid = client.post("/api/chat/start", headers=auth,
+                      json={"objective": "primeira fala"}).json()["session_id"]
+    for _ in range(40):                          # espera o worker 1 travar no LLM
+        if chamadas:
+            break
+        _t.sleep(0.05)
+    assert client.get(f"/api/chat/{sid}", headers=auth).json()["status"] == "thinking"
+
+    # sem interrupt continua 409 (contrato antigo dos agentes)
+    assert client.post(f"/api/chat/{sid}", headers=auth,
+                       json={"message": "outra"}).status_code == 409
+
+    r = client.post(f"/api/chat/{sid}", headers=auth,
+                    json={"message": "na verdade, muda tudo", "interrupt": True})
+    assert r.status_code == 200 and r.json()["interrupted"] is True
+    solta.set()                                  # worker velho responde agora — tarde demais
+
+    d = {}
+    for _ in range(60):
+        d = client.get(f"/api/chat/{sid}", headers=auth).json()
+        if d["status"] != "thinking":
+            break
+        _t.sleep(0.05)
+    assert d["reply"] == "RESPOSTA NOVA"
+    assert "RESPOSTA VELHA" not in [m["content"] for m in d["messages"]]
+    # as duas falas do humano viraram um único turno 'user' (nada de user seguido)
+    papeis = [m["role"] for m in d["messages"]]
+    assert all(a != b for a, b in zip(papeis, papeis[1:]))
+    assert "muda tudo" in d["messages"][0]["content"]
+    client.delete(f"/api/chat/{sid}", headers=auth)
 
 
 def test_chat_system_setting(client, auth):

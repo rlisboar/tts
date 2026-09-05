@@ -1926,7 +1926,7 @@
 
 <div id="keyBar" class="card keybar" style="display:none">
   <div class="row">
-    <span>Este dispositivo precisa da chave da API (Configurações → Acesso, ou cole abaixo):</span>
+    <span>Este dispositivo precisa da chave da API. No Mac do servidor: Configurações → Acesso → Revelar (ou o terminal do <code>./run.sh</code>). Cole abaixo:</span>
     <input type="text" id="keyInput" placeholder="cole a chave aqui" style="max-width:340px" autocomplete="off">
     <button id="keySave">Salvar neste navegador</button>
     <button type="button" class="ghost" id="keyBarGoto">Abrir Acesso</button>
@@ -2521,9 +2521,10 @@
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">Chaves da API (servidor)</h3>
         <label class="check"><input type="checkbox" id="apiAuthEnabled"> Exigir chave na rede local</label>
-        <p class="hint" id="apiAuthHint">Em <code>localhost</code> a UI não precisa de chave. Outros
-          dispositivos e sistemas (Home Assistant, scripts, etc.) usam uma das chaves abaixo
-          via <code>Authorization: Bearer</code>, <code>X-API-Key</code> ou <code>?api_key=</code>.</p>
+        <p class="hint" id="apiAuthHint">Neste Mac a UI não precisa de chave. Outros
+          dispositivos usam uma das chaves abaixo via <code>Authorization: Bearer</code>,
+          <code>X-API-Key</code> ou <code>?api_key=</code>. Use <b>Revelar</b> / <b>Copiar</b>
+          e cole no outro navegador.</p>
         <div id="apiKeysList" class="api-keys-list"></div>
         <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap">
           <input type="text" id="apiKeyNewName" placeholder="nome (ex.: Home Assistant)" style="flex:1; min-width:160px" maxlength="64">
@@ -2731,7 +2732,12 @@ async function api(path, opts = {}) {
   const r = await authFetch(path, opts);
   if (r.status === 401) {
     $("keyBar").style.display = "flex";
-    throw new Error("chave da API necessária");
+    let msg = "chave da API necessária";
+    try {
+      const body = await r.json();
+      msg = body.hint || body.detail || msg;
+    } catch {}
+    throw Object.assign(new Error(msg), { status: 401 });
   }
   if (!r.ok) {
     let detail = r.statusText;
@@ -3137,8 +3143,12 @@ async function refreshStatus() {
     } else {
       setDual(`${short} · idle`, "", "Carrega na 1ª geração · " + (label || ""), beShort);
     }
-  } catch {
-    setDual("servidor offline", "err", "", "—");
+  } catch (e) {
+    if (e && e.status === 401) {
+      setDual("precisa da chave", "warn", e.message || "Cole a chave da API", "—");
+    } else {
+      setDual("servidor offline", "err", "", "—");
+    }
   }
 }
 
@@ -3490,7 +3500,9 @@ $("voicesImportFile").onchange = async (e) => {
 };
 
 async function refreshVoices() {
-  const voices = await api("/api/voices");
+  let voices;
+  try { voices = await api("/api/voices"); }
+  catch { return; }
   const list = $("voiceList"), sel = $("voiceSelect"), sel2 = $("tvVoice");
   const selected = sel.value, selected2 = sel2.value;
   // preserve o playback: refresh recria os <audio> e cortaria o que toca
@@ -3761,7 +3773,8 @@ async function streamJob(job_id, statusEl) {
         if (j.warning) msg = `⚠ ${j.warning} — ` + msg;
         statusEl.innerHTML = `<span class="spinner"></span>${esc(msg)}`;
       }
-      await new Promise(r => setTimeout(r, 700));
+      // 150ms: peça pronta emenda na hora — 700ms criava pausa audível entre frases
+      await new Promise(r => setTimeout(r, 150));
     }
   } finally {
     if (player === meu && !meu.stopped) {
@@ -4441,7 +4454,9 @@ async function pumpPipeline(st) {
 
 /* ───────── Histórico ───────── */
 async function refreshOutputs() {
-  const outs = await api("/api/outputs");
+  let outs;
+  try { outs = await api("/api/outputs"); }
+  catch { return; }
   const list = $("outputList");
   list.innerHTML = outs.length ? "" : '<div class="empty">Nada gerado ainda.</div>';
   for (const o of outs) {
@@ -4474,7 +4489,6 @@ $("keySave").onclick = () => {
   loadApiKeys();
 };
 if ($("keyBarGoto")) $("keyBarGoto").onclick = () => {
-  $("keyBar").style.display = "none";
   showView("config", { tab: "acesso" });
 };
 
@@ -4506,9 +4520,17 @@ async function loadApiKeys() {
     if ($("apiAuthEnabled")) $("apiAuthEnabled").checked = !!data.enabled;
     const hint = $("apiAuthHint");
     if (hint) {
-      hint.innerHTML = data.auth_active
-        ? "Auth <b>ativa</b> na rede. <code>localhost</code> não precisa de chave. Outros dispositivos usam Bearer / X-API-Key / ?api_key=."
-        : "Auth <b>desligada</b> — qualquer um na rede acessa a API sem chave.";
+      const lans = (data.lan_urls || []).map(u => `<code>${u}</code>`).join(", ");
+      if (!data.auth_active) {
+        hint.innerHTML = "Auth <b>desligada</b> — qualquer um na rede acessa a API sem chave.";
+      } else if (data.local) {
+        hint.innerHTML = "Você está neste Mac — a UI não precisa de chave. Outros dispositivos em "
+          + (lans || "http://IP-DO-MAC:7860")
+          + " usam Bearer / X-API-Key / ?api_key=. Use <b>Revelar</b> ou <b>Copiar</b> e cole lá.";
+      } else {
+        hint.innerHTML = "Auth <b>ativa</b> na rede. Este dispositivo já autenticou. "
+          + "Revelar/criar chaves vale para os outros sistemas (Home Assistant, scripts, etc.).";
+      }
     }
     const rows = [];
     for (const k of (data.keys || [])) {
@@ -4542,7 +4564,7 @@ async function loadApiKeys() {
         acts.appendChild(b); return b;
       };
       if (data.can_reveal && !ro) {
-        btn("Revelar", "ghost", "Mostra o secret (só neste Mac)").onclick = async () => {
+        btn("Revelar", "ghost", "Mostra o secret para copiar no outro dispositivo").onclick = async () => {
           try {
             const d = await api("/api/apikeys?reveal=1");
             const found = (d.keys || []).find(x => x.id === k.id);
@@ -4552,11 +4574,21 @@ async function loadApiKeys() {
             } else toast("Não foi possível revelar", 4000);
           } catch (e) { toast("Erro: " + e.message, 5000); }
         };
+        btn("Copiar", "ghost", "Copia o segredo completo").onclick = async () => {
+          try {
+            const d = await api("/api/apikeys?reveal=1");
+            const found = (d.keys || []).find(x => x.id === k.id);
+            const secret = found && found.secret;
+            if (!secret) { toast("Não foi possível copiar o segredo", 4000); return; }
+            showApiKeyReveal(secret);
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              await navigator.clipboard.writeText(secret);
+              toast("Chave copiada ✔ — cole no outro dispositivo");
+            } else toast("Copie o segredo abaixo");
+          } catch (e) { toast("Erro: " + e.message, 5000); }
+        };
       }
       if (!ro) {
-        btn("Copiar máscara", "ghost").onclick = () => {
-          navigator.clipboard?.writeText(k.masked).then(() => toast("Máscara copiada")).catch(() => {});
-        };
         btn("Renomear", "ghost").onclick = async () => {
           const name = prompt("Novo nome da chave:", k.name);
           if (!name || !name.trim()) return;
@@ -4627,6 +4659,14 @@ if ($("apiKeyCreate")) $("apiKeyCreate").onclick = async () => {
     const secret = r.key && r.key.secret;
     showApiKeyReveal(secret);
     toast("Chave criada — copie o segredo abaixo");
+    if (secret && confirm("Usar esta chave neste navegador?")) {
+      KEY = secret;
+      localStorage.setItem("ttsStudioKey", KEY);
+      if ($("clientApiKey")) $("clientApiKey").value = KEY;
+      if ($("keyInput")) $("keyInput").value = KEY;
+      $("keyBar").style.display = "none";
+      updateClientKeyStatus();
+    }
     loadApiKeys();
   } catch (e) { toast("Erro: " + e.message, 5000); }
 };
@@ -5252,6 +5292,32 @@ const cvDbg = m => api("/api/chat-debug", {
 const CV_HINT = '🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar — quando estiver bom, confirme ("pode mandar").';
 let cvSid = null, cvPlaying = false, cvVad = null, cvVadLigado = false;
 let cvUltimaFala = "", cvUltimaFalaAt = 0;
+let cvBusy = false, cvSpeakingLogged = false;
+// Barge-in: cada fala do humano abre um TURNO novo. Só o turno mais novo pode
+// escrever na tela e tocar áudio — o anterior morre (fetch abortado, fila de
+// frases cortada), senão a resposta velha continuava tocando e serializava
+// com a nova.
+let cvTurno = 0;         // epoch do turno
+let cvCortaFala = false; // corta a fila de frases em reprodução
+let cvFalaRes = null;    // resolve da frase que está tocando agora
+let cvAbort = null;      // aborta os fetch (chat + TTS) do turno em voo
+let cvUrlFala = null;    // objectURL da frase atual
+
+function cvPararAudio() {
+  cvCortaFala = true;
+  const el = $("cvAudio");
+  if (el) { try { el.pause(); } catch (e) {} }
+  if (cvFalaRes) { const f = cvFalaRes; cvFalaRes = null; f("corte"); }
+  if (cvUrlFala) { URL.revokeObjectURL(cvUrlFala); cvUrlFala = null; }
+  cvPlaying = false;
+}
+
+function cvCancelarTurno() {
+  cvTurno++;
+  cvPararAudio();
+  if (cvAbort) { try { cvAbort.abort(); } catch (e) {} cvAbort = null; }
+  cvBusy = false;
+}
 
 function cvEco(txt) {
   // fala dita logo após a IA falar, com palavras em comum = eco do alto-falante
@@ -5282,9 +5348,11 @@ function cvFinalShow(text) {
   $("cvFinalText").textContent = text;
   $("cvFinal").style.display = "";
 }
-async function cvSpeak(text) {
+async function cvSpeak(text, gen, sinal) {
   // sintetiza FRASE A FRASE e toca em sequência; fale por cima = barge-in
-  cvBusy = true; cvPlaying = true;
+  // (corta a frase atual E o resto da fila — nada do turno velho sobrevive)
+  const vivo = () => gen === cvTurno && !cvCortaFala;
+  cvBusy = true; cvPlaying = true; cvCortaFala = false;
   cvUltimaFala = text; cvUltimaFalaAt = Date.now();
   cvStatus("🔊 sintetizando resposta…");
   try {
@@ -5292,33 +5360,52 @@ async function cvSpeak(text) {
     const el = $("cvAudio");
     el.style.display = "";
     for (const frase of frases) {
+      if (!vivo()) break;
       const body = { model: "tts-1", input: frase, response_format: "wav" };
       const voz = $("cvVoice")?.value;
       if (voz) body.voice = voz;
       const r = await fetch(APP_BASE + "/v1/audio/speech", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-API-Key": KEY },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body), signal: sinal
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
-      el.src = URL.createObjectURL(await r.blob());
+      const blob = await r.blob();
+      if (!vivo()) break;
+      if (cvUrlFala) URL.revokeObjectURL(cvUrlFala);
+      cvUrlFala = URL.createObjectURL(blob);
+      el.src = cvUrlFala;
       cvStatus("🔊 falando… fale por cima para interromper");
       await new Promise((res, rej) => {
-        el.onended = res;
+        cvFalaRes = res;
+        el.onended = () => res("fim");
         el.onpause = () => res("barge-in");
         el.onerror = () => rej(new Error("erro no player"));
         el.play().catch(err => rej(err));
       });
+      cvFalaRes = null;
+      el.onended = el.onpause = el.onerror = null;
+      if (!vivo()) break;
     }
-    cvDbg("tts fim");
+    cvDbg(vivo() ? "tts fim" : "tts cortado (barge-in)");
   } catch (e) {
-    cvDbg("✖ tts: " + e.message);
-    cvStatus("🔊 (não toquei: " + e.message + ")");
+    cvFalaRes = null;
+    if (e.name === "AbortError" || !vivo()) { cvDbg("tts cortado (barge-in)"); }
+    else {
+      cvDbg("✖ tts: " + e.message);
+      cvStatus("🔊 (não toquei: " + e.message + ")");
+    }
   }
-  cvPlaying = false; cvBusy = false;
+  if (gen === cvTurno) { cvPlaying = false; cvBusy = false; }
 }
 async function cvSend(text, _retry = true, quem = null) {
   if (!text.trim()) return;
+  // fala nova = turno novo: mata áudio, polling e fetch do turno anterior
+  cvCancelarTurno();
+  const gen = cvTurno;
+  const ac = new AbortController();
+  cvAbort = ac;
+  const vivo = () => gen === cvTurno;
   cvAdd("você", (quem ? `[${quem}] ` : "") + text);
   cvStatus("IA pensando…");
   cvBusy = true;
@@ -5326,17 +5413,20 @@ async function cvSend(text, _retry = true, quem = null) {
     if (!cvSid) {
       const r = await api("/api/chat/start", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ objective: text })
+        body: JSON.stringify({ objective: text }), signal: ac.signal
       });
       cvSid = r.session_id;
       cvDbg("start " + cvSid);
     } else {
       try {
+        // interrupt: se a IA ainda estiver pensando a fala anterior, o servidor
+        // descarta aquela resposta em vez de responder 409
         await api(`/api/chat/${cvSid}`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text })
+          body: JSON.stringify({ message: text, interrupt: true }), signal: ac.signal
         });
       } catch (e) {
+        if (e.name === "AbortError" || !vivo()) return;
         if (_retry && /encontrada|expirou/i.test(e.message)) {
           // sessão perdida: reabre com o mesmo texto — sem recursão (o fluxo
           // de fora continuaria e duplicaria a resposta)
@@ -5344,7 +5434,7 @@ async function cvSend(text, _retry = true, quem = null) {
           cvSid = null;
           const r = await api("/api/chat/start", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ objective: text })
+            body: JSON.stringify({ objective: text }), signal: ac.signal
           });
           cvSid = r.session_id;
           cvDbg("start " + cvSid);
@@ -5355,26 +5445,32 @@ async function cvSend(text, _retry = true, quem = null) {
     }
     for (let i = 0; i < 120; i++) {
       await new Promise(res => setTimeout(res, 1500));
+      if (!vivo()) return;
       if (!cvSid) { cvBusy = false; return; }
-      const d = await api(`/api/chat/${cvSid}`);
+      const d = await api(`/api/chat/${cvSid}`, { signal: ac.signal });
+      if (!vivo()) return;
       if (d.status === "thinking") continue;
       if (d.error) { cvStatus("✖ " + d.error); cvBusy = false; return; }
       if (d.status === "confirmed") {
         cvAdd("IA", "✅ " + d.text);
         cvFinalShow(d.text);
         cvStatus("✅ texto aprovado — a conversa continua (fale para ajustar)");
-        await cvSpeak(d.text);
+        await cvSpeak(d.text, gen, ac.signal);
         return;
       }
       cvAddIA(d.reply);
-      await cvSpeak(d.reply);
+      await cvSpeak(d.reply, gen, ac.signal);
+      if (!vivo()) return;
       cvStatus("🎧 ouvindo…");
       cvBusy = false;
       return;
     }
-    cvStatus("⏱ IA demorou demais — tente de novo");
-  } catch (e) { cvStatus("✖ " + e.message); }
-  cvBusy = false;
+    if (vivo()) cvStatus("⏱ IA demorou demais — tente de novo");
+  } catch (e) {
+    if (e.name === "AbortError" || !vivo()) return;   // turno velho: morre calado
+    cvStatus("✖ " + e.message);
+  }
+  if (vivo()) { cvBusy = false; cvAbort = null; }
 }
 async function cvTranscribeEEnvia(blob) {
   cvStatus(`transcrevendo ${blob.size}B…`);
@@ -5412,7 +5508,9 @@ $("cvMic").onclick = async () => {
         baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/",
         onSpeechStart: () => {
           cvSpeakingLogged = true;
-          if (cvPlaying) $("cvAudio").pause();   // barge-in
+          // barge-in: cala a IA na hora (frase atual + resto da fila). O turno
+          // velho só é descartado de fato quando o STT confirmar a fala nova.
+          if (cvPlaying) { cvPararAudio(); cvStatus("✋ interrompi — pode falar"); }
         },
         onSpeechEnd: async audio => {
           const blob = encodeWav(audio, 16000);
@@ -5428,6 +5526,7 @@ $("cvMic").onclick = async () => {
 };
 $("cvCutBtn").onclick = () => {};
 $("cvEnd").onclick = async () => {
+  cvCancelarTurno();   // encerrar = nada da resposta em voo pode tocar depois
   if (!cvSid) { if (cvVad) cvVad.pause(); cvSetMic(false); return; }
   try { await api(`/api/chat/${cvSid}`, { method: "DELETE" }); } catch (e) {}
   cvSid = null;

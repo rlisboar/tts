@@ -11,6 +11,7 @@ import os
 import re
 import secrets as _secrets
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -261,10 +262,10 @@ LANG_DISPLAY = {
 }
 
 # ---------------------------------------------------------------------------
-# Chaves de API (multi): protegem /api/* e /v1/* na rede. Loopback (127.0.0.1)
-# não exige chave. Aceita Authorization: Bearer, X-API-Key ou ?api_key=
-# (necessário p/ <audio src> na UI). Persistidas em .apikeys.json; migra de
-# .apikey / TTS_ROD_API_KEY. Gestão na UI (Configurações → Acesso).
+# Chaves de API (multi): protegem /api/* e /v1/* na rede. Loopback e o próprio
+# Mac (IP da LAN como origem) não exigem chave. Aceita Authorization: Bearer,
+# X-API-Key ou ?api_key= (necessário p/ <audio src> na UI). Persistidas em
+# .apikeys.json; migra de .apikey / TTS_ROD_API_KEY. Gestão na UI (Acesso).
 # ---------------------------------------------------------------------------
 _ENV_API_KEY = (os.environ.get("TTS_ROD_API_KEY") or "").strip()
 _apikeys_lock = threading.Lock()
@@ -402,13 +403,90 @@ def _extract_request_key(request) -> str:
             or "").strip()
 
 
+def _secrets_iguais(a: str, b: str) -> bool:
+    """compare_digest sem estourar se os tamanhos diferem."""
+    if not a or not b:
+        return False
+    try:
+        return _secrets.compare_digest(a, b)
+    except (TypeError, ValueError):
+        return False
+
+
+_own_ips_lock = threading.Lock()
+_own_ips_cache: tuple[float, frozenset] = (0.0, frozenset())
+
+
+def _peer_host(request) -> str:
+    """IP do cliente TCP (sem o prefixo IPv4-mapeado em IPv6)."""
+    host = (request.client.host if request.client else "") or ""
+    if host.startswith("::ffff:"):
+        host = host[7:]
+    return host
+
+
+def _own_ips() -> set[str]:
+    """IPs deste Mac (loopback + interfaces). Cache curto: Wi-Fi muda."""
+    global _own_ips_cache
+    now = time.monotonic()
+    with _own_ips_lock:
+        ts, cached = _own_ips_cache
+        if cached and (now - ts) < 15:
+            return set(cached)
+    ips = {"127.0.0.1", "::1"}
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            ip = info[4][0]
+            if ip.startswith("::ffff:"):
+                ip = ip[7:]
+            if ip and ip not in ("0.0.0.0", "255.255.255.255", "::"):
+                ips.add(ip)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.2)
+        s.connect(("1.1.1.1", 80))
+        ips.add(s.getsockname()[0])
+        s.close()
+    except Exception:  # noqa: BLE001
+        pass
+    frozen = frozenset(ips)
+    with _own_ips_lock:
+        _own_ips_cache = (now, frozen)
+    return ips
+
+
+def _lan_urls() -> list[str]:
+    """URLs IPv4 da LAN p/ a UI mostrar 'abra isto no outro dispositivo'."""
+    urls = []
+    for ip in sorted(_own_ips()):
+        if ip in ("127.0.0.1", "::1") or ":" in ip:
+            continue
+        if ip.startswith("169.254."):
+            continue
+        urls.append(f"http://{ip}:7860")
+    return urls
+
+
+def _is_local(request) -> bool:
+    """Loopback OU este próprio Mac abrindo pelo IP/hostname da LAN.
+
+    Outro dispositivo na rede (IP diferente) NÃO é local — exige chave.
+    """
+    host = _peer_host(request)
+    if host in ("127.0.0.1", "::1", "localhost"):
+        return True
+    return bool(host) and host in _own_ips()
+
+
 def _key_is_valid(provided: str) -> bool:
     if not provided:
         return False
-    if _ENV_API_KEY and _secrets.compare_digest(provided, _ENV_API_KEY):
+    if _ENV_API_KEY and _secrets_iguais(provided, _ENV_API_KEY):
         return True
     with _apikeys_lock:
-        return any(_secrets.compare_digest(provided, k.get("secret") or "")
+        return any(_secrets_iguais(provided, k.get("secret") or "")
                    for k in (_apikeys.get("keys") or []))
 
 
@@ -439,7 +517,20 @@ _load_apikeys()
 # compat: scripts antigos / mic-router que leem API_KEY no módulo
 API_KEY = _primary_api_key() or _ENV_API_KEY or None
 
-FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+def _ffmpeg_bin() -> str:
+    """ffmpeg do sistema ou, ausente, o binário estático do imageio-ffmpeg
+    (já é dependência do projeto) — Macs sem ffmpeg no PATH ficam cobertos."""
+    ff = shutil.which("ffmpeg")
+    if ff:
+        return ff
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001 — mantém fallback histórico
+        return "/opt/homebrew/bin/ffmpeg"
+
+
+FFMPEG = _ffmpeg_bin()
 
 app = FastAPI(title="TTS-STUDIO")
 app.add_middleware(
@@ -452,8 +543,8 @@ app.add_middleware(
 
 @app.middleware("http")
 async def _exige_chave(request, call_next):
-    # loopback = processo no próprio Mac; chave só para a rede
-    local = request.client and request.client.host in ("127.0.0.1", "::1")
+    # loopback + este Mac pelo IP da LAN dispensam chave; outros dispositivos não
+    local = _is_local(request)
     protegido = request.url.path.startswith(("/api/", "/v1/"))
     # docs/openapi revelam o mapa completo da API: abertos no Mac por conveniência,
     # mas exigem chave quando o acesso vem pela internet (proxy)
@@ -464,7 +555,11 @@ async def _exige_chave(request, call_next):
         ok = local or _key_is_valid(_extract_request_key(request))
         if not ok:
             from fastapi.responses import JSONResponse
-            return JSONResponse({"detail": "Não autorizado"}, status_code=401)
+            return JSONResponse(
+                {"detail": "Não autorizado",
+                 "hint": "Cole a chave da API. No Mac do servidor: "
+                         "Configurações → Acesso → Revelar (ou o terminal do ./run.sh)."},
+                status_code=401)
     return await call_next(request)
 
 
@@ -797,6 +892,7 @@ def status():
     st["api_auth_enabled"] = _auth_enabled()
     with _apikeys_lock:
         st["api_keys_count"] = len(_apikeys.get("keys") or [])
+    st["lan_urls"] = _lan_urls()
     return st
 
 
@@ -806,9 +902,12 @@ def status():
 
 @app.get("/api/apikeys")
 def list_apikeys(request: Request, reveal: bool = False):
-    """Lista chaves. `reveal=1` devolve o secret completo (só localhost)."""
-    local = request.client and request.client.host in ("127.0.0.1", "::1")
-    do_reveal = bool(reveal) and bool(local)
+    """Lista chaves. `reveal=1` devolve o secret se for o Mac ou se a
+    requisição já autenticou com uma chave válida."""
+    local = _is_local(request)
+    tem_chave = _key_is_valid(_extract_request_key(request))
+    can_reveal = bool(local) or tem_chave
+    do_reveal = bool(reveal) and can_reveal
     with _apikeys_lock:
         rows = [_public_key_row(k, reveal=do_reveal) for k in (_apikeys.get("keys") or [])]
         enabled = bool(_apikeys.get("enabled", True))
@@ -830,7 +929,9 @@ def list_apikeys(request: Request, reveal: bool = False):
         "auth_active": _auth_enabled(),
         "keys": rows,
         "env_key": env_row,
-        "can_reveal": bool(local),
+        "can_reveal": can_reveal,
+        "local": bool(local),
+        "lan_urls": _lan_urls(),
     }
 
 
@@ -1126,17 +1227,19 @@ def _chat_purge(now: float) -> None:
         _chat_sessions.pop(sid, None)
 
 
-def _chat_worker(sid: str) -> None:
+def _chat_worker(sid: str, gen: int = 0) -> None:
     """Chama o LLM em background e atualiza a sessão (status thinking → reply).
     Com teto hard de 150s: provedor pendurado não deixa a sessão em 'thinking'
-    para sempre."""
+    para sempre.
+    `gen` é a geração do turno: se o humano interrompeu (barge-in) e mandou fala
+    nova, a sessão já está em outra geração e este resultado é jogado fora."""
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
     def _rodar() -> None:
         try:
             with _chat_lock:
                 s = _chat_sessions.get(sid)
-                if not s:
+                if not s or s.get("gen", 0) != gen:
                     return
                 hist = s["messages"][:]
                 if len(hist) > CHAT_MAX_MSGS + 1:
@@ -1146,8 +1249,8 @@ def _chat_worker(sid: str) -> None:
             parsed = _chat_parse(reply)
             with _chat_lock:
                 s = _chat_sessions.get(sid)
-                if not s:
-                    return
+                if not s or s.get("gen", 0) != gen:
+                    return   # interrompido: resposta velha não entra na sessão
                 if parsed.get("final") and parsed.get("text"):
                     s["status"], s["text"] = "confirmed", str(parsed["text"])
                     s["reply"] = s["text"]
@@ -1160,7 +1263,7 @@ def _chat_worker(sid: str) -> None:
         except Exception as e:  # noqa: BLE001 — erro vai pra sessão, não derruba o server
             with _chat_lock:
                 s = _chat_sessions.get(sid)
-                if s:
+                if s and s.get("gen", 0) == gen:
                     s["error"] = str(e)[:200]
                     s["thinking"] = False
 
@@ -1169,7 +1272,7 @@ def _chat_worker(sid: str) -> None:
     except concurrent.futures.TimeoutError:
         with _chat_lock:
             s = _chat_sessions.get(sid)
-            if s and s.get("thinking"):
+            if s and s.get("gen", 0) == gen and s.get("thinking"):
                 s["error"] = "Provedor de IA demorou demais (150s) — tente de novo"
                 s["thinking"] = False
     finally:
@@ -1193,8 +1296,8 @@ def chat_start(payload: dict):
         _chat_sessions[sid] = {"objective": objetivo, "context": contexto,
                                "messages": msgs, "status": "chatting", "text": "",
                                "reply": "", "thinking": True, "error": "", "last_text": "",
-                               "created": now, "updated": now}
-    threading.Thread(target=_chat_worker, args=(sid,), daemon=True).start()
+                               "gen": 0, "created": now, "updated": now}
+    threading.Thread(target=_chat_worker, args=(sid, 0), daemon=True).start()
     return {"session_id": sid, "status": "thinking"}
 
 
@@ -1206,16 +1309,29 @@ def chat_message(sid: str, payload: dict):
     msg = str((payload or {}).get("message") or "").strip()
     if not msg:
         raise HTTPException(400, "Campo 'message' obrigatório")
+    interromper = bool((payload or {}).get("interrupt"))
     with _chat_lock:
-        if s.get("thinking"):
+        if s.get("thinking") and not interromper:
             raise HTTPException(409, "IA ainda processando a fala anterior")
-        s["messages"].append({"role": "user", "content": msg})
+        interrompido = bool(s.get("thinking"))
+        if interrompido:
+            # barge-in: a resposta em voo é descartada (o worker vê a geração
+            # nova e não escreve nada). A fala anterior ficou sem resposta, então
+            # junta com a nova pra não mandar dois 'user' seguidos ao provedor.
+            if s["messages"] and s["messages"][-1]["role"] == "user":
+                s["messages"][-1]["content"] += "\n" + msg
+            else:
+                s["messages"].append({"role": "user", "content": msg})
+        else:
+            s["messages"].append({"role": "user", "content": msg})
+        s["gen"] = s.get("gen", 0) + 1
+        gen = s["gen"]
         s["status"], s["text"] = "chatting", ""
         s["reply"], s["error"] = "", ""
         s["thinking"] = True
         s["updated"] = time.time()
-    threading.Thread(target=_chat_worker, args=(sid,), daemon=True).start()
-    return {"ok": True, "status": "thinking"}
+    threading.Thread(target=_chat_worker, args=(sid, gen), daemon=True).start()
+    return {"ok": True, "status": "thinking", "interrupted": interrompido}
 
 
 @app.get("/api/chat/{sid}")
@@ -3637,7 +3753,7 @@ def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
         filtro = ("highpass=f=80,afftdn=nr=12,"
                   "silenceremove=start_periods=1:start_threshold=-45dB,"
                   "areverse,silenceremove=start_periods=1:start_threshold=-45dB,areverse")
-        p = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(raw),
+        p = subprocess.run([FFMPEG, "-y", "-v", "error", "-i", str(raw),
                             "-af", filtro, "-ar", "16000", "-ac", "1", str(wav)],
                            capture_output=True, timeout=120, text=True)
         stderr = (p.stderr or "").strip()
