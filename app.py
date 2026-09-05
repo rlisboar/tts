@@ -1118,7 +1118,12 @@ CHAT_SYSTEM = (
     "{\"final\": false, \"reply\": \"<sua mensagem conversacional>\"}. "
     "Confirmação explícita → APENAS com JSON: "
     "{\"final\": true, \"text\": \"<texto aprovado, pronto p/ fala>\"}. "
-    "O texto final deve conter só o que será falado — sem comentários sobre a conversa."
+    "O texto final deve conter só o que será falado — sem comentários sobre a conversa. "
+    "DEPOIS DE ENTREGAR a conversa continua: pedido ou pergunta NOVA começa um "
+    "RASCUNHO NOVO — nunca reenvie um texto já entregue, a não ser que peçam "
+    "exatamente o mesmo. Se a fala misturar confirmação com pedido novo (ex.: "
+    "'agora envia, e pergunta por que não conectou antes'), o pedido novo é o "
+    "próximo rascunho: proponha ele e pergunte se está aprovado."
 )
 
 
@@ -1255,6 +1260,15 @@ def _chat_worker(sid: str, gen: int = 0) -> None:
                     s["status"], s["text"] = "confirmed", str(parsed["text"])
                     s["reply"] = s["text"]
                     s["last_text"] = s["text"]   # último texto aprovado (persiste entre rodadas)
+                    # a ENTREGA também é turno do assistente. Sem isto o histórico
+                    # ficava com dois 'user' seguidos e sem registro do que foi
+                    # entregue: na rodada seguinte o único rascunho visível era o
+                    # antigo e o modelo reconfirmava o MESMO texto.
+                    s["messages"].append({
+                        "role": "assistant",
+                        "content": json.dumps({"final": True, "text": s["text"]},
+                                              ensure_ascii=False),
+                    })
                 else:
                     s["reply"] = str(parsed.get("reply") or "")
                     s["messages"].append({"role": "assistant", "content": s["reply"]})

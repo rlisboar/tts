@@ -365,6 +365,54 @@ def test_chat_fluxo_confirma(client, auth, monkeypatch):
     assert client.delete(f"/api/chat/{sid}", headers=auth).status_code == 200
 
 
+def test_chat_entrega_entra_no_historico(client, auth, monkeypatch):
+    """O texto entregue (final=true) precisa virar turno do assistente. Sem isso
+    o histórico ficava com dois 'user' seguidos e sem registro da entrega, e na
+    rodada seguinte o modelo reconfirmava o MESMO texto em vez de atender o
+    pedido novo."""
+    import time as _t
+    vistos = []
+    respostas = iter([
+        '{"final": false, "reply": "Rascunho: ... Pode ser?"}',
+        '{"final": true, "text": "Verificando a saude do Cluster."}',
+        '{"final": false, "reply": "Rascunho novo: ... Pode ser?"}',
+    ])
+
+    def _llm(msgs):
+        vistos.append([m["role"] for m in msgs if m["role"] != "system"])
+        return next(respostas)
+
+    monkeypatch.setattr(app, "_chat_llm", _llm)
+
+    def _espera(sid):
+        for _ in range(60):
+            d = client.get(f"/api/chat/{sid}", headers=auth).json()
+            if d["status"] != "thinking":
+                return d
+            _t.sleep(0.05)
+        raise AssertionError("worker não respondeu")
+
+    sid = client.post("/api/chat/start", headers=auth,
+                      json={"objective": "Verifica a saude do Cluster."}).json()["session_id"]
+    _espera(sid)
+    client.post(f"/api/chat/{sid}", headers=auth, json={"message": "Sim."})
+    d = _espera(sid)
+    assert d["status"] == "confirmed"
+    # a entrega está no histórico, com o texto entregue
+    entregas = [m for m in d["messages"]
+                if m["role"] == "assistant" and "Verificando a saude" in m["content"]]
+    assert len(entregas) == 1
+
+    client.post(f"/api/chat/{sid}", headers=auth,
+                json={"message": "Agora envia. Por que você não conectou antes?"})
+    d = _espera(sid)
+    papeis = vistos[-1]
+    assert all(a != b for a, b in zip(papeis, papeis[1:])), papeis
+    assert papeis[-2] == "assistant"          # a entrega vem antes da fala nova
+    assert d["status"] == "chatting"          # pedido novo abre rascunho novo
+    client.delete(f"/api/chat/{sid}", headers=auth)
+
+
 def test_speech_queue_bypass(client, auth, monkeypatch, tmp_path):
     """queue=false tira a fala da fila do servidor (a Conversa faz o pipeline no
     navegador); sem a flag o contrato antigo continua usando a fila."""
