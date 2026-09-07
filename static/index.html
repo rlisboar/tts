@@ -2119,7 +2119,7 @@
             <button id="discardBtn" class="ghost">Descartar</button>
           </div>
           <p class="hint">Ambiente silencioso. Transcrição <b>idêntica ao falado</b>. Amostra curta (≈10–20s) clona melhor.</p>
-          <div class="micfx-slot"></div>
+          <button type="button" class="ghost small" data-goto-audio>🎙 Filtros do microfone e anti-ruído</button>
         </div>
         <div class="card col-scroll">
           <div class="card-head">
@@ -2219,7 +2219,7 @@
             <div id="tvOut"><div class="empty">Aperte <b>Falar</b> e fale — a transcrição aparece aqui.</div></div>
           </div>
           <div class="tv-right">
-            <div class="micfx-slot"></div>
+            <button type="button" class="ghost small" data-goto-audio>🎙 Ajustes de microfone e anti-ruído</button>
             <p class="hint">Contínuo = simultâneo. Ajuste o trecho p/ latência × contexto.</p>
           </div>
         </div>
@@ -2285,7 +2285,7 @@
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
           </div>
           <p class="hint" id="cvStatus" style="margin-top:6px"></p>
-          <div class="micfx-slot"></div>
+          <button type="button" class="ghost small" data-goto-audio>🎙 Filtros do microfone e anti-ruído</button>
           <details style="margin-top:10px">
             <summary class="hint" style="cursor:pointer">Instruções da IA (preprompt)</summary>
             <textarea id="cvSystem" style="width:100%; min-height:70px; font-size:12px; margin-top:6px; font-family:var(--mono)" placeholder="instruções da IA…"></textarea>
@@ -2466,6 +2466,56 @@
           <code>BlackHole 2ch</code> (<code>brew install blackhole-2ch</code>) e escolha-o
           acima em <b>Saída de som</b>.</p>
       </section>
+<section class="cfg-sec" id="micFxPanel">
+        <h3 class="cfg-sec-h">Microfone / filtros</h3>
+        <p class="hint" id="micFxInfo">Abra o monitor para ver nível, espectro e piso de ruído.</p>
+        <div class="sliders">
+          <label>Ganho do mic <output id="micGainOut">1.0</output>
+            <input type="range" id="micGain" min="0" max="3" step="0.1" value="1"></label>
+          <label>Passa-alta · corta grave/zumbido <output id="micHpOut">90 Hz</output>
+            <input type="range" id="micHp" min="0" max="300" step="10" value="90"></label>
+          <label>Sensibilidade · ignora ruído <output id="micThreshOut">0.015</output>
+            <input type="range" id="micThresh" min="0.005" max="0.08" step="0.001" value="0.015"></label>
+          <label>Pausa = fim de frase <output id="micSilenceOut">700 ms</output>
+            <input type="range" id="micSilence" min="300" max="2000" step="50" value="700"></label>
+          <label>Duração mínima da fala <output id="micMinUtterOut">350 ms</output>
+            <input type="range" id="micMinUtter" min="100" max="1500" step="50" value="350"></label>
+          <label>Trecho do contínuo (latência × contexto) <output id="micContMaxOut">4.5 s</output>
+            <input type="range" id="micContMax" min="1.5" max="8" step="0.5" value="4.5"></label>
+        </div>
+        <label class="check" style="margin-top:10px"><input type="checkbox" id="micNs"> supressão de ruído (navegador)</label>
+        <div class="mic-meter-wrap" style="margin-top:10px">
+          <div class="hint">nível do mic (marca laranja = limiar)</div>
+          <div id="micMeter">
+            <div id="micMeterBar"></div>
+            <div id="micMeterMark"></div>
+          </div>
+        </div>
+        <canvas id="micSpectrum" width="560" height="96"
+                style="width:100%;height:96px;display:block;margin-top:8px;background:var(--sunken);border:1px solid var(--line);border-radius:8px"></canvas>
+        <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
+          <button type="button" id="micFxMonitor" class="small">🎧 Monitorar 12 s</button>
+          <button type="button" id="micFxCalibrar" class="ghost small">Sugerir sensibilidade</button>
+          <span id="micFxRead" class="hint"></span>
+        </div>
+        <p class="hint" style="margin-top:6px">Espectro ao vivo: a marca vertical é o passa-alta — o que fica
+          à esquerda dela é o que ele corta. <b>Piso de ruído</b> é o nível com você calado; a sensibilidade
+          deve ficar ~4× acima dele. Se aparecer "amostras estouradas", baixe o ganho. Estes ajustes valem
+          para o microfone de todas as telas (voz, tradutor, conversa, transcrição, biometria).</p>
+        <div class="cfg-sec-h">Anti-ruído da transcrição</div>
+        <div class="sliders">
+          <label>Mín. de palavras <output id="sttWordsOut">1</output>
+            <input type="range" id="sttWords" min="0" max="6" step="1" value="1"></label>
+          <label>Mín. de caracteres <output id="sttCharsOut">2</output>
+            <input type="range" id="sttChars" min="0" max="20" step="1" value="2"></label>
+          <label>Máx. "sem fala" <output id="sttNoSpeechOut">0.60</output>
+            <input type="range" id="sttNoSpeech" min="0" max="1" step="0.05" value="0.6"></label>
+          <label>Mín. confiança <output id="sttLogprobOut">-1.0</output>
+            <input type="range" id="sttLogprob" min="-5" max="0" step="0.1" value="-1"></label>
+          <label>Máx. repetição <output id="sttCompOut">2.4</output>
+            <input type="range" id="sttComp" min="1" max="10" step="0.1" value="2.4"></label>
+        </div>
+      </section>
             </div>
             <div class="settings-pane" data-spane="acesso">
 <section class="cfg-sec">
@@ -2600,7 +2650,7 @@
         <p class="hint" id="spStatus" style="margin-top:4px"></p>
         <p class="hint" style="margin-top:2px">Cadastre <b>3–5 amostras</b> (cliques) p/ o perfil ficar estável — falando em velocidades/distâncias diferentes.</p>
         <div id="spProfiles" class="hint" style="margin-top:4px"></div>
-        <div class="micfx-slot"></div>
+        <button type="button" class="ghost small" data-goto-audio>🎙 Filtros do microfone e anti-ruído</button>
         <div class="divider"></div>
         <label class="check"><input type="checkbox" id="freeLocalOnRemote"> Liberar RAM: descarregar local quando usar remoto</label>
         <label class="cfg-label">Descarregar por ociosidade (min)
@@ -2619,50 +2669,6 @@
   </main>
   </div><!-- /app-top -->
 </div>
-
-<!-- Painel de microfone: existe UM só (ids únicos, listeners preservados) e é
-     realocado para o .micfx-slot da tela ativa — toda tela que expõe microfone
-     mostra os mesmos ajustes. Ver placeMicPanel(). -->
-<div id="micFxDock" hidden></div>
-<section class="cfg-sec" id="micFxPanel" style="display:none">
-  <div class="cfg-sec-h">Microfone / filtros</div>
-  <div class="sliders">
-    <label>Ganho do mic <output id="micGainOut">1.0</output>
-      <input type="range" id="micGain" min="0" max="3" step="0.1" value="1"></label>
-    <label>Passa-alta · corta grave/zumbido <output id="micHpOut">90 Hz</output>
-      <input type="range" id="micHp" min="0" max="300" step="10" value="90"></label>
-    <label>Sensibilidade · ignora ruído <output id="micThreshOut">0.015</output>
-      <input type="range" id="micThresh" min="0.005" max="0.08" step="0.001" value="0.015"></label>
-    <label>Pausa = fim de frase <output id="micSilenceOut">700 ms</output>
-      <input type="range" id="micSilence" min="300" max="2000" step="50" value="700"></label>
-    <label>Duração mínima da fala <output id="micMinUtterOut">350 ms</output>
-      <input type="range" id="micMinUtter" min="100" max="1500" step="50" value="350"></label>
-    <label>Trecho do contínuo (latência × contexto) <output id="micContMaxOut">4.5 s</output>
-      <input type="range" id="micContMax" min="1.5" max="8" step="0.5" value="4.5"></label>
-  </div>
-  <label class="check" style="margin-top:10px"><input type="checkbox" id="micNs"> supressão de ruído (navegador)</label>
-  <div class="mic-meter-wrap">
-    <div class="hint">nível do mic (marca laranja = limiar)</div>
-    <div id="micMeter">
-      <div id="micMeterBar"></div>
-      <div id="micMeterMark"></div>
-    </div>
-  </div>
-  <div class="cfg-sec-h">Anti-ruído da transcrição</div>
-  <div class="sliders">
-    <label>Mín. de palavras <output id="sttWordsOut">1</output>
-      <input type="range" id="sttWords" min="0" max="6" step="1" value="1"></label>
-    <label>Mín. de caracteres <output id="sttCharsOut">2</output>
-      <input type="range" id="sttChars" min="0" max="20" step="1" value="2"></label>
-    <label>Máx. "sem fala" <output id="sttNoSpeechOut">0.60</output>
-      <input type="range" id="sttNoSpeech" min="0" max="1" step="0.05" value="0.6"></label>
-    <label>Mín. confiança <output id="sttLogprobOut">-1.0</output>
-      <input type="range" id="sttLogprob" min="-5" max="0" step="0.1" value="-1"></label>
-    <label>Máx. repetição <output id="sttCompOut">2.4</output>
-      <input type="range" id="sttComp" min="1" max="10" step="0.1" value="2.4"></label>
-  </div>
-  <p class="hint" style="margin-top:0">Vale para o microfone desta tela e para as demais com mic.</p>
-</section>
 
 <div id="toast" role="status" aria-live="polite"></div>
 
@@ -2791,22 +2797,7 @@ function showView(id, opts) {
     const tab = document.querySelector(`.settings-tabs .stab[data-stab="${opts.tab}"]`);
     if (tab) tab.click();
   }
-  placeMicPanel(ok);
   if (ok === "tradutor" && typeof warmTranslator === "function") warmTranslator();
-}
-
-// O painel de microfone é um nó só (ids únicos, listeners preservados): vai para o
-// .micfx-slot da tela ativa — Vozes, Tradutor, Conversa, Config/biometria — e volta
-// para o dock oculto nas telas sem microfone. appendChild MOVE o nó, então valores
-// e estado dos controles não se perdem ao trocar de tela.
-function placeMicPanel(viewId) {
-  const panel = $("micFxPanel"), dock = $("micFxDock");
-  if (!panel || !dock) return;
-  const slot = document.querySelector(`#view-${viewId} .micfx-slot`);
-  const alvo = slot || dock;
-  if (panel.parentElement !== alvo) alvo.appendChild(panel);
-  panel.style.display = slot ? "" : "none";
-  if (slot) updateMicMark();
 }
 document.querySelectorAll(".nav-item").forEach(b => b.onclick = () => showView(b.dataset.view));
 // restaura última tela no fim do carregamento (warmTranslator já existe)
@@ -4045,8 +4036,7 @@ async function openProcessedMic() {
 }
 
 function closeProcessedMic() {
-  stopMeter();
-  meterSrc = null;
+  if (meterSrc === micGraph) { meterSrc = null; stopMeter(); }   // monitor noutra captura segue vivo
   if (!micGraph) return;
   try { micGraph.proc.onaudioprocess = null; micGraph.proc.disconnect(); micGraph.sink.disconnect(); } catch {}
   micGraph.raw.getTracks().forEach(t => t.stop());
@@ -4087,6 +4077,8 @@ function startMeter() {
     const bar = $("micMeterBar");
     if (bar) { bar.style.width = Math.min(100, r / 0.15 * 100) + "%";
                bar.style.background = r > VAD.thresh ? "var(--ok)" : "var(--faint)"; }
+    micMedir(meterSrc.buf, r);
+    desenhaEspectro(meterSrc.an);
     meterRAF = requestAnimationFrame(loop);
   };
   loop();
@@ -4099,6 +4091,87 @@ function stopMeter() {
 function updateMicMark() {
   const m = $("micMeterMark"); if (m) m.style.left = Math.min(100, micFx.thresh / 0.15 * 100) + "%";
 }
+
+/* ───────── Bancada do microfone (Configurações → Áudio) ─────────
+   Medição ao vivo de nível, espectro, pico/estouro e piso de ruído, para ajustar
+   passa-alta e sensibilidade com número na tela em vez de achismo. O gráfico e as
+   leituras se alimentam de QUALQUER captura aberta — a do próprio monitor, ou a de
+   uma gravação/tradução em curso noutro lugar. */
+let micMed = { rms: 0, pico: 0, clip: 0, piso: Infinity, freq: null };
+let micMonitor = null;
+const db = v => (v > 0 ? (20 * Math.log10(v)).toFixed(1) : "-∞");
+function micTaxa() { return (micGraph && micGraph.sr) || (micMonitor && micMonitor.sr) || 48000; }
+
+function micMedir(buf, r) {
+  micMed.rms = r;
+  let pk = 0;
+  for (const v of buf) { const a = v < 0 ? -v : v; if (a > pk) pk = a; if (a >= 0.98) micMed.clip++; }
+  micMed.pico = Math.max(micMed.pico, pk);
+  if (pk < 0.02) micMed.piso = Math.min(micMed.piso, r);   // janela quase muda = só o ruído da sala
+  const out = $("micFxRead");
+  if (out) out.textContent = `RMS ${db(r)} dB · pico ${db(micMed.pico)} dB · piso ${db(micMed.piso)} dB`
+    + (micMed.clip ? ` · ⚠ ${micMed.clip} amostras estouradas` : "");
+}
+
+function desenhaEspectro(an) {
+  const cv = $("micSpectrum"); if (!cv) return;
+  const ctx = cv.getContext("2d"); if (!ctx) return;
+  const n = an.frequencyBinCount, sr = micTaxa(), nyq = sr / 2, TOPE = 8000;
+  if (!micMed.freq || micMed.freq.length !== n) micMed.freq = new Uint8Array(n);
+  an.getByteFrequencyData(micMed.freq);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const barras = 96, larg = cv.width / barras;
+  for (let i = 0; i < barras; i++) {
+    const b0 = Math.floor((TOPE * i / barras) / nyq * n);
+    const b1 = Math.max(b0 + 1, Math.ceil((TOPE * (i + 1) / barras) / nyq * n));
+    let mx = 0;
+    for (let b = b0; b < b1 && b < n; b++) mx = Math.max(mx, micMed.freq[b]);
+    const h = mx / 255 * cv.height;
+    ctx.fillStyle = "rgba(120,200,160,.85)";
+    ctx.fillRect(i * larg, cv.height - h, Math.max(1, larg - 1), h);
+  }
+  if (micFx.hp > 0) {   // à esquerda da marca, é o que o passa-alta derruba
+    ctx.fillStyle = "rgba(230,150,60,.95)";
+    ctx.fillRect(micFx.hp / TOPE * cv.width, 0, 2, cv.height);
+  }
+}
+
+function atualizaInfoMic() {
+  const el = $("micFxInfo"); if (!el) return;
+  const sel = $("audioInDevice");
+  const dev = (sel && sel.value && sel.selectedIndex > 0) ? sel.options[sel.selectedIndex].text : "padrão do sistema";
+  el.textContent = `Entrada: ${dev} · ${micTaxa()} Hz · ` + (micMonitor ? "monitorando"
+    : micGraph ? "microfone aberto (uso em curso)" : "fechado — aperte Monitorar");
+}
+
+$("micFxMonitor").onclick = async () => {
+  const btn = $("micFxMonitor");
+  if (micMonitor) {
+    clearTimeout(micMonitor.timer); micMonitor.close(); micMonitor = null;
+  } else {
+    micMed = { rms: 0, pico: 0, clip: 0, piso: Infinity, freq: micMed.freq };
+    try {
+      micMonitor = await micFilteredStream({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false });
+    } catch (e) { toast("Microfone: " + e.message, 5000); return; }
+    micMonitor.timer = setTimeout(() => $("micFxMonitor").click(), 12000);
+  }
+  btn.textContent = micMonitor ? "■ Parar monitor" : "🎧 Monitorar 12 s";
+  atualizaInfoMic();
+};
+
+$("micFxCalibrar").onclick = () => {
+  if (!isFinite(micMed.piso)) { toast("Monitore primeiro e fique calado ~2 s", 5000); return; }
+  const alvo = Math.min(0.08, Math.max(0.005, micMed.piso * 4));
+  micFx.thresh = alvo; VAD.thresh = alvo;
+  const s = $("micThresh"); if (s) s.value = alvo;
+  const o = $("micThreshOut"); if (o) o.textContent = alvo.toFixed(3);
+  updateMicMark(); saveMicFx();
+  atualizaInfoMic();
+  toast(`Sensibilidade ${alvo.toFixed(3)} = piso ${micMed.piso.toFixed(4)} × 4`, 5000);
+};
+
+document.querySelectorAll("[data-goto-audio]").forEach(b => b.onclick = () => showView("config", { tab: "audio" }));
+atualizaInfoMic();
 
 /* ───────── Dispositivos de áudio: microfone (entrada) + saída de som ───────── */
 let micDeviceId = localStorage.getItem("micDeviceId") || "";
@@ -4124,7 +4197,10 @@ async function micFilteredStream(base) {
   }
   refreshDevices();
   const libera = () => raw.getTracks().forEach(t => t.stop());
-  if (!micFx.hp && micFx.gain === 1) return { stream: raw, close: libera };  // transparente
+  if (!micFx.hp && micFx.gain === 1) {   // transparente: sem cadeia, sem ganho de latência
+    const tr = raw.getAudioTracks()[0];
+    return { stream: raw, close: libera, sr: (tr && tr.getSettings().sampleRate) || 0 };
+  }
   const ctx = new AudioContext();
   const src = ctx.createMediaStreamSource(raw);
   let node = src;
@@ -4139,9 +4215,13 @@ async function micFilteredStream(base) {
   const dest = ctx.createMediaStreamDestination();
   gain.connect(an); an.connect(dest);
   meterSrc = { an, buf: new Float32Array(an.fftSize) };
+  const meuMedidor = meterSrc;
   startMeter();
-  return { stream: dest.stream,
-           close: () => { stopMeter(); meterSrc = null; try { ctx.close(); } catch {} libera(); } };
+  return { stream: dest.stream, sr: ctx.sampleRate,
+           // só derruba o medidor se ele ainda for desta captura: fechar um
+           // gravador enquanto o monitor está aberto congelaria o espectro
+           close: () => { if (meterSrc === meuMedidor) { stopMeter(); meterSrc = null; }
+                          try { ctx.close(); } catch {} libera(); } };
 }
 /* Gate de TTS: o cliente roteador de microfone publica o modo (via servidor de
    controle local) — "voz real" (mic) ou "voz do app" (TTS). Em "voz real" o TTS
