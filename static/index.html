@@ -2119,6 +2119,7 @@
             <button id="discardBtn" class="ghost">Descartar</button>
           </div>
           <p class="hint">Ambiente silencioso. Transcrição <b>idêntica ao falado</b>. Amostra curta (≈10–20s) clona melhor.</p>
+          <div class="micfx-slot"></div>
         </div>
         <div class="card col-scroll">
           <div class="card-head">
@@ -2218,42 +2219,7 @@
             <div id="tvOut"><div class="empty">Aperte <b>Falar</b> e fale — a transcrição aparece aqui.</div></div>
           </div>
           <div class="tv-right">
-            <div class="cfg-sec-h">Microfone / filtros</div>
-            <div class="sliders">
-              <label>Ganho do mic <output id="micGainOut">1.0</output>
-                <input type="range" id="micGain" min="0" max="3" step="0.1" value="1"></label>
-              <label>Passa-alta · corta grave/zumbido <output id="micHpOut">90 Hz</output>
-                <input type="range" id="micHp" min="0" max="300" step="10" value="90"></label>
-              <label>Sensibilidade · ignora ruído <output id="micThreshOut">0.015</output>
-                <input type="range" id="micThresh" min="0.005" max="0.08" step="0.001" value="0.015"></label>
-              <label>Pausa = fim de frase <output id="micSilenceOut">700 ms</output>
-                <input type="range" id="micSilence" min="300" max="2000" step="50" value="700"></label>
-              <label>Duração mínima da fala <output id="micMinUtterOut">350 ms</output>
-                <input type="range" id="micMinUtter" min="100" max="1500" step="50" value="350"></label>
-              <label>Trecho do contínuo (latência × contexto) <output id="micContMaxOut">4.5 s</output>
-                <input type="range" id="micContMax" min="1.5" max="8" step="0.5" value="4.5"></label>
-            </div>
-            <label class="check" style="margin-top:10px"><input type="checkbox" id="micNs"> supressão de ruído (navegador)</label>
-            <div class="mic-meter-wrap">
-              <div class="hint">nível do mic (marca laranja = limiar)</div>
-              <div id="micMeter">
-                <div id="micMeterBar"></div>
-                <div id="micMeterMark"></div>
-              </div>
-            </div>
-            <div class="cfg-sec-h">Anti-ruído da transcrição</div>
-            <div class="sliders">
-              <label>Mín. de palavras <output id="sttWordsOut">1</output>
-                <input type="range" id="sttWords" min="0" max="6" step="1" value="1"></label>
-              <label>Mín. de caracteres <output id="sttCharsOut">2</output>
-                <input type="range" id="sttChars" min="0" max="20" step="1" value="2"></label>
-              <label>Máx. "sem fala" <output id="sttNoSpeechOut">0.60</output>
-                <input type="range" id="sttNoSpeech" min="0" max="1" step="0.05" value="0.6"></label>
-              <label>Mín. confiança <output id="sttLogprobOut">-1.0</output>
-                <input type="range" id="sttLogprob" min="-5" max="0" step="0.1" value="-1"></label>
-              <label>Máx. repetição <output id="sttCompOut">2.4</output>
-                <input type="range" id="sttComp" min="1" max="10" step="0.1" value="2.4"></label>
-            </div>
+            <div class="micfx-slot"></div>
             <p class="hint">Contínuo = simultâneo. Ajuste o trecho p/ latência × contexto.</p>
           </div>
         </div>
@@ -2319,6 +2285,7 @@
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
           </div>
           <p class="hint" id="cvStatus" style="margin-top:6px"></p>
+          <div class="micfx-slot"></div>
           <details style="margin-top:10px">
             <summary class="hint" style="cursor:pointer">Instruções da IA (preprompt)</summary>
             <textarea id="cvSystem" style="width:100%; min-height:70px; font-size:12px; margin-top:6px; font-family:var(--mono)" placeholder="instruções da IA…"></textarea>
@@ -2633,6 +2600,7 @@
         <p class="hint" id="spStatus" style="margin-top:4px"></p>
         <p class="hint" style="margin-top:2px">Cadastre <b>3–5 amostras</b> (cliques) p/ o perfil ficar estável — falando em velocidades/distâncias diferentes.</p>
         <div id="spProfiles" class="hint" style="margin-top:4px"></div>
+        <div class="micfx-slot"></div>
         <div class="divider"></div>
         <label class="check"><input type="checkbox" id="freeLocalOnRemote"> Liberar RAM: descarregar local quando usar remoto</label>
         <label class="cfg-label">Descarregar por ociosidade (min)
@@ -2651,6 +2619,50 @@
   </main>
   </div><!-- /app-top -->
 </div>
+
+<!-- Painel de microfone: existe UM só (ids únicos, listeners preservados) e é
+     realocado para o .micfx-slot da tela ativa — toda tela que expõe microfone
+     mostra os mesmos ajustes. Ver placeMicPanel(). -->
+<div id="micFxDock" hidden></div>
+<section class="cfg-sec" id="micFxPanel" style="display:none">
+  <div class="cfg-sec-h">Microfone / filtros</div>
+  <div class="sliders">
+    <label>Ganho do mic <output id="micGainOut">1.0</output>
+      <input type="range" id="micGain" min="0" max="3" step="0.1" value="1"></label>
+    <label>Passa-alta · corta grave/zumbido <output id="micHpOut">90 Hz</output>
+      <input type="range" id="micHp" min="0" max="300" step="10" value="90"></label>
+    <label>Sensibilidade · ignora ruído <output id="micThreshOut">0.015</output>
+      <input type="range" id="micThresh" min="0.005" max="0.08" step="0.001" value="0.015"></label>
+    <label>Pausa = fim de frase <output id="micSilenceOut">700 ms</output>
+      <input type="range" id="micSilence" min="300" max="2000" step="50" value="700"></label>
+    <label>Duração mínima da fala <output id="micMinUtterOut">350 ms</output>
+      <input type="range" id="micMinUtter" min="100" max="1500" step="50" value="350"></label>
+    <label>Trecho do contínuo (latência × contexto) <output id="micContMaxOut">4.5 s</output>
+      <input type="range" id="micContMax" min="1.5" max="8" step="0.5" value="4.5"></label>
+  </div>
+  <label class="check" style="margin-top:10px"><input type="checkbox" id="micNs"> supressão de ruído (navegador)</label>
+  <div class="mic-meter-wrap">
+    <div class="hint">nível do mic (marca laranja = limiar)</div>
+    <div id="micMeter">
+      <div id="micMeterBar"></div>
+      <div id="micMeterMark"></div>
+    </div>
+  </div>
+  <div class="cfg-sec-h">Anti-ruído da transcrição</div>
+  <div class="sliders">
+    <label>Mín. de palavras <output id="sttWordsOut">1</output>
+      <input type="range" id="sttWords" min="0" max="6" step="1" value="1"></label>
+    <label>Mín. de caracteres <output id="sttCharsOut">2</output>
+      <input type="range" id="sttChars" min="0" max="20" step="1" value="2"></label>
+    <label>Máx. "sem fala" <output id="sttNoSpeechOut">0.60</output>
+      <input type="range" id="sttNoSpeech" min="0" max="1" step="0.05" value="0.6"></label>
+    <label>Mín. confiança <output id="sttLogprobOut">-1.0</output>
+      <input type="range" id="sttLogprob" min="-5" max="0" step="0.1" value="-1"></label>
+    <label>Máx. repetição <output id="sttCompOut">2.4</output>
+      <input type="range" id="sttComp" min="1" max="10" step="0.1" value="2.4"></label>
+  </div>
+  <p class="hint" style="margin-top:0">Vale para o microfone desta tela e para as demais com mic.</p>
+</section>
 
 <div id="toast" role="status" aria-live="polite"></div>
 
@@ -2779,7 +2791,22 @@ function showView(id, opts) {
     const tab = document.querySelector(`.settings-tabs .stab[data-stab="${opts.tab}"]`);
     if (tab) tab.click();
   }
+  placeMicPanel(ok);
   if (ok === "tradutor" && typeof warmTranslator === "function") warmTranslator();
+}
+
+// O painel de microfone é um nó só (ids únicos, listeners preservados): vai para o
+// .micfx-slot da tela ativa — Vozes, Tradutor, Conversa, Config/biometria — e volta
+// para o dock oculto nas telas sem microfone. appendChild MOVE o nó, então valores
+// e estado dos controles não se perdem ao trocar de tela.
+function placeMicPanel(viewId) {
+  const panel = $("micFxPanel"), dock = $("micFxDock");
+  if (!panel || !dock) return;
+  const slot = document.querySelector(`#view-${viewId} .micfx-slot`);
+  const alvo = slot || dock;
+  if (panel.parentElement !== alvo) alvo.appendChild(panel);
+  panel.style.display = slot ? "" : "none";
+  if (slot) updateMicMark();
 }
 document.querySelectorAll(".nav-item").forEach(b => b.onclick = () => showView(b.dataset.view));
 // restaura última tela no fim do carregamento (warmTranslator já existe)
@@ -3214,19 +3241,17 @@ async function blobToWav(blob) {
 
 $("recBtn").onclick = async () => {
   if (mediaRecorder && mediaRecorder.state === "recording") { mediaRecorder.stop(); return; }
-  let stream;
+  let cap;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: micAudioConstraints({ echoCancellation: false, noiseSuppression: false, autoGainControl: true })
-    });
+    cap = await micFilteredStream({ echoCancellation: false, noiseSuppression: micFx.ns, autoGainControl: true });
   } catch { toast("Permissão de microfone negada."); return; }
-  refreshDevices();   // já com permissão -> popula rótulos dos dispositivos
+  const stream = cap.stream;
 
   chunks = [];
   mediaRecorder = new MediaRecorder(stream);
   mediaRecorder.ondataavailable = e => chunks.push(e.data);
   mediaRecorder.onstop = async () => {
-    stream.getTracks().forEach(t => t.stop());
+    cap.close();
     clearInterval(timerH); $("timer").textContent = "";
     $("recBtn").textContent = "● Gravar"; $("recBtn").classList.remove("rec");
     try {
@@ -3964,7 +3989,9 @@ try { micFxSaved = JSON.parse(localStorage.getItem("micFx") || "{}") || {}; } ca
 const micFx = Object.assign({ gain: 1, hp: 90, thresh: 0.015, ns: false, silenceHold: 700, minUtter: 350, contMax: 4500 },
   micFxSaved);
 CONT_MAX_MS = micFx.contMax;
-let micGraph = null, meterRAF = null;
+let micGraph = null, meterRAF = null, meterSrc = null;
+// meterSrc = { an, buf } da captura de microfone em curso, contínua ou de
+// gravador — é o que alimenta o medidor do painel, em qualquer tela.
 VAD.thresh = micFx.thresh; VAD.silenceHoldMs = micFx.silenceHold; VAD.minUtterMs = micFx.minUtter;
 const saveMicFx = () => localStorage.setItem("micFx", JSON.stringify(micFx));
 
@@ -4012,12 +4039,14 @@ async function openProcessedMic() {
     micGraph.head += d.length;
     trimPcm(micGraph, micGraph.head - micGraph.sr * 40);   // teto de ~40s de buffer
   };
+  meterSrc = micGraph;
   startMeter();
   return micGraph;
 }
 
 function closeProcessedMic() {
   stopMeter();
+  meterSrc = null;
   if (!micGraph) return;
   try { micGraph.proc.onaudioprocess = null; micGraph.proc.disconnect(); micGraph.sink.disconnect(); } catch {}
   micGraph.raw.getTracks().forEach(t => t.stop());
@@ -4051,10 +4080,10 @@ function trimPcm(g, keepFrom) {
 
 function startMeter() {
   const loop = () => {
-    if (!micGraph) return;
-    micGraph.an.getFloatTimeDomainData(micGraph.buf);
-    let s = 0; for (const v of micGraph.buf) s += v * v;
-    const r = Math.sqrt(s / micGraph.buf.length);
+    if (!meterSrc) return;
+    meterSrc.an.getFloatTimeDomainData(meterSrc.buf);
+    let s = 0; for (const v of meterSrc.buf) s += v * v;
+    const r = Math.sqrt(s / meterSrc.buf.length);
     const bar = $("micMeterBar");
     if (bar) { bar.style.width = Math.min(100, r / 0.15 * 100) + "%";
                bar.style.background = r > VAD.thresh ? "var(--ok)" : "var(--faint)"; }
@@ -4076,6 +4105,43 @@ let micDeviceId = localStorage.getItem("micDeviceId") || "";
 let outDeviceId = localStorage.getItem("outDeviceId") || "";
 function micAudioConstraints(base) {
   return micDeviceId ? { ...base, deviceId: { exact: micDeviceId } } : base;
+}
+/* Microfone já filtrado (passa-alta + ganho do painel) para quem grava por
+   MediaRecorder. Antes só o Tradutor contínuo aplicava os filtros: na amostra de
+   voz, na transcrição e na biometria o painel era decorativo. Retorna o stream p/
+   o gravador e um close() que derruba também o microfone cru (parar o stream do
+   AudioContext NÃO libera o dispositivo). */
+async function micFilteredStream(base) {
+  let raw;
+  try {
+    raw = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints(base) });
+  } catch (e) {
+    if (micDeviceId && (e.name === "OverconstrainedError" || e.name === "NotFoundError")) {
+      micDeviceId = ""; localStorage.removeItem("micDeviceId");
+      toast("Microfone salvo não encontrado — usando o padrão do sistema");
+      raw = await navigator.mediaDevices.getUserMedia({ audio: base });
+    } else { throw e; }
+  }
+  refreshDevices();
+  const libera = () => raw.getTracks().forEach(t => t.stop());
+  if (!micFx.hp && micFx.gain === 1) return { stream: raw, close: libera };  // transparente
+  const ctx = new AudioContext();
+  const src = ctx.createMediaStreamSource(raw);
+  let node = src;
+  if (micFx.hp > 0) {
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass"; hp.frequency.value = micFx.hp; hp.Q.value = 0.707;
+    node.connect(hp); node = hp;
+  }
+  const gain = ctx.createGain(); gain.gain.value = micFx.gain;
+  node.connect(gain);
+  const an = ctx.createAnalyser(); an.fftSize = 1024;
+  const dest = ctx.createMediaStreamDestination();
+  gain.connect(an); an.connect(dest);
+  meterSrc = { an, buf: new Float32Array(an.fftSize) };
+  startMeter();
+  return { stream: dest.stream,
+           close: () => { stopMeter(); meterSrc = null; try { ctx.close(); } catch {} libera(); } };
 }
 /* Gate de TTS: o cliente roteador de microfone publica o modo (via servidor de
    controle local) — "voz real" (mic) ou "voz do app" (TTS). Em "voz real" o TTS
@@ -5206,8 +5272,10 @@ async function refreshSpProfiles() {
 }
 $("spThr")?.addEventListener("input", () => { $("spThrOut").textContent = (+$("spThr").value).toFixed(2); });
 async function spGravar(segundos, st) {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  const rec = new MediaRecorder(stream);
+  // mesma cadeia das demais telas: biometria cadastrada por outro caminho de áudio
+  // desalinha o limiar usado na escuta real
+  const cap = await micFilteredStream({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false });
+  const rec = new MediaRecorder(cap.stream);
   const pedacos = [];
   rec.ondataavailable = ev => ev.data.size && pedacos.push(ev.data);
   rec.start();
@@ -5218,7 +5286,7 @@ async function spGravar(segundos, st) {
     if (faltam > 0) st.textContent = `🔴 gravando… ${faltam}s`;
     else { clearInterval(t); rec.stop(); }
   }, 1000);
-  await new Promise(res => rec.onstop = () => { res(); stream.getTracks().forEach(tr => tr.stop()); });
+  await new Promise(res => rec.onstop = () => { res(); cap.close(); });
   return new Blob(pedacos, { type: rec.mimeType || "audio/webm" });
 }
 
@@ -5377,16 +5445,16 @@ $("shutdownBtn").onclick = async () => {
 let sttRec = null, sttChunks = [], sttStream = null, sttSegs = [];
 $("sttRecBtn").onclick = async () => {
   if (sttRec && sttRec.state === "recording") { sttRec.stop(); return; }
+  let cap;
   try {
-    sttStream = await navigator.mediaDevices.getUserMedia({
-      audio: micAudioConstraints({ echoCancellation: true, noiseSuppression: true, autoGainControl: true }) });
+    cap = await micFilteredStream({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: true });
   } catch { toast("Sem acesso ao microfone."); return; }
-  refreshDevices();
+  sttStream = cap.stream;
   sttChunks = [];
   sttRec = new MediaRecorder(sttStream);
   sttRec.ondataavailable = e => { if (e.data.size) sttChunks.push(e.data); };
   sttRec.onstop = async () => {
-    sttStream.getTracks().forEach(t => t.stop());
+    cap.close();
     $("sttRecBtn").textContent = "● Gravar"; $("sttRecBtn").classList.remove("rec");
     await sttTranscribe(new Blob(sttChunks, { type: sttRec.mimeType }));
   };
@@ -5698,6 +5766,8 @@ $("cvMic").onclick = async () => {
     if (!cvVad) {
       cvVad = await vad.MicVAD.new({
         baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/",
+        // o VAD abre o próprio microfone: ao menos as restrições são as do painel
+        audioConstraints: micAudioConstraints({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false }),
         // corte da fala da IA decidido aqui, frame a frame — não no
         // onSpeechStart (que dispara em qualquer ruído de um frame só)
         onFrameProcessed: probs => {
