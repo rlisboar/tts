@@ -3835,10 +3835,11 @@ async function pollPieces(job_id, pl, opts = {}) {
   const gap = opts.gap ?? 0.05;
   const poll = opts.poll ?? 150;
   const maxTries = opts.maxTries ?? Infinity;
-  let buscados = 0, tries = 0, j;
+  let buscados = 0, tries = 0, j, ocioso = 0;
   while (!pl.stopped && tries++ < maxTries) {
     j = await api(`/api/tts/jobs/${job_id}`);
     if (j.status === "error") throw new Error(j.error || "falha na geração");
+    const antes = buscados;
     if (buscados < j.pieces) {
       // Busca em lote, ordem preservada. Em série cada trecho custa um round-trip:
       // pelo proxy o fetch do trecho seguinte atrasava até ctx.currentTime passar
@@ -3868,7 +3869,10 @@ async function pollPieces(job_id, pl, opts = {}) {
     }
     if (j.status === "done") { refreshOutputs(); return j; }
     if (opts.onProgress) opts.onProgress(j, buscados);
-    await new Promise(r => setTimeout(r, poll));
+    // Backoff: um trecho leva ~2,4 s p/ nascer, então pollar a 150 ms não achava
+    // nada e só gastava o teto de requests. Continua rápido quando há novidade.
+    ocioso = (buscados === antes) ? ocioso + 1 : 0;
+    await new Promise(r => setTimeout(r, ocioso >= 3 ? Math.max(poll, 600) : poll));
   }
   return j;
 }

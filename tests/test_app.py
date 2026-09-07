@@ -44,13 +44,15 @@ def test_stt_ok_aceita_fala_real():
     assert ok, motivo
 
 
-def test_stt_ok_rejeita_curto_e_blacklist():
+def test_stt_ok_rejeita_curto_e_blacklist(monkeypatch):
+    monkeypatch.setitem(app._settings, "stt_anti_ruido", True)   # não depende do settings.json real
     assert not app._stt_ok(_r(), "a")[0]              # 1 char < stt_min_chars
     ok, motivo = app._stt_ok(_r(), "obrigado")
     assert not ok and motivo == "alucinação comum"
 
 
-def test_stt_ok_rejeita_metricas_ruins():
+def test_stt_ok_rejeita_metricas_ruins(monkeypatch):
+    monkeypatch.setitem(app._settings, "stt_anti_ruido", True)
     # confiança baixa e repetição derrubam sozinhas
     assert not app._stt_ok(_r(alp=-2.0), "uma frase qualquer aqui")[0]
     assert not app._stt_ok(_r(cr=4.0), "uma frase qualquer aqui")[0]
@@ -61,7 +63,8 @@ def test_stt_ok_rejeita_metricas_ruins():
     assert not app._stt_ok(_r(nsp=0.9, alp=-0.8), "uma frase qualquer aqui")[0]
 
 
-def test_stt_ok_motivo_quando_nao_ouviu_fala():
+def test_stt_ok_motivo_quando_nao_ouviu_fala(monkeypatch):
+    monkeypatch.setitem(app._settings, "stt_anti_ruido", True)
     # antes, texto vazio caía em "curto demais" e sugeria filtro de tamanho
     ok, motivo = app._stt_ok(_r(), "")
     assert not ok and motivo == "não ouviu fala"

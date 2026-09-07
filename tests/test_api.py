@@ -155,7 +155,7 @@ def test_settings_400_nao_deixa_ram_divergindo_do_disco(client):
     assert _json.loads(app.SETTINGS_PATH.read_text())["stt_beam"] == 4
 
 
-def test_settings_anti_ruido_persiste(client):
+def test_settings_anti_ruido_persiste(client, auth):
     """As duas chaves novas de filtro têm de sobreviver ao restart (RAM == disco)."""
     r = client.post("/api/settings", headers=auth_headers(client),
                     json={"stt_anti_ruido": False, "stt_denoise": False})
@@ -163,6 +163,38 @@ def test_settings_anti_ruido_persiste(client):
     assert r.json()["stt_anti_ruido"] is False and r.json()["stt_denoise"] is False
     disco = _json.loads(app.SETTINGS_PATH.read_text())
     assert disco["stt_anti_ruido"] is False and disco["stt_denoise"] is False
+    # devolve o ligado: settings.json é estado de produção, não fixture do teste
+    client.post("/api/settings", headers=auth,
+                json={"stt_anti_ruido": True, "stt_denoise": True})
+
+
+def test_rate_limit_isenta_loopback(client):
+    """O navegador no próprio Mac polla a API em sub-segundo por design; o teto de
+    120/min virava 429 interno (no log) e derrubava o polling do próprio job."""
+    c = TestClient(app.app, raise_server_exceptions=False, client=("127.0.0.1", 50000))
+    assert {c.get("/api/status").status_code for _ in range(140)} == {200}
+
+
+def test_rate_limit_comporta_o_polling_da_ui(client, auth):
+    # /api/tts/jobs/<id> é pollado a ~150 ms durante uma geração inteira, e começa
+    # com "/api/tts" — não pode ser contado como geração pesada
+    codigos = {client.get("/api/tts/jobs/limite-polling", headers=auth).status_code
+               for _ in range(300)}
+    assert 429 not in codigos
+
+
+def test_rate_limit_geracao_continua_pesada(client, auth):
+    # o POST /api/tts (gerar de fato) segue no teto baixo, mesmo com o polling liberado
+    assert app._rate_limit_for("/api/tts") == app._RATE_HEAVY
+    assert app._rate_limit_for("/api/tts/jobs/abc123") == app._RATE_POLL
+    assert app._rate_limit_for("/v1/audio/speech") == app._RATE_HEAVY
+    assert app._rate_limit_for("/api/settings") == app._RATE_DEFAULT
+
+
+def test_rate_limit_continua_valendo_para_o_resto(client, auth, monkeypatch):
+    monkeypatch.setattr(app, "_RATE_DEFAULT", 5)
+    codigos = [client.get("/api/tunnel/status", headers=auth).status_code for _ in range(12)]
+    assert 429 in codigos
 
 
 # ---------------------------------------------------------------------------
@@ -693,6 +725,7 @@ def test_stt_whisper_repo_setting(client, auth):
 
 def test_transcribe_filtra_alucinacao(client, auth, monkeypatch):
     # ruído transcrito como "E aí" (blacklist) → rejeitado, sem virar mensagem
+    monkeypatch.setitem(app._settings, "stt_anti_ruido", True)   # independe do settings.json real
     monkeypatch.setattr(app, "_vad_tem_fala", lambda p: True)
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
     monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:

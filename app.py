@@ -583,18 +583,37 @@ _rate_hits = defaultdict(deque)
 _RATE_WINDOW = 60.0
 _RATE_DEFAULT = int(os.environ.get("TTS_RATE_LIMIT", "120"))
 _RATE_HEAVY = int(os.environ.get("TTS_HEAVY_RATE_LIMIT", "20"))
-_RATE_HEAVY_PATHS = ("/api/tts", "/v1/audio/speech", "/api/transcribe",
+_RATE_HEAVY_PATHS = ("/v1/audio/speech", "/api/transcribe",
                      "/api/stt-partial", "/api/translate-speech", "/api/modify-speech",
                      "/api/voices/import")
+_RATE_HEAVY_EXATAS = ("/api/tts",)          # o POST que gera; consultar o job não é
+# Caminhos que a própria UI polla de propósito (andamento do job, chat, fila do
+# mic, status): 120/min derrubava o polling do próprio job numa geração longa e
+# aparecia como 429 no log, com o áudio morrendo no meio da frase. Vem ANTES do
+# pesado porque /api/tts/jobs/… começa com /api/tts e não é geração.
+_RATE_POLL_PATHS = ("/api/status", "/api/mic-route", "/api/tts/jobs/", "/api/chat/",
+                    "/api/outputs")
+_RATE_POLL = int(os.environ.get("TTS_POLL_RATE_LIMIT", "1200"))
 
 
 def _rate_limit_for(path: str) -> int:
-    return _RATE_HEAVY if path.startswith(_RATE_HEAVY_PATHS) else _RATE_DEFAULT
+    if path.startswith(_RATE_POLL_PATHS):
+        return _RATE_POLL
+    if path in _RATE_HEAVY_EXATAS or path.startswith(_RATE_HEAVY_PATHS):
+        return _RATE_HEAVY
+    return _RATE_DEFAULT
 
 
 @app.middleware("http")
 async def _rate_limit(request, call_next):
     if request.method == "OPTIONS" or not request.url.path.startswith(("/api/", "/v1/")):
+        return await call_next(request)
+    if _is_local(request):
+        # O limitador existe para proteger a caixa exposta pela internet. O
+        # navegador rodando no próprio Mac é o cliente nativo e polla a API em
+        # sub-segundo por design — medir isso contra o teto de 120/min gerava 429
+        # interno. Vale só para loopback: pela internet (túnel) a origem é o IP LAN
+        # do Mac, que continua limitado.
         return await call_next(request)
     limit = max(0, _rate_limit_for(request.url.path))
     if limit:
