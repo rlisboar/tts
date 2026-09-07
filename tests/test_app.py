@@ -51,9 +51,26 @@ def test_stt_ok_rejeita_curto_e_blacklist():
 
 
 def test_stt_ok_rejeita_metricas_ruins():
-    assert not app._stt_ok(_r(nsp=0.9), "uma frase qualquer aqui")[0]
+    # confiança baixa e repetição derrubam sozinhas
     assert not app._stt_ok(_r(alp=-2.0), "uma frase qualquer aqui")[0]
     assert not app._stt_ok(_r(cr=4.0), "uma frase qualquer aqui")[0]
+    # no_speech_prob SOZINHO não derruba mais: medido no app, era ele que fazia
+    # fala curta e boa ("Sim.") voltar sem texto. Com confiança boa, passa.
+    assert app._stt_ok(_r(nsp=0.9), "uma frase qualquer aqui")[0]
+    # aí sim, sem-fala + confiança razoável-por-pouco rejeitam em conjunto
+    assert not app._stt_ok(_r(nsp=0.9, alp=-0.8), "uma frase qualquer aqui")[0]
+
+
+def test_stt_ok_motivo_quando_nao_ouviu_fala():
+    # antes, texto vazio caía em "curto demais" e sugeria filtro de tamanho
+    ok, motivo = app._stt_ok(_r(), "")
+    assert not ok and motivo == "não ouviu fala"
+
+
+def test_stt_ok_anti_ruido_desligado_passa_tudo(monkeypatch):
+    monkeypatch.setitem(app._settings, "stt_anti_ruido", False)
+    assert app._stt_ok(_r(alp=-4.0, cr=9.0), "obrigado")[0]
+    assert app._stt_ok(_r(), "")[0]      # até vazio: quem decide é o chamador
 
 
 # ---------------------------------------------------------------------------

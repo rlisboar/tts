@@ -135,6 +135,8 @@ _SETTINGS_DEFAULTS = {
     "stt_max_no_speech": 0.6,         # rejeita se prob. de "sem fala" acima disto (0–1)
     "stt_min_logprob": -1.0,          # rejeita se confiança média abaixo disto (-5–0)
     "stt_max_compression": 2.4,       # rejeita se repetitivo demais (alucinação) (1–10)
+    "stt_anti_ruido": True,           # desliga todos os filtros acima (só VAD e tamanho)
+    "stt_denoise": True,              # denoise ffmpeg (afftdn) antes de cada transcrição
     "stt_local_engine": "whisper",    # STT local no Mac: whisper | parakeet
     "stt_whisper_repo": "",           # repo HF do Whisper local; vazio = large-v3-turbo
     "stt_beam": 5,                    # beam do STT remoto: 1=rápido, 5=padrão, 8=qualidade
@@ -1854,6 +1856,9 @@ def _apply_settings(payload: dict):
         _settings["stt_whisper_repo"] = repo
     if "stt_beam" in payload:
         _settings["stt_beam"] = int(_clamp(payload["stt_beam"], 1, 10, 5))
+    for chave in ("stt_anti_ruido", "stt_denoise"):
+        if chave in payload:
+            _settings[chave] = bool(payload[chave])
     for chave in ("remote_tts", "remote_translate", "remote_stt"):
         if chave in payload:
             _settings[chave] = bool(payload[chave])
@@ -3729,13 +3734,16 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
     audio = _wav_to_mono16k(audio_path)
     with _stt_lock:
         # opções que reduzem alucinação: greedy (beam ainda não existe no
-        # mlx-whisper), sem condicionar no texto anterior, limiares configuráveis
+        # mlx-whisper) e sem condicionar no texto anterior
         r = mlx_whisper.transcribe(
             audio, path_or_hf_repo=_whisper_repo(), language=lang,
             temperature=0.0, condition_on_previous_text=False,
-            no_speech_threshold=_settings["stt_max_no_speech"],
-            logprob_threshold=_settings["stt_min_logprob"],
-            compression_ratio_threshold=_settings["stt_max_compression"],
+            # Limiares do PRÓPRIO whisper fazem ele descartar o trecho inteiro: o
+            # texto volta vazio e o motivo se perde (medido com "Sim."). Quem julga
+            # é o _stt_ok, que devolve a razão — então aqui se pede ao whisper para
+            # não deitar nada fora por conta própria.
+            no_speech_threshold=0.99, logprob_threshold=-3.0,
+            compression_ratio_threshold=9.9,
         )
     del audio
     _touch_use("stt")
@@ -3766,9 +3774,20 @@ def _transcribe_parakeet(audio_path: Path) -> dict:
 
 
 def _stt_ok(r: dict, text: str):
-    """Aceita só transcrição que pareça fala real (rejeita ruído/alucinação)."""
+    """Aceita só transcrição que pareça fala real (rejeita ruído/alucinação).
+
+    `stt_anti_ruido=false` desliga tudo: o que continua valendo é o gate de
+    silêncio (VAD) e o tamanho do áudio — para quem quer ver também o que o
+    Whisper duvidou.
+    """
+    if not _settings.get("stt_anti_ruido", True):
+        return True, ""
     t = text.strip()
     palavras = re.findall(r"[^\W\d_]+", t, flags=re.UNICODE)  # palavras (sem números/símbolos)
+    if not t:
+        # honesto: fala curta que o whisper descartou chegava aqui como vazio e era
+        # reportada como "curto demais", que sugere filtro de tamanho
+        return False, "não ouviu fala"
     if len(t) < _settings["stt_min_chars"]:
         return False, "curto demais"
     if len(palavras) < _settings["stt_min_words"]:
@@ -3780,8 +3799,10 @@ def _stt_ok(r: dict, text: str):
         nsp = max((s.get("no_speech_prob", 0.0) for s in segs), default=0.0)
         alp = min((s.get("avg_logprob", 0.0) for s in segs), default=0.0)
         cr = max((s.get("compression_ratio", 0.0) for s in segs), default=0.0)
-        if nsp > _settings["stt_max_no_speech"]:
-            return False, f"sem fala ({nsp:.2f})"
+        # no_speech_prob sozinho deitava fala curta e boa fora (medido: "Sim."
+        # voltava sem texto). Só rejeita se a confiança também estiver fraca.
+        if nsp > _settings["stt_max_no_speech"] and alp < _settings["stt_min_logprob"] + 0.5:
+            return False, f"sem fala ({nsp:.2f}, confiança {alp:.2f})"
         if alp < _settings["stt_min_logprob"]:
             return False, f"baixa confiança ({alp:.2f})"
         if cr > _settings["stt_max_compression"]:
@@ -3987,11 +4008,15 @@ def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
     _write_upload_limited(upload, raw)
     wav = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}.wav"
     try:
-        # denoise espectral (afftdn) + trim de silêncio nas pontas + 16k mono:
-        # o Whisper alucina em ruído puro — sem isso o "nada" vira "E aí"
-        filtro = ("highpass=f=80,afftdn=nr=12,"
-                  "silenceremove=start_periods=1:start_threshold=-45dB,"
-                  "areverse,silenceremove=start_periods=1:start_threshold=-45dB,areverse")
+        # trim de silêncio nas pontas + 16k mono: o Whisper alucina em ruído puro —
+        # sem isso o "nada" vira "E aí". O denoise espectral (afftdn) é opção: em
+        # áudio limpo ele é neutro para a acurácia (medido por WER) e em áudio ruim
+        # ajuda, então fica a critério de quem está capturando.
+        filtro = "highpass=f=80"
+        if _settings.get("stt_denoise", True):
+            filtro += ",afftdn=nr=12"
+        filtro += (",silenceremove=start_periods=1:start_threshold=-45dB,"
+                   "areverse,silenceremove=start_periods=1:start_threshold=-45dB,areverse")
         p = subprocess.run([FFMPEG, "-y", "-v", "error", "-i", str(raw),
                             "-af", filtro, "-ar", "16000", "-ac", "1", str(wav)],
                            capture_output=True, timeout=120, text=True)

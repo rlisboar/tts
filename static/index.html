@@ -2498,12 +2498,20 @@
           <button type="button" id="micFxCalibrar" class="ghost small">Sugerir sensibilidade</button>
           <span id="micFxRead" class="hint"></span>
         </div>
+        <textarea id="micFxTexto" readonly placeholder="o texto captado aparece aqui: aperte Monitorar, fale, e pare — eu transcrevo e digo quanto levou"
+                  style="width:100%;min-height:74px;margin-top:8px;font-size:12.5px"></textarea>
+        <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+          <span id="micFxTempo" class="hint"></span>
+          <button type="button" id="micFxTextoCopiar" class="ghost small">Copiar</button>
+        </div>
         <p class="hint" style="margin-top:6px">Espectro ao vivo: a marca vertical é o passa-alta — o que fica
           à esquerda dela é o que ele corta. <b>Piso de ruído</b> é o nível com você calado; a sensibilidade
           deve ficar ~4× acima dele. Se aparecer "amostras estouradas", baixe o ganho. Estes ajustes valem
           para o microfone de todas as telas (voz, tradutor, conversa, transcrição, biometria).</p>
         <div class="cfg-sec-h">Anti-ruído da transcrição</div>
-        <div class="sliders">
+        <label class="check"><input type="checkbox" id="sttFiltros" checked> filtrar transcrição suspeita (rejeita ruído e alucinação)</label>
+        <label class="check"><input type="checkbox" id="sttDenoise" checked> denoise do microfone no servidor (ffmpeg afftdn)</label>
+        <div id="sttFiltrosBox" class="sliders">
           <label>Mín. de palavras <output id="sttWordsOut">1</output>
             <input type="range" id="sttWords" min="0" max="6" step="1" value="1"></label>
           <label>Mín. de caracteres <output id="sttCharsOut">2</output>
@@ -2515,6 +2523,11 @@
           <label>Máx. repetição <output id="sttCompOut">2.4</output>
             <input type="range" id="sttComp" min="1" max="10" step="0.1" value="2.4"></label>
         </div>
+        <p class="hint" style="margin-top:0">Desligando a primeira caixa, nada mais é rejeitado — o
+          texto volta do jeito que o Whisper ouviu, inclusive curto ou duvidoso. O "Máx. sem fala" só
+          derruba a fala quando a confiança também está baixa; "Máx. repetição" segue sozinho, porque
+          repetição é o sinal firme de alucinação. O denoise do servidor é neutro em áudio limpo e ajuda
+          em áudio ruim.</p>
       </section>
             </div>
             <div class="settings-pane" data-spane="acesso">
@@ -3995,6 +4008,21 @@ const STT_CTL = [
   ["sttComp", "sttCompOut", "stt_max_compression", v => (+v).toFixed(1)],
 ];
 
+/* Mestre dos filtros anti-ruído. Desligado, o servidor devolve o que o Whisper
+   ouviu sem rejeitar nada — então os sliders são apagados, para não parecer que
+   ainda ajustam alguma coisa. */
+function pintaSttFiltros() {
+  const caix = $("sttFiltros");
+  const on = !caix || caix.checked;
+  const box = $("sttFiltrosBox");
+  if (!box) return;
+  box.style.opacity = on ? "" : ".4";
+  box.style.pointerEvents = on ? "" : "none";
+  box.querySelectorAll("input").forEach(i => { i.disabled = !on; });
+}
+$("sttFiltros")?.addEventListener("change", pintaSttFiltros);
+pintaSttFiltros();
+
 async function openProcessedMic() {
   let raw;
   const base = { echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false };
@@ -4146,17 +4174,79 @@ function atualizaInfoMic() {
 
 $("micFxMonitor").onclick = async () => {
   const btn = $("micFxMonitor");
-  if (micMonitor) {
-    clearTimeout(micMonitor.timer); micMonitor.close(); micMonitor = null;
-  } else {
-    micMed = { rms: 0, pico: 0, clip: 0, piso: Infinity, freq: micMed.freq };
-    try {
-      micMonitor = await micFilteredStream({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false });
-    } catch (e) { toast("Microfone: " + e.message, 5000); return; }
-    micMonitor.timer = setTimeout(() => $("micFxMonitor").click(), 12000);
+  if (micMonitor) {                       // parar = transcrever o que foi gravado
+    clearTimeout(micMonitor.timer);
+    const seg = micMonitor; micMonitor = null;
+    btn.textContent = "🎧 Monitorar 12 s";
+    atualizaInfoMic();
+    let blob = null;
+    if (seg.grab) { try { blob = await seg.grab(); } catch {} }
+    seg.close();
+    if (blob && blob.size > 4096) await transcreveMonitor(blob, seg.gravou);
+    else $("micFxTempo").textContent = "nada capturado — fale enquanto o monitor está aberto";
+    return;
   }
-  btn.textContent = micMonitor ? "■ Parar monitor" : "🎧 Monitorar 12 s";
+  micMed = { rms: 0, pico: 0, clip: 0, piso: Infinity, freq: micMed.freq };
+  try {
+    micMonitor = await micFilteredStream({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false });
+  } catch (e) { toast("Microfone: " + e.message, 5000); return; }
+  // grava o monitor: no fim, o texto captado e o tempo de transcrição aparecem na
+  // caixa ao lado — é o único jeito de ver o efeito de um filtro no resultado, não
+  // só na forma de onda
+  const pedacos = [];
+  try {
+    const rec = new MediaRecorder(micMonitor.stream);
+    rec.ondataavailable = e => { if (e.data.size) pedacos.push(e.data); };
+    rec.start();
+    micMonitor.gravou = performance.now();
+    micMonitor.grab = () => new Promise(res => {
+      rec.onstop = () => res(new Blob(pedacos, { type: rec.mimeType || "audio/webm" }));
+      rec.stop();
+    });
+  } catch { micMonitor.grab = null; }
+  micMonitor.timer = setTimeout(() => $("micFxMonitor").click(), 12000);
+  btn.textContent = "■ Parar e transcrever";
   atualizaInfoMic();
+};
+
+function rotuloStt() {
+  const s = LAST_SETTINGS || {};
+  return s.remote_stt
+    ? `STT remoto ${(s.remote_stt_model || "whisper-1")}`
+    : `Whisper local ${(s.stt_whisper_repo || "?").split("/").pop()}`;
+}
+
+async function transcreveMonitor(blob, t0) {
+  const caixa = $("micFxTexto"), tempo = $("micFxTempo");
+  const eng = rotuloStt();
+  const audioS = t0 ? (performance.now() - t0) / 1000 : null;
+  tempo.textContent = `transcrevendo ${audioS ? audioS.toFixed(1) + " s de áudio" : "áudio"} com ${eng}…`;
+  const fd = new FormData();
+  fd.append("audio", blob, "monitor.webm");
+  fd.append("source_lang", "auto");
+  const ini = performance.now();
+  try {
+    const r = await api("/api/transcribe", { method: "POST", body: fd });
+    const ms = performance.now() - ini;
+    caixa.value = r.text || "";
+    const segs = r.segments || [];
+    const dur = segs.length ? (+segs[segs.length - 1].end || 0) : (audioS || 0);
+    let msg = `transcrito em ${(ms / 1000).toFixed(2)} s`
+      + (dur > 0.2 ? ` para ${dur.toFixed(1)} s de áudio — ${(ms / 1000 / dur).toFixed(2)}× tempo real` : "")
+      + ` · ${eng}` + (r.language ? ` · idioma ${r.language}` : "");
+    if (r.rejected) msg += ` · ⛔ rejeitado pelo anti-ruído: ${r.reason || "?"} (baixe Mín. confiança / Máx. "sem fala")`;
+    if (!r.text && !r.rejected) msg += " · vazio (o VAD não viu fala)";
+    tempo.textContent = msg;
+  } catch (e) {
+    caixa.value = "";
+    tempo.textContent = "✖ " + ((e && e.message) || e);   // ex.: STT remoto sem URL
+  }
+}
+
+$("micFxTextoCopiar").onclick = () => {
+  const v = $("micFxTexto").value;
+  if (!v) { toast("nada para copiar ainda", 2500); return; }
+  navigator.clipboard.writeText(v).then(() => toast("texto copiado", 2000)).catch(() => {});
 };
 
 $("micFxCalibrar").onclick = () => {
@@ -5296,6 +5386,9 @@ async function loadSettings() {
     for (const [id, out, key, fmt] of STT_CTL) {
       if (s[key] !== undefined && $(id) && $(out)) { $(id).value = s[key]; $(out).textContent = fmt(s[key]); }
     }
+    cfgChk("sttFiltros", s.stt_anti_ruido !== false);
+    cfgChk("sttDenoise", s.stt_denoise !== false);
+    pintaSttFiltros();
     // popula voz padrão da API com as vozes existentes
     const voices = await api("/api/voices");
     $("cfgVoice").innerHTML = '<option value="">(voz mais recente)</option>';
@@ -5436,7 +5529,8 @@ const CFG_DIRTY_IDS = ["cfgModel","cfgModelCustom","cfgPrePrompt","cfgLang","cfg
   "cfgPrecision","audGain","audLow","audMid","audHigh",
   "remoteTts","remoteTtsUrl","remoteTtsVoice","remoteTtsExtra","remoteBaseUrl","remoteApiKey",
   "remoteTranslate","remoteTranslateModel","vdGender","vdAge","vdPitch","vdAccent","vdWhisper",
-  "freeLocalOnRemote","idleUnloadMin","speechQueue","speechQueueGap"];
+  "freeLocalOnRemote","idleUnloadMin","speechQueue","speechQueueGap",
+  "sttFiltros","sttDenoise"];
   // oSeed fora da lista: o onchange dele já persiste na hora (marcaria "não salvo" à toa)
 function markCfgDirty() {
   if ($("cfgSave")) $("cfgSave").textContent = "Salvar configurações •";
@@ -5489,6 +5583,8 @@ $("cfgSave").onclick = async () => {
       speaker_gate: $("speakerGate")?.value || "off",
       speaker_threshold: parseFloat($("spThr")?.value) || 0.75,
       stt_whisper_repo: $("sttWhisperModel")?.value || "",
+      stt_anti_ruido: $("sttFiltros")?.checked !== false,
+      stt_denoise: $("sttDenoise")?.checked !== false,
       free_local_on_remote: $("freeLocalOnRemote").checked,
       idle_unload_minutes: parseInt($("idleUnloadMin")?.value, 10) || 0,
       speech_queue: !!$("speechQueue")?.checked,

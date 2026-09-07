@@ -155,6 +155,16 @@ def test_settings_400_nao_deixa_ram_divergindo_do_disco(client):
     assert _json.loads(app.SETTINGS_PATH.read_text())["stt_beam"] == 4
 
 
+def test_settings_anti_ruido_persiste(client):
+    """As duas chaves novas de filtro têm de sobreviver ao restart (RAM == disco)."""
+    r = client.post("/api/settings", headers=auth_headers(client),
+                    json={"stt_anti_ruido": False, "stt_denoise": False})
+    assert r.status_code == 200
+    assert r.json()["stt_anti_ruido"] is False and r.json()["stt_denoise"] is False
+    disco = _json.loads(app.SETTINGS_PATH.read_text())
+    assert disco["stt_anti_ruido"] is False and disco["stt_denoise"] is False
+
+
 # ---------------------------------------------------------------------------
 # Export/import de vozes (dirs temporários — não toca em voices/ real)
 # ---------------------------------------------------------------------------
