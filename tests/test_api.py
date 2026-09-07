@@ -27,6 +27,32 @@ def auth():
     return {"X-API-Key": key} if key else {}
 
 
+@pytest.fixture(autouse=True)
+def _isolamento_disco(monkeypatch, tmp_path):
+    """Snapshot de app._settings e do settings.json antes de cada teste, restaurados
+    depois: os POSTs em /api/settings escrevem no settings.json real (produção)."""
+    snap = dict(app._settings)
+    arq = app.SETTINGS_PATH
+    conteudo = arq.read_text() if arq.exists() else None
+    # chaves/perfis também não podem deixar rastro no repo
+    monkeypatch.setattr(app, "APIKEYS_PATH", tmp_path / ".apikeys.json")
+    monkeypatch.setattr(app, "LEGACY_APIKEY_PATH", tmp_path / ".apikey")
+    monkeypatch.setattr(app, "SPEAKER_PATH", tmp_path / ".speaker-profiles.json")
+    try:
+        yield
+    finally:
+        app._settings.clear()
+        app._settings.update(snap)
+        try:
+            if conteudo is None:
+                if arq.exists():
+                    arq.unlink()
+            elif arq.exists() and arq.read_text() != conteudo:
+                arq.write_text(conteudo)
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Básicos
 # ---------------------------------------------------------------------------
@@ -253,18 +279,17 @@ def test_apikeys_cria_autentica_e_apaga(client, auth):
         app.API_KEY = app._primary_api_key() or app._ENV_API_KEY or None
 
 
-def test_auth_ip_deste_mac_dispensa_chave(monkeypatch):
-    monkeypatch.setattr(app, "_own_ips", lambda: {"192.168.15.31"})
-    c = TestClient(app.app, raise_server_exceptions=False, client=("192.168.15.31", 50000))
-    assert c.get("/api/status").status_code == 200
-    d = c.get("/api/apikeys?reveal=1").json()
-    assert d["local"] is True and d["can_reveal"] is True
-    assert d["keys"] and d["keys"][0].get("secret")
+def test_auth_ip_deste_mac_exige_chave(monkeypatch):
+    # Um IP LAN do próprio Mac também exige chave: o túnel SSH reverso pode
+    # usar esse IP como origem para uma requisição vinda da internet.
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    c = TestClient(app.app, raise_server_exceptions=False, client=("203.0.113.10", 50000))
+    assert c.get("/api/status").status_code == 401
 
 
 def test_auth_outro_ip_exige_chave_e_bloqueia_cadastro(monkeypatch):
-    monkeypatch.setattr(app, "_own_ips", lambda: {"192.168.15.31"})
-    c = TestClient(app.app, raise_server_exceptions=False, client=("192.168.15.177", 50000))
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    c = TestClient(app.app, raise_server_exceptions=False, client=("203.0.113.99", 50000))
     assert c.get("/api/status").status_code == 401
     assert c.post("/api/apikeys", json={"name": "invasor"}).status_code == 401
     snap_keys = [dict(k) for k in (app._apikeys.get("keys") or [])]

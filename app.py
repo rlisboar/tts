@@ -6,19 +6,23 @@ Tudo local: nenhum áudio ou texto sai da máquina.
 """
 
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
 import secrets as _secrets
+import signal
 import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
+import tempfile
 import uuid
 import wave
 from collections import OrderedDict
+from collections import defaultdict, deque
 from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,6 +52,18 @@ SPEAKER_PATH = BASE / ".speaker-profiles.json"   # embeddings de voz (fora do gi
 LEGACY_APIKEY_PATH = BASE / ".apikey"
 VOICES_DIR.mkdir(exist_ok=True)
 OUTPUTS_DIR.mkdir(exist_ok=True)
+
+# Workers filhos têm sessão própria; em crash do pai podem sobreviver. Recolhe
+# apenas PIDs registrados pelo próprio app e cujo comando ainda é tts_worker.py.
+for _pid_file in OUTPUTS_DIR.glob(".job-*/worker.pid"):
+    try:
+        _pid = int(_pid_file.read_text().strip())
+        _cmd = subprocess.run(["ps", "-p", str(_pid), "-o", "command="],
+                              capture_output=True, text=True, timeout=2).stdout
+        if "tts_worker.py" in _cmd:
+            os.killpg(_pid, signal.SIGTERM)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
 
 # trechos parciais de jobs interrompidos não sobrevivem a restart
 for _d in OUTPUTS_DIR.glob(".job-*"):
@@ -126,7 +142,7 @@ _SETTINGS_DEFAULTS = {
     # (ex.: http://rtx-host:8000/v1). api_key opcional. Tudo local por padrão.
     # base_url + api_key ficam locais (settings.json é gitignored). Vazio = local.
     "remote_tts": False,              # síntese (OmniVoice) numa máquina remota (ex.: RTX)
-    "remote_tts_url": "",             # URL completa do endpoint, ex.: http://192.168.1.50:8800/tts
+    "remote_tts_url": "",             # URL completa do endpoint, ex.: http://rtx-host:8800/tts
     "remote_tts_voice": "",           # nome/preset da voz no servidor remoto (vai como `voice`)
     "remote_tts_extra": "",           # JSON com params extras do servidor (speed, num_steps…)
     "remote_tts_model": "tts-1",      # (compat OpenAI) nome do modelo, se o servidor usar
@@ -186,6 +202,10 @@ def _save_settings():
         _settings["speech_queue_gap_s"] = 0.35
     payload = {k: _settings.get(k, v) for k, v in _SETTINGS_DEFAULTS.items()}
     write_json_atomic(SETTINGS_PATH, payload)
+    try:
+        os.chmod(SETTINGS_PATH, 0o600)
+    except OSError:
+        pass
 
 
 # materializa chaves novas (ex.: speech_queue) no arquivo se ainda não existirem
@@ -264,10 +284,11 @@ LANG_DISPLAY = {
 # ---------------------------------------------------------------------------
 # Chaves de API (multi): protegem /api/* e /v1/* na rede. Loopback e o próprio
 # Mac (IP da LAN como origem) não exigem chave. Aceita Authorization: Bearer,
-# X-API-Key ou ?api_key= (necessário p/ <audio src> na UI). Persistidas em
+# Authorization: Bearer ou X-API-Key. Persistidas em
 # .apikeys.json; migra de .apikey / TTS_ROD_API_KEY. Gestão na UI (Acesso).
 # ---------------------------------------------------------------------------
 _ENV_API_KEY = (os.environ.get("TTS_ROD_API_KEY") or "").strip()
+_ADMIN_API_KEY = (os.environ.get("TTS_ROD_ADMIN_KEY") or "").strip()
 _apikeys_lock = threading.Lock()
 _apikeys: dict = {"enabled": True, "keys": []}  # keys: id, name, secret, created_at
 
@@ -285,6 +306,8 @@ def _mask_secret(secret: str) -> str:
 
 def _sync_legacy_apikey_file():
     """Mantém .apikey = 1ª chave gerenciada (compat run.sh / scripts)."""
+    # sem chaves gerenciadas o .apikey NÃO é apagado: run.sh e a migração de
+    # _load_apikeys() ainda o usam como bootstrap da chave.
     try:
         keys = _apikeys.get("keys") or []
         if keys:
@@ -293,9 +316,6 @@ def _sync_legacy_apikey_file():
                 os.chmod(LEGACY_APIKEY_PATH, 0o600)
             except Exception:  # noqa: BLE001
                 pass
-        elif LEGACY_APIKEY_PATH.exists() and not _ENV_API_KEY:
-            # sem chaves gerenciadas e sem env: remove legado p/ não reabrir auth fantasma
-            pass
     except Exception:  # noqa: BLE001
         pass
 
@@ -398,9 +418,7 @@ def _extract_request_key(request) -> str:
     auth = request.headers.get("authorization") or ""
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
-    return (request.headers.get("x-api-key")
-            or request.query_params.get("api_key")
-            or "").strip()
+    return (request.headers.get("x-api-key") or "").strip()
 
 
 def _secrets_iguais(a: str, b: str) -> bool:
@@ -470,14 +488,17 @@ def _lan_urls() -> list[str]:
 
 
 def _is_local(request) -> bool:
-    """Loopback OU este próprio Mac abrindo pelo IP/hostname da LAN.
+    """Só loopback é considerado local sem autenticação.
 
-    Outro dispositivo na rede (IP diferente) NÃO é local — exige chave.
+    Não isentamos os IPs da própria máquina: em um túnel SSH reverso o
+    processo SSH pode abrir a conexão para o IP LAN do Mac usando justamente
+    um IP local como origem, o que transformaria uma requisição da internet
+    em uma requisição "local".
     """
     host = _peer_host(request)
     if host in ("127.0.0.1", "::1", "localhost"):
         return True
-    return bool(host) and host in _own_ips()
+    return False
 
 
 def _key_is_valid(provided: str) -> bool:
@@ -488,6 +509,17 @@ def _key_is_valid(provided: str) -> bool:
     with _apikeys_lock:
         return any(_secrets_iguais(provided, k.get("secret") or "")
                    for k in (_apikeys.get("keys") or []))
+
+
+def _admin_is_allowed(request) -> bool:
+    """Admin local ou chave administrativa dedicada, quando configurada."""
+    if _is_local(request):
+        return True
+    if _ADMIN_API_KEY and _secrets_iguais(_extract_request_key(request), _ADMIN_API_KEY):
+        return True
+    # Compatibilidade: sem chave administrativa configurada, uma chave normal
+    # continua administrando a instalação, como nas versões anteriores.
+    return not _ADMIN_API_KEY and _key_is_valid(_extract_request_key(request))
 
 
 def _primary_api_key() -> str:
@@ -533,17 +565,62 @@ def _ffmpeg_bin() -> str:
 FFMPEG = _ffmpeg_bin()
 
 app = FastAPI(title="TTS-STUDIO")
+_CORS_ORIGINS = [x.strip() for x in os.environ.get("TTS_CORS_ORIGINS", "").split(",") if x.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS or ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Limite leve em memória: impede que uma chave/IP monopolize STT, importação ou
+# criação de jobs. Não substitui rate limit no nginx, mas protege o servidor
+# mesmo quando ele é usado diretamente na LAN.
+_rate_lock = threading.Lock()
+_rate_hits = defaultdict(deque)
+_RATE_WINDOW = 60.0
+_RATE_DEFAULT = int(os.environ.get("TTS_RATE_LIMIT", "120"))
+_RATE_HEAVY = int(os.environ.get("TTS_HEAVY_RATE_LIMIT", "20"))
+_RATE_HEAVY_PATHS = ("/api/tts", "/v1/audio/speech", "/api/transcribe",
+                     "/api/stt-partial", "/api/translate-speech", "/api/modify-speech",
+                     "/api/voices/import")
+
+
+def _rate_limit_for(path: str) -> int:
+    return _RATE_HEAVY if path.startswith(_RATE_HEAVY_PATHS) else _RATE_DEFAULT
+
+
+@app.middleware("http")
+async def _rate_limit(request, call_next):
+    if request.method == "OPTIONS" or not request.url.path.startswith(("/api/", "/v1/")):
+        return await call_next(request)
+    limit = max(0, _rate_limit_for(request.url.path))
+    if limit:
+        # Usa a chave quando presente para não agrupar todos os clientes atrás
+        # do mesmo proxy; nunca registra o segredo, apenas um identificador curto.
+        raw_identity = request.headers.get("x-api-key") or request.headers.get("authorization") or _peer_host(request) or "unknown"
+        identity = hashlib.sha256(raw_identity.encode("utf-8", "ignore")).hexdigest()[:16]
+        now = time.monotonic()
+        with _rate_lock:
+            hits = _rate_hits[(identity, request.url.path)]
+            while hits and now - hits[0] >= _RATE_WINDOW:
+                hits.popleft()
+            # Evita crescimento permanente por identidades descartáveis.
+            if len(_rate_hits) > 10000:
+                for chave, bucket in list(_rate_hits.items()):
+                    if not bucket or now - bucket[-1] >= _RATE_WINDOW:
+                        _rate_hits.pop(chave, None)
+            if len(hits) >= limit:
+                from fastapi.responses import JSONResponse
+                return JSONResponse({"detail": "Muitas requisições; tente novamente em breve"},
+                                    status_code=429, headers={"Retry-After": "60"})
+            hits.append(now)
+    return await call_next(request)
+
 
 @app.middleware("http")
 async def _exige_chave(request, call_next):
-    # loopback + este Mac pelo IP da LAN dispensam chave; outros dispositivos não
+    # somente loopback dispensa chave; qualquer acesso pela LAN exige autenticação
     local = _is_local(request)
     protegido = request.url.path.startswith(("/api/", "/v1/"))
     # docs/openapi revelam o mapa completo da API: abertos no Mac por conveniência,
@@ -587,6 +664,10 @@ async def _strip_base_path(request, call_next):
         resp.headers["Cache-Control"] = "no-cache"
     resp.headers.setdefault("Referrer-Policy", "no-referrer")
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Permissions-Policy", "camera=(), geolocation=(), payment=()")
+    if (request.headers.get("x-forwarded-proto") or request.url.scheme).lower() == "https":
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return resp
 
 # ---------------------------------------------------------------------------
@@ -906,7 +987,7 @@ def list_apikeys(request: Request, reveal: bool = False):
     requisição já autenticou com uma chave válida."""
     local = _is_local(request)
     tem_chave = _key_is_valid(_extract_request_key(request))
-    can_reveal = bool(local) or tem_chave
+    can_reveal = bool(local) or (_admin_is_allowed(request) and tem_chave)
     do_reveal = bool(reveal) and can_reveal
     with _apikeys_lock:
         rows = [_public_key_row(k, reveal=do_reveal) for k in (_apikeys.get("keys") or [])]
@@ -936,8 +1017,10 @@ def list_apikeys(request: Request, reveal: bool = False):
 
 
 @app.post("/api/apikeys")
-def create_apikey(payload: dict):
+def create_apikey(request: Request, payload: dict):
     """Cria chave. Devolve o secret completo uma vez."""
+    if not _admin_is_allowed(request):
+        raise HTTPException(403, "Chave administrativa necessária")
     payload = payload or {}
     name = str(payload.get("name") or "nova chave").strip()[:64] or "nova chave"
     kid = uuid.uuid4().hex[:10]
@@ -957,7 +1040,9 @@ def create_apikey(payload: dict):
 
 
 @app.patch("/api/apikeys/{key_id}")
-def rename_apikey(key_id: str, payload: dict):
+def rename_apikey(request: Request, key_id: str, payload: dict):
+    if not _admin_is_allowed(request):
+        raise HTTPException(403, "Chave administrativa necessária")
     payload = payload or {}
     name = str(payload.get("name") or "").strip()[:64]
     if not name:
@@ -974,8 +1059,10 @@ def rename_apikey(key_id: str, payload: dict):
 
 
 @app.post("/api/apikeys/{key_id}/rotate")
-def rotate_apikey(key_id: str):
+def rotate_apikey(request: Request, key_id: str):
     """Gera novo secret. A chave antiga deixa de valer na hora."""
+    if not _admin_is_allowed(request):
+        raise HTTPException(403, "Chave administrativa necessária")
     if key_id == "__env__":
         raise HTTPException(400, "Chave de ambiente não pode ser rotacionada pela UI")
     with _apikeys_lock:
@@ -991,7 +1078,9 @@ def rotate_apikey(key_id: str):
 
 
 @app.delete("/api/apikeys/{key_id}")
-def delete_apikey(key_id: str):
+def delete_apikey(request: Request, key_id: str):
+    if not _admin_is_allowed(request):
+        raise HTTPException(403, "Chave administrativa necessária")
     if key_id == "__env__":
         raise HTTPException(400, "Chave de ambiente não pode ser apagada pela UI")
     with _apikeys_lock:
@@ -1007,8 +1096,10 @@ def delete_apikey(key_id: str):
 
 
 @app.post("/api/apikeys/enabled")
-def set_apikeys_enabled(payload: dict):
+def set_apikeys_enabled(request: Request, payload: dict):
     """Liga/desliga a exigência de chave na rede."""
+    if not _admin_is_allowed(request):
+        raise HTTPException(403, "Chave administrativa necessária")
     payload = payload or {}
     if "enabled" not in payload:
         raise HTTPException(400, "Campo 'enabled' obrigatório")
@@ -1105,6 +1196,8 @@ CHAT_TTL = 3600          # sessão expira 1h sem uso
 CHAT_MAX_MSGS = 60       # teto de mensagens enviadas ao LLM por rodada
 _chat_sessions: dict = {}
 _chat_lock = threading.Lock()
+_chat_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8,
+                                                       thread_name_prefix="chat-llm")
 
 CHAT_SYSTEM = (
     "Você ajuda a decidir o TEXTO FINAL que será falado por um agente de voz (TTS). "
@@ -1238,8 +1331,6 @@ def _chat_worker(sid: str, gen: int = 0) -> None:
     para sempre.
     `gen` é a geração do turno: se o humano interrompeu (barge-in) e mandou fala
     nova, a sessão já está em outra geração e este resultado é jogado fora."""
-    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-
     def _rodar() -> None:
         try:
             with _chat_lock:
@@ -1282,15 +1373,13 @@ def _chat_worker(sid: str, gen: int = 0) -> None:
                     s["thinking"] = False
 
     try:
-        ex.submit(_rodar).result(timeout=150)
+        _chat_executor.submit(_rodar).result(timeout=150)
     except concurrent.futures.TimeoutError:
         with _chat_lock:
             s = _chat_sessions.get(sid)
             if s and s.get("gen", 0) == gen and s.get("thinking"):
                 s["error"] = "Provedor de IA demorou demais (150s) — tente de novo"
                 s["thinking"] = False
-    finally:
-        ex.shutdown(wait=False)
 
 
 @app.post("/api/chat/start")
@@ -1372,6 +1461,8 @@ def chat_delete(sid: str):
 @app.post("/api/chat-debug")
 def chat_debug(payload: dict):
     """Telemetria temporária do fluxo Conversa no navegador (diagnóstico)."""
+    if os.environ.get("TTS_CHAT_DEBUG") != "1":
+        return {"ok": True, "disabled": True}
     try:
         with open("/tmp/tts-chat-debug.log", "a") as f:
             f.write(f"{time.strftime('%H:%M:%S')} {json.dumps(payload, ensure_ascii=False)}\n")
@@ -1420,8 +1511,17 @@ def _public_proxy_check(url: str, timeout: float = 6.0) -> dict:
         import urllib.request
         req = urllib.request.Request(f"{url}/health", method="GET")
         req.add_header("User-Agent", "tts-studio-tunnel-check")
+        # o python.org framework build não tem CA store próprio — sem certifi a
+        # checagem falha com "unable to get local issuer certificate" e a UI
+        # mostra a internet como caída (mesmo bug já tratado em _chat_llm)
+        import ssl
+        try:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception:  # noqa: BLE001 — sem certifi, trust store padrão
+            ctx = ssl.create_default_context()
         t0 = time.monotonic()
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             body = resp.read(200)
             lat = round((time.monotonic() - t0) * 1000)
             ok = resp.status == 200 and b'"ok"' in body
@@ -1878,7 +1978,7 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
     voice_id = uuid.uuid4().hex[:10]
     wav_path = VOICES_DIR / f"{voice_id}.wav"
     tmp = VOICES_DIR / f".up-{voice_id}"
-    tmp.write_bytes(audio.file.read())
+    _write_upload_limited(audio, tmp)
     try:
         data, sr = sf.read(str(tmp), dtype="float32")
     except Exception:
@@ -1923,6 +2023,7 @@ def denoise_voice(voice_id: str, payload: dict = None):
     mtime muda -> o cache de ref_tokens invalida sozinho na próxima geração."""
     import soundfile as sf
 
+    voice_id = _safe_id(voice_id)
     path = VOICES_DIR / f"{voice_id}.wav"
     if not path.exists():
         raise HTTPException(404, "Voz não encontrada")
@@ -1989,36 +2090,98 @@ async def import_voices(zip_file: UploadFile = File(...)):
     nome seguro (achata subpastas); o resto do zip é ignorado. Arquivos órfãos
     (wav sem json ou vice-versa) entram, mas são avisados no response.
     """
-    import io
     import re as _re
     import zipfile
 
-    # teto do arquivo RECEBIDO (read() carrega tudo na RAM; o cap de conteúdo
-    # descomprimido vem depois)
-    if zip_file.size and zip_file.size > _IMPORT_MAX_TOTAL:
-        raise HTTPException(400, "Zip grande demais (máx. 512 MB)")
+    # Copia em streaming para não depender de UploadFile.size nem carregar o
+    # upload inteiro na RAM antes de validar o limite.
+    with tempfile.NamedTemporaryFile(prefix=".voice-import-", suffix=".zip",
+                                     dir=OUTPUTS_DIR, delete=False) as incoming:
+        incoming_path = Path(incoming.name)
+        recebido = 0
+        try:
+            while True:
+                bloco = await zip_file.read(1024 * 1024)
+                if not bloco:
+                    break
+                recebido += len(bloco)
+                if recebido > _IMPORT_MAX_TOTAL:
+                    raise HTTPException(400, "Zip grande demais (máx. 512 MB)")
+                incoming.write(bloco)
+        except Exception:
+            incoming_path.unlink(missing_ok=True)
+            raise
+
     try:
-        zf = zipfile.ZipFile(io.BytesIO(await zip_file.read()))
-    except zipfile.BadZipFile:
-        raise HTTPException(400, "Arquivo não é um zip válido")
+        zf = zipfile.ZipFile(incoming_path)
+    except zipfile.BadZipFile as exc:
+        incoming_path.unlink(missing_ok=True)
+        raise HTTPException(400, "Arquivo não é um zip válido") from exc
+
     importados, ignorados = [], []
     total = 0
-    with zf:
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            total += info.file_size
-            if total > _IMPORT_MAX_TOTAL:
-                raise HTTPException(400, "Zip grande demais (total descomprimido > 512 MB)")
-            if info.file_size > 100 * 1024 * 1024:
-                ignorados.append(info.filename)
-                continue
-            nome = Path(info.filename).name
-            if not _re.fullmatch(r"[A-Za-z0-9_-]+\.(wav|json)", nome):
-                ignorados.append(info.filename)
-                continue
-            (VOICES_DIR / nome).write_bytes(zf.read(info))
-            importados.append(nome)
+    preparados = []
+    try:
+        with zf:
+            with tempfile.TemporaryDirectory(prefix=".voice-import-", dir=OUTPUTS_DIR) as staging:
+                staging_dir = Path(staging)
+                vistos = set()
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    total += info.file_size
+                    if total > _IMPORT_MAX_TOTAL:
+                        raise HTTPException(400, "Zip grande demais (total descomprimido > 512 MB)")
+                    if info.file_size > 100 * 1024 * 1024:
+                        ignorados.append(info.filename)
+                        continue
+                    nome = Path(info.filename).name
+                    chave = nome.lower()
+                    if (not _re.fullmatch(r"[A-Za-z0-9_-]+\.(wav|json)", nome)
+                            or chave in vistos):
+                        ignorados.append(info.filename)
+                        continue
+                    vistos.add(chave)
+                    destino = staging_dir / nome
+                    with zf.open(info) as origem, destino.open("wb") as saida:
+                        shutil.copyfileobj(origem, saida, length=1024 * 1024)
+                    if nome.endswith(".json"):
+                        try:
+                            dados = json.loads(destino.read_text(encoding="utf-8"))
+                            if not isinstance(dados, dict):
+                                raise ValueError("metadata deve ser objeto JSON")
+                        except Exception:
+                            ignorados.append(info.filename)
+                            destino.unlink(missing_ok=True)
+                            continue
+                    preparados.append((nome, destino))
+
+                # Só publica depois de validar TODAS as entradas: falha não
+                # deixa restore parcialmente aplicado.
+                publicados = []
+                backups = {}
+                try:
+                    for nome, origem in preparados:
+                        destino = VOICES_DIR / nome
+                        if destino.exists():
+                            backup = staging_dir / (".backup-" + nome)
+                            shutil.copy2(destino, backup)
+                            backups[nome] = backup
+                        origem.replace(destino)
+                        publicados.append(nome)
+                        importados.append(nome)
+                except Exception:
+                    # Reverte o que já foi publicado caso o filesystem falhe
+                    # no meio da troca.
+                    for nome in publicados:
+                        (VOICES_DIR / nome).unlink(missing_ok=True)
+                    for nome, backup in backups.items():
+                        if backup.exists():
+                            backup.replace(VOICES_DIR / nome)
+                    importados.clear()
+                    raise
+    finally:
+        incoming_path.unlink(missing_ok=True)
     if not importados:
         raise HTTPException(400, "Nenhuma voz (.wav/.json) encontrada no zip")
     # órfãos: .wav sem .json (voz some da lista) ou .json sem .wav (clonagem quebra)
@@ -2060,7 +2223,10 @@ def audio_edit(audio: UploadFile = File(...), op: str = Form(...)):
     import soundfile as sf
 
     try:
-        a, sr = sf.read(_io.BytesIO(audio.file.read()), dtype="float32")
+        dados = _read_upload_limited(audio)
+        if not dados:
+            raise HTTPException(400, "Áudio vazio")
+        a, sr = sf.read(_io.BytesIO(dados), dtype="float32")
     except Exception:
         raise HTTPException(400, "Áudio inválido")
     if a.ndim > 1:
@@ -2130,11 +2296,12 @@ def replace_voice_audio(voice_id: str, audio: UploadFile = File(...)):
     """Substitui o áudio de uma voz existente (mantém o id) — usado pelo editor."""
     import soundfile as sf
 
+    voice_id = _safe_id(voice_id)
     wav = VOICES_DIR / f"{voice_id}.wav"
     if not wav.exists():
         raise HTTPException(404, "Voz não encontrada")
     tmp = VOICES_DIR / f".rep-{voice_id}"
-    tmp.write_bytes(audio.file.read())
+    _write_upload_limited(audio, tmp)
     try:
         a, sr = sf.read(str(tmp), dtype="float32")
     except Exception:
@@ -2166,6 +2333,7 @@ def voice_peaks(voice_id: str, n: int = 160):
     import numpy as np
     import soundfile as sf
 
+    voice_id = _safe_id(voice_id)
     path = VOICES_DIR / f"{voice_id}.wav"
     if not path.exists():
         raise HTTPException(404, "Voz não encontrada")
@@ -2183,6 +2351,7 @@ def voice_peaks(voice_id: str, n: int = 160):
 
 @app.delete("/api/voices/{voice_id}")
 def delete_voice(voice_id: str):
+    voice_id = _safe_id(voice_id)
     removed = False
     for ext in ("wav", "json"):
         path = VOICES_DIR / f"{voice_id}.{ext}"
@@ -2562,6 +2731,9 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
                 stderr=subprocess.STDOUT,
                 start_new_session=True,  # grupo próprio: kill limpo se preciso
             )
+            # Registro antes do polling: se o servidor morrer, o próximo
+            # startup consegue localizar e encerrar este grupo de processos.
+            (pdir / "worker.pid").write_text(str(proc.pid))
         except Exception as exc:  # noqa: BLE001
             log_f.close()
             _speech_queue_abort(sq)
@@ -2652,6 +2824,7 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
                 log_f.close()
             except Exception:  # noqa: BLE001
                 pass
+            (pdir / "worker.pid").unlink(missing_ok=True)
 
         # processo saiu sem status done
         rc = proc.returncode
@@ -3039,6 +3212,17 @@ def _auto_cleanup_once():
             continue
         shutil.rmtree(d, ignore_errors=True)
         removidos += 1
+    # Temporários de uploads podem sobreviver a timeout/crash. Limpa somente
+    # arquivos conhecidos e antigos, nunca outputs finais.
+    temp_cutoff = time.time() - 6 * 3600
+    for pattern in (".stt-*", ".pstt-*", ".voz-*", ".vozchk-*", ".up-*", ".rep-*"):
+        for tmp in OUTPUTS_DIR.glob(pattern):
+            try:
+                if tmp.is_file() and tmp.stat().st_mtime < temp_cutoff:
+                    tmp.unlink(missing_ok=True)
+                    removidos += 1
+            except OSError:
+                pass
     return removidos
 
 
@@ -3048,6 +3232,16 @@ def _auto_cleanup_loop():
         try:
             if _settings["auto_cleanup"]:
                 _auto_cleanup_once()
+            else:
+                # Mesmo com histórico permanente, temporários órfãos devem sair.
+                temp_cutoff = time.time() - 6 * 3600
+                for pattern in (".stt-*", ".pstt-*", ".voz-*", ".vozchk-*", ".up-*", ".rep-*"):
+                    for tmp in OUTPUTS_DIR.glob(pattern):
+                        try:
+                            if tmp.is_file() and tmp.stat().st_mtime < temp_cutoff:
+                                tmp.unlink(missing_ok=True)
+                        except OSError:
+                            pass
         except Exception:  # noqa: BLE001
             pass
 
@@ -3058,6 +3252,7 @@ threading.Thread(target=_auto_cleanup_loop, daemon=True).start()
 
 @app.delete("/api/outputs/{out_id}")
 def delete_output(out_id: str):
+    out_id = _safe_id(out_id)
     removed = False
     for ext in ("wav", "json"):
         path = OUTPUTS_DIR / f"{out_id}.{ext}"
@@ -3757,14 +3952,8 @@ def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
             suffix = ".wav"
     # cap de tamanho: leitura limitada (sem confiar em Content-Length) —
     # evita encher disco/memória com upload gigante de quem tem a chave
-    limite_mb = int(os.environ.get("TTS_MAX_UPLOAD_MB", "600"))
-    dados = upload.file.read(limite_mb * 1024 * 1024 + 1)
-    if len(dados) > limite_mb * 1024 * 1024:
-        raise HTTPException(413, f"Áudio maior que {limite_mb} MB")
-    if not dados:
-        raise HTTPException(400, "Áudio vazio")
     raw = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}{suffix}"
-    raw.write_bytes(dados)
+    _write_upload_limited(upload, raw)
     wav = OUTPUTS_DIR / f"{prefix}-{uuid.uuid4().hex[:10]}.wav"
     try:
         # denoise espectral (afftdn) + trim de silêncio nas pontas + 16k mono:
@@ -3777,7 +3966,7 @@ def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
                            capture_output=True, timeout=120, text=True)
         stderr = (p.stderr or "").strip()
         if p.returncode != 0 or not wav.exists() or wav.stat().st_size == 0:
-            print(f"[stt] ffmpeg ({ctype}, {len(dados)}B): {stderr[:160]}", flush=True)
+            print(f"[stt] ffmpeg ({ctype}, {raw.stat().st_size if raw.exists() else 0}B): {stderr[:160]}", flush=True)
             raise RuntimeError(stderr[:160] or "ffmpeg não produziu saída")
     except HTTPException:
         raise
@@ -3787,6 +3976,51 @@ def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
         raise HTTPException(400, f"Formato de áudio não suportado ({ctype or 'desconhecido'}): {e}") from e
     raw.unlink(missing_ok=True)
     return wav
+
+
+def _read_upload_limited(upload: UploadFile, default_mb: int = 64) -> bytes:
+    """Lê uploads em memória com teto comum para voz, edição e STT."""
+    try:
+        limite_mb = int(os.environ.get("TTS_MAX_UPLOAD_MB", str(default_mb)))
+    except (TypeError, ValueError):
+        limite_mb = default_mb
+    limite_mb = max(0, min(limite_mb, 2048))
+    limite = limite_mb * 1024 * 1024
+    dados = upload.file.read(limite + 1)
+    if len(dados) > limite:
+        raise HTTPException(413, f"Áudio maior que {limite_mb} MB")
+    return dados
+
+
+def _upload_limit_bytes(default_mb: int = 64) -> tuple[int, int]:
+    try:
+        limite_mb = int(os.environ.get("TTS_MAX_UPLOAD_MB", str(default_mb)))
+    except (TypeError, ValueError):
+        limite_mb = default_mb
+    limite_mb = max(0, min(limite_mb, 2048))
+    return limite_mb, limite_mb * 1024 * 1024
+
+
+def _write_upload_limited(upload: UploadFile, path: Path, default_mb: int = 64) -> None:
+    """Copia multipart em blocos, sem materializar o áudio completo na RAM."""
+    limite_mb, limite = _upload_limit_bytes(default_mb)
+    total = 0
+    try:
+        with Path(path).open("wb") as out:
+            while True:
+                bloco = upload.file.read(min(1024 * 1024, limite - total + 1))
+                if not bloco:
+                    break
+                total += len(bloco)
+                if total > limite:
+                    raise HTTPException(413, f"Áudio maior que {limite_mb} MB")
+                out.write(bloco)
+    except Exception:
+        Path(path).unlink(missing_ok=True)
+        raise
+    if total == 0:
+        Path(path).unlink(missing_ok=True)
+        raise HTTPException(400, "Áudio vazio")
 
 
 @app.post("/api/stt-partial")
@@ -4027,7 +4261,8 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
             s = _cos_sim(emb, vec)
             if s > sim:
                 melhor, sim = nome, s
-    lim = float(_settings.get("speaker_threshold") or 0.75)
+    lim = float(_settings.get("speaker_threshold")
+                or _SETTINGS_DEFAULTS["speaker_threshold"])
     autorizado = melhor is not None and sim >= lim
     out: dict = {}
     if gate == "enforce" and not autorizado:
@@ -4139,14 +4374,20 @@ def transcribe_audio(audio: UploadFile = None, source_lang: str = Form("auto")):
     return out
 
 
-@app.post("/api/translate-speech")
-def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
-                     voice_id: str = Form(""), source_lang: str = Form("auto"),
-                     emotion_mode: str = Form("off"), instruct: str = Form("")):
-    """fala (áudio) -> transcreve -> traduz -> dispara TTS na voz; devolve textos + job_id."""
-    if audio is None:
-        raise HTTPException(400, "Áudio obrigatório")
-    tgt = (target_lang or "en").lower()
+def _preparar_fala_para_voz(audio: UploadFile, voice_id: str, source_lang: str,
+                            emotion_mode: str, instruct: str, msg_voz_design: str,
+                            com_gate: bool = False) -> dict:
+    """Pipeline comum do tradutor e do modificador de fala.
+
+    Valida a voz (gravada, padrão ou por descrição), aplica o gate de locutor,
+    transcreve, filtra ruído/alucinação e idioma de entrada, captura a emoção e
+    monta os controles de geração. Ordem dos efeitos: gate -> transcribe ->
+    stt_ok -> idioma -> emoção -> unlink do temporário.
+
+    Devolve {"resposta": {...}} quando o áudio é rejeitado (o endpoint só
+    devolve esse corpo) ou os intermediários prontos p/ o passo da tradução:
+    vid/vpath/gate/src_text/src_lang/lang/omni/emotion/emo_show/emo_err.
+    """
     vid = voice_id or _settings["default_voice"]
     design = (vid == DESIGN_VOICE_ID)                       # voz por descrição (tags OmniVoice)
     des_instruct = _sanitize_instruct(instruct) if design else ""
@@ -4154,29 +4395,30 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
     if design:
         ok = des_instruct or _sanitize_instruct(_settings.get("omni_instruct") or "")
         if not ok:
-            raise HTTPException(400, "Voice design vazio — descreva a voz p/ o tradutor")
+            raise HTTPException(400, msg_voz_design)
     elif not vpath.exists() and vid not in OMNI_PRESETS:
         raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
 
+    exp = (source_lang or "auto").lower()
     tmp = _save_audio_upload(audio)
-    gate = _speaker_gate_ok(tmp)
+    gate = _speaker_gate_ok(tmp) if com_gate else {}
     if gate.get("rejected"):
         tmp.unlink(missing_ok=True)
-        return {"rejected": True, "reason": gate["reason"], "source_text": ""}
+        return {"resposta": {"rejected": True, "reason": gate["reason"], "source_text": ""}}
     emo_label, emo_pitch, emo_speed, emo_err = "", "", 1.0, None
     try:
-        r = _transcribe(tmp, language=(source_lang or "auto").lower())
+        r = _transcribe(tmp, language=exp)
         src_text = (r.get("text") or "").strip()
         src_lang = (r.get("language") or "").strip().lower()
         ok, motivo = _stt_ok(r, src_text)
         if not ok:
             # não é erro: ruído/silêncio — o cliente apenas ignora e segue ouvindo
-            return {"rejected": True, "reason": motivo, "source_text": src_text}
+            return {"resposta": {"rejected": True, "reason": motivo, "source_text": src_text}}
         # filtro de idioma de entrada: só segue se a fala estiver no idioma escolhido
-        exp = (source_lang or "auto").lower()
         if exp not in ("", "auto") and src_lang and src_lang != exp:
-            return {"rejected": True, "reason": f"idioma errado (detectou {src_lang})",
-                    "source_text": src_text, "source_lang": src_lang}
+            return {"resposta": {"rejected": True,
+                                 "reason": f"idioma errado (detectou {src_lang})",
+                                 "source_text": src_text, "source_lang": src_lang}}
         # captura de emoção (precisa do áudio ainda em disco)
         modo = (emotion_mode or "off").lower()
         if modo in ("light", "accurate"):
@@ -4185,24 +4427,51 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
         tmp.unlink(missing_ok=True)
 
     emotivo = bool(emo_label) and emo_label != "neutro"
-    # 1) o LLM já traduz no TOM da emoção (pontuação/ênfase) -> prosódia segue o texto
-    translation = _translate(src_text, tgt, emo_label if emotivo else None)
     omni = _resolve_omni({})
-    if design:   # voz por descrição: o instruct do tradutor define a voz (vence o clone/emoção)
+    if design:   # voz por descrição: o instruct pedido define a voz (vence o clone/emoção)
         omni["instruct"] = des_instruct or _sanitize_instruct(_settings.get("omni_instruct") or "")
     if emotivo:
-        # 2) pitch = tag válida (nudge, mantém o clone); 3) velocidade = time-stretch
-        #    em voice design o pitch da emoção NÃO troca a voz desenhada (mantém o instruct);
-        #    a emoção ainda atua via velocidade/expressividade + tom do texto traduzido.
+        # pitch = tag válida (nudge, mantém o clone); em voice design o pitch da emoção
+        # NÃO troca a voz desenhada (mantém o instruct) — a emoção age via velocidade
+        # /expressividade + tom do texto. Velocidade = time-stretch clampado 0,5–2,0.
         ep = _sanitize_instruct(emo_pitch)
         if ep and not design:
             omni["instruct"] = ep
         if emo_speed and abs(float(emo_speed) - 1.0) > 1e-3:
             base = float(omni.get("speed") or 1.0)
             omni["speed"] = round(_clamp(base * float(emo_speed), 0.5, 2.0, base), 3)
-        # 4) mais expressivo/menos monótono (guidance↓, position_temperature↑)
+        # mais expressivo/menos monótono (guidance↓, position_temperature↑)
         omni["guidance_scale"] = round(max(0.5, float(omni.get("guidance_scale") or 2.0) - 0.4), 2)
         omni["position_temperature"] = round(min(20.0, float(omni.get("position_temperature") or 5.0) + 4.0), 1)
+
+    emo_show = None
+    if emotivo:
+        bits = [b for b in (emo_pitch, f"{omni['speed']}×" if abs(float(omni.get('speed') or 1) - 1) > 1e-3 else "") if b]
+        emo_show = emo_label + (f" ({', '.join(bits)})" if bits else "")
+
+    lang = exp if exp not in ("", "auto") else (src_lang or _settings["language"])
+    return {"vid": vid, "vpath": vpath, "gate": gate, "src_text": src_text,
+            "src_lang": src_lang, "lang": lang, "omni": omni,
+            "emotion": emo_label if emotivo else None,
+            "emo_show": emo_show, "emo_err": emo_err}
+
+
+@app.post("/api/translate-speech")
+def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
+                     voice_id: str = Form(""), source_lang: str = Form("auto"),
+                     emotion_mode: str = Form("off"), instruct: str = Form("")):
+    """fala (áudio) -> transcreve -> traduz -> dispara TTS na voz; devolve textos + job_id."""
+    if audio is None:
+        raise HTTPException(400, "Áudio obrigatório")
+    tgt = (target_lang or "en").lower()
+    p = _preparar_fala_para_voz(audio, voice_id, source_lang, emotion_mode, instruct,
+                                "Voice design vazio — descreva a voz p/ o tradutor",
+                                com_gate=True)
+    if "resposta" in p:
+        return p["resposta"]
+    src_text, src_lang, gate = p["src_text"], p["src_lang"], p["gate"]
+    # o LLM já traduz no TOM da emoção (pontuação/ênfase) -> prosódia segue o texto
+    translation = _translate(src_text, tgt, p["emotion"])
 
     job_id = uuid.uuid4().hex[:10]
     _jobs[job_id] = {"status": "running", "pieces": 0, "total": None,
@@ -4211,16 +4480,12 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
     _evict_jobs()
     threading.Thread(
         target=_run_tts_job,
-        args=(job_id, translation, vid, vpath, tgt, omni),
+        args=(job_id, translation, p["vid"], p["vpath"], tgt, p["omni"]),
         daemon=True,
     ).start()
-    emo_show = None
-    if emo_label and emo_label != "neutro":
-        bits = [b for b in (emo_pitch, f"{omni['speed']}×" if abs(float(omni.get('speed') or 1) - 1) > 1e-3 else "") if b]
-        emo_show = emo_label + (f" ({', '.join(bits)})" if bits else "")
     return {"job_id": job_id, "source_text": src_text, "source_lang": src_lang,
             "translation": translation, "target_lang": tgt,
-            "emotion": emo_show, "emotion_error": emo_err,
+            "emotion": p["emo_show"], "emotion_error": p["emo_err"],
             **({"speaker": gate["speaker"]} if gate.get("speaker") else {})}
 
 
@@ -4232,63 +4497,23 @@ def modify_speech(audio: UploadFile = None, voice_id: str = Form(""),
     língua, mesmas palavras). Igual ao tradutor, mas sem o passo do LLM."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
-    vid = voice_id or _settings["default_voice"]
-    design = (vid == DESIGN_VOICE_ID)
-    des_instruct = _sanitize_instruct(instruct) if design else ""
-    vpath = VOICES_DIR / f"{vid}.wav"
-    if design:
-        ok = des_instruct or _sanitize_instruct(_settings.get("omni_instruct") or "")
-        if not ok:
-            raise HTTPException(400, "Voice design vazio — descreva a voz")
-    elif not vpath.exists() and vid not in OMNI_PRESETS:
-        raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
-
-    tmp = _save_audio_upload(audio)
-    emo_label, emo_pitch, emo_speed, emo_err = "", "", 1.0, None
-    try:
-        r = _transcribe(tmp, language=(source_lang or "auto").lower())
-        src_text = (r.get("text") or "").strip()
-        src_lang = (r.get("language") or "").strip().lower()
-        ok, motivo = _stt_ok(r, src_text)
-        if not ok:
-            return {"rejected": True, "reason": motivo, "source_text": src_text}
-        exp = (source_lang or "auto").lower()
-        if exp not in ("", "auto") and src_lang and src_lang != exp:
-            return {"rejected": True, "reason": f"idioma errado (detectou {src_lang})",
-                    "source_text": src_text, "source_lang": src_lang}
-        modo = (emotion_mode or "off").lower()
-        if modo in ("light", "accurate"):
-            emo_label, emo_pitch, emo_speed, emo_err = _emotion_instruct(tmp, src_text, modo)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-    out_text = src_text                                    # SEM tradução: fala o que foi dito
-    lang = exp if exp not in ("", "auto") else (src_lang or _settings["language"])
-    emotivo = bool(emo_label) and emo_label != "neutro"
-    omni = _resolve_omni({})
-    if design:
-        omni["instruct"] = des_instruct or _sanitize_instruct(_settings.get("omni_instruct") or "")
-    if emotivo:
-        ep = _sanitize_instruct(emo_pitch)
-        if ep and not design:
-            omni["instruct"] = ep
-        if emo_speed and abs(float(emo_speed) - 1.0) > 1e-3:
-            base = float(omni.get("speed") or 1.0)
-            omni["speed"] = round(_clamp(base * float(emo_speed), 0.5, 2.0, base), 3)
-        omni["guidance_scale"] = round(max(0.5, float(omni.get("guidance_scale") or 2.0) - 0.4), 2)
-        omni["position_temperature"] = round(min(20.0, float(omni.get("position_temperature") or 5.0) + 4.0), 1)
+    p = _preparar_fala_para_voz(audio, voice_id, source_lang, emotion_mode, instruct,
+                                "Voice design vazio — descreva a voz")
+    if "resposta" in p:
+        return p["resposta"]
+    src_text = p["src_text"]
+    out_text = src_text                    # SEM tradução: fala o que foi dito
+    lang = p["lang"]
 
     job_id = uuid.uuid4().hex[:10]
     _jobs[job_id] = {"status": "running", "pieces": 0, "total": None, "progress": None,
                      "output": None, "error": None, "text": out_text[:200]}
     _evict_jobs()
-    threading.Thread(target=_run_tts_job, args=(job_id, out_text, vid, vpath, lang, omni), daemon=True).start()
-    emo_show = None
-    if emo_label and emo_label != "neutro":
-        bits = [b for b in (emo_pitch, f"{omni['speed']}×" if abs(float(omni.get('speed') or 1) - 1) > 1e-3 else "") if b]
-        emo_show = emo_label + (f" ({', '.join(bits)})" if bits else "")
-    return {"job_id": job_id, "source_text": src_text, "source_lang": src_lang,
-            "translation": out_text, "target_lang": lang, "emotion": emo_show, "emotion_error": emo_err}
+    threading.Thread(target=_run_tts_job, args=(job_id, out_text, p["vid"], p["vpath"],
+                                                lang, p["omni"]), daemon=True).start()
+    return {"job_id": job_id, "source_text": src_text, "source_lang": p["src_lang"],
+            "translation": out_text, "target_lang": lang,
+            "emotion": p["emo_show"], "emotion_error": p["emo_err"]}
 
 
 # ---------------------------------------------------------------------------
@@ -4439,7 +4664,7 @@ def openai_speech(payload: dict):
 
     # queue=false: cliente controla o tempo da fala (Conversa faz pipeline no
     # navegador). Default true — o contrato do SDK OpenAI não muda.
-    q = payload.get("queue", payload.get("speech_queue", True))
+    q = payload.get("queue", payload.get("speech_queue", _settings.get("speech_queue", True)))
     use_queue = q is not False and str(q).lower() not in ("false", "0", "no")
 
     # reusa o pipeline de jobs de forma síncrona (histórico incluso)

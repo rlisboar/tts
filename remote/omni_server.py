@@ -20,7 +20,7 @@
 # modelo TTS em ./model_local; vozes clonadas em ./voices (wav + .txt de ref_text).
 #
 # Esta é uma cópia versionada do que roda em /root/omnivoice/server.py (v2.4).
-import io, os, re, time, asyncio, tempfile, subprocess, numpy as np, torch, soundfile as sf
+import io, os, re, time, asyncio, tempfile, subprocess, secrets, numpy as np, torch, soundfile as sf
 from concurrent.futures import ThreadPoolExecutor
 torch.set_float32_matmul_precision("high")
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -28,8 +28,8 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.benchmark = True
 from omnivoice import OmniVoice
 from faster_whisper import WhisperModel
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import Response, StreamingResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi.responses import Response, StreamingResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict
 try:
     from omnivoice import OmniVoiceGenerationConfig
@@ -40,6 +40,11 @@ FFMPEG = "/usr/local/bin/ffmpeg8"
 DEV = "cuda:0"  # CUDA_VISIBLE_DEVICES=1 -> RTX 4090
 VOICES_DIR = "/root/omnivoice/voices"
 os.makedirs(VOICES_DIR, exist_ok=True)
+REMOTE_API_KEY = os.environ.get("OMNI_API_KEY", "").strip()
+try:
+    MAX_UPLOAD_BYTES = max(1, min(int(os.environ.get("OMNI_MAX_UPLOAD_MB", "64")), 2048)) * 1024 * 1024
+except ValueError:
+    MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 # ---------- separated, env-tunable thread pools ----------
 TTS_WORKERS = int(os.getenv("OMNI_TTS_WORKERS", "4"))   # GPU: OmniVoice generate
@@ -256,6 +261,28 @@ if os.environ.get("OMNI_LOAD_MT_FAST", "1") != "0":
 app = FastAPI(title="OmniVoice TTS + Whisper ASR + MT", version="2.4",
               description="OpenAI-compatible speech + transcription + chat(translation) on dual RTX, voice cloning + voice design")
 
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    """Opcionalmente protege o servidor remoto quando exposto fora da LAN.
+
+    Sem OMNI_API_KEY o comportamento legado permanece; em produção atrás de
+    internet/VPS, configurar a variável é obrigatório.
+    """
+    if REMOTE_API_KEY and request.url.path != "/health" and request.method != "OPTIONS":
+        auth = request.headers.get("authorization", "")
+        supplied = auth[7:].strip() if auth.lower().startswith("bearer ") else request.headers.get("x-api-key", "")
+        if not supplied or not secrets.compare_digest(supplied, REMOTE_API_KEY):
+            return JSONResponse({"detail": "Não autorizado"}, status_code=401)
+    return await call_next(request)
+
+
+async def read_upload_limited(file: UploadFile) -> bytes:
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "áudio grande demais")
+    return data
+
 class Req(BaseModel):
     model_config = ConfigDict(extra="allow")
     text: str
@@ -315,7 +342,7 @@ async def chat_completions(r: ChatReq):
 @app.post("/voices")
 async def add_voice(name: str = Form(...), audio: UploadFile = File(...), ref_text: str = Form("")):
     safe = _safe_name(name) or "voz"
-    b = await audio.read()
+    b = await read_upload_limited(audio)
     wav = await offload(IO_POOL, _to_wav24, b)
     with open(os.path.join(VOICES_DIR, safe + ".wav"), "wb") as f: f.write(wav)
     txt = os.path.join(VOICES_DIR, safe + ".txt")
@@ -360,7 +387,7 @@ async def openai_speech(r: SpeechReq):
         headers={"X-Gen-Seconds":f"{dt:.3f}","X-Audio-Seconds":f"{dur:.2f}","X-RTF":f"{dt/max(dur,1e-9):.4f}"})
 
 async def _asr(file, task, language, response_format, beam=5, model=""):
-    data = await file.read()
+    data = await read_upload_limited(file)
     suffix = os.path.splitext(file.filename or "a.wav")[1] or ".wav"
     def _write_tmp(b):
         tf=tempfile.NamedTemporaryFile(suffix=suffix, delete=False); tf.write(b); tf.close(); return tf.name

@@ -18,6 +18,7 @@ Endpoint espelha o que o app manda (_transcribe_remote): multipart `file`, `mode
 remote/voxtral_server.py — editar, ast.parse, scp p/ /root/voxtral/server.py, restart.
 """
 import os
+import secrets
 import tempfile
 import time
 import zlib
@@ -26,7 +27,7 @@ import librosa
 import numpy as np
 import torch
 import torch.nn.functional as F
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from silero_vad import get_speech_timestamps, load_silero_vad
 from transformers import BitsAndBytesConfig, VoxtralForConditionalGeneration, VoxtralProcessor
@@ -35,6 +36,11 @@ REPO = os.environ.get("VOXTRAL_REPO", "mistralai/Voxtral-Small-24B-2507")
 DEV = "cuda:0"   # CUDA_VISIBLE_DEVICES=1 + PCI_BUS_ID => 4090
 MAX_NEW = int(os.environ.get("VOXTRAL_MAX_NEW", "512"))
 MIN_SPEECH = float(os.environ.get("VOXTRAL_MIN_SPEECH", "0.2"))   # seg de fala p/ transcrever
+REMOTE_API_KEY = os.environ.get("VOXTRAL_API_KEY", "").strip()
+try:
+    MAX_UPLOAD_BYTES = max(1, min(int(os.environ.get("VOXTRAL_MAX_UPLOAD_MB", "64")), 2048)) * 1024 * 1024
+except ValueError:
+    MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 print(f"loading Voxtral processor {REPO}...", flush=True)
 processor = VoxtralProcessor.from_pretrained(REPO)
@@ -48,6 +54,24 @@ _vad = load_silero_vad(onnx=False)
 print("Voxtral ready", flush=True)
 
 app = FastAPI(title="Voxtral STT")
+
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    """Proteção opcional para deployments fora da rede local."""
+    if REMOTE_API_KEY and request.url.path != "/health" and request.method != "OPTIONS":
+        auth = request.headers.get("authorization", "")
+        supplied = auth[7:].strip() if auth.lower().startswith("bearer ") else request.headers.get("x-api-key", "")
+        if not supplied or not secrets.compare_digest(supplied, REMOTE_API_KEY):
+            return JSONResponse({"detail": "Não autorizado"}, status_code=401)
+    return await call_next(request)
+
+
+async def read_upload_limited(file: UploadFile) -> bytes:
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "áudio grande demais")
+    return data
 
 
 def _save_tmp(raw: bytes):
@@ -118,7 +142,7 @@ async def transcriptions(file: UploadFile = File(...), model: str = Form(None),
                          language: str = Form(None), response_format: str = Form("json"),
                          beam_size: int = Form(5), temperature: float = Form(0.0),
                          prompt: str = Form(None)):
-    raw = await file.read()
+    raw = await read_upload_limited(file)
     if not raw:
         raise HTTPException(400, "áudio vazio")
     path = _save_tmp(raw)
@@ -157,7 +181,7 @@ async def translations(file: UploadFile = File(...), model: str = Form(None),
                        response_format: str = Form("json"), temperature: float = Form(0.0),
                        prompt: str = Form(None)):
     # tradução STT->EN não é usada pelo pipeline ao vivo; transcreve e devolve.
-    raw = await file.read()
+    raw = await read_upload_limited(file)
     path = _save_tmp(raw)
     try:
         text, _ = _run(_load16(path), "en")

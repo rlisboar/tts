@@ -19,12 +19,15 @@ Nenhum áudio ou texto sai da máquina.
 ```
 
 Abra <http://127.0.0.1:7860> no navegador. O servidor escuta em `0.0.0.0`:
-outros dispositivos da rede acessam por `http://Mac-mini.local:7860` (Apple)
-ou pelo IP do Mac (ex.: `http://192.168.1.20:7860`).
+outros dispositivos da rede acessam por `http://NomeDoMac.local:7860` (Apple)
+ou pelo IP do Mac (ex.: `http://<ip-do-mac>:7860`).
 
 Toda a API (`/api/*` e `/v1/*`) exige chave. O `run.sh` gera uma na primeira
 execução, salva em `.apikey` e imprime no terminal. A UI pede a chave uma vez
-e guarda no navegador. Aceita `Authorization: Bearer`, `X-API-Key` ou `?api_key=`.
+e guarda no navegador. Aceita `Authorization: Bearer` ou `X-API-Key`.
+Para separar administração de uso normal pela rede, defina também
+`TTS_ROD_ADMIN_KEY`; sem essa variável, a compatibilidade legada permite que
+qualquer chave válida administre as chaves.
 
 1. **Gravar voz** — 10–30 s de fala limpa. Opcional: informe a transcrição da
    amostra (`ref_text`) para clonagem mais estável.
@@ -224,6 +227,12 @@ pelo proxy já sai com `server_url` incluindo o prefixo. Clientes OpenAI:
 próprio (server block dedicado + `location /`) também funciona, sem o
 prefixo. `TTS_TUNNEL_IF=enX` sobrescreve a interface de rede detectada;
 `./tunnel.sh uninstall` remove o agente.
+
+Os servidores opcionais em `remote/` também devem ficar protegidos na rede:
+defina `OMNI_API_KEY` no servidor OmniVoice e `VOXTRAL_API_KEY` no servidor
+Voxtral. O app envia essas chaves usando `remote_api_key` ou `remote_stt_key`.
+Sem essas variáveis, os servidores remotos mantêm o comportamento legado sem
+autenticação e devem ser usados somente atrás de firewall ou VPN.
 
 ## Conversa (decidir o texto com IA)
 

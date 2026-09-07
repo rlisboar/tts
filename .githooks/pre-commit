@@ -5,6 +5,6 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 PY=.venv-mlx/bin/python
 [ -x "$PY" ] || PY=python3
 
-"$PY" -m pyflakes app.py common.py tts_worker.py backends.py \
+"$PY" -m pyflakes app.py common.py tts_worker.py backends.py remote/*.py \
     tests/*.py client/mic_router.py || exit 1
 "$PY" -m pytest tests/ -q || exit 1

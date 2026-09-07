@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/bundle.min.js"></script>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' https://cdn.jsdelivr.net; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'">
 <title>TTS-STUDIO — Estúdio de voz local</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2309,29 +2309,15 @@
       <div class="view-scroll">
         <div class="card">
           <div class="cv-log" id="cvLog">
-            <p class="hint" id="cvHint">🎙 Aperte <b>Falar</b> e descreva o que você quer. A IA pergunta o que faltar — quando estiver bom, confirme ("pode mandar").</p>
+            <p class="hint" id="cvHint">🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar — quando estiver bom, confirme ("pode mandar").</p>
           </div>
           <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
             <button type="button" id="cvMic" class="primary">🎙 Ligar</button>
-            <button type="button" id="cvCutBtn" class="small" style="display:none" title="Corta e envia agora">⏎ Enviar</button>
             <select id="cvVoice" title="Voz da resposta da IA e da síntese" style="max-width:200px"></select>
             <span id="cvRec" style="display:none" class="hint">🎧 escutando…</span>
             <span style="flex:1"></span>
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
           </div>
-          <label class="cfg-label" style="margin-top:8px">Limiar de voz (SNR) <output id="cvSnrLimOut">3</output>
-            <input type="range" id="cvSnrLim" min="1.5" max="6" step="0.5" value="3" style="width:100%"></label>
-          <p class="hint" style="margin-top:2px">🎤 barra acima da linha laranja = voz detectada. Ajuste o limiar para o seu mic.</p>
-          <details style="margin-top:6px">
-            <summary class="hint" style="cursor:pointer">🎚 Ajustes avançados de áudio</summary>
-            <label class="check" style="margin-top:6px"><input type="checkbox" id="cvGate"> Filtro de ruído na gravação (highpass + gate suave)</label>
-            <label class="cfg-label">Corte de graves (Hz)
-              <input type="number" id="cvFiltHz" min="0" max="300" step="10" value="90"></label>
-            <label class="cfg-label">Pausa para cortar (ms)
-              <input type="number" id="cvSilenceMs" min="800" max="3000" step="100" value="1400"></label>
-
-            <p class="hint">Aplicados ao LIGAR novamente. O servidor também remove ruído (ffmpeg) nos uploads.</p>
-          </details>
           <p class="hint" id="cvStatus" style="margin-top:6px"></p>
           <details style="margin-top:10px">
             <summary class="hint" style="cursor:pointer">Instruções da IA (preprompt)</summary>
@@ -2345,9 +2331,7 @@
             <p class="hint" style="margin:0 0 6px"><b>Texto proposto:</b></p>
             <code id="cvFinalText" class="api-key-secret"></code>
             <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap">
-              <button type="button" id="cvApprove" class="small">✅ Aprovar</button>
-              <button type="button" id="cvSpeakBtn" class="small">🔊 Ouvir</button>
-              <button type="button" id="cvSynth" class="small">Sintetizar</button>
+              <button type="button" id="cvSynth" class="small">🔊 Ouvir</button>
               <button type="button" id="cvCopy" class="small">Copiar</button>
             </div>
           </div>
@@ -2483,7 +2467,6 @@
           <input type="text" id="vdSaveName" placeholder="Nome p/ salvar esta voz…" style="width:100%">
           <button id="vdSaveBtn" class="small" type="button" title="materializa o design numa voz salva">💾 Salvar como voz</button>
         </div>
-        <input type="hidden" id="oInstructLegacyBridge" value="">
       </section>
             </div>
             <div class="settings-pane" data-spane="audio">
@@ -2523,7 +2506,7 @@
         <label class="check"><input type="checkbox" id="apiAuthEnabled"> Exigir chave na rede local</label>
         <p class="hint" id="apiAuthHint">Neste Mac a UI não precisa de chave. Outros
           dispositivos usam uma das chaves abaixo via <code>Authorization: Bearer</code>,
-          <code>X-API-Key</code> ou <code>?api_key=</code>. Use <b>Revelar</b> / <b>Copiar</b>
+          <code>X-API-Key</code> ou <code>Authorization: Bearer</code>. Use <b>Revelar</b> / <b>Copiar</b>
           e cole no outro navegador.</p>
         <div id="apiKeysList" class="api-keys-list"></div>
         <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap">
@@ -2575,7 +2558,7 @@
         <h3 class="cfg-sec-h">TTS remoto (ex.: RTX)</h3>
         <label class="check"><input type="checkbox" id="remoteTts"> Síntese numa máquina remota</label>
         <label class="cfg-label">URL OmniVoice
-          <input type="text" id="remoteTtsUrl" placeholder="http://192.168.1.50:8800/tts"></label>
+          <input type="text" id="remoteTtsUrl" placeholder="http://rtx-host:8800/tts"></label>
         <p class="hint">Síntese remota no OmniVoice (646 idiomas, rápido).</p>
         <label class="cfg-label">Voz remota (nome/preset)
           <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
@@ -2720,12 +2703,35 @@ function toast(msg, ms = 3500) {
 let KEY = localStorage.getItem("ttsStudioKey") || localStorage.getItem("ttsRodKey") || "";
 // proxy por path (ex.: https://dominio/ttsproxy): prefixa todas as chamadas
 const APP_BASE = /^\/ttsproxy(\/|$)/.test(location.pathname) ? "/ttsproxy" : "";
-// <audio src>/<a download> não enviam header — chave vai na query string
-const k = u => APP_BASE + u + (KEY ? (u.includes("?") ? "&" : "?") + "api_key=" + encodeURIComponent(KEY) : "");
+// Recursos binários são carregados via fetch para manter a chave fora da URL.
+const k = u => APP_BASE + u;
 
 function authFetch(path, opts = {}) {
   opts.headers = { ...(opts.headers || {}), "X-API-Key": KEY };
   return fetch(APP_BASE + path, opts);
+}
+
+async function protectedAudio(el, path) {
+  try {
+    const r = await authFetch(path, { cache: "no-store" });
+    if (!r.ok) throw await apiError(r);
+    const old = el.dataset.objectUrl;
+    if (old) URL.revokeObjectURL(old);
+    const url = URL.createObjectURL(await r.blob());
+    el.dataset.objectUrl = url;
+    el.src = url;
+  } catch (e) {
+    el.dataset.loadError = e.message;
+  }
+}
+
+async function protectedDownload(path, filename) {
+  const r = await authFetch(path, { cache: "no-store" });
+  if (!r.ok) throw await apiError(r);
+  const url = URL.createObjectURL(await r.blob());
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function api(path, opts = {}) {
@@ -2745,6 +2751,22 @@ async function api(path, opts = {}) {
     throw new Error(detail);
   }
   return r.json();
+}
+
+// Constrói um Error a partir da resposta: usa `detail`/`hint` do corpo JSON
+// quando houver, senão o statusText. Base de api(), apiBlob e dos fetch binários.
+async function apiError(r) {
+  let d = r.statusText;
+  try { const b = await r.json(); d = b.hint || b.detail || d; } catch {}
+  return new Error(d);
+}
+
+// Igual a api(), mas para respostas binárias (blob). Sem isto cada chamada de
+// /v1/audio/speech, /api/audio/edit etc. reimplementava o tratamento de erro.
+async function apiBlob(path, opts = {}) {
+  const r = await authFetch(path, opts);
+  if (!r.ok) throw await apiError(r);
+  return await r.blob();
 }
 
 /* ───────── Navegação por abas ───────── */
@@ -2798,7 +2820,7 @@ const VD = {
            "russian accent", "chinese accent"],
 };
 function instructEl() {
-  return $("ctl_omni_instruct") || $("oInstruct");
+  return $("ctl_omni_instruct");
 }
 function getInstruct() {
   const el = instructEl();
@@ -3235,7 +3257,7 @@ async function fetchYouTube(url, start, end) {
     });
   } catch (e) { throw new Error(e.name === "AbortError" ? "tempo esgotado (3 min)" : e.message); }
   finally { clearTimeout(to); }
-  if (!r.ok) { let d = r.statusText; try { d = (await r.json()).detail || d; } catch {} throw new Error(d); }
+  if (!r.ok) throw await apiError(r);
   return await r.blob();
 }
 
@@ -3311,24 +3333,37 @@ const fmtTime = s => (isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s
 
 /* desenha o waveform (picos do backend) e o usa como BARRA DE NAVEGAÇÃO do áudio:
    clique/arraste = seek; play/pause próprio; o trecho tocado acende. */
+// Núcleo de desenho de waveform compartilhado por drawPeaks (navegação da voz) e
+// edDraw (editor). As duas telas têm geometria/overlays próprios — por isso
+// padding, largura da barra, seleção e cursor são parâmetros.
+function waveColors() {
+  const cs = getComputedStyle(document.documentElement);
+  return {
+    accent: (cs.getPropertyValue("--accent") || "#ff7a00").trim(),
+    dim: (cs.getPropertyValue("--border") || "#2a2a2a").trim(),
+  };
+}
+function drawWave(ctx, W, H, peaks, prog, o = {}) {
+  const { accent, dim } = waveColors();
+  ctx.clearRect(0, 0, W, H);
+  const mid = H / 2;
+  if (o.sel) { ctx.fillStyle = o.selColor || "rgba(255,122,0,.18)"; ctx.fillRect(o.sel.a * W, 0, (o.sel.b - o.sel.a) * W, H); }
+  const n = peaks.length || 1, bw = W / n;
+  const pad = o.pad ?? 3, gapR = o.gapR ?? 0.15, barR = o.barR ?? 0.7;
+  for (let i = 0; i < n; i++) {
+    const h = Math.max(2, peaks[i] * (H - pad));
+    ctx.fillStyle = (i / n) <= prog ? accent : dim;
+    ctx.fillRect(i * bw + bw * gapR, mid - h / 2, Math.max(1, bw * barR), h);
+  }
+  if (o.cursor) { ctx.fillStyle = accent; ctx.fillRect(prog * W, 0, 1.5, H); }
+}
 async function drawPeaks(canvas, id, buster, au, btn, tEl) {
   if (!canvas) return;
   let peaks;
   try { peaks = (await api(`/api/voices/${id}/peaks?n=180&_v=${buster}`)).peaks || []; }
   catch { return; }
-  const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, mid = H / 2;
-  const cs = getComputedStyle(document.documentElement);
-  const accent = (cs.getPropertyValue("--accent") || "#ff7a00").trim();
-  const dim = (cs.getPropertyValue("--border") || "#2a2a2a").trim();
-  const n = peaks.length || 1, bw = W / n;
-  const render = (prog = 0) => {
-    ctx.clearRect(0, 0, W, H);
-    for (let i = 0; i < n; i++) {
-      const h = Math.max(2, peaks[i] * (H - 3));
-      ctx.fillStyle = (i / n) <= prog ? accent : dim;
-      ctx.fillRect(i * bw + bw * 0.15, mid - h / 2, Math.max(1, bw * 0.7), h);
-    }
-  };
+  const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height;
+  const render = (prog = 0) => drawWave(ctx, W, H, peaks, prog, { pad: 3, gapR: 0.15, barR: 0.7 });
   const prog = () => (au && au.duration ? au.currentTime / au.duration : 0);
   render(0);
   if (!au) return;
@@ -3370,20 +3405,10 @@ async function peaksFromBlob(blob, n) {
   return { peaks: out.map(v => v / m), dur: dec.duration };
 }
 function edDraw() {
-  const c = $("edWave"), ctx = c.getContext("2d"), W = c.width, H = c.height, mid = H / 2;
-  ctx.clearRect(0, 0, W, H);
-  const cs = getComputedStyle(document.documentElement);
-  const accent = (cs.getPropertyValue("--accent") || "#ff7a00").trim();
-  const dim = (cs.getPropertyValue("--border") || "#2a2a2a").trim();
-  if (ED.sel) { ctx.fillStyle = "rgba(255,122,0,.18)"; ctx.fillRect(ED.sel.a * W, 0, (ED.sel.b - ED.sel.a) * W, H); }
-  const n = ED.peaks.length || 1, bw = W / n;
+  const c = $("edWave"), ctx = c.getContext("2d"), W = c.width, H = c.height;
   const prog = ED.au && ED.au.duration ? ED.au.currentTime / ED.au.duration : 0;
-  for (let i = 0; i < n; i++) {
-    const h = Math.max(2, ED.peaks[i] * (H - 8));
-    ctx.fillStyle = (i / n) <= prog ? accent : dim;
-    ctx.fillRect(i * bw + bw * 0.1, mid - h / 2, Math.max(1, bw * 0.8), h);
-  }
-  ctx.fillStyle = accent; ctx.fillRect(prog * W, 0, 1.5, H);   // cursor
+  drawWave(ctx, W, H, ED.peaks, prog,
+    { pad: 8, gapR: 0.1, barR: 0.8, sel: ED.sel, cursor: true });
   const gb = $("edGainApply"); if (gb) gb.textContent = ED.sel ? "🔊 Ganho (trecho)" : "🔊 Ganho (tudo)";
 }
 async function edSetBlob(blob, pushHist) {
@@ -3429,10 +3454,9 @@ async function edOp(op) {
   $("edStatus").textContent = "processando…";
   try {
     const fd = new FormData(); fd.append("audio", ED.blob, "a.wav"); fd.append("op", JSON.stringify(op));
-    const r = await authFetch("/api/audio/edit", { method: "POST", body: fd });
-    if (!r.ok) { let d = r.statusText; try { d = (await r.json()).detail || d; } catch {} throw new Error(d); }
+    const blob = await apiBlob("/api/audio/edit", { method: "POST", body: fd });
     ED.sel = null; $("edSel").textContent = "arraste na onda p/ selecionar um trecho";
-    await edSetBlob(await r.blob(), true);
+    await edSetBlob(blob, true);
     $("edStatus").textContent = "ok ✔";
   } catch (e) { $("edStatus").textContent = ""; toast("Erro: " + e.message, 6000); }
 }
@@ -3474,7 +3498,8 @@ $("editVoiceBtn").onclick = () => {
 
 /* ───────── Lista de vozes ───────── */
 $("exportVoicesBtn").onclick = () => {
-  window.location.href = k("/api/voices/export");
+  protectedDownload("/api/voices/export", "tts-studio-vozes.zip")
+    .catch(e => toast("Erro no backup: " + e.message, 6000));
 };
 $("importVoicesBtn").onclick = () => $("voicesImportFile").click();
 $("voicesImportFile").onchange = async (e) => {
@@ -3508,7 +3533,7 @@ async function refreshVoices() {
   // preserve o playback: refresh recria os <audio> e cortaria o que toca
   const tocando = [...list.querySelectorAll("audio")].find(a => !a.paused && !a.ended);
   const tocandoInfo = tocando
-    ? { vid: new URL(tocando.src).pathname.split("/")[3], t: tocando.currentTime }
+    ? { vid: tocando.dataset.voiceId, t: tocando.currentTime }
     : null;
   sel.innerHTML = ""; sel2.innerHTML = "";
   // voz "virtual": gera a partir da descrição (campo Voice design), sem clone
@@ -3537,7 +3562,7 @@ async function refreshVoices() {
           <canvas class="wave" width="600" height="38" title="clique/arraste p/ navegar"></canvas>
           <span class="wtime">0:00 / ${v.duration ? fmtTime(v.duration) : "0:00"}</span>
         </div></div>
-        <audio class="weng" preload="metadata" src="${k(`/api/voices/${v.id}/audio?_v=${buster}`)}"></audio>
+        <audio class="weng" data-voice-id="${esc(v.id)}" preload="metadata"></audio>
         <div class="item-actions">
         ${editBtn}
         ${cleanBtn}
@@ -3545,13 +3570,14 @@ async function refreshVoices() {
         </div>`;
       const au = div.querySelector(".weng");
       const wplay = div.querySelector(".wplay");
+      protectedAudio(au, `/api/voices/${v.id}/audio?_v=${buster}`);
       drawPeaks(div.querySelector(".wave"), v.id, buster, au, wplay, div.querySelector(".wtime"));
       wplay.onclick = () => { au.paused ? au.play() : au.pause(); };
       const eb = div.querySelector(".edit");
       if (eb) eb.onclick = async () => {
         eb.disabled = true;
         try {
-          const blob = await (await authFetch(k(`/api/voices/${v.id}/audio?_v=${buster}`))).blob();
+          const blob = await (await authFetch(`/api/voices/${v.id}/audio?_v=${buster}`)).blob();
           openEditor(blob, async (b) => {
             const fd = new FormData(); fd.append("audio", b, "voz.wav");
             try {
@@ -3611,6 +3637,21 @@ async function refreshVoices() {
     }
     cfgv.value = keep; if (cfgv.selectedIndex < 0) cfgv.selectedIndex = 0;
   }
+  // Conversa: a voz da resposta também é preenchida aqui — antes cvLoadVoices
+  // tinha caminho próprio e ficava dessincronizado quando uma voz era criada/apagada.
+  const cvv = $("cvVoice");
+  if (cvv) {
+    const keep = cvv.value;
+    cvv.innerHTML = "";
+    const ov = document.createElement("option");
+    ov.value = ""; ov.textContent = "voz padrão do servidor";
+    cvv.appendChild(ov);
+    for (const v of voices) {
+      const o = document.createElement("option");
+      o.value = v.id; o.textContent = v.name || v.id; cvv.appendChild(o);
+    }
+    cvv.value = keep; if (cvv.selectedIndex < 0) cvv.selectedIndex = 0;
+  }
   if (selected) sel.value = selected;
   if (sel.selectedIndex < 0) sel.selectedIndex = 0;
   if (selected2) sel2.value = selected2;
@@ -3639,10 +3680,12 @@ if ($("sttBeam")) {
 
 /* Seletor de engine de STT: aplica na hora (sem o Salvar) e mostra os campos
    manuais só no modo "API externa". */
-// host do RTX = o mesmo do TTS/tradução remota (remote_base_url); fallback: IP fixo
+// host do RTX = o mesmo do TTS/tradução remota (remote_base_url). Sem base
+// configurada sobra o placeholder, que falha com erro de DNS claro (melhor que
+// um IP de exemplo que simplesmente daria timeout).
 function rtxHost() {
   const m = ($("remoteBaseUrl")?.value || "").match(/^https?:\/\/([^\/\s]+)/);
-  return m ? m[1] : "192.168.200.32";
+  return m ? m[1] : "rtx-host";
 }
 const VOXTRAL_URL = () => `http://${rtxHost()}:8802/v1`;
 const WHISPER_RTX_URL = () => `http://${rtxHost()}:8800/v1`;
@@ -3736,34 +3779,52 @@ $("tvStopBtn").onclick = stopPlayback;
 
 /* Toca um job de TTS por streaming (busca cada trecho e agenda no AudioContext).
    Usado pela síntese e pelo tradutor de voz. */
+/* Núcleo comum dos dois streaming: faz polling do job e agenda cada peça na
+   timeline do AudioContext `pl`. Os dois chamadores diferem só no que mostram
+   e em até onde vão — por isso progresso/intervalo/limite vêm em `opts`.
+   opts: { gap=0.05, poll=150, maxTries=Infinity, onProgress(j,buscados) }
+   Retorna o último job lido; lança em status "error". */
+async function pollPieces(job_id, pl, opts = {}) {
+  const gap = opts.gap ?? 0.05;
+  const poll = opts.poll ?? 150;
+  const maxTries = opts.maxTries ?? Infinity;
+  let buscados = 0, tries = 0, j;
+  while (!pl.stopped && tries++ < maxTries) {
+    j = await api(`/api/tts/jobs/${job_id}`);
+    if (j.status === "error") throw new Error(j.error || "falha na geração");
+    while (buscados < j.pieces) {
+      const buf = await (await authFetch(`/api/tts/jobs/${job_id}/pieces/${buscados}`)).arrayBuffer();
+      if (!pl.stopped && !ttsMuted) {   // virou "voz real" no meio -> para de agendar
+        const audio = await pl.ctx.decodeAudioData(buf);
+        const src = pl.ctx.createBufferSource();
+        src.buffer = audio; src.connect(pl.ctx.destination);
+        const t = Math.max(pl.ctx.currentTime + gap, pl.nextTime);
+        src.start(t); pl.nextTime = t + audio.duration; pl.sources.push(src);
+      }
+      buscados++;
+    }
+    if (j.status === "done") { refreshOutputs(); return j; }
+    if (opts.onProgress) opts.onProgress(j, buscados);
+    await new Promise(r => setTimeout(r, poll));
+  }
+  return j;
+}
+
 async function streamJob(job_id, statusEl) {
   stopPlayback();
   player = { ctx: mkCtx(), nextTime: 0, sources: [], stopped: false };
   const meu = player;
   $("stopBtn").style.display = "";
   $("tvStopBtn").style.display = "";
-  let buscados = 0;
   try {
-    while (true) {
-      const j = await api(`/api/tts/jobs/${job_id}`);
-      if (j.status === "error") throw new Error(j.error || "falha na geração");
-      if (j.status === "queued" && statusEl) {
-        const msg = (j.progress && j.progress.stage) || "na fila de falas…";
-        statusEl.innerHTML = `<span class="spinner"></span>${msg}`;
-      }
-      while (buscados < j.pieces) {
-        const buf = await (await authFetch(`/api/tts/jobs/${job_id}/pieces/${buscados}`)).arrayBuffer();
-        if (!meu.stopped && !ttsMuted) {   // virou "voz real" no meio -> para de agendar
-          const audio = await meu.ctx.decodeAudioData(buf);
-          const src = meu.ctx.createBufferSource();
-          src.buffer = audio; src.connect(meu.ctx.destination);
-          const t = Math.max(meu.ctx.currentTime + 0.05, meu.nextTime);
-          src.start(t); meu.nextTime = t + audio.duration; meu.sources.push(src);
+    return await pollPieces(job_id, meu, {
+      onProgress: (j, buscados) => {
+        if (j.status === "queued" && statusEl) {
+          const msg = (j.progress && j.progress.stage) || "na fila de falas…";
+          statusEl.innerHTML = `<span class="spinner"></span>${msg}`;
+          return;
         }
-        buscados++;
-      }
-      if (j.status === "done") { refreshOutputs(); return j; }
-      if (statusEl && j.progress) {
+        if (!statusEl || !j.progress) return;
         let msg;
         if (j.progress.stage) msg = j.progress.stage;
         else if (j.progress.current != null)
@@ -3772,10 +3833,8 @@ async function streamJob(job_id, statusEl) {
         if (j.progress.backend) msg += ` [${j.progress.backend}]`;
         if (j.warning) msg = `⚠ ${j.warning} — ` + msg;
         statusEl.innerHTML = `<span class="spinner"></span>${esc(msg)}`;
-      }
-      // 150ms: peça pronta emenda na hora — 700ms criava pausa audível entre frases
-      await new Promise(r => setTimeout(r, 150));
-    }
+      },
+    });
   } finally {
     if (player === meu && !meu.stopped) {
       const resta = Math.max(0, (meu.nextTime - meu.ctx.currentTime) * 1000) + 300;
@@ -4038,7 +4097,7 @@ async function pollMicRoute() {
   } catch {}
   setTtsMuted(false);   // ninguém no controle -> TTS livre
 }
-setInterval(pollMicRoute, 350);
+const micRouteTimer = setInterval(pollMicRoute, 350);
 pollMicRoute();
 function fillDevices(sel, devs, current) {
   sel.innerHTML = '<option value="">Padrão do sistema</option>';
@@ -4362,7 +4421,6 @@ async function requestTranslation(blob) {
   return r;
 }
 
-const escHtml = s => (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 function showTrans(r) {
   const out = fEl("out");
   const src = r.source_text || "", trans = r.translation || "";
@@ -4375,10 +4433,10 @@ function showTrans(r) {
   const dstLang = same ? (r.source_lang || "") : (r.target_lang || "");
   let html = "";
   if (!same)
-    html += `<div class="t-src"><span class="t-lang">${escHtml(r.source_lang || "?")}</span>${escHtml(src)}</div>`;
-  html += `<div class="t-dst"><span class="t-lang t-lang-dst">${escHtml(dstLang)}</span>${escHtml(spoken)}</div>`;
-  if (r.emotion) html += `<div class="t-emo">🎭 ${escHtml(r.emotion)}</div>`;
-  if (r.emotion_error) html += `<div class="t-emo err">emoção indisponível: ${escHtml(r.emotion_error)}</div>`;
+    html += `<div class="t-src"><span class="t-lang">${esc(r.source_lang || "?")}</span>${esc(src)}</div>`;
+  html += `<div class="t-dst"><span class="t-lang t-lang-dst">${esc(dstLang)}</span>${esc(spoken)}</div>`;
+  if (r.emotion) html += `<div class="t-emo">🎭 ${esc(r.emotion)}</div>`;
+  if (r.emotion_error) html += `<div class="t-emo err">emoção indisponível: ${esc(r.emotion_error)}</div>`;
   e.innerHTML = html;
   out.querySelector(".empty")?.remove();
   out.appendChild(e);
@@ -4406,24 +4464,9 @@ async function translateAndSpeak(blob) {
    sem resetar — permite emendar trechos de chamadas consecutivas (pipeline).
    Retorna quando o job termina (todas as peças buscadas), não quando toca. */
 async function streamJobInto(job_id, pl) {
-  let buscados = 0, tries = 0;
-  while (!pl.stopped && tries++ < 250) {   // ~30s/trecho no máx -> não congela o pipeline
-    const j = await api(`/api/tts/jobs/${job_id}`);
-    if (j.status === "error") throw new Error(j.error || "falha na geração");
-    while (buscados < j.pieces) {
-      const buf = await (await authFetch(`/api/tts/jobs/${job_id}/pieces/${buscados}`)).arrayBuffer();
-      if (!pl.stopped && !ttsMuted) {   // se virou "voz real" no meio, para de agendar (descarta)
-        const audio = await pl.ctx.decodeAudioData(buf);
-        const src = pl.ctx.createBufferSource();
-        src.buffer = audio; src.connect(pl.ctx.destination);
-        const t = Math.max(pl.ctx.currentTime + 0.08, pl.nextTime);
-        src.start(t); pl.nextTime = t + audio.duration; pl.sources.push(src);
-      }
-      buscados++;
-    }
-    if (j.status === "done") { refreshOutputs(); return; }
-    await sleep(120);
-  }
+  // pipeline do tradutor: sem UI de progresso, gap maior (0,08) para emendar
+  // sem estalo e teto de tentativas (~30s/trecho) para não congelar a fila
+  await pollPieces(job_id, pl, { gap: 0.08, poll: 120, maxTries: 250 });
 }
 
 /* Pipeline de tradução simultânea (modo contínuo): consome trechos da fila e os
@@ -4466,9 +4509,9 @@ async function refreshOutputs() {
     div.innerHTML = `
       <div class="grow"><div class="name">${esc(short)}</div>
       <div class="meta"><span>${o.duration}s</span><span class="dot">gerado em ${o.elapsed}s</span><span class="dot">${o.created_at}</span></div></div>
-      <audio controls preload="none" src="${k(`/api/outputs/${o.id}/audio`)}"></audio>
+      <audio controls preload="none"></audio>
       <div class="item-actions">
-      <a href="${k(`/api/outputs/${o.id}/audio`)}" download><button class="ghost small">Baixar</button></a>
+      <button class="ghost small download-output">Baixar</button>
       <button class="danger small">Apagar</button>
       </div>`;
     div.querySelector(".danger").onclick = async () => {
@@ -4476,6 +4519,10 @@ async function refreshOutputs() {
       refreshOutputs();
     };
     list.appendChild(div);
+    protectedAudio(div.querySelector("audio"), `/api/outputs/${o.id}/audio`);
+    div.querySelector(".download-output").onclick = () =>
+      protectedDownload(`/api/outputs/${o.id}/audio`, `tts-${o.id}.wav`)
+        .catch(e => toast("Erro no download: " + e.message, 6000));
   }
 }
 
@@ -4526,26 +4573,23 @@ async function loadApiKeys() {
       } else if (data.local) {
         hint.innerHTML = "Você está neste Mac — a UI não precisa de chave. Outros dispositivos em "
           + (lans || "http://IP-DO-MAC:7860")
-          + " usam Bearer / X-API-Key / ?api_key=. Use <b>Revelar</b> ou <b>Copiar</b> e cole lá.";
+          + " usam Bearer / X-API-Key. Use <b>Revelar</b> ou <b>Copiar</b> e cole lá.";
       } else {
         hint.innerHTML = "Auth <b>ativa</b> na rede. Este dispositivo já autenticou. "
           + "Revelar/criar chaves vale para os outros sistemas (Home Assistant, scripts, etc.).";
       }
     }
-    const rows = [];
-    for (const k of (data.keys || [])) {
-      rows.push(k);
-    }
+    const rows = [...(data.keys || [])];
     if (data.env_key) rows.push(data.env_key);
     if (!rows.length) {
       list.innerHTML = '<div class="empty" style="padding:16px">Nenhuma chave — crie uma abaixo.</div>';
       return;
     }
     list.innerHTML = "";
-    for (const k of rows) {
+    for (const kr of rows) {
       const div = document.createElement("div");
       div.className = "api-key-row";
-      const ro = k.readonly || k.id === "__env__";
+      const ro = kr.readonly || kr.id === "__env__";
       div.innerHTML = `
         <div class="ak-meta">
           <span class="ak-name"></span>
@@ -4553,9 +4597,9 @@ async function loadApiKeys() {
           <span class="ak-date"></span>
         </div>
         <div class="ak-actions"></div>`;
-      div.querySelector(".ak-name").textContent = k.name + (ro ? " · somente leitura" : "");
-      div.querySelector(".ak-mask").textContent = k.masked || "••••";
-      div.querySelector(".ak-date").textContent = k.created_at ? ("criada " + k.created_at) : "";
+      div.querySelector(".ak-name").textContent = kr.name + (ro ? " · somente leitura" : "");
+      div.querySelector(".ak-mask").textContent = kr.masked || "••••";
+      div.querySelector(".ak-date").textContent = kr.created_at ? ("criada " + kr.created_at) : "";
       const acts = div.querySelector(".ak-actions");
       const btn = (label, cls, title) => {
         const b = document.createElement("button");
@@ -4567,7 +4611,7 @@ async function loadApiKeys() {
         btn("Revelar", "ghost", "Mostra o secret para copiar no outro dispositivo").onclick = async () => {
           try {
             const d = await api("/api/apikeys?reveal=1");
-            const found = (d.keys || []).find(x => x.id === k.id);
+            const found = (d.keys || []).find(x => x.id === kr.id);
             if (found && found.secret) {
               showApiKeyReveal(found.secret);
               toast("Segredo revelado abaixo — copie se precisar");
@@ -4577,7 +4621,7 @@ async function loadApiKeys() {
         btn("Copiar", "ghost", "Copia o segredo completo").onclick = async () => {
           try {
             const d = await api("/api/apikeys?reveal=1");
-            const found = (d.keys || []).find(x => x.id === k.id);
+            const found = (d.keys || []).find(x => x.id === kr.id);
             const secret = found && found.secret;
             if (!secret) { toast("Não foi possível copiar o segredo", 4000); return; }
             showApiKeyReveal(secret);
@@ -4590,10 +4634,10 @@ async function loadApiKeys() {
       }
       if (!ro) {
         btn("Renomear", "ghost").onclick = async () => {
-          const name = prompt("Novo nome da chave:", k.name);
+          const name = prompt("Novo nome da chave:", kr.name);
           if (!name || !name.trim()) return;
           try {
-            await api(`/api/apikeys/${k.id}`, {
+            await api(`/api/apikeys/${kr.id}`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ name: name.trim() }),
@@ -4603,9 +4647,9 @@ async function loadApiKeys() {
           } catch (e) { toast("Erro: " + e.message, 5000); }
         };
         btn("Rotacionar", "ghost", "Gera um secret novo; o antigo deixa de valer").onclick = async () => {
-          if (!confirm(`Rotacionar "${k.name}"? Sistemas com a chave antiga param de funcionar.`)) return;
+          if (!confirm(`Rotacionar "${kr.name}"? Sistemas com a chave antiga param de funcionar.`)) return;
           try {
-            const r = await api(`/api/apikeys/${k.id}/rotate`, { method: "POST" });
+            const r = await api(`/api/apikeys/${kr.id}/rotate`, { method: "POST" });
             const secret = r.key && r.key.secret;
             showApiKeyReveal(secret);
             toast("Nova chave gerada — copie agora");
@@ -4619,9 +4663,9 @@ async function loadApiKeys() {
           } catch (e) { toast("Erro: " + e.message, 5000); }
         };
         btn("Apagar", "danger", "Revoga a chave").onclick = async () => {
-          if (!confirm(`Apagar a chave "${k.name}"?`)) return;
+          if (!confirm(`Apagar a chave "${kr.name}"?`)) return;
           try {
-            const r = await api(`/api/apikeys/${k.id}`, { method: "DELETE" });
+            const r = await api(`/api/apikeys/${kr.id}`, { method: "DELETE" });
             toast(r.remaining === 0 && r.auth_active === false
               ? "Chave apagada — sem chaves ativas a rede fica aberta se o toggle estiver desligado"
               : "Chave apagada ✔");
@@ -5047,9 +5091,9 @@ async function refreshSpProfiles() {
     const lista = await api("/api/speaker/profiles");
     el.innerHTML = lista.length
       ? "Cadastradas: " + lista.map(p =>
-          `<span class="sp-chip" data-nome="${p.name.replace(/"/g, "&quot;")}">` +
-          `${p.name} (${p.samples}) <button type="button" class="ghost small" ` +
-          `data-del="${p.name.replace(/"/g, "&quot;")}" title="remover perfil">🗑</button></span>`
+          `<span class="sp-chip" data-nome="${esc(p.name)}">` +
+          `${esc(p.name)} (${Number(p.samples) || 0}) <button type="button" class="ghost small" ` +
+          `data-del="${esc(p.name)}" title="remover perfil">🗑</button></span>`
         ).join(" · ")
       : "Nenhuma voz cadastrada ainda.";
     el.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
@@ -5144,8 +5188,9 @@ $("spTest")?.addEventListener("click", async () => {
 const CFG_DIRTY_IDS = ["cfgModel","cfgModelCustom","cfgPrePrompt","cfgLang","cfgVoice","cfgChunk","cfgSpeed",
   "cfgPrecision","audGain","audLow","audMid","audHigh",
   "remoteTts","remoteTtsUrl","remoteTtsVoice","remoteTtsExtra","remoteBaseUrl","remoteApiKey",
-  "remoteTranslate","remoteTranslateModel","vdGender","vdAge","vdPitch","vdAccent","vdWhisper","oSeed",
+  "remoteTranslate","remoteTranslateModel","vdGender","vdAge","vdPitch","vdAccent","vdWhisper",
   "freeLocalOnRemote","idleUnloadMin","speechQueue","speechQueueGap"];
+  // oSeed fora da lista: o onchange dele já persiste na hora (marcaria "não salvo" à toa)
 function markCfgDirty() {
   if ($("cfgSave")) $("cfgSave").textContent = "Salvar configurações •";
   if ($("cfgStatus")) $("cfgStatus").textContent = "alterações não salvas";
@@ -5218,6 +5263,8 @@ $("cfgSave").onclick = async () => {
 $("shutdownBtn").onclick = async () => {
   if (!confirm("Desligar o servidor? A página para de funcionar até religar (TTS-STUDIO.command).")) return;
   try { await api("/api/shutdown", { method: "POST" }); } catch {}
+  // para os timers: sem isto continuariam falhando contra o servidor morto
+  clearInterval(micRouteTimer); clearInterval(statusTimer);
   document.body.innerHTML = '<div style="text-align:center;margin-top:80px;font-size:18px;color:#888">'
     + 'Servidor desligado.<br><br>Para religar, dê dois cliques em <b>TTS-STUDIO.command</b> no Finder.</div>';
 };
@@ -5292,7 +5339,7 @@ const cvDbg = m => api("/api/chat-debug", {
 const CV_HINT = '🎙 Aperte <b>Ligar</b> e converse. A IA pergunta o que faltar — quando estiver bom, confirme ("pode mandar").';
 let cvSid = null, cvPlaying = false, cvVad = null, cvVadLigado = false;
 let cvUltimaFala = "", cvUltimaFalaAt = 0;
-let cvBusy = false, cvSpeakingLogged = false;
+let cvBusy = false;
 // Barge-in: cada fala do humano abre um TURNO novo. Só o turno mais novo pode
 // escrever na tela e tocar áudio — o anterior morre (fetch abortado, fila de
 // frases cortada), senão a resposta velha continuava tocando e serializava
@@ -5385,13 +5432,10 @@ function cvSintetiza(frase, sinal) {
   const body = { model: "tts-1", input: frase, response_format: "wav", queue: false };
   const voz = $("cvVoice")?.value;
   if (voz) body.voice = voz;
-  const p = fetch(APP_BASE + "/v1/audio/speech", {
+  const p = apiBlob("/v1/audio/speech", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-API-Key": KEY },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body), signal: sinal
-  }).then(r => {
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    return r.blob();
   });
   p.catch(() => {});   // marca tratada: se o turno morrer antes do await, sem unhandled
   return p;
@@ -5567,7 +5611,6 @@ $("cvMic").onclick = async () => {
           cvPararAudio();
           cvStatus("✋ interrompi — pode falar");
         },
-        onSpeechStart: () => { cvSpeakingLogged = true; },
         onSpeechEnd: async audio => {
           cvFramesVoz = 0;
           const blob = encodeWav(audio, 16000);
@@ -5582,7 +5625,6 @@ $("cvMic").onclick = async () => {
     cvStatus("🎧 ouvindo… fale o objetivo");
   } catch (e) { cvStatus("✖ " + e.message); }
 };
-$("cvCutBtn").onclick = () => {};
 $("cvEnd").onclick = async () => {
   cvCancelarTurno();   // encerrar = nada da resposta em voo pode tocar depois
   if (!cvSid) { if (cvVad) cvVad.pause(); cvSetMic(false); return; }
@@ -5606,13 +5648,11 @@ $("cvSynth").onclick = async () => {
     const body = { model: "tts-1", input: texto, response_format: "wav" };
     const voz = $("cvVoice")?.value;
     if (voz) body.voice = voz;
-    const r = await fetch(APP_BASE + "/v1/audio/speech", {
+    const blob = await apiBlob("/v1/audio/speech", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-API-Key": KEY },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const blob = await r.blob();
     $("cvAudio").src = URL.createObjectURL(blob);
     $("cvAudio").play().catch(() => {});
     cvStatus("áudio pronto");
@@ -5646,29 +5686,15 @@ $("cvSystemReset").onclick = async () => {
   } catch (e) { toast("Erro: " + e.message, 5000); }
 };
 async function cvLoadVoices() {
-  const sel = $("cvVoice");
-  if (!sel) return;
+  // só a versão do build; a lista de vozes vem de refreshVoices (fonte única)
   try {
     const st = await api("/api/status");
     const b = $("cvBuild");
     if (b) b.textContent = "· build " + (st.version || "?");
   } catch (e) {}
-  try {
-    const vs = await api("/api/voices");
-    if (!Array.isArray(vs)) return;
-    sel.innerHTML = "";
-    const o0 = document.createElement("option");
-    o0.value = ""; o0.textContent = "voz padrão do servidor";
-    sel.appendChild(o0);
-    vs.forEach(v => {
-      const o = document.createElement("option");
-      o.value = v.id;
-      o.textContent = v.name || v.id;
-      sel.appendChild(o);
-    });
-  } catch (e) {}
 }
 cvLoadVoices();
+cvLoadSystem();   // sem isto a caixa de preprompt nascia vazia (só o placeholder)
 
 
 $("sttSrtBtn").onclick = () => {
@@ -5689,7 +5715,7 @@ refreshOutputs();
 loadSettings();
 initMicControls();
 refreshDevices();
-setInterval(refreshStatus, 15000);
+const statusTimer = setInterval(refreshStatus, 15000);
 </script>
 </body>
 </html>

@@ -24,7 +24,7 @@ Toda requisição a `/api/*` exige a chave em **um** destes:
 ```
 X-API-Key: <chave>
 Authorization: Bearer <chave>
-?api_key=<chave>          (query string, p/ players de áudio)
+Não envie a chave na query string; use `Authorization: Bearer` ou `X-API-Key`.
 ```
 
 ## Máquina de estados da sessão

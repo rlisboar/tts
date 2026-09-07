@@ -28,7 +28,9 @@ if [ -n "$LAN_IP" ]; then
   echo "UI rede:   http://$LAN_IP:7860  (outros dispositivos precisam da chave)"
 fi
 if [ -n "$TTS_ROD_API_KEY" ]; then
-  echo "Chave da API (cole no outro dispositivo): $TTS_ROD_API_KEY"
+  KEY_PREFIX="${TTS_ROD_API_KEY:0:4}"
+  KEY_SUFFIX="${TTS_ROD_API_KEY: -4}"
+  echo "Chave da API carregada: ${KEY_PREFIX}…${KEY_SUFFIX} (use Configurações → Acesso → Revelar)"
 else
   echo "Chaves da API: gerencie em Configurações → Acesso (UI)"
 fi
