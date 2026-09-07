@@ -680,7 +680,7 @@ _gen_lock = threading.Lock()  # geração LOCAL (MLX) não é thread-safe; seria
 import contextlib
 _NO_LOCK = contextlib.nullcontext()  # remoto pode rodar concorrente (sem serializar)
 _model_state = {"status": "idle", "device": None, "model": _settings["model"],
-                "error": None, "progress": None}
+                "error": None, "progress": None, "precision": None, "path": None}
 
 
 def _model_state_progress(msg):
@@ -1718,6 +1718,32 @@ def _resolve_omni(payload: dict, family: str | None = None) -> dict:
 
 @app.post("/api/settings")
 def update_settings(payload: dict):
+    """Aplica as settings de forma ATÔMICA (o corpo faz `_settings[k]=...` campo a
+    campo e só grava o disco no fim).
+
+    Sem rollback, o primeiro campo inválido (ex.: `chat_extra` que não é JSON,
+    `stt_whisper_repo` sem "whisper") devolvia 400 DEPOIS de aplicar os anteriores
+    na RAM, sem nunca chegar ao `_save_settings()` — a config passava a valer na
+    hora, sobrevivia ao uso e SUMIA no restart, sem nenhum aviso de que não tinha
+    sido gravada. Aqui: falhou, restaura o estado anterior (RAM == disco).
+    """
+    _antes = dict(_settings)
+    try:
+        _r = _apply_settings(payload)
+    except Exception:
+        _settings.clear()
+        _settings.update(_antes)
+        raise
+    if str(_antes.get("omni_precision", "")).lower() != str(_settings.get("omni_precision", "")).lower():
+        # Troca de dtype só pegaria no próximo load_model; descarrega o modelo com o
+        # dtype antigo agora, senão continua servindo (e segurando ~GB de RAM com) ele.
+        # Com job em voo não encosta: _gen_lock está tomado e o reload é lazy de qualquer jeito.
+        if not any(j.get("status") in ("running", "queued") for j in _jobs.values()):
+            _unload_local_models(tts=True, stt=False, mt=False, ser=False)
+    return _r
+
+
+def _apply_settings(payload: dict):
     if "model" in payload:
         m = str(payload["model"] or "").strip()
         if m:
@@ -2660,7 +2686,8 @@ def _unload_local_tts():
         _conds_cache.clear()
         _release_mlx_memory(aggressive=True)
         if _model_state.get("status") != "error":
-            _model_state.update(status="idle", progress=None, model=_settings.get("model"))
+            _model_state.update(status="idle", progress=None, model=_settings.get("model"),
+                                precision=None, path=None)
 
 
 def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Path,
@@ -3290,7 +3317,11 @@ def _unload_local_models(tts=True, stt=True, mt=True, ser=True) -> dict:
                     freed.append("tts")
                 _conds_cache.clear()
                 if _model_state.get("status") != "error":
-                    _model_state.update(status="idle", error=None, progress=None)
+                    # precision/path junto com o status: sem isto /api/status segue
+                    # afirmando "ready, precision X, path Y" de um modelo que já
+                    # saiu da RAM (unload por ociosidade / troca de precisão).
+                    _model_state.update(status="idle", error=None, progress=None,
+                                        precision=None, path=None)
     if mt:
         with _mt_lock:
             if _mt.get("model") is not None:

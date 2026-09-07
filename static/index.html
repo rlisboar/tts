@@ -3156,8 +3156,13 @@ async function refreshStatus() {
     const short = name.length > 28 ? name.slice(0, 26) + "…" : name;
     const label = s.backend_label || s.backend_id || s.model || short;
     const beShort = (s.backend_id || name || "—").toString();
+    // precision/path vêm do MODELO CARREGADO (null quando está fora da RAM) — é a
+    // única forma de o usuário conferir que a troca de precisão pegou de verdade.
+    const prec = s.precision ? ` · ${s.precision}` : "";
+    const detalhe = [label, s.precision ? `precisão: ${s.precision}` : null,
+                     s.path ? `pesos: ${s.path}` : null].filter(Boolean).join("\n");
     if (s.status === "ready") {
-      setDual(`${short} · pronto`, "ok", label, beShort);
+      setDual(`${short}${prec} · pronto`, "ok", detalhe, beShort);
     } else if (s.status === "loading") {
       setDual(s.progress || `carregando ${short}…`, "warn", s.path || label, beShort);
     } else if (s.status === "error") {
@@ -3656,12 +3661,16 @@ async function refreshVoices() {
   if (sel.selectedIndex < 0) sel.selectedIndex = 0;
   if (selected2) sel2.value = selected2;
   if (sel2.selectedIndex < 0) sel2.selectedIndex = 0;
-  // retoma o playback que o refresh teria cortado (UI sincroniza via eventos)
-  if (tocandoInfo) {
-    const a = list.querySelector(`audio[src*="/api/voices/${tocandoInfo.vid}/"]`);
+  // retoma o playback que o refresh teria cortado (UI sincroniza via eventos).
+  // O <audio> recriado nasce sem src (protectedAudio preenche em async) e o src é
+  // blob:, então casar por `audio[src*="/api/voices/..."]` nunca achava nada:
+  // atualizar a lista cortava a amostra que estava tocando e nunca retomava.
+  if (tocandoInfo && tocandoInfo.vid) {
+    const a = list.querySelector(`audio[data-voice-id="${CSS.escape(tocandoInfo.vid)}"]`);
     if (a) {
-      a.currentTime = tocandoInfo.t;
-      a.play().catch(() => {});
+      const retoma = () => { try { a.currentTime = tocandoInfo.t; } catch {} a.play().catch(() => {}); };
+      if (a.readyState >= 1) retoma();
+      else a.addEventListener("loadedmetadata", retoma, { once: true });
     }
   }
   updateTransVdHint();
@@ -3698,20 +3707,29 @@ function applySttEngine(persist) {
       url: $("remoteSttBaseUrl").value, model: $("remoteSttModel").value, key: $("remoteSttKey").value }));
   }
   let body;
+  // Nos presets, os campos de API são DErivados (host + porta). Só reescrevê-los
+  // quando o USADOR escolheu o preset: no load (persist=false) o valor salvo é a
+  // verdade, e sobrescrevê-lo fazia o próximo "Salvar" gravar um URL inventado
+  // por cima do que a pessoa digitou — a config "não persistia".
+  const escreve = (url, mod) => {
+    $("remoteSttBaseUrl").value = url; $("remoteSttModel").value = mod; $("remoteSttKey").value = "";
+  };
   if (eng === "voxtral") {
     $("remoteStt").checked = true;
-    $("remoteSttBaseUrl").value = VOXTRAL_URL();
-    $("remoteSttModel").value = "voxtral";
-    $("remoteSttKey").value = "";
     $("sttAdvanced").style.display = "none";
-    body = { remote_stt: true, remote_stt_base_url: VOXTRAL_URL(), remote_stt_model: "voxtral", remote_stt_key: "" };
+    if (persist) escreve(VOXTRAL_URL(), "voxtral");
+    body = { remote_stt: true,
+             remote_stt_base_url: $("remoteSttBaseUrl").value.trim() || VOXTRAL_URL(),
+             remote_stt_model: $("remoteSttModel").value.trim() || "voxtral",
+             remote_stt_key: $("remoteSttKey").value };
   } else if (eng === "whisper-rtx") {
     $("remoteStt").checked = true;
-    $("remoteSttBaseUrl").value = WHISPER_RTX_URL();
-    $("remoteSttModel").value = "whisper-large-v3";
-    $("remoteSttKey").value = "";
     $("sttAdvanced").style.display = "none";
-    body = { remote_stt: true, remote_stt_base_url: WHISPER_RTX_URL(), remote_stt_model: "whisper-large-v3", remote_stt_key: "" };
+    if (persist) escreve(WHISPER_RTX_URL(), "whisper-large-v3");
+    body = { remote_stt: true,
+             remote_stt_base_url: $("remoteSttBaseUrl").value.trim() || WHISPER_RTX_URL(),
+             remote_stt_model: $("remoteSttModel").value.trim() || "whisper-large-v3",
+             remote_stt_key: $("remoteSttKey").value };
   } else if (eng === "local") {
     $("remoteStt").checked = false;
     $("sttAdvanced").style.display = "none";
@@ -3792,16 +3810,32 @@ async function pollPieces(job_id, pl, opts = {}) {
   while (!pl.stopped && tries++ < maxTries) {
     j = await api(`/api/tts/jobs/${job_id}`);
     if (j.status === "error") throw new Error(j.error || "falha na geração");
-    while (buscados < j.pieces) {
-      const buf = await (await authFetch(`/api/tts/jobs/${job_id}/pieces/${buscados}`)).arrayBuffer();
-      if (!pl.stopped && !ttsMuted) {   // virou "voz real" no meio -> para de agendar
-        const audio = await pl.ctx.decodeAudioData(buf);
-        const src = pl.ctx.createBufferSource();
-        src.buffer = audio; src.connect(pl.ctx.destination);
-        const t = Math.max(pl.ctx.currentTime + gap, pl.nextTime);
-        src.start(t); pl.nextTime = t + audio.duration; pl.sources.push(src);
+    if (buscados < j.pieces) {
+      // Busca em lote, ordem preservada. Em série cada trecho custa um round-trip:
+      // pelo proxy o fetch do trecho seguinte atrasava até ctx.currentTime passar
+      // de nextTime, o agendamento caía em "agora" e virava silêncio no meio da
+      // frase (o picotado). Lotes de 4 escondem o RTT sem picar o pico de rede.
+      const BLOCO = 4;
+      while (buscados < j.pieces && !pl.stopped) {
+        const base = buscados, ate = Math.min(j.pieces, base + BLOCO);
+        const lote = [];
+        for (let i = base; i < ate; i++) lote.push(i);
+        const bufs = await Promise.all(lote.map(idx => authFetch(
+          `/api/tts/jobs/${job_id}/pieces/${idx}`).then(async r => {
+            if (!r.ok) throw await apiError(r);
+            return r.arrayBuffer();
+          })));
+        for (let n = 0; n < lote.length; n++) {
+          buscados = lote[n] + 1;
+          if (pl.stopped) break;      // parou / virou "voz real" no meio do lote
+          if (ttsMuted) continue;     // idem: baixa, mas não agenda
+          const audio = await pl.ctx.decodeAudioData(bufs[n]);
+          const src = pl.ctx.createBufferSource();
+          src.buffer = audio; src.connect(pl.ctx.destination);
+          const t = Math.max(pl.ctx.currentTime + gap, pl.nextTime);
+          src.start(t); pl.nextTime = t + audio.duration; pl.sources.push(src);
+        }
       }
-      buscados++;
     }
     if (j.status === "done") { refreshOutputs(); return j; }
     if (opts.onProgress) opts.onProgress(j, buscados);
@@ -4072,10 +4106,25 @@ function mkCtx() {   // AudioContext de reprodução roteado p/ a saída escolhi
    cliente não estiver rodando, caímos no canal do servidor (/api/mic-route). */
 const CTRL_PORTS = [7861, 7862, 7863, 7864, 7865];
 let ctrlBase = null, ctrlProbe = 0;
+// O gate ("voz real" x "voz do app") raramente muda, mas era consultado a cada
+// 350 ms: sem cliente roteador nesta máquina ele re-sondava as 5 portas locais e
+// caía em /api/mic-route — ~3 requests/s pelo túnel/Cloudflare competindo por
+// conexão com o download dos trechos do próprio playback (o picotado no proxy).
+// Loopback segue a 350 ms (de graça); pelo servidor só com áudio em andamento,
+// com backoff enquanto o valor não muda. A 1ª leitura é sempre feita.
+let srvPollAt = 0, srvPollMs = 1000, srvModo = null;
+function micRouteBusy() {
+  // auto/player/cv* são declarados adiante neste script; na 1ª chamada (TDZ)
+  // assume ocupado — equivale ao comportamento antigo de pollar sempre.
+  try { return !!(auto || cvPlaying || cvBusy || (player && !player.stopped)); }
+  catch { return true; }
+}
 async function pollMicRoute() {
-  // 1) descobre a porta do cliente local (uma vez; re-tenta no máx ~1.5s)
-  if (!ctrlBase && Date.now() - ctrlProbe > 1500) {
-    ctrlProbe = Date.now();
+  const agora = Date.now(), ocupado = micRouteBusy();
+  // 1) descobre a porta do cliente local (uma vez; re-tenta a cada 1,5s ouvindo
+  //    áudio, 10s parado — sem ele existir, sondar 5 portas 3x/s é só ruído)
+  if (!ctrlBase && agora - ctrlProbe > (ocupado ? 1500 : 10000)) {
+    ctrlProbe = agora;
     for (const p of CTRL_PORTS) {
       try {
         const r = await fetch(`http://127.0.0.1:${p}/mode`, { cache: "no-store" });
@@ -4090,11 +4139,21 @@ async function pollMicRoute() {
       ctrlBase = null;
     } catch { ctrlBase = null; }
   }
-  // 2) fallback: canal pelo servidor (cliente na mesma máquina do server)
+  // 2) fallback: canal pelo servidor = round-trip inteiro. Sem áudio em andamento
+  //    e dentro da janela de backoff, mantém o último modo conhecido.
+  if (!ocupado && srvPollAt && agora - srvPollAt < srvPollMs) return;
+  srvPollAt = agora;
   try {
     const r = await authFetch("/api/mic-route");
-    if (r.ok) { setTtsMuted((await r.json()).mode === "real"); return; }
+    if (r.ok) {
+      const m = (await r.json()).mode === "real";
+      srvPollMs = (m === srvModo && !ocupado) ? Math.min(15000, srvPollMs * 2) : 1000;
+      srvModo = m;
+      setTtsMuted(m);
+      return;
+    }
   } catch {}
+  srvPollMs = Math.min(15000, srvPollMs * 2);
   setTtsMuted(false);   // ninguém no controle -> TTS livre
 }
 const micRouteTimer = setInterval(pollMicRoute, 350);
@@ -4933,7 +4992,17 @@ async function loadBackendsIntoSelect() {
     sel.appendChild(custom);
     if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
     updateModelHint();
-  } catch (e) { console.warn("backends", e); }
+  } catch (e) {
+    // Sem catálogo não existem controles de geração: antes era só console.warn e
+    // a aba "Geração" aparecia vazia, sem nenhuma explicação na tela.
+    console.warn("backends", e);
+    const h = $("cfgModelHint");
+    if (h) h.innerHTML = `⚠ catálogo de modelos falhou (${esc(e.message || e)}) — `
+      + `<a href="#" id="retryBackends" style="color:var(--accent)">tentar de novo</a>`;
+    const rt = $("retryBackends");
+    if (rt) rt.onclick = (ev) => { ev.preventDefault(); loadBackendsIntoSelect(); };
+    renderFamilyControls(GENERIC_CONTROLS);   // pelo menos os controles genéricos
+  }
 }
 
 const GENERIC_CONTROLS = {
@@ -5021,40 +5090,45 @@ async function loadSettings() {
       $(sl).value = s[key] ?? 0;
       $(out).textContent = `${(+(s[key] ?? 0)).toFixed(1).replace(/\.0$/, "")} dB`;
     }
-    $("remoteTts").checked = !!s.remote_tts;
-    $("remoteTranslate").checked = !!s.remote_translate;
-    $("remoteStt").checked = !!s.remote_stt;
-    $("remoteTtsUrl").value = s.remote_tts_url || "";
-    $("remoteTtsVoice").value = s.remote_tts_voice || "";
-    $("remoteTtsExtra").value = s.remote_tts_extra || "";
-    $("remoteBaseUrl").value = s.remote_base_url || "";
-    $("remoteApiKey").value = s.remote_api_key || "";
-    $("remoteTranslateModel").value = s.remote_translate_model || "gpt-4o-mini";
-    $("remoteSttModel").value = s.remote_stt_model || "whisper-1";
-    $("remoteSttBaseUrl").value = s.remote_stt_base_url || "";
-    $("remoteSttKey").value = s.remote_stt_key || "";
-    $("chatBaseUrl").value = s.chat_base_url || "";
-    $("chatModel").value = s.chat_model || "";
-    $("chatApiKey").value = s.chat_api_key || "";
-    $("chatExtra").value = s.chat_extra || "";
+    const cfgNum = (id, v, def) => { const el = $(id); if (el) el.value = (v === undefined || v === null) ? def : v; };
+    const cfgTxt = (id, v) => { const el = $(id); if (el) el.value = v || ""; };
+    const cfgChk = (id, v) => { const el = $(id); if (el) el.checked = !!v; };
+    // Um campo a menos (ou um throw no meio) não pode mais deixar o RESTO do
+    // formulário em branco: este bloco era um try/catch vazio gigante, então a
+    // config aparecia "não salva" depois do restart quando na verdade só tinha
+    // parado de ser preenchida.
+    cfgChk("remoteTts", s.remote_tts);
+    cfgChk("remoteTranslate", s.remote_translate);
+    cfgChk("remoteStt", s.remote_stt);
+    cfgTxt("remoteTtsUrl", s.remote_tts_url);
+    cfgTxt("remoteTtsVoice", s.remote_tts_voice);
+    cfgTxt("remoteTtsExtra", s.remote_tts_extra);
+    cfgTxt("remoteBaseUrl", s.remote_base_url);
+    cfgTxt("remoteApiKey", s.remote_api_key);
+    cfgTxt("remoteTranslateModel", s.remote_translate_model || "gpt-4o-mini");
+    cfgTxt("remoteSttModel", s.remote_stt_model || "whisper-1");
+    cfgTxt("remoteSttBaseUrl", s.remote_stt_base_url);
+    cfgTxt("remoteSttKey", s.remote_stt_key);
+    cfgTxt("chatBaseUrl", s.chat_base_url);
+    cfgTxt("chatModel", s.chat_model);
+    cfgTxt("chatApiKey", s.chat_api_key);
+    cfgTxt("chatExtra", s.chat_extra);
     if ($("speakerGate")) $("speakerGate").value = s.speaker_gate || "off";
-    if ($("sttWhisperModel")) $("sttWhisperModel").value = s.stt_whisper_repo || "";
-    if ($("spThr")) { $("spThr").value = s.speaker_threshold ?? 0.75; $("spThrOut").textContent = (+($("spThr").value)).toFixed(2); }
+    cfgTxt("sttWhisperModel", s.stt_whisper_repo);
+    cfgNum("spThr", s.speaker_threshold, 0.75);
+    if ($("spThrOut")) $("spThrOut").textContent = (+($("spThr").value)).toFixed(2);
     if (typeof refreshSpProfiles === "function") refreshSpProfiles();
     $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
     applySttEngine(false);
     prevSttEngine = $("sttEngine").value;
-    $("freeLocalOnRemote").checked = !!s.free_local_on_remote;
-    if ($("idleUnloadMin")) $("idleUnloadMin").value = s.idle_unload_minutes ?? 10;
+    cfgChk("freeLocalOnRemote", s.free_local_on_remote);
+    cfgNum("idleUnloadMin", s.idle_unload_minutes, 10);
     // speech_queue: default true se a API ainda não mandar a chave
-    if ($("speechQueue")) {
-      $("speechQueue").checked = (s.speech_queue === undefined || s.speech_queue === null)
-        ? true
-        : !!s.speech_queue;
-    }
-    if ($("speechQueueGap")) $("speechQueueGap").value = s.speech_queue_gap_s ?? 0.35;
+    if ($("speechQueue")) $("speechQueue").checked = (s.speech_queue === undefined || s.speech_queue === null)
+      ? true : !!s.speech_queue;
+    cfgNum("speechQueueGap", s.speech_queue_gap_s, 0.35);
     for (const [id, out, key, fmt] of STT_CTL) {
-      if (s[key] !== undefined) { $(id).value = s[key]; $(out).textContent = fmt(s[key]); }
+      if (s[key] !== undefined && $(id) && $(out)) { $(id).value = s[key]; $(out).textContent = fmt(s[key]); }
     }
     // popula voz padrão da API com as vozes existentes
     const voices = await api("/api/voices");
@@ -5065,7 +5139,12 @@ async function loadSettings() {
       $("cfgVoice").appendChild(opt);
     }
     if (s.default_voice) $("cfgVoice").value = s.default_voice;
-  } catch {}
+  } catch (e) {
+    // antes: catch {} — metade do formulário podia ficar vazia sem nenhum aviso,
+    // e isso lia-se como "as configurações não foram salvas"
+    console.warn("settings", e);
+    if ($("cfgStatus")) $("cfgStatus").textContent = "⚠ nem toda configuração carregou: " + ((e && e.message) || e);
+  }
 }
 
 // ── Configurações: abas ──
@@ -5248,6 +5327,7 @@ $("cfgSave").onclick = async () => {
       speech_queue_gap_s: parseFloat($("speechQueueGap")?.value) || 0,
       ...ctl,
     };
+    const precAntes = (LAST_SETTINGS || {}).omni_precision;
     await api("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -5255,7 +5335,11 @@ $("cfgSave").onclick = async () => {
     });
     LAST_SETTINGS = { ...LAST_SETTINGS, ...body };
     $("cfgSave").textContent = "Salvar configurações";
-    $("cfgStatus").textContent = "salvo ✔ — já vale para a API";
+    // troca de precisão tem efeito invisível (só no próximo load_model) — dizer,
+    // senão parece que "não mudou nada"
+    $("cfgStatus").textContent = (body.omni_precision && body.omni_precision !== precAntes)
+      ? `salvo ✔ — precisão ${body.omni_precision}: modelo descarregado, recarrega no próximo uso`
+      : "salvo ✔ — já vale para a API";
     setTimeout(() => $("cfgStatus").textContent = "", 4000);
   } catch (e) { toast("Erro ao salvar: " + e.message); }
 };

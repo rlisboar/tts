@@ -129,6 +129,32 @@ def test_settings_clamp_e_restauracao(client):
     assert atual["omni_num_steps"] == orig["omni_num_steps"]
 
 
+def test_settings_400_nao_deixa_ram_divergindo_do_disco(client):
+    """Campo inválido não pode aplicar os demais só na RAM.
+
+    O apply mutate `_settings` campo a campo e só grava o disco no fim; antes, o
+    primeiro 400 interrompia antes do _save_settings() e a config ficava valendo
+    até o restart, para então sumir — lia-se como "esta configuração não salva".
+    """
+    auth = auth_headers(client)
+    disco_antes = (app.SETTINGS_PATH.read_text()
+                   if app.SETTINGS_PATH.exists() else None)
+    beam_antes = client.get("/api/settings", headers=auth).json()["stt_beam"]
+
+    r = client.post("/api/settings", headers=auth,
+                    json={"stt_beam": 3, "chat_extra": "reasoning=low"})  # o 2º é inválido
+    assert r.status_code == 400
+    assert app._settings["stt_beam"] == beam_antes, "rollback: nada aplicado na RAM"
+    assert client.get("/api/settings", headers=auth).json()["stt_beam"] == beam_antes
+    disco_depois = (app.SETTINGS_PATH.read_text()
+                    if app.SETTINGS_PATH.exists() else None)
+    assert disco_depois == disco_antes, "rollback: disco intacto"
+
+    # um save válido volta a persistir de fato (não só em memória)
+    assert client.post("/api/settings", headers=auth, json={"stt_beam": 4}).status_code == 200
+    assert _json.loads(app.SETTINGS_PATH.read_text())["stt_beam"] == 4
+
+
 # ---------------------------------------------------------------------------
 # Export/import de vozes (dirs temporários — não toca em voices/ real)
 # ---------------------------------------------------------------------------
