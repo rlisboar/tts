@@ -2233,7 +2233,7 @@
               <label>Trecho do contínuo (latência × contexto) <output id="micContMaxOut">4.5 s</output>
                 <input type="range" id="micContMax" min="1.5" max="8" step="0.5" value="4.5"></label>
             </div>
-            <label class="check" style="margin-top:10px"><input type="checkbox" id="micNs" checked> supressão de ruído (navegador)</label>
+            <label class="check" style="margin-top:10px"><input type="checkbox" id="micNs"> supressão de ruído (navegador)</label>
             <div class="mic-meter-wrap">
               <div class="hint">nível do mic (marca laranja = limiar)</div>
               <div id="micMeter">
@@ -3949,12 +3949,20 @@ const fEl = key => $(FEAT[key]);            // elemento do controle ativo
 const VAD = { thresh: 0.015, silenceHoldMs: 700, minUtterMs: 350, frameMs: 50 };
 let CONT_MAX_MS = 4500;   // contínuo: alvo de duração do trecho (mais contexto p/ o STT)
 const CONT_GAP_MS = 250;  // pausa mínima p/ cortar = borda real (250ms > oclusão de plosiva ~150ms,
-                          // senão cortava DENTRO da palavra ao falar rápido)
-const CONT_GRACE_MS = 2500; // teto duro: se a fala não der respiro, corta mesmo (com overlap p/ recuperar)
+                          // senão cortava DENTRO da palavra ao falar rápido); perto do teto a
+                          // exigência cai p/ 120ms — borda aproximada ainda bate corte em vogal
+const CONT_GRACE_MS = 2500; // teto duro: se a fala não der respiro, corta mesmo (descarta o fragmento, não sobrepõe)
 
 /* --- Microfone: ganho + passa-alta + supressão + medidor (aplica ao que é gravado) --- */
-const micFx = Object.assign({ gain: 1, hp: 90, thresh: 0.015, ns: true, silenceHold: 700, minUtter: 350, contMax: 4500 },
-  JSON.parse(localStorage.getItem("micFx") || "{}"));
+// ns (noiseSuppression do navegador) off por padrão na captura contínua: a
+// gravação de voz já desliga de propósito, o servidor denoisa no ffmpeg
+// (afftdn, medido como neutro para a acurácia) — suprimir duas vezes come
+// consoante e custa palavra no Whisper. JSON.parse protegido: um micFx corrompido
+// no localStorage derrubava este script inteiro e a UI nascia morta.
+let micFxSaved = {};
+try { micFxSaved = JSON.parse(localStorage.getItem("micFx") || "{}") || {}; } catch { micFxSaved = {}; }
+const micFx = Object.assign({ gain: 1, hp: 90, thresh: 0.015, ns: false, silenceHold: 700, minUtter: 350, contMax: 4500 },
+  micFxSaved);
 CONT_MAX_MS = micFx.contMax;
 let micGraph = null, meterRAF = null;
 VAD.thresh = micFx.thresh; VAD.silenceHoldMs = micFx.silenceHold; VAD.minUtterMs = micFx.minUtter;
@@ -4397,12 +4405,17 @@ function flushChunk(st, continuing, clean = true) {  // fatia o PCM acumulado ->
     st.queue.push(wav);
   }
   if (continuing) {
-    // corte LIMPO (numa pausa) começa exato; corte FORÇADO (meio de palavra) deixa
-    // 0.4s de overlap p/ a palavra dividida reaparecer inteira no próximo trecho.
-    st.chunkStart = clean ? g.head : Math.max(g.base, g.head - Math.floor(0.4 * sr));
+    // Corte numa pausa REAL: começa exato, SEM sobrepor. Corte FORÇADO (teto de
+    // duração, meio de palavra) também não sobrepõe: descarta o fragmento. O
+    // overlap de 0,4 s entregava ao pedaço seguinte uma sílaba mutilada, e o
+    // Whisper completa com o que ele espera — medido: "A reunião de amanhã foi"
+    // + overlap -> "A manhã foi movida…", com "da manhã" duplicado. Perder um
+    // oitavo de sílaba é mais barato que inventar palavra.
+    const guard = clean ? 0 : Math.floor(0.12 * sr);
+    st.chunkStart = g.head + guard;
     st.uttStart = performance.now(); st.wantCut = false;
   } else { st.speaking = false; stopLive(); }
-  trimPcm(g, g.head - Math.floor(0.6 * sr));         // mantém ~0.6s de cauda p/ overlap/pré-roll
+  trimPcm(g, g.head - Math.floor(0.6 * sr));         // mantém ~0.6s de cauda p/ o pré-roll
 }
 function vadTick(st) {
   if (st.stop) return;
@@ -4423,9 +4436,16 @@ function vadTick(st) {
     }
   } else if (st.speaking) {
     st.silence += VAD.frameMs;
-    // já passou do alvo e veio um respiro REAL (>=250ms) -> corta AQUI (borda limpa de palavra)
-    if (st.mode === "continuo" && st.wantCut && st.silence >= CONT_GAP_MS) flushChunk(st, true, true);
-    else if (st.silence >= VAD.silenceHoldMs) flushChunk(st, false);   // pausa longa -> fecha enunciado
+    if (st.mode === "continuo" && st.wantCut) {
+      // Passado o alvo de duração, qualquer respiro serve de borda de palavra:
+      // 250 ms é o ideal, mas a partir de metade da tolerância aceita 120 ms
+      // (fecho de oclusiva já é borda) em vez de esticar até o teto e cortar
+      // dentro da vogal — cortar em borda vale mais que respeitar a pontuação.
+      const el = performance.now() - st.uttStart;
+      const borda = el >= CONT_MAX_MS + CONT_GRACE_MS / 2 ? Math.min(CONT_GAP_MS, 120) : CONT_GAP_MS;
+      if (st.silence >= borda) { flushChunk(st, true, true); return; }
+    }
+    if (st.silence >= VAD.silenceHoldMs) flushChunk(st, false);   // pausa longa -> fecha enunciado
   }
 }
 
