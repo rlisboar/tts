@@ -246,6 +246,11 @@ internet ─▶ https://tts.seu-dominio (Cloudflare, TLS) ─▶ tunnel
          ─▶ conector na máquina do TTS ─▶ IP-LAN-da-máquina:7860
 ```
 
+> **Neste setup**: hostname `tts.the-dudes.com`, conector no Mac mini
+> (`192.168.15.34`), cliente de navegador `claudinhos` (provedor "TTS-Rod").
+> A CSP desse cliente precisa listar o hostname no `connect-src` — passo a
+> passo no `docs/TTS-ROD.md` do repo dele.
+
 > Mesma armadilha do túnel SSH: o destino é o **IP de LAN**, nunca `127.0.0.1`
 > — pelo loopback a API dispensaria chave e a internet entraria sem autenticação.
 
