@@ -483,6 +483,23 @@ def test_tunnel_sem_agente_instalado(client, auth, monkeypatch, tmp_path):
         assert r.status_code == 400, rota
 
 
+def test_cors_nas_respostas_de_erro(client):
+    """Cliente cross-origin (ex.: claudinhos no navegador) precisa LER o 401 —
+    sem `access-control-allow-origin` na resposta o navegador entrega
+    "Failed to fetch" em vez de "chave inválida" (o preflight passava porque
+    quem respondia era o CORS, mas a resposta real saía de fora dele)."""
+    r = client.get("/api/status", headers={"Origin": "http://localhost:5198"})
+    assert r.status_code == 401
+    assert r.headers.get("access-control-allow-origin") == "*"
+    r = client.get("/api/status", headers={"Origin": "http://localhost:5198",
+                                           "X-API-Key": "chave-errada"})
+    assert r.status_code == 401 and r.headers.get("access-control-allow-origin") == "*"
+    # preflight segue respondendo
+    r = client.options("/api/status", headers={"Origin": "http://localhost:5198",
+                                               "Access-Control-Request-Method": "GET"})
+    assert r.status_code == 200 and r.headers.get("access-control-allow-origin") == "*"
+
+
 def test_tunnel_status_estrutura(client, auth, monkeypatch):
     monkeypatch.setattr(app, "_tunnel_proc_running", lambda: True)
     monkeypatch.setattr(app, "_tunnel_launchd_loaded", lambda: True)

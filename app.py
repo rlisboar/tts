@@ -568,12 +568,12 @@ FFMPEG = _ffmpeg_bin()
 
 app = FastAPI(title="TTS-STUDIO")
 _CORS_ORIGINS = [x.strip() for x in os.environ.get("TTS_CORS_ORIGINS", "").split(",") if x.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_CORS_ORIGINS or ["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# NOTA: o CORS é registrado no FIM do módulo (depois dos @app.middleware) de
+# propósito. `add_middleware` empilha na frente, então quem é registrado por
+# último fica por FORA — e um 401/429 que sai do middleware de auth precisa
+# atravessar o CORS para ganhar os cabeçalhos. Registrado aqui em cima ele
+# ficava por dentro: o cliente cross-origin via "Failed to fetch" em vez do
+# 401 "chave inválida" (o preflight passava, a resposta real não).
 
 # Limite leve em memória: impede que uma chave/IP monopolize STT, importação ou
 # criação de jobs. Não substitui rate limit no nginx, mas protege o servidor
@@ -4855,6 +4855,16 @@ def openai_speech(payload: dict):
 
 # descarrega TTS/STT/tradutor/SER ociosos (idle_unload_minutes; 0 = off)
 threading.Thread(target=_idle_unload_loop, daemon=True).start()
+
+# CORS por ÚLTIMO = camada mais externa (ver nota no topo do módulo): assim
+# 401/429 do middleware de auth e erros de rota saem com os cabeçalhos que o
+# navegador cross-origin exige — sem eles o fetch vira "Failed to fetch".
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS or ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # UI estática (registrada por último para não engolir /api/* e /v1/*)
 app.mount("/", StaticFiles(directory=BASE / "static", html=True), name="static")
