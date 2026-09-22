@@ -98,6 +98,7 @@ case "${1:-}" in
 EOF
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
     launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null || launchctl load -w "$PLIST"
+    chmod 600 "$PLIST"   # o token do tunnel fica dentro do plist
     echo "Conector instalado (sobe no login, reconecta sozinho). Log: $LOG"
     exit 0 ;;
 
