@@ -123,6 +123,21 @@ def test_time_stretch_preserva_frequencia():
         assert pico == pytest.approx(freq, abs=15)
 
 
+def test_time_stretch_fallback_preserva_nivel():
+    """Sem ffmpeg (sr ausente = fallback phase vocoder) o nível de entrada tem de
+    sobreviver: o PV cancelava ~15x do sinal e a fala saía 'muda' — foi o que
+    aconteceu com o OmniVoice numa máquina sem imageio-ffmpeg (todo backend que
+    não tem speed nativa passa por aqui)."""
+    sr, freq = 16000, 220.0
+    t = np.arange(sr, dtype=np.float32) / sr
+    x = (0.6 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+    rms_in = float(np.sqrt((x ** 2).mean()))
+    for speed in (0.8, 0.9, 1.3):
+        y = time_stretch(x, speed)          # sem sr: força o PV
+        rms_out = float(np.sqrt((y ** 2).mean()))
+        assert rms_out == pytest.approx(rms_in, rel=0.2), speed
+
+
 def test_time_stretch_equivalente_ao_referencia_em_laco():
     """A versão vetorial deve reproduzir o phase vocoder original (que vivia
     duplicado em app.py/tts_worker.py) dentro de tolerância float."""

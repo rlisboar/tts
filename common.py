@@ -233,6 +233,9 @@ def atempo_chain(speed: float) -> str:
     return ",".join(f"atempo={f:g}" for f in fatores)
 
 
+_AVISO_PV = {"dito": False}   # avisa uma vez que o stretch caiu no phase vocoder
+
+
 def _ffmpeg_stretch(x, speed: float, sr: int):
     """Time-stretch via ffmpeg atempo (WSOLA) — muito melhor que phase vocoder
     em fala:     preserva transientes, sem smearing de fase (som metálico/robótico)."""
@@ -274,8 +277,13 @@ def time_stretch(audio, speed: float, sr: int | None = None, n_fft: int = 1024, 
     if sr:
         try:
             return _ffmpeg_stretch(x, speed, sr)
-        except Exception:  # noqa: BLE001 — degrada p/ PV em vez de falhar o job
-            pass
+        except Exception as e:  # noqa: BLE001 — degrada p/ PV em vez de falhar o job
+            # avisa UMA vez: sem isto o fallback silencioso escondia um venv sem
+            # imageio-ffmpeg e a fala saía baixa (o PV perde nível — ver abaixo)
+            if not _AVISO_PV["dito"]:
+                print(f"[stretch] ffmpeg indisponível ({str(e)[:80]}) — usando phase vocoder",
+                      flush=True)
+                _AVISO_PV["dito"] = True
     win = np.hanning(n_fft).astype(np.float32)
 
     # STFT (bins, frames) — mesma contagem de frames da versão em laço
@@ -324,6 +332,14 @@ def time_stretch(audio, speed: float, sr: int | None = None, n_fft: int = 1024, 
         wsum[start:start + m * n_fft] += np.tile(w2, m)
     del segs
     y /= np.maximum(wsum, 1e-8)
+    # O PV perde nível: as magnitudes saem interpoladas entre quadros enquanto a
+    # fase vem do acumulador, e a OLA cancela parte do sinal (~15x mais baixo em
+    # fala). Renormaliza pelo RMS de entrada — sem isto a fala sai "muda" quando
+    # o caminho do ffmpeg não está disponível (venv sem imageio-ffmpeg).
+    rms_in = float(np.sqrt(np.mean(x ** 2)))
+    rms_out = float(np.sqrt(np.mean(y ** 2)))
+    if rms_in > 1e-6 and rms_out > 1e-6:
+        y *= rms_in / rms_out
     peak = float(np.abs(y).max() or 0.0)
     if peak > 0.99:
         y *= 0.99 / peak

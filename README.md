@@ -310,6 +310,10 @@ sua própria voz ou com consentimento explícito da pessoa clonada.
 # testes (funções puras + API via TestClient, sem carregar MLX)
 ./.venv-mlx/bin/python -m pytest tests/ -q
 
+# venv completo: sem imageio-ffmpeg o time-stretch cai no phase vocoder e a
+# fala sai ~15x mais baixa (o OmniVoice não tem speed nativa e passa por ele)
+./.venv-mlx/bin/python -c "import imageio_ffmpeg, resemblyzer; print('deps ok')"
+
 # análise estática — nomes indefinidos em funções só explodem em runtime
 ./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py \
     tests/*.py client/mic_router.py
