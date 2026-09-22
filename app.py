@@ -1619,6 +1619,30 @@ def _launchctl(args: list, timeout: int = 10) -> None:
         raise HTTPException(500, f"Falha no launchctl: {e}")
 
 
+# Parar/reiniciar o túnel mata justamente o processo que está servindo ESTA
+# requisição — a resposta chegaria como 502 (o Cloudflare corta a conexão).
+# Por isso esses comandos saem com um atraso, fora do caminho da resposta.
+_LAUNCHCTL_ATRASO = 1.5
+_launchctl_threads: list = []
+
+
+def _launchctl_adiado(args: list, atraso: float | None = None) -> None:
+    """Roda launchctl em thread, depois de `atraso` segundos (default 1.5)."""
+    espera = _LAUNCHCTL_ATRASO if atraso is None else atraso
+
+    def alvo():
+        if espera:
+            time.sleep(espera)
+        try:
+            subprocess.run(args, capture_output=True, timeout=10)
+        except Exception:  # noqa: BLE001
+            pass
+
+    t = threading.Thread(target=alvo, daemon=True)
+    _launchctl_threads.append(t)
+    t.start()
+
+
 def _tunnel_exige_macos() -> None:
     if sys.platform != "darwin" or not hasattr(os, "getuid"):
         raise HTTPException(400, "Disponível apenas no macOS com o LaunchAgent instalado (tunnel.sh install)")
@@ -1632,7 +1656,7 @@ def tunnel_restart():
     if not agentes:
         raise HTTPException(400, "Nenhum agente instalado — rode ./tunnel.sh install ou ./cloudflare.sh install")
     for label, _plist in agentes:
-        _launchctl(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"])
+        _launchctl_adiado(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"])
     return {"ok": True, "msg": "Túnel reiniciado (aguarde ~5s e reavalie o status)"}
 
 
@@ -1645,28 +1669,24 @@ def tunnel_stop():
     if not agentes:
         raise HTTPException(400, "Nenhum agente instalado — rode ./tunnel.sh install ou ./cloudflare.sh install")
     for label, _plist in agentes:
-        # tolerante: agente já parado devolve erro no bootout e não é problema
-        try:
-            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
-                           capture_output=True, timeout=10)
-        except Exception:  # noqa: BLE001
-            pass
-    return {"ok": True, "msg": "Túnel desligado — URL pública fora do ar"}
+        # adiado: o agente que serve esta requisição morre depois de responder
+        _launchctl_adiado(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"])
+    return {"ok": True, "msg": "Túnel desligado — a URL pública cai em ~2s"}
 
 
 @app.post("/api/tunnel/start")
 def tunnel_start():
-    """Religa o acesso pela internet: bootstrap dos agentes instalados (se já
-    estiverem carregados, kickstart — bootstrap em agente carregado dá erro)."""
+    """Religa o acesso pela internet: bootstrap dos agentes instalados; agente
+    já carregado vai de kickstart (bootstrap em carregado dá erro)."""
     _tunnel_exige_macos()
     agentes = _agentes_publicos()
     if not agentes:
         raise HTTPException(400, "Nenhum agente instalado — rode ./tunnel.sh install ou ./cloudflare.sh install")
     for label, plist in agentes:
-        if _launchd_loaded(label):
-            _launchctl(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"])
-        else:
+        if not _launchd_loaded(label):
             _launchctl(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)])
+        elif not (_cf_proc_running() if label == CF_LABEL else _tunnel_proc_running()):
+            _launchctl_adiado(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"])
     return {"ok": True, "msg": "Túnel ligado — aguarde ~5s e teste a URL pública"}
 
 

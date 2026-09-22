@@ -402,6 +402,14 @@ def _agentes_fake(tmp_path, monkeypatch, *, ssh=True, cloudflare=True):
         cf_p.write_text("<plist/>")
     monkeypatch.setattr(app, "_tunnel_plist", lambda: ssh_p)
     monkeypatch.setattr(app, "_cf_plist", lambda: cf_p)
+    monkeypatch.setattr(app, "_LAUNCHCTL_ATRASO", 0)  # sem esperar o atraso real
+
+
+def _aguarda_launchctl():
+    """Espera as chamadas adiadas (thread) disparadas por stop/restart."""
+    for t in list(app._launchctl_threads):
+        t.join(timeout=2)
+    app._launchctl_threads.clear()
 
 
 def test_tunnel_start_stop_chamam_launchctl(client, auth, monkeypatch, tmp_path):
@@ -414,18 +422,42 @@ def test_tunnel_start_stop_chamam_launchctl(client, auth, monkeypatch, tmp_path)
 
     monkeypatch.setattr(app.subprocess, "run", fake_run)
     _agentes_fake(tmp_path, monkeypatch)
-    monkeypatch.setattr(app, "_launchd_loaded", lambda label: False)  # nada carregado
+    monkeypatch.setattr(app, "_launchd_loaded", lambda label: False)   # nada carregado
+    monkeypatch.setattr(app, "_tunnel_proc_running", lambda: False)
+    monkeypatch.setattr(app, "_cf_proc_running", lambda: False)
     r = client.post("/api/tunnel/stop", headers=auth)
     assert r.status_code == 200 and r.json()["ok"] is True
     r = client.post("/api/tunnel/start", headers=auth)
     assert r.status_code == 200 and r.json()["ok"] is True
+    _aguarda_launchctl()
     assert any("bootout" in c for c in chamadas) and any("bootstrap" in c for c in chamadas)
     # os dois caminhos (SSH e Cloudflare) são ligados/desligados juntos
     assert sum(1 for c in chamadas if "bootstrap" in c) == 2
     assert sum(1 for c in chamadas if "bootout" in c) == 2
 
 
-def test_tunnel_start_com_agente_carregado_usa_kickstart(client, auth, monkeypatch, tmp_path):
+def test_tunnel_start_agente_carregado_e_parado_usa_kickstart(client, auth, monkeypatch, tmp_path):
+    chamadas = []
+
+    def fake_run(args, **kw):
+        chamadas.append(args)
+        class R: returncode, stderr, stdout = 0, "", ""
+        return R()
+
+    monkeypatch.setattr(app.subprocess, "run", fake_run)
+    _agentes_fake(tmp_path, monkeypatch)
+    monkeypatch.setattr(app, "_launchd_loaded", lambda label: True)    # carregado, sem processo
+    monkeypatch.setattr(app, "_tunnel_proc_running", lambda: False)
+    monkeypatch.setattr(app, "_cf_proc_running", lambda: False)
+    r = client.post("/api/tunnel/start", headers=auth)
+    assert r.status_code == 200
+    _aguarda_launchctl()
+    # bootstrap em agente já carregado falha no launchctl — vai de kickstart
+    assert sum(1 for c in chamadas if "kickstart" in c) == 2
+    assert not any("bootstrap" in c for c in chamadas)
+
+
+def test_tunnel_start_ja_rodando_nao_reinicia(client, auth, monkeypatch, tmp_path):
     chamadas = []
 
     def fake_run(args, **kw):
@@ -436,11 +468,12 @@ def test_tunnel_start_com_agente_carregado_usa_kickstart(client, auth, monkeypat
     monkeypatch.setattr(app.subprocess, "run", fake_run)
     _agentes_fake(tmp_path, monkeypatch)
     monkeypatch.setattr(app, "_launchd_loaded", lambda label: True)
-    r = client.post("/api/tunnel/start", headers=auth)
-    assert r.status_code == 200
-    # bootstrap em agente já carregado falha no launchctl — vai de kickstart
-    assert sum(1 for c in chamadas if "kickstart" in c) == 2
-    assert not any("bootstrap" in c for c in chamadas)
+    monkeypatch.setattr(app, "_tunnel_proc_running", lambda: True)
+    monkeypatch.setattr(app, "_cf_proc_running", lambda: True)
+    assert client.post("/api/tunnel/start", headers=auth).status_code == 200
+    _aguarda_launchctl()
+    # kickstart -k no que já está no ar derrubaria a resposta desta requisição
+    assert not any("kickstart" in c for c in chamadas)
 
 
 def test_tunnel_sem_agente_instalado(client, auth, monkeypatch, tmp_path):
