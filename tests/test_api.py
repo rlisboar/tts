@@ -392,7 +392,19 @@ def test_status_traz_versao(client, auth):
     assert isinstance(r.json().get("lan_urls"), list)
 
 
-def test_tunnel_start_stop_chamam_launchctl(client, auth, monkeypatch):
+def _agentes_fake(tmp_path, monkeypatch, *, ssh=True, cloudflare=True):
+    """Plistas temporárias p/ os agentes de acesso público (SSH e Cloudflare)."""
+    ssh_p = tmp_path / "studio.tts.tunnel.plist"
+    cf_p = tmp_path / "com.local.cloudflared-tts.plist"
+    if ssh:
+        ssh_p.write_text("<plist/>")
+    if cloudflare:
+        cf_p.write_text("<plist/>")
+    monkeypatch.setattr(app, "_tunnel_plist", lambda: ssh_p)
+    monkeypatch.setattr(app, "_cf_plist", lambda: cf_p)
+
+
+def test_tunnel_start_stop_chamam_launchctl(client, auth, monkeypatch, tmp_path):
     chamadas = []
 
     def fake_run(args, **kw):
@@ -401,19 +413,33 @@ def test_tunnel_start_stop_chamam_launchctl(client, auth, monkeypatch):
         return R()
 
     monkeypatch.setattr(app.subprocess, "run", fake_run)
+    _agentes_fake(tmp_path, monkeypatch)
     r = client.post("/api/tunnel/stop", headers=auth)
     assert r.status_code == 200 and r.json()["ok"] is True
     r = client.post("/api/tunnel/start", headers=auth)
     assert r.status_code == 200 and r.json()["ok"] is True
     assert any("bootout" in c for c in chamadas) and any("bootstrap" in c for c in chamadas)
+    # os dois caminhos (SSH e Cloudflare) são ligados/desligados juntos
+    assert sum(1 for c in chamadas if "bootstrap" in c) == 2
+    assert sum(1 for c in chamadas if "bootout" in c) == 2
+
+
+def test_tunnel_sem_agente_instalado(client, auth, monkeypatch, tmp_path):
+    _agentes_fake(tmp_path, monkeypatch, ssh=False, cloudflare=False)
+    for rota in ("/api/tunnel/start", "/api/tunnel/stop", "/api/tunnel/restart"):
+        r = client.post(rota, headers=auth)
+        assert r.status_code == 400, rota
 
 
 def test_tunnel_status_estrutura(client, auth, monkeypatch):
     monkeypatch.setattr(app, "_tunnel_proc_running", lambda: True)
     monkeypatch.setattr(app, "_tunnel_launchd_loaded", lambda: True)
+    monkeypatch.setattr(app, "_cf_proc_running", lambda: True)
+    monkeypatch.setattr(app, "_cf_launchd_loaded", lambda: False)
     monkeypatch.setattr(app, "_public_proxy_check", lambda url, timeout=6.0: {"ok": True, "latency_ms": 10})
     d = client.get("/api/tunnel/status?url=https://x/ttsproxy", headers=auth).json()
     assert d["tunnel_running"] is True and d["launchd_loaded"] is True
+    assert d["cloudflared_running"] is True and d["cloudflared_loaded"] is False
     assert d["public_check"]["ok"] is True
     d = client.get("/api/tunnel/status", headers=auth).json()
     assert d["public_check"] is None

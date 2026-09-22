@@ -1493,7 +1493,12 @@ def chat_debug(payload: dict):
 
 
 # ── Túnel / acesso pela internet (proxy por path) ──────────────────────────
+# Dois caminhos possíveis, independentes: túnel SSH reverso até a VPS
+# (tunnel.sh) e conector Cloudflare Tunnel na própria máquina (cloudflare.sh,
+# gerenciado remotamente no dashboard). O app só reporta e liga/desliga os
+# agentes instalados — nenhum dos dois é obrigatório.
 TUNNEL_LABEL = "studio.tts.tunnel"
+CF_LABEL = "com.local.cloudflared-tts"
 
 
 def _tunnel_proc_running() -> bool:
@@ -1508,18 +1513,38 @@ def _tunnel_proc_running() -> bool:
         return False
 
 
-def _tunnel_launchd_loaded() -> bool | None:
-    """LaunchAgent do túnel carregado? None se não for macOS/sem launchctl."""
+def _cf_proc_running() -> bool:
+    """Há um conector cloudflared vivo nesta máquina?"""
+    try:
+        r = subprocess.run(
+            ["pgrep", "-f", "cloudflared tunnel"],
+            capture_output=True, timeout=5,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _launchd_loaded(label: str) -> bool | None:
+    """LaunchAgent carregado? None se não for macOS/sem launchctl."""
     if sys.platform != "darwin" or not hasattr(os, "getuid"):
         return None
     try:
         r = subprocess.run(
-            ["launchctl", "print", f"gui/{os.getuid()}/{TUNNEL_LABEL}"],
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
             capture_output=True, timeout=5,
         )
         return r.returncode == 0
     except Exception:
         return None
+
+
+def _tunnel_launchd_loaded() -> bool | None:
+    return _launchd_loaded(TUNNEL_LABEL)
+
+
+def _cf_launchd_loaded() -> bool | None:
+    return _launchd_loaded(CF_LABEL)
 
 
 def _public_proxy_check(url: str, timeout: float = 6.0) -> dict:
@@ -1554,18 +1579,32 @@ def _public_proxy_check(url: str, timeout: float = 6.0) -> dict:
 
 @app.get("/api/tunnel/status")
 def tunnel_status(url: str = ""):
-    """Status do acesso pela internet: processo do túnel, LaunchAgent e
-    checagem fim a fim da URL pública (passada pela UI)."""
+    """Status do acesso pela internet: agentes instalados/carregados (SSH e
+    Cloudflare) e checagem fim a fim da URL pública (passada pela UI)."""
     pub = _public_proxy_check(url) if url.strip() else None
     return {
         "tunnel_running": _tunnel_proc_running(),
         "launchd_loaded": _tunnel_launchd_loaded(),
+        "cloudflared_installed": _cf_plist().exists(),
+        "cloudflared_running": _cf_proc_running(),
+        "cloudflared_loaded": _cf_launchd_loaded(),
         "public_check": pub,
     }
 
 
 def _tunnel_plist() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{TUNNEL_LABEL}.plist"
+
+
+def _cf_plist() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{CF_LABEL}.plist"
+
+
+def _agentes_publicos() -> list[tuple[str, Path]]:
+    """Agentes de acesso público instalados nesta máquina (label, plist)."""
+    return [(label, plist) for label, plist in
+            ((TUNNEL_LABEL, _tunnel_plist()), (CF_LABEL, _cf_plist()))
+            if plist.exists()]
 
 
 def _launchctl(args: list, timeout: int = 10) -> None:
@@ -1587,28 +1626,43 @@ def _tunnel_exige_macos() -> None:
 
 @app.post("/api/tunnel/restart")
 def tunnel_restart():
-    """Reinicia o LaunchAgent do túnel (kickstart). Exige macOS + agente."""
+    """Reinicia os agentes do acesso pela internet (kickstart). Exige macOS."""
     _tunnel_exige_macos()
-    _launchctl(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{TUNNEL_LABEL}"])
+    agentes = _agentes_publicos()
+    if not agentes:
+        raise HTTPException(400, "Nenhum agente instalado — rode ./tunnel.sh install ou ./cloudflare.sh install")
+    for label, _plist in agentes:
+        _launchctl(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"])
     return {"ok": True, "msg": "Túnel reiniciado (aguarde ~5s e reavalie o status)"}
 
 
 @app.post("/api/tunnel/stop")
 def tunnel_stop():
-    """Desliga o acesso pela internet: faz bootout do LaunchAgent (o processo
-    ssh morre e o KeepAlive não reergue). A rede local continua valendo."""
+    """Desliga o acesso pela internet: bootout dos agentes (o KeepAlive não
+    reergue). A rede local continua valendo."""
     _tunnel_exige_macos()
-    _launchctl(["launchctl", "bootout", f"gui/{os.getuid()}/{TUNNEL_LABEL}"])
+    agentes = _agentes_publicos()
+    if not agentes:
+        raise HTTPException(400, "Nenhum agente instalado — rode ./tunnel.sh install ou ./cloudflare.sh install")
+    for label, _plist in agentes:
+        # tolerante: agente já parado devolve erro no bootout e não é problema
+        try:
+            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
+                           capture_output=True, timeout=10)
+        except Exception:  # noqa: BLE001
+            pass
     return {"ok": True, "msg": "Túnel desligado — URL pública fora do ar"}
 
 
 @app.post("/api/tunnel/start")
 def tunnel_start():
-    """Religa o acesso pela internet: bootstrap do LaunchAgent."""
+    """Religa o acesso pela internet: bootstrap dos agentes instalados."""
     _tunnel_exige_macos()
-    if not _tunnel_plist().exists():
-        raise HTTPException(400, "LaunchAgent não instalado — rode ./tunnel.sh install")
-    _launchctl(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(_tunnel_plist())])
+    agentes = _agentes_publicos()
+    if not agentes:
+        raise HTTPException(400, "Nenhum agente instalado — rode ./tunnel.sh install ou ./cloudflare.sh install")
+    for _label, plist in agentes:
+        _launchctl(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)])
     return {"ok": True, "msg": "Túnel ligado — aguarde ~5s e teste a URL pública"}
 
 

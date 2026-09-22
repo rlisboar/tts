@@ -2570,8 +2570,8 @@
         <h3 class="cfg-sec-h">Acesso pela internet (proxy)</h3>
         <label class="check"><input type="checkbox" id="proxyTunnelOn"> Túnel ativo — estúdio acessível pela internet</label>
         <p class="hint" style="margin-top:2px">Desligado: só a rede local alcança o estúdio (a URL pública para de responder).</p>
-        <p class="hint">URL pública do estúdio atrás de um proxy (ex.: VPS com túnel SSH —
-          veja o README). Fica salva só neste navegador.</p>
+        <p class="hint">URL pública do estúdio atrás de um proxy (ex.: VPS com túnel SSH ou
+          Cloudflare Tunnel — veja o README). Fica salva só neste navegador.</p>
         <label class="cfg-label">URL pública
           <input type="text" id="proxyUrl" placeholder="https://seu-dominio/ttsproxy" autocomplete="off"></label>
         <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:6px">
@@ -5118,6 +5118,8 @@ if ($("proxyTunnelStatus")) $("proxyTunnelStatus").onclick = async () => {
     const parts = [d.tunnel_running ? "✔ túnel rodando" : "✖ túnel parado"];
     if (d.launchd_loaded === true) parts.push("✔ LaunchAgent carregado");
     else if (d.launchd_loaded === false) parts.push("✖ LaunchAgent ausente (tunnel.sh install)");
+    if (d.cloudflared_running) parts.push("✔ Cloudflare conectado");
+    else if (d.cloudflared_installed) parts.push("✖ Cloudflare parado (cloudflare.sh)");
     if (d.public_check) {
       const c = d.public_check;
       parts.push(c.ok ? `✔ internet OK (${c.latency_ms} ms)` : `✖ internet falhou: ${c.error || "?"}`);
@@ -5126,7 +5128,7 @@ if ($("proxyTunnelStatus")) $("proxyTunnelStatus").onclick = async () => {
   } catch (e) { setProxyStatus(`✖ Erro: ${e.message}`); }
 };
 if ($("proxyTunnelRestart")) $("proxyTunnelRestart").onclick = async () => {
-  if (!confirm("Reiniciar o túnel SSH? O acesso pela internet cai por ~5s.")) return;
+  if (!confirm("Reiniciar o túnel? O acesso pela internet cai por ~5s.")) return;
   try {
     await api("/api/tunnel/restart", { method: "POST" });
     toast("Túnel reiniciado — aguarde ~5s");
@@ -5144,7 +5146,7 @@ async function syncTunnelToggle() {
   try {
     const d = await api("/api/tunnel/status");
     el.disabled = false;
-    el.checked = !!(d.launchd_loaded || d.tunnel_running);
+    el.checked = !!(d.launchd_loaded || d.tunnel_running || d.cloudflared_loaded || d.cloudflared_running);
   } catch (e) { el.disabled = true; el.checked = false; }
 }
 if ($("proxyTunnelOn")) {

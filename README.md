@@ -234,6 +234,39 @@ Voxtral. O app envia essas chaves usando `remote_api_key` ou `remote_stt_key`.
 Sem essas variáveis, os servidores remotos mantêm o comportamento legado sem
 autenticação e devem ser usados somente atrás de firewall ou VPN.
 
+## Acesso pela internet (Cloudflare Tunnel)
+
+Alternativa à VPS: o conector `cloudflared` roda **na própria máquina do TTS**
+e o Cloudflare publica o hostname com TLS. O ingress mora no dashboard
+(Zero Trust → Networks → Tunnels) — modo **gerenciado remotamente**: o host de
+produção guarda apenas o token, sem `config.yml` nem credenciais locais.
+
+```
+internet ─▶ https://tts.seu-dominio (Cloudflare, TLS) ─▶ tunnel
+         ─▶ conector na máquina do TTS ─▶ IP-LAN-da-máquina:7860
+```
+
+> Mesma armadilha do túnel SSH: o destino é o **IP de LAN**, nunca `127.0.0.1`
+> — pelo loopback a API dispensaria chave e a internet entraria sem autenticação.
+
+Provisionar (numa máquina com `cloudflared tunnel login` já feito):
+
+```sh
+./cloudflare.sh provision tts-mac-mini tts.seu-dominio 192.168.15.34
+```
+
+Na máquina que roda o TTS (o comando `install` sai impresso pelo `provision`):
+
+```sh
+./cloudflare.sh install <token>   # brew install cloudflared + LaunchAgent (sobe no login)
+./cloudflare.sh status | uninstall
+```
+
+Teste: `https://tts.seu-dominio/health` → `{"ok":true}`; o mesmo host sem chave
+em `/api/status` → `401` (chave exigida fora do loopback). Textos longos não
+batem no limite de 100 s de primeiro byte do Cloudflare porque a UI usa
+`/api/tts/jobs` (polling de trechos).
+
 ## Conversa (decidir o texto com IA)
 
 Sessões de conversa para decidir, com IA, o texto que um agente vai falar.
