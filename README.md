@@ -267,6 +267,26 @@ em `/api/status` → `401` (chave exigida fora do loopback). Textos longos não
 batem no limite de 100 s de primeiro byte do Cloudflare porque a UI usa
 `/api/tts/jobs` (polling de trechos).
 
+### Cliente de navegador (CORS e CSP)
+
+A API responde CORS liberado para qualquer origem, **inclusive nas respostas de
+erro** (401/429 saem com `access-control-allow-origin`, senão o navegador
+mostra `TypeError: Failed to fetch` em vez do motivo). Quem chama de outra
+origem precisa de:
+
+- **base URL com esquema** (`https://tts.seu-dominio` — sem ele o cliente monta
+  URL relativa);
+- chave da API no header (`Authorization: Bearer` ou `X-API-Key`);
+- **a origem liberada na CSP do cliente**: se a página que chama tiver
+  `Content-Security-Policy` com `connect-src` em allowlist, a requisição é
+  bloqueada *antes de sair* — nada aparece no log do servidor e o console
+  mostra violação de CSP. A CSP viaja com o documento: depois de mudar a
+  política, recarregue a aba.
+
+Diagnóstico rápido: se o cliente falha com "Failed to fetch" e **nada** chega em
+`/tmp/tts-studio.log`, o problema é antes da rede (CSP ou base errada); se chega
+`401`, é chave.
+
 ## Conversa (decidir o texto com IA)
 
 Sessões de conversa para decidir, com IA, o texto que um agente vai falar.
