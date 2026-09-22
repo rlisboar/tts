@@ -414,6 +414,7 @@ def test_tunnel_start_stop_chamam_launchctl(client, auth, monkeypatch, tmp_path)
 
     monkeypatch.setattr(app.subprocess, "run", fake_run)
     _agentes_fake(tmp_path, monkeypatch)
+    monkeypatch.setattr(app, "_launchd_loaded", lambda label: False)  # nada carregado
     r = client.post("/api/tunnel/stop", headers=auth)
     assert r.status_code == 200 and r.json()["ok"] is True
     r = client.post("/api/tunnel/start", headers=auth)
@@ -422,6 +423,24 @@ def test_tunnel_start_stop_chamam_launchctl(client, auth, monkeypatch, tmp_path)
     # os dois caminhos (SSH e Cloudflare) são ligados/desligados juntos
     assert sum(1 for c in chamadas if "bootstrap" in c) == 2
     assert sum(1 for c in chamadas if "bootout" in c) == 2
+
+
+def test_tunnel_start_com_agente_carregado_usa_kickstart(client, auth, monkeypatch, tmp_path):
+    chamadas = []
+
+    def fake_run(args, **kw):
+        chamadas.append(args)
+        class R: returncode, stderr, stdout = 0, "", ""
+        return R()
+
+    monkeypatch.setattr(app.subprocess, "run", fake_run)
+    _agentes_fake(tmp_path, monkeypatch)
+    monkeypatch.setattr(app, "_launchd_loaded", lambda label: True)
+    r = client.post("/api/tunnel/start", headers=auth)
+    assert r.status_code == 200
+    # bootstrap em agente já carregado falha no launchctl — vai de kickstart
+    assert sum(1 for c in chamadas if "kickstart" in c) == 2
+    assert not any("bootstrap" in c for c in chamadas)
 
 
 def test_tunnel_sem_agente_instalado(client, auth, monkeypatch, tmp_path):

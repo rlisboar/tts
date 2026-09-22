@@ -1656,13 +1656,17 @@ def tunnel_stop():
 
 @app.post("/api/tunnel/start")
 def tunnel_start():
-    """Religa o acesso pela internet: bootstrap dos agentes instalados."""
+    """Religa o acesso pela internet: bootstrap dos agentes instalados (se já
+    estiverem carregados, kickstart — bootstrap em agente carregado dá erro)."""
     _tunnel_exige_macos()
     agentes = _agentes_publicos()
     if not agentes:
         raise HTTPException(400, "Nenhum agente instalado — rode ./tunnel.sh install ou ./cloudflare.sh install")
-    for _label, plist in agentes:
-        _launchctl(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)])
+    for label, plist in agentes:
+        if _launchd_loaded(label):
+            _launchctl(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"])
+        else:
+            _launchctl(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)])
     return {"ok": True, "msg": "Túnel ligado — aguarde ~5s e teste a URL pública"}
 
 
