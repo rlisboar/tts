@@ -3776,11 +3776,17 @@ _vad_model = None
 
 
 def _vad_load():
-    """Silero VAD carregado sob demanda (~1MB, CPU, roda em tempo real)."""
+    """Silero VAD carregado sob demanda (~1MB, CPU, roda em tempo real).
+
+    O default do silero-vad é ONNX, que exige onnxruntime; sem ele o fallback
+    é o modelo torch (mesmo resultado, sem dependência extra)."""
     global _vad_model
     if _vad_model is None:
         from silero_vad import load_silero_vad
-        _vad_model = load_silero_vad()
+        try:
+            _vad_model = load_silero_vad()
+        except Exception:  # noqa: BLE001 — sem onnxruntime: cai no torch
+            _vad_model = load_silero_vad(onnx=False)
     return _vad_model
 
 
