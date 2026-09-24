@@ -16,6 +16,10 @@ Os limiares ficam no app: stt_max_no_speech / stt_min_logprob / stt_max_compress
 Endpoint espelha o que o app manda (_transcribe_remote): multipart `file`, `model`,
 `language`, `response_format`, `beam_size` (ignorado). Versionado em
 remote/voxtral_server.py — editar, ast.parse, scp p/ /root/voxtral/server.py, restart.
+O VAD pede ONNX EXPLÍCITO (precisa de onnxruntime no venv de lá; sem o pacote ele
+avisa no log e cai no jit do torch). `/health` devolve `vad` com o caminho que
+subiu — é como se confere o deploy sem entrar no Python.
+
 AUTENTICAÇÃO (fail closed): VOXTRAL_API_KEY é obrigatória — sem ela o processo NÃO
 sobe, a não ser que VOXTRAL_ALLOW_NO_AUTH=1 diga "aqui é atrás de firewall/VPN".
 `/health` fica fora da chave (e publica o modo em `auth`); a política mora em
@@ -60,7 +64,27 @@ _bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                           bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
 model = VoxtralForConditionalGeneration.from_pretrained(
     REPO, quantization_config=_bnb, device_map={"": DEV}).eval()
-_vad = load_silero_vad(onnx=False)
+print("loading Silero VAD...", flush=True)
+
+
+def _load_vad():
+    """VAD pelo caminho ONNX, com fallback explícito e logado para o jit do torch.
+
+    `load_silero_vad()` sem argumento NÃO garante ONNX: o default virou
+    onnx=False no silero-vad 6.x (no 5.x era True) e o servidor cairia no jit
+    sem avisar. Espelha o `_vad_load` do app (Mac) — mesma escolha, mesmo log,
+    mesmo fallback, para os dois lados não divergirem. Custa ~37 MB de RSS e
+    empata em velocidade; o ganho é paridade e não depender do torchscript."""
+    try:
+        return load_silero_vad(onnx=True), "onnx"
+    except Exception as e:  # noqa: BLE001 — sem onnxruntime: cai no torch jit
+        print(f"[vad] modelo ONNX indisponível ({str(e)[:120]}) — caindo no torch jit",
+              flush=True)
+        return load_silero_vad(onnx=False), "torch-jit"
+
+
+_vad, VAD_BACKEND = _load_vad()
+print(f"Silero VAD pronto ({VAD_BACKEND})", flush=True)
 print("Voxtral ready", flush=True)
 
 app = FastAPI(title="Voxtral STT")
@@ -145,6 +169,7 @@ def _run(wav16, language):
 def health():
     free, total = (torch.cuda.mem_get_info() if torch.cuda.is_available() else (0, 0))
     return {"status": "ok", "engine": "voxtral", "auth": AUTH_MODE, "repo": REPO, "min_speech_s": MIN_SPEECH,
+            "vad": VAD_BACKEND,
             "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
             "vram_free_mb": round(free / 1e6, 1), "vram_total_mb": round(total / 1e6, 1)}
 
