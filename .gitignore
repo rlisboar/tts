@@ -9,6 +9,9 @@ outputs/
 # ambientes e modelos (instalados/baixados sob demanda)
 .venv/
 .venv-mlx/
+# venv de teste do requirements.lock (task #29) e caches dele
+.venv-locktest/
+.tmp-lock/
 .venv-omni/
 .omnivoice-bf16/
 __pycache__/
@@ -22,5 +25,14 @@ settings.json
 # artefatos de PoC / teste
 poc-*.wav
 
+# telemetria do onnxruntime: o ID do dispositivo é gravado em $HOME; quando o
+# HOME não é gravável (sandbox/CI) a lib cai para um arquivo ":memory:.ses" no
+# CWD. Regenerado a cada import — inofensivo, mas não é para versionar.
+# (run.sh exporta ORT_DISABLE_TELEMETRY=1, que evita o arquivo e o warning.)
+:memory:.ses
+
 # log de runtime do servidor
 server.log
+
+# rascunho do navegador de teste (screenshots ficam em evidence/, que é versionado)
+.playwright-mcp/

@@ -96,6 +96,14 @@ Recomendações: `TTS_ROD_ADMIN_KEY` é a credencial do operador (guarde fora do
 repo); para os outros dispositivos, crie chaves `role: "use"`. Se as chaves
 forem trocadas, rotacione também a env (o app lê no boot).
 
+Pela UI (Configurações → Acesso → **Nova chave**) você escolhe o papel na
+criação — o default é `uso`, que é a chave que se compartilha. A lista mostra o
+papel de cada uma (`🔒 uso` / `🔑 admin`; chave antiga sem papel aparece como
+*legado (administra)*), o botão `virar admin`/`virar uso` troca depois
+(`PATCH /api/apikeys/{id}`), e adotar a chave nova pelo botão *"usar esta chave
+neste navegador"* já rebaixa/sobe o privilégio da sessão na hora — o selo do
+topo acompanha.
+
 ## Configurações (dashboard ⚙️)
 
 Card "Configurações padrão" na UI: modelo, idioma (Auto = detecta do texto),
@@ -234,7 +242,17 @@ cliente perderia status e áudio no meio da fala. `GET /api/status` publica
 `jobs_active`, `jobs_active_max` e `jobs_history_max` para acompanhar a ocupação.
 
 Pela internet o `POST /api/tts` também passa pelo limitador de taxa
-(`TTS_RATE_LIMIT` / `TTS_HEAVY_RATE_LIMIT`); loopback é isento dele.
+(`TTS_RATE_LIMIT` / `TTS_HEAVY_RATE_LIMIT`, `TTS_POLL_RATE_LIMIT`); loopback é
+isento dele.
+
+O limitador guarda uma janela de 60 s por (chave/IP × rota). Como a rota entra
+**normalizada** (`/api/tts/jobs/<id>/pieces/0` → `/api/tts/jobs/*/pieces/*`),
+pollar 500 jobs não cria 500 baldes; e o dicionário tem teto
+(`TTS_RATE_MAX_BUCKETS`, padrão 10000): acima dele sai primeiro o que expirou e,
+se ainda estiver cheio (rajada de chaves descartáveis na mesma janela), o balde
+tocado há mais tempo. `GET /api/status` publica `rate_limit_buckets` e
+`rate_limit_buckets_max`. O teto de cada rota continua saindo do path cru, então
+`/api/voices/import` mantém o limite pesado.
 
 ## Acesso pela internet (VPS como proxy)
 
@@ -442,13 +460,29 @@ navegador.
 
 # análise estática — nomes indefinidos em funções só explodem em runtime
 ./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py \
-    tests/*.py client/mic_router.py
+    smoke_sintese.py tests/*.py client/mic_router.py
+
+# ambiente reproduzível: `requirements.txt` é a lista CURADA (com o porquê de
+# cada pin); `requirements.lock` é o retrato do venv verificado — com os
+# transitivos, para um venv novo não resolver outra combinação sozinho
+python3.12 -m venv .venv-locktest
+./.venv-locktest/bin/python -m pip install -r requirements.lock      # idêntico
+# ...ou resolvendo a lista curada com o lock como teto:
+./.venv-locktest/bin/python -m pip install -r requirements.txt -c requirements.lock
+
+# gate de bump de mlx-*/transformers: SÍNTESE REAL (falha se o áudio sair mudo).
+# Com --stt transcreve e exige texto de volta. Instalar sem erro não basta.
+./.venv-locktest/bin/python smoke_sintese.py --stt
+# verde? aí sim: pip freeze > requirements.lock e atualize o pin no requirements.txt
 
 # smoke test do worker isolado (lento ~1 min, carrega Kokoro real)
 TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest tests/test_worker.py -q
 
 # regressão de XSS da UI contra o app de pé (./run.sh antes) — Chromium headless
 ./tests/xss_frontend_repro.sh            # --cleanup remove a voz de teste
+
+# política de chave: uso x admin, ponta a ponta (cria e remove as chaves de teste)
+./tests/admin_ui_flow.sh                 # precisa de IP de LAN (en0/en1)
 ```
 
 Pre-commit opcional (pyflakes + pytest antes de cada commit):

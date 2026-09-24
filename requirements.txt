@@ -9,6 +9,10 @@ mlx-lm==0.31.3
 transformers==5.10.2
 torch
 soundfile
+# scipy: DSP do app (resample_poly em _wav_to_mono16k, sosfilt nos filtros) e
+# reamostragem do áudio do navegador (24 kHz) p/ 16 kHz antes do VAD — sem ele
+# aquele caminho cai no `except` e o guarda anti-alucinação volta a ser no-op.
+scipy
 fastapi
 uvicorn
 python-multipart
@@ -24,9 +28,31 @@ phonemizer-fork
 #   ./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py tests/*.py client/mic_router.py
 pytest
 pyflakes
-# TestClient (tests/test_api.py) exige httpx — sem isto, venv novo quebra nos testes
+# TestClient (tests/test_api.py) usa httpx2 (linha abaixo). A `httpx` continua
+# necessária para huggingface_hub/weasel (download de modelos) — não remover.
 httpx
-silero-vad
-onnxruntime           # silero-vad: caminho ONNX (sem ele o app cai no modelo torch)
+# starlette 1.x prefere httpx2 no TestClient: sem ele cai nesta `httpx` e emite
+# StarletteDeprecationWarning (era o warning da suíte). Aditivo e só para teste:
+# 3 pacotes dev novos (httpx2, httpcore2, truststore), nenhum existente sobe.
+httpx2
+# Pin de propósito: anyio >= 4.15 deprecia `anyio.abc.BlockingPortal`, usado pela
+# starlette/testclient.py — sem pin, venv novo pega a última anyio e troca um
+# warning por outro. 4.13.0 = versão verificada neste venv.
+anyio==4.13.0
+# Pin de propósito: o default de `load_silero_vad()` virou onnx=False no 6.x
+# (no 5.x era True). O app pede onnx=True explícito — o pin evita que um venv
+# novo mude de default por baixo. 6.2.1 = versão instalada e verificada aqui.
+silero-vad==6.2.1
+# silero-vad: `model.py` procura PRIMEIRO este backport e usa a API moderna
+# (`files()`); sem ele cai no `importlib.resources.path()`, deprecado desde o
+# Python 3.11 — era 1 DeprecationWarning por load (4 no gate, um por teste que
+# carrega o VAD real) apontando para um arquivo de terceiro que não editamos.
+# Instalar o backport resolve na origem, sem filtro de -W no pytest. Sem deps em
+# py3.12 (só `zipp`, e só abaixo de 3.10). 7.1.0 = versão instalada (task #30).
+importlib_resources==7.1.0
+# silero-vad: caminho ONNX do VAD. Sem este pacote o load estoura e o app cai
+# no jit do torch, com aviso `[vad]` no log (não é mais silencioso). Instalado
+# e medido: 1.30.0, wheel macosx_14_0_arm64 (py3.12).
+onnxruntime
 resemblyzer
 parakeet-mlx
