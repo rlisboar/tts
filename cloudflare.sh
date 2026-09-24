@@ -27,6 +27,10 @@
 #   ./cloudflare.sh install <token> [label]     # token cru colado no shell
 #   ./cloudflare.sh install - [label]           # token pelo stdin
 #   ./cloudflare.sh status | uninstall | token [arquivo]
+#
+# Análise estática: `zsh -n cloudflare.sh` e `shellcheck -s bash cloudflare.sh`
+# (o shellcheck não tem dialeto zsh; o que ele estranha — `print`, `(N)` de
+# glob, `${var//x/y}` — é zsh de propósito).
 set -u
 # Tudo que este script cria carrega segredo (o token vai dentro do plist e do
 # arquivo do token): nasce 0600, sem janela legível entre escrever e chmodar.
@@ -176,7 +180,8 @@ EOF
     # Único ponto que imprime o token — quando você precisa copiá-lo na mão.
     FILE="${2:-}"
     if [ -z "$FILE" ]; then
-      local -a found; found=("$TOKEN_DIR"/*.token(N))
+      # shellcheck disable=SC1036  # (N) é qualificador de glob do zsh
+      found=("$TOKEN_DIR"/*.token(N))
       case ${#found} in
         1) FILE="${found[1]}" ;;
         0) echo "nenhum token em $TOKEN_DIR — rode: $0 provision"; exit 1 ;;
