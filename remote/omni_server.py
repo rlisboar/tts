@@ -19,8 +19,13 @@
 # accelerate, fastapi, uvicorn, soundfile, numpy; um ffmpeg (/usr/local/bin/ffmpeg8); o
 # modelo TTS em ./model_local; vozes clonadas em ./voices (wav + .txt de ref_text).
 #
+# AUTENTICAÇÃO (fail closed): OMNI_API_KEY é obrigatória — sem ela o processo NÃO sobe,
+# a não ser que OMNI_ALLOW_NO_AUTH=1 diga "aqui é atrás de firewall/VPN". `/health` fica
+# fora da chave (e publica o modo em `auth`); a política mora em remote/auth_policy.py,
+# copiada ao lado deste arquivo no deploy e compartilhada com o Voxtral.
+#
 # Esta é uma cópia versionada do que roda em /root/omnivoice/server.py (v2.4).
-import io, os, re, time, asyncio, tempfile, subprocess, secrets, numpy as np, torch, soundfile as sf
+import io, os, re, sys, time, asyncio, tempfile, subprocess, numpy as np, torch, soundfile as sf
 from concurrent.futures import ThreadPoolExecutor
 torch.set_float32_matmul_precision("high")
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -40,7 +45,15 @@ FFMPEG = "/usr/local/bin/ffmpeg8"
 DEV = "cuda:0"  # CUDA_VISIBLE_DEVICES=1 -> RTX 4090
 VOICES_DIR = "/root/omnivoice/voices"
 os.makedirs(VOICES_DIR, exist_ok=True)
-REMOTE_API_KEY = os.environ.get("OMNI_API_KEY", "").strip()
+try:  # auth_policy.py é copiado ao lado deste arquivo no deploy (ver DEPLOY.md §5)
+    from auth_policy import autorizado, load_key, precisa_chave
+except ModuleNotFoundError:  # cwd diferente do diretório do arquivo (unit sem WorkingDirectory)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from auth_policy import autorizado, load_key, precisa_chave
+# Fail closed: sem OMNI_API_KEY o processo NÃO sobe (a não ser com
+# OMNI_ALLOW_NO_AUTH=1) — antes o servidor subia em 0.0.0.0 sem avisar que
+# estava aberto. Roda antes de carregar os modelos na VRAM.
+REMOTE_API_KEY, AUTH_MODE = load_key("OMNI_API_KEY", allow_no_auth_var="OMNI_ALLOW_NO_AUTH")
 try:
     MAX_UPLOAD_BYTES = max(1, min(int(os.environ.get("OMNI_MAX_UPLOAD_MB", "64")), 2048)) * 1024 * 1024
 except ValueError:
@@ -264,16 +277,14 @@ app = FastAPI(title="OmniVoice TTS + Whisper ASR + MT", version="2.4",
 
 @app.middleware("http")
 async def require_api_key(request: Request, call_next):
-    """Opcionalmente protege o servidor remoto quando exposto fora da LAN.
+    """Exige OMNI_API_KEY quando ela existe (política em remote/auth_policy.py).
 
-    Sem OMNI_API_KEY o comportamento legado permanece; em produção atrás de
-    internet/VPS, configurar a variável é obrigatório.
+    `/health` e `OPTIONS` ficam fora — monitorar não precisa de chave. O modo do
+    boot aparece em `/health` → `auth` ("required" | "open").
     """
-    if REMOTE_API_KEY and request.url.path != "/health" and request.method != "OPTIONS":
-        auth = request.headers.get("authorization", "")
-        supplied = auth[7:].strip() if auth.lower().startswith("bearer ") else request.headers.get("x-api-key", "")
-        if not supplied or not secrets.compare_digest(supplied, REMOTE_API_KEY):
-            return JSONResponse({"detail": "Não autorizado"}, status_code=401)
+    if REMOTE_API_KEY and precisa_chave(request.method, request.url.path) \
+            and not autorizado(request, REMOTE_API_KEY):
+        return JSONResponse({"detail": "Não autorizado"}, status_code=401)
     return await call_next(request)
 
 
@@ -310,7 +321,7 @@ class ChatReq(BaseModel):                       # OpenAI /v1/chat/completions (t
 
 @app.get("/health")
 def health():
-    return {"status":"ok","gpu":torch.cuda.get_device_name(0),"tts_sr":SR,"asr_model":"large-v3",
+    return {"status":"ok","auth":AUTH_MODE,"gpu":torch.cuda.get_device_name(0),"tts_sr":SR,"asr_model":"large-v3",
             "asr_turbo_ready": asr_turbo is not None,
             "mt":{"repo":MT_REPO,"dev":MT_DEV,"ready":mt["ready"],"err":mt["err"]},
             "mt_fast":{"repo":MT_FAST_REPO,"dev":MT_FAST_DEV,"ready":mt_fast["ready"],"err":mt_fast["err"]},

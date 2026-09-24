@@ -16,9 +16,13 @@ Os limiares ficam no app: stt_max_no_speech / stt_min_logprob / stt_max_compress
 Endpoint espelha o que o app manda (_transcribe_remote): multipart `file`, `model`,
 `language`, `response_format`, `beam_size` (ignorado). Versionado em
 remote/voxtral_server.py — editar, ast.parse, scp p/ /root/voxtral/server.py, restart.
+AUTENTICAÇÃO (fail closed): VOXTRAL_API_KEY é obrigatória — sem ela o processo NÃO
+sobe, a não ser que VOXTRAL_ALLOW_NO_AUTH=1 diga "aqui é atrás de firewall/VPN".
+`/health` fica fora da chave (e publica o modo em `auth`); a política mora em
+remote/auth_policy.py, copiada ao lado deste arquivo no deploy.
 """
 import os
-import secrets
+import sys
 import tempfile
 import time
 import zlib
@@ -36,7 +40,14 @@ REPO = os.environ.get("VOXTRAL_REPO", "mistralai/Voxtral-Small-24B-2507")
 DEV = "cuda:0"   # CUDA_VISIBLE_DEVICES=1 + PCI_BUS_ID => 4090
 MAX_NEW = int(os.environ.get("VOXTRAL_MAX_NEW", "512"))
 MIN_SPEECH = float(os.environ.get("VOXTRAL_MIN_SPEECH", "0.2"))   # seg de fala p/ transcrever
-REMOTE_API_KEY = os.environ.get("VOXTRAL_API_KEY", "").strip()
+try:  # auth_policy.py é copiado ao lado deste arquivo no deploy (ver DEPLOY.md §5)
+    from auth_policy import autorizado, load_key, precisa_chave
+except ModuleNotFoundError:  # cwd diferente do diretório do arquivo (unit sem WorkingDirectory)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from auth_policy import autorizado, load_key, precisa_chave
+# Fail closed: sem VOXTRAL_API_KEY o processo NÃO sobe (a não ser com
+# VOXTRAL_ALLOW_NO_AUTH=1) — antes subia em 0.0.0.0 aberto e silencioso.
+REMOTE_API_KEY, AUTH_MODE = load_key("VOXTRAL_API_KEY", allow_no_auth_var="VOXTRAL_ALLOW_NO_AUTH")
 try:
     MAX_UPLOAD_BYTES = max(1, min(int(os.environ.get("VOXTRAL_MAX_UPLOAD_MB", "64")), 2048)) * 1024 * 1024
 except ValueError:
@@ -49,7 +60,6 @@ _bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                           bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
 model = VoxtralForConditionalGeneration.from_pretrained(
     REPO, quantization_config=_bnb, device_map={"": DEV}).eval()
-print("loading Silero VAD...", flush=True)
 _vad = load_silero_vad(onnx=False)
 print("Voxtral ready", flush=True)
 
@@ -58,12 +68,14 @@ app = FastAPI(title="Voxtral STT")
 
 @app.middleware("http")
 async def require_api_key(request: Request, call_next):
-    """Proteção opcional para deployments fora da rede local."""
-    if REMOTE_API_KEY and request.url.path != "/health" and request.method != "OPTIONS":
-        auth = request.headers.get("authorization", "")
-        supplied = auth[7:].strip() if auth.lower().startswith("bearer ") else request.headers.get("x-api-key", "")
-        if not supplied or not secrets.compare_digest(supplied, REMOTE_API_KEY):
-            return JSONResponse({"detail": "Não autorizado"}, status_code=401)
+    """Exige VOXTRAL_API_KEY quando ela existe (política em remote/auth_policy.py).
+
+    `/health` e `OPTIONS` ficam fora — monitorar não precisa de chave. O modo do
+    boot aparece em `/health` → `auth` ("required" | "open").
+    """
+    if REMOTE_API_KEY and precisa_chave(request.method, request.url.path) \
+            and not autorizado(request, REMOTE_API_KEY):
+        return JSONResponse({"detail": "Não autorizado"}, status_code=401)
     return await call_next(request)
 
 
@@ -132,7 +144,7 @@ def _run(wav16, language):
 @app.get("/health")
 def health():
     free, total = (torch.cuda.mem_get_info() if torch.cuda.is_available() else (0, 0))
-    return {"status": "ok", "engine": "voxtral", "repo": REPO, "min_speech_s": MIN_SPEECH,
+    return {"status": "ok", "engine": "voxtral", "auth": AUTH_MODE, "repo": REPO, "min_speech_s": MIN_SPEECH,
             "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
             "vram_free_mb": round(free / 1e6, 1), "vram_total_mb": round(total / 1e6, 1)}
 

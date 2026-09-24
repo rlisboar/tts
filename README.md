@@ -25,9 +25,6 @@ ou pelo IP do Mac (ex.: `http://<ip-do-mac>:7860`).
 Toda a API (`/api/*` e `/v1/*`) exige chave. O `run.sh` gera uma na primeira
 execução, salva em `.apikey` e imprime no terminal. A UI pede a chave uma vez
 e guarda no navegador. Aceita `Authorization: Bearer` ou `X-API-Key`.
-Para separar administração de uso normal pela rede, defina também
-`TTS_ROD_ADMIN_KEY`; sem essa variável, a compatibilidade legada permite que
-qualquer chave válida administre as chaves.
 
 1. **Gravar voz** — 10–30 s de fala limpa. Opcional: informe a transcrição da
    amostra (`ref_text`) para clonagem mais estável.
@@ -57,6 +54,48 @@ valioso do app). Na UI: **Vozes → Vozes salvas → ⬇ Backup** (zip com `.wav
 outra máquina (ou depois de um apagão): **⬆ Importar** selecionando o zip
 (`POST /api/voices/import` — sobrescreve vozes com o mesmo id).
 
+## Administração x uso (chave de uso)
+
+Administrar = gerenciar chaves (`/api/apikeys*`), mexer nas **conexões externas**
+do `/api/settings` (`remote_*`, `chat_*`, `remote_api_key`, `chat_api_key`) e
+trocar de **modelo** (`model`, `translate_model`, `stt_whisper_repo`). O resto —
+gerar fala, voz, transcrição, ajustes de qualidade — é uso e qualquer chave faz.
+
+Quem é admin: **loopback** (o Mac), a chave de `TTS_ROD_ADMIN_KEY` e chaves
+marcadas com `role: "admin"`. Duas formas de separar:
+
+```sh
+# 1) credencial do operador na env (autentica E administra; não vai para o git)
+TTS_ROD_ADMIN_KEY=$(openssl rand -hex 24) ./run.sh
+```
+
+```sh
+# 2) por chave, na UI (Acesso) ou na API — não precisa de env nenhuma
+curl -H "X-API-Key: $ADMIN" -H 'Content-Type: application/json' \
+     -d '{"name":"tablet","role":"use"}' http://127.0.0.1:7860/api/apikeys
+```
+
+Uma chave `role: "use"` gera fala normalmente, mas: não cria/apaga chaves
+(`403`), não lê os segredos em `GET /api/settings` (vêm mascarados como
+`••••abcd`) e tem os campos administrativos ignorados no `POST /api/settings`
+(a resposta lista o que foi ignorado em `admin_ignored`). `PATCH
+/api/apikeys/{id}` troca o `role` depois.
+
+**Migração/compatibilidade**: chave em `role: null` (criada antes deste campo) e
+instalação **sem** `TTS_ROD_ADMIN_KEY` continuam exatamente como antes — toda
+chave válida administra, e `GET /api/settings` continua devolvendo os segredos
+em claro para ela. Nada muda até você usar uma das duas formas acima.
+
+Única exceção, e é conserto: se você **já** subia o app com `TTS_ROD_ADMIN_KEY`,
+essa chave antes não autenticava (401: ela não era chave de API) e a chave
+comum não era admin (403) — administrar pela rede só funcionava com as duas na
+mão. Agora a env admin autentica e administra, e uma instalação que tenha só
+ela passa a exigir chave na rede (antes ficava aberta).
+
+Recomendações: `TTS_ROD_ADMIN_KEY` é a credencial do operador (guarde fora do
+repo); para os outros dispositivos, crie chaves `role: "use"`. Se as chaves
+forem trocadas, rotacione também a env (o app lê no boot).
+
 ## Configurações (dashboard ⚙️)
 
 Card "Configurações padrão" na UI: modelo, idioma (Auto = detecta do texto),
@@ -64,6 +103,22 @@ voz padrão da API, pré-prompt, tamanho de trecho, velocidade e os **controles 
 OmniVoice** (passos, aderência, variações, voice design, duração). Persiste em
 `settings.json` e **vale para UI e API** — parâmetro explícito na requisição
 sempre sobrepõe. Programaticamente: `GET/POST /api/settings`.
+
+Contrato do endpoint para quem integra: `GET` devolve as settings mais
+`is_admin` (bool) e `admin_fields` (lista dos campos que só admin altera); sem
+admin, os segredos vêm mascarados. `POST` aceita payload parcial, devolve
+`is_admin` e `admin_ignored` (lista, vazia quando tudo foi aplicado) — não é
+`403`: uma chave de uso que mandar o blob inteiro continua salvando o que é de
+uso. Reenviar uma máscara (`••••abcd`) mantém o segredo guardado; `""` limpa.
+
+**Na UI** isso aparece: um selo no topo das Configurações (`🔑 chave admin` x
+`🔒 chave de uso`), os campos de conexão externa aparecem esmaecidos e travados
+com o motivo no `title`, os segredos de terceiros chegam mascarados (o
+`placeholder` avisa que aquele `••••1234` não é o valor) e a aba Acesso
+desabilita criar/rotacionar/apagar chave. Salvar com chave de uso não mente: se
+o servidor descartar algum campo, o aviso diz qual e o `POST` sai sem os campos
+administrativos. Ação que exige admin e leva `403` abre a faixa de chave com o
+passo a passo (`Configurações → Acesso → Nova chave → papel admin`).
 
 ## Modelo
 
@@ -160,6 +215,27 @@ curl -s http://127.0.0.1:7860/v1/audio/speech \
 - Conversão de formato/velocidade usa `ffmpeg` (`brew install ffmpeg`).
 - `GET /v1/models` lista `tts-1` e `tts-1-hd`.
 
+### Limites de geração (429)
+
+As rotas que geram (`/api/tts`, `/api/translate-speech`, `/api/modify-speech`,
+`/v1/audio/speech`) aceitam até `TTS_JOBS_ACTIVE_MAX` jobs **em andamento**
+(padrão 20). Acima disso a resposta é `429` com `Retry-After` e nada é criado: o
+pedido recusado não sobe thread e nenhum job ativo é descartado.
+
+`POST /api/tts` aceita `model` no body; a escolha vale também para as próximas
+gerações (é assim que o seletor da UI aplica o modelo ao gerar), mas **só depois
+de o pedido passar** na validação: `400` (texto vazio/longo), `404` (voz) ou
+`429` (fila) devolvem o erro sem tocar em `settings.json` nem na config em
+memória.
+
+O histórico guarda os 20 últimos jobs (`_JOBS_MAX`) e só descarta job já
+**terminado** — descartar um job em execução apagaria os trechos `.job-*` e o
+cliente perderia status e áudio no meio da fala. `GET /api/status` publica
+`jobs_active`, `jobs_active_max` e `jobs_history_max` para acompanhar a ocupação.
+
+Pela internet o `POST /api/tts` também passa pelo limitador de taxa
+(`TTS_RATE_LIMIT` / `TTS_HEAVY_RATE_LIMIT`); loopback é isento dele.
+
 ## Acesso pela internet (VPS como proxy)
 
 Dá para consumir a API de fora de casa mantendo o processamento no Mac: um
@@ -234,11 +310,13 @@ próprio (server block dedicado + `location /`) também funciona, sem o
 prefixo. `TTS_TUNNEL_IF=enX` sobrescreve a interface de rede detectada;
 `./tunnel.sh uninstall` remove o agente.
 
-Os servidores opcionais em `remote/` também devem ficar protegidos na rede:
-defina `OMNI_API_KEY` no servidor OmniVoice e `VOXTRAL_API_KEY` no servidor
-Voxtral. O app envia essas chaves usando `remote_api_key` ou `remote_stt_key`.
-Sem essas variáveis, os servidores remotos mantêm o comportamento legado sem
-autenticação e devem ser usados somente atrás de firewall ou VPN.
+Os servidores opcionais em `remote/` exigem chave: `OMNI_API_KEY` no servidor
+OmniVoice e `VOXTRAL_API_KEY` no servidor Voxtral (o app envia por
+`remote_api_key` / `remote_stt_key`). Sem a variável o processo **não sobe** —
+antes ele subia em `0.0.0.0` sem avisar que estava aberto; para assumir o modo
+legado (só atrás de firewall/VPN) exporte `OMNI_ALLOW_NO_AUTH=1` ou
+`VOXTRAL_ALLOW_NO_AUTH=1`. `/health` não exige chave e publica o modo em
+`auth`; a política mora em `remote/auth_policy.py`.
 
 Inventário do deploy (host, serviço, portas, recon e comandos de subida):
 [`remote/DEPLOY.md`](remote/DEPLOY.md).
