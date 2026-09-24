@@ -86,6 +86,12 @@ campo "modelo" no dashboard). Se um vídeo do YouTube exigir login
 ("sign in to confirm"), exporte cookies do navegador (formato Netscape) e
 aponte `TTS_ROD_YT_COOKIES=/caminho/cookies.txt` antes do `./run.sh`.
 
+O `/api/youtube-audio` só aceita link cujo host seja `youtube.com`,
+`youtube-nocookie.com` ou `youtu.be` — exato ou subdomínio de verdade (o ponto
+conta: `evil-youtube.com` e `youtube.com.evil.com` não passam). Link curto
+`youtu.be/...` é resolvido normalmente; se o yt-dlp for redirecionado para fora
+dessa lista (ex.: `youtube.com/redirect?q=…`), o pedido volta 400.
+
 ### Controles de geração
 
 | Controle | Faixa | Default | Efeito |
@@ -234,6 +240,9 @@ Voxtral. O app envia essas chaves usando `remote_api_key` ou `remote_stt_key`.
 Sem essas variáveis, os servidores remotos mantêm o comportamento legado sem
 autenticação e devem ser usados somente atrás de firewall ou VPN.
 
+Inventário do deploy (host, serviço, portas, recon e comandos de subida):
+[`remote/DEPLOY.md`](remote/DEPLOY.md).
+
 ## Acesso pela internet (Cloudflare Tunnel)
 
 Alternativa à VPS: o conector `cloudflared` roda **na própria máquina do TTS**
@@ -263,9 +272,16 @@ Provisionar (numa máquina com `cloudflared tunnel login` já feito):
 Na máquina que roda o TTS (o comando `install` sai impresso pelo `provision`):
 
 ```sh
-./cloudflare.sh install <token>   # brew install cloudflared + LaunchAgent (sobe no login)
+./cloudflare.sh install --token-file ~/.cloudflared/tts-mac-mini.token
 ./cloudflare.sh status | uninstall
 ```
+
+O `provision` **não despeja o token no terminal**: ele grava o token em
+`~/.cloudflared/<nome>.token` (0600) e imprime o `install --token-file` para
+colar — fora do scrollback e do history. Se for outra máquina, copie o arquivo
+antes (ex.: `scp`); o token cru (`./cloudflare.sh install <token>`) e o stdin
+(`... | ./cloudflare.sh install -`) continuam aceitos. `./cloudflare.sh token`
+mostra o token quando você precisar copiá-lo na mão.
 
 Teste: `https://tts.seu-dominio/health` → `{"ok":true}`; o mesmo host sem chave
 em `/api/status` → `401` (chave exigida fora do loopback). Textos longos não
@@ -329,6 +345,13 @@ confirmação explícita do humano é o gatilho do `text` final.
 O pipeline MLX **não embute marca-d'água** nos áudios gerados. Use apenas com a
 sua própria voz ou com consentimento explícito da pessoa clonada.
 
+A chave da API fica no navegador (localStorage; veja `SECURITY-frontend.md`) e
+vale como credencial administrativa. O que a protege na prática: a chave vai só
+no header `X-API-Key` (nunca na URL, nunca em log de proxy), os dois bundles de
+CDN têm SRI, e os sinks de `innerHTML` são auditados. Em máquina compartilhada,
+Configurações → Acesso → *Guardar só nesta sessão* tira o segredo do disco do
+navegador.
+
 ## Desenvolvimento
 
 ```bash
@@ -345,6 +368,9 @@ sua própria voz ou com consentimento explícito da pessoa clonada.
 
 # smoke test do worker isolado (lento ~1 min, carrega Kokoro real)
 TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest tests/test_worker.py -q
+
+# regressão de XSS da UI contra o app de pé (./run.sh antes) — Chromium headless
+./tests/xss_frontend_repro.sh            # --cleanup remove a voz de teste
 ```
 
 Pre-commit opcional (pyflakes + pytest antes de cada commit):
