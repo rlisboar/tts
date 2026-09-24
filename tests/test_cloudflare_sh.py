@@ -18,6 +18,7 @@ import os
 import plistlib
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -32,7 +33,10 @@ ACCT = "acc$1"
 NAME = "tts-teste"
 LABEL = "com.local.cloudflared-tts"
 
-pytestmark = pytest.mark.skipif(ZSH is None, reason="precisa de zsh")
+pytestmark = [
+    pytest.mark.skipif(ZSH is None, reason="precisa de zsh"),
+    pytest.mark.skipif(sys.platform != "darwin", reason="plist/launchctl/stat do macOS"),
+]
 
 
 def _shim(path: Path, body: str) -> None:
