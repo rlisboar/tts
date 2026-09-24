@@ -5,7 +5,7 @@
 > dono — em 2026-09-24 uma varredura inteira não achou a máquina (seção 2). Tudo que
 > depende de confirmação está marcado com `❓`.
 >
-> Última atualização: 2026-09-24 (infra-remote, tasks #16 e #27). Como atualizar: assim
+> Última atualização: 2026-09-24 (infra-remote, tasks #16, #27 e #35). Como atualizar: assim
 > que o dono confirmar host/serviço, rode `remote/deploy.sh recon` (§4) e troque os `❓`
 > por valores reais; mantenha a data no topo.
 
@@ -26,6 +26,7 @@
 | Deploy (os dois servidores) | `remote/deploy.sh recon|compare|deploy --apply|rollback --apply|smoke` (§4) | `remote/deploy.sh` |
 | Modelo do Voxtral | HF `mistralai/Voxtral-Small-24B-2507` (bnb nf4, `VOXTRAL_REPO` troca) | `remote/voxtral_server.py:35` |
 | VAD (anti-alucinação) | `_load_vad()` pede **ONNX explícito** e cai no jit do torch com aviso no log se `onnxruntime` faltar | `remote/voxtral_server.py` |
+| Deps do VAD no venv remoto | `onnxruntime` (caminho ONNX) **e** `importlib_resources` (backport; sem ele o `silero_vad/model.py` usa `importlib.resources.path()`, deprecado desde o py3.11 — task #35) | `recon` imprime `dep:` e `silero DeprecationWarning:` |
 | Como conferir qual VAD subiu | `GET /health` devolve `"vad": "onnx"` \| `"torch-jit"` | idem |
 | Autenticação | `OMNI_API_KEY` e `VOXTRAL_API_KEY` **obrigatórias** (fail closed: sem elas o processo não sobe; escape hatch `<PREFIXO>_ALLOW_NO_AUTH=1`) | `remote/auth_policy.py`, README §"servidores `remote/`" |
 | Arquivo de política no servidor | `auth_policy.py` ao lado do `server.py` (`/root/omnivoice/`, `/root/voxtral/`) — **copiar junto no deploy** | `remote/auth_policy.py` |
@@ -162,8 +163,23 @@ ssh root@HOST 'cd /root/voxtral && python3 -c "import ast,pathlib;ast.parse(path
 curl -s http://HOST:❓PORTA/health      # 200 + "auth"; sem chave num endpoint → 401
 ```
 
-Dependência nova (ex.: `onnxruntime` do VAD): `ssh root@HOST 'python3 -m pip install
---dry-run onnxruntime'` e depois sem `--dry-run` — antes do restart.
+Dependência nova no venv remoto: `ssh root@HOST 'python3 -m pip install --dry-run <pacote>'`
+e depois sem `--dry-run` — antes do restart. Hoje são duas, do VAD (espelho do
+`requirements.txt` do Mac, tasks #14 e #35): `onnxruntime importlib_resources`.
+
+Conferir depois (read-only, é o aceite da #35):
+
+```sh
+./remote/deploy.sh recon   # linhas "dep: onnxruntime True", "dep: importlib_resources True"
+                           # e "silero DeprecationWarning: 0"
+# equivalente na mão (só o número tem de ser 0):
+ssh root@HOST 'python3 -W always::DeprecationWarning -c "import silero_vad; silero_vad.load_silero_vad(onnx=True)" 2>&1 | grep -c DeprecationWarning'
+```
+
+> O aviso é invisível no serviço (sem pytest/`-W`): vale para os ambientes não
+> divergirem. Com `-W error::DeprecationWarning` o comando sai 0 **mesmo sem** o
+> backport — o próprio `silero_vad` captura a exceção e cai no `files()`. Por isso
+> a checagem discriminante é a de cima (contar o warning).
 
 > **Pendência conhecida (2026-09-24):** o arquivo versionado já pede o VAD em ONNX, mas
 > o servidor no ar ainda roda o jit do torch — o deploy não aconteceu porque a máquina

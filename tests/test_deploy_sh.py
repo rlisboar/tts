@@ -174,6 +174,8 @@ def test_recon_mostra_fatos_e_redige_a_chave(amb):
     assert UNIT_VOXTRAL in r.stdout and UNIT_OMNI in r.stdout
     assert "sha256 no ar" in r.stdout and "RTX 4090" in r.stdout
     assert "FragmentPath" in r.stdout
+    assert "dep: importlib_resources" in r.stdout          # deps do VAD (task #35)
+    assert "silero DeprecationWarning:" in r.stdout
     assert CHAVE_SEGREDA not in r.stdout, "chave vazou no recon"
     assert "OMNI_API_KEY=<len 7>" in r.stdout, "esperava o valor redigido"
 

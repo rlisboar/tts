@@ -154,6 +154,9 @@ smoke_do_servico() { # $1 = serviço; 0 = passou
       print -r -- "  [aviso] modo ABERTO ($escape): use só atrás de firewall/VPN" ;;
     *) print -r -- "  [aviso] /health sem modo de auth legível — republica com 'auth' no corpo" ;;
   esac
+  if print -r -- "$corpo" | grep -q '"vad": *"torch-jit"'; then
+    print -r -- "  [aviso] VAD no jit do torch (falta onnxruntime no venv do servidor?)"
+  fi
   local chave=""
   case "$1" in omni) chave="${OMNI_API_KEY:-}";; voxtral) chave="${VOXTRAL_API_KEY:-}";; esac
   if [ -n "$chave" ]; then
@@ -186,6 +189,11 @@ for s in "${SERVICOS[@]}"; do
       done
       distante "python3 -V 2>&1" | sed 's/^/  python: /'
       distante "python3 -m pip freeze 2>/dev/null | wc -l" | sed 's/^/  pacotes no venv: /'
+      # deps do VAD: ONNX (senão o servidor cai no jit do torch) e o backport do
+      # importlib_resources (sem ele o silero usa importlib.resources.path,
+      # deprecado desde o py3.11 — task #35). find_spec não importa nada.
+      distante "python3 -c 'import importlib.util as u; print(\"importlib_resources\", bool(u.find_spec(\"importlib_resources\"))); print(\"onnxruntime\", bool(u.find_spec(\"onnxruntime\")))' 2>&1" | sed 's/^/  dep: /'
+      distante "python3 -W always::DeprecationWarning -c 'import silero_vad; silero_vad.load_silero_vad(onnx=True)' 2>&1 | grep -ci deprecat || true" | sed 's/^/  silero DeprecationWarning: /'
       distante "nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv,noheader 2>/dev/null || echo sem nvidia-smi" | sed 's/^/  gpu: /'
       ;;
     compare)
