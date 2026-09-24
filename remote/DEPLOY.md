@@ -5,8 +5,9 @@
 > dono — em 2026-09-24 uma varredura inteira não achou a máquina (seção 2). Tudo que
 > depende de confirmação está marcado com `❓`.
 >
-> Última atualização: 2026-09-24 (infra-remote, task #16). Como atualizar: assim que o
-> dono confirmar host/serviço, troque os `❓` por valores reais e mantenha a data no topo.
+> Última atualização: 2026-09-24 (infra-remote, tasks #16 e #27). Como atualizar: assim
+> que o dono confirmar host/serviço, rode `remote/deploy.sh recon` (§4) e troque os `❓`
+> por valores reais; mantenha a data no topo.
 
 ## 1. Inventário
 
@@ -22,7 +23,7 @@
 | ffmpeg do servidor | `/usr/local/bin/ffmpeg8` | `remote/omni_server.py:39` |
 | GPUs esperadas | 2 NVIDIA: `cuda:0` = RTX 4090 (OmniVoice+Whisper), `cuda:1` = RTX 4070 (tradutor 14B, thread isolada) | `remote/omni_server.py` (docstring) |
 | Arquivo no servidor (Voxtral) | `/root/voxtral/server.py` | `remote/voxtral_server.py` (docstring) |
-| Deploy do Voxtral | editar → `ast.parse` → `scp` → restart | idem |
+| Deploy (os dois servidores) | `remote/deploy.sh recon|compare|deploy --apply|rollback --apply|smoke` (§4) | `remote/deploy.sh` |
 | Modelo do Voxtral | HF `mistralai/Voxtral-Small-24B-2507` (bnb nf4, `VOXTRAL_REPO` troca) | `remote/voxtral_server.py:35` |
 | VAD (anti-alucinação) | `_load_vad()` pede **ONNX explícito** e cai no jit do torch com aviso no log se `onnxruntime` faltar | `remote/voxtral_server.py` |
 | Como conferir qual VAD subiu | `GET /health` devolve `"vad": "onnx"` \| `"torch-jit"` | idem |
@@ -119,40 +120,68 @@ Dicas que economizam tempo:
 - Varrer a /24 inteira por TCP (portas 22, 7860, 8800, 8000) com ~64 threads leva
   segundos e responde "existe máquina aqui?" melhor que ping (que pode estar bloqueado).
 
-## 4. Deploy (é máquina remota: descrever → **OK do dono** → executar)
+## 4. Deploy reproduzível (`remote/deploy.sh`)
+
+O script faz o ciclo inteiro offline-quando-possível e só muda o servidor com
+`--apply`. Ele **não** adivinha host: passe `host` ou exporte `TTS_REMOTE_HOST`
+(e, se unit/porta/pastas forem diferentes do ❓ abaixo, `OMNI_REMOTE_*` /
+`VOXTRAL_REMOTE_*`).
 
 ```sh
-# 0) dry-run (não muda nada) e depois backup do arquivo no servidor
-ssh root@HOST 'cd /root/voxtral && cp server.py server.py.bak-$(date +%F) && python3 -m pip install --dry-run onnxruntime'
-# 1) instalar a dependência nova (exemplo: onnxruntime do VAD — task #14)
-ssh root@HOST 'python3 -m pip install onnxruntime'
-# 2) validar a sintaxe ANTES de subir
-./.venv-mlx/bin/python -c "import ast,pathlib;ast.parse(pathlib.Path('remote/voxtral_server.py').read_text())"
-# 2b) confira a chave ANTES (senão o serviço não sobe): o unit tem VOXTRAL_API_KEY?
-ssh root@HOST 'systemctl show -p Environment voxtral.service | tr " " "\n" | grep -c VOXTRAL_API_KEY'
-# 3) subir (o arquivo versionado tem de refletir o que está no ar) — DOIS arquivos:
-#    auth_policy.py é importado pelo server.py e vale para o OmniVoice também
-scp remote/auth_policy.py remote/voxtral_server.py root@HOST:/root/voxtral/
-scp remote/auth_policy.py root@HOST:/root/omnivoice/    # (só a política; o server.py do omni é outro)
-ssh root@HOST 'systemctl restart ❓voxtral*.service && systemctl status ❓voxtral*.service --no-pager'
-# 4) smoke test: /health não exige chave e diz o modo de auth esperado ("required")
-curl -s http://HOST:❓PORTA/health
+./remote/deploy.sh recon    [host]              # read-only: units, portas, venv, sha256, gpu
+./remote/deploy.sh compare  [host]              # sha256 do repo × o que está no ar (rc=1 se difere)
+./remote/deploy.sh deploy   [host] --apply      # backup → scp → ast.parse → restart → smoke
+./remote/deploy.sh rollback [host] --apply      # volta o último server.py.bak-* e reinicia
+./remote/deploy.sh smoke    [host]              # /health 200 com "auth" + 401 sem chave
 ```
 
-Se o unit **não** tiver a chave e você quiser subir sem tocar nele agora, o serviço
-morre no import com a mensagem `[auth] VOXTRAL_API_KEY vazia...`: ou defina a chave no
-unit, ou acrescente `Environment=VOXTRAL_ALLOW_NO_AUTH=1` (modo legado, aberto).
+`--service voxtral|omni|all` limita o alvo (padrão `all`). O que o script garante:
 
-Para o OmniVoice, o mesmo com `remote/omni_server.py` → `/root/omnivoice/server.py` e
-`systemctl restart omnivoice-tts.service`. O restart do Voxtral/OmniVoice **recarrega os
-modelos na VRAM** (dezenas de segundos a minutos) — não é de graça.
+- **sem diff, sem restart**: igual ao repo → não reinicia (restart recarrega os
+  modelos na VRAM, não é de graça);
+- **backup antes de subir** (`server.py.bak-<data>`) e `ast.parse` no servidor
+  antes do restart;
+- **nada de segredo na saída**: `Environment=` sai com o valor redigido
+  (`OMNI_API_KEY=<len 32>`) — presença dá para conferir, chave não vaza para o chat;
+- `deploy` copia **dois** arquivos (`server.py` + `auth_policy.py`, importado por
+  ele) e o `recon` registra o `pip freeze`/versão do python para o item de ambiente.
+
+Antes do primeiro deploy, confirme a chave (senão o serviço não sobe — §1, política
+de auth): `recon` mostra o `Environment` do unit; sem `*_API_KEY` ou defina a chave
+ou acrescente `Environment=<PREFIXO>_ALLOW_NO_AUTH=1` (modo legado, aberto).
+
+### Passo manual equivalente (se preferir na mão)
+
+```sh
+ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath=none root@HOST \
+  'cd /root/voxtral && cp -a server.py server.py.bak-$(date +%F)'
+scp remote/auth_policy.py remote/voxtral_server.py root@HOST:/root/voxtral/
+scp remote/auth_policy.py root@HOST:/root/omnivoice/
+ssh root@HOST 'cd /root/voxtral && python3 -c "import ast,pathlib;ast.parse(pathlib.Path(\"server.py\").read_text())" \
+  && systemctl restart ❓voxtral*.service && systemctl is-active ❓voxtral*.service'
+curl -s http://HOST:❓PORTA/health      # 200 + "auth"; sem chave num endpoint → 401
+```
+
+Dependência nova (ex.: `onnxruntime` do VAD): `ssh root@HOST 'python3 -m pip install
+--dry-run onnxruntime'` e depois sem `--dry-run` — antes do restart.
 
 > **Pendência conhecida (2026-09-24):** o arquivo versionado já pede o VAD em ONNX, mas
 > o servidor no ar ainda roda o jit do torch — o deploy não aconteceu porque a máquina
 > nunca foi localizada (seção 2). Enquanto isso, `remote/voxtral_server.py` **não bate
-> 100% com o que está no ar**: rodar o passo 3 sem instalar `onnxruntime` não quebra
-> nada (cai no mesmo jit, agora com aviso no log); para migrar de verdade, rode o
-> passo 1 antes. Confira pelo `GET /health` → campo `vad`.
+> 100% com o que está no ar**: subir sem instalar `onnxruntime` não quebra nada (cai no
+> mesmo jit, agora com aviso no log); para migrar de verdade, instale a dependência
+> antes. Confira pelo `GET /health` → campo `vad`.
+
+### Unit real e venv remoto (❓ até o dono confirmar)
+
+Pendente de confirmação (item 1). Quando o dono responder, `recon` preenche:
+
+| peça | valor |
+|---|---|
+| ❓ unit do Voxtral / porta | `VOXTRAL_REMOTE_UNIT` / `VOXTRAL_REMOTE_PORT` (hoje chutes) |
+| ❓ `WorkingDirectory` e `ExecStart` do unit | saída do `recon` (`FragmentPath`, `ExecStart`) |
+| ❓ python/venv que serve os dois | saída do `recon` (`python:`, `pacotes no venv:`); é o mesmo que o `pip install` deve atingir |
+| ❓ hash do que está no ar | saída do `compare` (com o `repo` no mesmo commit, `compare` tem de dizer `[IGUAL]`) |
 
 ## 5. Segurança (leia antes de rodar ssh no escuro)
 
@@ -161,8 +190,9 @@ modelos na VRAM** (dezenas de segundos a minutos) — não é de graça.
   antes de concluir qualquer coisa. Recon é read-only; `pip install` e `systemctl restart`
   já são intervenção (pedir OK).
 - Nunca imprimir token/chave: o token do tunnel mora no plist, e as chaves de API
-  (`OMNI_API_KEY`, `VOXTRAL_API_KEY`) em `Environment=` do unit — `systemctl cat` mostra
-  sem vazar para o chat.
+  (`OMNI_API_KEY`, `VOXTRAL_API_KEY`) em `Environment=` do unit. `deploy.sh recon` redige
+  o valor (`OMNI_API_KEY=<len 32>`) — presença dá para conferir sem vazar para o chat;
+  `systemctl cat` cru mostra.
 - Autenticação é **fail closed** (política em `remote/auth_policy.py`): sem
   `OMNI_API_KEY`/`VOXTRAL_API_KEY` o processo **não sobe**; com a escape hatch
   `<PREFIXO>_ALLOW_NO_AUTH=1` ele sobe aberto — aí sim, só atrás de firewall/VPN.
@@ -172,5 +202,5 @@ modelos na VRAM** (dezenas de segundos a minutos) — não é de graça.
 
 ## 6. Arquivos relacionados
 
-`remote/omni_server.py` · `remote/voxtral_server.py` · `README.md` §"servidores `remote/`"
+`remote/deploy.sh` · `remote/auth_policy.py` · `remote/omni_server.py` · `remote/voxtral_server.py` · `README.md` §"servidores `remote/`"
 · `tunnel.sh` (Mac↔VPS) · `cloudflare.sh` (conector no Mac mini).
