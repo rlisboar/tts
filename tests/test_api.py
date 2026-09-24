@@ -786,9 +786,19 @@ def test_stt_local_engine_dispatch(monkeypatch):
     fake.transcribe = lambda *a, **k: {"text": "w", "language": "", "segments": []}
     monkeypatch.setitem(sys.modules, "mlx_whisper", fake)
     monkeypatch.setattr(app, "_wav_to_mono16k", lambda p: np.zeros(16000, dtype=np.float32))
+    # _release_mlx_memory real faz "import mlx.core as mx" (common.py:383) e
+    # inicializa o Metal — mesmo com mlx_whisper falso. Falso aqui para a suíte
+    # não carregar MLX, mas registrando que o caminho whisper continua devolvendo
+    # a memória ao SO (app.py:3853).
+    liberou = []
+    monkeypatch.setattr(app, "_release_mlx_memory", lambda *a, **k: liberou.append(1))
+    antes = {m for m in sys.modules if m == "mlx" or m.startswith("mlx.")}
     app._settings["stt_local_engine"] = "whisper"
     r = app._transcribe(Path("x.wav"), language="pt", allow_remote=False)
     assert r["text"] == "w" and "engine" not in chamado
+    assert liberou, "_transcribe (whisper) deve chamar _release_mlx_memory"
+    depois = {m for m in sys.modules if m == "mlx" or m.startswith("mlx.")}
+    assert depois == antes, f"caminho whisper carregou MLX: {sorted(depois - antes)}"
     app._settings["stt_local_engine"] = "whisper"
 
 
