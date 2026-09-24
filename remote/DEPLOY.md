@@ -98,6 +98,20 @@ respondeu na 8800 (OmniVoice) nem na 8000.
 Leitura provável: a máquina CUDA estava **desligada** (ou fora do alcance desta rede) em
 2026-09-24. Antes de repetir a varredura, pergunte o host ao dono.
 
+**Recon extra de 2026-09-24 (tasks #35/#27) — nada novo, não repita:**
+
+| alvo | resultado |
+|---|---|
+| LAN `192.168.15.0/24`, portas 22/8800/8000 | só `.1`, `.34`, `.59` (identificado com o recon anterior) |
+| faixas inteiras `213.155.16.0/24` e `217.179.88.0/24`, portas **8800 e 8000** | **nenhuma porta aberta** (o OmniVoice sobe na 8800: se a máquina estivesse de pé e exposta, apareceria aqui) |
+| `grindelwald.gryffindor.eonf.ltd` (único host do `~/.ssh/config.audit` que a varredura anterior não tinha testado) | resolve `213.155.16.36`, ssh dá timeout |
+| `settings.json` do app (`remote_base_url`/`remote_stt_base_url`) | hoje estão **vazios** (`remote_tts`/`remote_stt` desligados) — não dá para tirar o host daí |
+| `~/.ssh/config` (sem os audit) e `~/.zsh_history` | só `vm59`; histórico com `192.168.15.49` (offline) e os hosts da frota |
+| `~/.ssh/known_hosts` | nomes da frota (`*.gryffindor|slytherin.eonf.ltd`) já cobertos na tabela acima |
+
+Dica para a próxima: `python3 -c` com socket + ThreadPool em 2 portas × 2 faixas leva ~1 min
+e responde "existe GPU exposta?"; `nvidia-smi` ausente não é conclusivo sozinho (ver §3).
+
 ## 3. Recon read-only (copiar e colar)
 
 ```sh
