@@ -27,6 +27,15 @@ Authorization: Bearer <chave>
 Não envie a chave na query string; use `Authorization: Bearer` ou `X-API-Key`.
 ```
 
+**Chave de uso basta aqui.** Todo o fluxo de conversa (`start`, mensagens,
+`DELETE`) e o preprompt (`chat_system`) funcionam com uma chave
+`role: "use"` — o preprompt não está na lista administrativa. O que a chave de
+uso NÃO faz é reapontar o provedor: `chat_base_url`, `chat_model`,
+`chat_api_key`, `remote_*` e `model` são de admin. Nesses casos o
+`POST /api/settings` responde 200 com `admin_ignored: [...]` (não é erro) e o
+`GET /api/settings` devolve `is_admin: false` (com `admin_fields` e os segredos
+mascarados). Ver "Administração x uso" no README.
+
 ## Máquina de estados da sessão
 
 ```

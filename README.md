@@ -4,7 +4,8 @@ Clonagem de voz 100% local para Mac (Apple Silicon). Grava sua voz pelo navegado
 gerencia perfis de voz e gera fala natural com o **OmniVoice (Xiaomi/k2-fsa)
 quantizado e rodando via MLX** — zero-shot, 646 idiomas, mais rápido que tempo real no M3.
 
-Nenhum áudio ou texto sai da máquina.
+Roda inteiro no Mac. **Nada do seu áudio ou texto sai da máquina por padrão** —
+só o que você ligar em Configurações → Rede (ver *O que pode sair da máquina*).
 
 ## Requisitos
 
@@ -52,7 +53,15 @@ e guarda no navegador. Aceita `Authorization: Bearer` ou `X-API-Key`.
 valioso do app). Na UI: **Vozes → Vozes salvas → ⬇ Backup** (zip com `.wav` +
 `.json`), ou programaticamente `GET /api/voices/export`. Para restaurar em
 outra máquina (ou depois de um apagão): **⬆ Importar** selecionando o zip
-(`POST /api/voices/import` — sobrescreve vozes com o mesmo id).
+(`POST /api/voices/import` — sobrescreve vozes com o mesmo id). O import **alinha o
+`id` do meta ao nome do arquivo** e devolve em `renomeados` o que mudou (um id com
+`<img …>` ou espaço dava 404 em áudio/peaks, porque o `_safe_id` das rotas é
+estrito). Voz editada à MÃO em `voices/*.json` não passa por esse alinhamento:
+com id fora de `[A-Za-z0-9_-]` ela lista e gera normalmente, mas áudio/peaks
+respondem 404 — a UI mostra a voz sem waveform. Vale para o mesmo caso: voz cujo
+arquivo é SYMLINK apontando para fora de `voices/` também é tratada como
+desconhecida (a verificação segue o arquivo resolvido; o id acaba caindo no
+padrão).
 
 ## Administração x uso (chave de uso)
 
@@ -123,10 +132,18 @@ uso. Reenviar uma máscara (`••••abcd`) mantém o segredo guardado; `""`
 `🔒 chave de uso`), os campos de conexão externa aparecem esmaecidos e travados
 com o motivo no `title`, os segredos de terceiros chegam mascarados (o
 `placeholder` avisa que aquele `••••1234` não é o valor) e a aba Acesso
-desabilita criar/rotacionar/apagar chave. Salvar com chave de uso não mente: se
-o servidor descartar algum campo, o aviso diz qual e o `POST` sai sem os campos
-administrativos. Ação que exige admin e leva `403` abre a faixa de chave com o
-passo a passo (`Configurações → Acesso → Nova chave → papel admin`).
+desabilita criar/rotacionar/apagar chave. Salvar com chave de uso não mente: o
+`POST` manda o blob inteiro, o servidor descarta o que não é daquela chave e
+devolve a lista em `admin_ignored`, que a tela exibe com nome humano. Ação que
+exige admin e leva `403` abre a faixa de chave com o passo a passo
+(`Configurações → Acesso → Nova chave → papel admin`).
+
+Para quem mexe no HTML: um campo administrativo precisa do marcador
+`data-admin-setting="<nome da setting>"` — é ele que faz o travamento valer (o
+servidor decide a lista, a UI cruza). Se o servidor promover um nome a admin sem
+marcador, a UI avisa no console no load; os que ainda não têm campo na tela
+(`translate_model`, `remote_tts_model`) ficam numa lista explícita para não
+virar aviso eterno.
 
 ## Modelo
 
@@ -218,7 +235,9 @@ curl -s http://127.0.0.1:7860/v1/audio/speech \
   -o fala.mp3
 ```
 
-- `voice` desconhecida (ex.: `alloy`) cai na voz gravada mais recente.
+- `voice` desconhecida (ex.: `alloy`) cai na voz gravada mais recente — vale
+  também para id que escaparia de `voices/` (ex.: `"../fora"`, que antes
+  apontava para um WAV de fora do diretório de vozes).
 - Autenticação: use a chave do `.apikey` como `api_key` do SDK.
 - Conversão de formato/velocidade usa `ffmpeg` (`brew install ffmpeg`).
 - `GET /v1/models` lista `tts-1` e `tts-1-hd`.
@@ -228,13 +247,18 @@ curl -s http://127.0.0.1:7860/v1/audio/speech \
 As rotas que geram (`/api/tts`, `/api/translate-speech`, `/api/modify-speech`,
 `/v1/audio/speech`) aceitam até `TTS_JOBS_ACTIVE_MAX` jobs **em andamento**
 (padrão 20). Acima disso a resposta é `429` com `Retry-After` e nada é criado: o
-pedido recusado não sobe thread e nenhum job ativo é descartado.
+pedido recusado não sobe thread e nenhum job ativo é descartado. O botão
+*Gerar* mostra o `detail` e é o usuário quem repete; a **Conversa** repete sozinha
+uma vez (o `Retry-After` diz o tempo) porque lá uma frase recusada sai muda do
+turno — ver a seção Conversa.
 
-`POST /api/tts` aceita `model` no body; a escolha vale também para as próximas
-gerações (é assim que o seletor da UI aplica o modelo ao gerar), mas **só depois
-de o pedido passar** na validação: `400` (texto vazio/longo), `404` (voz) ou
-`429` (fila) devolvem o erro sem tocar em `settings.json` nem na config em
-memória.
+`POST /api/tts` aceita `model` no body e a resposta traz `model_aplicado_global`.
+Com admin/loopback a escolha vale para as próximas gerações (é assim que o
+seletor da UI aplica o modelo ao gerar); com **chave de uso** vale só naquele
+pedido — a chave gera com o modelo pedido sem sequestrar a config da instalação
+(`model` é campo admin). Nos dois casos, **só depois de o pedido passar** na
+validação: `400` (texto vazio/longo), `404` (voz) ou `429` (fila) devolvem o erro
+sem tocar em `settings.json` nem na memória.
 
 O histórico guarda os 20 últimos jobs (`_JOBS_MAX`) e só descarta job já
 **terminado** — descartar um job em execução apagaria os trechos `.job-*` e o
@@ -376,7 +400,9 @@ O `provision` **não despeja o token no terminal**: ele grava o token em
 `~/.cloudflared/<nome>.token` (0600) e imprime o `install --token-file` para
 colar — fora do scrollback e do history. Se for outra máquina, copie o arquivo
 antes (ex.: `scp`); o token cru (`./cloudflare.sh install <token>`) e o stdin
-(`... | ./cloudflare.sh install -`) continuam aceitos. `./cloudflare.sh token`
+(`... | ./cloudflare.sh install -`) continuam aceitos — nesses dois o script grava
+o token em `~/.cloudflared/<label>.token` (0600) e o plist aponta para o arquivo,
+então o segredo não aparece no `ps` nem dentro do plist. `./cloudflare.sh token`
 mostra o token quando você precisar copiá-lo na mão.
 
 Teste: `https://tts.seu-dominio/health` → `{"ok":true}`; o mesmo host sem chave
@@ -410,6 +436,12 @@ Sessões de conversa para decidir, com IA, o texto que um agente vai falar.
 Provedor OpenAI-compat configurável nas settings (`chat_base_url`,
 `chat_model`, `chat_api_key` — vazio herda `remote_base_url`).
 
+Se a admissão do TTS recusar a síntese de um bloco com **429** (`TTS_JOBS_ACTIVE_MAX`),
+a Conversa repete aquele bloco **uma vez** depois do `Retry-After` do servidor, em
+vez de engolir a frase: pico de jobs concorrentes (ex.: API externa martelando)
+deixa de custar uma frase do turno. A espera é cancelável — barge-in no meio dela
+mata a repetição, não o turno.
+
 ```sh
 # 1) abre a sessão com o objetivo
 SID=$(curl -s -X POST $BASE/api/chat/start -H "X-API-Key: $KEY" \
@@ -438,12 +470,35 @@ confirmação explícita do humano é o gatilho do `text` final.
 
 ## Privacidade e uso responsável
 
+### O que pode sair da máquina
+
+Tudo é processado localmente até você apontar para um serviço externo. Estes são
+os únicos caminhos de saída, **todos desligados por padrão** (Configurações →
+Rede):
+
+| Controle | O que sai | Para onde |
+|---|---|---|
+| TTS remoto (`remote_tts`) | o texto da fala e, em voz clonada, a amostra dessa voz + o texto de referência (sobe uma vez por mudança; some com `remote_tts_voice` preenchido) | `remote_tts_url` (ou `remote_base_url`) |
+| STT remoto (`remote_stt`) | o áudio da fala a transcrever | `remote_stt_base_url` (ou `remote_base_url`) |
+| Tradução remota (`remote_translate`) | o texto a traduzir | `remote_base_url` |
+| Base URL da Conversa (`chat_base_url`) | histórico da conversa + preprompt | `chat_base_url` (ou `remote_base_url`) |
+
+A chave do provedor (`remote_api_key`, `remote_stt_key`, `chat_api_key`) vai no
+header da requisição, só para a URL configurada — e com uma chave de uso ela nem
+é lida em claro (ver *Administração x uso*). Fora do fluxo de fala, o único
+tráfego é o que você pede: download do Hugging Face na primeira carga do modelo e
+o vídeo no `/api/youtube-audio`.
+
 O pipeline MLX **não embute marca-d'água** nos áudios gerados. Use apenas com a
 sua própria voz ou com consentimento explícito da pessoa clonada.
 
-A chave da API fica no navegador (localStorage; veja `SECURITY-frontend.md`) e
-vale como credencial administrativa. O que a protege na prática: a chave vai só
-no header `X-API-Key` (nunca na URL, nunca em log de proxy), os dois bundles de
+A chave da API fica no navegador (localStorage; veja `SECURITY-frontend.md`) e é a
+credencial que a UI usa para falar com a API. Se ela for `role:admin` (ou legada,
+num servidor sem `TTS_ROD_ADMIN_KEY`), também administra; uma chave `role:use` gera
+fala e transcreve, mas não mexe em conexão externa nem em modelo — ver
+*Administração x uso*.
+
+O que a protege na prática: a chave vai só no header `X-API-Key` (nunca na URL, nunca em log de proxy), os dois bundles de
 CDN têm SRI, e os sinks de `innerHTML` são auditados. Em máquina compartilhada,
 Configurações → Acesso → *Guardar só nesta sessão* tira o segredo do disco do
 navegador.
@@ -483,6 +538,9 @@ TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest tests/test_worker.py -q
 
 # política de chave: uso x admin, ponta a ponta (cria e remove as chaves de teste)
 ./tests/admin_ui_flow.sh                 # precisa de IP de LAN (en0/en1)
+
+# Conversa: retry do 429 de admissão do TTS (determinístico, sem carregar modelo)
+./tests/conversa_429.sh
 ```
 
 Pre-commit opcional (pyflakes + pytest antes de cada commit):
