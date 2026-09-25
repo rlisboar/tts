@@ -79,3 +79,17 @@ servidor de teste em http://127.0.0.1:60188 (stub :60187)
   VAD speech_start epoch=1790349411.72
 
 ✔ OK — turno real pela UI: mic->worklet->WS->áudio de volta, transcrição e corte do barge-in medido
+
+============================================================
+CONFIRMACAO INDEPENDENTE (audio-ml) depois do frontend tirar o ganho x3 do
+estimulo (agora so normalizacao de pico 0,95 — tests/live_ui.sh:68). Mesmo
+comando, mesma maquina, motor identico: o barge continua disparando e o corte
+segue 0 ms. O rms do frame do barge caiu de -3,2 para -17,1 dBFS e a prob do
+Silero subiu (0,998) — ou seja, o nivel do estimulo e sintoma, nao causa
+(invariancia de escala).
+
+  evento VAD: {'type': 'barge_in', 'barge_in': True, 'prob': 0.998,
+               'rms_dbfs': -17.1, 'detalhe': 'playback com turno aberto'}
+  corte no interrupted: 0 ms
+  ✔ OK — turno real pela UI: mic->worklet->WS->audio de volta, transcricao e
+         corte do barge-in medido   (exit 0)
