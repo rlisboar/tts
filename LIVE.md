@@ -2,7 +2,9 @@
 
 Como o Live funciona por dentro: sessão WebSocket, motor de turnos, pipeline de
 resposta e o que foi **medido** (e não só escolhido) em cada limiar. O objetivo
-é uma conversa estilo Gemini Live rodando 100% local, sem egress de rede.
+é uma conversa estilo Gemini Live rodando 100% local: nenhum áudio e nenhum
+texto saem da máquina. A única exceção é a checagem de metadados do Whisper na
+primeira transcrição do processo — ver *Egress* abaixo.
 
 | Módulo | Papel |
 | --- | --- |
@@ -183,6 +185,31 @@ eng.set_speaking(False)                     # playback acabou
   chama `engine.flush()`, que fecha o turno e emite um `speech_end` normal;
 - nomes no fio: `speech_start` / `speech_end` / `barge_in` (servidor→cliente) e
   `end_of_speech` / `cancel` (cliente→servidor).
+
+### Egress (o que sai, se sai)
+
+Auditado com `lsof -nP -a -p <pid> -i -sTCP:ESTABLISHED` durante uma sessão
+completa (método e medição no gate do épico): **nenhum áudio e nenhum texto
+saem**. O que aparece é uma coisa só, e só na primeira transcrição de cada
+processo:
+
+- o `mlx_whisper` chama `huggingface_hub.snapshot_download`, que resolve a
+  revisão do repo e confere os metadados dos arquivos do modelo (medido: 2
+  tentativas — DNS `huggingface.co` + um peer CloudFront:443). Com o cache
+  quente, nenhum payload é transferido.
+
+Para zerar de verdade (medido: **0 tentativas**, STT igual com o modelo em
+cache):
+
+```bash
+export HF_HUB_OFFLINE=1
+```
+
+Sem o modelo em cache, a primeira carga falha com `LocalEntryNotFoundError`
+("outgoing traffic has been disabled") — rode uma vez sem a variável para
+baixá-lo. Provedor de chat remoto (`chat_base_url`) é egress de TEXTO por
+desenho; com o provedor em loopback, sobra só o HEAD acima. O detalhe está
+também em *Privacidade e uso responsável* no `README.md`.
 
 ### Executar
 

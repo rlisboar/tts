@@ -489,6 +489,21 @@ header da requisição, só para a URL configurada — e com uma chave de uso el
 tráfego é o que você pede: download do Hugging Face na primeira carga do modelo e
 o vídeo no `/api/youtube-audio`.
 
+**Mesmo com o modelo já baixado**, a primeira carga do Whisper em cada processo
+confere os metadados do repo no Hugging Face (`snapshot_download` resolve a
+revisão e olha os arquivos do modelo — com o cache quente nenhum payload é
+transferido). Medido com guarda de `socket.connect`/`getaddrinfo`: 2 tentativas
+(DNS `huggingface.co` + um peer CloudFront:443), **zero áudio e zero texto**.
+Para zerar de vez:
+
+```bash
+export HF_HUB_OFFLINE=1      # medido: 0 tentativas, STT igual (modelo em cache)
+```
+
+Se o modelo **não** estiver em cache, a primeira carga falha com
+`LocalEntryNotFoundError` ("outgoing traffic has been disabled") — rode uma vez
+sem a variável para baixá-lo.
+
 O pipeline MLX **não embute marca-d'água** nos áudios gerados. Use apenas com a
 sua própria voz ou com consentimento explícito da pessoa clonada.
 
