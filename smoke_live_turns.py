@@ -10,7 +10,10 @@ Cenários (mic = eco_gain*TTS + voz_gain*humano + ruído de fundo):
   - `voz`: humano fala por cima do playback (barge-in verdadeiro);
   - `eco`: só o eco, com o TTS em chunks e pausas entre frases — o caso que mais
     provoca falso positivo (o eco cai na pausa e o próximo chunk entra como
-    transiente). Nenhum barge-in aqui é falso.
+    transiente). Nenhum barge-in aqui é falso;
+  - `sem_eco`: o mic entrega fala ANTES e durante o playback e o playback não
+    acrescenta eco (mic falso do Chromium, fone de ouvido). O motor tem de
+    perceber que não há eco — senão calibra a fala como eco e nunca dispara.
 
 Uso:
     ./.venv-mlx/bin/python smoke_live_turns.py                 # tabela padrão
@@ -34,6 +37,7 @@ SR = lt.SAMPLE_RATE
 CHUNK = 1600                       # 100 ms: o mesmo tamanho que o WS do LIVE-1 usa
 VOZ_DBFS = -18.0                   # fala a ~15 cm do mic
 NIVEL_RUIDO_DBFS = -55.0
+PERDA_ECO_DB = 10.0                # atenuação alto-falante -> mic (payload vs eco)
 
 
 def _db(x: float) -> float:
@@ -76,7 +80,7 @@ def wavs_disponiveis() -> list[Path]:
 def rodada(*, eco_dbfs: float, com_voz: bool, semente: int,
            voz_dbfs: float = VOZ_DBFS, atraso_voz_s: float = 2.0,
            margem_db: float | None = None, quantil: float | None = None,
-           teto: int | None = None) -> dict:
+           teto: int | None = None, sem_eco: bool = False) -> dict:
     """Uma sessão simulada de 6 s com playback ligado o tempo todo.
 
     Nível do mic = eco + voz (+ ruído), tudo em RMS dBFS. `voz_dbfs` acima de
@@ -88,12 +92,20 @@ def rodada(*, eco_dbfs: float, com_voz: bool, semente: int,
     voz = carregar_wav(wavs[semente % len(wavs)], dur)
     eco = fala_em_chunks(carregar_wav(wavs[(semente + 1) % len(wavs)], dur))
 
-    mic = (_ganho(eco_dbfs) * eco)[:n]
-    if com_voz:
-        # o humano entra ~2 s depois do início do playback
-        inicio = int(atraso_voz_s * SR)
-        falado = _ganho(voz_dbfs) * voz[: int(1.4 * SR)]
-        mic[inicio:inicio + falado.size] += falado
+    if sem_eco:
+        # regime do mic falso do Chromium / fone de ouvido: o mic entrega fala
+        # ANTES e durante o playback, e o playback (marcado ~2 s depois) não
+        # acrescenta eco nenhum ao sinal
+        mic = (_ganho(voz_dbfs) * voz)[:n]
+        inicio_playback_s = atraso_voz_s
+    else:
+        mic = (_ganho(eco_dbfs) * eco)[:n]
+        inicio_playback_s = 0.0
+        if com_voz:
+            # o humano entra ~2 s depois do início do playback
+            inicio = int(atraso_voz_s * SR)
+            falado = _ganho(voz_dbfs) * voz[: int(1.4 * SR)]
+            mic[inicio:inicio + falado.size] += falado
     mic = mic + _ganho(NIVEL_RUIDO_DBFS) * rng.normal(0, 1, n).astype(np.float32)
 
     over = {}
@@ -105,9 +117,15 @@ def rodada(*, eco_dbfs: float, com_voz: bool, semente: int,
         over["eco_calibracao_teto"] = teto
     cfg = lt.Config(**over)
     motor = lt.TurnEngine(cfg)
-    motor.set_speaking(True, nivel_dbfs=eco_dbfs)
+    # o nível do PAYLOAD é o do TTS digital; o que o mic ouve é o eco atenuado
+    # (o motor compara os dois para saber se o playback somou eco de verdade)
+    nivel_payload = (voz_dbfs if sem_eco else eco_dbfs) + PERDA_ECO_DB
+    marcado = False
     eventos = []
     for i in range(0, n, CHUNK):
+        if not marcado and i / SR >= inicio_playback_s:
+            motor.set_speaking(True, nivel_dbfs=nivel_payload)
+            marcado = True
         eventos += motor.feed(np.clip(mic[i:i + CHUNK], -1, 1).astype(np.float32))
 
     barge = [e for e in eventos if e.tipo == "barge_in"]
@@ -116,7 +134,7 @@ def rodada(*, eco_dbfs: float, com_voz: bool, semente: int,
     c = lt.Config()
     atraso_frames = (c._frames_barge + c._frames_prefix + c._frames_envelope) * lt.FRAME_SAMPLES
     disparos = [(e.amostra + atraso_frames) / SR * 1000 for e in barge]
-    corte = atraso_voz_s * 1000 - 200 if com_voz else 0
+    corte = (inicio_playback_s * 1000 - 200) if (com_voz or sem_eco) else 0
     falsos = sum(1 for d in disparos if d < corte)
     verdadeiros = [d for d in disparos if d >= corte]
     curtos = sum(1 for e in eventos if e.tipo == "speech_end" and e.curto)
@@ -147,18 +165,20 @@ def main() -> int:
               f"silence_ms={lt.Config().silence_ms} barge_ms={lt.Config().barge_in_ms} "
               f"margem_eco={lt.Config().barge_in_margin_db}dB", flush=True)
 
+    cenarios = [(eco, voz, False) for eco in (-42.0, -36.0, -30.0, -24.0)
+                for voz in (True, False)]
+    cenarios.append((-30.0, True, True))          # sem eco (mic falso/fone)
     linhas = []
-    for eco_dbfs in (-42.0, -36.0, -30.0, -24.0):
-        for com_voz in (True, False):
+    for eco_dbfs, com_voz, sem_eco in cenarios:
             reps = [rodada(eco_dbfs=eco_dbfs, com_voz=com_voz, semente=s,
                            margem_db=args.margem, quantil=args.quantil,
-                           teto=args.teto)
+                           teto=args.teto, sem_eco=sem_eco)
                     for s in range(args.repeticoes)]
             disparos = sum(r["barge_in"] for r in reps)
             falsos = sum(r["falsos"] for r in reps)
             lat = [r["latencia_ms"] for r in reps if r["latencia_ms"] is not None]
             linhas.append({
-                "cenario": "voz" if com_voz else "eco",
+                "cenario": "sem_eco" if sem_eco else ("voz" if com_voz else "eco"),
                 "eco_dbfs": eco_dbfs,
                 "disparos": disparos,
                 "esperados": (sum(1 for r in reps if r["detectou"]) if com_voz

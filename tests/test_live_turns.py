@@ -375,6 +375,58 @@ def test_pausa_entre_chunks_do_tts_nao_afunda_o_eco():
     assert motor.estatisticas()["eco_dbfs"] > calibrado - 1.0
 
 
+# --------------------------------------------------------------------------
+# regime SEM eco (mic falso do Chromium, fone de ouvido, eco muito baixo)
+# --------------------------------------------------------------------------
+def test_fala_antes_e_durante_o_playback_dispara_barge():
+    """Achado da bancada do frontend: se o humano JÁ fala quando o playback
+    começa, a calibração comia a fala dele como eco — e aí ele teria de superar
+    o próprio p90 + 4 dB por 300 ms, o que fala contínua quase nunca faz."""
+    motor, rel = _motor()
+    _tocar(motor, rel, _tom(0.3), 60)                 # mic já entregando fala
+    assert motor.turno_aberto
+
+    motor.set_speaking(True, nivel_dbfs=-20.0)        # o TTS começa a tocar
+    eventos = _tocar(motor, rel, _tom(0.3), 30)
+    assert [e.tipo for e in eventos] == ["barge_in"]
+    assert eventos[0].detalhe == "playback com turno aberto"
+    stats = motor.estatisticas()
+    assert stats["eco_ausente"] is True               # o playback não somou eco
+    assert stats["barge_in_com_turno_aberto"] == 1
+    assert stats["turnos"] == 1                       # turno NÃO reabriu
+
+
+@pytest.mark.parametrize("amp", [0.1, 0.3, 0.9])
+def test_amplificar_o_estimulo_nao_muda_a_decisao(amp):
+    """O limiar é relativo ao próprio sinal: ganho puro era invariante de escala
+    (por isso o x3 do live_ui.sh não podia resolver o não-disparo)."""
+    motor, rel = _motor(voz_amp=amp)
+    _tocar(motor, rel, _tom(amp), 60)
+    motor.set_speaking(True, nivel_dbfs=-20.0)
+    assert "barge_in" in [e.tipo for e in _tocar(motor, rel, _tom(amp), 30)]
+
+
+def test_mic_acima_do_payload_nao_e_eco():
+    """Sem histórico nenhum: alto-falante só atenua, então mic acima do payload
+    (RMS) não pode ser eco — com folga para o pico do envelope."""
+    motor, rel = _motor()
+    motor.set_speaking(True, nivel_dbfs=-40.0)        # payload baixo
+    eventos = _tocar(motor, rel, _tom(0.3), 40)       # mic bem acima (fala)
+    assert [e.tipo for e in eventos] == ["barge_in", "speech_start"]
+    assert motor.estatisticas()["eco_ausente"] is True
+
+
+def test_eco_de_verdade_nao_e_declarado_ausente():
+    """Contra-prova: com eco de verdade o regime tem de continuar sendo o de eco."""
+    motor, rel = _motor()
+    _tocar(motor, rel, _tom(0.0005), 40)              # silêncio antes do playback
+    motor.set_speaking(True, nivel_dbfs=-18.0)
+    assert _tocar(motor, rel, ECO, 60) == []          # eco puro: nada dispara
+    stats = motor.estatisticas()
+    assert stats["eco_ausente"] is False
+    assert stats["eco_dbfs"] > -40.0
+
+
 def test_barge_in_nao_conta_falso_quando_o_humano_fala():
     motor, rel = _motor()
     _abrir_por_barge(motor, rel)
