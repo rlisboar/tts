@@ -515,7 +515,7 @@ navegador.
 
 # análise estática — nomes indefinidos em funções só explodem em runtime
 ./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py \
-    smoke_sintese.py tests/*.py client/mic_router.py
+    smoke_sintese.py live_turns.py smoke_live_turns.py tests/*.py client/mic_router.py
 
 # ambiente reproduzível: `requirements.txt` é a lista CURADA (com o porquê de
 # cada pin); `requirements.lock` é o retrato do venv verificado — com os
@@ -541,6 +541,10 @@ TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest tests/test_worker.py -q
 
 # Conversa: retry do 429 de admissão do TTS (determinístico, sem carregar modelo)
 ./tests/conversa_429.sh
+
+# Live: motor de turnos (falso barge-in, latência). Ver LIVE.md.
+./.venv-mlx/bin/python -m pytest tests/test_live_turns.py -q   # sem MLX/Metal
+./.venv-mlx/bin/python smoke_live_turns.py                     # precisa de voices/
 ```
 
 Pre-commit opcional (pyflakes + pytest antes de cada commit):

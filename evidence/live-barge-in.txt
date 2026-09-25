@@ -1,0 +1,24 @@
+Live (task #92) — medicao de barge-in com eco do TTS
+=====================================================
+comando: ORT_DISABLE_TELEMETRY=1 ./.venv-mlx/bin/python smoke_live_turns.py --repeticoes 24
+ambiente: .venv-mlx (py3.12) silero-vad 6.2.1 ONNX, CPU, sem MLX/Metal, sem rede
+fonte: 21 wavs reais de voices/ (24 kHz -> 16 kHz, normalizados em RMS)
+cenario: playback de TTS em chunks (pausas de 180 ms) + voz do humano + ruido -55 dBFS
+leitura: 'falso' = disparo ANTES de o humano falar; 'esperados' = rodadas com barge-in
+         verdadeiro detectado (coluna voz) / rodadas de eco puro SEM disparo (coluna eco)
+
+backend do VAD: sera carregado agora | silence_ms=600 barge_ms=300 margem_eco=4.0dB
+
+cenario      eco  disparos  esperados  falsos  taxa_falso  lat_p50  lat_p90
+voz          -42        25         24       0        0.00      464      688
+eco          -42         2         23       0        0.00     1328     1328
+voz          -36        25         24       0        0.00      480      816
+eco          -36         3         23       0        0.00     -176     -176
+voz          -30        22         21       0        0.00      560     1168
+eco          -30         3         23       0        0.00     -176     -176
+voz          -24        14         13       0        0.00      592     1219
+eco          -24         3         23       0        0.00     -176     -176
+
+barge-in verdadeiro detectado: 82/96 (85%)
+disparo ANTES da fala (falso): 0 em 97 disparos; eco puro sem disparo: 92/96 rodadas
+latencia p90 maxima (fala->barge_in): 1219 ms (a janela de 300 ms ja esta no pre-roll do audio)

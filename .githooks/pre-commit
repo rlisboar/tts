@@ -6,5 +6,5 @@ PY=.venv-mlx/bin/python
 [ -x "$PY" ] || PY=python3
 
 "$PY" -m pyflakes app.py common.py tts_worker.py backends.py smoke_sintese.py remote/*.py \
-    tests/*.py client/mic_router.py || exit 1
+    live_turns.py smoke_live_turns.py tests/*.py client/mic_router.py || exit 1
 "$PY" -m pytest tests/ -q || exit 1
