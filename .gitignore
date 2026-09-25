@@ -36,3 +36,6 @@ server.log
 
 # rascunho do navegador de teste (screenshots ficam em evidence/, que é versionado)
 .playwright-mcp/
+
+# config local do runner de agentes (pode conter credenciais) — nunca versionar
+.grok/
