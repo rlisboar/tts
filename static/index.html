@@ -3,9 +3,26 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/bundle.min.js"></script>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'">
+<!-- A CSP vem no HEADER de resposta (app.py, `_CSP_POLICY`): texto idêntico ao
+     que ficava neste <meta>, que saiu quando o header entrou. Em <meta> ela
+     custava dois efeitos — `frame-ancestors` é ignorado em <meta> (o browser
+     logava em toda carga e a página podia ser emoldurada) e a policy só passava
+     a valer depois do parser. Com o header vale para a resposta inteira,
+     inclusive sob /ttsproxy/; /docs fica de fora porque monta a própria página
+     com CSS de CDN.
+     `script-src 'unsafe-inline'` é necessário porque o app é um <script> inline
+     único (sem build); por isso a auditoria de sinks de innerHTML importa.
+     `wasm-unsafe-eval` é do onnxruntime-web (VAD). -->
+<!-- integrity (SRI): os dois bundles rodam na origem da página e enxergam o
+     localStorage — onde vive a chave da API. Sem SRI, uma troca do arquivo no
+     CDN executa código novo com acesso à chave. Hash sha384 do conteúdo exato
+     daquela versão (jsdelivr serve o pacote publicado, imutável por versão). -->
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"
+        integrity="sha384-Ou/sKQMKkV+paff5KGVBnyXqj0KDkfCNmSuD6Io+ztT1yUUH1ZW9L7aSbslN0lzY"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/bundle.min.js"
+        integrity="sha384-9Zw5tdvtkW8cPdE6lgUlG9Q54a70dKM8fNQ+u/bxbgMJKUPQw4dwVXH3pg+feL6l"
+        crossorigin="anonymous"></script>
 <title>TTS-STUDIO — Estúdio de voz local</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -681,6 +698,8 @@
     font-family: var(--mono); font-size: 12px; color: var(--muted); letter-spacing: .02em;
   }
   .api-key-row .ak-date { font-size: 11px; color: var(--faint); }
+  .api-key-row .ak-role { font-size: 11px; font-weight: 600; }
+  .api-key-row .ak-role:empty { display: none; }
   .api-key-row .ak-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .api-key-reveal {
     margin-top: 12px; padding: 12px; border: 1px solid var(--accent-border);
@@ -1920,13 +1939,23 @@
     .item-actions { width: 100%; }
   }
 
+
+  /* Campo travado pela política de admin (chave de uso): ver aplicarPoliticaAdmin.
+     Fica visível e preenchido, mas não editável — e o title diz o motivo. */
+  .cfg-travado { opacity: .55; }
+  .cfg-travado input, .cfg-travado select, .cfg-travado textarea { cursor: not-allowed; }
+  input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; }
+  /* placeholder longo de segredo mascarado precisa de mais espaço/peso */
+  .cfg-mascarado::placeholder { color: var(--warn); opacity: .9; font-size: 11.5px; }
+  #cfgAdminBadge { cursor: help; letter-spacing: .2px; }
+  #cfgAdminBadge.travado { color: var(--warn); border-color: var(--warn); }
 </style>
 </head>
 <body>
 
 <div id="keyBar" class="card keybar" style="display:none">
   <div class="row">
-    <span>Este dispositivo precisa da chave da API. No Mac do servidor: Configurações → Acesso → Revelar (ou o terminal do <code>./run.sh</code>). Cole abaixo:</span>
+    <span id="keyBarText">Este dispositivo precisa da chave da API. No Mac do servidor: Configurações → Acesso → Revelar (ou o terminal do <code>./run.sh</code>). Cole abaixo:</span>
     <input type="text" id="keyInput" placeholder="cole a chave aqui" style="max-width:340px" autocomplete="off">
     <button id="keySave">Salvar neste navegador</button>
     <button type="button" class="ghost" id="keyBarGoto">Abrir Acesso</button>
@@ -2340,6 +2369,7 @@
           <p class="view-desc">Modelo, geração, áudio, rede remota e memória</p>
         </div>
         <div class="view-head-actions">
+          <span id="cfgAdminBadge" class="badge-soft" hidden></span>
           <span id="cfgStatus" class="hint"></span>
           <button id="cfgSave">Salvar configurações</button>
         </div>
@@ -2352,18 +2382,19 @@
           <button type="button" class="stab" data-stab="acesso" role="tab">Acesso</button>
           <button type="button" class="stab" data-stab="rede" role="tab">Rede &amp; memória</button>
         </div>
+        <p class="hint" id="cfgAdminDica" style="display:none; margin:10px 0 0"></p>
         <div class="config-dock" id="configPanel">
           <div class="config-body">
             <div class="settings-pane active" data-spane="modelo">
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">Modelo &amp; geração</h3>
         <label class="cfg-label">Modelo TTS (backend local)
-          <select id="cfgModel">
+          <select data-admin-setting="model" id="cfgModel">
             <option value="omnivoice">OmniVoice — 646 idiomas (atual)</option>
             <option value="__custom__">outro id/dir MLX (livre)…</option>
           </select>
         </label>
-        <input type="text" id="cfgModelCustom" placeholder="ex.: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16" style="display:none">
+        <input data-admin-setting="model" type="text" id="cfgModelCustom" placeholder="ex.: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16" style="display:none">
         <p class="hint" id="cfgModelHint">Trocar de modelo baixa os pesos na 1ª geração. Um de cada vez na RAM.</p>
         <label class="cfg-label" id="cfgPrecisionWrap">Precisão <span class="muted" style="font-weight:400">(só OmniVoice)</span>
           <select id="cfgPrecision">
@@ -2541,9 +2572,17 @@
         <div id="apiKeysList" class="api-keys-list"></div>
         <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap">
           <input type="text" id="apiKeyNewName" placeholder="nome (ex.: Home Assistant)" style="flex:1; min-width:160px" maxlength="64">
+          <select id="apiKeyNewRole" title="O que esta chave pode fazer"
+                  style="flex:1 1 100%">
+            <option value="use" selected title="Gera fala e transcreve; não troca conexão externa nem lê os segredos delas"
+              >uso — gera fala, não mexe em conexão</option>
+            <option value="admin" title="Administra conexões externas, modelo e outras chaves"
+              >admin — administra conexões e chaves</option>
+          </select>
           <button type="button" id="apiKeyCreate" class="primary">Nova chave</button>
           <button type="button" id="apiKeysRefresh" class="ghost small">Atualizar</button>
         </div>
+        <p class="hint" id="apiAdminDica" style="display:none"></p>
         <div id="apiKeyRevealBox" class="api-key-reveal" style="display:none">
           <p class="hint" style="margin:0 0 6px"><b>Copie agora</b> — o segredo completo só aparece na criação/rotação:</p>
           <code id="apiKeyRevealValue" class="api-key-secret"></code>
@@ -2556,7 +2595,8 @@
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">Chave neste navegador</h3>
         <p class="hint">Guarda localmente neste dispositivo (localStorage). Use a mesma chave
-          do servidor se acessar de outro IP da rede.</p>
+          do servidor se acessar de outro IP da rede. A chave vai só no header
+          <code>X-API-Key</code> — nunca na URL.</p>
         <label class="cfg-label">Chave salva neste dispositivo
           <input type="password" id="clientApiKey" placeholder="cole uma chave do servidor" autocomplete="off"></label>
         <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:6px">
@@ -2564,6 +2604,11 @@
           <button type="button" id="clientApiKeyClear" class="ghost small">Limpar</button>
           <button type="button" id="clientApiKeyToggle" class="ghost small">Mostrar</button>
         </div>
+        <label class="check" style="margin-top:8px"><input type="checkbox" id="clientApiKeySession">
+          Guardar só nesta sessão — some ao fechar o navegador</label>
+        <p class="hint" style="margin-top:2px">Desligado (padrão): fica no localStorage do dispositivo e a UI
+          já entra autenticada na próxima abertura. Ligue numa máquina compartilhada para o segredo
+          não persistir no disco do navegador.</p>
         <p class="hint" id="clientApiKeyStatus" style="margin-top:6px"></p>
       </section>
 <section class="cfg-sec">
@@ -2584,29 +2629,34 @@
       </section>
             </div>
             <div class="settings-pane" data-spane="rede">
+        <p class="hint" id="redeResumoSaida">Tudo roda no Mac: nada do seu áudio ou texto sai
+          daqui <b>por padrão</b>. Sai só o que você ligar abaixo — áudio da fala (TTS/STT
+          remoto), texto (tradução/Conversa) — para a URL configurada em cada bloco. No TTS
+          remoto com voz clonada, a <b>amostra daquela voz</b> (e o texto de referência) sobe
+          uma vez para o servidor remoto.</p>
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">TTS remoto (ex.: RTX)</h3>
-        <label class="check"><input type="checkbox" id="remoteTts"> Síntese numa máquina remota</label>
+        <label class="check"><input data-admin-setting="remote_tts" type="checkbox" id="remoteTts"> Síntese numa máquina remota</label>
         <label class="cfg-label">URL OmniVoice
-          <input type="text" id="remoteTtsUrl" placeholder="http://rtx-host:8800/tts"></label>
+          <input data-admin-setting="remote_tts_url" type="text" id="remoteTtsUrl" placeholder="http://rtx-host:8800/tts"></label>
         <p class="hint">Síntese remota no OmniVoice (646 idiomas, rápido).</p>
         <label class="cfg-label">Voz remota (nome/preset)
           <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
         <label class="cfg-label">API key (opcional)
-          <input type="password" id="remoteApiKey" placeholder="vazio se não exigir" autocomplete="off"></label>
+          <input data-admin-setting="remote_api_key" type="password" id="remoteApiKey" placeholder="vazio se não exigir" autocomplete="off"></label>
         <label class="cfg-label">Parâmetros extra (JSON)
           <textarea id="remoteTtsExtra" style="min-height:42px; font-family:var(--mono); font-size:12px" placeholder='{"voice":"alloy"}'></textarea></label>
       </section>
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">Tradução / STT · memória</h3>
         <label class="cfg-label">Base URL (termina em /v1)
-          <input type="text" id="remoteBaseUrl" placeholder="https://api.openai.com/v1"></label>
-        <label class="check"><input type="checkbox" id="remoteTranslate"> Tradução via API</label>
+          <input data-admin-setting="remote_base_url" type="text" id="remoteBaseUrl" placeholder="https://api.openai.com/v1"></label>
+        <label class="check"><input data-admin-setting="remote_translate" type="checkbox" id="remoteTranslate"> Tradução via API</label>
         <label class="cfg-label">Modelo de tradução
-          <input type="text" id="remoteTranslateModel" placeholder="gpt-4o-mini"></label>
+          <input data-admin-setting="remote_translate_model" type="text" id="remoteTranslateModel" placeholder="gpt-4o-mini"></label>
         <p class="hint" style="margin-top:0">Na RTX: <code>qwen2.5-14b-instruct</code> ou <code>qwen2.5-7b-instruct</code>.</p>
         <label class="cfg-label">Modelo de transcrição (STT)
-          <select id="sttEngine">
+          <select data-admin-setting="remote_stt" id="sttEngine">
             <option value="voxtral">Voxtral 24B — RTX (qualidade pt-BR)</option>
             <option value="whisper-rtx">Whisper large-v3 — RTX (mais rápido)</option>
             <option value="local">Whisper local — Mac (offline)</option>
@@ -2616,7 +2666,7 @@
         <p class="hint" style="margin-top:0"><b>Voxtral</b> = qualidade · <b>Whisper-RTX</b> = rápido · <b>Local</b> = offline · <b>API</b> = externo</p>
         <p class="hint" style="margin-top:0">Beam p/ Whisper remoto (API/RTX). O local no Mac roda greedy — p/ mais precisão lá, use o large-v3 completo.</p>
         <label class="cfg-label">Modelo Whisper local (Mac)
-          <select id="sttWhisperModel">
+          <select data-admin-setting="stt_whisper_repo" id="sttWhisperModel">
             <option value="">large-v3-turbo — rápido (padrão)</option>
             <option value="mlx-community/whisper-large-v3-mlx">large-v3 completo — máxima precisão (~3× mais lento)</option>
           </select></label>
@@ -2625,22 +2675,22 @@
         <p class="hint" style="margin-top:0">Beam p/ Whisper remoto (API/RTX); o local no Mac roda greedy — p/ mais precisão, use o large-v3 completo.</p>
 
         <div id="sttAdvanced">
-          <label class="check"><input type="checkbox" id="remoteStt"> Transcrição via API</label>
+          <label class="check"><input data-admin-setting="remote_stt" type="checkbox" id="remoteStt"> Transcrição via API</label>
           <label class="cfg-label">Nome do modelo
-            <input type="text" id="remoteSttModel" placeholder="ex.: gpt-4o-mini-transcribe"></label>
+            <input data-admin-setting="remote_stt_model" type="text" id="remoteSttModel" placeholder="ex.: gpt-4o-mini-transcribe"></label>
           <label class="cfg-label">URL do STT (termina em /v1)
-            <input type="text" id="remoteSttBaseUrl" placeholder="https://api.openai.com/v1"></label>
+            <input data-admin-setting="remote_stt_base_url" type="text" id="remoteSttBaseUrl" placeholder="https://api.openai.com/v1"></label>
           <label class="cfg-label">Chave do STT (opcional)
-            <input type="password" id="remoteSttKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
+            <input data-admin-setting="remote_stt_key" type="password" id="remoteSttKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
           <p class="hint">Provedor OpenAI-compatível. Roteia só a transcrição.</p>
         </div>
         <div class="divider"></div>
         <label class="cfg-label">IA da Conversa — Base URL (termina em /v1)
-          <input type="text" id="chatBaseUrl" placeholder="vazio = usa a Base URL de tradução"></label>
+          <input data-admin-setting="chat_base_url" type="text" id="chatBaseUrl" placeholder="vazio = usa a Base URL de tradução"></label>
         <label class="cfg-label">Modelo da Conversa
-          <input type="text" id="chatModel" placeholder="vazio = usa o modelo de tradução"></label>
+          <input data-admin-setting="chat_model" type="text" id="chatModel" placeholder="vazio = usa o modelo de tradução"></label>
         <label class="cfg-label">Chave da Conversa (opcional)
-          <input type="password" id="chatApiKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
+          <input data-admin-setting="chat_api_key" type="password" id="chatApiKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
         <label class="cfg-label">Extras do LLM (JSON)
           <textarea id="chatExtra" rows="2" style="font-family:var(--mono); font-size:12px" placeholder='{"reasoning_effort": "low"}'></textarea></label>
         <p class="hint">Mesclado no body de cada chamada. Ex.: <code>{"reasoning_effort": "low", "top_p": 0.9}</code>. Vazio = padrão.</p>
@@ -2703,7 +2753,7 @@
       <button id="edCut" class="ghost small" type="button">🗑 Remover seleção</button>
       <button id="edNorm" class="ghost small" type="button">📈 Normalizar</button>
       <span class="ed-tool"><button id="edDenoise" class="ghost small" type="button">🧽 Limpar ruído</button>
-        <input id="edDnStr" type="range" min="0" max="1" step="0.05" value="0.7" title="força da limpeza" oninput="this.nextElementSibling.textContent=(+this.value).toFixed(2)"><output>0.70</output></span>
+        <input id="edDnStr" type="range" min="0" max="1" step="0.05" value="0.7" title="força da limpeza"><output>0.70</output></span>
       <span class="ed-tool"><button id="edGainApply" class="ghost small" type="button">🔊 Ganho</button>
         <input id="edGain" type="range" min="-18" max="18" step="0.5" value="0"><output id="edGainOut">0 dB</output></span>
       <button id="edFade" class="ghost small" type="button">🎚 Fade nas bordas</button>
@@ -2731,7 +2781,158 @@ function toast(msg, ms = 3500) {
   t._h = setTimeout(() => t.classList.remove("show"), ms);
 }
 
-let KEY = localStorage.getItem("ttsStudioKey") || localStorage.getItem("ttsRodKey") || "";
+/* Onde a chave fica guardada. Padrão: localStorage (sobrevive a fechar o
+   navegador — é o que a UX espera num dispositivo próprio). Opção "sessao":
+   sessionStorage, para máquina compartilhada — some ao fechar a aba e não
+   deixa o segredo no disco do navegador. A chave NUNCA vai na URL: só no
+   header X-API-Key (authFetch/login abaixo). */
+const KEY_MODE = "ttsStudioKeyMode";
+const keyMode = () => (localStorage.getItem(KEY_MODE) === "sessao" ? "sessao" : "local");
+const keyRead = () => {
+  try {
+    return sessionStorage.getItem("ttsStudioKey")
+        || localStorage.getItem("ttsStudioKey")
+        || localStorage.getItem("ttsRodKey") || "";
+  } catch { return ""; }   // storage bloqueado (modo privado antigo / cookie off)
+};
+// Salva SEMPRE num único lugar: uma cópia esquecida no localStorage anularia
+// o modo "só nesta sessão" (e um ttsRodKey legado ressuscitaria a chave).
+function keySave(v) {
+  try {
+    localStorage.removeItem("ttsStudioKey");
+    sessionStorage.removeItem("ttsStudioKey");
+    if (!v) { localStorage.removeItem("ttsRodKey"); return; }
+    keyStore().setItem("ttsStudioKey", v);
+    localStorage.removeItem("ttsRodKey");
+  } catch {}
+}
+const keyStore = () => (keyMode() === "sessao" ? sessionStorage : localStorage);
+const keyDrop = () => keySave("");
+let KEY = keyRead();
+/* ───────── Chave de USO x chave ADMINISTRATIVA ─────────
+   Gerar fala é uma coisa; repontar a instalação para outro provedor (e ler a
+   credencial dele) é outra. Quem decide o que é "campo administrativo" é o
+   SERVIDOR — GET /api/settings devolve `is_admin` e `admin_fields`, e o POST
+   devolve `admin_ignored`. A UI só reflete: nada de lista hardcoded aqui, senão
+   as duas pontas desandam. Todo campo com `data-admin-setting` no HTML já nasce
+   travado se o servidor proteger aquele nome.
+   Loopback é admin por definição (é o Mac do dono) — isto só morde em acesso
+   pela rede/túnel com uma chave `role: "use"`. */
+let ADMIN = { is: true, fields: new Set() };
+
+// nome técnico da setting -> rótulo que aparece na tela (só para a mensagem)
+const ROTULO_SETTING = {
+  model: "modelo", translate_model: "modelo do tradutor", stt_whisper_repo: "Whisper local",
+  remote_tts: "síntese remota", remote_tts_url: "URL do TTS remoto", remote_tts_model: "modelo remoto",
+  remote_api_key: "chave da API remota", remote_base_url: "Base URL",
+  remote_translate: "tradução via API", remote_translate_model: "modelo de tradução",
+  remote_stt: "transcrição via API", remote_stt_base_url: "URL do STT",
+  remote_stt_model: "modelo do STT", remote_stt_key: "chave do STT",
+  chat_base_url: "Base URL da Conversa", chat_model: "modelo da Conversa", chat_api_key: "chave da Conversa",
+};
+const rotuloSetting = k => ROTULO_SETTING[k] || k;
+// Administrativos que existem no servidor mas ainda não têm input na tela: sem
+// isto o aviso de marcador faltante (abaixo) acusaria estes dois para sempre.
+const ADMIN_SEM_UI = new Set(["translate_model", "remote_tts_model"]);
+
+// Trava os campos administrativos e diz POR QUE estão travados: campo travado
+// sem explicação vira "a UI não me deixa mexer".
+function aplicarPoliticaAdmin() {
+  document.querySelectorAll("[data-admin-setting]").forEach(el => {
+    const travado = !ADMIN.is && ADMIN.fields.has(el.dataset.adminSetting);
+    el.disabled = travado;
+    if (el.dataset.tituloOriginal === undefined) el.dataset.tituloOriginal = el.title || "";
+    el.title = travado
+      ? `Travado: só a chave administrativa altera ${rotuloSetting(el.dataset.adminSetting)}`
+      : el.dataset.tituloOriginal;
+    (el.closest("label") || el).classList.toggle("cfg-travado", travado);
+  });
+  const b = $("cfgAdminBadge");
+  if (b) {
+    b.hidden = false;
+    b.textContent = ADMIN.is ? "🔑 chave admin" : "🔒 chave de uso";
+    b.classList.toggle("travado", !ADMIN.is);
+    b.title = ADMIN.is
+      ? "Este acesso administra: troca conexões externas, modelo e chaves."
+      : "Esta chave gera fala e transcreve, mas não troca conexão externa nem lê os segredos delas. "
+        + "Para administrar, cole uma chave com papel admin em Configurações → Acesso.";
+  }
+  // Campo protegido pelo servidor que não tem marcador no HTML não fica travado:
+  // o aviso no save cobre, mas é tarde. Apontar no console evita o dev descobrir
+  // só quando o campo for ignorado. Controles dinâmicos têm `data-setting` e
+  // entram sozinhos; isto pega o campo ESTÁTICO esquecido.
+  const semMarcador = [...ADMIN.fields].filter(nome => !ADMIN_SEM_UI.has(nome)
+    && !document.querySelector(`[data-admin-setting="${CSS.escape(nome)}"]`)
+    && !document.querySelector(`[data-setting="${CSS.escape(nome)}"]`));
+  if (semMarcador.length) {
+    console.warn("[admin] campo administrativo sem campo na UI (falta data-admin-setting):",
+                 semMarcador.join(", "));
+  }
+  const dica = $("cfgAdminDica");
+  if (dica) {
+    dica.style.display = ADMIN.is ? "none" : "";
+    dica.textContent = "Campos com 🔒 são de conexão externa e estão travados: esta chave é de uso. "
+      + "Chave administrativa em Configurações → Acesso.";
+  }
+  const dicaAcesso = $("apiAdminDica");
+  if (dicaAcesso) {
+    dicaAcesso.style.display = ADMIN.is ? "none" : "";
+    dicaAcesso.textContent = "Chave de uso: dá para gerar fala e transcrever, mas criar/rotacionar/apagar "
+      + "chaves e travar conexões externas só com uma chave administrativa.";
+  }
+  marcarSegredosMascarados();
+  if ($("apiKeyCreate")) {
+    $("apiKeyCreate").disabled = !ADMIN.is;
+    if ($("apiKeyNewName")) $("apiKeyNewName").disabled = !ADMIN.is;
+    if ($("apiAuthEnabled")) $("apiAuthEnabled").disabled = !ADMIN.is;
+  }
+}
+
+// Resposta de POST /api/settings: pode ter campo administrativo descartado pelo
+// servidor (blob único, sem 403 — ver _settings_payload_adm no app.py). Sem
+// avisar, a tela dizia "salvo ✔" com os campos de conexão intactos.
+function tratarRespostaSettings(dados) {
+  if (dados && typeof dados.is_admin === "boolean" && dados.is_admin !== ADMIN.is) {
+    ADMIN.is = dados.is_admin;
+    aplicarPoliticaAdmin();
+  }
+  const ignorados = (dados && dados.admin_ignored) || [];
+  if (!ignorados.length) return ignorados;
+  const nomes = ignorados.map(rotuloSetting);
+  const amostra = nomes.slice(0, 4).join(", ")
+    + (nomes.length > 4 ? ` e mais ${nomes.length - 4}` : "");
+  if ($("cfgStatus")) {
+    $("cfgStatus").textContent =
+      `salvo ✔ — ${nomes.length} campo(s) precisam de chave admin: ${amostra}`;
+  }
+  toast(`O que é de uso foi salvo. ${nomes.length} campo(s) de conexão ficaram como estavam `
+    + `(${amostra}) — precisam de chave admin. Use uma em Configurações → Acesso.`, 7000);
+  return ignorados;
+}
+
+// GET de settings, quando não-admin, entrega os segredos MASCARADOS (••••1234).
+// Sem dizer isso, a pessoa lê o campo como se fosse o valor e estranha o formato.
+function marcarSegredosMascarados() {
+  for (const [id, chave] of [["remoteApiKey", "remote_api_key"],
+                             ["remoteSttKey", "remote_stt_key"],
+                             ["chatApiKey", "chat_api_key"]]) {
+    const el = $(id);
+    if (!el) continue;
+    if (el.dataset.phOriginal === undefined) el.dataset.phOriginal = el.placeholder || "";
+    const mascarado = !ADMIN.is && ADMIN.fields.has(chave) && (el.value || "").startsWith("••••");
+    el.placeholder = mascarado
+      ? "••••1234 = mascarado (chave de uso não lê o segredo; o valor guardado continua)"
+      : el.dataset.phOriginal;
+    el.classList.toggle("cfg-mascarado", mascarado);
+  }
+}
+
+// Faixa de aviso no topo quando o servidor recusa uma ação por falta de admin.
+function mostrarAvisoAdmin(html) {
+  const bar = $("keyBar"), txt = $("keyBarText");
+  if (txt) txt.innerHTML = html;
+  if (bar) bar.style.display = "flex";
+}
 // proxy por path (ex.: https://dominio/ttsproxy): prefixa todas as chamadas
 const APP_BASE = /^\/ttsproxy(\/|$)/.test(location.pathname) ? "/ttsproxy" : "";
 // Recursos binários são carregados via fetch para manter a chave fora da URL.
@@ -2776,12 +2977,27 @@ async function api(path, opts = {}) {
     } catch {}
     throw Object.assign(new Error(msg), { status: 401 });
   }
+  if (r.status === 403) {
+    // 403 só sai de rota administrativa (/api/apikeys*): explicar ONDE resolver,
+    // em vez do "Erro: ..." seco — é o caminho de quem entrou com chave de uso.
+    let detail = "ação administrativa";
+    try { detail = (await r.json()).detail || detail; } catch {}
+    mostrarAvisoAdmin("Esta ação precisa de chave <b>administrativa</b> (" + esc(detail)
+      + "). No Mac do servidor: Configurações → Acesso → Nova chave → papel <b>admin</b>. Cole abaixo:");
+    throw Object.assign(
+      new Error(detail + " — precisa de uma chave administrativa (Configurações → Acesso)"),
+      { status: 403 });
+  }
   if (!r.ok) {
     let detail = r.statusText;
     try { detail = (await r.json()).detail || detail; } catch {}
-    throw new Error(detail);
+    throw Object.assign(new Error(detail), { status: r.status });
   }
-  return r.json();
+  const dados = await r.json();
+  // Um POST de /api/settings pode voltar com campo administrativo IGNORADO pelo
+  // servidor. Concentrar aqui evita repetir o aviso nos ~10 "Salvar" espalhados.
+  if (dados && typeof dados === "object" && dados.admin_ignored !== undefined) tratarRespostaSettings(dados);
+  return dados;
 }
 
 // Constrói um Error a partir da resposta: usa `detail`/`hint` do corpo JSON
@@ -2789,7 +3005,13 @@ async function api(path, opts = {}) {
 async function apiError(r) {
   let d = r.statusText;
   try { const b = await r.json(); d = b.hint || b.detail || d; } catch {}
-  return new Error(d);
+  const e = new Error(d);
+  e.status = r.status;
+  // Retry-After em segundos, quando o servidor manda (429 de admissão, 429 do
+  // rate limiter): é o que permite repetir com o tempo que ELE pediu.
+  const ra = parseInt(r.headers.get("Retry-After") || "", 10);
+  if (Number.isFinite(ra)) e.retryAfter = ra;
+  return e;
 }
 
 // Igual a api(), mas para respostas binárias (blob). Sem isto cada chamada de
@@ -3516,6 +3738,13 @@ $("edCut").onclick = () => ED.sel ? edOp({ type: "cut", start: ED.sel.a * ED.dur
 $("edNorm").onclick = () => edOp({ type: "normalize" });
 $("edDenoise").onclick = () => edOp({ type: "denoise", strength: parseFloat($("edDnStr").value) });
 $("edGain").oninput = () => $("edGainOut").textContent = (+$("edGain").value).toFixed(1).replace(/\.0$/, "") + " dB";
+// Este era o ÚNICO handler inline do arquivo. Atributo on*= precisa de
+// 'unsafe-inline' no script-src; com o nonce entrando (#76), ele sai. Os vizinhos
+// usam `.oninput =` (propriedade), que também dispensa o unsafe-inline — aqui vai
+// addEventListener porque a task pediu explicitamente.
+$("edDnStr").addEventListener("input", () => {
+  $("edDnStr").nextElementSibling.textContent = (+$("edDnStr").value).toFixed(2);
+});
 $("edGainApply").onclick = () => {
   const op = { type: "gain", db: parseFloat($("edGain").value) };
   if (ED.sel) { op.start = ED.sel.a * ED.dur; op.end = ED.sel.b * ED.dur; }   // ganho só no trecho
@@ -3590,7 +3819,7 @@ async function refreshVoices() {
       const editBtn = v.preset ? "" : `<button class="ghost small edit">✂️ Editar</button>`;
       div.innerHTML = `
         <div class="grow"><div class="name">${tag}${esc(v.name)}</div>
-        <div class="meta"><span>${v.duration}s</span><span class="dot">${v.preset ? "voz padrão" : v.created_at}</span>${limpa ? '<span class="badge-soft">limpa</span>' : ''}<code class="vid" title="clique p/ copiar o id">${v.id}</code></div>
+        <div class="meta"><span>${esc(v.duration)}s</span><span class="dot">${v.preset ? "voz padrão" : esc(v.created_at)}</span>${limpa ? '<span class="badge-soft">limpa</span>' : ''}<code class="vid" title="clique p/ copiar o id">${esc(v.id)}</code></div>
         <div class="wrow">
           <button class="wplay" type="button" title="tocar/pausar">▶</button>
           <canvas class="wave" width="600" height="38" title="clique/arraste p/ navegar"></canvas>
@@ -3779,7 +4008,8 @@ function applySttEngine(persist) {
   }
   if (persist) {
     api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-      .then(() => toast("STT: " + ({ voxtral: "Voxtral (RTX)", "whisper-rtx": "Whisper large-v3 (RTX)", local: "Whisper local (Mac)", "local-parakeet": "Parakeet local (Mac)", api: "API externa" }[eng] || eng)))
+      .then(r => { if ((r && r.admin_ignored || []).length) return;
+        toast("STT: " + ({ voxtral: "Voxtral (RTX)", "whisper-rtx": "Whisper large-v3 (RTX)", local: "Whisper local (Mac)", "local-parakeet": "Parakeet local (Mac)", api: "API externa" }[eng] || eng)); })
       .catch(e => toast("Erro: " + e.message));
   }
 }
@@ -3888,7 +4118,7 @@ async function streamJob(job_id, statusEl) {
       onProgress: (j, buscados) => {
         if (j.status === "queued" && statusEl) {
           const msg = (j.progress && j.progress.stage) || "na fila de falas…";
-          statusEl.innerHTML = `<span class="spinner"></span>${msg}`;
+          statusEl.innerHTML = `<span class="spinner"></span>${esc(msg)}`;
           return;
         }
         if (!statusEl || !j.progress) return;
@@ -3932,7 +4162,7 @@ $("ttsBtn").onclick = async () => {
   $("ttsBtn").disabled = true;
   const mid = selectedModelId();
   const blabel = (BACKENDS_META[mid] && BACKENDS_META[mid].label) || mid || "modelo";
-  $("ttsStatus").innerHTML = `<span class="spinner"></span>gerando… (${blabel} — 1ª vez pode baixar GB)`;
+  $("ttsStatus").innerHTML = `<span class="spinner"></span>gerando… (${esc(blabel)} — 1ª vez pode baixar GB)`;
 
   try {
     const body = {
@@ -4827,7 +5057,7 @@ async function refreshOutputs() {
     const short = o.text.length > 90 ? o.text.slice(0, 90) + "…" : o.text;
     div.innerHTML = `
       <div class="grow"><div class="name">${esc(short)}</div>
-      <div class="meta"><span>${o.duration}s</span><span class="dot">gerado em ${o.elapsed}s</span><span class="dot">${o.created_at}</span></div></div>
+      <div class="meta"><span>${esc(o.duration)}s</span><span class="dot">gerado em ${esc(o.elapsed)}s</span><span class="dot">${esc(o.created_at)}</span></div></div>
       <audio controls preload="none"></audio>
       <div class="item-actions">
       <button class="ghost small download-output">Baixar</button>
@@ -4845,26 +5075,34 @@ async function refreshOutputs() {
   }
 }
 
-$("keySave").onclick = () => {
-  KEY = $("keyInput").value.trim();
-  localStorage.setItem("ttsStudioKey", KEY);
-  $("keyBar").style.display = "none";
-  if ($("clientApiKey")) $("clientApiKey").value = KEY;
-  updateClientKeyStatus();
-  refreshStatus(); refreshVoices(); refreshOutputs(); loadSettings();
-  loadApiKeys();
-};
+$("keySave").onclick = () => trocarChave($("keyInput").value);
 if ($("keyBarGoto")) $("keyBarGoto").onclick = () => {
   showView("config", { tab: "acesso" });
 };
 
 /* ───────── Gestão de chaves de API (Configurações → Acesso) ───────── */
+/* Trocar a chave em uso muda o PRIVILÉGIO (admin x uso). Recarregar a política
+   junto é obrigatório: sem isso o selo, os campos travados e os botões de chave
+   ficam mentindo — era o caso ao criar/rotacionar uma chave e aceitar "usar esta
+   chave neste navegador" (o navegador passava a mandar uma chave de uso e a tela
+   continuava dizendo "chave admin", com os botões de admin habilitados). */
+function trocarChave(nova) {
+  KEY = (nova || "").trim();
+  keySave(KEY);
+  if ($("clientApiKey")) $("clientApiKey").value = KEY;
+  if ($("keyInput")) $("keyInput").value = KEY;
+  if ($("keyBar")) $("keyBar").style.display = "none";
+  updateClientKeyStatus();
+  refreshStatus(); refreshVoices(); refreshOutputs();
+  loadSettings();          // reconsulta is_admin/admin_fields desta chave
+}
+
 function updateClientKeyStatus() {
   const el = $("clientApiKeyStatus");
   if (!el) return;
   if (KEY) {
     const m = KEY.length > 10 ? KEY.slice(0, 4) + "…" + KEY.slice(-4) : "••••";
-    el.textContent = "Salva neste navegador: " + m;
+    el.textContent = (keyMode() === "sessao" ? "Nesta sessão: " : "Salva neste navegador: ") + m;
   } else {
     el.textContent = "Nenhuma chave neste navegador (ok em localhost).";
   }
@@ -4886,7 +5124,7 @@ async function loadApiKeys() {
     if ($("apiAuthEnabled")) $("apiAuthEnabled").checked = !!data.enabled;
     const hint = $("apiAuthHint");
     if (hint) {
-      const lans = (data.lan_urls || []).map(u => `<code>${u}</code>`).join(", ");
+      const lans = (data.lan_urls || []).map(u => `<code>${esc(u)}</code>`).join(", ");
       if (!data.auth_active) {
         hint.innerHTML = "Auth <b>desligada</b> — qualquer um na rede acessa a API sem chave.";
       } else if (data.local) {
@@ -4912,18 +5150,31 @@ async function loadApiKeys() {
       div.innerHTML = `
         <div class="ak-meta">
           <span class="ak-name"></span>
+          <span class="ak-role"></span>
           <span class="ak-mask"></span>
           <span class="ak-date"></span>
         </div>
         <div class="ak-actions"></div>`;
       div.querySelector(".ak-name").textContent = kr.name + (ro ? " · somente leitura" : "");
+      const papel = (kr.role || "").toLowerCase();
+      const chipPapel = div.querySelector(".ak-role");
+      chipPapel.textContent = papel === "admin" ? "🔑 admin" : papel === "use" ? "🔒 uso" : "legado (administra)";
+      chipPapel.title = papel === "admin"
+        ? "Administra conexões externas, modelo e outras chaves."
+        : papel === "use"
+          ? "Gera fala e transcreve; não mexe em conexão externa nem lê os segredos delas."
+          : "Chave criada antes do campo de papel: continua administrando (compatibilidade).";
       div.querySelector(".ak-mask").textContent = kr.masked || "••••";
       div.querySelector(".ak-date").textContent = kr.created_at ? ("criada " + kr.created_at) : "";
       const acts = div.querySelector(".ak-actions");
       const btn = (label, cls, title) => {
         const b = document.createElement("button");
         b.type = "button"; b.className = (cls || "ghost") + " small";
-        b.textContent = label; if (title) b.title = title;
+        b.textContent = label;
+        // Chave de uso: o servidor devolve 403 em toda edição de chave.
+        // Desabilitar com o motivo no title evita o clique que ia falhar.
+        b.disabled = !ADMIN.is;
+        b.title = ADMIN.is ? (title || "") : "Só a chave administrativa altera chaves";
         acts.appendChild(b); return b;
       };
       if (data.can_reveal && !ro) {
@@ -4965,6 +5216,24 @@ async function loadApiKeys() {
             loadApiKeys();
           } catch (e) { toast("Erro: " + e.message, 5000); }
         };
+        btn(papel === "admin" ? "↓ virar uso" : "↑ virar admin", "ghost",
+            "Troca o papel desta chave").onclick = async () => {
+          const novo = papel === "admin" ? "use" : "admin";
+          const aviso = (novo === "use")
+            ? `\n\nSe ela for a sua única chave admin, administrar passa a exigir o Mac (loopback).`
+            : "";
+          if (!confirm(`Tornar "${kr.name}" uma chave de ${novo === "admin" ? "administração" : "uso"}?${aviso}`)) return;
+          try {
+            await api(`/api/apikeys/${kr.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ name: kr.name, role: novo }),
+            });
+            toast(`"${kr.name}" agora é ${novo === "admin" ? "admin" : "de uso"}`);
+            loadApiKeys();
+            loadSettings();   // o selo/is_admin podem ter mudado se for a chave em uso
+          } catch (e) { toast("Erro: " + e.message, 5000); }
+        };
         btn("Rotacionar", "ghost", "Gera um secret novo; o antigo deixa de valer").onclick = async () => {
           if (!confirm(`Rotacionar "${kr.name}"? Sistemas com a chave antiga param de funcionar.`)) return;
           try {
@@ -4972,12 +5241,7 @@ async function loadApiKeys() {
             const secret = r.key && r.key.secret;
             showApiKeyReveal(secret);
             toast("Nova chave gerada — copie agora");
-            if (secret && confirm("Usar a nova chave neste navegador?")) {
-              KEY = secret;
-              localStorage.setItem("ttsStudioKey", KEY);
-              if ($("clientApiKey")) $("clientApiKey").value = KEY;
-              updateClientKeyStatus();
-            }
+            if (secret && confirm("Usar a nova chave neste navegador?")) trocarChave(secret);
             loadApiKeys();
           } catch (e) { toast("Erro: " + e.message, 5000); }
         };
@@ -5006,30 +5270,26 @@ async function loadApiKeys() {
       list.appendChild(div);
     }
   } catch (e) {
-    list.innerHTML = `<div class="empty" style="padding:16px">Não foi possível carregar as chaves: ${e.message}</div>`;
+    list.innerHTML = `<div class="empty" style="padding:16px">Não foi possível carregar as chaves: ${esc(e.message)}</div>`;
   }
 }
 
 if ($("apiKeyCreate")) $("apiKeyCreate").onclick = async () => {
   const name = ($("apiKeyNewName")?.value || "").trim() || "nova chave";
+  // papel explícito desde a criação: o default é "use" (é a chave que se
+  // compartilha com tablet/HA); sem papel, a chave cai na política legada.
+  const role = $("apiKeyNewRole")?.value || "use";
   try {
     const r = await api("/api/apikeys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, role }),
     });
     if ($("apiKeyNewName")) $("apiKeyNewName").value = "";
     const secret = r.key && r.key.secret;
     showApiKeyReveal(secret);
     toast("Chave criada — copie o segredo abaixo");
-    if (secret && confirm("Usar esta chave neste navegador?")) {
-      KEY = secret;
-      localStorage.setItem("ttsStudioKey", KEY);
-      if ($("clientApiKey")) $("clientApiKey").value = KEY;
-      if ($("keyInput")) $("keyInput").value = KEY;
-      $("keyBar").style.display = "none";
-      updateClientKeyStatus();
-    }
+    if (secret && confirm("Usar esta chave neste navegador?")) trocarChave(secret);
     loadApiKeys();
   } catch (e) { toast("Erro: " + e.message, 5000); }
 };
@@ -5059,20 +5319,11 @@ if ($("clientApiKey")) {
   updateClientKeyStatus();
 }
 if ($("clientApiKeySave")) $("clientApiKeySave").onclick = () => {
-  KEY = ($("clientApiKey")?.value || "").trim();
-  localStorage.setItem("ttsStudioKey", KEY);
-  if ($("keyInput")) $("keyInput").value = KEY;
-  $("keyBar").style.display = "none";
-  updateClientKeyStatus();
+  trocarChave($("clientApiKey")?.value);
   toast(KEY ? "Chave salva neste navegador ✔" : "Chave limpa");
-  refreshStatus(); refreshVoices(); refreshOutputs(); loadSettings();
 };
 if ($("clientApiKeyClear")) $("clientApiKeyClear").onclick = () => {
-  KEY = "";
-  localStorage.removeItem("ttsStudioKey");
-  if ($("clientApiKey")) $("clientApiKey").value = "";
-  if ($("keyInput")) $("keyInput").value = "";
-  updateClientKeyStatus();
+  trocarChave("");
   toast("Chave deste navegador removida");
 };
 if ($("clientApiKeyToggle")) $("clientApiKeyToggle").onclick = () => {
@@ -5082,6 +5333,16 @@ if ($("clientApiKeyToggle")) $("clientApiKeyToggle").onclick = () => {
   el.type = show ? "text" : "password";
   $("clientApiKeyToggle").textContent = show ? "Ocultar" : "Mostrar";
 };
+if ($("clientApiKeySession")) {
+  $("clientApiKeySession").checked = keyMode() === "sessao";
+  $("clientApiKeySession").onchange = () => {
+    const sessao = $("clientApiKeySession").checked;
+    try { localStorage.setItem(KEY_MODE, sessao ? "sessao" : "local"); } catch {}
+    keySave(KEY);          // realoca a chave e apaga a cópia do outro storage
+    updateClientKeyStatus();
+    toast(sessao ? "Chave guardada só nesta sessão" : "Chave guardada neste dispositivo");
+  };
+}
 
 /* ───────── Acesso pela internet (proxy) ───────── */
 const proxyUrlEl = $("proxyUrl");
@@ -5296,9 +5557,9 @@ function updateModelHint() {
     h.textContent = "Trocar de modelo baixa os pesos na 1ª geração. Um de cada vez na RAM.";
     return;
   }
-  h.innerHTML = `<strong>${b.label}</strong> — ${b.notes || ""}`
-    + ` · <code style="font-size:11px">${b.repo || ""}</code>`
-    + ` · ${b.size || "?"} · licença: ${b.license || "?"}`
+  h.innerHTML = `<strong>${esc(b.label)}</strong> — ${esc(b.notes || "")}`
+    + ` · <code style="font-size:11px">${esc(b.repo || "")}</code>`
+    + ` · ${esc(b.size || "?")} · licença: ${esc(b.license || "?")}`
     + (b.clone ? " · clonagem ✓" : " · sem clonagem de amostra")
     + (b.voice_design ? " · voice design ✓" : "");
   renderFamilyControls(b);
@@ -5315,18 +5576,41 @@ $("cfgModel").onchange = () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: mid }),
-    }).then(() => {
-      if ($("cfgStatus")) $("cfgStatus").textContent = "modelo aplicado: " + mid;
+    }).then(r => {
+      if ($("cfgStatus") && !((r && r.admin_ignored) || []).length)
+        $("cfgStatus").textContent = "modelo aplicado: " + mid;
       refreshStatus();
     }).catch(e => toast("Erro ao aplicar modelo: " + e.message));
   }
 };
 
+// Um blip do servidor (reinício por outro processo, proxy piscando) fazia o
+// loadSettings abortar no primeiro await: a tela nascia VAZIA — selo, campos,
+// listas — e só voltava com reload manual. Duas tentativas com folga curta
+// cobrem o transitório sem inventar estado: se as duas falharem, o catch do
+// loadSettings avisa como antes.
+async function comRetentativa(fn, tentativas = 2, esperaMs = 700) {
+  let ultimo;
+  for (let i = 0; i < tentativas; i++) {
+    try { return await fn(); }
+    catch (e) {
+      ultimo = e;
+      if (i + 1 < tentativas) await new Promise(r => setTimeout(r, esperaMs));
+    }
+  }
+  throw ultimo;
+}
+
 async function loadSettings() {
   try {
     await loadBackendsIntoSelect();
+    const s = await comRetentativa(() => api("/api/settings"));
+    // Política ANTES de preencher os campos: o que esta chave não pode alterar
+    // já nasce travado (e loadApiKeys, que depende dela, roda depois).
+    ADMIN.is = s.is_admin !== false;
+    ADMIN.fields = new Set(s.admin_fields || []);
+    aplicarPoliticaAdmin();
     loadApiKeys();
-    const s = await api("/api/settings");
     LAST_SETTINGS = s;
     if (MODELOS_PADRAO.includes(s.model)) {
       $("cfgModel").value = s.model;
@@ -5374,6 +5658,7 @@ async function loadSettings() {
     cfgTxt("chatBaseUrl", s.chat_base_url);
     cfgTxt("chatModel", s.chat_model);
     cfgTxt("chatApiKey", s.chat_api_key);
+    marcarSegredosMascarados();
     cfgTxt("chatExtra", s.chat_extra);
     if ($("speakerGate")) $("speakerGate").value = s.speaker_gate || "off";
     cfgTxt("sttWhisperModel", s.stt_whisper_repo);
@@ -5598,19 +5883,27 @@ $("cfgSave").onclick = async () => {
       ...ctl,
     };
     const precAntes = (LAST_SETTINGS || {}).omni_precision;
-    await api("/api/settings", {
+    // Manda o blob inteiro, inclusive os campos que esta chave não pode alterar:
+    // o servidor os ignora e devolve `admin_ignored`, que é o que a tela usa para
+    // dizer o que ficou de fora (ver tratarRespostaSettings). Omitir aqui daria a
+    // mesma gravação — mas sem ter o que reportar.
+    const resposta = await api("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     LAST_SETTINGS = { ...LAST_SETTINGS, ...body };
     $("cfgSave").textContent = "Salvar configurações";
-    // troca de precisão tem efeito invisível (só no próximo load_model) — dizer,
-    // senão parece que "não mudou nada"
-    $("cfgStatus").textContent = (body.omni_precision && body.omni_precision !== precAntes)
-      ? `salvo ✔ — precisão ${body.omni_precision}: modelo descarregado, recarrega no próximo uso`
-      : "salvo ✔ — já vale para a API";
-    setTimeout(() => $("cfgStatus").textContent = "", 4000);
+    // Com campo ignorado, tratarRespostaSettings (dentro de api()) já escreveu
+    // em cfgStatus o que ficou de fora e por quê — não sobrescrever com o
+    // "salvo ✔" genérico. Troca de precisão tem efeito invisível (só no próximo
+    // load_model): quando não há nada ignorado, dizer, senão parece que não mudou.
+    if (!((resposta && resposta.admin_ignored) || []).length) {
+      $("cfgStatus").textContent = (body.omni_precision && body.omni_precision !== precAntes)
+        ? `salvo ✔ — precisão ${body.omni_precision}: modelo descarregado, recarrega no próximo uso`
+        : "salvo ✔ — já vale para a API";
+      setTimeout(() => $("cfgStatus").textContent = "", 4000);
+    }
   } catch (e) { toast("Erro ao salvar: " + e.message); }
 };
 
@@ -5780,16 +6073,49 @@ function cvBlocos(text, max = CV_BLOCO_MAX) {
   return out.length ? out : [text.trim()];
 }
 
-function cvSintetiza(frase, sinal) {
+// 429 de admissão do TTS (TTS_JOBS_ACTIVE_MAX): o servidor recusa quando há
+// muitos jobs em voo. É pico transitório (ex.: API externa martelando) — repetir
+// UMA vez depois do Retry-After evita a Conversa engolir a frase do turno por
+// causa do pico. A espera é abortável: barge-in no meio dos 5 s não segura o
+// turno (o signal do turno é abortado por cvPararAudio/cvCancelarTurno).
+const cvAborto = () => Object.assign(new Error("abortado"), { name: "AbortError" });
+function cvEspera(ms, sinal) {
+  return new Promise((res, rej) => {
+    if (sinal && sinal.aborted) return rej(cvAborto());
+    const ao = () => { clearTimeout(t); rej(cvAborto()); };
+    const t = setTimeout(() => { if (sinal) sinal.removeEventListener("abort", ao); res(); }, ms);
+    if (sinal) sinal.addEventListener("abort", ao, { once: true });
+  });
+}
+async function cvTtsComRetry(pedir, sinal, aoEsperar) {
+  try {
+    return await pedir();
+  } catch (e) {
+    // só 429; e não vale repetir se o turno já foi cortado no meio
+    if (e.status !== 429 || (sinal && sinal.aborted)) throw e;
+    const bruto = Number.isFinite(e.retryAfter) ? e.retryAfter : 5;
+    const seg = Math.min(30, Math.max(1, bruto));   // absurdo não pendura a fala
+    cvDbg("429 na síntese (admissão) — retry em " + seg + "s");
+    if (aoEsperar) aoEsperar(seg);
+    await cvEspera(seg * 1000, sinal);
+    return await pedir();
+  }
+}
+
+function cvSintetiza(frase, sinal, vivo) {
   // queue:false — quem manda no tempo da fala é o player aqui, não a fila do
   // servidor (que reservaria a duração da fala anterior e dobraria o silêncio)
   const body = { model: "tts-1", input: frase, response_format: "wav", queue: false };
   const voz = $("cvVoice")?.value;
   if (voz) body.voice = voz;
-  const p = apiBlob("/v1/audio/speech", {
+  const pedir = () => apiBlob("/v1/audio/speech", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body), signal: sinal
+  });
+  const p = cvTtsComRetry(pedir, sinal, seg => {
+    // só mexe no status se o turno ainda é o dono da tela
+    if (!vivo || vivo()) cvStatus("🔊 servidor ocupado — falo em " + seg + "s…");
   });
   p.catch(() => {});   // marca tratada: se o turno morrer antes do await, sem unhandled
   return p;
@@ -5806,13 +6132,13 @@ async function cvSpeak(text, gen, sinal) {
   const el = $("cvAudio");
   el.style.display = "";
   const blocos = cvBlocos(text);
-  let prox = cvSintetiza(blocos[0], sinal);
+  let prox = cvSintetiza(blocos[0], sinal, vivo);
   try {
     for (let i = 0; i < blocos.length; i++) {
       const blob = await prox;
       if (!vivo()) break;
       // dispara a próxima ANTES de tocar esta
-      prox = (i + 1 < blocos.length) ? cvSintetiza(blocos[i + 1], sinal) : null;
+      prox = (i + 1 < blocos.length) ? cvSintetiza(blocos[i + 1], sinal, vivo) : null;
       if (cvUrlFala) URL.revokeObjectURL(cvUrlFala);
       cvUrlFala = URL.createObjectURL(blob);
       el.src = cvUrlFala;
@@ -6004,11 +6330,11 @@ $("cvSynth").onclick = async () => {
     const body = { model: "tts-1", input: texto, response_format: "wav" };
     const voz = $("cvVoice")?.value;
     if (voz) body.voice = voz;
-    const blob = await apiBlob("/v1/audio/speech", {
+    const blob = await cvTtsComRetry(() => apiBlob("/v1/audio/speech", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
-    });
+    }), null, seg => cvStatus("servidor ocupado — tento de novo em " + seg + "s…"));
     $("cvAudio").src = URL.createObjectURL(blob);
     $("cvAudio").play().catch(() => {});
     cvStatus("áudio pronto");
