@@ -134,3 +134,14 @@ eng.set_speaking(False)                     # playback acabou
 ```
 
 O bench sai 2 se não houver wav em `voices/` (grave uma voz na UI).
+
+### Gate estático do épico (para o QA reusar)
+
+Mesma lista do `.githooks/pre-commit` (ele roda isto + `pytest tests/` antes de
+cada commit). Saída tem de ser **vazia** e o exit **0**:
+
+```bash
+./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py \
+    smoke_sintese.py remote/*.py live_turns.py smoke_live_turns.py \
+    live_pipeline.py tests/*.py client/mic_router.py
+```

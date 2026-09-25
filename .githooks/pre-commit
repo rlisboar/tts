@@ -5,6 +5,10 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 PY=.venv-mlx/bin/python
 [ -x "$PY" ] || PY=python3
 
+# Módulos do épico Live, por dono — entram aqui para o gate estático não ter
+# buraco: live_turns.py + smoke_live_turns.py são do audio-ml (#92/LIVE-2) e
+# live_pipeline.py é do speech-pipeline (#93/LIVE-3). Módulo novo do épico,
+# linha nova aqui.
 "$PY" -m pyflakes app.py common.py tts_worker.py backends.py smoke_sintese.py remote/*.py \
-    live_turns.py smoke_live_turns.py tests/*.py client/mic_router.py || exit 1
+    live_turns.py smoke_live_turns.py live_pipeline.py tests/*.py client/mic_router.py || exit 1
 "$PY" -m pytest tests/ -q || exit 1
