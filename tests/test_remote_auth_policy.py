@@ -203,6 +203,17 @@ def test_arquivo_copiavel_sobe_sozinho_ao_lado_do_server(tmp_path):
 
 # ------------------------------------- import de verdade (com pesados falsos)
 
+# liga/desliga o "onnxruntime existe" do stub de silero_vad (aceite da #14: sem o
+# pacote o server não pode morrer, tem de logar e cair no jit do torch)
+SEM_ONNXRUNTIME = {"ok": True}
+
+
+def _load_silero_vad(onnx=False, *a, **k):
+    if onnx and not SEM_ONNXRUNTIME["ok"]:
+        raise RuntimeError("no module named onnxruntime")
+    return types.SimpleNamespace()
+
+
 def _instala_stubs(monkeypatch, carregados: list) -> None:
     """Falsifica torch/transformers/omnivoice/... — o suficiente para o import
     do server.py rodar sem CUDA, sem HuggingFace e sem baixar peso."""
@@ -239,7 +250,7 @@ def _instala_stubs(monkeypatch, carregados: list) -> None:
     fake("soundfile", read=lambda *a, **k: (None, None), write=lambda *a, **k: None)
     fake("faster_whisper", WhisperModel=lambda *a, **k: types.SimpleNamespace())
     fake("librosa", load=lambda *a, **k: (None, 16000))
-    fake("silero_vad", load_silero_vad=lambda *a, **k: types.SimpleNamespace(),
+    fake("silero_vad", load_silero_vad=_load_silero_vad,
          get_speech_timestamps=lambda *a, **k: [])
     fake("transformers", BitsAndBytesConfig=lambda **k: types.SimpleNamespace(),
          VoxtralProcessor=Pesos, VoxtralForConditionalGeneration=Pesos,
@@ -312,3 +323,27 @@ def test_hatch_sobe_aberto_e_avisa(arquivo, var, hatch, carrega_servidor, capsys
     assert cliente.get("/health").json()["auth"] == "open"
     assert cliente.post("/rota-inexistente").status_code == 404     # sem 401
     assert "ABERTO" in capsys.readouterr().out
+
+
+# ------------------------------------------------- VAD do voxtral (task #14)
+
+def test_vad_usa_onnx_quando_disponivel(carrega_servidor):
+    mod = carrega_servidor("voxtral_server.py", chave="k1")
+    assert mod.VAD_BACKEND == "onnx"
+
+
+def test_vad_cai_no_torch_jit_sem_onnxruntime_sem_derrubar_o_servidor(
+        carrega_servidor, monkeypatch, capsys):
+    """Aceite 1 da #14: sem `onnxruntime` o import não morre — avisa no log e
+    sobe no jit do torch; `/health` publica qual caminho subiu."""
+    monkeypatch.setitem(SEM_ONNXRUNTIME, "ok", False)
+
+    mod = carrega_servidor("voxtral_server.py", chave="k1")   # não levanta
+    assert mod.VAD_BACKEND == "torch-jit"
+    assert "[vad]" in capsys.readouterr().out
+    assert TestClient(mod.app).get("/health").json()["vad"] == "torch-jit"
+
+
+def test_vad_onnx_nao_vaza_no_health_como_torch(carrega_servidor):
+    """Sanidade: `vad` do /health é o caminho REAL que subiu, não um rótulo fixo."""
+    assert carrega_servidor("voxtral_server.py", chave="k1").VAD_BACKEND == "onnx"

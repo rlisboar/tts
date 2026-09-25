@@ -24,10 +24,19 @@ import wave
 from collections import OrderedDict
 from collections import defaultdict, deque
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
+
+# onnxruntime (caminho ONNX do VAD) tenta gravar o ID de telemetria em $HOME;
+# com HOME não-gravável (sandbox/CI) ele larga um arquivo ":memory:.ses" no CWD.
+# O run.sh já exporta isto para o servidor; aqui vale também para pytest, scripts
+# e IDE, que carregam o VAD sem passar pelo run.sh. O app é local/offline: a
+# telemetria não serve para nada e o warning suja a suíte. Fica ANTES dos
+# imports locais porque o próprio onnxruntime lê a var ao ser importado.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
 from backends import generate_with_backend, list_backends, resolve_backend
 from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,
@@ -53,21 +62,120 @@ LEGACY_APIKEY_PATH = BASE / ".apikey"
 VOICES_DIR.mkdir(exist_ok=True)
 OUTPUTS_DIR.mkdir(exist_ok=True)
 
-# Workers filhos têm sessão própria; em crash do pai podem sobreviver. Recolhe
-# apenas PIDs registrados pelo próprio app e cujo comando ainda é tts_worker.py.
+# ---------------------------------------------------------------------------
+# Limpeza de boot dos diretórios de job (outputs/.job-*)
+#
+# Um `.job-*` é trabalho de ALGUMA instância do app — o servidor da máquina, um
+# smoke, um `pytest` (a suíte importa app). A limpeza antiga apagava tudo no
+# import, então um segundo processo derrubava a geração do servidor vivo
+# (`System error` ao escrever o trecho e 404 no status) e ainda matava o worker
+# filho dele. Agora só sai o órfão de verdade: dir com dono VIVO fica.
+# ---------------------------------------------------------------------------
+
+_JOB_ORFAO_JANELA_S = 300             # sem dono registrado: atividade recente segura
+
+
+def _pid_cmd(pid) -> str:
+    """Cmdline do pid ("" se o processo não existe ou o `ps` não respondeu).
+
+    `ps` pode faltar (sandbox/CI nega o exec): por isso a vida do processo é
+    medida com `os.kill(pid, 0)` e a cmdline é só refinamento opcional. E sem
+    ela não dá para distinguir pid reciclado — daí o "não respondeu" nunca ser
+    tratado como "morto"."""
+    try:
+        return subprocess.run(["ps", "-p", str(int(pid)), "-o", "command="],
+                              capture_output=True, text=True, timeout=2).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+
+
+def _pid_vivo(pid) -> bool:
+    """True se o processo existe (sem depender do ps)."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True                       # existe, mas é de outro usuário
+    except OSError:
+        return False
+
+
+def _job_owner_pid(job_dir: Path):
+    """Pid do processo que criou o job (None em dir de versão anterior)."""
+    try:
+        return int((job_dir / "owner.pid").read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _job_owner_vivo(job_dir: Path) -> bool:
+    """True se o dono do job ainda é um processo python vivo desta app.
+
+    Com a cmdline disponível exige "python": sem isso a reciclagem do pid por
+    outro programa deixaria um dir velho preso para sempre. Sem `ps`, vale a
+    vida do processo (o `owner.pid` é escrito por nós)."""
+    pid = _job_owner_pid(job_dir)
+    if not _pid_vivo(pid):
+        return False
+    cmd = _pid_cmd(pid)
+    return "python" in cmd.lower() if cmd else True
+
+
+def _job_dir_ativo(job_dir: Path) -> bool:
+    """Dir de job que outra instância pode estar usando AGORA.
+
+    `owner.pid` presente decide sozinho: dono vivo = fica, dono morto = órfão de
+    crash e sai na hora (é o que queremos depois de um restart, em vez de deixar
+    lixo 5 min). Só o dir SEM dono (versão anterior do app) cai na atividade
+    recente — o dono reescreve status.json e cria trechos enquanto gera.
+    `owner.pid` fica FORA dos mtimes: escrito uma vez no começo, ele mentiria
+    "recente" num dir que já parou (o dir em si já conta a criação)."""
+    if _job_owner_pid(job_dir) is not None:
+        return _job_owner_vivo(job_dir)
+    mtimes = []
+    for alvo in (job_dir, job_dir / "status.json", job_dir / "0.wav"):
+        try:
+            mtimes.append(alvo.stat().st_mtime)
+        except OSError:
+            pass
+    return bool(mtimes) and (time.time() - max(mtimes)) < _JOB_ORFAO_JANELA_S
+
+
+# Workers filhos têm sessão própria e sobrevivem à morte do pai: recolhe só os
+# que ficaram órfãos. A decisão é a MESMA do dir (`_job_dir_ativo`): dir vivo
+# mantém o worker, senão o par ficava incoerente (dir preservado, worker morto,
+# e quem pollava o worker era a instância antiga). Dir novo = dono vivo decide;
+# dir de versão anterior cai na atividade recente.
 for _pid_file in OUTPUTS_DIR.glob(".job-*/worker.pid"):
     try:
         _pid = int(_pid_file.read_text().strip())
-        _cmd = subprocess.run(["ps", "-p", str(_pid), "-o", "command="],
-                              capture_output=True, text=True, timeout=2).stdout
-        if "tts_worker.py" in _cmd:
-            os.killpg(_pid, signal.SIGTERM)
+        _cmd = _pid_cmd(_pid)
+        if _cmd and "tts_worker.py" not in _cmd:
+            continue                      # pid morto ou reciclado por outro
+        if not _cmd and not _pid_vivo(_pid):
+            continue                      # sem ps: só segue se o processo existe
+        if _job_dir_ativo(_pid_file.parent):
+            continue                      # instância viva ainda polla esse worker
+        os.killpg(_pid, signal.SIGTERM)
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
 
-# trechos parciais de jobs interrompidos não sobrevivem a restart
+# trechos parciais de job interrompido não sobrevivem a restart
 for _d in OUTPUTS_DIR.glob(".job-*"):
-    shutil.rmtree(_d, ignore_errors=True)
+    if _job_dir_ativo(_d):
+        continue
+    if _d.is_dir():
+        shutil.rmtree(_d, ignore_errors=True)
+    else:
+        _d.unlink(missing_ok=True)        # arquivo solto: rmtree não o alcança
 
 # OmniVoice: as conversões MLX publicadas vêm quebradas — app e worker usam o
 # dir montado por common.assemble_omnivoice_path (backbone bf16 + audio_tokenizer
@@ -407,13 +515,17 @@ def _load_apikeys():
 
 
 def _auth_enabled() -> bool:
-    """Auth na rede se enabled e existe ao menos uma chave (arquivo ou env)."""
+    """Auth na rede se enabled e existe ao menos uma chave (arquivo ou env).
+
+    `TTS_ROD_ADMIN_KEY` conta como chave: quem sobe o app só com ela não pode
+    ficar com a rede ABERTA (era o caso: `_key_is_valid` não a conhecia e
+    `_auth_enabled` só olhava TTS_ROD_API_KEY/chaves gerenciadas)."""
     with _apikeys_lock:
         if not _apikeys.get("enabled", True):
             return False
         if _apikeys.get("keys"):
             return True
-    return bool(_ENV_API_KEY)
+    return bool(_ENV_API_KEY or _ADMIN_API_KEY)
 
 
 def _extract_request_key(request) -> str:
@@ -504,24 +616,69 @@ def _is_local(request) -> bool:
 
 
 def _key_is_valid(provided: str) -> bool:
+    """A chave autentica em /api/* e /v1/*.
+
+    A chave administrativa TAMBÉM vale como chave: ela é a credencial do
+    operador, e sem isto o fluxo documentado ("defina TTS_ROD_ADMIN_KEY")
+    devolvia 401 para quem só tinha a chave admin — e 403 de admin para quem
+    só tinha a chave comum, ou seja, NADA administrava pela rede.
+    """
     if not provided:
         return False
     if _ENV_API_KEY and _secrets_iguais(provided, _ENV_API_KEY):
+        return True
+    if _ADMIN_API_KEY and _secrets_iguais(provided, _ADMIN_API_KEY):
         return True
     with _apikeys_lock:
         return any(_secrets_iguais(provided, k.get("secret") or "")
                    for k in (_apikeys.get("keys") or []))
 
 
+def _key_role(provided: str) -> str | None:
+    """Papel da chave apresentada: "admin" | "use" | None (não é chave gerenciada).
+
+    None = linha antiga, sem o campo — mantém a regra de compatibilidade (uma
+    chave válida administra enquanto não existir `TTS_ROD_ADMIN_KEY`)."""
+    if not provided:
+        return None
+    with _apikeys_lock:
+        for k in (_apikeys.get("keys") or []):
+            if _secrets_iguais(provided, k.get("secret") or ""):
+                return (k.get("role") or "").strip().lower() or None
+    return None
+
+
 def _admin_is_allowed(request) -> bool:
-    """Admin local ou chave administrativa dedicada, quando configurada."""
+    """Admin local, chave administrativa dedicada ou chave com papel `admin`.
+
+    O papel por chave (`role`) é a separação explícita "chave de uso x chave de
+    administração" sem depender de variável de ambiente; linha sem `role`
+    (arquivo anterior ao campo) preserva a política antiga."""
     if _is_local(request):
         return True
-    if _ADMIN_API_KEY and _secrets_iguais(_extract_request_key(request), _ADMIN_API_KEY):
+    provided = _extract_request_key(request)
+    if _ADMIN_API_KEY and _secrets_iguais(provided, _ADMIN_API_KEY):
         return True
-    # Compatibilidade: sem chave administrativa configurada, uma chave normal
+    papel = _key_role(provided)
+    if papel == "admin":
+        return True
+    if papel == "use":
+        return False
+    # Compatibilidade: chave sem papel e sem chave administrativa configurada
     # continua administrando a instalação, como nas versões anteriores.
-    return not _ADMIN_API_KEY and _key_is_valid(_extract_request_key(request))
+    return not _ADMIN_API_KEY and _key_is_valid(provided)
+
+
+def _normaliza_role(v) -> str | None:
+    """`admin` | `use` para a chave; vazio/ausente = None (política legada)."""
+    if v is None:
+        return None
+    s = str(v).strip().lower()
+    if not s:
+        return None
+    if s not in ("admin", "use"):
+        raise HTTPException(400, "role inválido (admin|use)")
+    return s
 
 
 def _primary_api_key() -> str:
@@ -540,6 +697,7 @@ def _public_key_row(k: dict, *, reveal: bool = False) -> dict:
         "masked": _mask_secret(k.get("secret") or ""),
         "created_at": k.get("created_at") or "",
         "readonly": bool(k.get("readonly")),
+        "role": k.get("role") or None,      # None = legado (regra antiga de admin)
     }
     if reveal:
         row["secret"] = k.get("secret") or ""
@@ -604,6 +762,58 @@ def _rate_limit_for(path: str) -> int:
     return _RATE_DEFAULT
 
 
+# Teto de buckets. A identidade é a chave/IP (efêmera) e o path tem id (job,
+# voz, saída, sessão): sem nada disso o dict cresce por (chave, path) e o teto
+# antigo só varria o que JÁ tinha expirado — uma rajada de paths distintos dentro
+# da mesma janela não caberia em lugar nenhum e ficava tudo "vivo".
+_RATE_MAX_BUCKETS = max(100, int(os.environ.get("TTS_RATE_MAX_BUCKETS", "10000")))
+# Rotas cujo segmento seguinte é um ID — sem isso cada job/voz/saída vira um
+# bucket próprio. O LIMITE continua saindo do path cru (`/api/voices/import`
+# mantém o teto pesado); o que colapsa é só a CHAVE do bucket.
+_RATE_PREFIXOS_ID = ("/api/tts/jobs/", "/api/voices/", "/api/outputs/",
+                     "/api/speaker/", "/api/apikeys/", "/api/chat/")
+_RATE_SUB_ROTAS = frozenset({"import", "export", "design", "audio", "peaks",
+                             "denoise", "replace", "rotate", "pieces", "start",
+                             "enroll", "profiles", "check", "enabled"})
+
+
+def _rate_path_normalizado(path: str) -> str:
+    """Path com o ID colapsado em `*` (`/api/tts/jobs/abc/pieces/0` →
+    `/api/tts/jobs/*/pieces/*`). Sub-rotas estáticas (`voices/import`) ficam."""
+    for pref in _RATE_PREFIXOS_ID:
+        if not path.startswith(pref):
+            continue
+        partes = path[len(pref):].split("/")
+        if not partes or not partes[0]:
+            return path
+        for i in range(len(partes)):
+            if partes[i] not in _RATE_SUB_ROTAS:
+                partes[i] = "*"
+        return pref + "/".join(partes)
+    return path
+
+
+def _rate_poda(now: float) -> None:
+    """Mantém `_rate_hits` abaixo do teto (chamar com `_rate_lock` tomado).
+
+    Primeiro descarta o que expirou; se ainda estiver cheio (muitos paths ou
+    identidades na MESMA janela) remove os buckets tocados há mais tempo. Drena
+    20% de uma vez para o custo do sorted não cair em toda requisição — enquanto
+    está abaixo do teto o caminho é uma comparação de int."""
+    if len(_rate_hits) <= _RATE_MAX_BUCKETS:
+        return
+    for chave, bucket in list(_rate_hits.items()):
+        if not bucket or now - bucket[-1] >= _RATE_WINDOW:
+            _rate_hits.pop(chave, None)
+    excesso = len(_rate_hits) - _RATE_MAX_BUCKETS
+    if excesso <= 0:
+        return
+    for chave, _ in sorted(_rate_hits.items(),
+                           key=lambda kv: kv[1][-1] if kv[1] else 0.0
+                           )[:excesso + _RATE_MAX_BUCKETS // 5]:
+        _rate_hits.pop(chave, None)
+
+
 @app.middleware("http")
 async def _rate_limit(request, call_next):
     if request.method == "OPTIONS" or not request.url.path.startswith(("/api/", "/v1/")):
@@ -622,15 +832,15 @@ async def _rate_limit(request, call_next):
         raw_identity = request.headers.get("x-api-key") or request.headers.get("authorization") or _peer_host(request) or "unknown"
         identity = hashlib.sha256(raw_identity.encode("utf-8", "ignore")).hexdigest()[:16]
         now = time.monotonic()
+        chave = (identity, _rate_path_normalizado(request.url.path))
         with _rate_lock:
-            hits = _rate_hits[(identity, request.url.path)]
+            # a poda vem ANTES de pegar o bucket: assim o bucket desta requisição
+            # não corre o risco de ser evituado no mesmo request (deixaria a
+            # referência `hits` órfã e a contagem se perderia).
+            _rate_poda(now)
+            hits = _rate_hits[chave]
             while hits and now - hits[0] >= _RATE_WINDOW:
                 hits.popleft()
-            # Evita crescimento permanente por identidades descartáveis.
-            if len(_rate_hits) > 10000:
-                for chave, bucket in list(_rate_hits.items()):
-                    if not bucket or now - bucket[-1] >= _RATE_WINDOW:
-                        _rate_hits.pop(chave, None)
             if len(hits) >= limit:
                 from fastapi.responses import JSONResponse
                 return JSONResponse({"detail": "Muitas requisições; tente novamente em breve"},
@@ -668,6 +878,42 @@ async def _exige_chave(request, call_next):
 _BASE_PATH = os.environ.get("TTS_ROD_BASE_PATH", "/ttsproxy").rstrip("/")
 
 
+# CSP pelo HEADER (não pelo `<meta http-equiv>`): o Chromium ignora
+# `frame-ancestors` quando a policy vem em meta — a UI podia ser emoldurada
+# (clickjacking no botão Revelar da chave) e o console nascia com erro em toda
+# carga. Texto IDÊNTICO ao do meta enquanto os dois existirem; o frontend remove o
+# meta depois deste header entrar (aí ESTE vira a fonte da verdade).
+_CSP_POLICY = (
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' "
+    "https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' "
+    "https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src "
+    "'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' "
+    "http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net; object-src 'none'; "
+    "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+)
+# /docs e /redoc montam a própria página (CSS do CDN, que a policy da UI não
+# cobre) — ficam como sempre foram, sem CSP.
+_CSP_SEM_HEADER = ("/docs", "/redoc", "/docs/oauth2-redirect", "/openapi.json")
+# Paths do SPA: servidos por `index_com_nonce`, que devolve o MESMO index.html com
+# `nonce` no `<script>` inline (sem ele, sem 'unsafe-inline', o app não roda).
+_SPA_PATHS = ("/", "/index.html")
+
+
+def _csp_com_nonce(nonce: str | None) -> str:
+    """Policy com o nonce DESTA resposta no `script-src` (None = sem nonce)."""
+    if not nonce:
+        return _CSP_POLICY
+    return _CSP_POLICY.replace("script-src 'self'",
+                               f"script-src 'self' 'nonce-{nonce}'", 1)
+
+
+def _index_com_nonce(nonce: str) -> str:
+    """index.html com `nonce` nos `<script>` inline (a tag sozinha na linha; as
+    duas de CDN ficam como estão — elas são cobertas pelo source do CDN e têm SRI)."""
+    html = (BASE / "static" / "index.html").read_text(encoding="utf-8")
+    return re.sub(r"(?m)^<script>$", f'<script nonce="{nonce}">', html)
+
+
 @app.middleware("http")
 async def _strip_base_path(request, call_next):
     if _BASE_PATH and (request.url.path == _BASE_PATH
@@ -687,9 +933,29 @@ async def _strip_base_path(request, call_next):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Permissions-Policy", "camera=(), geolocation=(), payment=()")
+    if request.url.path not in _CSP_SEM_HEADER:
+        # nonce é POR RESPOSTA e quem o cria é a rota do SPA (fica em request.state);
+        # nas outras rotas ele não existe e o header sai sem nonce.
+        resp.headers.setdefault("Content-Security-Policy",
+                                _csp_com_nonce(getattr(request.state, "nonce", None)))
     if (request.headers.get("x-forwarded-proto") or request.url.scheme).lower() == "https":
         resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return resp
+
+@app.get("/")
+@app.get("/index.html")
+def index_com_nonce(request: Request):
+    """Serve o index.html com nonce no `<script>` inline (CSP sem 'unsafe-inline').
+
+    Fica ANTES do `app.mount("/", StaticFiles(...))`: a rota tem precedência e o
+    middleware de CSP lê este nonce do `request.state` para o header da resposta."""
+    import secrets as _sec
+    nonce = getattr(request.state, "nonce", None)
+    if not nonce:
+        nonce = _sec.token_urlsafe(16)
+        request.state.nonce = nonce
+    return HTMLResponse(_index_com_nonce(nonce))
+
 
 # ---------------------------------------------------------------------------
 # Modelo (carregamento preguiçoso — primeira síntese baixa/monta os pesos)
@@ -709,22 +975,25 @@ def _model_state_progress(msg):
     _model_state.update(progress=msg)
 
 
-def _current_backend() -> dict:
-    """Metadados do backend selecionado em settings['model']."""
-    return resolve_backend(_settings.get("model") or "omnivoice")
+def _current_backend(model: str | None = None) -> dict:
+    """Metadados do backend selecionado em settings['model'].
+
+    `model` opcional resolve SEM tocar nas settings — é o que permite validar um
+    pedido com `model` no body antes de aplicá-lo globalmente."""
+    return resolve_backend(model or _settings.get("model") or "omnivoice")
 
 
 def _is_omnivoice() -> bool:
     return _current_backend()["family"] == "omnivoice"
 
 
-def _resolve_model_path() -> str:
-    """Resolve settings['model'] → path/id p/ load_model.
+def _resolve_model_path(model: str | None = None) -> str:
+    """Resolve o modelo efetivo → path/id p/ load_model.
 
     OmniVoice: monta bf16 local (ou repo fp32). Outros atalhos: repo MLX do catálogo.
-    String livre (HF/dir): repassada como está.
-    """
-    be = _current_backend()
+    String livre (HF/dir): repassada como está. `model` opcional = modelo do PEDIDO,
+    sem depender de `_settings` (usado quando quem pediu não pode trocar o global)."""
+    be = _current_backend(model)
     if be["family"] == "omnivoice" and (
             be["is_shortcut"] or str(be["path"]).strip().lower() in OMNI_ALIASES):
         return resolve_omni_source(_settings, BASE, progress=_model_state_progress)
@@ -749,12 +1018,18 @@ def _quantize_backbone(model, bits: int):
     nn.quantize(model.backbone, group_size=gs, bits=bits, class_predicate=pred)
 
 
-def _get_model():
+def _get_model(model: str | None = None):
+    """Modelo carregado para `model` (None = o das settings).
+
+    A checagem de cache compara com o modelo EFETIVO do pedido: um cliente que manda
+    `model` no body (e não pode trocar o global) carrega o modelo dele, e o próximo
+    pedido com outro modelo recarrega — serializado pelo `_gen_lock`."""
     global _model
+    modelo = model or _settings["model"]
     with _model_lock:
         prec = str(_settings.get("omni_precision", "bf16")).lower()
-        be = _current_backend()
-        if (_model is not None and _model_state.get("model") == _settings["model"]
+        be = _current_backend(modelo)
+        if (_model is not None and _model_state.get("model") == modelo
                 and _model_state.get("precision") == prec
                 and _model_state.get("family") == be["family"]):
             _touch_use("tts")
@@ -763,10 +1038,10 @@ def _get_model():
         old = _model
         _model = None
         _conds_cache.clear()
-        path = _resolve_model_path()
+        path = _resolve_model_path(modelo)
         label = be["meta"].get("label") or path
         _model_state.update(
-            status="loading", device="mlx", model=_settings["model"],
+            status="loading", device="mlx", model=modelo,
             precision=prec, family=be["family"], path=path,
             progress=f"carregando {label}…",
             backend_id=be.get("id"), backend_label=be["meta"].get("label"),
@@ -977,6 +1252,11 @@ _VERSION = _git_version()
 def status():
     st = dict(_model_state)
     st["version"] = _VERSION
+    # `_model_state["model"]` é o ÚLTIMO modelo carregado — verdade sobre a VRAM, não
+    # sobre a config: um cliente com `model` no body (chave de uso) carrega o modelo
+    # dele sem trocar settings, então o painel passava a mostrar como "config" algo
+    # que era um pedido. Aqui vai o valor configurado, ao lado, para desambiguar.
+    st["model_settings"] = _settings.get("model")
     try:
         be = _current_backend()
         st.setdefault("family", be["family"])
@@ -992,6 +1272,20 @@ def status():
         round(_speech_gate.last_duration, 2) if st["speech_queue"] else 0.0
     )
     st["api_auth_enabled"] = _auth_enabled()
+    # Admissão de jobs: sem isto um 429 por teto de ativos era indistinguível de
+    # um 429 do limitador de taxa, e a UI não tinha como saber que a geração
+    # esperava slot. jobs_active == jobs_active_max = próxima geração recusa.
+    st["jobs_active"] = _jobs_ativos()
+    st["jobs_active_max"] = _JOBS_ACTIVE_MAX
+    st["jobs_history_max"] = _JOBS_MAX
+    # Caminho do VAD realmente carregado ("onnx" | "torch-jit"); None = ainda não
+    # carregou. Sem isto a única pista de um fallback para o torch seria o print
+    # no stderr do servidor — /api/status prova em produção qual caminho está vivo.
+    st["vad_backend"] = _vad_backend or None
+    # Tamanho do dict do rate limiter (buckets = identidade × path normalizado) e o
+    # teto: era invisível e só aparecia como memória crescendo em caixa exposta.
+    st["rate_limit_buckets"] = len(_rate_hits)
+    st["rate_limit_buckets_max"] = _RATE_MAX_BUCKETS
     with _apikeys_lock:
         st["api_keys_count"] = len(_apikeys.get("keys") or [])
     st["lan_urls"] = _lan_urls()
@@ -1051,6 +1345,9 @@ def create_apikey(request: Request, payload: dict):
         "name": name,
         "secret": secret,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        # role=use: chave que gera fala/transcreve mas não mexe em conexão externa
+        # nem lê segredo. Ausente = política antiga (compatibilidade).
+        "role": _normaliza_role(payload.get("role")),
     }
     with _apikeys_lock:
         _apikeys.setdefault("keys", []).append(row)
@@ -1062,18 +1359,25 @@ def create_apikey(request: Request, payload: dict):
 
 @app.patch("/api/apikeys/{key_id}")
 def rename_apikey(request: Request, key_id: str, payload: dict):
+    """Renomeia e/ou troca o papel da chave (admin | use | vazio = legado).
+
+    Corpo parcial: `name` ausente OU vazio mantém o nome atual (o campo em branco
+    na UI é "não mexi no nome"), `role` ausente mantém o papel. A UI manda os dois;
+    a API pode mandar só um."""
     if not _admin_is_allowed(request):
         raise HTTPException(403, "Chave administrativa necessária")
     payload = payload or {}
-    name = str(payload.get("name") or "").strip()[:64]
-    if not name:
-        raise HTTPException(400, "Nome vazio")
     if key_id == "__env__":
         raise HTTPException(400, "Chave de ambiente não pode ser renomeada")
+    name = str(payload.get("name") or "").strip()[:64]
+    novo_role = _normaliza_role(payload["role"]) if "role" in payload else None
     with _apikeys_lock:
         for k in _apikeys.get("keys") or []:
             if k["id"] == key_id:
-                k["name"] = name
+                if name:                    # vazio/ausente: mantém o que está
+                    k["name"] = name
+                if "role" in payload:
+                    k["role"] = novo_role
                 _save_apikeys()
                 return {"ok": True, "key": _public_key_row(k)}
     raise HTTPException(404, "Chave não encontrada")
@@ -1701,11 +2005,81 @@ def shutdown():
     return {"ok": True, "msg": "Servidor desligando…"}
 
 
+# ---------------------------------------------------------------------------
+# /api/settings: separação entre chave de USO e administração
+#
+# Gerar fala é uma coisa; repontar a instalação para outro provedor (e ler a
+# credencial dele) é outra. `_SETTINGS_ADMIN` = campos que só admin altera:
+# conexões externas (URLs, chaves, toggles de envio remoto) e escolha de modelo
+# (que dispara download/load de repo). Fora da lista: `remote_tts_voice`/
+# `remote_tts_extra` (formato do payload, não o destino) e políticas de recurso
+# (idle_unload, free_local_on_remote, speech_queue).
+#
+# Compatibilidade: quem não quer separação nenhuma não muda NADA — sem
+# `TTS_ROD_ADMIN_KEY` e sem `role` nas chaves, toda chave válida segue admin.
+# ---------------------------------------------------------------------------
+_SETTINGS_ADMIN = frozenset({
+    "model", "translate_model", "stt_whisper_repo",
+    "remote_tts", "remote_translate", "remote_stt",
+    "remote_base_url", "remote_api_key", "remote_tts_url",
+    "remote_stt_base_url", "remote_stt_key",
+    "remote_tts_model", "remote_translate_model", "remote_stt_model",
+    "chat_base_url", "chat_model", "chat_api_key",
+})
+_SETTINGS_SECRETS = ("remote_api_key", "remote_stt_key", "chat_api_key")
+# marcador da máscara: começa com "•" e nunca é confundido com chave de verdade.
+# O POST que devolver a máscara (a UI recarrega o form e reenvia o blob) mantém
+# o segredo guardado em vez de gravar "••••1234" por cima dele.
+_MASCARA_SETTING = "••••"
+
+
+def _mascara_setting_secret(v: str) -> str:
+    s = str(v or "")
+    return _MASCARA_SETTING + (s[-4:] if len(s) >= 4 else "")
+
+
+def _settings_payload_adm(request, payload: dict) -> tuple[dict, list[str]]:
+    """Limpa o payload antes de aplicar: tira máscara de segredo e, para quem não
+    é admin, tira os campos administrativos (devolvidos em `ignorados`).
+
+    Não é 403: a UI manda um blob único no "Salvar", então um 403 por causa de um
+    campo remote_* travaria também a mudança de `speed`."""
+    dados = dict(payload or {})
+    for k in _SETTINGS_SECRETS:
+        v = dados.get(k)
+        if isinstance(v, str) and v.startswith(_MASCARA_SETTING):
+            dados.pop(k, None)          # segredo mascarado: mantém o guardado
+    if _admin_is_allowed(request):
+        return dados, []
+    ignorados = []
+    for k in list(dados):
+        if k in _SETTINGS_ADMIN:
+            ignorados.append(k)
+            dados.pop(k)
+    return dados, ignorados
+
+
 @app.get("/api/settings")
-def get_settings():
+def get_settings(request: Request):
     st = dict(_settings)
     st["chat_system_default"] = CHAT_SYSTEM  # p/ a UI exibir o preprompt padrão
+    st.update(_settings_vista(request))
     return st
+
+
+def _settings_vista(request) -> dict:
+    """Corta o que a requisição não pode VER: segredos de serviços externos.
+
+    Chave de uso (e visitante sem chave admin) não recebe `remote_api_key`,
+    `remote_stt_key` nem `chat_api_key` em claro — são credenciais de terceiros,
+    não material para gerar fala. Admin/mac continua vendo tudo."""
+    adm = _admin_is_allowed(request)
+    extra = {"is_admin": adm, "admin_fields": sorted(_SETTINGS_ADMIN)}
+    if not adm:
+        for k in _SETTINGS_SECRETS:
+            if _settings.get(k):
+                extra[k] = _mascara_setting_secret(_settings[k])
+    return extra
 
 
 def _clamp(value, lo, hi, default):
@@ -1816,7 +2190,7 @@ def _resolve_omni(payload: dict, family: str | None = None) -> dict:
 
 
 @app.post("/api/settings")
-def update_settings(payload: dict):
+def update_settings(request: Request, payload: dict):
     """Aplica as settings de forma ATÔMICA (o corpo faz `_settings[k]=...` campo a
     campo e só grava o disco no fim).
 
@@ -1825,7 +2199,12 @@ def update_settings(payload: dict):
     na RAM, sem nunca chegar ao `_save_settings()` — a config passava a valer na
     hora, sobrevivia ao uso e SUMIA no restart, sem nenhum aviso de que não tinha
     sido gravada. Aqui: falhou, restaura o estado anterior (RAM == disco).
+
+    Chave de uso: campos administrativos são IGNORADOS (não é 403 — a UI manda um
+    blob único no "Salvar") e vêm em `admin_ignored`. Máscara de segredo é
+    tratada como "mantém o que está guardado".
     """
+    payload, ignorados = _settings_payload_adm(request, payload)
     _antes = dict(_settings)
     try:
         _r = _apply_settings(payload)
@@ -1837,9 +2216,41 @@ def update_settings(payload: dict):
         # Troca de dtype só pegaria no próximo load_model; descarrega o modelo com o
         # dtype antigo agora, senão continua servindo (e segurando ~GB de RAM com) ele.
         # Com job em voo não encosta: _gen_lock está tomado e o reload é lazy de qualquer jeito.
-        if not any(j.get("status") in ("running", "queued") for j in _jobs.values()):
+        if not any(j.get("status") in ("running", "queued")
+                   for j in _jobs_snapshot()):
             _unload_local_models(tts=True, stt=False, mt=False, ser=False)
-    return _r
+    # Cópia: `_apply_settings` devolve o dict vivo `_settings` (e `_save_settings`
+    # persiste só as chaves de _SETTINGS_DEFAULTS) — não injetar metadado nele.
+    out = dict(_r)
+    # Mesma vista do GET: quem não é admin não recebe segredo de terceiro em claro
+    # nem na resposta do Salvar (a resposta É as settings, não um ack).
+    out.update(_settings_vista(request))
+    # sempre presente: a UI/storybook não precisa distinguir "sem campo" de "vazio"
+    out["admin_ignored"] = sorted(ignorados)
+    return out
+
+
+def _voice_path(v) -> Path | None:
+    """Path do WAV de `v` — e só se ele ficar DENTRO de `voices/`.
+
+    `VOICES_DIR / f"{v}.wav"` aceita qualquer coisa: `"../fora"` aponta para um
+    arquivo fora do diretório de vozes e ele seguia para o worker/remoto como se
+    fosse voz cadastrada.
+
+    O critério segue o ARQUIVO de propósito (decisão do PM na #69): só vale o que
+    está DENTRO de `voices/` mesmo depois do symlink resolvido. Assim
+    `voices/link.wav -> /fora/x.wav` é recusado (o conteúdo vem de fora) e `../fora`
+    também; um symlink para dentro de `voices/` continua valendo. Não uso `_safe_id`:
+    ele rejeitaria id exótico já registrado (`<img src=x …>`). None = escapa ou não existe."""
+    if not v or not isinstance(v, str):
+        return None
+    p = VOICES_DIR / f"{v}.wav"
+    try:
+        if p.resolve().parent != VOICES_DIR.resolve():
+            return None
+    except OSError:
+        return None
+    return p if p.exists() else None
 
 
 def _apply_settings(payload: dict):
@@ -1853,7 +2264,9 @@ def _apply_settings(payload: dict):
         _settings["language"] = str(payload["language"] or "auto").lower()[:16]
     if "default_voice" in payload:
         v = payload["default_voice"]
-        _settings["default_voice"] = v if v and (VOICES_DIR / f"{v}.wav").exists() else None
+        # `_voice_path` (não `exists()` no caminho cru): "../x" não fica gravado como
+        # voz padrão e não contamina todo pedido que não manda voz própria
+        _settings["default_voice"] = v if _voice_path(v) else None
     if "chunk_max_chars" in payload:
         _settings["chunk_max_chars"] = int(_clamp(payload["chunk_max_chars"], 60, 200, 140))
     if "speed" in payload:
@@ -2188,20 +2601,35 @@ def export_voices():
 
     voices/ é gitignored e é o dado mais valioso do app (gravações + presets
     materializados) — sem isso, apagar o dir perde as vozes para sempre.
-    """
-    import io
-    import zipfile
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for p in sorted(VOICES_DIR.iterdir()):
-            # só wav/json de voz; ignora temporários de upload (.up-*/.rep-*)
-            if p.is_file() and p.suffix in (".wav", ".json") and not p.name.startswith("."):
-                z.write(p, f"voices/{p.name}")
-    return Response(
-        content=buf.getvalue(),
+    STREAM de disco: antes o zip era montado num `BytesIO` e devolvido via
+    `getvalue()` — o zip inteiro DUAS vezes na RAM (buffer + cópia do corpo), com
+    cada .wav lido por inteiro pelo `z.write`. Com o teto de 512 MB anunciado no
+    import isso chega perto de 1 GB de pico numa máquina que já carrega modelo.
+    Agora grava num arquivo temporário e o `FileResponse` envia de lá, com o
+    unlink no background (o import já usa o mesmo padrão de temporário).
+    """
+    import zipfile
+    from starlette.background import BackgroundTask
+
+    tmp = tempfile.NamedTemporaryFile(prefix=".vozes-", suffix=".zip",
+                                      dir=OUTPUTS_DIR, delete=False)
+    tmp.close()
+    path = Path(tmp.name)
+    try:
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            for p in sorted(VOICES_DIR.iterdir()):
+                # só wav/json de voz; ignora temporários de upload (.up-*/.rep-*)
+                if p.is_file() and p.suffix in (".wav", ".json") and not p.name.startswith("."):
+                    z.write(p, f"voices/{p.name}")
+    except Exception:  # noqa: BLE001 — não deixar temporário pela metade
+        path.unlink(missing_ok=True)
+        raise
+    return FileResponse(
+        path,
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="tts-studio-vozes.zip"'},
+        filename="tts-studio-vozes.zip",
+        background=BackgroundTask(path.unlink, missing_ok=True),
     )
 
 
@@ -2246,7 +2674,7 @@ async def import_voices(zip_file: UploadFile = File(...)):
         incoming_path.unlink(missing_ok=True)
         raise HTTPException(400, "Arquivo não é um zip válido") from exc
 
-    importados, ignorados = [], []
+    importados, ignorados, renomeados = [], [], []
     total = 0
     preparados = []
     try:
@@ -2282,6 +2710,21 @@ async def import_voices(zip_file: UploadFile = File(...)):
                             ignorados.append(info.filename)
                             destino.unlink(missing_ok=True)
                             continue
+                        # O `id` tem de ser o nome do arquivo: as rotas
+                        # (/api/voices/{id}/audio|peaks) remontam o caminho pelo
+                        # id com `_safe_id`, que é estrito — um id fora de
+                        # [A-Za-z0-9_-] (ex.: `<img src=x onerror=…>`, de backup
+                        # feito à mão) deixava a voz na lista e 404 no áudio/peaks,
+                        # e um id ausente nem aparecia. Aqui o meta é alinhado ao
+                        # stem (que JÁ passou pela regex no nome do arquivo).
+                        stem = Path(nome).stem
+                        if dados.get("id") != stem:
+                            renomeados.append({"arquivo": nome,
+                                               "de": dados.get("id"), "para": stem})
+                            dados["id"] = stem
+                            destino.write_text(
+                                json.dumps(dados, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
                     preparados.append((nome, destino))
 
                 # Só publica depois de validar TODAS as entradas: falha não
@@ -2320,7 +2763,9 @@ async def import_voices(zip_file: UploadFile = File(...)):
     _conds_cache.clear()
     return {"ok": True, "importados": len(importados),
             "vozes": len(wav_stems & json_stems),
-            "orfaos": orfaos[:10], "ignorados": ignorados[:10]}
+            "orfaos": orfaos[:10], "ignorados": ignorados[:10],
+            # ids alinhados ao nome do arquivo (o que faz a UI achar áudio/peaks)
+            "renomeados": renomeados[:10]}
 
 
 def _eq_custom(audio, sr, low_db, mid_db, high_db):
@@ -2499,7 +2944,23 @@ def delete_voice(voice_id: str):
 # Jobs de síntese: o servidor gera trecho a trecho e o navegador toca cada
 # trecho assim que fica pronto — a fala começa após o 1º trecho, não no fim.
 _jobs: "OrderedDict[str, dict]" = OrderedDict()
-_JOBS_MAX = 20
+_JOBS_MAX = 20                          # teto do histórico (ver _evict_jobs)
+# Teto de jobs EM VOO (running/queued) — é o que a admissão conta; acima disto o
+# pedido novo leva 429 em vez de empurrar um job ATIVO para fora do histórico.
+# Antes não existia: com os _JOBS_MAX já em voo, o evict não achava nenhum job
+# terminado para descartar e caía no "último recurso" — apagava o job MAIS
+# ANTIGO, que estava rodando (e o .job-* com os trechos), então o cliente perdia
+# status e stream enquanto a thread seguia gerando. Padrão 20 = teto prático de
+# antes (sem regressão); env TTS_JOBS_ACTIVE_MAX para apertar em máquina pequena.
+_JOBS_ACTIVE_MAX = max(1, int(os.environ.get("TTS_JOBS_ACTIVE_MAX", "20")))
+# Campos comuns de todo job novo (é o que as rotas de status/trechos consomem).
+_JOB_BASE = {"status": "running", "pieces": 0, "total": None, "progress": None,
+             "output": None, "error": None}
+# Serializa admissão/evict. Endpoint `def` roda no threadpool do FastAPI, então
+# checagem+insert concorrentes furavam o teto de ativos; e o `pop` do evict no
+# meio de uma iteração alheia mexe no tamanho do dict. Reentrante porque a
+# admissão chama helpers que também travam.
+_jobs_lock = threading.RLock()
 
 # ---------------------------------------------------------------------------
 # Fila de falas (speech_queue): gate serial por ticket.
@@ -2704,6 +3165,18 @@ def _piece_dir(job_id: str) -> Path:
     return OUTPUTS_DIR / f".job-{_safe_id(job_id)}"
 
 
+def _job_owner_write(pdir: Path) -> None:
+    """Marca o dir do job com o pid do processo dono.
+
+    É o que a limpeza de boot de OUTRO processo consulta para não apagar os
+    trechos de um job em voo (`_job_dir_ativo`). Falha aqui não derruba o job:
+    sem o arquivo o boot cai na regra de atividade recente."""
+    try:
+        (pdir / "owner.pid").write_text(str(os.getpid()))
+    except OSError:
+        pass
+
+
 def _safe_id(v: str) -> str:
     """Valida id vindo da rota antes de montar Path — defesa em profundidade
     contra path traversal em downloads (o roteador já impede '/', isto aqui
@@ -2713,21 +3186,88 @@ def _safe_id(v: str) -> str:
     return v
 
 
-def _evict_jobs():
-    """Mantém no máximo _JOBS_MAX jobs no histórico.
+def _jobs_ativos() -> int:
+    """Jobs em voo (running/queued) — o que a admissão conta.
 
-    Evict prefere jobs terminados (done/error): apagar trechos de um job em
-    execução/na fila deixaria o cliente sem stream. Running só sai na força
-    (todos os 20 em voo) — comportamento antigo, último recurso.
+    `queued` conta: job parado na fila de falas ainda não entregou nada, então
+    continua sendo um ativo que o cliente está esperando.
     """
-    while len(_jobs) > _JOBS_MAX:
-        alvo = next((jid for jid, j in _jobs.items()
-                     if j.get("status") not in ("running", "queued")),
-                    next(iter(_jobs), None))
-        if alvo is None:
-            break
-        _jobs.pop(alvo, None)
-        shutil.rmtree(_piece_dir(alvo), ignore_errors=True)
+    with _jobs_lock:
+        return sum(1 for j in _jobs.values() if j.get("status") in ("running", "queued"))
+
+
+def _jobs_snapshot() -> list:
+    """Cópia dos jobs sob lock, para quem precisa ITERAR.
+
+    Iterar a view viva (`_jobs.values()`) enquanto outra thread admite/evicta
+    estoura "OrderedDict mutated during iteration" — e o `_jobs` foi feito para
+    ser mexido de dentro de threads (admissão de rota + evict)."""
+    with _jobs_lock:
+        return list(_jobs.values())
+
+
+def _jobs_admit(extra: dict | None = None) -> str:
+    """Registra um job novo com admissão controlada; devolve o job_id.
+
+    Estourou o teto de ativos → 429 (mesma família do limitador de taxa, que o
+    cliente já sabe exibir e o navegador mostra pelo `detail`), ANTES de criar o
+    job e de subir thread: o pedido recusado não deixa nada pela metade.
+    `Retry-After` curto porque um slot libera assim que qualquer job termina.
+
+    Checagem + insert acontecem sob `_jobs_lock`: endpoint `def` roda no
+    threadpool do FastAPI, então duas requisições passavam juntas pela checagem
+    e o teto era furado (medido no gate: teto 2 com 10 admissões simultâneas →
+    4 aceitos). Com o lock o teto é exato; o invariante (nunca descartar ativo)
+    valia antes e continua valendo.
+    """
+    with _jobs_lock:
+        _jobs_capacity_check()
+        job_id = uuid.uuid4().hex[:10]
+        _jobs[job_id] = {**_JOB_BASE, **(extra or {})}
+        _evict_jobs()
+        return job_id
+
+
+def _jobs_capacity_check():
+    """Levanta 429 se não há slot de job ativo livre.
+
+    Chamado cedo nas rotas que fazem STT/tradução antes de criar o job: recusar
+    depois do STT inteiro custaria segundos de espera ao cliente para então
+    devolver o erro (e o áudio teria de ser reenviado). Como não reserva slot,
+    o probe pode passar e o `_jobs_admit` recusar logo depois — quem decide é
+    sempre a admissão.
+    """
+    ativos = _jobs_ativos()
+    if ativos >= _JOBS_ACTIVE_MAX:
+        raise HTTPException(
+            429,
+            f"Limite de jobs em andamento atingido ({ativos}/{_JOBS_ACTIVE_MAX}) "
+            "— aguarde um job terminar e tente de novo",
+            headers={"Retry-After": "5"},
+        )
+
+
+def _evict_jobs():
+    """Mantém no máximo _JOBS_MAX jobs no histórico — SEM tocar em job ativo.
+
+    Só jobs terminados (done/error) saem: se todos os _JOBS_MAX estiverem em voo
+    (admissão garante ativos ≤ _JOBS_ACTIVE_MAX) o dict fica acima do teto e
+    volta a ele conforme os jobs terminam. Descartar um ativo aqui apagaria os
+    trechos .job-* e o cliente perderia status/stream no meio da geração, com a
+    thread ainda rodando (o bug: o job sumia, o áudio parava).
+
+    Trava o `_jobs_lock` em volta do laço: é chamado da admissão (que já o
+    segura — daí o RLock) e de testes, e o `pop` no meio de uma iteração
+    concorrente mudaria o tamanho do dict.
+    """
+    with _jobs_lock:
+        while len(_jobs) > _JOBS_MAX:
+            alvo = next((jid for jid, j in _jobs.items()
+                         if j.get("status") not in ("running", "queued")), None)
+            if alvo is None:
+                break                   # só ativos em voo: nenhum é descartado
+            _jobs.pop(alvo, None)
+            shutil.rmtree(_piece_dir(alvo), ignore_errors=True)
 
 
 def _voice_ref_text(voice_id: str):
@@ -2793,7 +3333,8 @@ def _unload_local_tts():
 
 
 def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Path,
-                          language: str, omni: dict, be: dict, sq=None):
+                          language: str, omni: dict, be: dict, sq=None,
+                          model: str | None = None):
     """Síntese em subprocesso: crash nativo (SIGSEGV) só mata o worker."""
     import subprocess
     import sys
@@ -2801,6 +3342,7 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
     job = _jobs[job_id]
     pdir = _piece_dir(job_id)
     pdir.mkdir(exist_ok=True)
+    _job_owner_write(pdir)          # dono: o boot de outro processo consulta
     status_path = pdir / "status.json"
     cfg_path = pdir / "config.json"
     label = (be.get("meta") or {}).get("label") or be.get("id")
@@ -2810,7 +3352,7 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
     # libera RAM do modelo in-process antes do filho carregar o Qwen/etc.
     _unload_local_tts()
     _model_state.update(
-        status="loading", device="mlx-worker", model=_settings.get("model"),
+        status="loading", device="mlx-worker", model=model or _settings.get("model"),
         family=family, progress=f"worker: {label}…",
         backend_id=be.get("id"), backend_label=label,
     )
@@ -2825,7 +3367,7 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
         "voice_path": str(voice_path) if voice_path else "",
         "language": language,
         "omni": omni,
-        "model": _settings.get("model") or "omnivoice",
+        "model": model or _settings.get("model") or "omnivoice",
         "settings": {
             "chunk_max_chars": _settings.get("chunk_max_chars", 140),
             "omni_ref_max_s": _settings.get("omni_ref_max_s", 10.0),
@@ -3001,16 +3543,19 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
     remote = False
     sq = _speech_queue_begin(job_id) if use_queue else None
     hold_pieces = sq is not None  # com fila: grava trechos mas só libera na entrega
-    # model_override já deve ter sido aplicado em settings pelo /api/tts
+    # `model_override` = modelo DESTE pedido. Vale sem trocar o global: quem não é
+    # admin manda `model` no body e gera com ele (ver /api/tts); admin também
+    # persiste, então os dois caminhos ficam idênticos aqui.
     try:
         remote = _use_remote_tts()
-        be = _current_backend()
+        be = _current_backend(model_override)
         family = be["family"]
         be_meta = be.get("meta") or {}
 
         # Qwen/Fish/etc.: processo isolado (não trava/derruba o servidor)
         if not remote and family in _ISOLATED_FAMILIES:
-            _run_tts_job_isolated(job_id, text, voice_id, voice_path, language, omni, be, sq=sq)
+            _run_tts_job_isolated(job_id, text, voice_id, voice_path, language, omni, be,
+                                  sq=sq, model=model_override)
             # worker morreu: garante pool Metal limpo no pai + apaga trechos depois
             _release_mlx_memory(aggressive=True)
             st = job.get("status")
@@ -3021,6 +3566,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         job["total"] = len(chunks)
         pdir = _piece_dir(job_id)
         pdir.mkdir(exist_ok=True)
+        _job_owner_write(pdir)      # dono: o boot de outro processo consulta
 
         # remoto: sem lock global -> jobs concorrentes (o servidor RTX paraleliza);
         # local: serializa load+gen no _gen_lock (evita 2 modelos MLX em paralelo / segfault).
@@ -3033,7 +3579,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                     "backend": be.get("id"), "family": family,
                 }
                 _model_state["progress"] = job["progress"]["stage"]
-            model = None if remote else _get_model()
+            model = None if remote else _get_model(model_override)
             sr = 24000 if remote else int(getattr(model, "sample_rate", 24000) or 24000)
             silence = np.zeros(int(CHUNK_SILENCE_S * sr), dtype=np.float32)
             # voz de VOICE DESIGN salva: REGENERA do instruct+seed (determinístico) em
@@ -3183,24 +3729,28 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
 
 
 @app.post("/api/tts")
-def synthesize(payload: dict):
+def synthesize(request: Request, payload: dict):
+    """Aceita o pedido e devolve o job; valida ANTES de mexer em qualquer config.
+
+    `model` no body é o modelo DESTE pedido. Ele também vira config global quando
+    quem manda é admin/loopback (é o que a UI espera do seletor: escolheu, ficou
+    escolhido); para chave de uso ele vale só no pedido — coerente com `model` ser
+    campo admin no /api/settings. E, dos dois jeitos, só DEPOIS do pedido passar:
+    antes, um 400 (texto vazio) ou 404 (voz) já tinha trocado `settings['model']`
+    na RAM e no disco, com um job que nem rodou.
+    """
     text = (payload.get("text") or "").strip()
     if _settings["pre_prompt"]:
         text = f"{_settings['pre_prompt']} {text}".strip()
     language = (payload.get("language") or _settings["language"]).lower()
-    # model no body: aplica na hora (e grava em settings p/ UI/API ficarem alinhados)
+    # `model` no body: resolvido aqui SEM mutar nada (a família decide as regras de
+    # voz/design abaixo, então precisa valer já na validação).
     model_override = None
     if payload.get("model"):
         m = str(payload["model"]).strip()
         if m and m != "__custom__":
             model_override = m
-            if _settings.get("model") != m:
-                _settings["model"] = m
-                try:
-                    _save_settings()
-                except Exception:  # noqa: BLE001
-                    pass
-    be = _current_backend()
+    be = _current_backend(model_override)
     family = be["family"]
     be_meta = be.get("meta") or {}
     omni = _resolve_omni(payload, family=family)
@@ -3216,7 +3766,7 @@ def synthesize(payload: dict):
     if raw_voice == DESIGN_VOICE_ID or (isinstance(raw_voice, str)
             and raw_voice.strip().lower() in (DESIGN_VOICE_ID, "design")):
         voice_id = DESIGN_VOICE_ID
-    elif raw_voice and (VOICES_DIR / f"{raw_voice}.wav").exists():
+    elif raw_voice and _voice_path(raw_voice):
         voice_id = raw_voice
     elif raw_voice in OMNI_PRESETS:
         voice_id = raw_voice
@@ -3247,18 +3797,34 @@ def synthesize(payload: dict):
         else:
             raise HTTPException(404, "Voz não encontrada — grave uma voz ou escolha uma voz padrão")
 
-    job_id = uuid.uuid4().hex[:10]
-    _jobs[job_id] = {"status": "running", "pieces": 0, "total": None,
-                     "progress": None, "output": None, "error": None,
-                     "text": text[:200]}  # facilita depurar relatos de áudio mudo
-    _evict_jobs()
+    # text[:200]: facilita depurar relatos de áudio mudo
+    job_id = _jobs_admit({"text": text[:200]})
+
+    # Pedido ACEITO (passou na validação e tem slot). O job já recebe o modelo do
+    # pedido explicitamente; o que falta é decidir se ele também vira config GLOBAL:
+    # - admin/loopback: sim (contrato do seletor da UI: escolhe e fica escolhido);
+    # - chave de USO: não — `model` é campo admin no /api/settings, então a chave de
+    #   uso gera com o modelo pedido sem sequestrar a configuração da instalação.
+    # `_save_settings` é melhor-esforço: falha de disco não derruba a geração.
+    persistido = bool(model_override) and _admin_is_allowed(request)
+    if persistido and _settings.get("model") != model_override:
+        _settings["model"] = model_override
+        try:
+            _save_settings()
+        except Exception:  # noqa: BLE001
+            pass
 
     threading.Thread(
         target=_run_tts_job,
         args=(job_id, text, voice_id, voice_path, language, omni, model_override),
         daemon=True,
     ).start()
-    return {"job_id": job_id, "backend": be.get("id"), "family": family}
+    out = {"job_id": job_id, "backend": be.get("id"), "family": family}
+    if model_override:
+        # verdadeiro = o global agora é esse modelo; falso = valeu só neste pedido
+        out["model"] = model_override
+        out["model_aplicado_global"] = _settings.get("model") == model_override
+    return out
 
 
 @app.get("/api/tts/jobs/{job_id}")
@@ -3479,10 +4045,11 @@ def _idle_unload_loop():
                 continue
             limit = mins * 60.0
             now = time.time()
-            # não descarrega TTS no meio de um job
+            # não descarrega TTS no meio de um job (snapshot: iterar a view viva estoura
+            # quando uma rota admite job na mesma hora)
             busy_tts = any(
-                j.get("status") == "running" for j in _jobs.values()
-            ) if _jobs else False
+                j.get("status") == "running" for j in _jobs_snapshot()
+            )
             tts_idle = (not busy_tts) and _last_use["tts"] > 0 and (now - _last_use["tts"]) >= limit
             stt_idle = _last_use["stt"] > 0 and (now - _last_use["stt"]) >= limit
             mt_idle = _last_use["mt"] > 0 and (now - _last_use["mt"]) >= limit
@@ -3531,14 +4098,37 @@ _STT_BLACKLIST = {
 }
 
 
+def _ffmpeg_to_mono16k(audio_path: Path):
+    """Decodifica qualquer formato que o FFMPEG entenda (webm/opus do
+    MediaRecorder, m4a, mp4, ogg…) direto para float32 mono 16 kHz."""
+    import numpy as np
+
+    p = subprocess.run([FFMPEG, "-v", "error", "-i", str(audio_path),
+                        "-f", "f32le", "-ac", "1", "-ar", "16000", "-"],
+                       capture_output=True, timeout=120)
+    if p.returncode != 0 or not p.stdout:
+        raise RuntimeError((p.stderr or b"").decode("utf-8", "replace").strip()[:160]
+                           or "ffmpeg não decodificou o áudio")
+    return np.frombuffer(p.stdout, dtype="<f4").copy()
+
+
 def _wav_to_mono16k(audio_path: Path):
-    """Lê WAV (vindo do navegador) via soundfile e devolve array float32 mono a
-    16 kHz. Evita o load_audio do whisper e o ffmpeg_read do transformers — ambos
-    dependem do binário externo `ffmpeg`, ausente em muitos Macs."""
+    """Devolve array float32 mono a 16 kHz.
+
+    Caminho normal: soundfile (sem processo externo), que já é o bastante para
+    WAV vindo do navegador — evita o load_audio do whisper e o ffmpeg_read do
+    transformers. Quando o libsndfile não reconhece o formato (ele não lê
+    matroska: webm/opus do MediaRecorder, m4a, mp4), cai no FFMPEG do projeto
+    — que tem o binário do imageio-ffmpeg como reserva, então não depende de
+    ffmpeg no PATH. Sem esse fallback, quem chamasse isto com o blob cru
+    levava LibsndfileError (ou, via `_vad_tem_fala`, um fail-open silencioso)."""
     import numpy as np
     import soundfile as sf
 
-    audio, sr = sf.read(str(audio_path), dtype="float32")
+    try:
+        audio, sr = sf.read(str(audio_path), dtype="float32")
+    except Exception:  # noqa: BLE001 — formato que o libsndfile não lê: usa ffmpeg
+        return _ffmpeg_to_mono16k(audio_path)
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
     if int(sr) != 16000:
@@ -3775,34 +4365,53 @@ def _transcribe_remote(audio_path: Path, language: str | None):
 _vad_model = None
 
 
+_vad_backend = ""  # "onnx" | "torch-jit" — caminho realmente carregado
+
+
 def _vad_load():
     """Silero VAD carregado sob demanda (~1MB, CPU, roda em tempo real).
 
-    O default do silero-vad é ONNX, que exige onnxruntime; sem ele o fallback
-    é o modelo torch (mesmo resultado, sem dependência extra)."""
-    global _vad_model
+    Pede o modelo ONNX EXPLICITAMENTE: `load_silero_vad()` sem argumento não
+    basta porque o default mudou de versão — no silero-vad 5.x era onnx=True,
+    no 6.x é onnx=False. Com 6.x instalado, o app carregava o jit do torch
+    mesmo com onnxruntime presente, e o `except` nunca disparava (os dois
+    ramos carregavam o mesmo modelo).
+
+    NÃO é "mais leve": medido no M3, o ONNX soma ~30–40 MB de RSS (o silero_vad
+    importa torch no topo, então o torch entra nos dois caminhos) e empata em
+    velocidade fora do cold start. Fica ONNX por ser o caminho declarado no
+    requirements, por não desserializar torchscript e por tornar o fallback
+    explícito e logado. Sem onnxruntime o load estoura e o fallback é o jit do
+    torch (mesmo resultado, dependência extra)."""
+    global _vad_model, _vad_backend
     if _vad_model is None:
         from silero_vad import load_silero_vad
         try:
-            _vad_model = load_silero_vad()
-        except Exception:  # noqa: BLE001 — sem onnxruntime: cai no torch
+            _vad_model = load_silero_vad(onnx=True)
+            _vad_backend = "onnx"
+        except Exception as e:  # noqa: BLE001 — sem onnxruntime: cai no torch
+            print(f"[vad] modelo ONNX indisponível ({str(e)[:120]}) — caindo no torch jit",
+                  flush=True)
+            _vad_backend = "torch-jit"
             _vad_model = load_silero_vad(onnx=False)
     return _vad_model
 
 
 def _vad_tem_fala(audio_path: Path, minimo_s: float = 0.3) -> bool:
     """Silero VAD: True se o wav tem fala de verdade (não ruído).
+
+    Reamostra para 16 kHz antes do modelo: o Silero só aceita 8/16 kHz e o
+    navegador manda WAV a 24 kHz — sem a reamostragem o modelo estourava e o
+    `except` devolvia True, ou seja, o guarda anti-alucinação era no-op em todo
+    áudio vindo de arquivo (ruído puro passava como fala).
     Em caso de erro no Silero, devolve True (não bloqueia o pipeline)."""
     try:
-        import soundfile as sf
         import torch
         from silero_vad import get_speech_timestamps
-        audio, sr = sf.read(str(audio_path), dtype="float32")
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
+        audio = _wav_to_mono16k(audio_path)          # 16 kHz mono, sr suportado
         speech = get_speech_timestamps(torch.from_numpy(audio), _vad_load(),
-                                       sampling_rate=sr, threshold=0.6, speech_pad_ms=100)
-        dur_fala = sum((t["end"] - t["start"]) for t in speech) / sr
+                                       sampling_rate=16000, threshold=0.6, speech_pad_ms=100)
+        dur_fala = sum((t["end"] - t["start"]) for t in speech) / 16000
         return dur_fala >= minimo_s
     except Exception:  # noqa: BLE001 — Silero indisponível não bloqueia o STT
         return True
@@ -4218,6 +4827,59 @@ def _parse_time(v) -> "float | None":
         return None
 
 
+# Allowlist do /api/youtube-audio. `host.endswith("youtube.com")` puro aceitava
+# "evil-youtube.com" e "youtube.com.evil.com" (domínios registráveis por
+# terceiros, com outro conteúdo) — exige-se o PONTO antes do domínio.
+YT_ALLOWED_ZONE_HOSTS = ("youtube.com", "youtube-nocookie.com")
+YT_ALLOWED_EXACT_HOSTS = ("youtu.be",)
+
+
+def _yt_host_allowed(host: str) -> bool:
+    """Só o domínio exato ou um subdomínio DELE (ponto obrigatório antes)."""
+    h = (host or "").strip().lower().rstrip(".")      # "youtube.com." é o mesmo host
+    if not h:
+        return False
+    return h in YT_ALLOWED_EXACT_HOSTS or h in YT_ALLOWED_ZONE_HOSTS or any(
+        h.endswith("." + d) for d in YT_ALLOWED_ZONE_HOSTS)
+
+
+def _url_parse(url: str):
+    """`urlparse` que não estoura: IPv6 malformado ("http://[::1") levanta
+    ValueError no PRÓPRIO urlparse() (e em `.hostname`). None = não parseou."""
+    try:
+        return urlparse(url or "")
+    except ValueError:
+        return None
+
+
+def _yt_url_host(url: str) -> str:
+    try:
+        return (_url_parse(url).hostname or "").lower()
+    except (ValueError, AttributeError):
+        return ""
+
+
+def _yt_final_host(info: object) -> str:
+    """Host que o yt-dlp REALMENTE abriu ("" = não deu para saber).
+
+    Um link de redirecionamento (youtube.com/redirect?q=…) faz o yt-dlp cair no
+    extractor genérico e baixar de outro site; o host da página final é o único
+    lugar onde isso aparece — a URL do STREAM (googlevideo.com) nunca bate com a
+    allowlist e não serve para esta checagem."""
+    if not isinstance(info, dict):
+        return ""
+    for key in ("webpage_url", "original_url"):
+        host = _yt_url_host(info.get(key) or "")
+        if host:
+            return host
+    entries = info.get("entries")
+    if entries:
+        for entry in entries:
+            if isinstance(entry, dict):
+                return _yt_url_host(entry.get("webpage_url") or "")
+    return ""
+
+
 def _yt_retryable(exc: BaseException) -> bool:
     """403/SABR: o client InnerTube escolhido devolveu URL que o CDN recusa.
     Outros erros (vídeo privado, indisponível) não valem retry."""
@@ -4275,12 +4937,20 @@ def _youtube_audio(url: str, start_s: float, end_s: float) -> bytes:
                     opts["cookiefile"] = str(ck)
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.extract_info(url, download=True)
+                    info = ydl.extract_info(url, download=True)
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
                 if not _yt_retryable(exc):
                     raise
                 continue
+            # Redirecionou para fora da allowlist (ex.: youtube.com/redirect?q=…):
+            # não vale insistir nos outros clients, já baixou de outro host.
+            fora = _yt_final_host(info)
+            if fora and not _yt_host_allowed(fora):
+                raise RuntimeError(
+                    f"o link saiu do YouTube ({fora}) — use o endereço direto do vídeo "
+                    "(youtube.com/… ou youtu.be/…)"
+                )
             srcs = glob.glob(os.path.join(d, "src.*"))
             if srcs:
                 break
@@ -4306,16 +4976,32 @@ def _youtube_audio(url: str, start_s: float, end_s: float) -> bytes:
 def youtube_audio(payload: dict):
     """Extrai um trecho de áudio de um link do YouTube -> WAV 24k mono. Usado como
     fonte de voz (treino) e de transcrição."""
-    from urllib.parse import urlparse
-
     url = (payload.get("url") or "").strip()
     if not url:
         raise HTTPException(400, "Informe o link do YouTube")
-    u = urlparse(url)
-    host = (u.hostname or "").lower()
-    if u.scheme not in ("http", "https") or not (
-            host == "youtu.be" or host.endswith(("youtube.com", "youtube-nocookie.com"))):
+    u = _url_parse(url)
+    # `urlparse` LEVANTA em IPv6 malformado ("http://[::1") — antes virava 500 em vez
+    # de 400; `u.hostname` também, por isso o host sai do helper (que trata).
+    host = _yt_url_host(url)
+    if u is None or u.scheme not in ("http", "https") or not _yt_host_allowed(host):
         raise HTTPException(400, "Use um link do YouTube (youtube.com ou youtu.be)")
+    # youtube.com/redirect?q=<url>: o yt-dlp segue o q e baixa de onde ele aponta. O
+    # host final nem sempre aparece no info do yt-dlp (a checagem pós-download
+    # passava batido), então o ALVO é validado aqui: 400 imediato, sem baixar para
+    # depois descartar. O bloco pós-download segue como rede de segurança (cadeia).
+    if u.path.rstrip("/") == "/redirect":
+        alvo = (parse_qs(u.query).get("q") or [""])[0].strip()
+        if alvo.startswith("//"):
+            alvo = f"{u.scheme}:{alvo}"
+        elif alvo.startswith("/"):
+            alvo = f"{u.scheme}://{host}{alvo}"
+        alvo_host = _yt_url_host(alvo) if alvo else ""
+        if alvo_host and not _yt_host_allowed(alvo_host):
+            raise HTTPException(
+                400,
+                f"o link saiu do YouTube ({alvo_host}) — use o endereço direto do vídeo "
+                "(youtube.com/… ou youtu.be/…)",
+            )
     start = max(0.0, _parse_time(payload.get("start")) or 0.0)
     end = _parse_time(payload.get("end"))
     if end is None or end <= start:
@@ -4548,6 +5234,10 @@ def _preparar_fala_para_voz(audio: UploadFile, voice_id: str, source_lang: str,
     vid/vpath/gate/src_text/src_lang/lang/omni/emotion/emo_show/emo_err.
     """
     vid = voice_id or _settings["default_voice"]
+    # id que ESCAPA de voices/ ('../x') não pode virar caminho do job: resolve para
+    # uma voz registrada, como qualquer id desconhecido
+    if vid and vid != DESIGN_VOICE_ID and vid not in OMNI_PRESETS and not _voice_path(vid):
+        vid = _resolve_voice(vid)
     design = (vid == DESIGN_VOICE_ID)                       # voz por descrição (tags OmniVoice)
     des_instruct = _sanitize_instruct(instruct) if design else ""
     vpath = VOICES_DIR / f"{vid}.wav"
@@ -4622,6 +5312,7 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
     """fala (áudio) -> transcreve -> traduz -> dispara TTS na voz; devolve textos + job_id."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
+    _jobs_capacity_check()      # antes do STT+tradução: recusa cedo, não em segundos
     tgt = (target_lang or "en").lower()
     p = _preparar_fala_para_voz(audio, voice_id, source_lang, emotion_mode, instruct,
                                 "Voice design vazio — descreva a voz p/ o tradutor",
@@ -4632,11 +5323,7 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
     # o LLM já traduz no TOM da emoção (pontuação/ênfase) -> prosódia segue o texto
     translation = _translate(src_text, tgt, p["emotion"])
 
-    job_id = uuid.uuid4().hex[:10]
-    _jobs[job_id] = {"status": "running", "pieces": 0, "total": None,
-                     "progress": None, "output": None, "error": None,
-                     "text": translation[:200]}
-    _evict_jobs()
+    job_id = _jobs_admit({"text": translation[:200]})
     threading.Thread(
         target=_run_tts_job,
         args=(job_id, translation, p["vid"], p["vpath"], tgt, p["omni"]),
@@ -4656,6 +5343,7 @@ def modify_speech(audio: UploadFile = None, voice_id: str = Form(""),
     língua, mesmas palavras). Igual ao tradutor, mas sem o passo do LLM."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
+    _jobs_capacity_check()      # antes do STT: recusa cedo, não em segundos
     p = _preparar_fala_para_voz(audio, voice_id, source_lang, emotion_mode, instruct,
                                 "Voice design vazio — descreva a voz")
     if "resposta" in p:
@@ -4664,10 +5352,7 @@ def modify_speech(audio: UploadFile = None, voice_id: str = Form(""),
     out_text = src_text                    # SEM tradução: fala o que foi dito
     lang = p["lang"]
 
-    job_id = uuid.uuid4().hex[:10]
-    _jobs[job_id] = {"status": "running", "pieces": 0, "total": None, "progress": None,
-                     "output": None, "error": None, "text": out_text[:200]}
-    _evict_jobs()
+    job_id = _jobs_admit({"text": out_text[:200]})
     threading.Thread(target=_run_tts_job, args=(job_id, out_text, p["vid"], p["vpath"],
                                                 lang, p["omni"]), daemon=True).start()
     return {"job_id": job_id, "source_text": src_text, "source_lang": p["src_lang"],
@@ -4827,10 +5512,11 @@ def openai_speech(payload: dict):
     use_queue = q is not False and str(q).lower() not in ("false", "0", "no")
 
     # reusa o pipeline de jobs de forma síncrona (histórico incluso)
-    job_id = uuid.uuid4().hex[:10]
-    _jobs[job_id] = {"status": "running", "pieces": 0, "total": None,
-                     "progress": None, "output": None, "error": None,
-                     "text": text[:200]}
+    job_id = _jobs_admit({"text": text[:200]})
+    # Referência PRÓPRIA ao job: assim que a thread termina o job vira
+    # descartável e outro pedido pode evictá-lo do _jobs antes da leitura abaixo
+    # (o evict dá pop no dict, não invalida o objeto) — sem isto era KeyError/500.
+    job = _jobs[job_id]
     # mesma mecânica do /api/tts: MLX exige thread "nova" (stream GPU é
     # thread-local e o threadpool do FastAPI reusa threads sem stream)
     t = threading.Thread(
@@ -4843,7 +5529,6 @@ def openai_speech(payload: dict):
     t.join(timeout=600)
     if t.is_alive():
         raise HTTPException(504, "Síntese excedeu 10 minutos")
-    job = _jobs[job_id]
     if job["status"] != "done":
         raise HTTPException(500, f"Falha na síntese: {job.get('error')}")
 
@@ -4864,6 +5549,11 @@ app.add_middleware(
     allow_origins=_CORS_ORIGINS or ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # `Retry-After` não é header safelisted de CORS: sem expor, cliente
+    # cross-origin (o client/ do repo, SDK de fora) lê null e negocia o retry no
+    # escuro. Os nossos 429 (admissão de jobs e rate limiter) pedem um tempo
+    # explícito — ele tem que chegar a quem vai repetir.
+    expose_headers=["Retry-After"],
 )
 
 # UI estática (registrada por último para não engolir /api/* e /v1/*)
