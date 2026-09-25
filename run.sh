@@ -3,6 +3,11 @@
 # Reinicia sozinho se o processo morrer com segfault/OOM (exit ≠ 0,130,143).
 cd "$(dirname "$0")"
 
+# onnxruntime tenta gravar o ID de telemetria em $HOME; com HOME não-gravável
+# (sandbox/CI) ele cai num arquivo ":memory:.ses" no CWD, que é a raiz do repo.
+# O app é local/offline: desligar a telemetria mata o artefato e o warning.
+export ORT_DISABLE_TELEMETRY="${ORT_DISABLE_TELEMETRY:-1}"
+
 if [ ! -d .venv-mlx ]; then
   echo "Criando ambiente virtual (Python 3.12)…"
   python3.12 -m venv .venv-mlx

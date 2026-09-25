@@ -84,8 +84,11 @@ sem_segredo() {
   python3 -c '
 import re, sys
 segredo = re.compile(r"(_API_KEY|_TOKEN|_SECRET|_PASSWORD)$")
-par = re.compile(r"^((?:Environment=)?[A-Za-z_][A-Za-z0-9_]*)=(.*)$")
-for pedaco in sys.stdin.read().split():
+par = re.compile(r"^((?:Environment=)?[A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
+# Separa por ASSIGNMENT (\s+(?=NOME=)), não por espaço em branco: valor com
+# espaço (e o escape \\ do systemd, e aspas) ficava partido em dois tokens e o
+# resto vazava em claro — só o primeiro pedaço casava o padrão e era redigido.
+for pedaco in re.split(r"\s+(?=[A-Za-z_][A-Za-z0-9_]*=)", sys.stdin.read()):
     m = par.match(pedaco)
     if m and segredo.search(m.group(1)):
         pedaco = f"{m.group(1)}=<len {len(m.group(2))}>"

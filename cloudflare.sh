@@ -66,7 +66,7 @@ _xml_escape() {
   print -rn -- "$s"
 }
 
-_api() { # _api METHOD PATH [BODY]
+_api() { # _api METHOD PATH [BODY] → rc≠0 quando a API responde success:false
   local out
   if [ -n "${3:-}" ]; then
     out="$(curl -s -X "$1" -H "Authorization: Bearer $CF_TOKEN" \
@@ -74,8 +74,13 @@ _api() { # _api METHOD PATH [BODY]
   else
     out="$(curl -s -X "$1" -H "Authorization: Bearer $CF_TOKEN" "$API$2")"
   fi
-  print -r -- "$out" | python3 -c 'import sys,json;d=json.load(sys.stdin);print("ok" if d.get("success") else "erro: "+json.dumps(d.get("errors")))' >&2
   print -r -- "$out"
+  # o rc tem de ser o do python (antes terminava no `print` acima = sempre 0 e um
+  # ingress não configurado passava batido)
+  print -r -- "$out" | python3 -c 'import sys,json
+d = json.load(sys.stdin)
+print("ok" if d.get("success") else "erro: " + json.dumps(d.get("errors")))
+sys.exit(0 if d.get("success") else 1)' >&2
 }
 
 case "${1:-}" in
@@ -98,7 +103,8 @@ case "${1:-}" in
 
     # ingress remoto: só o hostname do TTS + 404 para o resto
     _api PUT "/accounts/$CF_ACCT/cfd_tunnel/$TID/configurations" \
-      "{\"config\":{\"ingress\":[{\"hostname\":\"$HOST\",\"service\":\"http://$ORIG:7860\",\"originRequest\":{\"connectTimeout\":15}},{\"service\":\"http_status:404\"}]}}" >/dev/null
+      "{\"config\":{\"ingress\":[{\"hostname\":\"$HOST\",\"service\":\"http://$ORIG:7860\",\"originRequest\":{\"connectTimeout\":15}},{\"service\":\"http_status:404\"}]}}" >/dev/null \
+      || { echo "o ingress remoto NÃO foi configurado (erro da API acima)"; exit 1; }
 
     # O token sai do cloudflared direto para o arquivo (nunca pelo stdout do
     # terminal) e já fica 0600 — o install seguinte pode lê-lo do arquivo.
@@ -137,9 +143,22 @@ case "${1:-}" in
     done
     if [ -n "$FILE" ]; then
       [ -r "$FILE" ] || { echo "não achei o arquivo do token: $FILE"; exit 1; }
+      # launchd roda o agente com cwd `/`: caminho relativo no plist não resolve,
+      # e o sintoma é o conector parado sem erro no install. `:A` absolutiza
+      # (o arquivo existe — acabamos de conferir), resolvendo `..` e symlink.
+      FILE="${FILE:A}"
       TOKEN="$(<"$FILE")"
     fi
     [ -n "$TOKEN" ] || { echo "uso: $0 install <token> | install --token-file <arquivo> | install -"; exit 1; }
+    if [ -z "$FILE" ]; then
+      # token cru/stdin: normaliza para arquivo 0600 — o plist passa a usar
+      # --token-file e o segredo deixa de aparecer no `ps` (e no próprio plist).
+      FILE="$TOKEN_DIR/${LABEL}.token"
+      mkdir -p "$TOKEN_DIR"
+      print -rn -- "$TOKEN" > "$FILE"
+      chmod 600 "$FILE"
+      FILE="${FILE:A}"   # idem: o plist nunca guarda caminho relativo
+    fi
     command -v cloudflared >/dev/null || brew install cloudflared || exit 1
     BIN="$(command -v cloudflared || echo "$BIN")"   # re-resolve se o brew acabou de instalar
     mkdir -p "$HOME/Library/Logs" "$PLIST:h"
@@ -153,7 +172,7 @@ case "${1:-}" in
     <string>tunnel</string><string>--no-autoupdate</string>
     <string>--metrics</string><string>127.0.0.1:20242</string>
     <string>--loglevel</string><string>info</string>
-    <string>run</string><string>--token</string><string>$(_xml_escape "$TOKEN")</string>
+    <string>run</string><string>--token-file</string><string>$(_xml_escape "$FILE")</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -162,19 +181,32 @@ case "${1:-}" in
   <key>StandardErrorPath</key><string>$(_xml_escape "$LOG")</string>
 </dict></plist>
 EOF
-    chmod 600 "$PLIST"   # o token do tunnel fica dentro do plist; antes de carregar
+    chmod 600 "$PLIST"   # defensivo: o plist pode citar caminho de token; antes de carregar
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null || launchctl load -w "$PLIST"
-    echo "Conector instalado (sobe no login, reconecta sozinho) — token fora do stdout."
-    echo "plist: $PLIST (0600) · log: $LOG"
+    launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null || launchctl load -w "$PLIST" 2>/dev/null || true
+    # F1: bootstrap/load têm stderr suprimido — sem esta conferência o install
+    # dizia "instalado" e saía 0 mesmo com o launchd recusando o agente.
+    if launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; then
+      echo "Conector instalado (sobe no login, reconecta sozinho)."
+      echo "plist: $PLIST · token em $FILE (0600, fora do stdout e do ps) · log: $LOG"
+    else
+      echo "AVISO: $LABEL NÃO ficou carregado no launchd (bootstrap/load falharam)" >&2
+      echo "  confira: launchctl print gui/$UID/$LABEL" >&2
+      exit 1
+    fi
     exit 0 ;;
 
   status)
     # `launchctl print` traz os argumentos (inclusive o token); o grep fica
     # só no estado para não despejar segredo no terminal.
-    launchctl print "gui/$UID/$LABEL" 2>/dev/null | grep -E "state =|pid =|last exit" || echo "LaunchAgent não carregado"
+    if launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; then
+      launchctl print "gui/$UID/$LABEL" 2>/dev/null | grep -E "state =|pid =|last exit"
+      tail -3 "$LOG" 2>/dev/null
+      exit 0
+    fi
+    echo "LaunchAgent não carregado ($LABEL)"
     tail -3 "$LOG" 2>/dev/null
-    exit 0 ;;
+    exit 1 ;;
 
   token)
     # Único ponto que imprime o token — quando você precisa copiá-lo na mão.

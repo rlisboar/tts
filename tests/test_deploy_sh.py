@@ -180,6 +180,20 @@ def test_recon_mostra_fatos_e_redige_a_chave(amb):
     assert "OMNI_API_KEY=<len 7>" in r.stdout, "esperava o valor redigido"
 
 
+@pytest.mark.parametrize("valor", ["abc def", "abc\\ def", '"abc def"'])
+def test_recon_nao_vaza_pedaco_de_segredo_com_espaco(amb, valor):
+    """P3 do gate da #27: a redação quebrava o stdin em TOKENS por espaço — um
+    valor com espaço virava dois pedaços, só o primeiro era redigido e o resto
+    saía em claro (e o `len` mentia). Vale para o escape `\\ ` do systemd e aspas."""
+    amb["T_SEGREDO"] = valor
+
+    r = _run(amb, "recon")
+    assert r.returncode == 0, _saida(r)
+    assert f"OMNI_API_KEY=<len {len(valor)}>" in r.stdout, r.stdout
+    assert valor not in r.stdout      # nada do valor em claro
+    assert "def" not in r.stdout      # o fragmento que vazava antes
+
+
 # --------------------------------------------------------------------- smoke
 
 def test_smoke_ok_quando_health_responde_e_sem_chave_da_401(amb):

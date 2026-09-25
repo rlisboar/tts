@@ -13,8 +13,13 @@ exige texto de volta, cobrindo o lado da transcrição.
     ./.venv-mlx/bin/python smoke_sintese.py --stt            # + transcrição
     ./.venv-mlx/bin/python smoke_sintese.py --json           # p/ gate automatizado
 
-Sai 0 só com tudo verde; 1 se o áudio falhar (ou a transcrição, com --stt); 2 em
-erro de uso/modelo. `--out arquivo.wav` guarda o áudio para escutar.
+Sai 0 só com tudo verde; 1 se o áudio falhar (ou a transcrição, com --stt).
+Uso inválido do argparse sai 2; erro de modelo/load estoura traceback (rc 1).
+`--out arquivo.wav` guarda o áudio para escutar.
+
+Parâmetros e clone saem do app: `omni` vem do próprio `app._resolve_omni({})`
+(as mesmas chaves/clamps da UI) e `--voz ID` monta o ref do worker
+(`voices/<id>.wav` + `ref_text` do .json; OmniVoice por `create_voice_clone_prompt`).
 """
 from __future__ import annotations
 
@@ -44,10 +49,55 @@ def _args():
     p.add_argument("--text", default=TEXTO_PADRAO)
     p.add_argument("--stt", action="store_true", help="também transcreve o áudio gerado")
     p.add_argument("--json", action="store_true", dest="como_json")
-    p.add_argument("--out", default="", help="grava o wav aqui (default: temporário)")
+    p.add_argument("--out", default="", help="grava o wav aqui (default: arquivo único em TMPDIR)")
+    p.add_argument("--voz", default="", help="voice id de voices/ (default: settings.default_voice ou a 1ª voz)")
     p.add_argument("--min-rms", type=float, default=MIN_RMS)
     p.add_argument("--min-segundos", type=float, default=MIN_SEGUNDOS)
     return p.parse_args()
+
+
+def _voz_padrao() -> str:
+    ids = sorted(p.stem for p in (Path(RAIZ) / "voices").glob("*.wav"))
+    if not ids:
+        return ""
+    pedido = str(_settings().get("default_voice") or "").strip()
+    return pedido if pedido in ids else ids[0]
+
+
+def _ref_do_clone(modelo, family: str, voz: str) -> dict:
+    """Espelha o caminho de clonagem do tts_worker (mesma montagem de ref)."""
+    wav = Path(RAIZ) / "voices" / f"{voz}.wav"
+    if not wav.exists():
+        raise SystemExit(f"voz não encontrada: {wav}")
+    ref_text = None
+    meta_json = wav.with_suffix(".json")
+    if meta_json.exists():
+        try:
+            ref_text = (json.loads(meta_json.read_text()).get("ref_text") or "").strip() or None
+        except Exception:  # noqa: BLE001 — json torto não invalida o smoke
+            ref_text = None
+    if family == "omnivoice":
+        from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
+
+        max_s = float(_settings().get("omni_ref_max_s") or 10.0)
+        return {"ref_tokens": create_voice_clone_prompt(
+            str(wav), ref_text=None, tokenizer=modelo.audio_tokenizer, max_duration_s=max_s),
+            "ref_text": ref_text}
+    return {"ref_audio": str(wav), "ref_text": ref_text}
+
+
+def _destino_wav(pedido: str) -> str:
+    """Nome único (duas execuções concorrentes não se sobrescrevem)."""
+    if pedido:
+        return pedido
+    for base in (os.environ.get("TMPDIR") or "", RAIZ):
+        try:
+            fd, caminho = tempfile.mkstemp(prefix="smoke-sintese-", suffix=".wav", dir=base or None)
+            os.close(fd)
+            return caminho
+        except OSError:
+            continue
+    return os.path.join(RAIZ, "smoke-sintese.wav")
 
 
 def _settings() -> dict:
@@ -114,13 +164,28 @@ def main() -> int:
     sr = int(getattr(modelo, "sample_rate", 24000) or 24000)
     laudo["carga_s"] = round(time.time() - t0, 1)
 
+    voz = (a.voz or _voz_padrao()).strip()
+    ref = {}
+    if voz:
+        ref = _ref_do_clone(modelo, be["family"], voz)
+        laudo["voz"] = voz
+    try:  # as MESMAS chaves/clamps que a UI aplica (app._resolve_omni)
+        from app import _resolve_omni
+
+        omni = _resolve_omni({}, be["family"])
+    except Exception as e:  # noqa: BLE001 — cai nos defaults do adapter
+        print(f"[smoke] sem app._resolve_omni ({type(e).__name__}: {e}); usando defaults",
+              file=sys.stderr)
+        omni = {}
+
     t0 = time.time()
-    audio = generate_with_backend(modelo, be["family"], a.text, language="pt")
+    audio = generate_with_backend(modelo, be["family"], a.text, language="pt",
+                                  omni=omni, meta=be.get("meta") or {}, **ref)
     laudo["geracao_s"] = round(time.time() - t0, 1)
     laudo["sample_rate"] = sr
     laudo.update(_medir(audio, sr))
 
-    destino = a.out or os.path.join(tempfile.gettempdir(), "smoke-sintese.wav")
+    destino = _destino_wav(a.out)
     try:
         import numpy as np
         import soundfile as sf
