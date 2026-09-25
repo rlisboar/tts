@@ -39,11 +39,16 @@ DESIGN_VOICE_ID = "__design__"
 
 
 def _write_status(path: Path, data: dict):
-    """Escrita atômica do status (o pai faz poll)."""
-    path = Path(path)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False))
-    tmp.replace(path)
+    """Escrita atômica do status (o pai faz poll).
+
+    Delegado ao `write_json_atomic` do common (tmp ÚNICO no mesmo diretório,
+    sem órfão em erro, modo do destino preservado). O esquema antigo — tmp de
+    nome FIXO (`path.with_suffix(".tmp")`) e sem try/except — era a mesma classe
+    do bug #12: dois escritores no mesmo status se atropelavam e o
+    FileNotFoundError derrubava a atualização. Hoje o status é por job, mas o
+    worker é multi-processo por design, então o padrão convidava ao erro.
+    """
+    write_json_atomic(path, data)
 
 
 def _resolve_path(model_setting: str, settings: dict, base: Path) -> str:

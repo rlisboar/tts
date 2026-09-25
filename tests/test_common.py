@@ -1,11 +1,17 @@
 """Testes das utilidades compartilhadas (common.py)."""
 
+import json
+import multiprocessing
+import os
+import threading
+
 import numpy as np
 import pytest
 
+import common
 from common import (assemble_omnivoice_path, fade_edges, normalize,
                     sanitize_text, split_text, time_stretch,
-                    trim_tail_silence, write_wav_concat)
+                    trim_tail_silence, write_json_atomic, write_wav_concat)
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +266,98 @@ def test_assemble_omnivoice_reusa_dir_montado(tmp_path):
     (base / ".omnivoice-bf16" / "audio_tokenizer").mkdir()
     (base / ".omnivoice-bf16" / "audio_tokenizer" / "model.safetensors").write_bytes(b"x")
     assert assemble_omnivoice_path(base) == str(base / ".omnivoice-bf16")
+
+
+# ---------------------------------------------------------------------------
+# Escrita atômica sob concorrência (o gate da suíte é compartilhado: 6 agentes
+# rodando pytest ao mesmo tempo no mesmo settings.json do repo)
+# ---------------------------------------------------------------------------
+
+def _batida(path, tag, rounds, erros=None):
+    """Escritor concorrente: acumula falhas sem estourar a thread/processo e
+    RETORNA a lista (em subprocesso a lista recebida é cópia, não a do pai)."""
+    erros = [] if erros is None else erros
+    for i in range(rounds):
+        try:
+            write_json_atomic(path, {"quem": tag, "i": i})
+        except Exception as e:  # noqa: BLE001 — queremos ver QUAL exceção
+            erros.append(f"{tag}/{i}: {type(e).__name__}: {e}")
+    return erros
+
+
+def test_write_json_atomic_tmp_unico_no_meio_de_outro_escritor(tmp_path, monkeypatch):
+    """Regressão determinística: B escreve por INTEIRO entre o write do tmp de A
+    e o replace de A — o entrelaçamento que o tmp de nome fixo não sobrevive
+    (ambos usavam x.json.tmp: B substituía e o tmp sumia da mão de A, que
+    estourava FileNotFoundError)."""
+    dst = tmp_path / "settings.json"
+    real_replace = os.replace
+    estado = {"armado": True}
+
+    def replace_espiao(src, dst_):
+        if estado["armado"]:
+            estado["armado"] = False
+            write_json_atomic(dst, {"quem": "B"})   # escritor concorrente completo
+            estado["armado"] = True
+        return real_replace(src, dst_)
+
+    monkeypatch.setattr(common.os, "replace", replace_espiao)
+    write_json_atomic(dst, {"quem": "A"})           # não pode dar FileNotFoundError
+
+    assert json.loads(dst.read_text()) == {"quem": "A"}   # A substitui por último e vence
+    assert [p.name for p in tmp_path.iterdir()] == ["settings.json"]   # sem .tmp órfão
+
+
+def test_write_json_atomic_sem_corrida_entre_threads(tmp_path):
+    dst = tmp_path / "settings.json"
+    erros = []
+    ths = [threading.Thread(target=_batida, args=(dst, f"t{k}", 150, erros))
+           for k in range(8)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+
+    assert erros == []
+    assert set(json.loads(dst.read_text())) == {"quem", "i"}   # JSON íntegro, não truncado
+    assert [p.name for p in tmp_path.iterdir()] == ["settings.json"]
+
+
+def test_write_json_atomic_sem_corrida_entre_processos(tmp_path):
+    """Prova com processos de verdade (é assim que o falso vermelho apareceu:
+    pytest rodando em paralelo pelos agentes)."""
+    ctx = multiprocessing.get_context("spawn")   # evita o fork() em processo multi-thread
+    dst = tmp_path / "settings.json"
+    with ctx.Pool(6) as pool:
+        res = pool.starmap(_batida, [(dst, f"p{k}", 120) for k in range(6)])
+    erros = [e for r in res for e in r]
+
+    assert erros == []
+    assert set(json.loads(dst.read_text())) == {"quem", "i"}
+    assert [p.name for p in tmp_path.iterdir()] == ["settings.json"]
+
+
+def test_write_json_atomic_limpa_tmp_quando_replace_falha(tmp_path, monkeypatch):
+    dst = tmp_path / "settings.json"
+
+    def boom(src, dst_):
+        raise OSError("disco cheio")
+
+    monkeypatch.setattr(common.os, "replace", boom)
+    with pytest.raises(OSError):
+        write_json_atomic(dst, {"a": 1})
+
+    assert list(tmp_path.iterdir()) == []   # tmp único não fica órfão
+
+
+def test_write_json_atomic_preserva_modo_do_destino(tmp_path):
+    """mkstemp cria 0600; o destino (settings.json/.apikeys.json: 0644 no repo)
+    não deve virar 0600 só por ser reescrito."""
+    dst = tmp_path / "chaves.json"
+    dst.write_text("{}")
+    os.chmod(dst, 0o640)
+
+    write_json_atomic(dst, {"k": 1})
+
+    assert (dst.stat().st_mode & 0o777) == 0o640
+    assert json.loads(dst.read_text()) == {"k": 1}

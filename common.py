@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import unicodedata
 from pathlib import Path
 
@@ -46,13 +47,36 @@ NATIVE_SPEED_FAMILIES = frozenset({
 # ---------------------------------------------------------------------------
 
 def write_json_atomic(path, payload) -> None:
-    """Escrita atômica de JSON (tmp + os.replace): crash no meio da escrita não
-    deixa arquivo truncado/corrompido. Use para settings, chaves e metas — um
-    arquivo corrompido reseta defaults/gera chave nova silenciosamente."""
+    """Escrita atômica de JSON (tmp único + os.replace): crash no meio da escrita
+    não deixa arquivo truncado/corrompido. Use para settings, chaves e metas — um
+    arquivo corrompido reseta defaults/gera chave nova silenciosamente.
+
+    O tmp é ÚNICO por escritor (`tempfile.mkstemp` no MESMO diretório, para o
+    `os.replace` continuar atômico). Com nome fixo (`x.json.tmp`), dois
+    escritores concorrentes no mesmo arquivo se atropelavam: A criava o tmp, B
+    sobrescrevia o mesmo tmp, A substituía o destino (o tmp sumia) e B estourava
+    FileNotFoundError -> 500. Acontece de verdade aqui: 6 agentes rodando a suíte
+    em paralelo disputando o settings.json REAL do repo.
+    """
     path = Path(path)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-    tmp.replace(path)
+    data = json.dumps(payload, ensure_ascii=False, indent=2)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(data)
+        # mkstemp cria 0600; preserva o modo do destino (senão settings.json
+        # virava 0600 no primeiro write e .apikeys.json idem)
+        try:
+            os.chmod(tmp, path.stat().st_mode & 0o777)
+        except FileNotFoundError:
+            pass
+        os.replace(tmp, path)
+    finally:
+        # erro no meio (disco cheio, chmod/replace falho): não deixa .tmp órfão
+        tmp.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

@@ -64,3 +64,54 @@ def test_worker_isolado_smoke(tmp_path):
     d, sr = sf.read(str(wavs[0]))
     assert len(d) > sr // 2, "áudio curto demais"
     assert float(np.sqrt(np.mean(d ** 2))) > 0.005, "áudio (quase) mudo"
+
+
+# ---------------------------------------------------------------------------
+# _write_status: rápidos, sem MLX (regressão do #17 — mesma classe do #12)
+# ---------------------------------------------------------------------------
+
+def test_write_status_tmp_unico_sob_escritores_concorrentes(tmp_path):
+    """tinha tmp de nome FIXO próprio (`status.tmp`) e nenhum try/except: dois
+    escritores no mesmo status estouravam FileNotFoundError e derrubavam a
+    atualização. Hoje o caminho é por job, mas o worker é multi-processo por
+    design — o padrão convidava ao erro."""
+    import threading
+
+    from tts_worker import _write_status
+
+    dst = tmp_path / "status.json"
+    erros = []
+
+    def batida(tag):
+        for i in range(200):
+            try:
+                _write_status(dst, {"fase": tag, "i": i})
+            except Exception as e:  # noqa: BLE001 — queremos ver QUAL exceção
+                erros.append(f"{tag}/{i}: {type(e).__name__}: {e}")
+
+    ths = [threading.Thread(target=batida, args=(f"w{k}",)) for k in range(4)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+
+    assert erros == []
+    assert set(json.loads(dst.read_text())) == {"fase", "i"}   # íntegro, não truncado
+    assert [p.name for p in tmp_path.iterdir()] == ["status.json"]
+
+
+def test_write_status_limpa_tmp_quando_replace_falha(tmp_path, monkeypatch):
+    """Erro no meio não pode deixar `.tmp` órfão (o pai faz poll do arquivo)."""
+    import common
+    from tts_worker import _write_status
+
+    dst = tmp_path / "status.json"
+
+    def boom(src, dst_):
+        raise OSError("disco cheio")
+
+    monkeypatch.setattr(common.os, "replace", boom)
+    with pytest.raises(OSError):
+        _write_status(dst, {"status": "running"})
+
+    assert list(tmp_path.iterdir()) == []   # sem status.tmp / status.json.*.tmp órfão
