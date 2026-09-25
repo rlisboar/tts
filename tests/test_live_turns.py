@@ -396,6 +396,51 @@ def test_fala_antes_e_durante_o_playback_dispara_barge():
     assert stats["turnos"] == 1                       # turno NÃO reabriu
 
 
+def test_flag_de_speaking_em_par_por_chunk_nao_zera_o_barge():
+    """Cadência REAL do handler (#115): `set_speaking(True)` no envio do chunk e
+    `set_speaking(False)` quando `audio_pendente` zera — com um chunk por vez
+    isso é um par no mesmo instante e a flag fica ligada ~0 ms. Se toda decisão
+    olhasse a flag, o contador de 300 ms zeraria a cada par e o barge nunca
+    sairia (era o defeito)."""
+    motor, rel = _motor()
+    _tocar(motor, rel, _tom(0.3), 30)                 # humano já falando
+    assert motor.turno_aberto
+
+    eventos = []
+    for _ in range(30):
+        motor.set_speaking(True, nivel_dbfs=-20.0)    # par do handler…
+        motor.set_speaking(False)                     # …no mesmo instante
+        eventos += _tocar(motor, rel, _tom(0.3), 1)
+
+    assert [e.tipo for e in eventos] == ["barge_in"]
+    assert motor.estatisticas()["barge_in_com_turno_aberto"] == 1
+
+
+def test_par_por_chunk_nao_impede_a_calibracao_de_eco():
+    """O mesmo par não pode matar a calibração (o `False` a desarmava)."""
+    motor, rel = _motor()
+    eco = _tom(0.05)
+    _tocar(motor, rel, SILENCIO, 20)
+    for _ in range(60):
+        motor.set_speaking(True, nivel_dbfs=-20.0)
+        motor.set_speaking(False)
+        _tocar(motor, rel, eco, 1)
+    assert motor.estatisticas()["eco_dbfs"] > -36      # calibrou, não ficou no palpite
+    assert motor.estatisticas()["eco_ausente"] is False
+
+
+def test_janela_sobrevive_ao_stop_do_playback():
+    """Depois do stop a janela continua: o eco residual não vira fala fantasma."""
+    motor, rel = _motor()
+    _tocar(motor, rel, _tom(0.001), 20)
+    motor.set_speaking(True, nivel_dbfs=-30.0)
+    _tocar(motor, rel, ECO, 60)
+    motor.set_speaking(False)
+    assert motor.estatisticas()["playback_ativo"] is True
+    _tocar(motor, rel, SILENCIO, lt.Config()._frames_playback)
+    assert motor.estatisticas()["playback_ativo"] is False
+
+
 @pytest.mark.parametrize("amp", [0.1, 0.3, 0.9])
 def test_amplificar_o_estimulo_nao_muda_a_decisao(amp):
     """O limiar é relativo ao próprio sinal: ganho puro era invariante de escala

@@ -1,0 +1,81 @@
+Live (task #115) — E2E do barge-in pela UI, ponta a ponta (tests/live_ui.sh)
+==========================================================================
+comando: ./tests/live_ui.sh   (sobe stub de chat + servidor em portas livres, Chromium headless,
+                               mic falso alimentado com fala real de voices/*.wav)
+aceite: barge_in disparar e o corte do playback no `interrupted` ficar <50 ms (o proprio
+        harness cobra isso em `cobrar(corte < 50, ...)`; sem barge ele falha com
+        "barge-in nao aconteceu nem com fala injetada").
+
+ANTES do fix (#115): ✖ FALHOU — "barge-in nao aconteceu nem com fala injetada — sem medicao do alvo <50 ms" (exit 1)
+DEPOIS:              ✔ OK    — barge_in com detalhe "playback com turno aberto", corte 0 ms (exit 0)
+
+Trecho relevante da rodada verde (evento VAD e medicao do corte):
+
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.741, 'rms_dbfs': -4.7, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 500}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 8512, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 9582}
+  evento VAD: {'type': 'speech_start', 'barge_in': None, 'prob': None, 'rms_dbfs': None, 'fala_ms': None, 'curto': None, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': None}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.753, 'rms_dbfs': -2.4, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 12980}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 576, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 13344}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.517, 'rms_dbfs': -3.4, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 13378}
+  evento VAD: {'type': 'barge_in', 'barge_in': True, 'prob': 0.982, 'rms_dbfs': -3.6, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': 'playback com turno aberto', 't_decisao_ms': 15252}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 8608, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 15952}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.542, 'rms_dbfs': -9.8, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 16182}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 64, 'curto': True, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 16347}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.786, 'rms_dbfs': -3.5, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 17582}
+  corte no interrupted: 0 ms · estado final: 'pensando…'
+✔ OK — turno real pela UI: mic->worklet->WS->áudio de volta, transcrição e corte do barge-in medido
+
+--- rodada completa ---
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 60289)
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 318, in _handle_request_noblock
+    self.process_request(request, client_address)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 349, in process_request
+    self.finish_request(request, client_address)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 761, in __init__
+    self.handle()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/server.py", line 436, in handle
+    self.handle_one_request()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/server.py", line 424, in handle_one_request
+    method()
+  File "<stdin>", line 18, in do_POST
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 840, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+servidor de teste em http://127.0.0.1:60188 (stub :60187)
+  sessão pronta · captura (worklet+mic): True
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.741, 'rms_dbfs': -4.7, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 500}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 8512, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 9582}
+  evento VAD: {'type': 'speech_start', 'barge_in': None, 'prob': None, 'rms_dbfs': None, 'fala_ms': None, 'curto': None, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': None}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.753, 'rms_dbfs': -2.4, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 12980}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 576, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 13344}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.517, 'rms_dbfs': -3.4, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 13378}
+  evento VAD: {'type': 'barge_in', 'barge_in': True, 'prob': 0.982, 'rms_dbfs': -3.6, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': 'playback com turno aberto', 't_decisao_ms': 15252}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 8608, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 15952}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.542, 'rms_dbfs': -9.8, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 16182}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 64, 'curto': True, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 16347}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.786, 'rms_dbfs': -3.5, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 17582}
+  erro do servidor: {'type': 'error', 'code': 'turno_em_curso', 'message': 'espere o turn_complete'}
+  eventos: ['ready', 'speech_start', 'speech_end', 'speech_start', 'transcript_user', 'assistant_text', 'assistant_text', 'assistant_text', '<audio>', 'speech_start', 'speech_end', 'error', 'speech_start', 'prewarm']
+  transcrição você='É 1984, qualquer um entenderia. É um ata' ia='Claro, o dia está bonito hoje. Quer que ' · quadros de áudio: 2
+  corte no interrupted: 0 ms · estado final: 'pensando…'
+  [DBG-eco] t=1790349406.90 ligado=True nivel_payload=-25.38339986890356 limiar=-33.4
+  [DBG-eco] t=1790349406.90 ligado=False nivel_payload=None limiar=-33.4
+  [DBG-eco] t=1790349409.38 ligado=True nivel_payload=-24.764422080076937 limiar=-26.0
+  [DBG-eco] t=1790349409.38 ligado=False nivel_payload=None limiar=-26.0
+  VAD speech_start epoch=1790349394.64
+  VAD speech_end epoch=1790349403.72
+  VAD speech_start epoch=1790349403.72
+  VAD speech_start epoch=1790349407.12
+  VAD speech_end epoch=1790349407.48
+  VAD speech_start epoch=1790349407.52
+  VAD speech_end epoch=1790349410.09
+  VAD speech_start epoch=1790349410.32
+  VAD speech_end epoch=1790349410.49
+  VAD speech_start epoch=1790349411.72
+
+✔ OK — turno real pela UI: mic->worklet->WS->áudio de volta, transcrição e corte do barge-in medido

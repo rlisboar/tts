@@ -155,7 +155,7 @@ class Config:
     eco_contrib_min_db: float = 3.0               # abaixo disto o playback não somou eco
     eco_folga_payload_db: float = 8.0             # folga de pico: eco não passa do payload
     envelope_ms: int = 224                        # suavização do nível (decisão)
-    eco_cauda_ms: int = 800                       # eco residual depois do stop
+    playback_janela_ms: int = 900                 # janela de playback (toca + cauda)
     adaptacao_ruido_db: float = 0.25              # por frame, só fora de voz
     adaptacao_eco_db: float = 0.25                # por frame, só fora de voz
     eco_faixa_morta_db: float = 3.0               # zona em que o eco não se mexe
@@ -165,7 +165,7 @@ class Config:
 
     def __post_init__(self) -> None:
         for nome in ("prefix_ms", "silence_ms", "onset_ms", "barge_in_ms", "min_fala_ms",
-                     "cauda_ms", "turno_max_ms", "eco_cauda_ms", "eco_calibracao_ms",
+                     "cauda_ms", "turno_max_ms", "playback_janela_ms", "eco_calibracao_ms",
                      "envelope_ms", "eco_pre_janela_ms"):
             if int(getattr(self, nome)) < 0:
                 raise ValueError(f"{nome} não pode ser negativo")
@@ -217,8 +217,8 @@ class Config:
         return math.ceil(self.cauda_ms / FRAME_MS)
 
     @property
-    def _frames_eco_cauda(self) -> int:
-        return max(1, math.ceil(self.eco_cauda_ms / FRAME_MS))
+    def _frames_playback(self) -> int:
+        return max(1, math.ceil(self.playback_janela_ms / FRAME_MS))
 
     @property
     def _frames_pre(self) -> int:
@@ -313,7 +313,7 @@ class TurnEngine:
 
         self._onset_frames = 0
         self._barge_frames = 0
-        self._eco_cauda_frames = 0
+        self._playback_frames = 0
         self._calibrando = False
         self._calibracao_vals: list[float] = []
         self._eco_ausente = False
@@ -344,23 +344,32 @@ class TurnEngine:
     def speaking(self) -> bool:
         return self._speaking
 
-    def _eco_ativo(self) -> bool:
-        """O eco ainda é a referência de energia? Vale enquanto o alto-falante
-        toca E por `eco_cauda_ms` depois: o servidor para de mandar áudio no
-        barge-in, mas o cliente ainda tem áudio bufferizado para tocar."""
-        return self._speaking or self._eco_cauda_frames > 0
+    def _playback_ativo(self) -> bool:
+        """JANELA de playback — e não a flag instantânea.
+
+        O handler marca o playback no ENVIO e desmarca quando a fila esvazia, o
+        que no regime de um chunk por vez vira um par `set_speaking(True)` +
+        `set_speaking(False)` no mesmo instante: a flag fica ligada ~0 ms e
+        qualquer decisão que dependa dela (contador de 300 ms do barge,
+        calibração de eco) nunca acumula. A janela mantém o regime de playback
+        enquanto ele toca E por `playback_janela_ms` depois do último stop (o
+        cliente ainda tem áudio bufferizado).
+
+        Vale também como "eco ainda é referência": é o que impede o eco
+        residual de virar fala fantasma."""
+        return self._speaking or self._playback_frames > 0
 
     def _base_energia(self) -> float:
         # eco declarado ausente (o playback não somou nível): o regime é o de
         # ocioso, senão o estímulo humano teria de superar o PRÓPRIO p90 + margem
         if self._eco_ausente:
             return self._noise_dbfs
-        return max(self._noise_dbfs, self._eco_dbfs) if self._eco_ativo() else self._noise_dbfs
+        return max(self._noise_dbfs, self._eco_dbfs) if self._playback_ativo() else self._noise_dbfs
 
     @property
     def limiar_energia_dbfs(self) -> float:
         """Limiar para ABRIR turno (dBFS). Durante o playback parte do eco."""
-        margem = (self.config.barge_in_margin_db if self._speaking
+        margem = (self.config.barge_in_margin_db if self._playback_ativo()
                   else self.config.energia_margin_db)
         return self._base_energia() + margem
 
@@ -370,7 +379,7 @@ class TurnEngine:
         (histerese): pausa de respiração não pode fechar o turno. Com eco ativo
         a margem volta a ser a do barge: o eco tem picos de ~6 dB acima da
         mediana e não pode ficar resetando o contador de silêncio."""
-        margem = (self.config.barge_in_margin_db if self._eco_ativo()
+        margem = (self.config.barge_in_margin_db if self._playback_ativo()
                   else self.config.energia_margin_turno_db)
         return self._base_energia() + margem
 
@@ -381,7 +390,7 @@ class TurnEngine:
                 "taxa_falso_barge_in": round(taxa, 4),
                 "noise_dbfs": round(self._noise_dbfs, 1),
                 "eco_dbfs": round(self._eco_dbfs, 1),
-                "eco_cauda_frames": self._eco_cauda_frames,
+                "playback_ativo": self._playback_ativo(),
                 "eco_ausente": self._eco_ausente,
                 "hold_to_talk": self._hold or self.config.hold_to_talk,
                 "hold_to_talk_sugerido": bool(
@@ -394,24 +403,25 @@ class TurnEngine:
         """Liga/desliga o estado de playback. `nivel_dbfs` (opcional) é o nível
         do chunk de TTS que vai para o alto-falante: dele sai o palpite inicial
         do eco, refinado pela EMA enquanto o usuário não fala."""
-        if ligado and not self._speaking:
+        subida = ligado and not self._playback_ativo()
+        if subida:
             palpite = (nivel_dbfs - self.config.eco_perda_inicial_db
                        if nivel_dbfs is not None else self._noise_dbfs + 6.0)
             self._eco_dbfs = float(np.clip(palpite, self.config.piso_ruido_dbfs,
                                            self.config.teto_ruido_dbfs + 20.0))
         self._speaking = bool(ligado)
-        self._barge_frames = 0
         self._nivel_payload = nivel_dbfs if ligado else None
-        if ligado:
+        if subida:
+            # SÓ na borda: no par True/False por chunk, reiniciar a cada chamada
+            # zeraria o contador de barge e a calibração antes de acumularem
+            self._barge_frames = 0
             self._eco_ausente = False
             self._barge_no_turno_emitido = False
-        # o stop não some com o eco: o cliente ainda tem áudio na fila
-        self._eco_cauda_frames = (0 if self._speaking
-                                  else self.config._frames_eco_cauda)
-        # o palpite do eco pode errar 6 dB para baixo e o próprio eco virar
-        # "fala": a calibração acha o nível real antes de contar barge
-        self._calibrando = self._speaking
-        self._calibracao_vals = []
+            self._calibrando = True
+            self._calibracao_vals = []
+        if not ligado:
+            # o stop não fecha a janela na hora: o cliente ainda tem áudio na fila
+            self._playback_frames = self.config._frames_playback
 
     def set_hold(self, pressionado: bool) -> list[TurnEvent]:
         """Fallback de UI "segurar pra falar": abre/fecha o turno no botão,
@@ -449,7 +459,7 @@ class TurnEngine:
 
     def reset(self) -> None:
         self._reset_turno()
-        self._eco_cauda_frames = 0
+        self._playback_frames = 0
         self._calibrando = False
         self._calibracao_vals = []
         self._env.clear()
@@ -496,11 +506,11 @@ class TurnEngine:
         prob = float(self._scorer(frame) if self._scorer is not None
                      else scorer_silero(frame))
         self._historico.append(_Quadro(amostra, frame, prob, env_dbfs))
-        if not self._speaking:
+        if not self._playback_ativo():
             self._pre_env.append(env_dbfs)
-        if not self._speaking and self._eco_cauda_frames:
-            self._eco_cauda_frames -= 1
-            if self._eco_cauda_frames == 0:
+        if not self._speaking and self._playback_frames:
+            self._playback_frames -= 1
+            if self._playback_frames == 0:
                 # herda o eco no piso: o que sobrou dele não pode virar "fala"
                 # fantasma (senão o STT transcreve o próprio TTS)
                 self._noise_dbfs = float(np.clip(max(self._noise_dbfs,
@@ -531,7 +541,7 @@ class TurnEngine:
         `barge_in` (sem `speech_start`) é o que evita reabrir o turno e perder o
         começo da fala do usuário, que veio antes do playback."""
         # turno aberto PELO barge já sinalizou o barge: não repete o evento
-        if (self._speaking and not self._barge_no_turno_emitido
+        if (self._playback_ativo() and not self._barge_no_turno_emitido
                 and not self._turno_barge):
             voz = self._voz(env_dbfs, prob, self.limiar_energia_dbfs)
             self._barge_frames = self._barge_frames + 1 if voz else 0
@@ -634,7 +644,7 @@ class TurnEngine:
             return
         if self._voz(dbfs, prob, self.limiar_energia_dbfs):
             return
-        if self._eco_ativo() and not self._eco_ausente:
+        if self._playback_ativo() and not self._eco_ausente:
             # O eco NÃO pode seguir o envelope para baixo: nas pausas entre
             # chunks do TTS o envelope cai e o estimador escorregava até o
             # ruído — aí o próprio eco voltava a passar do limiar. Faixa morta
@@ -659,7 +669,7 @@ class TurnEngine:
             self._barge_frames = 0
             return []
 
-        if self._speaking:
+        if self._playback_ativo():
             voz = self._voz(dbfs, prob, self.limiar_energia_dbfs)
             self._barge_frames = self._barge_frames + 1 if voz else 0
             self._onset_frames = 0

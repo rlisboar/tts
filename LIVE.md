@@ -11,6 +11,38 @@ resposta e o que foi **medido** (e não só escolhido) em cada limiar. O objetiv
 | `app.py` (`/api/live/ws`) | Handler da sessão: auth, TTL, tradução dos eventos para o fio |
 | `static/live-worklet.js` | Captura PCM16 no navegador (AudioWorklet) e playback cancelável |
 
+## Handler da sessão (`/api/live/ws`)
+
+Um WS por conversa, sem estado global de áudio: cada sessão tem fila própria e **uma
+única task escreve no socket** (o pipeline só enfileira). Auth é a MESMA das rotas —
+loopback dispensa, o resto precisa de credencial — e a credencial do navegador é um
+**ticket de um uso** (a chave não vai na query string):
+
+```bash
+curl -sX POST localhost:7860/api/live/ticket -H "X-API-Key: $CHAVE"   # {ticket, expires_in: 60}
+# depois:  new WebSocket("ws://host/api/live/ws?ticket=<ticket>")
+```
+
+`?key=<chave>` continua aceito (compat). **Em loopback o handshake nem consome o
+ticket** (auth dispensada) — smoke que teste "reuso recusado" precisa conectar pelo
+IP da LAN, não por `127.0.0.1`.
+
+| Controle | Env | Padrão |
+| --- | --- | --- |
+| sessões simultâneas (acima → `error{busy}` + close 1013) | `TTS_LIVE_MAX_SESSIONS` | 4 |
+| ociosidade da sessão (close 1000 + `error{session_ttl}`) | `TTS_LIVE_TTL_S` | 300 s |
+| retomada do histórico por `session_id` | `TTS_LIVE_RESUME_TTL_S` | 1800 s |
+| teto do histórico (mensagens / chars) | `TTS_LIVE_HIST_MAX_MSGS` / `TTS_LIVE_HIST_MAX_CHARS` | 24 / 12000 |
+| teto de históricos guardados | `TTS_LIVE_MAX_HISTORICOS` | 32 |
+| traço de depuração do turno | `LIVE_DEBUG_TTS=1` | off |
+
+Protocolo (o contrato completo está no comentário da seção no `app.py`):
+cliente → `setup` (1º frame; `session_id` opcional retoma), PCM16 16 kHz, `end_of_speech`,
+`cancel`, `ping`; servidor → `ready{resumed}`, `speech_start`/`speech_end`, áudio PCM16
+24 kHz, `transcript_user`, `assistant_text`, `turn_complete`, `interrupted`, `error`,
+`pong`. Turno marcado `curto`/`barge_falso` **abre igual** — quem descarta por eco é o
+pipeline (por texto, não por tempo).
+
 ## Turnos (motor)
 
 ### De onde vem a decisão de "começou a falar"
@@ -60,7 +92,12 @@ de cauda para o STT não receber uma frase decapitada.
 O mic continua sendo consumido durante o playback. O eco do alto-falante é
 tratado no MVP por **limiar adaptativo + energia sustentada**, sem AEC:
 
-1. ao começar o playback o handler chama `set_speaking(True, nivel_dbfs=…)`;
+1. ao começar o playback o handler chama `set_speaking(True, nivel_dbfs=…)`.
+   O motor trabalha com uma **JANELA** de playback (`playback_janela_ms`), não
+   com a flag instantânea: o handler marca no ENVIO do chunk e desmarca quando a
+   fila esvazia, então no regime de um chunk por vez isso é um par
+   `True`+`False` no mesmo instante e a flag fica ligada ~0 ms. Com a janela, o
+   par não zera o contador de barge nem a calibração;
 2. o motor **calibra** o nível do eco na primeira janela de áudio de verdade
    (~400 ms de áudio, estatística de quantil alto): o wav do TTS pode abrir em
    silêncio — uma janela de duração fixa calibraria o silêncio como eco — e a
@@ -74,10 +111,10 @@ tratado no MVP por **limiar adaptativo + energia sustentada**, sem AEC:
    teria de superar o próprio p90 + 4 dB (fala contínua não supera);
 4. durante o playback, um candidato precisa de `barge_in_ms = 300` de energia
    sustentada acima do limiar — o que derruba transiente de chunk e estalo;
-5. o stop do playback não some com o eco na hora: `eco_cauda_ms` (800 ms) mantém
-   a referência enquanto o cliente ainda tem áudio na fila, e ao acabar o nível
-   herdado vai para o piso de ruído para não virar "fala fantasma" (senão o STT
-   transcreve o próprio TTS).
+5. o stop do playback não fecha a janela na hora: ela segue por
+   `playback_janela_ms` (900 ms) — o cliente ainda tem áudio na fila — e ao
+   acabar o nível herdado vai para o piso de ruído para não virar "fala
+   fantasma" (senão o STT transcreve o próprio TTS).
 
 Se o humano começa a falar durante a calibração, o motor já conta o que foi
 sustentado e dispara o barge-in no fim da janela — com o áudio inteiro no
@@ -108,6 +145,7 @@ Bench offline com o Silero real, 21 wavs do app, 96 rodadas, eco de −42 a
 | barge-in detectado **sem eco** (mic falso, fone) | **100 %** (24/24) |
 | disparo **antes** de o humano falar | **0** em 97 disparos |
 | rodada com eco puro sem nenhum disparo | **96 %** (92/96) |
+| corte do playback no barge-in (`tests/live_ui.sh`, ponta a ponta) | **0 ms** (alvo <50 ms) |
 | latência fala → `barge_in` (p50) | ~0,5 s |
 | latência (p90, pior caso) | ~1,2 s |
 
@@ -232,6 +270,24 @@ palavras nunca é eco (conservador: descartar fala é pior que rodar um STT). Li
 conhecido: repetição de **2** palavras que existam no texto do assistente ("dia
 está") casa a janela e é classificada como eco — ajustável baixando `minimo` ou
 subindo o mínimo de palavras.
+
+### Por que o TTS do turno é IN-PROCESS (e não pelo `tts_worker`)
+
+O `tts_worker` existe para isolar crash nativo de famílias pesadas — mas ele
+CARREGA O MODELO A CADA JOB. Medido com `kokoro` (família isolada) e o mesmo
+texto curto:
+
+| caminho | 1º áudio |
+| --- | --- |
+| worker isolado (subprocesso por job) | **7,5 s** |
+| in-process, 1ª chamada (carrega o modelo) | 5,5 s |
+| in-process, chamadas seguintes | **0,24 s** |
+
+Com o alvo de 1,5 s, o worker só valeria como worker PERSISTENTE por sessão (P2);
+até lá o turno gera in-process, segurando o `_gen_lock`. O pre-warm Absorve a
+primeira carga. Troca assumida: nas famílias isoladas o modelo passa a viver no
+processo do servidor e um crash nativo derruba o app (no omnivoice — o default —
+isso já era o caso).
 
 ### Cancelamento
 
