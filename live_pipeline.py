@@ -201,8 +201,19 @@ class LivePipeline:
 
         O worker persistente (#152) sobe AQUI, fora do turno, e o pre-warm pula o
         TTS in-process quando ele assumiu (senão o modelo do pai ficaria carregado
-        à toa enquanto o filho tem o mesmo modelo)."""
+        à toa enquanto o filho tem o mesmo modelo).
+
+        #207: quem chama isto é uma THREAD (`_live_pipe_start`), e o `finally` do
+        WS fecha a sessão no caminho dele. Num abrir/fechar rápido o `close()` cai
+        ANTES ou NO MEIO daqui; sem consultar `_saiu`, o `start()` subia worker e
+        processo `dsh` para uma sessão já morta — ninguém mais chama `close()`, e
+        o processo (com 2 threads leitoras) ficava órfão a cada conexão curta."""
+        if self._saiu:                    # close() chegou antes: sessão já morreu
+            return
         worker_ok = self._worker_sobe()
+        if self._saiu:                    # close() no meio: não vale bootar o dsh
+            self.close()                  # fecha o worker que nasceu depois dele
+            return
         try:
             self._prewarm(voice_id=self.voice_id, tts_in_process=not worker_ok)
         except TypeError:                 # prewarm de teste sem os parâmetros
@@ -221,6 +232,12 @@ class LivePipeline:
                 self._dsh.prewarm()
             except Exception as exc:      # noqa: BLE001
                 self._dsh_morreu(exc)
+        if self._saiu:
+            # #207: o `close()` caiu DURANTE o boot. O processo que ele matou não
+            # é necessariamente o último: o backoff do `_garantir` (dsh_client)
+            # não consulta `_stopping` e sobe um processo NOVO para terminar a
+            # chamada. `close()` de novo é idempotente e leva esse junto.
+            self.close()
 
     def close(self) -> None:
         self._saiu = True
@@ -244,17 +261,22 @@ class LivePipeline:
         knob desligado ou o filho não subiu)."""
         if not _worker_habilitado():
             return False
-        self._worker = _LiveWorker(voice_id=self.voice_id)
+        # nome local (#207): o `close()` pode cair no meio e zerar `self._worker`
+        # entre a atribuição e o `.start()` — com o atributo direto, o handler de
+        # erro estourava em `None.fecha()` e o `start()` inteiro subia de exceção.
+        w = _LiveWorker(voice_id=self.voice_id)
+        self._worker = w
         try:
-            self._worker.start()
+            w.start()
             return True
         except Exception as exc:            # noqa: BLE001 — pre-warm falho não derruba
             self._worker_indisponivel = True
             self._worker_motivo = f"{type(exc).__name__}: {exc}"
             print(f"[live] worker TTS não subiu ({self._worker_motivo}) — "
                   f"sessão no in-process", flush=True)
-            self._worker.fecha()
-            self._worker = None
+            w.fecha()
+            if self._worker is w:           # close() já zerou: não ressuscitar
+                self._worker = None
             return False
 
     def _tts_live(self, texto: str, omni: dict):

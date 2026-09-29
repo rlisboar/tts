@@ -20,11 +20,11 @@ import pytest
 
 import app
 import live_pipeline as lp
-from test_api import dsh_limpo  # fixture de test_api (não está no conftest)
+from test_api import dsh_fake_bin, dsh_limpo  # fixtures de test_api (fora do conftest)
 
 # os imports de fixture são usados só como PARÂMETRO de teste, uso que o pyflakes
 # não enxerga (ele ignora `noqa`): `__all__` marca como usados e mata F401/F811.
-__all__ = ["dsh_limpo"]
+__all__ = ["dsh_fake_bin", "dsh_limpo"]
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +365,124 @@ def test_app_cria_cliente_por_sessao_e_fecha_com_ela(sessao_min):
 def _sessao(nome="sx"):
     return {"id": nome, "voice_id": None, "system": None, "history": [],
             "fila": queue.Queue()}
+
+
+# ---------------------------------------------------------------------------
+# #207: `start()` é chamado numa THREAD e o `finally` do WS pode fechar a sessão
+# antes (ou no meio) dele. O `_saiu` era escrito e nunca lido: a sessão morta
+# subia worker e processo `dsh` NOVOS, com 2 threads leitoras, e ninguém mais
+# chamava `close()` — um órfão por conexão curta.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def pipe_dsh_real(dsh_limpo, dsh_fake_bin, monkeypatch):
+    """Pipeline REAL com o processo do `fake_acp` (o ciclo de vida é o do alvo).
+
+    `_prewarm` falso: carregar os modelos aqui não muda o que se mede e custa
+    segundos. O `_dsh.prewarm()` do `start()` continua REAL — é ele que subia o
+    processo órfão."""
+    monkeypatch.setenv("TTS_CHAT_BACKEND_LIVE", "dsh")
+    monkeypatch.setattr(lp, "_worker_habilitado", lambda: False)
+    pipe = app._live_pipe_novo(_sessao("orfa"))
+    assert pipe._dsh is not None, "o teste precisa do processo de verdade"
+    monkeypatch.setattr(pipe, "_prewarm", lambda **kw: None)
+    try:
+        yield pipe
+    finally:
+        try:
+            pipe.close()
+        except Exception:                # noqa: BLE001 — limpeza best-effort
+            pass
+
+
+def test_start_sobe_o_dsh_da_sessao_viva(pipe_dsh_real):
+    """Controle: sem `close()` antes, o `start()` segue subindo tudo."""
+    pipe = pipe_dsh_real
+    pipe.start()
+    assert pipe._dsh.alive is True, "sessão viva tem de pre-warmar o dsh"
+
+
+def test_close_antes_do_start_nao_ressuscita_o_dsh(pipe_dsh_real):
+    """O caso do #207: o cliente cai logo após conectar e o `finally` do WS fecha
+    a sessão antes de a thread do `_live_pipe_start` entrar no `start()`."""
+    pipe = pipe_dsh_real
+    pipe.close()
+    pipe.start()
+    assert pipe._dsh.alive is False, "sessão morta não pode subir processo novo"
+
+
+def test_close_no_meio_do_prewarm_nao_sobe_o_dsh(pipe_dsh_real, monkeypatch):
+    """`close()` caindo DURANTE o pre-warm (segundos de modelo em produção): o
+    boot do dsh não precisa nem começar depois dele."""
+    pipe = pipe_dsh_real
+    entrou = threading.Event()
+
+    def prewarm_lento(**kw):
+        entrou.set()
+        time.sleep(0.3)
+
+    monkeypatch.setattr(pipe, "_prewarm", prewarm_lento)
+    th = threading.Thread(target=pipe.start, daemon=True)
+    th.start()
+    assert entrou.wait(2), "o start() tinha de estar dentro do pre-warm"
+    pipe.close()
+    th.join(5)
+    assert not th.is_alive(), "start() não pode ficar preso"
+    assert pipe._dsh.alive is False
+
+
+def test_close_durante_o_boot_do_dsh_nao_deixa_processo_orfo(pipe_dsh_real, monkeypatch):
+    """`close()` no MEIO do boot: o processo que ele mata não é o último — o
+    backoff do `_garantir` (dsh_client) sobe OUTRO para terminar a chamada."""
+    pipe = pipe_dsh_real
+    abrir = pipe._dsh._abrir_sessao
+    subir = pipe._dsh._subir
+    subidas = []
+    fechou = []
+
+    def subir_contando():
+        subidas.append(True)
+        return subir()
+
+    def fechar_e_abrir():
+        if not fechou:                   # o close() cai ANTES do `session/new`...
+            fechou.append(True)
+            pipe.close()                 # ...e o handshake morre no meio do `_subir`
+        abrir()
+
+    monkeypatch.setattr(pipe._dsh, "_subir", subir_contando)
+    monkeypatch.setattr(pipe._dsh, "_abrir_sessao", fechar_e_abrir)
+    pipe.start()
+    assert len(subidas) == 2, "o backoff tinha de ter subido um processo NOVO"
+    assert pipe._dsh.alive is False, "o processo do retry não pode ficar sem dono"
+
+
+def test_close_na_criacao_do_worker_nao_deixa_filho_orfao(dsh_limpo, monkeypatch):
+    """Mesma janela no worker persistente: ele nasce depois do `close()` e não
+    pode ficar com o filho vivo (nem estourar `None.fecha()` no caminho)."""
+    monkeypatch.setenv("TTS_CHAT_BACKEND", "openai")   # isola do dsh
+    monkeypatch.setattr(lp, "_worker_habilitado", lambda: True)
+    criados = []
+
+    class WorkerFalso:
+        def __init__(self, voice_id=None):
+            self.fechado = False
+            criados.append(self)
+            pipe.close()                 # o cliente cai NA CRIAÇÃO do worker
+
+        def start(self):
+            self.iniciado = True
+
+        def fecha(self):
+            self.fechado = True
+
+    monkeypatch.setattr(lp, "_LiveWorker", WorkerFalso)
+    pipe = app._live_pipe_novo(_sessao("worker-orfao"))
+    pipe._prewarm = lambda **kw: None
+    pipe.start()
+    assert len(criados) == 1, "o worker tinha de ter sido criado"
+    assert criados[0].fechado is True, "worker criado após o close() fica órfão"
+    assert pipe._worker is None
 
 
 def test_backend_do_live_e_do_live_a_conversa_segue_no_global(monkeypatch):
