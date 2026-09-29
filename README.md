@@ -4,8 +4,10 @@ Clonagem de voz 100% local para Mac (Apple Silicon). Grava sua voz pelo navegado
 gerencia perfis de voz e gera fala natural com o **OmniVoice (Xiaomi/k2-fsa)
 quantizado e rodando via MLX** — zero-shot, 646 idiomas, mais rápido que tempo real no M3.
 
-Roda inteiro no Mac. **Nada do seu áudio ou texto sai da máquina por padrão** —
-só o que você ligar em Configurações → Rede (ver *O que pode sair da máquina*).
+Roda inteiro no Mac. **Nada do seu áudio sai da máquina** e o texto só sai pelo
+que você ligar em Configurações → Rede — ou, na Conversa e no Live, se você
+escolher a IA pelo harness `dsh`, cuja rota é a que estiver configurada nele
+(ver *O que pode sair da máquina*).
 
 ## Requisitos
 
@@ -436,6 +438,115 @@ Sessões de conversa para decidir, com IA, o texto que um agente vai falar.
 Provedor OpenAI-compat configurável nas settings (`chat_base_url`,
 `chat_model`, `chat_api_key` — vazio herda `remote_base_url`).
 
+### Backend alternativo: `dsh` (harness local via ACP)
+
+Em vez do endpoint+chave, a IA da Conversa (e, com o DSH-2, a do Live) pode rodar
+no harness **dsh** já instalado na máquina, por um perfil próprio sem tools
+(`~/.dsh/profiles/tts-studio`). `chat_backend: "dsh"` liga o caminho; `"openai"`
+(default) mantém o comportamento acima **intacto**. O processo é persistente e
+recebe pre-warm, porque o boot custa 2–4 s e o 1º prompt de uma sessão paga
+1,3–7 s sozinho (medido; ver task_129d2183).
+
+Campos (todos admin): `chat_backend_live` (vazio = herda `chat_backend`; ver
+abaixo), `chat_dsh_bin` (default `dsh`, resolvido no PATH),
+`chat_dsh_profile` (default `tts-studio`), `chat_dsh_model` (par opaco JSON
+`["rota","modelo"]`; default seguro `["dsflash","deepseek-flash-41"]`, porque a
+rota default do catálogo fica sem chave e falha `-32603`) e `chat_dsh_effort`
+(`off|low|high|max`, default `off`). Env equivalente, por campo:
+`TTS_CHAT_BACKEND` / `TTS_CHAT_DSH_{BIN,PROFILE,MODEL,EFFORT}`.
+
+**Conversa e Live podem usar backends DIFERENTES** (#176): `chat_backend` vale para
+a Conversa e é a herança; `chat_backend_live` (env `TTS_CHAT_BACKEND_LIVE`) vale só
+para o Live e **vazio herda** o global. Motivo: as recomendações de rota divergem —
+no Live o dsh entrega o 1º token em ~0,4 s contra 4–11 s do provedor remoto, e na
+Conversa o provedor do dono serve bem. Ex.: `chat_backend=openai` +
+`chat_backend_live=dsh` mantém a Conversa no endpoint e põe o Live no harness.
+
+Invariantes do caminho dsh: `session/request_permission` é **sempre negada**
+(nada de tool executando); `mcpServers: []`; cwd = diretório vazio do app; env do
+filho é mínimo (as nossas chaves não vão — o dsh lê `~/.dsh/.credentials.yaml`).
+O texto vai para a rota do dsh (configuração explícita do dono), como já acontece
+com o provedor.
+
+#### Patch local do bridge ACP (streaming de verdade — task DSH-4a)
+
+O `@deepseek-ai/dsh-acp` assina só `session/event` → `assistant/message` (comitado),
+então o ACP entregava **um** `agent_message_chunk` no FIM da geração (medido: 74 s
+numa resposta de 1,7 k chars) — os deltas do provedor existem em
+`agent/assistant-stream` e só o app web os consumia. `scripts/dsh-acp-stream.patch.js`
+é o patch textual (versionado) e `scripts/dsh-acp-stream-patch.mjs` é o aplicador
+idempotente: ele exige que cada âncora do arquivo case **exatamente uma vez** e
+falha alto (rc=2) se o pacote mudar de forma.
+
+- Alvo real: `$(npm root -g)/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-acp/lib/index.js`
+  (a dependência é aninhada do `dsh`; versão verificada: `0.1.5-rc.3`).
+- Backup ao lado (`index.js.orig-<versão>`) + marcador `DSH4A_PATCH_V1` no arquivo.
+- Marca os deltas com `partial: true` e a mensagem comitada com `partial: false`
+  (mesmo `messageId`) — quem deduplica é `dsh_client._nao_duplicar`; sem a marca,
+  o cliente continua correto, só mais lerdo.
+
+```sh
+node scripts/dsh-acp-stream-patch.mjs --status    # PATCHADO (rc=0) | LIMPO (rc=1) — não escreve
+node scripts/dsh-acp-stream-patch.mjs --dry-run   # mostra as âncoras e o diff de linhas — não escreve
+node scripts/dsh-acp-stream-patch.mjs             # aplica; se já patchado, no-op idempotente
+node scripts/dsh-acp-stream-patch.mjs --reapply   # GARANTE patchado (reverte se houver backup, aplica de novo) — é o remédio depois de `npm install -g @deepseek-ai/dsh`
+node scripts/dsh-acp-stream-patch.mjs --revert     # ROLLBACK num comando (exige o backup)
+node scripts/dsh-acp-stream-patch.mjs --help      # o mesmo texto, sem exigir o pacote
+```
+
+Semântica completa das flags (e o que cada uma faz quando o backup não existe) em
+`scripts/README.md`; o `--help` repete a tabela.
+
+##### Trace do bridge (diagnóstico, ligado por arquivo)
+
+Para correlacionar as pontas sem mexer em env: enquanto `/tmp/dsh4a-trace.on`
+existir, o bridge grava um JSONL por evento cru recebido e por `session/update`
+emitido em `/tmp/dsh4a-trace.jsonl`; sem o arquivo, o custo é um `existsSync` na
+primeira chamada. `python3 evidence/dsh-acp-tres-pontas.py 3 persona` liga, mede e
+compara bridge × cliente no mesmo turno.
+
+Foi assim que o DSH-4b localizou o "resto da resposta em bloco": é **upstream** — a
+rota LLM (`dsflash`) para 17–88 s no meio da geração e despeja a cauda de uma vez; o
+bridge recebe em bloco e repassa em 1 ms (prova em
+`evidence/dsh-acp-DSH-4b-EVIDENCIA.md`). O patch não é a causa e não há contorno
+nosso.
+
+**Provedor com preempção estraga a cauda.** O `dsflash` emite o 1º token em ~0,4 s e
+às vezes trava 17–88 s no meio (provedor, não o nosso lado; medido no fio). A rota
+alternativa do `~/.dsh/settings.yaml` (OpenRouter) não trava no meio, mas paga 5,6–43 s
+no **1º token** — inaceitável para o Live, que vive do 1º áudio. Por isso o default
+segue `dsflash`; **trocar de rota é decisão do dono** (`chat_dsh_model` em
+Configurações → IA), e o trade-off é: cauda com rajada x cabeça lenta.
+
+Descobrir os modelos/efforts disponíveis (com cache; a rota 400/502 traz o motivo):
+
+```sh
+curl -s $BASE/api/chat/dsh/models -H "X-API-Key: $KEY" | jq '.models[].id'
+```
+
+Na UI (Configurações → Rede & memória → *Backend da IA da Conversa*) a escolha é
+um seletor: `Endpoint + chave` (campos de Base URL/modelo/chave, comportamento de
+sempre) ou `dsh`, que troca o bloco pelos campos do harness — binário, perfil,
+modelo (lista preenchida pelo próprio dsh via `/api/chat/dsh/models`, com estado
+de carregando porque a descoberta leva 1–4 s) e effort. Os 5 campos são
+administrativos. Dois detalhes que a tela deixa explícito e valem para quem
+mexer no código:
+
+- a descoberta usa o binário/perfil **salvos** (o endpoint lê settings, não o
+  formulário): mudou o campo → Salvar → Recarregar; e se a descoberta falha o
+  erro aparece com o motivo, sem esvaziar o seletor de modelo (senão o save
+  seguinte apagaria o valor guardado);
+- `effort ≠ off` liga o raciocínio e pode **estourar o orçamento de latência do
+  Live** (1,5 s no 1º áudio) — no Live `off` é o default por isso.
+
+O env `TTS_CHAT_DSH_*` tem precedência sobre o settings (padrão `TTS_CHAT_*`):
+com ele setado, o campo correspondente na tela fica decorativo.
+
+Contexto longo: numa sessão ACP o contexto vive no harness, então a compressão do
+Live não se aplica a ela. Ao bater o teto (`TTS_DSH_CTX_MAX_MSGS`/
+`TTS_DSH_CTX_MAX_CHARS`, iguais aos do Live), a sessão é fechada e uma sessão NOVA
+recebe o resumo + os últimos turnos. A persona vai no 1º prompt de cada sessão.
+
 Se a admissão do TTS recusar a síntese de um bloco com **429** (`TTS_JOBS_ACTIVE_MAX`),
 a Conversa repete aquele bloco **uma vez** depois do `Retry-After` do servidor, em
 vez de engolir a frase: pico de jobs concorrentes (ex.: API externa martelando)
@@ -482,12 +593,19 @@ Rede):
 | STT remoto (`remote_stt`) | o áudio da fala a transcrever | `remote_stt_base_url` (ou `remote_base_url`) |
 | Tradução remota (`remote_translate`) | o texto a traduzir | `remote_base_url` |
 | Base URL da Conversa (`chat_base_url`) | histórico da conversa + preprompt | `chat_base_url` (ou `remote_base_url`) |
+| Backend de IA pelo harness `dsh` (`chat_backend: "dsh"`, na Conversa e no Live) | o texto do turno; no modo histórico, o histórico renderizado. **Nada de áudio.** | a rota do provedor escolhida no `chat_dsh_model` — que, por default, é um provedor remoto; trocar o modelo pode trocar a rota |
 
 A chave do provedor (`remote_api_key`, `remote_stt_key`, `chat_api_key`) vai no
 header da requisição, só para a URL configurada — e com uma chave de uso ela nem
-é lida em claro (ver *Administração x uso*). Fora do fluxo de fala, o único
-tráfego é o que você pede: download do Hugging Face na primeira carga do modelo e
-o vídeo no `/api/youtube-audio`.
+é lida em claro (ver *Administração x uso*). No caminho `dsh` a credencial fica
+com o próprio harness (`~/.dsh/.credentials.yaml`): o app não lê nem copia o
+arquivo. Fora do fluxo de fala, o único tráfego é o que você pede: download do
+Hugging Face na primeira carga do modelo e o vídeo no `/api/youtube-audio`.
+
+O caminho `dsh` é o mesmo material que já sairia pelo `chat_base_url` quando a
+Conversa usa um endpoint remoto — a diferença é QUEM fala com o provedor (o
+harness, na sua máquina, com a rota dele) e não o conteúdo. Para ficar 100% local
+nele, escolha um modelo cuja rota aponte para um provedor na sua rede.
 
 **Mesmo com o modelo já baixado**, a primeira carga do Whisper em cada processo
 confere os metadados do repo no Hugging Face (`snapshot_download` resolve a
@@ -557,6 +675,9 @@ TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest tests/test_worker.py -q
 # Conversa: retry do 429 de admissão do TTS (determinístico, sem carregar modelo)
 ./tests/conversa_429.sh
 
+# deep-link por hash (#live): sobe servidor próprio em porta livre, sem modelo
+./tests/hash_deep_link.sh
+
 # Live: motor de turnos (falso barge-in, latência). Ver LIVE.md.
 ./.venv-mlx/bin/python -m pytest tests/test_live_turns.py -q   # sem MLX/Metal
 ./.venv-mlx/bin/python smoke_live_turns.py                     # precisa de voices/
@@ -567,3 +688,20 @@ Pre-commit opcional (pyflakes + pytest antes de cada commit):
 ```bash
 git config core.hooksPath .githooks
 ```
+
+### Pin de arquivo em veredito (sha256-8)
+
+Veredito e gate dizem *qual* versão mediram citando o arquivo com um hash de 8
+dígitos — sem isso, "a tela mudou" vira discussão e alguém re-mede outra coisa.
+
+```bash
+shasum -a 256 static/index.html | cut -c1-8     # ex.: 0198ae84
+```
+
+É **sha256** e truncado em 8 (não md5, não o blob do git): `git hash-object`
+devolve o hash do *objeto* do git e não bate com o do arquivo, o que já fez
+gente achar que a tela tinha mudado sem ter. `mtime` também não serve de pin —
+restauro com `cp -p`/`rsync -a` preserva data e troca conteúdo.
+
+Quem altera um arquivo pinado re-pina no mesmo lugar (e, se houver gate aberto,
+avisa: a versão dele acabou de deixar de ser a medida).

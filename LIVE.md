@@ -2,9 +2,11 @@
 
 Como o Live funciona por dentro: sessão WebSocket, motor de turnos, pipeline de
 resposta e o que foi **medido** (e não só escolhido) em cada limiar. O objetivo
-é uma conversa estilo Gemini Live rodando 100% local: nenhum áudio e nenhum
-texto saem da máquina. A única exceção é a checagem de metadados do Whisper na
-primeira transcrição do processo — ver *Egress* abaixo.
+é uma conversa estilo Gemini Live rodando 100% local: **nenhum áudio sai da
+máquina** e o texto só sai pelo provedor de IA que estiver escolhido. As exceções
+são a checagem de metadados do Whisper na primeira transcrição do processo, o
+provedor de chat remoto (quando configurado) e o backend `dsh`, cuja rota é a do
+harness — ver *Egress* abaixo.
 
 | Módulo | Papel |
 | --- | --- |
@@ -36,14 +38,99 @@ IP da LAN, não por `127.0.0.1`.
 | retomada do histórico por `session_id` | `TTS_LIVE_RESUME_TTL_S` | 1800 s |
 | teto do histórico (mensagens / chars) | `TTS_LIVE_HIST_MAX_MSGS` / `TTS_LIVE_HIST_MAX_CHARS` | 24 / 12000 |
 | teto de históricos guardados | `TTS_LIVE_MAX_HISTORICOS` | 32 |
+| janela de barge INTRA-TURNO (#167, hoje desligada — ver medição abaixo) | `TTS_LIVE_BARGE_JANELA_TURNO` | 0 |
+| janela de barge pela DURAÇÃO REAL do chunk (#167, idem) | `TTS_LIVE_PLAYBACK_DURACAO` | 0 |
+| cadência do evento `stats` de telemetria | `TTS_LIVE_STATS_MS` | 250 ms (0 desliga) |
 | traço de depuração do turno | `LIVE_DEBUG_TTS=1` | off |
+
+O teto de sessões é decidido NO REGISTRO (depois do `setup`, atômico com a inserção):
+antes disso a checagem ficava no connect e duas conexões que passassem juntas furam o
+limite — e o cliente só descobre que o `session_id` retoma depois de mandar o `setup`,
+então `busy` chega nesse ponto (uma retomada SUBSTITUI a entrada e não conta).
 
 Protocolo (o contrato completo está no comentário da seção no `app.py`):
 cliente → `setup` (1º frame; `session_id` opcional retoma), PCM16 16 kHz, `end_of_speech`,
 `cancel`, `ping`; servidor → `ready{resumed}`, `speech_start`/`speech_end`, áudio PCM16
 24 kHz, `transcript_user`, `assistant_text`, `turn_complete`, `interrupted`, `error`,
-`pong`. Turno marcado `curto`/`barge_falso` **abre igual** — quem descarta por eco é o
-pipeline (por texto, não por tempo).
+`prewarm{ok}`, `pong` e `stats` (telemetria, abaixo). Turno marcado `curto`/`barge_falso`
+**abre igual** — quem descarta por eco é o pipeline (por texto, não por tempo).
+
+Fala que chega com turno em curso NÃO é mais descartada (#126): os trechos se
+ACUMULAM num único pendente (frase completada em dois pedaços vira um turno só) e
+abrem quando o pipeline liberar, precedidos do evento aditivo
+`turno_pendente{buffer_bytes, trechos, descartados_ms, barge_in, truncado}`
+("anotei, respondo já"): `trechos` é QUANTOS pedaços já se acumulam no pendente e
+`descartados_ms` é quanto de áudio saiu no teto (`truncado: true`) — o booleano
+`substituido` do primeiro desenho não dizia se o corte fora de 20 ms ou de 20 s.
+Teto de `TTS_LIVE_PENDENTE_MAX_S` (30 s): estourou, sai o trecho MAIS ANTIGO e o
+evento vem com `truncado: true`. O turno em si vem na sequência normal
+(`speech_start` → `turn_complete`), inclusive quando o turno anterior termina em
+`error` (não herda) — o caminho de erro acorda o pendente como o `turn_complete`.
+O `cancel` do cliente limpa o pendente; barge-in mantém (a fala que interrompeu abre
+turno próprio). O `stats.turno` ganha `pendente`, `pendentes_trechos`,
+`pendentes_descartados_ms` e `pendentes_descartados`.
+
+### Telemetria da sessão (`stats` + log de metadados)
+
+Enquanto a sessão está aberta, o servidor emite um JSON `stats` a cada
+`TTS_LIVE_STATS_MS` (250 ms; 0 desliga) pela MESMA fila do resto do fio — o evento
+é **aditivo**: nenhum evento existente mudou. O painel da UI (#119) se alimenta
+dele; contrato completo no comentário da task #118. Formato:
+
+```json
+{"type": "stats", "t_ms": 41200,
+ "mic":      {"frames": 431, "bytes": 1379200, "desde_ultimo_ms": 42, "dbfs": -31.4, "prob": 0.87},
+ "motor":    {"estado": "ouvindo", "limiar_dbfs": -45.2, "limiar_turno_dbfs": -48.1,
+              "barge_ativos": 0, "barge_falsos": 0},
+ "turno":    {"stage": "llm", "ms": 812, "n": 7, "buffer_bytes": 95232, "t_decisao_ms": 486},
+ "playback": {"speaking": true, "chunks": 12, "bytes": 284160},
+ "sessao":   {"idade_s": 41, "ocioso_ms": 130, "ttl_s": 300, "criadas": 2, "historicos": 1},
+ "erro":     {"code": "pipeline", "stage": "tts", "idade_ms": 2100},
+ "provedor": {"estado": "ok", "http": 200, "idade_ms": 3400}}
+```
+
+- `mic.dbfs` é o RMS do áudio do cliente medido **no servidor** e
+  `mic.desde_ultimo_ms` a idade do último frame — é o par que distingue "o mic
+  parou de mandar" (bug #117) de "o servidor parou de processar";
+- `motor.estado` deriva `ouvindo`/`fechando` além dos estados da FSM; os
+  `limiar_*` são os VIGENTES (com eco do playback eles sobem — é o número que
+  explica um barge-in não disparar);
+- `turno.stage` (`idle|stt|llm|tts`) com `ms` no estágio e `t_decisao_ms` do
+  orçamento de latência; `playback.speaking` é a MESMA janela que alimenta o
+  limiar de eco (`set_speaking`);
+- `erro` e `provedor` só aparecem quando há ocorrência; `provedor` é do
+  PROCESSO (não da sessão) e mostra `ok|erro{http}|timeout` da última chamada
+  ao provedor de chat.
+
+O log da sessão vai no logger `live` (INFO; `LIVE_LOG=0` desliga), uma linha
+`chave=valor` por evento de metadados: abre/resume/fecha, speech_start/speech_end
+(com `fala_ms`, `curto`, `barge_falso`), stage_inicio/stage_fim com ms, barge_in,
+interrupted, cancel, erros. **Invariante de privacidade: nunca áudio nem texto
+transcrito/gerado no log** — o teste `test_live_ws_log_só_metadados` prova (o
+texto do transcript NÃO aparece). Foi a ausência desse log que deixou o #117 sem
+diagnóstico.
+
+### Painéis de monitoramento no cliente (OBS)
+
+O painel do Live nasceu na #119; a #120 extraiu o núcleo dele para um componente
+ÚNICO, reusado pelas telas que captam ou tocam áudio — sem cópia por tela:
+
+- `OBS` — malha **única** de `requestAnimationFrame` para todas as barras de áudio
+  do app (`OBS.barras`: id→callback; o loop só existe enquanto há barra registrada
+  e para sozinho quando a última sai). O Live registra/desregistra na mesma engine.
+- `obsLog(el, txt, cls)` — log com timestamp e teto de linhas (textNode: sem
+  injeção de HTML).
+- `criaObsMonitor(mount, opts)` — fábrica do painel (medidor de entrada e/ou saída
+  opcionais, chip de estado, contadores por `setInfo` e log em `<details>`);
+  `micFilteredStream(base, obs)` é o hook único: com `obs`, sempre há analyser
+  (reusa o da cadeia filtrada; no modo transparente levanta um ctx mínimo só para o
+  tap, sem tocar no áudio gravado) e `close()` desanexa.
+
+Painéis: ditado/STT (`#obsStt`), gravação de amostra e biometria (`#obsVozes`),
+Conversa (`#obsCv`, sem medidor — o mic ali é do MicVAD, declarado no painel) e
+progresso dos jobs de TTS (`#obsTts`, contadores de trecho/status/tempo).
+Verificação: `tests/obs_ui.sh` (Playwright, mic falso real, console sem erro de
+script) + `evidence/120-obs-*.png`.
 
 ## Turnos (motor)
 
@@ -211,6 +298,23 @@ baixá-lo. Provedor de chat remoto (`chat_base_url`) é egress de TEXTO por
 desenho; com o provedor em loopback, sobra só o HEAD acima. O detalhe está
 também em *Privacidade e uso responsável* no `README.md`.
 
+#### Com o backend de IA `dsh`
+
+O egress de texto acima supõe o provedor HTTP do app. Com
+`chat_backend: "dsh"` o texto do turno (e, no modo histórico, o histórico
+renderizado) não vai para o `chat_base_url`: sai pela ROTA que estiver
+configurada no harness — que, no default de `chat_dsh_model`, é um provedor
+remoto. Quem fala com o provedor é o processo `dsh` da sessão, com a credencial
+dele (`~/.dsh/.credentials.yaml`; o app não lê nem copia). Trocar o modelo pela
+UI troca a rota; um modelo apontando para um provedor da sua rede deixa o caminho
+local. É o mesmo material que já iria para o `chat_base_url` quando o provedor é
+remoto — muda quem pergunta, não o conteúdo.
+
+O que **não** muda: **o áudio continua com zero egress** nos dois backends (nem
+PCM do cliente, nem áudio do TTS saem da máquina) e o HEAD de metadados do
+Whisper na primeira transcrição de cada processo vale igual. Com o dsh fora (ver
+o fallback acima), o turno volta ao `chat_base_url` e o egress é o de sempre.
+
 ### Executar
 
 ```bash
@@ -236,7 +340,57 @@ thread própria (os helpers de STT/TTS do app são sync e disputam
 | pre-warm (no `ready`) | 8–12 s, **1× por processo** | whisper + TTS com a voz da sessão + 1 request ao LLM |
 | turno completo (5,9 s de fala) | ~4 s | chunk a 160 chars, passos do setting |
 
-Três decisões fazem o alvo caber, todas por medição:
+**DE QUAL CENÁRIO SÃO ESTES NÚMEROS (#173):** são do cenário LOCAL — o `live_ws.sh` sobe
+um stub de chat SSE na própria máquina e é contra ele que o alvo de 1,5 s é aferido. Com
+provedor de chat REMOTO o alvo NÃO vale: o `first_token` sozinho já custa segundos (medido
+direto no provedor do dono, sem app, uma pergunta de uma linha: **TTFT 4,3 / 7,9 / 4,5 s**,
+total 5,1–8,9 s; o smoke de release viu 7,1 / 8,1 / 16,5 s e o Live fechou o 1º áudio em
+~31 s). Ali o esperado é `STT + TTFT + 1º chunk` — **segundos, não 1,5 s** — e não é defeito
+do app: o turno não tem fallback, retry nem erro (STT 389 ms, TTS normal). O provedor é
+escolha do dono, então "o Live está lento" com provedor remoto é o comportamento publicado
+aqui, não regressão.
+
+Bimodalidade medida no mesmo provedor (mesma família do #160, mas na rota do provedor de
+chat do dono, não no dsh): em parte das chamadas ele devolve a resposta INTEIRA num único
+delta — ignorando `stream` — e nas outras ~60 deltas. Com um delta só, `first_chunk_ms` é o
+FIM da geração e empata com `first_token_ms`: o `SentenceChunker`/playback aguentam, mas
+quem lê o painel não pode tratar `first_token_ms` como "fluidez" quando o provedor responde
+em bloco.
+
+#### TTFT por rota — quanto cada escolha custa no Live (#175)
+
+Tudo aqui é `1º token` do LLM (o resto do turno soma STT ~0,3 s + 1º chunk de TTS ~0,25 s).
+Medições de 29/09, método e procedência por linha; **nenhuma promessa de latência, é
+orientação de escolha**:
+
+| rota / modelo | 1º token | como foi medido |
+| --- | --- | --- |
+| **stub local** (o do `live_ws.sh`) | ~0,01 s | SSE na própria máquina; é o cenário do alvo de 1,5 s |
+| **`dsh` / rota `dsflash`** | **0,38–0,47 s** | cliente ACP real, 6 turnos (api-backend #147/#162 e minha rodada); o infra confirmou no probe cru |
+| OpenRouter (`z-ai/glm-5.3-flash`) | 5,6–12,6 s | infra, #160; em troca, NÃO preempta no meio (gaps < 0,4 s) |
+| provedor do dono, `glm-5.3-flash` (hoje) | **4,3–11,0 s** (mediana ~7,6 s) | API direta, sem app, 2 rodadas × 3 amostras; o smoke de release viu 7,1 / 8,1 / 16,5 s |
+| mesmo provedor, `glm-5-turbo` | 4,2–9,9 s (mediana 4,6 s) | idem, 3 amostras |
+| mesmo provedor, `glm-4.5-air` | 4,3–7,9 s (mediana 6,6 s) | idem, 3 amostras |
+| mesmo provedor, `glm-5.3-flashx` | não medido | a chave devolveu 429 em todas as tentativas de hoje |
+
+Leitura: a rota do `dsh` é **uma ordem de grandeza** melhor no 1º token (0,4 s contra
+segundos) — e é o que o Live precisa, porque o Live vive do 1º áudio; a ressalva é a cauda
+do `dsflash` (preempção do provedor, seção acima), que atrasa o MEIO da resposta mas não o
+começo. Trocar de MODELO dentro do provedor atual não muda a ordem de grandeza (4–10 s em
+três modelos diferentes): não é "troque de fornecedor", é "provedor remoto de propósito
+geral não é bom para o 1º áudio".
+
+**RECOMENDAÇÃO:** para o LIVE, use o backend `dsh` (`chat_backend: "dsh"` em Configurações →
+IA) — 1º token sub-segundo; para a CONVERSA, o provedor atual serve bem (lá ninguém espera
+1,5 s). Tudo isso depende da conta/rota do dono: as linhas de provedor são da chave dele, e a
+rota do `dsh` também é escolha dele (`chat_dsh_model`).
+
+**LIMITE ATUAL da recomendação:** `chat_backend` é GLOBAL — escolher `dsh` para melhorar o
+Live também põe a Conversa no `dsh`. O campo por caminho (`chat_backend_live`, herdando do
+global) está na **task_b5223fc6 (#176)**; até ele existir, quem quiser a melhor config do Live
+aceita o `dsh` também na Conversa.
+
+Três decisões fazem o alvo caber (no cenário local), todas por medição:
 
 1. **1º chunk curto e rápido** (`first_max=18`, `first_chunk_max_steps=12`): a
    geração custa ~0,45 s a 16 passos e ~0,35 s a 12; com 48 chars o 1º chunk
@@ -298,23 +452,102 @@ conhecido: repetição de **2** palavras que existam no texto do assistente ("di
 está") casa a janela e é classificada como eco — ajustável baixando `minimo` ou
 subindo o mínimo de palavras.
 
-### Por que o TTS do turno é IN-PROCESS (e não pelo `tts_worker`)
+### TTS do turno: in-process — exceto família isolada, que usa worker PERSISTENTE
 
-O `tts_worker` existe para isolar crash nativo de famílias pesadas — mas ele
-CARREGA O MODELO A CADA JOB. Medido com `kokoro` (família isolada) e o mesmo
-texto curto:
+O `tts_worker` (processo filho) existe para isolar crash nativo de famílias
+pesadas, mas CARREGA O MODELO A CADA JOB — medido com `kokoro` (família isolada) e
+o mesmo texto curto: **8,5 s** de 1º áudio por pedido contra 121 ms no in-process
+quente. Com o alvo de 1,5 s, família isolada ficava fora do Live.
 
-| caminho | 1º áudio |
+A #152 resolveu com um worker PERSISTENTE POR SESSÃO: o filho sobe no pre-warm
+(fora do turno, junto do aquecimento dos outros modelos), carrega o modelo UMA vez
+e atende N turnos por NDJSON em stdin/stdout (`tts_worker.py --serve`), com
+`close`/kill quando a sessão morre. Medido no app real
+(`smoke_worker_persist.py`, 1º áudio do turno, pre-warm fora da conta):
+
+| caminho | 1º áudio do turno |
 | --- | --- |
-| worker isolado (subprocesso por job) | **7,5 s** |
-| in-process, 1ª chamada (carrega o modelo) | 5,5 s |
-| in-process, chamadas seguintes | **0,24 s** |
+| worker por job (o que existia) | **8515–9114 ms** |
+| in-process, 1º chunk depois do pre-warm | 2518–2783 ms |
+| in-process, 2º turno (mesmo texto) | 83–121 ms |
+| **worker persistente, 1º chunk** | **487–507 ms** |
+| worker persistente, 2º turno | 84–87 ms |
 
-Com o alvo de 1,5 s, o worker só valeria como worker PERSISTENTE por sessão (P2);
-até lá o turno gera in-process, segurando o `_gen_lock`. O pre-warm Absorve a
-primeira carga. Troca assumida: nas famílias isoladas o modelo passa a viver no
-processo do servidor e um crash nativo derruba o app (no omnivoice — o default —
-isso já era o caso).
+Escopo: SÓ o caminho do Live. `/api/tts/jobs` continua UM processo por job (lá a
+isolação por job é desejada). `TTS_LIVE_WORKER=0` desliga o worker do Live; ele só
+liga para família de `_ISOLATED_FAMILIES` (omnivoice — o default — segue
+in-process).
+
+**Exclusividade de Metal** (o desenho da task): o árbitro é o `app._gen_lock` — o
+MESMO lock da geração in-process e do spawn do worker de lote (que o segura pelo
+job inteiro). O cliente do worker toma esse lock no `init` e em CADA pedido, então
+nunca há duas gerações no Metal. Com o worker vivo a sessão NÃO gera in-process;
+na 1ª falha (filho morto, timeout, erro do filho) ela marca `worker_indisponivel`,
+regera aquele chunk in-process e segue assim até o fim — mesmo padrão do fallback
+do dsh. O modelo do pai é liberado quando o filho assume (`_unload_local_tts`),
+para não carregar o mesmo modelo duas vezes. Consequência medida: um turno do Live
+espera o job de lote terminar (8,4 s no teste D do smoke) — sem atropelo, os dois
+saem com áudio (RMS 0,0333).
+
+Cobertura: `tests/test_live_worker.py` (rápido, filho STUB — protocolo, reuso do
+processo, crash → fallback, lock, ciclo de vida; RODA no `pytest tests/ -q`) e a
+suíte opcional do caminho LIGADO com modelo real, marcada como **`worker_real`**:
+
+```bash
+TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+```
+
+(os tests `worker_real` — worker isolado por job, worker persistente `--serve` e o
+pipeline do Live usando o worker — ficam SKIPPED sem o env. O cabeçalho do pytest
+avisa em todo run que esse caminho está fora do default, senão `pytest tests/ -q`
+vira falso verde aqui.) Evidência de latência: `smoke_worker_persist.py`.
+
+**Bug de terceiro achado no caminho** (patch em
+`backends._patch_kokoro_interpolate`): o `interpolate` do `mlx_audio` calcula
+`size = ceil(n * scale)`, e `34200 * (1/300)` em float dá 114.00000000000001 — o
+ceil vira 115, o ida-e-volta do `_f02sine` devolve 34500 e o `uv` continua 34200,
+estourando `Shapes (1,34200,1) and (1,34500,9) cannot be broadcast`. Atinge ~1/4
+dos textos curtos ("Ok.", "Oi", "Bom dia", "Certo.") — justamente os primeiros
+chunks do Live. O patch (arredondar o produto antes do ceil) é aplicado no
+namespace do istftnet, já que o venv é reinstalado pelos pinos do requirements.
+
+**PATCH DE TERCEIRO EM RUNTIME — não "conserte" o venv.** Se o Kokoro voltar a
+estourar `cannot be broadcast` em texto curto e você for olhar o
+`.venv-mlx/lib/python3.12/site-packages/mlx_audio/tts/models/kokoro/istftnet.py`,
+vai encontrar o `ceil` ORIGINAL: quem conserta é o app, em runtime
+(`backends._patch_kokoro_interpolate`, marcador `istftnet._rod_interp_seguro`,
+idempotente e só nesse namespace). É inofensivo se a lib corrigir antes — o `size`
+resultante é o mesmo. Fórmula/invariantes: `tests/test_kokoro_interpolate.py`
+(rápido, sem modelo).
+
+### Barge-in nos VÃOS de geração (#167) — o que ficou ligado e o que não
+
+O motor armava o barge pela JANELA de playback, que era dimensionada pela FILA de
+chunks (`playback_janela_ms` = 900 ms depois do último envio). Nos vãos de LLM/TTS
+(medidos até 20 s) a janela fechava e o onset virava turno NOVO em vez de
+`interrupção` — `tests/live_barge_rep.sh` media ~metade das tentativas.
+
+O que ficou LIGADO por default: calibração de eco a cada INÍCIO de áudio (e não só
+quando a janela estava fechada), braço do barge contando DURANTE a calibração e o
+mínimo de contagem preservado quando a calibração fecha. Medido no harness do
+frontend: **16/20** no cenário degradado (era 3/6 ≈ 50%) e **9/10** no sentido do
+eco (`MIC_FILE=1`), com `tests/live_ui.sh` verde e o corte do barge medido.
+
+Duas alavancas ficaram DESLIGADAS (cada uma é um `Config`, com env próprio):
+
+- `playback_por_duracao` (`TTS_LIVE_PLAYBACK_DURACAO=1`): dimensiona a janela pela
+  duração REAL do chunk + backlog em voo (`set_speaking(True, duracao_ms=…)`).
+  Leva o harness a **19/20**, MAS derruba o `live_ui.sh` (a janela passa a cobrir
+  o tempo de uma fala JÁ terminada e o corte deixa de ser medido). É a alavanca a
+  reconciliar antes de virar default.
+- `barge_janela_turno` (`TTS_LIVE_BARGE_JANELA_TURNO=1`): mantém a janela aberta
+  enquanto o turno do assistente está em voo (`set_turno_aberto`, chamado pelo
+  sender). No sentido do eco ela PIORA (4/10 contra 9/10), por isso também off.
+
+Residual conhecido (os 4/20 do default): injeção imediatamente APÓS
+`turn_complete` com o cliente ainda com áudio bufferizado — o servidor não tem a
+posição de reprodução do cliente; é o que a alavanca da duração cobre e o que
+ainda precisa de reconciliação com o `live_ui.sh`.
 
 ### Cancelamento
 
@@ -329,6 +562,146 @@ Eventos que o pipeline emite: `speech_start`, `transcript_user`,
 (`ms`, `audio_bytes`), `interrupted`, `error` e `prewarm`; o áudio sai como
 frames BINÁRIOS PCM16 24 kHz.
 
+### Backend de IA do Live: `openai` (padrão) ou `dsh`
+
+`chat_backend` (Configurações → IA, ou `TTS_CHAT_BACKEND`) escolhe o provedor do
+turno. O **default continua `openai`** (endpoint + chave, caminho intacto); com
+`dsh` o texto vai para o harness local via ACP (`dsh_client.py`), que sustenta um
+primeiro token de ~0,4 s **porque o contexto vive na sessão ACP** — o turno manda
+poucas dezenas de tokens em vez de re-subir a conversa inteira.
+
+Como o Live usa isso (por sessão do WS, nada compartilhado com a Conversa):
+
+- **um `DshClient` por sessão** (processo + sessão ACP próprios), fechado no fim da
+  sessão — o `cancel` do barge-in não vaza de uma sessão para outra;
+- **`prewarm` no `start()`** do pipeline, junto do aquecimento do whisper/TTS e na
+  mesma thread (fora do handshake do WS). O boot a frio é caro — medido aqui:
+  **23,7 s só do dsh** e **26,5 s** no `prewarm` do pipeline inteiro (dsh + TTS +
+  whisper); quente, o prompt curto do prewarm custa ~0,4 s. Quem falar ANTES do
+  evento `prewarm` paga o boot no turno. Um turno que chega DURANTE o prewarm NÃO
+  espera por ele: o `session/cancel` cancela o prompt de aquecimento e o turno
+  segue (o prewarm já entregou o que importa — processo, sessão e rota) — é o que
+  impede um provedor lento de transformar o aquecimento em atraso (#172);
+- **só o 1º turno manda histórico renderizado** (persona + resumo + últimas falas),
+  o que abre a sessão ACP; os seguintes mandam só o texto novo;
+- **persona OBRIGATÓRIA** no primeiro prompt de cada sessão ACP (inclusive na
+  reaberta pelo teto): fala curta ("1 a 3 frases, sem markdown, sem código, tom de
+  conversa") — é o que encurta a resposta e, o que define de fato o tempo até o 1º
+  áudio, é a projeção dos deltas (patch DSH-4a; sem ele, um chunk no fim). O `system`
+  da sessão, quando existe, entra DEPOIS da persona;
+- **teto de contexto** igual ao do LIVE-5 (`TTS_DSH_CTX_MAX_MSGS` 24 /
+  `TTS_DSH_CTX_MAX_CHARS` 12000): estourou, o próximo turno reabre sessão ACP nova
+  com o contexto renderizado — reusa o resumo que o `_live_hist_comprime` já
+  produziu, sem LLM extra. O resumo sai pelo backend do LIVE (não pelo da Conversa):
+  com o Live no dsh ele usa o POOL do dsh, em processo separado do cliente da sessão
+  (o resumo roda em thread no fim do turno e o cliente da sessão já pode estar no
+  prompt seguinte). Antes ele ia por `_chat_llm` — o caminho da Conversa —, o que
+  mandava o resumo para o provedor REMOTO quando os dois caminhos divergem e
+  falhava 400 (e o Live nunca comprimia) quando não havia endpoint configurado;
+- **barge-in** chama `cancel(turno_id)` no harness e ainda descarta delta de turno
+  abandonado ANTES do chunker (defesa em profundidade: o cliente já barra o chunk
+  tardio, o pipeline não confia só nisso);
+- **erro do dsh** vira `error{pipeline}` com a sessão VIVA (padrão F1): o turno
+  seguinte volta a tentar;
+- **pipeline que não NASCE** (exceção na montagem, antes do 1º frame de áudio) também
+  deixa a sessão viva: sai `error{pipeline}` e o `ready` já foi mandado — a sessão
+  continua respondendo `ping`/`stats` (sem STT/TTS) em vez de morrer calada; o
+  processo dsh já criado é fechado junto;
+- **dsh fora NÃO deixa a sessão muda** (#146): se o boot/handshake morre ANTES do
+  1º token (binário errado, `~/.dsh` sem permissão de escrita, Node antigo…), o
+  turno é REFEITO no backend openai, o dsh fica marcado como indisponível (com o
+  processo liberado), sai o evento aditivo
+  `dsh_indisponivel{fallback:"openai",message}` e os turnos seguintes já nascem no
+  openai. **A marcação é sem volta DEPOIS de uma repetição curta** (#162): o harness
+  recusa um 2º prompt na sessão com `-32602 "a prompt is already in flight"` e essa
+  corrida é transitória (acontecia em ~30% dos primeiros turnos), então o cliente
+  repete UMA vez com 250 ms antes de considerar o dsh fora — o `dsh_client` também
+  serializa o prewarm com o 1º turno pelo mesmo motivo. Só o retry esgotado cai na
+  política sem volta. Falha no MEIO do stream não dá para refazer sem repetir o que já foi
+  dito: aí o turno fecha com `error{pipeline}` e o dsh fica marcado só para o
+  próximo. Custo do caminho degradado (medido no `tests/live_ws.sh` com o dsh
+  quebrado de propósito): o turno que descobre o dsh fora paga ~1 s a mais
+  (1877 ms contra ~870 ms).
+
+**ANTES do patch do bridge (chunk único por ACP)** — medido aqui com persona, pipeline
+real (STT real + TTS real + dsh real), 5 turnos na mesma sessão: fim-de-fala → 1º áudio
+**mediana 2,49 s** (amostras 1,93 / 3,26 / 18,37 / 2,49 / 1,88 s). O `first_token_ms`
+fica ~0,25 s abaixo do 1º áudio. Causa: o bridge `dsh-acp` só projetava o evento
+DURÁVEL (`assistant/message`), então o "1º token" era o FIM da geração — resposta de
+1,4 k chars levava 21,9–32,3 s. Reprodução: `evidence/dsh-chunks-spike.py` e
+`evidence/dsh-provider-sse-spike.py` (o provedor streama bem: 1º delta em 372–376 ms).
+
+**DEPOIS do patch (#149, `scripts/dsh-acp-stream-patch.mjs` aplicado)** — o bridge passa
+a projetar `agent/assistant-stream` em `session/update`, então os deltas EXISTEM. O número
+de referência é o do **veredito do gate #125** (6 rodadas do `tests/live_ws.sh` com backend
+dsh, na mesma máquina, lado a lado com o app do dono de pé): fim-de-fala → 1º áudio
+**1312 / 1330 / 1524 / 1636 / 19 864 / 34 131 / 47 793 ms** — ou seja, o alvo de 1,5 s é
+ALCANÇADO, mas **não sustentado** (2 de 7; o resto estoura por ordens de grandeza). O
+veredito classifica como aprovado com essa ressalva. Ambiente do veredito, para quem
+repetir: shell sandboxed com `DSH_HOME=/tmp/qa-home/.dsh` (o `~/.dsh` real não é gravável),
+bridge **PATCHADO**, `effort=off`, perfil `tts-studio`, instância própria em porta livre;
+escrever em `/opt/homebrew` (apply/revert) exigiu escalar o sandbox.
+
+**RE-MEDIÇÃO pós-#160, com a máquina QUIETA** (`load average` 2,5–4,9 — sem as suítes, app
+do dono apenas de pé), pipeline real, 5 turnos, **rota CARIMBADA** (bridge `patched`
+sha256-8 `64c0d1cc`, zero `dsh_indisponivel`, sem nada de fallback): primeiro áudio de
+**1563 / 19 518 / 198 490 / 2673 / 51 635 ms** (mediana 19,5 s), `first_token_ms` sempre em
+**1,3–1,8 s**. Reprodução: `evidence/dsh-live-latency-spike.py` (carimba estado da rota e
+sai 1 se o turno caiu no fallback — para o número não ser confundido com o do openai, que
+responde em ~0,87 s e se disfarça de "dsh rápido").
+
+**A CAUSA É EXTERNA e o dono tem nome: o PROVEDOR da rota `dsflash`** — ele PREEMPETA no meio
+da resposta (provado no #160, não suposto): o mesmo gap aparece no TCP CRU contra o provedor
+(3 de 6 rodadas com um único vão de 26,6 / 55,5 / 36,0 s, primeiro `recv()` em 0,85–2,07 s e
+depois fio mudo), o CONTROLE sem stream (mesma pergunta, sem flush envolvido) levou
+29,9–36,1 s, e o bridge × cliente no mesmo relógio dá atraso de 1 ms (recebe em bloco e
+repassa na hora). Nenhuma das suspeitas do diagnóstico (flush do `notify`, coalescência do
+harness, stdout, concatenação do patch, MLX) se sustenta — o NOSSO lado sai limpo, patch
+inclusive. Prova completa: `evidence/dsh-acp-DSH-4b-EVIDENCIA.md`.
+
+**E trocar de rota não é de graça** (também medido no #160, e é decisão do dono): a
+alternativa (OpenRouter, `z-ai/glm-5.3-flash`) NÃO preempta no meio — gaps < 0,4 s — mas
+paga `1º token` de **5,6–12,6 s**, o que é pior para o Live, que vive do 1º áudio (`muse-spark`:
+8,6–43,2 s). Portanto: `dsflash` continua sendo a escolha certa pelo 1º áudio; o que falta é
+o provedor parar de preemptar. Sem preempção numa janela, o número desta seção fica
+CONDICIONAL ao provedor; com ela, é o que está publicado.
+
+Medições minhas, na mesma família (rodadas **sob carga**, `load average` 4,6–11,4) — ficam
+como contraste, não como número final:
+
+- **no cliente, sem modelos de áudio no processo** (6 turnos, sessão quente): 1º delta em
+  **0,35–0,47 s** e resposta inteira em **menos de 1,5 s em todos os turnos**;
+- **no pipeline real** (STT real + TTS real + dsh, 5 turnos): 1º áudio de **1,2–2,6 s** nos
+  turnos em que o stream corre, e cauda de **18–44 s** em parte deles (medianas 30,6 s e
+  32,4 s nas duas rodadas). Com STT real e **TTS falso**: 3 de 4 turnos em 1,2–1,8 s — a
+  cauda aparece mais junto do **TTS real**, cuja geração MLX disputa com o stream. Sem
+  nenhuma mudança no `live_pipeline` para consumir os deltas (o laço do turno já era por
+  delta; o chunker por sentença passa a soltar o 1º áudio mais cedo quando o stream corre).
+
+**DIAGNÓSTICO (bateu nas duas pontas — gate e minha):** o gargalo NÃO é o pipeline nem o
+chunker, é a CHEGADA do texto. No trace do gate, o `stage_fim llm` empata com o
+`first_chunk_ms` (o pipeline entrega no primeiro texto que recebe) e o 1º delta varia de
+1,4 s a 37,8 s. A assinatura medida nos INTERVALOS entre deltas (4 turnos): não é "stream
+lento", é **1 delta adiantado e o resto em bloco** — em cada turno com cauda há UM único
+intervalo acima de 1 s e ele é enorme (16,6 / 22,4 / 42,2 s), enquanto os ~30 deltas
+seguintes saem com ~5 ms entre si; proporção que chega em ≤1 s: **de 1 para 36**. Quando
+isso acontece, o 1º áudio fica preso à primeira SENTENÇA completa, não ao 1º token.
+
+**CONDIÇÃO do número acima:** ele exige o patch na máquina. Um `npm install -g` que recrie
+o `node_modules` global desfaz a projeção e o comportamento VOLTA ao chunk único — aí vale
+o número "ANTES" e o alvo de 1,5 s deixa de ser cobrável no dsh. Rollback explícito:
+`node scripts/dsh-acp-stream-patch.mjs --revert`. Para saber em que estado a máquina está
+— inclusive depois de um `npm install` — sem abrir o `node_modules`, o
+`GET /api/chat/dsh/models` devolve `bridge: "patched" | "clean" | "unknown"` (e
+`bridge_detalhe`): quem medir latência do dsh deve registrar esse campo junto do número.
+
+**ALVO no caminho dsh (só na condição incremental):** volta a ser os 1,5 s do épico — o
+pedaço que o patch destrava cabe e sobra (1º delta 0,35–0,47 s + TTS do 1º chunk ~0,25 s),
+e o `first_token` medido fica em 1,3–1,8 s mesmo com a máquina quieta. O que estoura é a
+CHEGADA do resto da resposta, e a causa está fora daqui (provedor da rota): enquanto ela
+não mudar, o estado é **alcançado e não sustentado** — número de referência o do veredito do
+gate #125, acima.
+
 ### Executar
 
 ```bash
@@ -336,6 +709,7 @@ frames BINÁRIOS PCM16 24 kHz.
 ./tests/live_ws.sh                    # ciclo completo + latência + barge-in
 LIVE_LLM=config ./tests/live_ws.sh    # usa o provedor de chat configurado
 BASE=http://127.0.0.1:7860 ./tests/live_ws.sh   # contra um servidor já de pé
+TTS_CHAT_BACKEND=dsh ./tests/live_ws.sh         # turno pelo harness dsh
 ```
 
 O smoke é **auto-contido**: sobe o provedor de chat local (SSE) e um servidor
@@ -355,5 +729,21 @@ cada commit). Saída tem de ser **vazia** e o exit **0**:
 ```bash
 ./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py \
     smoke_sintese.py remote/*.py live_turns.py smoke_live_turns.py \
-    live_pipeline.py tests/*.py client/mic_router.py
+    live_pipeline.py smoke_worker_persist.py tests/*.py client/mic_router.py
 ```
+
+### Suítes de modelo: rodar em paralelo agora é seguro (#134)
+
+As suítes que carregam Whisper/Kokoro (`live_ws.sh`, `live_ui.sh`, `obs_ui.sh`)
+disputavam Metal/CPU quando a bateria rodava junto e o alvo de ponta do
+`live_ws.sh` dava **falso vermelho** (medido pelo QA: 1792 ms em paralelo, 884 ms
+sozinho, segundos depois). Agora elas se serializam sozinhas por uma trava de
+arquivo (`tests/serial.sh`): espera com aviso de quem é a dona, rouba lock órfão
+por PID morto/TTL e libera no exit via `trap`.
+
+- `TTS_SERIAL=0` desliga a trava (escape para quem sabe que está sozinho);
+- `TTS_SERIAL_ESPERA=Ns` e `TTS_SERIAL_TTL=Ns` ajustam espera e roubo de órfão;
+- a trava tem teste próprio e **sem modelo**: `tests/serial_lock.sh`.
+
+Com isso o alvo de 1,5 s segue sendo medido honesto em qualquer ordem de bateria
+— não é preciso lembrar de rodar em série.

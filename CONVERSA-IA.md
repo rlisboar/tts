@@ -8,9 +8,40 @@ dele).
 
 - **Provedor do LLM**: roda no TTS-STUDIO (OpenAI-compat, configurável lá).
   O Dudes só fala com o TTS-STUDIO — nunca diretamente com o provedor.
-- **Privacidade**: o histórico da conversa vai para o provedor do LLM.
+- **Privacidade**: o histórico da conversa vai para o provedor do LLM — inclusive
+  quando o backend é o `dsh`, cuja rota é a configurada no harness (e pode ser
+  remota). Áudio não sai por nenhum dos dois caminhos.
 - **A conversa não para** após o texto aprovado: ela continua até o `DELETE`
   ou expiração (1h sem uso). Cada novo objetivo = nova sessão.
+
+## Backend do LLM: endpoint+chave ou `dsh`
+
+O dono escolhe, nas Configurações, **`chat_backend`**:
+
+- `"openai"` (default) — o endpoint OpenAI-compat (`chat_base_url`/`chat_model`/
+  `chat_api_key`). Nada muda para quem já usa.
+- `"dsh"` — o harness `dsh` instalado na máquina, por ACP. Ajustes:
+  `chat_dsh_bin`, `chat_dsh_profile`, `chat_dsh_model`, `chat_dsh_effort`.
+  Descubra os valores válidos em `GET /api/chat/dsh/models`.
+  O caminho `dsh` depende de um **patch local** no bridge ACP (sem ele o texto só
+  chega no fim da geração): aplique com `node scripts/dsh-acp-stream-patch.mjs`
+  — `--status`, `--reapply` (depois de `npm install -g`) e `--revert` (rollback).
+  Detalhes no README, seção do backend `dsh`.
+
+Do ponto de vista de quem integra com a Conversa (o Dudes), **nada muda**: o
+fluxo `start` → mensagem → `GET`/polling é o mesmo e o contrato HTTP não muda
+com o backend. O que muda é só de onde o texto vem.
+
+Campos `chat_backend`, `chat_backend_live`, `chat_dsh_*`, `chat_base_url`,
+`chat_model` e `chat_api_key` são **admin** (chave de uso não reaponta o provedor).
+`chat_backend_live` vale só para o Live e vazio = herda `chat_backend` (o Live e a
+Conversa podem estar em backends diferentes; o resumo de contexto do Live segue o
+backend DELE).
+
+O processo do `dsh` é reaproveitado entre turnos (pool quente): trocar
+`chat_dsh_model`/`effort`/`bin`/`profile` descarta o processo da config antiga — a
+chave viaja com o cliente, então um turno em voo no momento da troca não devolve
+um processo da config velha como se fosse da nova.
 
 ## Base URL e autenticação
 
