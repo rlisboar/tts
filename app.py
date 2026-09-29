@@ -1829,9 +1829,19 @@ def _chat_dsh_cliente() -> "dsh_client.DshClient":
 def _chat_dsh_devolve(cli: "dsh_client.DshClient") -> None:
     """Devolve ao pool com a chave DA ENTREGA (não a global de agora).
 
+    Devolução DUPLA do MESMO objeto não pode virar duas entradas: `_chat_dsh_cliente`
+    dá `pop()` numa e a outra fica na lista, então a entrega seguinte devolve o mesmo
+    cliente — ainda em uso pelo chamador anterior. Dois turnos passam a dividir o slot
+    de prompt (`stream` faz `_esperar_slot_prompt()`: não é erro, é espera) e o resumo
+    do Live, que existe para NÃO disputar o slot com o turno em curso, volta a
+    disputar (#218). A identidade (`is`) é a checagem certa porque a lista guarda o
+    OBJETO; a entrada que já está lá não é fechada — fechar mataria o processo quente.
+
     O `close()` do descarte roda FORA do lock (mesmo motivo do `_chat_dsh_cliente`)."""
     chave = getattr(cli, "_pool_chave", None)
     with _chat_dsh_lock:
+        if any(c is cli for _k, c in _chat_dsh_livres):
+            return                                   # já está no pool: nem duplica nem fecha
         guardar = bool(chave is not None and cli.alive
                        and len(_chat_dsh_livres) < _CHAT_DSH_POOL_MAX)
         if guardar:

@@ -2977,6 +2977,29 @@ def test_pool_nao_devolve_cliente_da_config_antiga_como_nova(dsh_limpo, dsh_fake
         app._settings["chat_dsh_model"] = app.dsh_client.DSH_DEFAULT_MODEL
 
 
+def test_devolucao_dupla_nao_duplica_o_pool(dsh_limpo, dsh_fake_bin):
+    """#218: devolver o MESMO cliente duas vezes deixava duas entradas idênticas.
+    `_chat_dsh_cliente` dá `pop()` numa e a outra continuava na lista, então a
+    entrega seguinte devolvia o MESMO objeto — ainda em uso pelo chamador anterior.
+    Efeito: dois turnos no mesmo processo/sessão ACP, e o resumo do Live (que existe
+    para não disputar o slot de prompt) passa a disputar. Aqui o pool fica com UMA
+    entrada e a segunda entrega é obrigada a ser outro objeto."""
+    a = app._chat_dsh_cliente()
+    a.prewarm()
+    app._chat_dsh_devolve(a)
+    app._chat_dsh_devolve(a)                     # devolução DUPLA do mesmo objeto
+    assert len(app._chat_dsh_livres) == 1, "devolução dupla duplicou o pool"
+    assert app._chat_dsh_livres[0][1] is a, "e não pode ter virado outra entrada"
+    b = app._chat_dsh_cliente()
+    c = app._chat_dsh_cliente()
+    assert b is a, "a primeira entrega tem de ser o cliente que voltou ao pool"
+    assert b is not c, "duas entregas seguidas deram o MESMO cliente"
+    c.prewarm()                                  # sem processo o pool recusa (não é bug daqui)
+    app._chat_dsh_devolve(b)
+    app._chat_dsh_devolve(c)
+    assert len(app._chat_dsh_livres) == 2, "dois clientes distintos podem ficar quentes"
+
+
 def test_pool_nao_segura_o_lock_durante_o_close(dsh_limpo, dsh_fake_bin, monkeypatch):
     """Descartar cliente de config antiga faz `session/close` (timeout de 60 s) e um
     dsh vivo mas mudo não responde: fechando DENTRO do lock, todo uso do pool — o
