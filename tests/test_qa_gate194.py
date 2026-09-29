@@ -167,7 +167,6 @@ def test_teto_de_sessoes_e_atomico_sob_concorrencia(ws_client, live_limpo, monke
 
     def abre(i):
         try:
-            c = app._ws_cliente() if hasattr(app, "_ws_cliente") else None
             from starlette.testclient import TestClient
             c = TestClient(app.app, raise_server_exceptions=False, client=("127.0.0.1", 50000))
             with c.websocket_connect("/api/live/ws") as ws:
