@@ -59,7 +59,9 @@
 # LIMIAR (RELATIVO, não ms absoluto — o runner roda sob `nice 19` + hogs): o probe
 # durante o congelamento tem de ficar abaixo de `max(0.25s, 25× o tempo OCIOSO do
 # /health medido antes)`. Números medidos nesta máquina, nas duas direções:
-#   · fix (cena A)   → ocioso 1–6 ms, probe 15–52 ms → PASSA
+#   · fix (cena A)   → ocioso 1–6 ms, probe 3–52 ms → PASSA (o probe é o MESMO
+#                      caminho do ocioso: 3 ms numa rodada, 52 ms em outra, sob
+#                      carga — daí o limiar ser relativo com piso)
 #   · revertido      → ocioso 1–3 ms, probe 2001–2002 ms (o urlopen de 2 s estoura;
 #                      o loop está preso em `Lock.acquire()`) → FALHA
 #   · controle (B)   → congelado e PERMANENTE (2º probe também estoura: 2001 ms)
@@ -84,6 +86,12 @@
 # medida, o hunk dele sobrevive. Enquanto a rodada revertida dura, o invariante
 # `test_busy_e_mandado_fora_do_live_lock` fica vermelho (é o esperado): se uma
 # suíte rodar no meio, nomeie isso em vez de atribuir ao gate.
+#
+# A ÁRVORE É COMPARTILHADA e a rodada revertida (~20 s) deixa o `app.py` REVERTIDO
+# para quem olhar nesse instante: outra suíte que rodar ali vê o invariante vermelho,
+# e um `git commit` de terceiro commitaria a forma revertida. O `restaura` do trap
+# devolve o arquivo em qualquer saída (inclusive Ctrl-C) e confere o md5 — a janela
+# é curta e o aviso sai no fim, mas não rode o `MORDIDA=1` "junto" com um commit.
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
