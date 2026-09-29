@@ -32,6 +32,25 @@ import os                       # noqa: E402
 
 os.environ.setdefault("TTS_LIVE_WORKER", "0")
 
+# ── #206: o AMBIENTE do dono não decide o veredito ───────────────────────────────
+# O env TEM PRECEDÊNCIA sobre o settings (por desenho, #112): um
+# `export TTS_CHAT_BACKEND_LIVE=openai` no shell do dono, ou um `TTS_LIVE_*` de
+# tuning esquecido, mudava o caminho medido por testes que não pinam o campo — e o
+# veredito virava refém do estado dele. Seis casos da mesma família já custaram
+# rodada (#143/#145, #191, #195, #199, #203 e o resíduo do #182).
+#
+# A SESSÃO nasce com esses knobs NEUTRALIZADOS; quem precisa de um valor usa
+# `monkeypatch` no próprio teste (padrão já usado no repo). As redes pontuais
+# (`dsh_limpo`, `delenv` locais) FICAM: são a regressão de quem editar este arquivo.
+#
+# DUAS EXCEÇÕES, de propósito — são INTERRUPTORES do dono, não comportamento a
+# neutralizar: `TTS_TEST_WORKER` (liga o caminho lento com modelo real, ver o topo)
+# e `TTS_LIVE_WORKER` (o default que este arquivo acabou de definir).
+_ENV_NEUTRO = ("TTS_CHAT_", "TTS_LIVE_", "TTS_TEST_")
+_ENV_INTERRUPTOR = ("TTS_TEST_WORKER", "TTS_LIVE_WORKER")
+_ENV_DO_DONO = {k: os.environ.pop(k) for k in sorted(os.environ)
+                if k.startswith(_ENV_NEUTRO) and k not in _ENV_INTERRUPTOR}
+
 # `DeprecationWarning: builtin type SwigPyPacked/SwigPyObject has no __module__
 # attribute`. EMISSOR pinçado: os bindings SWIG que entram junto com
 # `import onnxruntime` (o primeiro a carregar é
@@ -86,7 +105,8 @@ def pytest_report_header(config):
         f"(TTS_LIVE_WORKER={os.environ.get('TTS_LIVE_WORKER', '0')})",
         "caminho LIGADO com modelo real (fora do default): "
         "TTS_TEST_WORKER=1 pytest -m worker_real",
-    ]
+    ] + ([f"ambiente do dono neutralizado na sessão (#206): "
+          f"{', '.join(_ENV_DO_DONO)}"] if _ENV_DO_DONO else [])
 
 
 def pytest_terminal_summary(terminalreporter):
@@ -112,6 +132,18 @@ def _rodou_worker_real(terminalreporter) -> bool:
             if "worker_real" in getattr(rep, "keywords", {}):
                 return True
     return False
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _ambiente_neutro():
+    """#206: devolve ao processo o ambiente do dono tirado na neutralização acima.
+
+    O `setUp` é no import do conftest (precisa valer ANTES de qualquer `import app`);
+    aqui só o desfazimento, para um pytest in-process (IDE, plugin, xdist) não deixar
+    o shell do dono alterado.
+    """
+    yield _ENV_DO_DONO
+    os.environ.update(_ENV_DO_DONO)
 
 
 @pytest.fixture(scope="session", autouse=True)
