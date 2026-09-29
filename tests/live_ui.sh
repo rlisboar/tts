@@ -92,8 +92,13 @@ env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1", "
        # com `chat_backend: "dsh"` ela deixaria o stub e falaria com o harness (#143).
        # O do LIVE também: ele MANDA sobre `chat_backend_live` e o pin da Conversa
        # não o governa, então o dono com o Live em dsh saía do stub sem querer (#195).
+       # O do LIVE é o ÚNICO que respeita o env do chamador, de propósito: é a
+       # porta para medir esta tela com o harness (`TTS_CHAT_BACKEND_LIVE=dsh`).
+       # Como a rota muda o que se mede, ela vai IMPRESSA abaixo — env exportado
+       # não pode mudar a rodada em silêncio.
        "TTS_CHAT_BACKEND": "openai",
        "TTS_CHAT_BACKEND_LIVE": os.environ.get("TTS_CHAT_BACKEND_LIVE") or "openai"}
+ROTA_LIVE = env["TTS_CHAT_BACKEND_LIVE"]
 log = pathlib.Path("/tmp/live_ui_servidor.log")
 # Instrumenta SEM editar arquivo de outro agente: envolve `set_speaking` para
 # registrar o nível que vem do payload do TTS e o limiar resultante. É o número
@@ -122,6 +127,7 @@ try:
         try: urllib.request.urlopen(base + "/health", timeout=2).read(); break
         except Exception: time.sleep(0.2)
     print(f"servidor de teste em {base} (stub :{stub_porta})")
+    print(f"  rota do Live: {ROTA_LIVE}" + ("  ← pedida pelo env do chamador" if ROTA_LIVE != "openai" else " (stub)"))
 
     # ─── UI no navegador, com mic falso ─────────────────────────────────────
     with sf.SoundFile(str(wav_entrada)) as f:
@@ -451,5 +457,6 @@ if falhas:
     print("✖ FALHOU")
     for f in falhas: print("  ·", f)
     sys.exit(1)
-print("✔ OK — turno real pela UI: mic->worklet->WS->áudio de volta, transcrição e corte do barge-in medido")
+print("✔ OK — turno real pela UI: mic->worklet->WS->áudio de volta, transcrição e corte do barge-in medido"
+      + ("" if ROTA_LIVE == "openai" else f" [rota do Live: {ROTA_LIVE}, não o stub]"))
 PYEOF
