@@ -75,3 +75,21 @@ def test_pyflakes_do_hook_sai_limpo():
                        capture_output=True, text=True, cwd=BASE)
     assert r.returncode == 0, \
         f"pyflakes vermelho (o commit de terceiro trava):\n{r.stdout}{r.stderr}"
+
+
+def test_guard_se_morde_com_violacao_plantada(tmp_path):
+    """Contraprova AUTOMATIZADA: sem ela, se o `pyflakes` parasse de acusar (versão
+    nova, `-m` quebrado, lista virando no-op), o teste acima passaria em falso.
+
+    A violação é plantada FORA de `tests/` de propósito: dentro, ela entraria no
+    glob `tests/*.py` e quem estivesse rodando a suíte em paralelo veria o vermelho
+    dela — que é justamente o efeito que este guard quer medir, mas não de graça.
+    """
+    alvo = tmp_path / "plantado.py"
+    alvo.write_text("import os\n\n\ndef test_z():\n    assert True\n")
+    r = subprocess.run([sys.executable, "-m", "pyflakes", *_modulos(), str(alvo)],
+                       capture_output=True, text=True, cwd=BASE)
+    assert r.returncode == 1, \
+        f"o pyflakes engoliu a violação plantada:\n{r.stdout}{r.stderr}"
+    assert str(alvo) in r.stdout and "imported but unused" in r.stdout, \
+        f"acusa, mas não cita o arquivo plantado:\n{r.stdout}"
