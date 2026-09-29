@@ -1,0 +1,14 @@
+normal                       EXIT=0  avisos=0  log=/tmp/179-normal.log
+      corte no interrupted: 0 ms · estado final: 'erro'
+escape0                      EXIT=0  avisos=0  log=/tmp/179-escape0.log
+      corte no interrupted: 0 ms · estado final: 'erro'
+escape0_simula               EXIT=0  avisos=1  log=/tmp/179-escape0_simula.log
+      [controle] rodada simulada SEM barge (BARGE_SIMULA_SEM=1; corte real da rodada=0 ms)
+      corte no interrupted: 0 ms · estado final: 'erro'
+estrito1_simula              EXIT=1  avisos=0  log=/tmp/179-estrito1_simula.log
+      [controle] rodada simulada SEM barge (BARGE_SIMULA_SEM=1; corte real da rodada=0 ms)
+      corte no interrupted: 0 ms · estado final: 'erro'
+vazio_simula                 EXIT=1  avisos=0  log=/tmp/179-vazio_simula.log
+      [controle] rodada simulada SEM barge (BARGE_SIMULA_SEM=1; corte real da rodada=0 ms)
+      corte no interrupted: 0 ms · estado final: 'erro'
+--- esperado: 0 / 0 / 0 / 1 / 1 ---

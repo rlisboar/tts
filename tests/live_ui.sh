@@ -9,6 +9,13 @@
 # WS -> turno com áudio de volta -> playback -> barge-in com corte medido.
 #
 #   ./tests/live_ui.sh            # sobe stub+servidor em portas livres e derruba no fim
+#
+# BARGE: o corte do playback é exigência DURA por padrão. Escapes, para quando se
+# está medindo OUTRA coisa:
+#   BARGE_ESTRITO=0     volta ao regime tolerante (barge ausente = aviso, não falha)
+#   BARGE_SIMULA_SEM=1  força a rodada a se comportar como a que não teve barge —
+#                       é o controle que prova os dois lados sem depender da janela
+# Vazio/ausente/qualquer outro valor de BARGE_ESTRITO = ESTRITO (`= cmd` não relaxa).
 set -euo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -99,6 +106,11 @@ env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1", "
        "TTS_CHAT_BACKEND": "openai",
        "TTS_CHAT_BACKEND_LIVE": os.environ.get("TTS_CHAT_BACKEND_LIVE") or "openai"}
 ROTA_LIVE = env["TTS_CHAT_BACKEND_LIVE"]
+
+def _barge_estrito():
+    """Duro por padrão (#167 fechou); `0`/`false`/`no` relaxam. Vazio = estrito."""
+    return (os.environ.get("BARGE_ESTRITO") or "").strip().lower() not in ("0", "false", "no", "nao")
+BARGE_ESTRITO = _barge_estrito()
 log = pathlib.Path("/tmp/live_ui_servidor.log")
 # Instrumenta SEM editar arquivo de outro agente: envolve `set_speaking` para
 # registrar o nível que vem do payload do TTS e o limiar resultante. É o número
@@ -240,12 +252,10 @@ try:
             print("  servidor (tail):", "".join(open("/tmp/live_ui_servidor.log").readlines()[-6:]) if os.path.exists("/tmp/live_ui_servidor.log") else "-")
             injeta()
         # Barge: injeta fala com áudio do servidor tocando e fecha o turno.
-        # Depende de a JANELA DE PLAYBACK do servidor estar aberta no instante do
-        # onset — ela fechava entre chunks (medido: 3/6 em máquina ociosa, e 0/n
-        # quando a máquina estava carregada), o falso vermelho do #161. Com o fix do
-        # #167 (janela colada ao turno) a 1ª tentativa deve bastar; a 2ª continua
-        # aqui como rede do servidor mudo, não como desculpa para o barge não vir.
-        # O corte do alvo (<50 ms) é exigência DURA desde então.
+        # Com a janela de playback colada ao TURNO a 1ª tentativa basta; a 2ª
+        # continua aqui como rede do servidor mudo, não como desculpa para o barge
+        # não vir. O corte do alvo (<50 ms) é exigência DURA — quem quer o regime
+        # antigo pede BARGE_ESTRITO=0 (cabeçalho).
         def tentar_barge(timeout=25000):
             injeta()
             try:
@@ -272,7 +282,7 @@ try:
                 pass
             barge_ok = tentar_barge(120000)
             print(f"  barge: {'disparou na 2ª tentativa' if barge_ok else 'NÃO disparou (2 tentativas)'}"
-                  " — cauda da janela de playback, #161")
+                  " — a rede da 2ª tentativa foi usada")
         starts = len([e for e in (pg.evaluate("() => window.__sp || []") or [])
                       if e.get("type") == "speech_start"])
         print(f"  continuidade: quadros de mic {q1} -> {q2} · speech_start acumulados: {starts}")
@@ -428,14 +438,26 @@ try:
         cobrar(bool(user.strip()), "não veio transcrição do usuário")
         cobrar(bool(ia.strip()), "não veio texto do assistente")
         cobrar(audio_evs > 0, "nenhum áudio do servidor")
-        # #167 fechou o falso vermelho: com a janela de barge colada ao TURNO (e o
-        # eco só valendo como referência enquanto há áudio tocando) o onset no vão
-        # de geração volta a ser interrupção. Então a exigência voltou a ser DURA —
-        # `BARGE_ESTRITO=1` continua aceito como alias, sem efeito próprio.
-        cobrar(corte is not None,
-               "barge-in não aconteceu nem com fala injetada — sem medição do alvo <50 ms")
+        # A janela de barge colada ao TURNO (com o eco valendo só como referência
+        # enquanto há áudio tocando) faz o onset no vão voltar a ser interrupção:
+        # o corte é exigência DURA por padrão, e `BARGE_ESTRITO=0` é o escape.
+        if os.environ.get("BARGE_SIMULA_SEM"):
+            # controle do MODO: força a rodada a se comportar como a que não teve
+            # barge (sem depender da janela) — é o que prova que o `=0` AINDA
+            # tolera e que o estrito REPROVA a MESMA rodada. O corte real é
+            # IMPRESSO antes de sumir, senão o par `=0`/`=1` prova só que o
+            # simulador simulou.
+            print(f"  [controle] rodada simulada SEM barge (BARGE_SIMULA_SEM=1;"
+                  f" corte real da rodada={corte if corte is None else round(corte, 2)} ms)")
+            corte = None
         if corte is not None:
             cobrar(corte < 50, f"corte do playback demorou {corte:.1f} ms (alvo <50 ms)")
+        elif BARGE_ESTRITO:
+            cobrar(False,
+                   "barge-in não aconteceu nem com fala injetada — sem medição do alvo <50 ms")
+        else:
+            print("  ⚠ sem barge nesta rodada, tolerado por BARGE_ESTRITO=0"
+                  " (o corte não foi medido)")
         cobrar(not erros, "erros de JS: " + "; ".join(erros[:3]))
         janelas = [l for l in log.read_text().splitlines() if "DBG-eco" in l]
         for l in janelas: print("  " + l)
