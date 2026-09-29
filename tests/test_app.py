@@ -312,7 +312,7 @@ def test_snapshot_nao_estoura_com_admissao_concorrente(monkeypatch):
                     assert isinstance(app._jobs_snapshot(), list)
                     any(j.get("status") == "running" for j in app._jobs_snapshot())
                     app._jobs_ativos()
-            except Exception as exc:                     # noqa: BLE001
+            except Exception as exc:                     # noqa: BLE001 (flake8; o pyflakes do hook ignora)
                 erros.append(repr(exc))
 
         def trabalhador():

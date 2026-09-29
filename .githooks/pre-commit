@@ -9,6 +9,13 @@ PY=.venv-mlx/bin/python
 # buraco: live_turns.py + smoke_live_turns.py + smoke_worker_persist.py são do
 # audio-ml (#92/LIVE-2, #152) e live_pipeline.py é do speech-pipeline (#93/LIVE-3).
 # Módulo novo do épico, linha nova aqui.
+#
+# ATENÇÃO: este `pyflakes` NÃO lê `# noqa` — o suporte a noqa é do flake8, e o
+# `# noqa` no fim da linha aqui é inerte (falso conforto). Para calar um import
+# que só existe para virar fixture de teste, ou um nome reusado como parâmetro,
+# declare o nome em `__all__ = [...]` no módulo: isso marca o import como usado
+# e derruba tanto o F401 quanto o F811 derivado (que só dispara em
+# 'redefinition of UNUSED'). Exemplo vivo: tests/test_qa_gate176.py.
 "$PY" -m pyflakes app.py common.py tts_worker.py backends.py dsh_client.py smoke_sintese.py remote/*.py \
     live_turns.py smoke_live_turns.py live_pipeline.py smoke_worker_persist.py \
     tests/*.py client/mic_router.py || exit 1

@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # (o `live_ws.sh` usa o modelo do settings.json: `TTS_ROD_MODEL` só vale quando o
 #  arquivo não tem "model" — com settings.json preenchido, família isolada ponta a
 #  ponta exige trocar o `model` do settings ou passar pelo teste do pipeline.)
+# `# noqa` é do flake8: o pyflakes do hook não o lê, então o E402 abaixo é
+# decorativo — silêncio de verdade, aqui, só com `__all__` (ver o hook).
 import os                       # noqa: E402
 
 os.environ.setdefault("TTS_LIVE_WORKER", "0")

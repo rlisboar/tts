@@ -649,6 +649,9 @@ navegador.
 # análise estática — nomes indefinidos em funções só explodem em runtime
 ./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py \
     smoke_sintese.py live_turns.py smoke_live_turns.py tests/*.py client/mic_router.py
+# esse pyflakes NÃO lê `# noqa` (noqa é do flake8): import que só existe para virar
+# fixture, ou nome reusado como parâmetro de teste, se declara em `__all__ = [...]`
+# no módulo — `# noqa` na linha não silencia nada aqui (ex.: tests/test_qa_gate176.py).
 
 # ambiente reproduzível: `requirements.txt` é a lista CURADA (com o porquê de
 # cada pin); `requirements.lock` é o retrato do venv verificado — com os
@@ -688,6 +691,34 @@ Pre-commit opcional (pyflakes + pytest antes de cada commit):
 ```bash
 git config core.hooksPath .githooks
 ```
+
+O hook roda `pyflakes` **puro**: os `# noqa` espalhados pelo repo são códigos do
+flake8 e não contam para ele — os de `tests/conftest.py` e `tests/test_app.py`
+inclusive (ver a nota na lista de análise estática, acima).
+
+### Instância viva x código do commit (regra de restart)
+
+O `run.sh` sobe o `uvicorn` **sem `--reload`** (de propósito: com vários agentes
+editando, reload contínuo mata job e refaz o boot do modelo). Consequência: o app de
+pé pode estar rodando código de dias atrás — e o pin de um ticket não dá para ser
+conferido contra ele. Já aconteceu: a instância em 7860 estava sem o backend de IA
+por caminho e `POST /api/settings` ignorava o campo novo em silêncio.
+
+Para conferir, sem subir modelo nem processo:
+
+```bash
+curl -s localhost:7860/api/build -H "X-API-Key: $CHAVE"
+# {ok, version, boot_ts, boot_ms, codigo, modulos, admin_fields}
+```
+
+`codigo` é o sha256-8 do **conteúdo** dos módulos do servidor (`version` é o commit):
+se ele não casa com o sha do ticket, a instância é velha. `admin_fields` denuncia o
+caso clássico — instância antiga com menos campos administrativos que o código.
+
+**REGRA:** quem fecha mudança de SERVIDOR (`app.py`, `backends.py`, `tts_worker.py`,
+`live_*.py`, `dsh_client.py`, `common.py`) reinicia o app local **como último passo
+do próprio ticket** — antes, confira que não há job nem sessão Live ativos — e
+registra o restart no comentário do ticket (`codigo` antes/depois).
 
 ### Pin de arquivo em veredito (sha256-8)
 
