@@ -1940,6 +1940,54 @@
   }
 
 
+  /* Live: duas colunas de transcrição (reusa o visual do log da Conversa) */
+  .lx-split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; flex: 1; min-height: 0; margin-top: 10px; }
+  .lx-col { display: flex; flex-direction: column; min-height: 260px; background: var(--sunken);
+            border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .lx-lab { font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--faint);
+            padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .lx-log { flex: 1; overflow-y: auto; padding: 10px; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; }
+  .lx-log .lx-b { display: block; margin-bottom: 6px; }
+  .lx-log .lx-erro { display: block; margin-bottom: 6px; color: var(--err); }
+  .lx-log .lx-vazio { display: block; margin-bottom: 6px; color: var(--muted); font-style: italic; }
+  @media (max-width: 900px) { .lx-split { grid-template-columns: 1fr; } }
+
+  /* OBS-2 (#119): painel de monitoramento da sessão Live — o que está acontecendo
+     com número na tela em vez de achismo (é o instrumento que faltou no #117). */
+  .lx-obs { display: grid; gap: 8px; margin-top: 10px; }
+  .lx-meters { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 700px) { .lx-meters { grid-template-columns: 1fr; } }
+  .lx-meter { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 7px 10px 9px; }
+  .lx-lab2 { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--faint); display: flex; justify-content: space-between; }
+  .lx-lab2 span:last-child { text-transform: none; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+  .lx-meterbar { height: 10px; background: var(--bg); border: 1px solid var(--border-soft); border-radius: 99px; position: relative; overflow: hidden; margin-top: 5px; }
+  .lx-meterbar .bar { height: 100%; width: 0; background: var(--faint); transition: width .06s; border-radius: 99px; }
+  .lx-meterbar .peak { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--warn); left: 0; }
+  .lx-meterbar .mark { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--err); left: 0; display: none; }
+  .lx-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .lx-chip { font-size: 11.5px; border: 1px solid var(--border-soft); border-radius: 99px; padding: 2px 10px; color: var(--muted); background: var(--surface); }
+  .lx-chip b { color: var(--text); font-weight: 600; }
+  .lx-chip.big { font-size: 13px; padding: 4px 14px; }
+  .lx-chip.big.err { color: var(--err); border-color: var(--err-border); }
+  .lx-chip.warn { color: var(--warn); border-color: var(--warn); }
+  .lx-chip.big.ok { border-color: var(--ok); }
+  .lx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 3px 14px; font-size: 12px; color: var(--muted); }
+  .lx-grid b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .lx-log-mini { max-height: 132px; overflow-y: auto; font-size: 11.5px; line-height: 1.55; font-variant-numeric: tabular-nums; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 6px 10px; }
+  .lx-log-mini .t { color: var(--faint); margin-right: 7px; }
+  /* Aviso PERSISTENTE da sessão (ex.: dsh indisponível, #150): o evento é único,
+     então um toast sumiria e a pessoa ficaria sem explicação da latência. */
+  .lx-aviso { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--warn);
+              background: var(--surface); border: 1px solid var(--border-soft);
+              border-left: 3px solid var(--warn); border-radius: 8px; padding: 6px 10px; }
+  .lx-log-mini.e-erro { color: var(--err); }
+  .lx-log-mini.e-ok { color: var(--ok); }
+
+  /* OBS-3 (#120): o painel ocupa a PRÓPRIA linha mesmo quando o mount cai dentro
+     de um flex (toolbar/actions). Colado ao lado do botão ele ficava espremido em
+     ~120 px e o log virava uma tira — medido no app antes desta regra. */
+  #obsStt, #obsVozes, #obsCv, #obsTts { flex-basis: 100%; width: 100%; margin-top: 10px; }
+
   /* Campo travado pela política de admin (chave de uso): ver aplicarPoliticaAdmin.
      Fica visível e preenchido, mas não editável — e o title diz o motivo. */
   .cfg-travado { opacity: .55; }
@@ -2001,6 +2049,11 @@
         <span>Histórico</span>
         <span class="kbd">5</span>
       </button>
+      <button class="nav-item" data-view="live" aria-label="Live">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg></span>
+        <span>Live</span>
+        <span class="kbd">7</span>
+      </button>
     </nav>
     <div class="nav-label">Sistema</div>
     <nav class="nav">
@@ -2028,7 +2081,7 @@
       </div>
       <div class="ctx-right">
         <span class="ctx-pill" id="ctxBackend">—</span>
-        <span class="ctx-pill" title="1 Gerar · 2 Vozes · 3 Tradutor · 4 Conversa · 5 Histórico · 6 Config">1–6 atalhos</span>
+        <span class="ctx-pill" title="1 Gerar · 2 Vozes · 3 Tradutor · 4 Conversa · 5 Histórico · 6 Config · 7 Live">1–7 atalhos</span>
       </div>
     </div>
 
@@ -2090,6 +2143,8 @@
               <button id="stopBtn" class="ghost" style="display:none" title="Interrompe a reprodução">■ Parar</button>
               <span id="ttsStatus" class="hint" role="status" aria-live="polite"></span>
             </div>
+            <!-- OBS-3: fora do .actions — o painel do job pega a barra inteira -->
+            <div id="obsTts"></div>
           </div>
           <div class="gen-meta">
             <p class="hint" style="margin:0">Tags de prosódia inserem no cursor · parâmetros finos em <b>Configurações → Geração</b>.</p>
@@ -2126,6 +2181,9 @@
               <input type="file" id="voiceFile" accept="audio/*" style="display:none">
               <span id="timer"></span>
             </div>
+            <!-- OBS-3: fora do .actions (que é estreito) — aqui o painel pega a
+                 largura da barra inteira na própria linha -->
+            <div id="obsVozes"></div>
           </div>
           <details>
             <summary>Importar do YouTube</summary>
@@ -2257,6 +2315,7 @@
           <div style="margin-top:12px">
             <div class="toolbar">
               <button id="sttRecBtn">● Gravar</button>
+              <div id="obsStt"></div>
               <button id="sttUploadBtn" class="ghost" type="button">Carregar arquivo</button>
               <input type="file" id="sttFile" accept="audio/*" style="display:none">
               <select id="sttSrcLang" style="max-width:190px">
@@ -2314,6 +2373,7 @@
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
           </div>
           <p class="hint" id="cvStatus" style="margin-top:6px"></p>
+          <div id="obsCv"></div>
           <button type="button" class="ghost small" data-goto-audio>🎙 Filtros do microfone e anti-ruído</button>
           <details style="margin-top:10px">
             <summary class="hint" style="cursor:pointer">Instruções da IA (preprompt)</summary>
@@ -2359,6 +2419,83 @@
       </div>
     </section>
 
+
+    <!-- ===== Live (task #94) ===== -->
+    <section class="view" id="view-live">
+      <div class="view-head">
+        <div class="view-head-main">
+          <span class="view-eyebrow">Tempo real</span>
+          <h1>Live</h1>
+          <p class="view-desc">Sessão contínua por WebSocket — fala e escuta no mesmo canal, com barge-in</p>
+        </div>
+        <div class="view-head-actions">
+          <span id="lxEstado" class="badge">desligado</span>
+          <button id="lxLigar" class="primary">🎙 Ligar</button>
+        </div>
+      </div>
+      <div class="view-scroll">
+        <div class="card" style="flex:1; min-height:0; display:flex; flex-direction:column">
+          <div class="control-bar">
+            <div class="field-group"><span>Voz</span><select id="lxVoz" aria-label="Voz" style="max-width:200px"></select></div>
+            <div class="field-group"><span>Silêncio (ms)</span>
+              <input type="number" id="lxSilencio" min="200" max="2000" step="50" value="600" style="width:88px"
+                     title="ms de silêncio que fecham o turno — vai no setup"></div>
+            <label class="check"><input type="checkbox" id="lxPtt"
+              title="Se o barge-in automático estiver cortando você sem querer"> segurar para falar</label>
+            <span style="flex:1"></span>
+            <button id="lxLimpar" class="ghost small" type="button">Limpar</button>
+          </div>
+          <div class="lx-obs">
+            <div class="lx-meters">
+              <div class="lx-meter">
+                <div class="lx-lab2"><span>mic</span><span id="lxMicDb">—</span></div>
+                <div class="lx-meterbar" title="nível do mic (RMS) — a marca vermelha é o limiar VIGENTE de abertura de turno, do evento stats">
+                  <div class="bar" id="lxMicBar"></div>
+                  <div class="peak" id="lxMicPeak"></div>
+                  <div class="mark" id="lxMicMark"></div>
+                </div>
+              </div>
+              <div class="lx-meter">
+                <div class="lx-lab2"><span>saída (resposta)</span><span id="lxOutDb">—</span></div>
+                <div class="lx-meterbar" title="o que está tocando agora — eco do TTS pelo mic aparece nos dois medidores">
+                  <div class="bar" id="lxOutBar"></div>
+                  <div class="peak" id="lxOutPeak"></div>
+                </div>
+              </div>
+            </div>
+            <div class="lx-chips">
+              <span class="lx-chip big" id="lxEstadoGrande">desligado</span>
+              <span class="lx-chip">WS <b id="lxWs">—</b></span>
+              <span class="lx-chip">motor <b id="lxMotor">—</b></span>
+              <span class="lx-chip">turno <b id="lxTurno">—</b></span>
+              <span class="lx-chip" title="backend que de FATO responde o turno (o servidor publica em stats.backend)">backend chat <b id="lxProv">—</b></span>
+            </div>
+            <div class="lx-grid">
+              <span>frames enviados <b id="lxCEnv">0</b></span>
+              <span>chunks recebidos <b id="lxCRec">0</b></span>
+              <span>fila de playback <b id="lxFila">0</b></span>
+              <span>mic no servidor <b id="lxMicServ">—</b></span>
+              <span>taxa de captura <b id="lxCtx">—</b></span>
+              <span>entrada <b id="lxDev">—</b></span>
+            </div>
+            <div class="lx-grid" style="grid-template-columns: 1fr">
+              <span>latência do turno <b id="lxLat">—</b></span>
+              <span id="lxLatHist" style="color: var(--faint)"></span>
+            </div>
+            <p class="lx-aviso" id="lxDshAviso" hidden role="status"></p>
+            <div class="lx-log-mini" id="lxLog" aria-live="off" title="eventos da sessão — erros nunca são silenciosos"></div>
+          </div>
+          <div class="lx-split">
+            <div class="lx-col"><div class="lx-lab">você</div><div id="lxUser" class="lx-log"></div></div>
+            <div class="lx-col"><div class="lx-lab">IA</div><div id="lxIA" class="lx-log"></div></div>
+          </div>
+          <div class="row" style="gap:10px; align-items:center; margin-top:10px">
+            <button id="lxPttBtn" class="primary-lg" type="button" style="display:none">🔊 Segurar para falar</button>
+            <span id="lxStatus" class="hint" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <!-- ===== Configurações ===== -->
     <section class="view" id="view-config">
@@ -2685,12 +2822,48 @@
           <p class="hint">Provedor OpenAI-compatível. Roteia só a transcrição.</p>
         </div>
         <div class="divider"></div>
+        <label class="cfg-label">Backend da IA da Conversa
+          <select data-admin-setting="chat_backend" id="chatBackend">
+            <option value="openai">Endpoint + chave (OpenAI-compatível)</option>
+            <option value="dsh">dsh — harness local (ACP, sem tools)</option>
+          </select></label>
+        <p class="hint" id="chatBackendHint"></p>
+        <label class="cfg-label">Backend do Live
+          <select data-admin-setting="chat_backend_live" id="chatBackendLive">
+            <option value="">igual ao da Conversa (padrão)</option>
+            <option value="openai">Endpoint + chave (OpenAI-compatível)</option>
+            <option value="dsh">dsh — harness local (ACP, sem tools)</option>
+          </select></label>
+        <p class="hint" id="chatBackendLiveHint"></p>
+        <p class="hint">O Live vive do <b>1º áudio</b>: com provedor remoto o 1º token DELE domina (segundos); o dsh responde em ~0,4 s. Em <code>dsh</code>, o Live usa a MESMA config do dsh da Conversa (binário/perfil/modelo/effort) — a descoberta é compartilhada de propósito.</p>
+        <div id="chatDshBox" hidden>
+          <label class="cfg-label">Binário do dsh
+            <input data-admin-setting="chat_dsh_bin" type="text" id="chatDshBin" placeholder="dsh (resolvido no PATH)"></label>
+          <label class="cfg-label">Perfil do dsh
+            <input data-admin-setting="chat_dsh_profile" type="text" id="chatDshProfile" placeholder="tts-studio"></label>
+          <label class="cfg-label">Modelo (descoberto do próprio dsh)
+            <span class="row" style="gap:8px; align-items:center">
+              <select data-admin-setting="chat_dsh_model" id="chatDshModel" style="flex:1"></select>
+              <button type="button" id="chatDshTestar" class="ghost small"
+                      title="Fala com o dsh agora: descobre os modelos e reporta a latência (mesmo caminho do turno real)">Testar</button>
+            </span></label>
+          <label class="cfg-label">Effort (raciocínio)
+            <select data-admin-setting="chat_dsh_effort" id="chatDshEffort"></select></label>
+          <p class="hint" id="chatDshStatus" role="status" aria-live="polite"></p>
+          <p class="hint">O dsh é um <b>processo local</b> e o texto do turno vai para a <b>rota dele</b> (não usa a Base URL/chave acima). O prewarm do processo acontece fora do turno; a descoberta de modelos leva 1–4 s e fica em cache.</p>
+          <p class="hint">A descoberta usa o binário/perfil <b>salvos</b>: mudou o campo, clique em <b>Salvar</b> e depois em <b>Testar</b>.</p>
+          <p class="hint">⚠ <b>effort ≠ off</b> liga o raciocínio do modelo e pode <b>estourar o orçamento de latência do Live</b>. Esse orçamento (1,5 s no 1º áudio) é do cenário com provedor <b>local/stub</b>: com provedor <b>remoto</b> o primeiro token DELE domina e a espera vira segundos, sem o app ter quebrado. No Live, `off` é o default por isso; em Conversa o esforço maior costuma valer.</p>
+          <p class="hint" id="chatDshStreaming" title="Estado do patch do bridge: node scripts/dsh-acp-stream-patch.mjs --status">⚠ O dsh é um harness local: a latência do 1º áudio depende do tamanho da resposta. Com o bridge local patcheado (DSH-4a), os deltas são projetados e o 1º áudio sai em ~0,4 s; sem o patch (ex.: depois de <code>npm install -g @deepseek-ai/dsh</code>), a resposta só chega no fim e a espera cresce com o texto.</p>
+        </div>
+        <div id="chatOpenaiBox">
+        <p class="hint" id="chatOpenaiNota" style="margin-top:0" hidden>⚠ Estes campos valem também para o <b>Live</b> — ele está no endpoint por escolha própria.</p>
         <label class="cfg-label">IA da Conversa — Base URL (termina em /v1)
           <input data-admin-setting="chat_base_url" type="text" id="chatBaseUrl" placeholder="vazio = usa a Base URL de tradução"></label>
         <label class="cfg-label">Modelo da Conversa
           <input data-admin-setting="chat_model" type="text" id="chatModel" placeholder="vazio = usa o modelo de tradução"></label>
         <label class="cfg-label">Chave da Conversa (opcional)
           <input data-admin-setting="chat_api_key" type="password" id="chatApiKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
+        </div>
         <label class="cfg-label">Extras do LLM (JSON)
           <textarea id="chatExtra" rows="2" style="font-family:var(--mono); font-size:12px" placeholder='{"reasoning_effort": "low"}'></textarea></label>
         <p class="hint">Mesclado no body de cada chamada. Ex.: <code>{"reasoning_effort": "low", "top_p": 0.9}</code>. Vazio = padrão.</p>
@@ -2927,6 +3100,172 @@ function marcarSegredosMascarados() {
   }
 }
 
+/* ───────── Backend de IA: endpoint+chave OU dsh (task_bde89b9a) ─────────
+   O `chat_backend` decide POR ONDE o texto da Conversa sai. O dsh é um processo
+   local e o catálogo de modelos/efforts vem do endpoint DELE — que pode falhar
+   com motivo (binário fora do PATH, perfil inexistente, handshake): o erro
+   aparece no status, nunca em silêncio. Regra importante: um select vazio NÃO
+   pode apagar o modelo guardado — a descoberta leva 1–4 s e o form é salvo
+   inteiro. */
+const DSH_EFFORTS_UI = [
+  ["off", "off — sem raciocínio (cabe no Live)"],
+  ["low", "low — raciocínio curto"],
+  ["high", "high — raciocínio longo"],
+  ["max", "max — raciocínio máximo"],
+];
+let dshModelosCarregando = false;
+
+function chatBackendEhDsh() { return (($("chatBackend") || {}).value || "") === "dsh"; }
+
+// O bloco do dsh guarda a config COMPARTILHADA (bin/perfil/modelo/effort): basta UM
+// caminho querer o dsh para os campos precisarem aparecer — com a Conversa no
+// endpoint e o Live no dsh, esconder o bloco deixaria o dono sem como configurar o
+// que o Live vai usar. Idem para o bloco do endpoint.
+function backendEfetivoLive() {
+  return (($("chatBackendLive") || {}).value || "") || (($("chatBackend") || {}).value || "openai");
+}
+function algumBackendEhDsh() { return chatBackendEhDsh() || backendEfetivoLive() === "dsh"; }
+function algumBackendEhEndpoint() { return !chatBackendEhDsh() || backendEfetivoLive() === "openai"; }
+
+// O Live pode ter backend PRÓPRIO (campo `chat_backend_live`, vazio = herda o da
+// Conversa — #176). Sem dizer o que está valendo, o dono lê "igual ao da Conversa"
+// como "não faz nada": o hint mostra o backend EFETIVO, resolvido na hora.
+const BACKEND_ROTULO = { openai: "Endpoint + chave", dsh: "dsh (harness local)" };
+function atualizaBackendLive() {
+  const sel = $("chatBackendLive"), st = $("chatBackendLiveHint");
+  if (!st) return;
+  const proprio = (sel && sel.value) || "";
+  const daConversa = (($("chatBackend") || {}).value) || "openai";
+  st.innerHTML = proprio
+    ? "O Live usa o backend <b>próprio</b>: " + esc(BACKEND_ROTULO[proprio] || proprio) + "."
+    : "O Live usa o <b>mesmo backend da Conversa</b>: "
+      + "<b>" + esc(BACKEND_ROTULO[daConversa] || daConversa) + "</b> (padrão; mude acima para dar um backend só ao Live).";
+}
+
+function atualizaBackendChat() {
+  const dsh = chatBackendEhDsh();
+  const dshAlgum = algumBackendEhDsh();
+  if ($("chatDshBox")) $("chatDshBox").hidden = !dshAlgum;
+  if ($("chatOpenaiBox")) $("chatOpenaiBox").hidden = !algumBackendEhEndpoint();
+  // nota só quando o Live escolheu o endpoint por conta própria (aí estes campos
+  // são a config DELE também, não só a da Conversa)
+  if ($("chatOpenaiNota")) $("chatOpenaiNota").hidden = (($("chatBackendLive") || {}).value || "") !== "openai";
+  if ($("chatBackendHint")) $("chatBackendHint").innerHTML = dsh
+    ? "O texto da Conversa vai para a <b>rota do dsh</b> (processo local, perfil sem tools). "
+      + "Base URL/chave acima deixam de valer para o chat."
+    : "O texto da Conversa vai para a Base URL abaixo, com a chave da Conversa.";
+  if (dshAlgum) carregaDshModelos();
+}
+
+// Preenche o select de modelo com o que o dsh conhece. Em falha: mantém as opções
+// atuais e MOSTRA o motivo — nunca deixa o select vazio (senão o próximo save
+// gravaria `chat_dsh_model` em branco).
+const DSH_EFFORT_ROTULO = Object.fromEntries(DSH_EFFORTS_UI);
+
+// Opções do modelo AGRUPADAS por provedor (#148). O `sel.value` segue funcionando
+// com optgroup (busca em todos os options) — é assim que o valor guardado é
+// restaurado. Cada option carrega os `efforts` DELA em dataset para o effort
+// derivado.
+function montaOpcoesModelo(sel, models) {
+  const grupos = new Map();
+  sel.innerHTML = "";
+  for (const m of models) {
+    const prov = m.provider || "(sem provedor)";
+    let g = grupos.get(prov);
+    if (!g) { g = document.createElement("optgroup"); g.label = prov; grupos.set(prov, g); sel.appendChild(g); }
+    const o = document.createElement("option");
+    o.value = m.id;                            // par opaco ["rota","modelo"]
+    o.textContent = (m.label || m.modelo || m.id) + (m.isDefault ? "  (padrão)" : "");
+    o.dataset.efforts = (m.efforts || []).join(",");
+    g.appendChild(o);
+  }
+  return grupos.size;
+}
+
+// Effort DERIVADO do modelo escolhido (#148): o servidor publica `efforts` por
+// modelo; sem essa lista, cai na lista completa. Mantém a escolha anterior quando
+// ela continua válida.
+function preencheEfforts(lista) {
+  const sel = $("chatDshEffort");
+  if (!sel) return;
+  const vals = (lista && lista.length) ? lista : DSH_EFFORTS_UI.map(([v]) => v);
+  const atual = sel.value;
+  sel.innerHTML = "";
+  for (const v of vals) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = DSH_EFFORT_ROTULO[v] || v;
+    sel.appendChild(o);
+  }
+  if (atual && vals.includes(atual)) sel.value = atual;
+  else sel.value = vals.includes("off") ? "off" : vals[0];
+}
+
+// "Testar" (#148): o MESMO caminho do turno real (descoberta sobe o harness) e o
+// resultado é datado DESTE clique — ok com latência medida no cliente, ou o
+// `detail` do 502. Também é o que popula o catálogo, então não há dois controles.
+async function carregaDshModelos() {
+  const sel = $("chatDshModel"), st = $("chatDshStatus");
+  if (!sel || !st || dshModelosCarregando) return;
+  const guardado = ((LAST_SETTINGS || {}).chat_dsh_model || sel.value || "").trim();
+  dshModelosCarregando = true;
+  const btn = $("chatDshTestar"); if (btn) btn.disabled = true;
+  sel.disabled = true;
+  st.textContent = "testando o dsh… (1–4 s; a descoberta fica em cache)";
+  const t0 = performance.now();
+  try {
+    const r = await api("/api/chat/dsh/models");
+    const ms = Math.round(performance.now() - t0);
+    const n = montaOpcoesModelo(sel, r.models || []);
+    if (!sel.options.length) throw new Error("o dsh não devolveu nenhum modelo");
+    const alvo = [guardado, (r.current || {}).model, r.default_model]
+      .find(v => v && [...sel.options].some(o => o.value === v));
+    if (alvo) sel.value = alvo;             // se nada casar, fica o primeiro
+    // o PM pediu o caminho RESOLVIDO visível (#124): o endpoint devolve o binário
+    // que de fato foi executado — vai para o placeholder, sem sujar o valor salvo
+    if (r.bin && $("chatDshBin")) {
+      const bin = $("chatDshBin");
+      if (bin.dataset.phOriginal === undefined) bin.dataset.phOriginal = bin.placeholder || "";
+      bin.placeholder = "resolvido: " + r.bin;
+      bin.title = "binário resolvido neste host: " + r.bin;
+    }
+    const escolhida = sel.options[sel.selectedIndex];
+    preencheEfforts(escolhida && escolhida.dataset.efforts ? escolhida.dataset.efforts.split(",") : null);
+    st.textContent = `✔ falei com o dsh em ${ms} ms · ${sel.options.length} modelo(s) em ${n} provedor(es)`
+      + `${r.node ? " · node " + r.node : ""} · selecionado: ${(escolhida.textContent || "").trim()}`;
+  } catch (e) {
+    if (!sel.options.length) {              // select vazio apagaria o guardado
+      const o = document.createElement("option");
+      o.value = guardado || ""; o.textContent = guardado ? "guardado: " + guardado : "—";
+      sel.appendChild(o);
+    }
+    st.textContent = `✖ não consegui falar com o dsh em ${Math.round(performance.now() - t0)} ms: `
+      + e.message + "  ·  confira o binário/perfil e clique em Testar (o valor guardado segue valendo)";
+  } finally {
+    dshModelosCarregando = false;
+    sel.disabled = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+function ligaControlesBackendChat() {
+  const back = $("chatBackend");
+  if (back) back.onchange = () => { atualizaBackendChat(); atualizaBackendLive(); };
+  const backLive = $("chatBackendLive");
+  if (backLive) backLive.onchange = () => { atualizaBackendLive(); atualizaBackendChat(); };
+  atualizaBackendLive();
+  const sel = $("chatDshModel");
+  if (sel) sel.onchange = () => {
+    const st = $("chatDshStatus");
+    const op = sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+    preencheEfforts(op && op.dataset.efforts ? op.dataset.efforts.split(",") : null);
+    if (st && op) st.textContent = "selecionado: " + op.textContent;
+  };
+  const bt = $("chatDshTestar");
+  if (bt) bt.onclick = () => carregaDshModelos();
+  if ($("chatDshEffort") && !$("chatDshEffort").options.length) preencheEfforts(null);
+  atualizaBackendChat();
+}
+
 // Faixa de aviso no topo quando o servidor recusa uma ação por falta de admin.
 function mostrarAvisoAdmin(html) {
   const bar = $("keyBar"), txt = $("keyBarText");
@@ -3024,10 +3363,11 @@ async function apiBlob(path, opts = {}) {
 
 /* ───────── Navegação por abas ───────── */
 function showView(id, opts) {
-  const ok = ["gerar","vozes","tradutor","conversa","historico","config"].includes(id) ? id : "gerar";
+  const ok = ["gerar","vozes","tradutor","conversa","historico","live","config"].includes(id) ? id : "gerar";
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + ok));
   document.querySelectorAll(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.view === ok));
   localStorage.setItem("ttsStudioView", ok);
+  if (ok === "live" && typeof lxAoAbrir === "function") lxAoAbrir();
   if (ok === "config" && opts && opts.tab) {
     const tab = document.querySelector(`.settings-tabs .stab[data-stab="${opts.tab}"]`);
     if (tab) tab.click();
@@ -3035,15 +3375,22 @@ function showView(id, opts) {
   if (ok === "tradutor" && typeof warmTranslator === "function") warmTranslator();
 }
 document.querySelectorAll(".nav-item").forEach(b => b.onclick = () => showView(b.dataset.view));
+// Deep-link por hash (#live etc., #128): o hash VENCE sobre a última tela — é a
+// intenção de quem abriu o link. Inválido cai na padrão (o showView já valida).
+function viewDoHash() {
+  const h = (location.hash || "").replace(/^#/, "");
+  return h || null;
+}
+window.addEventListener("hashchange", () => showView(viewDoHash() || ""));
 // restaura última tela no fim do carregamento (warmTranslator já existe)
-queueMicrotask(() => showView(localStorage.getItem("ttsStudioView") || localStorage.getItem("ttsRodView") || "gerar"));
+queueMicrotask(() => showView(viewDoHash() || localStorage.getItem("ttsStudioView") || localStorage.getItem("ttsRodView") || "gerar"));
 
 // atalhos 1–5 (ignora se estiver digitando)
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const tag = (e.target && e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select" || e.target?.isContentEditable) return;
-  const map = { "1": "gerar", "2": "vozes", "3": "tradutor", "4": "conversa", "5": "historico", "6": "config" };
+  const map = { "1": "gerar", "2": "vozes", "3": "tradutor", "4": "conversa", "5": "historico", "6": "config", "7": "live" };
   if (map[e.key]) { e.preventDefault(); showView(map[e.key]); }
 });
 const _gotoGenCfg = $("gotoGenCfg");
@@ -3467,10 +3814,12 @@ async function blobToWav(blob) {
 
 $("recBtn").onclick = async () => {
   if (mediaRecorder && mediaRecorder.state === "recording") { mediaRecorder.stop(); return; }
+  obsVozesM.setEstado("● gravando", "ok");
   let cap;
   try {
-    cap = await micFilteredStream({ echoCancellation: false, noiseSuppression: micFx.ns, autoGainControl: true });
+    cap = await micFilteredStream({ echoCancellation: false, noiseSuppression: micFx.ns, autoGainControl: true }, obsVozesM);
   } catch { toast("Permissão de microfone negada."); return; }
+  obsVozesM.log("gravando amostra de voz");
   const stream = cap.stream;
 
   chunks = [];
@@ -3480,11 +3829,15 @@ $("recBtn").onclick = async () => {
     cap.close();
     clearInterval(timerH); $("timer").textContent = "";
     $("recBtn").textContent = "● Gravar"; $("recBtn").classList.remove("rec");
+    obsVozesM.setEstado("processando…");
+    obsVozesM.log("amostra capturada — processando");
     try {
       wavBlob = await blobToWav(new Blob(chunks, { type: mediaRecorder.mimeType }));
       $("previewAudio").src = URL.createObjectURL(wavBlob);
       $("previewRow").style.display = "flex";
-    } catch (e) { toast("Falha ao processar áudio: " + e.message); }
+      obsVozesM.setEstado("✔ amostra pronta", "ok");
+      obsVozesM.log("amostra pronta para clonagem");
+    } catch (e) { toast("Falha ao processar áudio: " + e.message); obsVozesM.setEstado("✖ erro", "err"); obsVozesM.log("erro ao processar: " + e.message, "e-erro"); }
   };
   mediaRecorder.start();
   const t0 = Date.now();
@@ -4113,9 +4466,16 @@ async function streamJob(job_id, statusEl) {
   const meu = player;
   $("stopBtn").style.display = "";
   $("tvStopBtn").style.display = "";
+  // OBS-3: progresso do job no painel de monitoramento (trecho atual, status, tempo)
+  const obsT0 = Date.now(), idCurto = job_id.slice(0, 8);
+  obsTtsM.setEstado("▶ " + idCurto);
+  obsTtsM.log("reproduzindo job " + idCurto + " por streaming");
   try {
-    return await pollPieces(job_id, meu, {
+    const j = await pollPieces(job_id, meu, {
       onProgress: (j, buscados) => {
+        obsTtsM.setInfo("trecho", j.pieces ? buscados + "/" + j.pieces : null);
+        obsTtsM.setInfo("status", j.status);
+        obsTtsM.setInfo("tempo", Math.round((Date.now() - obsT0) / 1000) + "s");
         if (j.status === "queued" && statusEl) {
           const msg = (j.progress && j.progress.stage) || "na fila de falas…";
           statusEl.innerHTML = `<span class="spinner"></span>${esc(msg)}`;
@@ -4132,6 +4492,20 @@ async function streamJob(job_id, statusEl) {
         statusEl.innerHTML = `<span class="spinner"></span>${esc(msg)}`;
       },
     });
+    obsTtsM.setEstado("✔ concluído", "ok");
+    // O chip `status` vinha do ÚLTIMO poll (`running`) e ficava contradizendo o
+    // "✔ concluído" ao lado (#142). O desfecho do job passa a mandar no chip e o
+    // `tempo` é recalculado agora — não fica congelado no valor do último poll.
+    obsTtsM.setInfo("status", j.status || "done");
+    obsTtsM.setInfo("tempo", Math.round((Date.now() - obsT0) / 1000) + "s");
+    obsTtsM.log("job " + idCurto + " concluído — " + j.pieces + " trecho(s) em " + Math.round((Date.now() - obsT0) / 1000) + "s");
+    return j;
+  } catch (e) {
+    obsTtsM.setEstado("✖ erro", "err");
+    obsTtsM.setInfo("status", "error");
+    obsTtsM.setInfo("tempo", Math.round((Date.now() - obsT0) / 1000) + "s");
+    obsTtsM.log("job " + idCurto + " falhou: " + e.message, "e-erro");
+    throw e;
   } finally {
     if (player === meu && !meu.stopped) {
       const resta = Math.max(0, (meu.nextTime - meu.ctx.currentTime) * 1000) + 300;
@@ -4227,7 +4601,7 @@ try { micFxSaved = JSON.parse(localStorage.getItem("micFx") || "{}") || {}; } ca
 const micFx = Object.assign({ gain: 1, hp: 90, thresh: 0.015, ns: false, silenceHold: 700, minUtter: 350, contMax: 4500 },
   micFxSaved);
 CONT_MAX_MS = micFx.contMax;
-let micGraph = null, meterRAF = null, meterSrc = null;
+let micGraph = null, meterSrc = null;   // o RAF do medidor é da malha única OBS-3
 // meterSrc = { an, buf } da captura de microfone em curso, contínua ou de
 // gravador — é o que alimenta o medidor do painel, em qualquer tela.
 VAD.thresh = micFx.thresh; VAD.silenceHoldMs = micFx.silenceHold; VAD.minUtterMs = micFx.minUtter;
@@ -4331,8 +4705,12 @@ function trimPcm(g, keepFrom) {
 }
 
 function startMeter() {
+  // OBS-3: o medidor da bancada entra na MESMA malha de RAF do resto do app
+  // (`OBS`). Antes ele tinha RAF própria: durante uma gravação em qualquer tela
+  // rodavam DUAS malhas (a da bancada e a do painel) pintando o mesmo sinal —
+  // #120/#134 no cliente. O corpo do loop não mudou.
   const loop = () => {
-    if (!meterSrc) return;
+    if (!meterSrc) { OBS.desliga("bancada:mic"); return; }
     meterSrc.an.getFloatTimeDomainData(meterSrc.buf);
     let s = 0; for (const v of meterSrc.buf) s += v * v;
     const r = Math.sqrt(s / meterSrc.buf.length);
@@ -4341,13 +4719,11 @@ function startMeter() {
                bar.style.background = r > VAD.thresh ? "var(--ok)" : "var(--faint)"; }
     micMedir(meterSrc.buf, r);
     desenhaEspectro(meterSrc.an);
-    meterRAF = requestAnimationFrame(loop);
   };
-  loop();
+  OBS.liga("bancada:mic", loop);
 }
 function stopMeter() {
-  if (meterRAF) cancelAnimationFrame(meterRAF);
-  meterRAF = null;
+  OBS.desliga("bancada:mic");
   const b = $("micMeterBar"); if (b) b.style.width = "0";
 }
 function updateMicMark() {
@@ -4508,7 +4884,8 @@ function micAudioConstraints(base) {
    voz, na transcrição e na biometria o painel era decorativo. Retorna o stream p/
    o gravador e um close() que derruba também o microfone cru (parar o stream do
    AudioContext NÃO libera o dispositivo). */
-async function micFilteredStream(base) {
+let ctxObsMed = null;   // ctx do tap de monitoramento (OBS-3), criado sob demanda
+async function micFilteredStream(base, obs) {
   let raw;
   try {
     raw = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints(base) });
@@ -4520,7 +4897,24 @@ async function micFilteredStream(base) {
     } else { throw e; }
   }
   refreshDevices();
-  const libera = () => raw.getTracks().forEach(t => t.stop());
+  // OBS-3: tap do monitor quando a tela pediu — na cadeia quando ela existe;
+  // no modo transparente, ctx mínimo À PARTE (a gravação segue no stream cru,
+  // zero impacto no áudio capturado). O monitor desanexa no close().
+  let desanexaObs = null;
+  if (obs && obs.mic && !(micFx.hp || micFx.gain !== 1)) {
+    // modo transparente não tem cadeia nem analyser: ctx mínimo só para o tap
+    if (!ctxObsMed) ctxObsMed = new AudioContext();
+    const src = ctxObsMed.createMediaStreamSource(raw);
+    const anT = ctxObsMed.createAnalyser(); anT.fftSize = 2048;
+    src.connect(anT);
+    obs.mic(anT);
+    desanexaObs = () => { try { src.disconnect(); anT.disconnect(); } catch (e) {} };
+  }
+  const libera = () => {
+    if (desanexaObs) desanexaObs();
+    if (obs && obs.fechar) obs.fechar();
+    raw.getTracks().forEach(t => t.stop());
+  };
   if (!micFx.hp && micFx.gain === 1) {   // transparente: sem cadeia, sem ganho de latência
     const tr = raw.getAudioTracks()[0];
     return { stream: raw, close: libera, sr: (tr && tr.getSettings().sampleRate) || 0 };
@@ -4539,6 +4933,7 @@ async function micFilteredStream(base) {
   const dest = ctx.createMediaStreamDestination();
   gain.connect(an); an.connect(dest);
   meterSrc = { an, buf: new Float32Array(an.fftSize) };
+  if (obs && obs.mic) obs.mic(an);      // OBS-3: a cadeia já tem o analyser — reuso
   const meuMedidor = meterSrc;
   startMeter();
   return { stream: dest.stream, sr: ctx.sampleRate,
@@ -5658,6 +6053,17 @@ async function loadSettings() {
     cfgTxt("chatBaseUrl", s.chat_base_url);
     cfgTxt("chatModel", s.chat_model);
     cfgTxt("chatApiKey", s.chat_api_key);
+    if ($("chatBackend")) $("chatBackend").value = s.chat_backend === "dsh" ? "dsh" : "openai";
+    if ($("chatBackendLive")) $("chatBackendLive").value = ["openai", "dsh"].includes(s.chat_backend_live)
+      ? s.chat_backend_live : "";   // "" = herda da Conversa
+    // ANTES de escrever o effort: o select nasce vazio, e `value=` num select sem
+    // options não pega — o liga() é quem o popula (lista completa) e dispara a
+    // descoberta; o valor salvo é aplicado logo abaixo e a descoberta o preserva
+    // se ele continuar válido para o modelo.
+    ligaControlesBackendChat();
+    cfgTxt("chatDshBin", s.chat_dsh_bin || "dsh");
+    cfgTxt("chatDshProfile", s.chat_dsh_profile || "tts-studio");
+    if ($("chatDshEffort")) $("chatDshEffort").value = s.chat_dsh_effort || "off";
     marcarSegredosMascarados();
     cfgTxt("chatExtra", s.chat_extra);
     if ($("speakerGate")) $("speakerGate").value = s.speaker_gate || "off";
@@ -5738,7 +6144,8 @@ $("spThr")?.addEventListener("input", () => { $("spThrOut").textContent = (+$("s
 async function spGravar(segundos, st) {
   // mesma cadeia das demais telas: biometria cadastrada por outro caminho de áudio
   // desalinha o limiar usado na escuta real
-  const cap = await micFilteredStream({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false });
+  const cap = await micFilteredStream({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false }, obsVozesM);
+  obsVozesM.log("biometria: gravando " + segundos + "s");
   const rec = new MediaRecorder(cap.stream);
   const pedacos = [];
   rec.ondataavailable = ev => ev.data.size && pedacos.push(ev.data);
@@ -5871,6 +6278,13 @@ $("cfgSave").onclick = async () => {
       chat_model: $("chatModel")?.value || "",
       chat_api_key: $("chatApiKey")?.value || "",
       chat_extra: $("chatExtra")?.value || "",
+      chat_backend: $("chatBackend")?.value || "openai",
+      chat_backend_live: $("chatBackendLive")?.value || "",   // "" = herda (não apaga o campo)
+      chat_dsh_bin: $("chatDshBin")?.value || "",
+      chat_dsh_profile: $("chatDshProfile")?.value || "",
+      // Select vazio (descoberta falhou no load) não pode APAGAR o modelo guardado.
+      chat_dsh_model: $("chatDshModel")?.value || (LAST_SETTINGS || {}).chat_dsh_model || "",
+      chat_dsh_effort: $("chatDshEffort")?.value || "off",
       speaker_gate: $("speakerGate")?.value || "off",
       speaker_threshold: parseFloat($("spThr")?.value) || 0.75,
       stt_whisper_repo: $("sttWhisperModel")?.value || "",
@@ -5920,10 +6334,12 @@ $("shutdownBtn").onclick = async () => {
 let sttRec = null, sttChunks = [], sttStream = null, sttSegs = [];
 $("sttRecBtn").onclick = async () => {
   if (sttRec && sttRec.state === "recording") { sttRec.stop(); return; }
+  obsSttM.setEstado("● gravando", "ok");
   let cap;
   try {
-    cap = await micFilteredStream({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: true });
+    cap = await micFilteredStream({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: true }, obsSttM);
   } catch { toast("Sem acesso ao microfone."); return; }
+  obsSttM.log("gravando — fale");
   sttStream = cap.stream;
   sttChunks = [];
   sttRec = new MediaRecorder(sttStream);
@@ -5931,6 +6347,8 @@ $("sttRecBtn").onclick = async () => {
   sttRec.onstop = async () => {
     cap.close();
     $("sttRecBtn").textContent = "● Gravar"; $("sttRecBtn").classList.remove("rec");
+    obsSttM.setEstado("transcrevendo…");
+    obsSttM.log("gravacao encerrada — transcrevendo");
     await sttTranscribe(new Blob(sttChunks, { type: sttRec.mimeType }));
   };
   sttRec.start();
@@ -5954,6 +6372,8 @@ $("sttYtBtn").onclick = async () => {
 };
 async function sttTranscribe(blob) {
   $("sttStatus").innerHTML = '<span class="spinner"></span>transcrevendo…';
+  const obsT0 = Date.now();
+  obsSttM.log("transcrição iniciada (" + Math.round(blob.size / 1024) + " kB)");
   let wav;
   try { wav = await blobToWav(blob); }
   catch (e) { wav = blob; }  // browser não decodificou (Safari/iOS) — servidor converte via ffmpeg
@@ -5965,7 +6385,13 @@ async function sttTranscribe(blob) {
     $("sttText").value = r.text || "";
     sttSegs = r.segments || [];
     $("sttStatus").textContent = `pronto (${r.language || "?"}) — ${(r.text || "").length} caracteres`;
-  } catch (e) { $("sttStatus").textContent = ""; toast("Erro: " + e.message, 6000); }
+    obsSttM.setEstado("✔ texto pronto", "ok");
+    obsSttM.log("transcrito em " + ((Date.now() - obsT0) / 1000).toFixed(1) + " s (" + (r.language || "?") + ", " + (r.text || "").length + " caracteres)");
+  } catch (e) {
+    $("sttStatus").textContent = ""; toast("Erro: " + e.message, 6000);
+    obsSttM.setEstado("✖ erro", "err");
+    obsSttM.log("erro na transcrição: " + e.message, "e-erro");
+  }
 }
 function _dl(name, text, type) {
   const a = document.createElement("a");
@@ -6052,7 +6478,7 @@ function cvAddIA(txt) {
   if (ult && ult.textContent === "🤖 " + txt) { cvDbg("dup skip"); return; }
   cvAdd("IA", txt);
 }
-function cvStatus(t) { if ($("cvStatus")) $("cvStatus").textContent = t || ""; }
+function cvStatus(t) { if ($("cvStatus")) $("cvStatus").textContent = t || ""; if (obsCvM && t) obsCvM.log(t); }
 function cvFinalShow(text) {
   $("cvFinalText").textContent = text;
   $("cvFinal").style.display = "";
@@ -6262,6 +6688,7 @@ function cvSetMic(ligado) {
   if (!ligado) cvFramesVoz = 0;
   $("cvMic").textContent = ligado ? "⏹ Desligar" : "🎙 Ligar";
   $("cvRec").style.display = ligado ? "" : "none";
+  if (obsCvM) obsCvM.setEstado(ligado ? "ouvindo" : "desligado", ligado ? "ok" : null);
 }
 $("cvMic").onclick = async () => {
   if (cvVadLigado) {
@@ -6395,9 +6822,678 @@ refreshStatus();
 refreshVoices();
 refreshOutputs();
 loadSettings();
+ligaControlesBackendChat();   // mesmo se o load falhar (servidor fora), o seletor responde
 initMicControls();
 refreshDevices();
 const statusTimer = setInterval(refreshStatus, 15000);
+/* ───── OBS-3 (#120): componente único de monitoramento ─────
+   O painel do Live (#119) é a referência visual; o núcleo que todas as telas
+   compartilham vive aqui: UMA malha de RAF para todas as barras de áudio do app
+   (viva só enquanto houver barra), a primitiva de log com teto e a fábrica do
+   painel compacto (medidores + estado + contadores + log). Nada de cópias por
+   tela: cada uma instancia a fábrica e alimenta com os eventos dela. */
+const OBS = { raf: 0, barras: new Map() };
+function obsAcorda() {
+  if (!OBS.raf) OBS.raf = requestAnimationFrame(obsLoop);
+}
+function obsLoop() {
+  if (!OBS.barras.size) { OBS.raf = 0; return; }   // ninguém assistindo: para de pintar
+  OBS.raf = requestAnimationFrame(obsLoop);
+  for (const fn of OBS.barras.values()) { try { fn(); } catch (e) {} }
+}
+OBS.liga = (id, fn) => { OBS.barras.set(id, fn); obsAcorda(); };
+OBS.desliga = id => { OBS.barras.delete(id); };
+
+function obsLog(el, txt, cls, max) {
+  if (!el) return;
+  max = max || 150;
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  const t = new Date(), ts = document.createElement("span");
+  ts.className = "t";
+  ts.textContent = t.toTimeString().slice(0, 8) + "." + String(t.getMilliseconds()).padStart(3, "0");
+  d.appendChild(ts);
+  d.appendChild(document.createTextNode(txt));      // textNode = sem injeção de HTML
+  el.appendChild(d);
+  while (el.children.length > max) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
+function _obsLe(an, buf) {
+  an.getFloatTimeDomainData(buf);
+  let s = 0, pico = 0;
+  for (let i = 0; i < buf.length; i++) {
+    s += buf[i] * buf[i];
+    const a = buf[i] < 0 ? -buf[i] : buf[i];
+    if (a > pico) pico = a;
+  }
+  return { rms: Math.sqrt(s / buf.length), pico };
+}
+
+function criaObsMonitor(mount, opts) {
+  opts = opts || {};
+  const raiz = document.getElementById(mount);
+  if (!raiz) return null;
+  raiz.innerHTML = "";
+  const el = document.createElement("div");
+  el.className = "lx-obs"; el.style.gap = "6px";
+  raiz.appendChild(el);
+
+  const barras = {};
+  if (opts.medMic || opts.medOut) {
+    const meters = document.createElement("div"); meters.className = "lx-meters";
+    const mk = (chave, rot) => {
+      const m = document.createElement("div"); m.className = "lx-meter";
+      const lab = document.createElement("div"); lab.className = "lx-lab2";
+      const r1 = document.createElement("span"); r1.textContent = rot;
+      const dbspan = document.createElement("span"); dbspan.textContent = "—";
+      lab.appendChild(r1); lab.appendChild(dbspan);
+      const bar = document.createElement("div"); bar.className = "lx-meterbar";
+      const b = document.createElement("div"); b.className = "bar";
+      const pk = document.createElement("div"); pk.className = "peak";
+      bar.appendChild(b); bar.appendChild(pk);
+      m.appendChild(lab); m.appendChild(bar);
+      meters.appendChild(m);
+      barras[chave] = { bar: b, pk, dbspan, an: null, buf: null, pico: null };
+    };
+    if (opts.medMic) mk("in", "mic");
+    if (opts.medOut) mk("out", "saída");
+    el.appendChild(meters);
+  }
+
+  const chips = document.createElement("div"); chips.className = "lx-chips";
+  const estado = document.createElement("span"); estado.className = "lx-chip big"; estado.textContent = "—";
+  chips.appendChild(estado);
+  const infos = {};
+  el.appendChild(chips);
+
+  const logWrap = document.createElement("details");
+  const sum = document.createElement("summary"); sum.textContent = "eventos";
+  const logEl = document.createElement("div"); logEl.className = "lx-log-mini";
+  logWrap.appendChild(sum); logWrap.appendChild(logEl);
+  if (!opts.compacto) logWrap.open = true;
+  el.appendChild(logWrap);
+
+  function _frame(chave) {
+    const b = barras[chave];
+    if (!b.an) return;
+    const r = _obsLe(b.an, b.buf);
+    const dbfs = r.rms > 0 ? 20 * Math.log10(r.rms) : -120;
+    b.bar.style.width = lxPct(dbfs) + "%";
+    const agora = performance.now();
+    if (!b.pico || r.pico >= b.pico.v) b.pico = { v: r.pico, t: agora };
+    else if (agora - b.pico.t > 900) b.pico = { v: b.pico.v * 0.92, t: agora };
+    b.pk.style.left = lxPct(b.pico.v > 0 ? 20 * Math.log10(b.pico.v) : -120) + "%";
+    b.dbspan.textContent = (dbfs <= -120 ? "−∞" : dbfs.toFixed(1)) + " dBFS";
+  }
+
+  return {
+    el,
+    setEstado: (txt, cls) => { estado.textContent = txt; estado.className = "lx-chip big" + (cls ? " " + cls : ""); },
+    setInfo: (rot, txt) => {
+      let chip = infos[rot];
+      if (txt == null) { if (chip) chip.remove(); delete infos[rot]; return; }
+      if (!chip) {
+        chip = document.createElement("span"); chip.className = "lx-chip";
+        chip.appendChild(document.createTextNode(rot + " "));
+        chip._b = document.createElement("b"); chip.appendChild(chip._b);
+        infos[rot] = chip; chips.appendChild(chip);
+      }
+      chip._b.textContent = txt;
+    },
+    log: (txt, cls) => obsLog(logEl, txt, cls, 150),
+    mic: an => { if (barras.in && an) { barras.in.an = an; barras.in.buf = new Float32Array(an.fftSize); OBS.liga(mount + ":in", () => _frame("in")); } },
+    out: an => { if (barras.out && an) { barras.out.an = an; barras.out.buf = new Float32Array(an.fftSize); OBS.liga(mount + ":out", () => _frame("out")); } },
+    fechar: () => { OBS.desliga(mount + ":in"); OBS.desliga(mount + ":out"); }
+  };
+}
+
+// As quatro telas com áudio/geração (OBS-3). Criados cedo: os mounts já existem
+// (o script roda no fim do body) e os painéis ficam visíveis mesmo antes do 1º uso.
+const obsSttM = criaObsMonitor("obsStt", { medMic: true, compacto: true });
+const obsVozesM = criaObsMonitor("obsVozes", { medMic: true, compacto: true });
+const obsCvM = criaObsMonitor("obsCv", { compacto: true });   // sem medidor de mic: o mic da Conversa é do MicVAD (sem tap limpo)
+const obsTtsM = criaObsMonitor("obsTts", { compacto: true }); // sem áudio capturado: progresso do job
+
+/* ───────── Live: sessão contínua por WebSocket (task #94) ─────────
+   Protocolo da #91: cliente manda JSON de controle + PCM16 mono 16 kHz; servidor
+   devolve eventos JSON + PCM16 24 kHz. Estado centralizado em LX.estado e o botão
+   só REFLETE — foi assim que a Conversa se queimou com botão dessincronizado. */
+const LX = { ws: null, estado: "desligado", ctxCap: null, noCap: null, stream: null,
+             fonte: null, ctxPlay: null, ativos: [], proximo: 0, ptt: false, erro: false };
+
+/* OBS-2 (#119): instrumentação do cliente — contadores, medidores, latências e
+   log de eventos. É o painel que teria diagnosticado o #117 na hora: frames do
+   mic, fila de playback, limiar vigente do VAD e erros nunca silenciosos. */
+LX.obs = { env: 0, rec: 0, stats: null, lat: null, latHist: [], raf: 0, tick: 0,
+           bufs: {}, picos: {}, ws: "—", pendente: false, pendenteTrechos: 0 };
+
+const LX_ROTULO = { desligado: "desligado", conectando: "conectando…", ouvindo: "ouvindo",
+                    pensando: "pensando…", falando: "falando", interrompido: "interrompi", erro: "erro" };
+
+function lxEstado(novo, msg) {
+  LX.estado = novo;
+  const b = $("lxEstado"), lig = $("lxLigar");
+  if (b) {
+    b.textContent = LX_ROTULO[novo] || novo;
+    b.className = "badge" + (novo === "erro" ? " err" : novo === "falando" || novo === "interrompido" ? " ok" : "");
+  }
+  // espelho GRANDE no painel de monitoramento (OBS-2): o badge do cabeçalho é pequeno
+  const g = $("lxEstadoGrande");
+  if (g) {
+    g.textContent = LX_ROTULO[novo] || novo;
+    g.className = "lx-chip big" + (novo === "erro" ? " err"
+                 : novo === "ouvindo" || novo === "falando" || novo === "interrompido" ? " ok" : "");
+  }
+  // o botão reflete se EXISTE sessão, não o estado do turno: erro de pipeline
+  // (ex.: chat fora) deixa a sessão viva e o clique deve DESLIGAR, não reconectar
+  if (lig) lig.textContent = (novo === "desligado" || !LX.ws) ? "🎙 Ligar" : "⏹ Desligar";
+  if (msg != null && $("lxStatus")) $("lxStatus").textContent = msg;
+}
+
+function lxAppend(id, txt) {
+  const el = $(id);
+  if (!el || !txt) return;
+  // delta cola no último parágrafo; texto novo abre parágrafo (o protocolo manda
+  // `delta`; quando vier `text` cheio, ele abre bloco e não duplica a bolha)
+  const ult = el.lastElementChild;
+  if (ult && ult.dataset.delta === "1") ult.textContent += txt;
+  else {
+    const d = document.createElement("span");
+    d.className = "lx-b"; d.dataset.delta = "1"; d.textContent = txt;
+    el.appendChild(d);
+  }
+  el.scrollTop = el.scrollHeight;
+}
+function lxQuebraLinha(id) { const el = $(id); const u = el && el.lastElementChild; if (u) u.dataset.delta = "0"; }
+
+// Linha de STATUS na coluna (erro de pipeline, "não captei fala") — #117: esses
+// eventos antes só tocavam o hint minúsculo (ou nada) e o usuário lia "parou de
+// captar". `dataset.delta = "0"`: a linha NÃO cola com o próximo delta do LLM.
+function lxLinha(id, cls, txt) {
+  const el = $(id);
+  if (!el || !txt) return;
+  const d = document.createElement("span");
+  d.className = cls; d.dataset.delta = "0"; d.textContent = txt;   // sem injeção de HTML
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+}
+
+// WebSocket não manda header, então a chave não pode ir em X-API-Key. O caminho
+// da #91 é TICKET de um uso: POST /api/live/ticket (esse com header) e depois
+// ?ticket=<t>. No BROWSER não se cai para `?key=<chave>`: chave em query vaza em
+// access log, proxy e histórico — é o que o #98 fechou. Ou é ticket, ou é erro
+// visível (o próximo clique tenta de novo). `?key=` só em script/CLI.
+// `connect-src 'self'` já cobre ws:// (medido: sem violação de CSP).
+function lxWsUrl() {
+  return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + APP_BASE + "/api/live/ws";
+}
+
+function lxEnviaJSON(obj) {
+  if (LX.ws && LX.ws.readyState === WebSocket.OPEN) LX.ws.send(JSON.stringify(obj));
+}
+function lxEnviaBin(int16) {
+  if (LX.ws && LX.ws.readyState === WebSocket.OPEN) { LX.obs.env++; LX.ws.send(int16.buffer); }
+}
+
+async function lxwsConectar() {
+  lxEstado("conectando", "abrindo sessão…");
+  LX.erro = false;
+  // contadores zeram POR SESSÃO (o painel descreve a sessão corrente)
+  LX.obs = { env: 0, rec: 0, stats: null, lat: null, latHist: [], raf: 0, tick: 0,
+             bufs: {}, picos: {}, ws: "abrindo…", pendente: false, pendenteTrechos: 0,
+             dshFallback: null };   // #150: aviso do fallback é POR SESSÃO
+  lxAvisaDsh();
+  let q = "";
+  if (KEY) {
+    try {
+      const t = await api("/api/live/ticket", { method: "POST" });
+      if (!t || !t.ticket) throw new Error("resposta sem ticket");
+      q = "?ticket=" + encodeURIComponent(t.ticket);
+    } catch (e) {
+      lxEstado("erro", "✖ não consegui ticket (" + e.message + ") — clico de novo para tentar");
+      return;                       // sem degradar para chave na URL
+    }
+  }
+  let ws;
+  try { ws = new WebSocket(lxWsUrl() + q); }
+  catch (e) { lxEstado("erro", "✖ URL de WebSocket inválida: " + e.message); return; }
+  LX.ws = ws;
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { lxObsWs("conectado"); lxSetup(); lxCaptura().catch(e => lxEstado("erro", "✖ mic: " + e.message)); };
+  ws.onmessage = ev => lxRecebe(ev);
+  ws.onerror = () => { LX.erro = true; lxObsWs("erro de conexão", true); };
+  ws.onclose = ev => {
+    LX.ws = null; lxParaCaptura(); lxCancelaPlayback();
+    LX.obs.dshFallback = null;   // aviso é DA SESSÃO: morre com ela (#150)
+    lxAvisaDsh();
+    lxObsWs("fechado (código " + ev.code + ")", LX.erro);
+    if (LX.erro) lxEstado("erro", "✖ WebSocket caiu — /api/live/ws está no ar? (código " + ev.code + ")");
+    else lxEstado("desligado", "sessão encerrada");
+  };
+}
+
+function lxSetup() {
+  lxEnviaJSON({
+    type: "setup",
+    voice_id: $("lxVoz") ? ($("lxVoz").value || null) : null,
+    system_instruction: null,
+    vad: { silence_ms: parseInt($("lxSilencio")?.value, 10) || 600, prefix_ms: 100,
+           ptt: !!$("lxPtt")?.checked },
+    history: [],
+  });
+}
+
+async function lxCaptura() {
+  // Origem NÃO segura (ex.: IP da LAN em http) não tem `navigator.mediaDevices`:
+  // o erro saía como "Not supported" e não dizia o que fazer. Medido: 127.0.0.1 é
+  // contexto seguro; 192.168.x.x NÃO é.
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("mic exige origem segura — abra por http://127.0.0.1:7860 (IP da LAN em http não serve)");
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: micAudioConstraints({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false }) });
+  LX.stream = stream;
+  // captura a 16 kHz: o worklet entrega já na taxa do protocolo, sem resample
+  const ctx = new AudioContext({ sampleRate: 16000 });
+  await ctx.audioWorklet.addModule("/live-worklet.js");
+  const no = new AudioWorkletNode(ctx, "live-capture");
+  // playback em contexto próprio, na taxa que o servidor manda (24 kHz)
+  LX.ctxPlay = new AudioContext({ sampleRate: 24000 });
+  const mudo = ctx.createGain(); mudo.gain.value = 0;
+  ctx.createMediaStreamSource(stream).connect(no); no.connect(mudo); mudo.connect(ctx.destination);
+  // OBS-2: tap do mic para o medidor (analyser não precisa ligar ao destino para puxar)
+  LX.anMic = ctx.createAnalyser(); LX.anMic.fftSize = 2048;
+  ctx.createMediaStreamSource(stream).connect(LX.anMic);
+  // saída: o playback passa pelo bus -> analyser -> destino (lxToca conecta no bus)
+  LX.bus = LX.ctxPlay.createGain();
+  LX.anOut = LX.ctxPlay.createAnalyser(); LX.anOut.fftSize = 2048;
+  LX.bus.connect(LX.anOut); LX.anOut.connect(LX.ctxPlay.destination);
+  no.port.onmessage = e => lxEnviaBin(e.data);
+  LX.ctxCap = ctx; LX.noCap = no;
+  lxObsInicia(ctx, stream);
+  if (LX.estado !== "erro") lxEstado("ouvindo", "🎙 fale — interrompo falando por cima");
+}
+
+function lxParaCaptura() {
+  lxObsPara();
+  try { LX.anMic && LX.anMic.disconnect(); } catch (e) {}
+  try { LX.bus && LX.bus.disconnect(); } catch (e) {}
+  try { LX.anOut && LX.anOut.disconnect(); } catch (e) {}
+  LX.anMic = LX.anOut = LX.bus = null;
+  try { LX.noCap && (LX.noCap.port.onmessage = null); } catch (e) {}
+  try { LX.fonte && LX.fonte.disconnect(); } catch (e) {}
+  try { LX.stream && LX.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+  const c1 = LX.ctxCap, c2 = LX.ctxPlay;
+  LX.ctxCap = LX.ctxPlay = LX.noCap = LX.fonte = LX.stream = null;
+  try { c1 && c1.close(); } catch (e) {}
+  try { c2 && c2.close(); } catch (e) {}
+}
+
+/* ───── OBS-2 (#119): painel de monitoramento — medidores, contadores e log ─────
+   Escala dos medidores: dBFS com piso em -60 (fala a ~15 cm fica entre -30 e -15).
+   A marca vermelha do mic é o limiar VIGENTE do motor (evento `stats`): é ele que
+   explica por que uma fala não abre turno (subiu com o eco do playback). */
+const LX_DB_CHAO = -60;
+
+function lxPct(dbfs) {
+  return Math.max(0, Math.min(100, (dbfs - LX_DB_CHAO) / -LX_DB_CHAO * 100));
+}
+
+// Marcador PERSISTENTE do aviso de fallback: mostra o motivo e diz que o backend
+// em vigor é OUTRO. Some quando a sessão termina (o estado é zerado no connect).
+function lxAvisaDsh() {
+  const el = $("lxDshAviso");
+  if (!el) return;
+  const d = LX.obs.dshFallback;
+  if (!d) { el.hidden = true; el.textContent = ""; return; }
+  el.hidden = false;
+  el.textContent = "⚠ dsh indisponível nesta sessão (" + d.message
+                 + ") — respondendo pelo " + d.fallback + ", não pelo harness";
+}
+
+// helper de texto do painel, no escopo do script (o `txt` local do render não
+// vale no handler de eventos)
+function lxTxt(id, v) { const el = $(id); if (el) el.textContent = v; }
+
+function lxLogEvento(txt, cls) {
+  obsLog($("lxLog"), txt, cls);   // primitiva compartilhada do OBS-3 (#120)
+}
+
+function lxObsWs(txt, erro) {
+  LX.obs.ws = txt;
+  lxLogEvento("WS: " + txt, erro ? "e-erro" : null);
+}
+
+function lxLe(an, chave) {
+  if (!an) return { rms: 0, pico: 0 };
+  if (!LX.obs.bufs[chave] || LX.obs.bufs[chave].length !== an.fftSize)
+    LX.obs.bufs[chave] = new Float32Array(an.fftSize);
+  const buf = LX.obs.bufs[chave];
+  an.getFloatTimeDomainData(buf);
+  let s = 0, pico = 0;
+  for (let i = 0; i < buf.length; i++) {
+    s += buf[i] * buf[i];
+    const a = buf[i] < 0 ? -buf[i] : buf[i];
+    if (a > pico) pico = a;
+  }
+  return { rms: Math.sqrt(s / buf.length), pico };
+}
+
+function lxBarra(chave, an, barraId, picoId, dbId) {
+  const { rms, pico } = lxLe(an, chave);
+  const dbfs = rms > 0 ? 20 * Math.log10(rms) : -120;
+  const bar = $(barraId);
+  if (bar) {
+    bar.style.width = lxPct(dbfs) + "%";
+    const lim = LX.obs.stats && LX.obs.stats.motor && LX.obs.stats.motor.limiar_dbfs;
+    if (chave === "mic" && lim != null)
+      bar.style.background = dbfs >= lim ? "var(--ok)" : "var(--faint)";
+  }
+  // pico com hold (~900 ms) e decaimento — leitura estável de transientes
+  const p = LX.obs.picos, agora = performance.now();
+  if (p[chave] == null || pico >= p[chave].v) p[chave] = { v: pico, t: agora };
+  else if (agora - p[chave].t > 900) p[chave] = { v: p[chave].v * 0.92, t: agora };
+  const pe = $(picoId);
+  if (pe) pe.style.left = lxPct(p[chave].v > 0 ? 20 * Math.log10(p[chave].v) : -120) + "%";
+  const db = $(dbId);
+  if (db) db.textContent = (dbfs <= -120 ? "−∞" : dbfs.toFixed(1)) + " dBFS";
+}
+
+// A partir de quanto o 1º token do provedor deixa de ser ruído e passa a EXPLICAR
+// a espera (o alvo de 1,5 s é do cenário local/stub). Marcar isso na tela evita
+// caçar fantasma no app quando o provedor remoto demora segundos.
+const LAT_PROVEDOR_MIN_MS = 1500;
+
+function lxProvedorMarca(l) {
+  return (l && l.first_token_ms != null && l.first_token_ms >= LAT_PROVEDOR_MIN_MS)
+    ? " ⚠ provedor: 1º token em " + l.first_token_ms + " ms" : "";
+}
+
+function lxLatTxt(l) {
+  const f = v => (v == null ? "—" : v + " ms");
+  return "STT " + f(l.stt_ms) + " · 1º token " + f(l.first_token_ms)
+       + " · 1º áudio " + f(l.first_audio_ms) + " · total " + f(l.total_ms)
+       + lxProvedorMarca(l);
+}
+
+function lxObsRender() {
+  const o = LX.obs, s = o.stats;
+  const txt = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  txt("lxCEnv", o.env.toLocaleString("pt-BR"));
+  txt("lxCRec", o.rec.toLocaleString("pt-BR"));
+  txt("lxFila", LX.ativos.length);
+  txt("lxWs", o.ws);
+  txt("lxMotor", s && s.motor ? s.motor.estado : "—");
+  txt("lxTurno", s && s.turno
+      ? (s.turno.stage + " " + s.turno.ms + " ms · nº " + s.turno.n
+         + (s.turno.pendente || o.pendente
+            ? " · ⚑ pendente" + ((s.turno.pendentes_trechos || o.pendenteTrechos) > 1
+                                 ? " (" + (s.turno.pendentes_trechos || o.pendenteTrechos) + " trechos)" : "")
+            : "")
+         + (s.turno.pendentes_descartados ? " · " + s.turno.pendentes_descartados + " descartado(s)" : ""))
+      : (o.pendente ? "⚑ pendente" + (o.pendenteTrechos > 1 ? " (" + o.pendenteTrechos + " trechos)" : "") : "—"));
+  // IA EM VIGOR (pedido x efetivo) a partir de `stats.ia` (#146/#151): com o dsh
+  // morto o servidor marca `fallback` e este selo NÃO pode continuar dizendo
+  // "dsh" enquanto o texto vem do endpoint. Sem o `stats.ia` (ainda não chegou),
+  // o fallback já anunciado pelo evento É a verdade — "—" aqui apagaria o aviso.
+  {
+    const ia = s && s.ia;
+    const d = LX.obs.dshFallback;   // anunciado pelo evento: vale MESMO se o stats
+                                    // já chegou dizendo que ainda não caiu (o
+                                    // servidor marca o fallback ~250 ms depois) — daí
+                                    // o `||` fora do `ia`, e não dentro dele
+    const chip = $("lxProv") && $("lxProv").parentElement;
+    const emFallback = !!(ia && ia.fallback) || !!d;
+    const backendEfetivo = (ia && ia.fallback && ia.backend) || (d && d.fallback) || null;
+    const motivo = (ia && ia.motivo) || (d && d.message) || "";
+    txt("lxProv", emFallback
+        ? ((backendEfetivo || "openai") + " (fallback do dsh)")
+        : (ia ? ia.backend : "—"));
+    if (chip) {
+      chip.classList.toggle("warn", emFallback);
+      chip.title = emFallback
+        ? "o dsh não subiu nesta sessão — o turno está sendo respondido pelo "
+          + (backendEfetivo || "endpoint") + (motivo ? ": " + motivo : "")
+        : "backend que de FATO responde o turno (o servidor publica em stats.ia)";
+    }
+  }
+  // o aviso também se acende pelo `stats` (fonte que se auto-corrige, caso o
+  // evento único se perca numa reconexão)
+  if (s && s.ia && s.ia.fallback && !LX.obs.dshFallback) {
+    LX.obs.dshFallback = { fallback: s.ia.backend || "openai",
+                           message: s.ia.motivo || "motivo não informado" };
+    lxAvisaDsh();
+  }
+  txt("lxMicServ", s && s.mic
+      ? (s.mic.frames.toLocaleString("pt-BR") + " frames · último há "
+         + (s.mic.desde_ultimo_ms != null ? s.mic.desde_ultimo_ms + " ms" : "—")) : "—");
+  const mark = $("lxMicMark");
+  if (mark) {
+    const lim = s && s.motor && s.motor.limiar_dbfs;
+    if (lim != null) {
+      mark.style.display = "";
+      mark.style.left = lxPct(lim) + "%";
+      mark.title = "limiar de abertura de turno: " + lim + " dBFS";
+    }
+  }
+  txt("lxLat", o.lat ? lxLatTxt(o.lat) : "—");
+  txt("lxLatHist", o.latHist.length ? "histórico (1º áudio): " + o.latHist.map(v => v + " ms").join(" · ") : "");
+}
+
+function lxObsInicia(ctx, stream) {
+  const taxa = $("lxCtx");
+  if (taxa) taxa.textContent = ctx.sampleRate + " Hz (dispositivo "
+      + ((stream.getAudioTracks()[0] || {}).getSettings ? (stream.getAudioTracks()[0].getSettings().sampleRate || "?") : "?") + " Hz)";
+  const dev = $("audioInDevice");
+  const entrada = $("lxDev");
+  if (entrada) entrada.textContent = (dev && dev.selectedIndex > 0)
+      ? dev.options[dev.selectedIndex].text : "padrão do sistema";
+  LX.obs.tick = setInterval(lxObsRender, 250);
+  // medidores na malha compartilhada do OBS-3: UMA RAF para o app inteiro
+  OBS.liga("live:mic", () => lxBarra("mic", LX.anMic, "lxMicBar", "lxMicPeak", "lxMicDb"));
+  OBS.liga("live:out", () => lxBarra("out", LX.anOut, "lxOutBar", "lxOutPeak", "lxOutDb"));
+  lxObsRender();
+}
+
+function lxObsPara() {
+  OBS.desliga("live:mic");
+  OBS.desliga("live:out");
+  if (LX.obs.tick) clearInterval(LX.obs.tick);
+  LX.obs.tick = 0;
+  for (const id of ["lxMicBar", "lxOutBar"]) {
+    const el = $(id); if (el) { el.style.width = "0"; el.style.background = ""; }
+  }
+  for (const id of ["lxMicPeak", "lxOutPeak"]) { const el = $(id); if (el) el.style.left = "0"; }
+  for (const id of ["lxMicDb", "lxOutDb"]) { const el = $(id); if (el) el.textContent = "—"; }
+  const mark = $("lxMicMark"); if (mark) mark.style.display = "none";
+}
+
+// Fila de playback: agenda em `proximo` (sem sobrepor) e, no `interrupted`,
+// PARA tudo na hora — `stop(0)` corta o que já está tocando, sem esperar o fim.
+function lxToca(int16) {
+  const ctx = LX.ctxPlay;
+  if (!ctx || !int16 || !int16.length) return;
+  const buf = ctx.createBuffer(1, int16.length, 24000);
+  const dados = buf.getChannelData(0);
+  for (let i = 0; i < int16.length; i++) dados[i] = int16[i] / 32768;
+  const src = ctx.createBufferSource();
+  src.buffer = buf; src.connect(LX.bus || ctx.destination);
+  const agora = ctx.currentTime;
+  if (LX.proximo < agora + 0.02) LX.proximo = agora + 0.02;   // não agenda no passado
+  src.start(LX.proximo);
+  LX.proximo += buf.duration;
+  LX.ativos.push(src);
+  src.onended = () => {
+    LX.ativos = LX.ativos.filter(x => x !== src);
+    if (!LX.ativos.length && LX.estado === "falando") lxEstado("ouvindo", null);
+  };
+}
+
+function lxCancelaPlayback() {
+  for (const s of LX.ativos) { try { s.stop(0); } catch (e) {} }
+  LX.ativos = []; LX.proximo = 0;
+}
+
+function lxRecebe(ev) {
+  if (ev.data instanceof ArrayBuffer) {          // áudio do servidor (PCM16 24 kHz)
+    LX.obs.rec++;
+    if (LX.estado === "ouvindo" || LX.estado === "pensando") lxEstado("falando", null);
+    lxToca(new Int16Array(ev.data));
+    return;
+  }
+  if (typeof ev.data !== "string") return;
+  let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+  switch (m.type) {
+    // `ready`: o servidor confirma o setup — só AQUI a sessão está de pé (o
+    // onopen do WS não garante pipeline pronto).
+    case "ready":          if (LX.estado === "conectando") lxEstado("ouvindo", "🎙 sessão pronta — fale");
+                           lxLogEvento("sessão pronta (saída " + ((m.audio || {}).sr || "?") + " Hz)"); break;
+    // `prewarm`: informativo (pipeline pré-aquecido). NÃO é turno: não mexe no
+    // estado, só na linha de status — se mexesse, um prewarm no meio da fala
+    // trocaria o estado debaixo do usuário.
+    case "prewarm":        if ($("lxStatus")) $("lxStatus").textContent = "⚡ pipeline pré-aquecido"; break;
+    case "speech_start":   LX.obs.pendente = false;   // a fala anotada está abrindo agora (#129)
+                           LX.obs.pendenteTrechos = 0;
+                           if (LX.obs.stats && LX.obs.stats.turno)
+                             LX.obs.stats.turno.pendente = false;  // snapshot velho (até 250 ms) não re-acende o chip
+                           lxEstado("pensando", "✋ ouvi você…");
+                           lxLogEvento("▶ fala começou"); break;
+    case "speech_end":     lxLogEvento("⏹ fala terminou — "
+                             + (m.fala_ms != null ? m.fala_ms + " ms de voz" : "fim decidido pelo servidor")
+                             + (m.curto ? " (curta)" : "") + (m.barge_in ? " [durante o playback]" : "")); break;
+    case "turno_pendente": // #126/#129 + #133/#136: fala chegou com o pipeline ocupado — foi
+                           // ANOTADA, não perdida. `trechos`/`descartados_ms` dizem o TAMANHO do
+                           // que está retido: o booleano antigo (`substituido`) não distinguia
+                           // 20 ms de 20 s, e o log tinha de adivinhar.
+                           LX.obs.pendente = true;
+                           LX.obs.pendenteTrechos = m.trechos || 1;
+                           if ($("lxStatus")) $("lxStatus").textContent = "📝 anotei sua fala — respondo logo que terminar a resposta atual";
+                           lxLogEvento("📝 fala anotada (" + Math.round((m.buffer_bytes || 0) / 1024) + " kB"
+                                     + (m.trechos > 1 ? ", " + m.trechos + " trechos" : "")
+                                     + (m.truncado
+                                          ? ", teto de 30 s: " + (m.descartados_ms || 0) + " ms do começo fora (mantive o fim)"
+                                          : (m.descartados_ms ? ", " + m.descartados_ms + " ms do começo fora" : ""))
+                                     + (m.barge_in ? ", nasceu durante o playback" : "") + ")"); break;
+    case "transcript_user": lxAppend("lxUser", m.delta ?? m.text ?? ""); break;
+    case "assistant_text":  lxAppend("lxIA", m.delta ?? m.text ?? ""); break;
+    case "barge_in":       lxLogEvento("✋ barge-in — cortei a resposta", "e-ok"); break;
+    case "interrupted":    lxCancelaPlayback(); lxEstado("interrompido", "✋ interrompi — pode falar");
+                           lxLogEvento("interrompido", "e-ok"); break;
+    case "latency":        LX.obs.lat = m;
+                           if (m.first_audio_ms != null) {
+                             LX.obs.latHist.unshift(m.first_audio_ms);
+                             LX.obs.latHist = LX.obs.latHist.slice(0, 5);
+                           }
+                           lxLogEvento("latência — 1º áudio em " + (m.first_audio_ms != null ? m.first_audio_ms + " ms" : "?")
+                                     + lxProvedorMarca(m), lxProvedorMarca(m) ? "e-erro" : null); break;
+    // #146/#150: o dsh não subiu e a sessão SEGUE no openai. Evento único — o
+    // aviso tem de ficar (toast sumiria) e o backend do painel não pode continuar
+    // dizendo "dsh". O servidor também publica `stats.backend` (com `fallback`),
+    // que é a fonte que se auto-corrige; aqui é o aviso IMEDIATO.
+    case "dsh_indisponivel":
+                           LX.obs.dshFallback = { fallback: m.fallback || "openai",
+                                                  message: m.message || "motivo não informado" };
+                           lxLogEvento("⚠ dsh indisponível — a sessão segue pelo " + (m.fallback || "openai")
+                                     + (m.message ? ": " + m.message : ""), "e-erro");
+                           if ($("lxStatus")) $("lxStatus").textContent =
+                             "⚠ o harness não subiu nesta sessão — respondendo pelo " + (m.fallback || "openai");
+                           // o selo não pode esperar o próximo `stats` para parar de
+                           // dizer "dsh": corrige no mesmo evento (#150, item 3)
+                           lxTxt("lxProv", (m.fallback || "openai") + " (fallback do dsh)");
+                           { const chip = $("lxProv") && $("lxProv").parentElement;
+                             if (chip) { chip.classList.add("warn");
+                               chip.title = "o dsh não subiu nesta sessão — o turno está sendo respondido pelo "
+                                          + (m.fallback || "openai") + (m.message ? ": " + m.message : ""); } }
+                           lxAvisaDsh(); break;
+    case "stats":          LX.obs.stats = m; break;   // telemetria ~4 Hz: render no tick, fora do log
+    // `turn_complete` pode vir DESCARTADO (turno curto/barge-in falso): sem áudio
+    // a caminho e sem STT. Sem tratar, o estado ficava preso em pensando/falando
+    // esperando um áudio que nunca vem.
+    case "turn_complete":
+      lxQuebraLinha("lxIA");
+      lxLogEvento("✓ turno " + (m.turn != null ? m.turn : "—")
+                + (m.ms != null ? " — " + m.ms + " ms" : "")
+                + (m.audio_bytes ? " · áudio " + Math.round(m.audio_bytes / 1024) + " kB" : "")
+                + (m.descartado ? " (descartado: " + (m.barge_falso ? "barge falso" : m.eco ? "eco do próprio TTS" : "curto") + ")" : ""));
+      if (LX.estado === "desligado") break;
+      if (m.descartado) {
+        lxEstado(LX.ativos.length ? "falando" : "ouvindo",
+                 m.barge_falso ? "✋ barge-in falso — sigo ouvindo"
+                               : m.curto ? "turno curto — descartado" : "turno descartado");
+      } else if (typeof m.transcript === "string" && !m.transcript.trim()) {
+        // STT não captou fala: sem isto o turno fechava em silêncio e o usuário
+        // lia "parou de me ouvir" (#117). Aviso onde ele procura o que disse.
+        lxLinha("lxUser", "lx-vazio", "— não captei fala nenhuma —");
+        lxEstado(LX.ativos.length ? "falando" : "ouvindo",
+                 "não captei fala — fale mais perto do mic");
+      } else {
+        lxEstado(LX.ativos.length ? "falando" : "ouvindo", null);
+      }
+      break;
+    case "error":
+      // `turno_em_curso` é benigno: o `end_of_speech` (ex.: solta do "segurar para
+      // falar") chegou no meio de um turno e o servidor pediu para esperar — o
+      // turno segue. Pintar isso de erro derrubava a UI à toa.
+      if (m.code === "turno_em_curso") {
+        // legado (#126): com áudio o servidor ANOTA a fala (`turno_pendente`) em vez
+        // de recusar; isso aqui resta só nos caminhos sem áudio — hint neutro
+        if ($("lxStatus")) $("lxStatus").textContent = "⏳ turno em curso — aguarde o fim da resposta";
+      } else {
+        // erro de pipeline/sessão (ex.: provedor de conversa fora): a sessão
+        // segue viva. Além do hint, linha visível na coluna IA — o hint some no
+        // evento seguinte e o usuário ficava sem saber por que ele não responde (#117)
+        lxQuebraLinha("lxIA");
+        const msgErro = "✖ " + (m.message || m.detail || "erro na sessão") + (m.code ? " [" + m.code + "]" : "");
+        lxLinha("lxIA", "lx-erro", msgErro);
+        lxLogEvento(msgErro, "e-erro");
+        lxEstado("erro", "sessão viva — fale de novo para tentar");
+      }
+      break;
+  }
+}
+
+async function lxAoAbrir() {
+  const sel = $("lxVoz");
+  if (!sel || sel.options.length) return;
+  try {
+    const vozes = await api("/api/voices");
+    sel.innerHTML = "";
+    const o0 = document.createElement("option"); o0.value = ""; o0.textContent = "voz padrão do servidor";
+    sel.appendChild(o0);
+    for (const v of vozes) {
+      const o = document.createElement("option"); o.value = v.id; o.textContent = v.name || v.id;
+      sel.appendChild(o);
+    }
+  } catch (e) { /* sem lista: a voz padrão do servidor serve */ }
+}
+
+if ($("lxLigar")) $("lxLigar").onclick = () => { if (LX.ws) lxDesligar(); else lxwsConectar(); };
+function lxDesligar() {
+  lxCancelaPlayback();
+  if (LX.ws) { const w = LX.ws; LX.ws = null; try { w.close(1000, "cliente desligou"); } catch (e) {} }
+  lxParaCaptura();
+  lxEstado("desligado", "sessão encerrada");
+}
+if ($("lxLimpar")) $("lxLimpar").onclick = () => {
+  // array, não parênteses: `("a", "b")` vira a string "b" e o for...of iterava
+  // CARACTERES — o botão não limpava nada (achado verificando o #117)
+  for (const id of ["lxUser", "lxIA"]) { const el = $(id); if (el) el.innerHTML = ""; }
+};
+if ($("lxPtt")) $("lxPtt").onchange = () => {
+  const b = $("lxPttBtn");
+  if (b) b.style.display = $("lxPtt").checked ? "" : "none";
+};
+if ($("lxPttBtn")) {
+  // fallback "segurar para falar": solta -> `end_of_speech` (o servidor fecha o
+  // turno sem depender do VAD automático)
+  const solta = () => { if (LX.ws) lxEnviaJSON({ type: "end_of_speech" }); };
+  $("lxPttBtn").onpointerdown = () => { LX.ptt = true; $("lxPttBtn").textContent = "🎙 falando…"; };
+  $("lxPttBtn").onpointerup = () => { LX.ptt = false; $("lxPttBtn").textContent = "🔊 Segurar para falar"; solta(); };
+  $("lxPttBtn").onpointerleave = () => { if (LX.ptt) { LX.ptt = false; solta(); } };
+}
+lxEstado("desligado", "");
+
 </script>
 </body>
 </html>
