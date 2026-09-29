@@ -1,0 +1,48 @@
+PROVA DE MORDIDA #217 — tests/live_lock_freeze.sh (par do invariante
+tests/test_api.py::test_busy_e_mandado_fora_do_live_lock).
+Duas rodadas na MESMA trava de modelo (TTS_SERIAL=0 no filho). 2026-09-29T19:47:59Z
+
+### estado inicial: fix
+já está fix
+
+### RODADA 0 — app.py no estado do FIX: a cena A TEM de PASSAR (exit 0)
+  · cena A — `await` com o lock LIVRE (estado do fix)
+    ocioso 2 ms · probe 5 ms (limiar 250 ms)
+  ✔ cena A: o processo seguiu atendendo com o `busy` pendurado (5 ms vs limiar 250 ms)
+  ✔ cena A: o cliente do `busy` recebeu o frame depois da janela
+  · cena B (controle) — lock SEGURADO em volta do envio (estado revertido)
+    ocioso 3 ms · probe 2002 ms · 2º probe 2002 ms (limiar 250 ms)
+  ✔ cena B: congelou como esperado (2002 ms vs limiar 250 ms)
+  ✔ cena B: congelamento PERMANENTE (o 2º probe também estourou)
+
+✔ sem congelamento
+exit=0
+
+### RODADA 1 — app.py REVERTIDO (await de volta para dentro do with): a cena A TEM de FALHAR (exit 1)
+revertido aplicado
+  · cena A — `await` com o lock LIVRE (estado do fix)
+    ocioso 2 ms · probe 2002 ms (limiar 250 ms)
+  ✘ cena A CONGELOU: /health não respondeu em 2 s com o `busy` pendurado (limiar 250 ms) — o `await` está sob o lock?
+  ✘ cena A: o cliente do `busy` não recebeu o frame (o envio não completou)
+  · cena B (controle) — lock SEGURADO em volta do envio (estado revertido)
+    ocioso 2 ms · probe 2002 ms · 2º probe 2014 ms (limiar 250 ms)
+  ✔ cena B: congelou como esperado (2002 ms vs limiar 250 ms)
+  ✔ cena B: congelamento PERMANENTE (o 2º probe também estourou)
+
+✘ 2 falha(s)
+exit=1
+
+### restaura: fix aplicado
+
+=== invariante (par determinístico) ===
+.                                                                        [100%]
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+1 passed in 0.50s
+
+=== como reproduzir ===
+1. ./tests/live_lock_freeze.sh                        # estado fix  -> sai 0
+2. reverter a linha do fix (app.py, bloco do caminho `busy`): o
+   `await ws.send_json(...)` volta para DENTRO do `with _live_lock:`
+3. ./tests/live_lock_freeze.sh                        # revertido  -> cena A falha, sai 1
+As duas rodadas acima saíram de um driver que pega a trava de modelo UMA vez e
+roda os dois passos com `TTS_SERIAL=0` no filho (mesma medida, menos fila).
