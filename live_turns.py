@@ -176,6 +176,16 @@ class Config:
     # uma fala que já terminou). Por isso o default é DESLIGADO — ligue com
     # TTS_LIVE_PLAYBACK_DURACAO=1 e reconcilie o `live_ui.sh` antes de virar default.
     playback_por_duracao: bool = False
+    # #167 (direção c): a referência de ENERGIA (piso de eco, limiares, adaptação)
+    # passa a olhar "há áudio audível AGORA?" — e não a JANELA. A janela é sobre o
+    # TURNO (um onset nela é interrupção); o eco só existe quando algo toca. Nas
+    # duas alavancas acima a janela fica aberta nos VÃOS de geração, onde NADA
+    # toca: mantendo o eco como referência ali, o humano teria de superar o nível
+    # do TTS que já parou (foi o que mediu o barge FALSO por eco piorando). Com
+    # esta flag o vão cai no regime de ocioso (ruído) sem perder a classificação
+    # de barge. Desligada, nada muda (`_tocando()` == `_playback_ativo()` quando as
+    # duas alavancas estão off).
+    eco_so_tocando: bool = False
     adaptacao_ruido_db: float = 0.25              # por frame, só fora de voz
     adaptacao_eco_db: float = 0.25                # por frame, só fora de voz
     eco_faixa_morta_db: float = 3.0               # zona em que o eco não se mexe
@@ -397,6 +407,23 @@ class TurnEngine:
         `set_turno_aberto(False)` e aí vale a cauda normal."""
         return self._speaking or self._turno_aberto or self._playback_frames > 0
 
+    def _tocando(self) -> bool:
+        """Há áudio AUDÍVEL agora (o eco existe) — distinto da JANELA.
+
+        A janela (`_playback_ativo`) responde "um onset aqui é interrupção?" e
+        inclui o turno em voo, com os vãos de geração dentro. O eco, porém, só
+        existe enquanto algo está no alto-falante: servidor enviando
+        (`_speaking`) ou o cliente ainda com áudio na fila (a cauda
+        `_playback_frames` e o backlog real `_playback_restante`). Num vão sem
+        nada tocando o regime tem de ser o de OCIOSO — senão o humano disputa o
+        limiar com o nível de um TTS que já parou."""
+        return (self._speaking or self._playback_frames > 0
+                or self._playback_restante > 0)
+
+    def _ref_audio(self) -> bool:
+        """Qual das duas leituras governa a ENERGIA (eco x ruído)."""
+        return self._tocando() if self.config.eco_so_tocando else self._playback_ativo()
+
     def _janela_log(self, motivo: str, antes: bool) -> None:
         """Diagnóstico das transições da JANELA (LIVE_TURNS_DEBUG=1).
 
@@ -414,12 +441,12 @@ class TurnEngine:
         # ocioso, senão o estímulo humano teria de superar o PRÓPRIO p90 + margem
         if self._eco_ausente:
             return self._noise_dbfs
-        return max(self._noise_dbfs, self._eco_dbfs) if self._playback_ativo() else self._noise_dbfs
+        return max(self._noise_dbfs, self._eco_dbfs) if self._ref_audio() else self._noise_dbfs
 
     @property
     def limiar_energia_dbfs(self) -> float:
         """Limiar para ABRIR turno (dBFS). Durante o playback parte do eco."""
-        margem = (self.config.barge_in_margin_db if self._playback_ativo()
+        margem = (self.config.barge_in_margin_db if self._ref_audio()
                   else self.config.energia_margin_db)
         return self._base_energia() + margem
 
@@ -429,7 +456,7 @@ class TurnEngine:
         (histerese): pausa de respiração não pode fechar o turno. Com eco ativo
         a margem volta a ser a do barge: o eco tem picos de ~6 dB acima da
         mediana e não pode ficar resetando o contador de silêncio."""
-        margem = (self.config.barge_in_margin_db if self._playback_ativo()
+        margem = (self.config.barge_in_margin_db if self._ref_audio()
                   else self.config.energia_margin_turno_db)
         return self._base_energia() + margem
 
@@ -441,6 +468,7 @@ class TurnEngine:
                 "noise_dbfs": round(self._noise_dbfs, 1),
                 "eco_dbfs": round(self._eco_dbfs, 1),
                 "playback_ativo": self._playback_ativo(),
+                "tocando": self._tocando(),
                 "turno_assistente_aberto": self._turno_aberto,
                 "eco_ausente": self._eco_ausente,
                 "hold_to_talk": self._hold or self.config.hold_to_talk,
@@ -597,7 +625,7 @@ class TurnEngine:
         prob = float(self._scorer(frame) if self._scorer is not None
                      else scorer_silero(frame))
         self._historico.append(_Quadro(amostra, frame, prob, env_dbfs))
-        if not self._playback_ativo():
+        if not self._ref_audio():
             self._pre_env.append(env_dbfs)
         if not self._speaking and self._playback_frames:
             self._playback_frames -= 1
@@ -608,11 +636,14 @@ class TurnEngine:
                                                      self._eco_dbfs - 3.0),
                                                  self.config.piso_ruido_dbfs,
                                                  self.config.teto_ruido_dbfs))
-        if not self._speaking and not self._turno_aberto and self._playback_restante:
+        if (not self._speaking and self._playback_restante
+                and (self.config.eco_so_tocando or not self._turno_aberto)):
             # #167: o backlog só escoa DEPOIS do turno. Com o turno aberto o cliente
             # está atrasado (ele toca em 1x o que o servidor produziu mais rápido),
             # então descontar durante a geração consumia o backlog antes do
             # `turn_complete` e a janela fechava com áudio ainda na fila do cliente.
+            # Com `eco_so_tocando` ele escoa em TEMPO REAL (é a estimativa do que o
+            # cliente ainda tem para tocar — é ela que diz se há áudio audível).
             self._playback_restante -= 1
         if self._turno_aberto and not self._speaking:
             # trava de segurança (#167): turno "aberto" que o handler esqueceu de
@@ -755,7 +786,7 @@ class TurnEngine:
             return
         if self._voz(dbfs, prob, self.limiar_energia_dbfs):
             return
-        if self._playback_ativo() and not self._eco_ausente:
+        if self._ref_audio() and not self._eco_ausente:
             # O eco NÃO pode seguir o envelope para baixo: nas pausas entre
             # chunks do TTS o envelope cai e o estimador escorregava até o
             # ruído — aí o próprio eco voltava a passar do limiar. Faixa morta

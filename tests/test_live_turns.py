@@ -794,3 +794,78 @@ def test_backlog_escoa_e_a_janela_fecha():
     motor.set_speaking(False)
     _tocar(motor, rel, SILENCIO, 40)
     assert motor.estatisticas()["playback_ativo"] is False
+
+# ---------------------------------------------------------------------------
+# #167 (direção c): a JANELA é sobre o TURNO; o ECO é sobre o que TOCA
+# ---------------------------------------------------------------------------
+
+def _cenario_de_vao(**cfg):
+    """Chunk do TTS tocou, fila esvaziou e o turno SEGUE aberto (vão de geração).
+
+    Depois do vão não há nada tocando: é o regime em que as duas alavancas acima
+    deixam a janela aberta com o alto-falante mudo. O chunk é longo de propósito
+    (20 frames) para a calibração do eco FECHAR antes do vão — senão o motor
+    segue calibrando e a decisão do vão nem é avaliada."""
+    motor, rel = _motor(**cfg)
+    motor.set_turno_aberto(True)
+    motor.set_speaking(True, nivel_dbfs=-20.0, duracao_ms=700)
+    _tocar(motor, rel, ECO, 20)              # o chunk está no alto-falante
+    motor.set_speaking(False)
+    _tocar(motor, rel, SILENCIO, 60)         # ~2 s: cauda e backlog escoam
+    return motor, rel
+
+
+def test_vao_com_nada_tocando_nao_disputa_o_limiar_com_o_eco():
+    """O eco do TTS que JÁ PAROU não pode ser a referência de um vão.
+
+    Sem isto, um onset no vão teria de superar o nível do TTS anterior para ser
+    lido como interrupção — é o que fazia o sentido do barge FALSO por eco piorar
+    quando a janela passou a cobrir os vãos."""
+    com, _ = _cenario_de_vao(barge_janela_turno=True, playback_por_duracao=True,
+                             eco_so_tocando=True)
+    sem, _ = _cenario_de_vao(barge_janela_turno=True, playback_por_duracao=True)
+    for motor in (com, sem):
+        assert motor.estatisticas()["playback_ativo"] is True, "o vão tem de seguir ARMANDO o barge"
+    assert com.estatisticas()["tocando"] is False
+    assert com.limiar_energia_dbfs < sem.limiar_energia_dbfs - 6, (
+        f"vão tem de voltar ao regime de ocioso ({com.limiar_energia_dbfs:.1f} dBFS) "
+        f"e não ao do eco ({sem.limiar_energia_dbfs:.1f} dBFS)")
+
+
+def test_fala_baixa_no_vao_dispara_barge_com_a_referencia_certa():
+    """Fala bem abaixo do nível do TTS (mas acima do ruído) interrompe no vão."""
+    motor, rel = _cenario_de_vao(voz_amp=0.01, barge_janela_turno=True,
+                                 playback_por_duracao=True, eco_so_tocando=True)
+    baixa = _tom(0.01)                       # ~-43 dBFS: TTS estava em -20
+    eventos = _tocar(motor, rel, baixa, lt.Config()._frames_barge + 1)
+    assert [e.tipo for e in eventos] == ["barge_in", "speech_start"]
+    assert all(e.barge_in for e in eventos)
+
+
+def test_backlog_escoa_em_tempo_real_com_a_referencia_por_audio():
+    """Com `eco_so_tocando` o backlog escoa durante o turno: é ele que diz se há
+    áudio audível (o cliente toca em 1x, o servidor produziu mais rápido)."""
+    motor, rel = _motor(barge_janela_turno=True, playback_por_duracao=True,
+                        eco_so_tocando=True)
+    motor.set_turno_aberto(True)
+    motor.set_speaking(True, nivel_dbfs=-20.0, duracao_ms=600)
+    _tocar(motor, rel, SILENCIO, 10)         # 320 ms de áudio enviado
+    motor.set_speaking(False)                # fila esvaziou: sobra o chunk no cliente
+    assert motor._playback_restante > 0, "o backlog tem de ser o áudio ainda não tocado"
+    _tocar(motor, rel, SILENCIO, 40)         # ~1,3 s: backlog e cauda escoam
+    assert motor._playback_restante == 0
+    assert motor._tocando() is False
+    assert motor.estatisticas()["playback_ativo"] is True    # o turno segura a janela
+
+
+def test_sem_a_flag_tocando_acompanha_a_janela():
+    """Contraprova: desligada, `_tocando()` é `_playback_ativo()` — o default de
+    hoje não muda por causa desta direção."""
+    motor, rel = _motor()
+    assert motor._tocando() == motor._playback_ativo() is False
+    motor.set_speaking(True, nivel_dbfs=-20.0)
+    assert motor._tocando() == motor._playback_ativo() is True
+    motor.set_speaking(False)
+    assert motor._tocando() == motor._playback_ativo() is True    # cauda da janela
+    _tocar(motor, rel, SILENCIO, lt.Config()._frames_playback + 2)
+    assert motor._tocando() == motor._playback_ativo() is False
