@@ -121,10 +121,18 @@ try:
         if not v: return False
         return os.path.exists(v) if os.path.sep in v else bool(shutil.which(v))
 
+    def _perfil_serve(v):
+        # o dsh compõe o perfil no boot: sem o cordis.yml dele a sessão nem sobe
+        # (medido: perfil inexistente → 502 na descoberta)
+        v = (v or "").strip()
+        if not v: return False
+        raiz = pathlib.Path(os.environ.get("DSH_HOME") or (pathlib.Path.home() / ".dsh"))
+        return (raiz / "profiles" / v / "cordis.yml").exists()
+
     # Só reescreve o que NÃO serve: valor bom do dono não é trocado pelo normalizado.
     normalizar = {}
     if not _bin_serve(orig_tocado["chat_dsh_bin"]): normalizar["chat_dsh_bin"] = DSH_BIN
-    if not (orig_tocado["chat_dsh_profile"] or "").strip(): normalizar["chat_dsh_profile"] = PROFILE
+    if not _perfil_serve(orig_tocado["chat_dsh_profile"]): normalizar["chat_dsh_profile"] = PROFILE
     if normalizar: post_settings(normalizar)
     print(f"  cenário: bin={orig_tocado['chat_dsh_bin'] or DSH_BIN!r} "
           f"profile={orig_tocado['chat_dsh_profile'] or PROFILE!r} · "
@@ -267,6 +275,7 @@ try:
                "mostrar o resolvido mexeu no valor salvo")
 
         # ─── 3) catálogo do modelo: carrega, mostra progresso, não fica vazio ──
+        cat = None
         if tem_dsh:
             try:
                 pg.wait_for_function(
@@ -290,10 +299,15 @@ try:
             cobrar(cat["valor"], "nenhum modelo selecionado após a descoberta")
             cobrar(cat["grupos"] and all(g for g in cat["grupos"]),
                f"select de modelo sem agrupamento por provedor: {cat['grupos']}")
-        cobrar(cat["efforts"] and cat["efforts"] == cat["effortsDoModelo"],
-               f"effort não derivou do modelo: opção={cat['effortsDoModelo']} select={cat['efforts']}")
-        cobrar("falei com o dsh em" in cat["status"] and " ms" in cat["status"],
-               f"Testar não reporta a latência do próprio clique: {cat['status'][:80]!r}")
+        if cat is None:
+            # sem dsh no PATH não há catálogo medido — e sem este guarda o `cat`
+            # estourava NameError justamente no caminho de erro (#156)
+            print("  (sem dsh: catálogo e latência do Testar não são cobrados)")
+        else:
+            cobrar(cat["efforts"] and cat["efforts"] == cat["effortsDoModelo"],
+                   f"effort não derivou do modelo: opção={cat['effortsDoModelo']} select={cat['efforts']}")
+            cobrar("falei com o dsh em" in cat["status"] and " ms" in cat["status"],
+                   f"Testar não reporta a latência do próprio clique: {cat['status'][:80]!r}")
 
         # ─── 3b) effort SALVO sobrevive ao load ───────────────────────────────
         # O select de effort nasce VAZIO (as opções são criadas no liga()): se o
@@ -426,6 +440,21 @@ try:
                    f"campo {k} ficou {atual!r} (original {orig_tocado[k]!r})")
         print("  devolvido ao dono:", {k: esperado[k] for k in
               ("chat_dsh_bin", "chat_dsh_profile", "chat_dsh_model")})
+
+        # Rede de segurança: o Salvar manda o BLOB INTEIRO da tela, então um campo
+        # com divergência form x settings é reescrito sem a suíte nem saber (não só
+        # os que ela toca de propósito — `speed` já foi vítima disso em rodada de
+        # outra suíte). Devolve tudo que a rodada mexeu por fora do escopo.
+        agora = json.loads(urllib.request.urlopen(base + "/api/settings", timeout=10).read())
+        fora = {k: v for k, v in orig.items()
+                if k in agora and k not in ("admin_fields", "admin_ignored", "is_admin")
+                and agora[k] != v and k not in CAMPOS_TOCADOS}
+        if fora:
+            print("  a rodada mexeu por FORA do escopo:", {k: (v, agora[k]) for k, v in fora.items()})
+            post_settings(fora)
+            final = json.loads(urllib.request.urlopen(base + "/api/settings", timeout=10).read())
+            for k, v in fora.items():
+                cobrar(final.get(k) == v, f"campo {k} não voltou ao original ({final.get(k)!r} != {v!r})")
 
         print(f"  pageerror: {erros} · console.error de script: {cons}")
         cobrar(not erros, f"pageerror: {erros}")

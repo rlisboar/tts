@@ -101,7 +101,12 @@ limpar() {
   curl -sf -X DELETE "$BASE/api/apikeys/$ADM_ID" >/dev/null 2>&1 || true
   for id in $(ids_de_teste); do curl -sf -X DELETE "$BASE/api/apikeys/$id" >/dev/null 2>&1 || true; done
 }
-trap limpar EXIT
+# EXIT cobre saída normal E falha (`set -e`); INT/TERM cobrem Ctrl-C e o harness
+# matando a rodada. `limpar` é idempotente, então rodar duas vezes (INT + EXIT)
+# não incomoda. SIGKILL não roda trap nenhum: para esse caso existe a varredura de
+# "velhos" lá em cima (nome de outro sufixo E com mais de 2 min) — foi ela que
+# limpou as sobras da rodada 29093, criadas por uma execução morta à força.
+trap limpar EXIT INT TERM
 echo "chaves de teste: use=${USE_KEY:0:8}… admin=${ADM_KEY:0:8}…"
 
 # ── 1. contrato no servidor ───────────────────────────────────────────────
@@ -124,9 +129,21 @@ mascarados = [k for k in ("remote_api_key", "remote_stt_key", "chat_api_key")
               if str(s.get(k, "")).startswith("••••")]
 print(f"  is_admin=False · {len(s['admin_fields'])} campos admin · segredos mascarados: {mascarados or '(vazios)'}")
 
-r = req("POST", "/api/settings", use, {"remote_base_url": "http://ignorado.teste/v1", "speed": 1.0})
+# O payload leva um campo NÃO-admin junto de propósito: `admin_ignored` só prova
+# que o admin ficou de fora, e sozinho ele não distingue "ignorou o admin" de
+# "ignorou tudo". O não-admin tem de APLICAR.
+orig_speed = float(s.get("speed") or 1.0)
+alvo = 1.25 if abs(orig_speed - 1.25) > 1e-9 else 1.5
+r = req("POST", "/api/settings", use, {"remote_base_url": "http://ignorado.teste/v1", "speed": alvo})
 assert "remote_base_url" in r.get("admin_ignored", []), r.get("admin_ignored")
-print(f"  POST com campo admin -> admin_ignored={r['admin_ignored']} (sem 403)")
+assert abs(float(r.get("speed") or 0) - alvo) < 1e-9, f"campo não-admin não foi aplicado: {r.get('speed')!r}"
+print(f"  POST com campo admin -> admin_ignored={r['admin_ignored']} (sem 403)"
+      f" · não-admin aplicou: speed {orig_speed} -> {alvo}")
+# …e devolve: o settings é o DO DONO e não é versionado. Sem isto a suíte deixava
+# `speed` no valor de teste em toda rodada (1.77 do dono virava 1.0).
+volta = req("POST", "/api/settings", use, {"speed": orig_speed})
+assert abs(float(volta.get("speed") or 0) - orig_speed) < 1e-9, \
+    f"speed não voltou ao original: {volta.get('speed')!r} != {orig_speed!r}"
 PYEOF
 
 # ── 2. UI: chave de uso e chave admin ────────────────────────────────────

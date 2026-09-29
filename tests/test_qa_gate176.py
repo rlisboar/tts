@@ -118,17 +118,19 @@ def test_so_o_live_e_afetado_quando_a_conversa_esta_em_openai(monkeypatch,
     assert app._chat_dsh_prewarm("teste") is None, "Conversa em openai não sobe dsh"
 
 def test_stats_ia_de_sessao_ja_aberta_apos_trocar_o_campo(monkeypatch, sem_env_backend):
-    """RESIDUAL (#177): o cliente dsh nasce no CONNECT e a troca do campo não
-    reconstrói a sessão aberta. `stats.ia.pedido` é o configurado (certo), mas
-    `backend` hoje é derivado dele — então uma sessão aberta com o Live em openai
-    passa a anunciar dsh no painel assim que o dono troca o seletor, enquanto o
-    texto continua vindo do endpoint (mesma classe do falso-verde do #151)."""
+    """RESIDUAL do #177, fechado no #196: o cliente dsh nasce no CONNECT e a troca do
+    campo não reconstrói a sessão aberta. `stats.ia.pedido` é o configurado (certo),
+    mas `backend` seguia o campo — então uma sessão aberta com o Live em openai
+    passava a anunciar dsh no painel assim que o dono trocava o seletor, enquanto o
+    texto continuava vindo do endpoint (mesma classe do falso-verde do #151). Agora
+    `backend` olha o cliente da sessão (`pipe._dsh`)."""
     monkeypatch.setattr(app.dsh_client, "DshClient", DshClienteFalso)
     DshClienteFalso.criados.clear()
     monkeypatch.setitem(app._settings, "chat_backend", "openai")
     monkeypatch.setitem(app._settings, "chat_backend_live", "openai")
     sess = _sessao("aberta")
     pipe = app._live_pipe_novo(sess)
+    sess["pipe"] = pipe          # como no handler: é DAQUI que o `stats` lê o pipe
     try:
         assert pipe._dsh is None
         ia = app._live_stats_ia(sess)
@@ -138,10 +140,13 @@ def test_stats_ia_de_sessao_ja_aberta_apos_trocar_o_campo(monkeypatch, sem_env_b
         monkeypatch.setitem(app._settings, "chat_backend_live", "dsh")
         ia = app._live_stats_ia(sess)
         assert ia["pedido"] == "dsh", "pedido é o configurado"
-        # RESIDUAL: o painel anuncia dsh sem haver cliente dsh nesta sessão
+        # #196: sem cliente dsh nesta sessão o painel NÃO pode anunciar dsh
         assert pipe._dsh is None
-        assert ia["backend"] == "dsh", (
-            "hoje o backend segue o configurado; o honesto seria olhar o pipe "
-            "(_dsh) — o texto deste turno ainda vem do endpoint")
+        assert ia["backend"] == "openai", (
+            "o backend é o EFETIVO: sem `pipe._dsh` o turno vem do endpoint, "
+            "mesmo com o campo já pedindo dsh (a sessão não é reconstruída)")
+        # e com o cliente presente o painel volta a anunciar dsh
+        pipe._dsh = object()
+        assert app._live_stats_ia(sess)["backend"] == "dsh"
     finally:
         pipe.close()

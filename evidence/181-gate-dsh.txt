@@ -1,0 +1,67 @@
+#181 — gate vermelho/flaky no caminho dsh · evidência (speech-pipeline, 16:35–17:00Z)
+
+PIN dos arquivos tocados (ao fim):
+app.py a0e3c5a6a61f · tests/test_app.py ed5e8b0e8053 · tests/test_dsh_client.py 7db4cf69fe62
+tests/test_api.py 6197f412cee2 · .githooks/pre-commit b9f6de1df5f5
+
+## 1. stdout do `import app` com backend dsh (REPRO 1 do ticket)
+
+ANTES (app.py de 16:34Z, logs em stdout):
+  TTS_CHAT_BACKEND=dsh .venv-mlx/bin/python -m pytest \
+    tests/test_app.py::test_ort_telemetry_default_sem_sobrescrever_usuario -q
+  → 3 failed in 3.09s, todos `assert '[chat-dsh] [dsh] subindo: ...\n1' == '1'`
+
+DEPOIS (logs do dsh/pre-warm em STDERR via `_dsh_log`):
+  mesma linha de comando → 6 passed in 4.02s
+  5 rodadas seguidas, sem env no pai: 6 passed ×5 (4.4–5.5 s cada)
+  com TTS_CHAT_BACKEND=openai no pai: 6 passed
+
+O teste agora pina o backend NOS DOIS SENTIDOS por env no subprocesso e usa o
+`fake_acp.py` como `TTS_CHAT_DSH_BIN` (não depende do dsh instalado nem do
+settings.json do dono); o filho ESPERA o pre-warm terminar (`th.join(60)`) para o
+veredito não ser corrida. A igualdade exata do stdout ficou (é o que cobra o
+stdout limpo).
+
+## 2. flake do cancel (REPRO 2 do ticket)
+
+`tests/test_dsh_client.py::test_cancel_descarta_chunk_tardio`: `time.sleep(0.25)`
+substituído por espera do 1º chunk (threading.Event) antes do `cancel`.
+
+  5× isolado: 1 passed (0.77–1.32 s)
+  5× sob a carga de 3 rodadas completas da suíte em paralelo: 1 passed ×5
+
+## 3. hook
+
+`.githooks/pre-commit`: `dsh_client.py` entrou na lista do pyflakes.
+  .venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py \
+    dsh_client.py smoke_sintese.py remote/*.py live_turns.py smoke_live_turns.py \
+    live_pipeline.py smoke_worker_persist.py tests/*.py client/mic_router.py
+  → exit 0
+
+## 4. suíte inteira
+
+  pytest tests/ -q                      → 579 passed, 3 skipped (104 s)
+  TTS_CHAT_BACKEND=dsh pytest tests/ -q → 579 passed, 3 skipped (88 s)
+  pytest tests/ -q (mais 2 rodadas)     → 586 passed, 3 skipped, 1 xfailed
+
+A suíte CRESCEU durante o trabalho (579 → 586 testes) por edições de terceiros;
+os arquivos deste ticket têm o pin acima.
+
+## 5. resíduo encontrado: o test_api não era hermético ao backend do DONO
+
+Com a Conversa em dsh pelo SETTINGS (não pelo env — o `_isolamento_disco` apaga
+o env), a suíte ficava vermelha: o LLM passa a entregar delta por token e o teto
+de leitura dos helpers contava FRAME CRU. Medido com plugin de bancada
+(`-p forca_dsh`, força `chat_backend=dsh` no settings; arquivo fora do repo):
+
+  ANTES do ajuste dos helpers: 8 failed (test_resume_restaura_contexto,
+  test_resume_sem_voice_id_usa_a_voz_do_registro, test_retomada_*, 
+  test_live_ws_log_só_metadados, test_live_pipeline_roda_o_turno_e_manda_audio,
+  test_live_truncated_no_turn_complete_do_pipeline, +2 de chat)
+  DEPOIS: 210 passed (97 s)
+
+Ajustes: `_ate` e `_le_turno` contam EVENTO DE CONTROLE, não frame/delta (o erro
+do `_ate` passa a listar o que veio); os 2 testes de corpo de requisição do
+`_chat_llm` pinam `chat_backend=openai` (são do caminho openai por definição).
+
+Reprodução: PYTHONPATH=/tmp .venv-mlx/bin/python -m pytest tests/test_api.py -q -p forca_dsh
