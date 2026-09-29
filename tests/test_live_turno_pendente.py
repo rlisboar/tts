@@ -100,6 +100,40 @@ def sem_historico(monkeypatch):
     monkeypatch.setattr(app, "_live_hist_pos_turno", lambda sess: None)
 
 
+def test_rearm_nao_apaga_trecho_que_chegou_entre_o_pop_e_o_rearm():
+    """#208: o guarda acumula entre o `pop` do observador e o re-arm. O re-arm
+    antigo regravava o valor que ele tinha lido, então o trecho NOVO do usuário
+    (falado enquanto o pipeline voltava a ficar ocupado) era apagado."""
+    pipe = CanalFalso()
+    pipe.end_of_speech()                     # pipeline ocupado: observador espera
+    sess = _sessao(pipe)
+    app._live_guarda_pendente(sess, b"\x01" * 10, False)
+    pendente = sess.pop("turno_pendente")    # o observador "levou" o pendente
+    app._live_guarda_pendente(sess, b"\x02" * 10, True)   # chegou NA janela
+    app._live_pend_rearma(sess, pendente, False)
+    assert sess.get("turno_pendente") == b"\x01" * 10 + b"\x02" * 10, \
+        "o trecho que chegou na janela foi apagado pelo re-arm"
+    assert sess.get("turno_pendente_barge") is True, "barge é pegajoso no re-arm"
+
+
+def test_guarda_espera_o_lock_do_pendente():
+    """O read-modify-write do guarda é serializado com o do observador."""
+    pipe = CanalFalso()
+    pipe.end_of_speech()                     # ocupado: o observador não consome já
+    sess = _sessao(pipe)
+    lock = app._live_pend_lock(sess)
+    lock.acquire()
+    th = threading.Thread(target=app._live_guarda_pendente,
+                          args=(sess, b"\x03" * 8, False))
+    th.start()
+    time.sleep(0.15)
+    assert sess.get("turno_pendente") is None, "escreveu com o lock preso"
+    lock.release()
+    assert _espera(lambda: sess.get("turno_pendente") is not None)
+    assert sess["turno_pendente"] == b"\x03" * 8
+    th.join(5)
+
+
 # ---------------------------------------------------------------------------
 # Unidade: a fila de 1 pendente (com acúmulo)
 # ---------------------------------------------------------------------------

@@ -1891,6 +1891,7 @@ except Exception as exc:  # noqa: BLE001 — prewarm é otimização
 
 
 _dsh_models_cache: dict = {}
+_dsh_models_lock = threading.Lock()          # #213: 1 descoberta por vez no frio
 _DSH_MODELS_TTL_S = 300
 
 
@@ -1911,17 +1912,21 @@ def chat_dsh_models():
     cfg = _chat_dsh_cfg()
     chave = (cfg["bin"], cfg["profile"])
     agora = time.time()
-    if (_dsh_models_cache.get("chave") == chave
-            and agora - _dsh_models_cache.get("em", 0) < _DSH_MODELS_TTL_S):
-        dados = _dsh_models_cache["dados"]
-    else:
-        try:
-            dados = dsh_client.descobrir_modelos(bin=cfg["bin"], profile=cfg["profile"])
-        except dsh_client.DshError as exc:
-            raise HTTPException(502, f"descoberta do dsh falhou: {exc}")
-        # cacheado JUNTO da descoberta: a tela não paga leitura de arquivo por request
-        dados = {"bridge_info": _dsh_bridge_estado(), **dados}
-        _dsh_models_cache.update({"dados": dados, "chave": chave, "em": agora})
+    # o lock cobre só o caminho FRIO: a descoberta spawna um processo `dsh` e dois
+    # GETs simultâneos (a tela chama no clique) subiam 2+ processos, com o último
+    # sobrescrevendo o cache (#213). O caminho quente não espera.
+    with _dsh_models_lock:
+        if (_dsh_models_cache.get("chave") == chave
+                and agora - _dsh_models_cache.get("em", 0) < _DSH_MODELS_TTL_S):
+            dados = _dsh_models_cache["dados"]
+        else:
+            try:
+                dados = dsh_client.descobrir_modelos(bin=cfg["bin"], profile=cfg["profile"])
+            except dsh_client.DshError as exc:
+                raise HTTPException(502, f"descoberta do dsh falhou: {exc}")
+            # cacheado JUNTO da descoberta: a tela não paga leitura de arquivo por request
+            dados = {"bridge_info": _dsh_bridge_estado(), **dados}
+            _dsh_models_cache.update({"dados": dados, "chave": chave, "em": agora})
     bridge = dados.get("bridge_info") or {"estado": "unknown"}
     return {"ok": True, "backend": "dsh",
             **{k: v for k, v in dados.items() if k != "bridge_info"},
@@ -6037,14 +6042,19 @@ def _live_autentica(ws) -> bool:
     """MESMA política das rotas: loopback dispensa; o resto precisa de credencial.
 
     Ordem: `?ticket=` (efêmero, de um uso — o caminho para o browser) → `?key=`
-    (compat) → header (cliente não-browser, ex.: script/RN)."""
+    (compat) → header (cliente não-browser, ex.: script/RN).
+
+    O ticket não é o ÚLTIMO recurso: se ele não valer (usado/expirado/inventado),
+    a checagem SEGUE para a chave/header (#212) — antes o `return` cortava ali e um
+    cliente com credencial boa levava 4401 só porque repetiu o parâmetro. O ticket
+    tentado continua sendo consumido: um uso segue um uso."""
     if _is_local(ws):
         return True
     if not _auth_enabled():
         return True
     ticket = (ws.query_params.get("ticket") or "").strip()
-    if ticket:
-        return _live_ticket_consome(ticket)
+    if ticket and _live_ticket_consome(ticket):
+        return True
     chave = (ws.query_params.get("key") or "").strip() or _extract_request_key(ws)
     return _key_is_valid(chave)
 
@@ -6228,7 +6238,11 @@ def _live_engine_novo(sess: dict):
                 "TTS_LIVE_BARGE_JANELA_TURNO", "0") != "0",
             # #167: janela pela duração real do chunk (ver Config.playback_por_duracao)
             playback_por_duracao=os.environ.get(
-                "TTS_LIVE_PLAYBACK_DURACAO", "0") != "0")
+                "TTS_LIVE_PLAYBACK_DURACAO", "0") != "0",
+            # #167 (direção c): o ECO só vale como referência enquanto há áudio
+            # audível; nos vãos o regime é o de ocioso (ver Config.eco_so_tocando)
+            eco_so_tocando=os.environ.get(
+                "TTS_LIVE_ECO_SO_TOCANDO", "0") != "0")
     except Exception:                    # noqa: BLE001 — config inválida: usa o padrão
         cfg = None
     return _live_turns_mod.TurnEngine(config=cfg)
@@ -6286,8 +6300,12 @@ def _live_abre_turno(sess: dict, pcm: bytes = b"", barge_in: bool = False) -> No
     sess["turno_barge_in"] = bool(barge_in)
     pipe = sess.get("pipe")
     if pipe is None:                     # sem pipeline: stub mínimo
-        sess["fila"].put(("json", {"type": "turn_complete", "stub": True,
-                                   "buffer_bytes": len(pcm)}))
+        # via `_live_envia_json` (#211), como o irmão `_live_engine`: a fila crua
+        # pulava `_live_enriquece`/`_live_observa`/`_live_hist_pos_turno` e deixava
+        # buffer sem zerar, `st_stage` preso em "stt" e o registro de retomada sem
+        # gravar (o buffer de mic ainda acumulava até o teto de 2 MB).
+        _live_envia_json(sess, {"type": "turn_complete", "stub": True,
+                                "buffer_bytes": len(pcm)})
         return
     if _DEBUG_LIVE:
         print(f"[live][dbg] abre_turno pcm={len(pcm)} ocupado={pipe.ocupado} "
@@ -6333,6 +6351,27 @@ def _live_pendente_zera_contadores(sess: dict) -> None:
     sess["pendentes_descartados_ms"] = 0
 
 
+_pend_lock_cria = threading.Lock()
+
+
+def _live_pend_lock(sess: dict) -> threading.Lock:
+    """Lock do turno pendente — serializa o guarda (loop) contra o observador.
+
+    Os dois fazem read-modify-write em `sess["turno_pendente"]` de THREADS
+    diferentes (#208): o guarda acumula o trecho novo e o observador faz `pop`
+    + re-arm. Sem o lock, quem escreve por último apaga o outro e o trecho de
+    fala do usuário some. Criado na sessão; a criação preguiçosa é para as
+    sessões de teste (dupla checagem com um lock de módulo: dois threads não
+    podem ficar com locks diferentes)."""
+    lock = sess.get("pend_lock")
+    if lock is None:
+        with _pend_lock_cria:
+            lock = sess.get("pend_lock")
+            if lock is None:
+                lock = sess["pend_lock"] = threading.Lock()
+    return lock
+
+
 def _live_guarda_pendente(sess: dict, pcm: bytes, barge_in: bool) -> None:
     """Acumula o trecho no ÚNICO pendente, para abrir quando o pipeline liberar.
 
@@ -6346,19 +6385,20 @@ def _live_guarda_pendente(sess: dict, pcm: bytes, barge_in: bool) -> None:
     não vira resposta)."""
     if not pcm:
         return
-    novo = (sess.get("turno_pendente") or b"") + pcm
-    truncado = len(novo) > _LIVE_PENDENTE_MAX_BYTES
-    if truncado:
-        cortados = len(novo) - _LIVE_PENDENTE_MAX_BYTES
-        novo = novo[-_LIVE_PENDENTE_MAX_BYTES:]
-        sess["pendentes_descartados"] = sess.get("pendentes_descartados", 0) + 1
-        # 32 bytes = 1 ms (PCM16 mono 16 kHz) — mesma base do teto
-        sess["pendentes_descartados_ms"] = (sess.get("pendentes_descartados_ms", 0)
-                                            + cortados // 32)
-    sess["pendentes_trechos"] = sess.get("pendentes_trechos", 0) + 1  # trechos ACUMULADOS
-    sess["turno_pendente"] = novo
-    if barge_in:
-        sess["turno_pendente_barge"] = True       # pegajoso: eco-check segue valendo
+    with _live_pend_lock(sess):                   # #208: contra o observador
+        novo = (sess.get("turno_pendente") or b"") + pcm
+        truncado = len(novo) > _LIVE_PENDENTE_MAX_BYTES
+        if truncado:
+            cortados = len(novo) - _LIVE_PENDENTE_MAX_BYTES
+            novo = novo[-_LIVE_PENDENTE_MAX_BYTES:]
+            sess["pendentes_descartados"] = sess.get("pendentes_descartados", 0) + 1
+            # 32 bytes = 1 ms (PCM16 mono 16 kHz) — mesma base do teto
+            sess["pendentes_descartados_ms"] = (sess.get("pendentes_descartados_ms", 0)
+                                                + cortados // 32)
+        sess["pendentes_trechos"] = sess.get("pendentes_trechos", 0) + 1  # ACUMULADOS
+        sess["turno_pendente"] = novo
+        if barge_in:
+            sess["turno_pendente_barge"] = True   # pegajoso: eco-check segue valendo
     _live_log_kv("turno_pendente", sess=sess["id"], bytes=len(novo),
                  trechos=sess["pendentes_trechos"], truncado=truncado,
                  descartados_ms=sess.get("pendentes_descartados_ms", 0),
@@ -6371,6 +6411,20 @@ def _live_guarda_pendente(sess: dict, pcm: bytes, barge_in: bool) -> None:
                             "barge_in": bool(sess.get("turno_pendente_barge")),
                             "truncado": truncado})
     _live_acorda_pendente(sess)
+
+
+def _live_pend_rearma(sess: dict, pendente: bytes, barge: bool) -> None:
+    """Devolve o pendente que o observador tirou — SEM apagar o que chegou depois.
+
+    O guarda pode ter acumulado um trecho novo entre o `pop` e este re-arm: o
+    re-arm antigo regravava o valor que ele leu e o trecho NOVO sumia (#208).
+    Aqui o antigo vem PRIMEIRO (é o mais antigo na linha do tempo) e o barge é
+    pegajoso — qualquer pedaço nascido no playback mantém a checagem de eco."""
+    with _live_pend_lock(sess):
+        novo = sess.get("turno_pendente") or b""
+        sess["turno_pendente"] = pendente + novo
+        if barge:
+            sess["turno_pendente_barge"] = True
 
 
 def _live_acorda_pendente(sess: dict) -> None:
@@ -6405,20 +6459,17 @@ def _live_descarrega_pendente(sess: dict) -> None:
     try:
         while not sess.get("fechar") and pipe.ocupado:
             time.sleep(0.1)
-        pendente = sess.pop("turno_pendente", None)
-        barge = bool(sess.pop("turno_pendente_barge", False))
+        with _live_pend_lock(sess):       # #208: o guarda pode estar acumulando
+            pendente = sess.pop("turno_pendente", None)
+            barge = bool(sess.pop("turno_pendente_barge", False))
         if not pendente or sess.get("fechar"):
             _live_pendente_zera_contadores(sess)
             return
-        # contadores do evento descrevem o pendente ATUAL: preservados no re-arm
-        # abaixo (o conteúdo VOLTA) e zerados no fim quando ele é aberto
-        trechos = sess.get("pendentes_trechos", 0)
-        descartados_ms = sess.get("pendentes_descartados_ms", 0)
+        # contadores do evento descrevem o pendente ATUAL: ficam como estão no
+        # re-arm (o guarda já contou o que chegou no intervalo) e são zerados
+        # quando ele é aberto
         if pipe.ocupado:                  # fechou e abriu outro no intervalo
-            sess["turno_pendente"] = pendente
-            sess["turno_pendente_barge"] = barge
-            sess["pendentes_trechos"] = trechos
-            sess["pendentes_descartados_ms"] = descartados_ms
+            _live_pend_rearma(sess, pendente, barge)
             return
         _live_pendente_zera_contadores(sess)
         _live_abre_turno(sess, pendente, barge_in=barge)
@@ -6809,8 +6860,16 @@ async def live_ws(ws: WebSocket):
         await ws.close(code=4400)
         return
 
-    retomado = _live_hist_pega(cfg.get("session_id") or "")
-    sid = cfg["session_id"] if retomado else uuid.uuid4().hex[:10]
+    pedido = cfg.get("session_id") or ""
+    retomado = _live_hist_pega(pedido)
+    # o id é do CLIENTE quando ele manda um (#210): antes ele só era adotado se JÁ
+    # existisse registro, então um cliente com id próprio estável nunca retomava
+    # nada — o `ready` devolvia sid aleatório a cada reconexão e o registro enchia
+    # de sids órfãos. O id já vem validado por `_live_valida_setup`
+    # ([A-Za-z0-9_-]{1,64}); adotá-lo também deixa um cliente retomar a sessão de
+    # outro se adivinhar o id (40 bits quando o servidor gera, e não há vínculo
+    # com a chave) — registrado aqui como decisão de contrato.
+    sid = pedido or uuid.uuid4().hex[:10]
     if retomado:
         # retomada: voz/system do SETUP vencem quando vieram; senão, os guardados
         cfg = {**cfg,
@@ -6852,12 +6911,21 @@ async def live_ws(ws: WebSocket):
                  history=len(sess["history"]), criadas=len(_live_sessions))
     with _live_lock:
         # teto atômico com a inserção (ver comentário no topo do handler)
-        if sid not in _live_sessions and len(_live_sessions) >= _LIVE_MAX_SESSIONS:
-            await ws.send_json(_live_erro(
-                "busy", f"máximo de {_LIVE_MAX_SESSIONS} sessões simultâneas"))
-            await ws.close(code=1013)
-            return
-        _live_sessions[sid] = sess
+        ocupado = (sid not in _live_sessions
+                   and len(_live_sessions) >= _LIVE_MAX_SESSIONS)
+        if not ocupado:
+            _live_sessions[sid] = sess
+    if ocupado:
+        # FORA do lock (#209): `_live_lock` é `threading.Lock` e o mesmo lock é
+        # pego por código SÍNCRONO no handler (`_live_sweep`, `_live_hist_*`).
+        # Com o `await` lá dentro, um send que suspende (peer lento) deixava o
+        # lock preso; a outra corrotina bloqueava a THREAD do event loop — e a
+        # primeira só retomava se o loop rodasse. O slot já foi decidido aqui,
+        # nada mais depende do lock.
+        await ws.send_json(_live_erro(
+            "busy", f"máximo de {_LIVE_MAX_SESSIONS} sessões simultâneas"))
+        await ws.close(code=1013)
+        return
     global _live_sweeper_iniciado
     if not _live_sweeper_iniciado:
         _live_sweeper_iniciado = True

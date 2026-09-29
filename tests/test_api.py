@@ -2318,6 +2318,31 @@ def test_live_ws_teto_de_sessoes(ws_client, live_limpo, monkeypatch):
             assert exc.value.code == 1013
 
 
+def test_busy_e_mandado_fora_do_live_lock(ws_client, live_limpo, monkeypatch):
+    """#209: `_live_lock` é `threading.Lock` e o handler o pega por código
+    SÍNCRONO (`_live_sweep`/`_live_hist_*`). Se o `error{busy}` sair com o lock
+    preso e o send suspender, a outra corrotina bloqueia a thread do event loop
+    e nada mais roda. Aqui o espião olha o estado do lock NO MOMENTO do send."""
+    from starlette.websockets import WebSocket
+
+    monkeypatch.setattr(app, "_LIVE_MAX_SESSIONS", 1)
+    visto = []
+    original = WebSocket.send_json
+
+    async def espiao(self, dado, *a, **k):
+        if isinstance(dado, dict) and dado.get("code") == "busy":
+            visto.append(app._live_lock.locked())
+        return await original(self, dado, *a, **k)
+
+    monkeypatch.setattr(WebSocket, "send_json", espiao)
+    with ws_client.websocket_connect("/api/live/ws") as ws1:
+        _setup_ok(ws1)
+        with ws_client.websocket_connect("/api/live/ws") as ws2:
+            ws2.send_json({"type": "setup"})
+            assert ws2.receive_json()["code"] == "busy"
+    assert visto == [False], "o `error{busy}` saiu com o `_live_lock` preso"
+
+
 def test_retomada_com_teto_cheio_nao_leva_busy(ws_client, live_limpo, pipeline_fake,
                                                engine_fake, hist_limpo, monkeypatch):
     """Retomada SUBSTITUI a entrada do `sid`: com o registry cheio ela não pode
@@ -2424,6 +2449,21 @@ def test_live_ticket_emite_e_consome_uma_vez(client, auth, tickets_limpos):
         with pytest.raises(WebSocketDisconnect) as exc:
             ws.receive_json()
         assert exc.value.code == 4401
+
+
+def test_ticket_usado_cai_para_a_chave(client, auth, tickets_limpos):
+    """#212: o ticket não é o ÚLTIMO recurso — usado/expirado/inventado, a checagem
+    segue para `?key=`/header. Antes o `return` cortava e um cliente com credencial
+    boa levava 4401 só porque repetiu o parâmetro."""
+    t = client.post("/api/live/ticket", headers=auth).json()
+    chave = app._primary_api_key()
+    c = _ws_cliente("203.0.113.9")
+    with c.websocket_connect(f"/api/live/ws?ticket={t['ticket']}&key={chave}") as ws:
+        assert _setup_ok(ws)["type"] == "ready"          # 1ª: o ticket vale
+    with c.websocket_connect(f"/api/live/ws?ticket={t['ticket']}&key={chave}") as ws:
+        assert _setup_ok(ws)["type"] == "ready", "ticket usado cortou a chave válida"
+    with c.websocket_connect(f"/api/live/ws?ticket=inventado&key={chave}") as ws:
+        assert _setup_ok(ws)["type"] == "ready", "ticket inválido cortou a chave válida"
 
 
 def test_live_ticket_expirado_recusa(tickets_limpos):
@@ -3083,6 +3123,34 @@ def test_get_chat_dsh_models_e_cache(client, auth, monkeypatch, dsh_limpo):
     assert len(chamadas) == 1, "o discovery sobe um dsh — tem que ter cache"
 
 
+def test_dsh_models_uma_descoberta_por_vez(monkeypatch, dsh_limpo):
+    """#213: com o cache frio, dois GETs simultâneos passavam juntos e subiam 2+
+    processos `dsh` (a tela chama no clique). O lock faz o segundo esperar e
+    reaproveitar o cache do primeiro."""
+    chamadas = []
+    solta = threading.Event()
+
+    def descobre(**_kw):
+        chamadas.append(1)
+        solta.wait(3)                # segura a 1ª com o lock preso
+        return {"models": [], "default_model": None, "current": {}}
+
+    monkeypatch.setattr(app.dsh_client, "descobrir_modelos", descobre)
+    c1, c2 = _ws_cliente("127.0.0.1"), _ws_cliente("127.0.0.1")
+    saida = []
+    t1 = threading.Thread(target=lambda: saida.append(c1.get("/api/chat/dsh/models").status_code))
+    t1.start()
+    time.sleep(0.2)
+    t2 = threading.Thread(target=lambda: saida.append(c2.get("/api/chat/dsh/models").status_code))
+    t2.start()
+    time.sleep(0.2)
+    solta.set()
+    t1.join(10)
+    t2.join(10)
+    assert saida == [200, 200]
+    assert len(chamadas) == 1, f"a descoberta rodou {len(chamadas)}x (lock não segurou)"
+
+
 def test_get_chat_dsh_models_erro_explicativo(client, auth, monkeypatch, dsh_limpo):
     def explode(**_kw):
         raise app.dsh_client.DshError("node 23.11.0 é antigo: o dsh exige >= 24.2")
@@ -3230,6 +3298,45 @@ def test_retomada_com_sessao_antiga_viva_nao_derruba_a_nova(ws_client, live_limp
         # escrita atrasada da antiga (socket zumbi) não pode voltar o contexto
         app._live_hist_guarda(antiga)
         assert app._live_historico[sid]["msgs"][0]["content"] == "contexto novo"
+
+
+def test_stub_sem_pipeline_manda_pelo_envia_json(ws_client, live_limpo, hist_limpo,
+                                                monkeypatch):
+    """#211: sem pipeline (stub) o `turn_complete` tem de sair por
+    `_live_envia_json`, como o irmão `_live_engine` — pela fila crua ele não zerava
+    o buffer do mic, não consumia `truncado`, não devolvia `st_stage` a idle e não
+    gravava o registro de retomada."""
+    monkeypatch.setattr(app, "_live_pipe_novo", lambda sess: None)
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        assert _setup_ok(ws)["type"] == "ready"
+        sess = list(app._live_sessions.values())[0]
+        sess["buffer"].extend(b"\x01\x00" * 50)
+        sess["truncado"] = True
+        app._live_stage(sess, "stt")            # como o fim-de-fala faz
+        app._live_abre_turno(sess, b"\x01\x00" * 50, barge_in=False)
+        ev = _ate(ws, {"turn_complete"})
+        assert ev.get("stub") is True and ev.get("truncated") is True
+        assert not sess["buffer"], "buffer do mic não foi zerado"
+        assert sess["truncado"] is False, "aviso de truncado não foi consumido"
+        assert sess.get("st_stage") == "idle", "st_stage ficou preso em 'stt'"
+
+
+def test_cliente_com_id_proprio_retoma_com_o_mesmo_id(ws_client, live_limpo, pipeline_fake,
+                                                      engine_fake, hist_limpo):
+    """#210: id escolhido pelo CLIENTE tem de retomar. Antes ele era aceito e
+    ignorado na 1ª conexão (o servidor devolvia sid aleatório), então reconectar
+    com o mesmo id nunca retomava e o registro enchia de sids órfãos."""
+    with ws_client.websocket_connect("/api/live/ws") as ws1:
+        pronto = _setup_ok(ws1, session_id="meu-id-fixo")
+        assert pronto["session_id"] == "meu-id-fixo", "id do cliente ignorado"
+        assert pronto["resumed"] is False
+        sess = app._live_sessions["meu-id-fixo"]
+        sess["pipe"].history[:] = [{"role": "user", "content": "meu nome é Ana"}]
+        app._live_hist_guarda(sess)
+    with ws_client.websocket_connect("/api/live/ws") as ws2:
+        pronto = _setup_ok(ws2, session_id="meu-id-fixo")
+        assert pronto["resumed"] is True, "o id do cliente não retomou"
+        assert pronto["session_id"] == "meu-id-fixo"
 
 
 def test_resume_recusa_id_desconhecido_e_expirado(ws_client, live_limpo, hist_limpo, monkeypatch):
