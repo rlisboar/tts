@@ -1291,20 +1291,22 @@ def health():
 # ---------------------------------------------------------------------------
 _BUILD_MODULOS = ("app.py", "common.py", "backends.py", "tts_worker.py",
                   "live_pipeline.py", "live_turns.py", "dsh_client.py")
-_build_cache: dict = {}
-
-
 def _build_hash() -> str:
-    """sha256-8 do conteúdo dos módulos do servidor (calculado no 1º uso, cacheado)."""
-    if "codigo" not in _build_cache:
-        h = hashlib.sha256()
-        for nome in _BUILD_MODULOS:
-            try:
-                h.update((BASE / nome).read_bytes())
-            except OSError:
-                h.update(b"<ausente>")
-        _build_cache["codigo"] = h.hexdigest()[:8]
-    return _build_cache["codigo"]
+    """sha256-8 do conteúdo ATUAL dos módulos do servidor (lê o disco)."""
+    h = hashlib.sha256()
+    for nome in _BUILD_MODULOS:
+        try:
+            h.update((BASE / nome).read_bytes())
+        except OSError:
+            h.update(b"<ausente>")
+    return h.hexdigest()[:8]
+
+
+# CONGELADO NO IMPORT (#214): o campo promete o código CARREGADO. Calculado no 1º
+# uso, uma instância que nunca serviu `/api/build` descrevia o disco do momento da
+# checagem — editar um módulo sem reiniciar e chamar uma vez dava "bate" falso, com
+# o processo rodando o código antigo. São 7 arquivos pequenos: mesmo custo do boot.
+_BUILD_CODIGO = _build_hash()
 
 
 @app.get("/api/build")
@@ -1314,11 +1316,14 @@ def build():
     Comparar `codigo` com o sha do ticket diz se a instância é a mesma que o commit;
     `boot_ms` é a idade do processo (medida do import) e `admin_fields` o tamanho do
     conjunto de campos administrativos — uma instância antiga tinha 17 campos quando
-    o código já tinha 23, e `POST /api/settings` ignorava o campo novo em silêncio."""
+    o código já tinha 23, e `POST /api/settings` ignorava o campo novo em silêncio.
+
+    `codigo` é o hash CONGELADO no import: comparar com o disco de agora é o que
+    separa "código carregado" de "árvore editada depois" (#214)."""
     return {"ok": True, "version": _VERSION,
             "boot_ts": int(_BUILD_TS),
             "boot_ms": int((time.monotonic() - _BUILD_INI) * 1000),
-            "codigo": _build_hash(), "modulos": list(_BUILD_MODULOS),
+            "codigo": _BUILD_CODIGO, "modulos": list(_BUILD_MODULOS),
             "admin_fields": len(_SETTINGS_ADMIN)}
 
 

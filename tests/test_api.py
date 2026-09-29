@@ -2214,11 +2214,30 @@ def test_build_diz_qual_codigo_esta_rodando(client, auth):
     for nome in app._BUILD_MODULOS:
         h.update((app.BASE / nome).read_bytes())
     assert d["codigo"] == h.hexdigest()[:8], "hash é do conteúdo, não do commit"
+    assert d["codigo"] == app._BUILD_CODIGO, "o campo tem de ser o hash do BOOT"
     assert d["version"] == app._VERSION
     assert d["admin_fields"] == len(app._SETTINGS_ADMIN)
     assert d["boot_ts"] > 0 and d["boot_ms"] >= 0
     assert "app.py" in d["modulos"] and "live_pipeline.py" in d["modulos"]
     assert client.get("/api/build").status_code == 401, "sob /api/ exige chave"
+
+
+def test_build_codigo_e_do_boot_nao_do_disco_de_agora(client, auth, tmp_path, monkeypatch):
+    """#214: o hash é CONGELADO no import. Editado um módulo depois (sem reiniciar),
+    `/api/build` continua reportando o código CARREGADO — se ele fosse calculado no
+    1º uso, uma instância que nunca serviu a rota daria "bate" falso contra a árvore
+    e o gate acusaria o alvo errado (o próprio motivo de o #190 existir)."""
+    for nome in app._BUILD_MODULOS:           # árvore de mentira = cópia do repo
+        (tmp_path / nome).write_bytes((app.BASE / nome).read_bytes())
+    monkeypatch.setattr(app, "BASE", tmp_path)
+    assert app._build_hash() == app._BUILD_CODIGO, "pré-condição: árvore == boot"
+
+    (tmp_path / "live_turns.py").write_text("# editado DEPOIS do import\n")
+    assert app._build_hash() != app._BUILD_CODIGO, "o disco mudou de verdade"
+
+    d = client.get("/api/build", headers=auth).json()
+    assert d["codigo"] == app._BUILD_CODIGO, \
+        "a instância reportou o disco de agora, não o código que carregou"
 
 
 def test_build_exige_chave_fora_do_loopback():
