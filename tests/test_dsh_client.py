@@ -202,8 +202,14 @@ def test_cancel_orfao_reabre_sessao_e_nao_vaza_chunk_tardio(monkeypatch):
     logs = []
     c = cliente(monkeypatch, on_log=logs.append, cancel_espera=0.3, env={
         "FAKE_ACP_MODO": "deltas",
-        "FAKE_ACP_CHUNKS": json.dumps(["A", "B", "C"]),
-        "FAKE_ACP_CHUNK_DELAY_S": "0.05",
+        # 6 deltas × 0,08 s = 0,48 s de janela. O fake decide se o turno foi
+        # cancelado SÓ quando termina de emitir os deltas, e o `session/cancel`
+        # chega por IPC: com 3 × 0,05 s (0,15 s) a mensagem do cancel podia
+        # chegar DEPOIS dessa decisão, o turno settleava sozinho e a sessão não
+        # era reaberta — o teste caía por corrida, não por comportamento
+        # (medido: falhava com a máquina carregada, passava sozinho).
+        "FAKE_ACP_CHUNKS": json.dumps(["A", "B", "C", "D", "E", "F"]),
+        "FAKE_ACP_CHUNK_DELAY_S": "0.08",
         "FAKE_ACP_CANCEL_IGNORA_S": "1.5",
     })
     caixa = {}
