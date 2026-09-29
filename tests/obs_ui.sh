@@ -68,7 +68,9 @@ porta = porta_livre()
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        "TTS_CHAT_MODEL": "stub-obs", "OBS_UI_PORT": str(porta),
        # pinado: env > settings — o dono pode ter deixado `chat_backend: "dsh"` (#143)
+       # …e o do LIVE junto, que tem variável própria e não é governado por esta (#195)
        "TTS_CHAT_BACKEND": "openai",
+       "TTS_CHAT_BACKEND_LIVE": os.environ.get("TTS_CHAT_BACKEND_LIVE") or "openai",
        "ORT_DISABLE_TELEMETRY": "1"}
 log = pathlib.Path("/tmp") / f"obs_ui_servidor_{SUF}.log"
 _launcher = '''

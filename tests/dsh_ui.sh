@@ -228,8 +228,14 @@ try:
         cobrar(live["admin"], "campo do Live sem data-admin-setting (não travaria p/ chave de uso)")
         cobrar(live["opcoes"] == ["", "openai", "dsh"],
                f"opções do backend do Live não são herdar/openai/dsh: {live['opcoes']}")
-        cobrar("mesmo backend da Conversa" in live["hint"] and "dsh" in live["hint"],
-               f"com o Live herdando, o hint não diz o backend EFETIVO: {live['hint']!r}")
+        # O valor SALVO do dono pode ser `dsh` (é a recomendação do #175): para
+        # cobrar a herança, põe o campo em "igual ao da Conversa" de propósito —
+        # senão a asserção do hint vira refém da config de partida.
+        pg.select_option("#chatBackendLive", value="")
+        pg.wait_for_timeout(200)
+        herdando = pg.evaluate("() => document.getElementById('chatBackendLiveHint').textContent")
+        cobrar("mesmo backend da Conversa" in herdando and "dsh" in herdando,
+               f"com o Live herdando, o hint não diz o backend EFETIVO: {herdando!r}")
         pg.select_option("#chatBackendLive", value="openai")
         pg.wait_for_timeout(200)
         pro = pg.evaluate("() => document.getElementById('chatBackendLiveHint').textContent")
@@ -379,6 +385,9 @@ try:
 
         # ─── 6) o save leva os 5 campos (payload real do POST) ───────────────
         pg.evaluate("() => showView('config')")
+        # o campo do Live pode ter voltado ao valor SALVO do dono num reload da
+        # tela; o ponto aqui é o `""` (herdar) ir no payload, então põe de propósito
+        pg.select_option("#chatBackendLive", value="")
         pg.click("#cfgSave")
         pg.wait_for_timeout(1500)
         enviados = {k: corpo_save.get(k) for k in

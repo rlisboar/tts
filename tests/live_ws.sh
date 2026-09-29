@@ -21,10 +21,18 @@
 # durante o playback → `interrupted` e o áudio para de chegar; (5) sessão
 # fechando limpa.
 #
+# MEDINDO À MÃO (script de trace, curl, playwright avulso): a chave de API que você
+# cria é estado DO DONO e fica no `.apikeys.json` dele. Use nome com prefixo que a
+# limpeza reconhece — `teste-ui-*`, `probe-papel*`, `probe-adota*` (o
+# `admin_ui_flow.sh` varre esses com mais de 2 min na abertura) — e apague no fim.
+# Nome fora do padrão (ex.: `trace-speed-191`) fica para sempre, e o dono vê na tela.
+#
 # O alvo de 1500 ms vale para ESTE cenário (stub local): com o provedor de chat
 # REMOTO do dono o 1º token sozinho custa segundos e o alvo não cabe — quem medir
 # com `LIVE_LLM=config` tem de dizer que saiu do cenário do alvo (#173, números no
-# LIVE.md).
+# LIVE.md). O mesmo vale quando o Live roda no harness `dsh`
+# (`TTS_CHAT_BACKEND_LIVE=dsh ./tests/live_ws.sh`): aí o alvo vira AVISO
+# qualificado, e o número do provedor sai separado — não ✘ por construção (#195).
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,6 +57,12 @@ MODO = os.environ.get("LIVE_LLM", "stub")
 CHAVE = pathlib.Path(".apikey").read_text().strip()
 H = {"X-API-Key": CHAVE}
 ALVO_MS = 1500
+# Backend do Live desta rodada (o env do chamador manda; sem ele, stub). O alvo de
+# 1,5 s é do cenário STUB (#173): com o Live no harness dsh, o 1º token DELE domina
+# e o alvo não cabe — aí o número é AVISO qualificado, não falha.
+BACKEND_LIVE = (os.environ.get("TTS_CHAT_BACKEND_LIVE")
+                or os.environ.get("TTS_CHAT_BACKEND") or "openai")
+ALVO_VALE = BACKEND_LIVE == "openai"
 falhas, avisos = [], []
 
 def ok(msg):
@@ -154,9 +168,15 @@ def sobe_servidor(porta, stub_porta):
     media outra rota (achado do gate #135/#137) — e caía quando o dsh não subia, o
     que virava vermelho FALSO do smoke. O env do CHAMADOR ainda manda (é o que
     permite `TTS_CHAT_BACKEND=dsh ./tests/live_ws.sh` medir o harness); o pino só
-    impede o settings do dono de decidir sozinho."""
+    impede o settings do dono de decidir sozinho.
+
+    `TTS_CHAT_BACKEND_LIVE` é o MESMO caso, e ficou de fora por um tempo: ele manda
+    sobre `chat_backend_live` e `TTS_CHAT_BACKEND=openai` só governa a Conversa —
+    com o Live em dsh (por env do chamador OU por `chat_backend_live` no settings)
+    a suíte saía do stub sem querer (#195)."""
     env = {**os.environ,
            "TTS_CHAT_BACKEND": os.environ.get("TTS_CHAT_BACKEND") or "openai",
+           "TTS_CHAT_BACKEND_LIVE": BACKEND_LIVE,
            "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
            "TTS_CHAT_MODEL": "stub-live"}
     log = pathlib.Path("/tmp") / f"live_ws_servidor_{porta}.log"
@@ -318,9 +338,15 @@ async def principal():
             else:
                 falha(f"turno não fechou com turn_complete: {tipos}")
             if primeiro is not None:
-                marca = "OK" if primeiro <= ALVO_MS else "ACIMA DO ALVO"
-                (ok if primeiro <= ALVO_MS else falha)(
-                    f"fim-de-fala → 1º áudio: {primeiro:.0f} ms (alvo ≤ {ALVO_MS} ms) — {marca}")
+                if primeiro <= ALVO_MS:
+                    ok(f"fim-de-fala → 1º áudio: {primeiro:.0f} ms (alvo ≤ {ALVO_MS} ms) — OK")
+                elif ALVO_VALE:
+                    falha(f"fim-de-fala → 1º áudio: {primeiro:.0f} ms (alvo ≤ {ALVO_MS} ms)"
+                          " — ACIMA DO ALVO")
+                else:
+                    print(f"     ⚠ fim-de-fala → 1º áudio: {primeiro:.0f} ms — acima do alvo do"
+                          f" stub, mas o backend do Live é {BACKEND_LIVE!r}: o alvo de 1,5 s é do"
+                          " cenário local/stub (#173), não deste. AVISO, não falha.")
                 lat = next((e for e in eventos if e["type"] == "latency"), None)
                 if lat:
                     print("     orçamento por estágio (ms): "
@@ -369,7 +395,8 @@ async def principal():
         for f in falhas:
             print(f"   - {f}")
         sys.exit(1)
-    print("✔ OK — ciclo completo, latência dentro do alvo e barge-in respondendo")
+    print("✔ OK — ciclo completo, latência medida e barge-in respondendo"
+      + ("" if ALVO_VALE else f" (alvo de {ALVO_MS} ms é do cenário stub; Live em {BACKEND_LIVE!r})"))
     if avisos:
         print(f"({len(avisos)} aviso(s))")
 

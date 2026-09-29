@@ -90,7 +90,10 @@ porta = porta_livre()
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1", "TTS_CHAT_MODEL": "stub-live",
        # BACKEND PINADO: sem isto a suíte fica refém do settings.json do dono —
        # com `chat_backend: "dsh"` ela deixaria o stub e falaria com o harness (#143).
-       "TTS_CHAT_BACKEND": "openai"}
+       # O do LIVE também: ele MANDA sobre `chat_backend_live` e o pin da Conversa
+       # não o governa, então o dono com o Live em dsh saía do stub sem querer (#195).
+       "TTS_CHAT_BACKEND": "openai",
+       "TTS_CHAT_BACKEND_LIVE": os.environ.get("TTS_CHAT_BACKEND_LIVE") or "openai"}
 log = pathlib.Path("/tmp/live_ui_servidor.log")
 # Instrumenta SEM editar arquivo de outro agente: envolve `set_speaking` para
 # registrar o nível que vem do payload do TTS e o limiar resultante. É o número
@@ -356,6 +359,40 @@ try:
                f"log de latência não marca o 1º token do provedor: {lento['log']!r}")
         cobrar("provedor" in lento["painel"] and "4200" in lento["painel"],
                f"painel de latência não marca o provedor: {lento['painel']!r}")
+
+        # ─── #192: os dois ajustes de MOMENTO do servidor ───────────────────────
+        # 1) `error{busy}` + close 1013 chegam DEPOIS do setup e ANTES do ready: a
+        #    tela mostra o motivo e NÃO pinta "WebSocket caiu" (close limpo não é
+        #    falha de transporte — `LX.erro` só liga em `onerror`).
+        # 2) `error{pipeline}` chega logo DEPOIS do ready com a sessão VIVA: o
+        #    "ouvindo" não pode ficar prometendo fala que não vem.
+        r192 = pg.evaluate("""() => {
+            const estadoTxt = () => document.getElementById('lxEstado').textContent;
+            const status = () => document.getElementById('lxStatus').textContent;
+            const ia = () => document.getElementById('lxIA').textContent;
+            LX.estado = 'conectando'; lxEstado('conectando', 'abrindo sessão…');
+            lxRecebe({ data: JSON.stringify({ type: 'error', code: 'busy', message: 'teto de sessões' }) });
+            const a = { estado: estadoTxt(), status: status(), ia: ia() };
+            if (LX.ws) LX.ws.onclose({ code: 1013 });      // o servidor fecha logo atrás
+            const b = { estado: estadoTxt(), status: status() };
+            LX.estado = 'conectando'; lxEstado('conectando', 'abrindo sessão…');
+            lxRecebe({ data: JSON.stringify({ type: 'ready' }) });
+            const c = { estado: estadoTxt() };
+            lxRecebe({ data: JSON.stringify({ type: 'error', code: 'pipeline', message: 'pipeline não subiu' }) });
+            const d = { estado: estadoTxt(), ia: ia() };
+            return { a, b, c, d };
+        }""")
+        print(f"  error{{busy}} antes do ready → ia={r192['a']['ia'][:46]!r} estado={r192['a']['estado']!r}"
+              f" · depois do close 1013: estado={r192['b']['estado']!r} status={r192['b']['status']!r}")
+        print(f"  ready → {r192['c']['estado']!r} · error{{pipeline}} depois dele →"
+              f" estado={r192['d']['estado']!r} ia={r192['d']['ia'][:46]!r}")
+        cobrar("teto de sessões" in r192["a"]["ia"], f"motivo do busy não aparece na coluna IA: {r192['a']['ia']!r}")
+        cobrar("conectando" not in r192["a"]["estado"], f"erro antes do ready deixou a tela em conectando: {r192['a']['estado']!r}")
+        cobrar("caiu" not in r192["b"]["status"], f"close 1013 limpo virou 'WebSocket caiu': {r192['b']['status']!r}")
+        cobrar("ouvindo" in r192["c"]["estado"], f"ready não abriu a sessão: {r192['c']['estado']!r}")
+        cobrar("pipeline não subiu" in r192["d"]["ia"], f"motivo do pipeline não aparece na coluna IA: {r192['d']['ia']!r}")
+        cobrar("ouvindo" not in r192["d"]["estado"],
+               f"com o pipeline morto a tela segue prometendo fala (estado {r192['d']['estado']!r})")
 
         ev = [((json.loads(x).get("type") if x.startswith("{") else x) if x != "<bin>" else "<audio>") for x in eventos]
         for e in (pg.evaluate("() => window.__sp || []") or []):

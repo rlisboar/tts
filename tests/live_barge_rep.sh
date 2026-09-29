@@ -85,6 +85,9 @@ if not fala: raise SystemExit("sem voices/*.wav")
 porta = porta_livre()
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        "TTS_CHAT_MODEL": "stub-barge", "TTS_CHAT_BACKEND": "openai",
+       # o Live tem backend PRÓPRIO: sem este pin o dono com `chat_backend_live: dsh`
+       # tirava o harness do stub e a contagem de barge media outra rota (#195)
+       "TTS_CHAT_BACKEND_LIVE": os.environ.get("TTS_CHAT_BACKEND_LIVE") or "openai",
        "BARGE_PORT": str(porta), "ORT_DISABLE_TELEMETRY": "1"}
 log = pathlib.Path("/tmp") / f"live_barge_rep_{SUF}.log"
 # Instrumenta a JANELA DE PLAYBACK do servidor (sem editar arquivo de outro dono):
