@@ -736,3 +736,34 @@ restauro com `cp -p`/`rsync -a` preserva data e troca conteúdo.
 
 Quem altera um arquivo pinado re-pina no mesmo lugar (e, se houver gate aberto,
 avisa: a versão dele acabou de deixar de ser a medida).
+
+O pin é PROVA DE VERSÃO, não medição: gate que só re-hasheia e não roda a suíte
+não provou nada — o hash diz *o que* foi medido, nunca *que* foi.
+
+### Commit em árvore compartilhada (mais de um agente no mesmo working tree)
+
+O index do git é ÚNICO para o repo inteiro. Com vários agentes editando ao mesmo
+tempo, `git add` de um e `git commit` de outro se misturam, e o commit sai com
+arquivo alheio e mensagem que não descreve o que entrou.
+
+Regra: **um committer por vez** — os outros deixam o arquivo sujo e não dão
+`git add`. Quem commita fatia por área e **confere antes**:
+
+```bash
+git add <paths da fatia>
+git diff --cached --stat        # nada alheio pode aparecer aqui
+git commit                      # SEM pathspec
+```
+
+Se aparecer path alheio no `--cached --stat`, o remédio é tirar do index sem
+tocar na árvore e seguir:
+
+```bash
+git restore --staged <path alheio>
+```
+
+**`git commit -- <path>` não é a mesma coisa**: pathspec leva o arquivo como está
+na ÁRVORE, ignorando o index. Serve para snapshot do arquivo inteiro, não para
+separar hunks — com pathspec, um `git add -p` antes vira decoração. Para commitar
+só parte de um arquivo compartilhado: `git add -p` → `git diff --cached --stat` →
+`git commit` sem pathspec.
