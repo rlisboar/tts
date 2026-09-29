@@ -1,0 +1,323 @@
+(node:16488) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+servidor http://127.0.0.1:52229 · stub :52228 · repetições=20
+  [1/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [1/20] injetando em 16:34:56 (playback ativo=1)
+  [1/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 4} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=2 barge_falsos=0 limiar=-54
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 9760, 't_decisao_ms': 17407, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [2/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [2/20] injetando em 16:35:09 (playback ativo=1)
+  [2/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 9} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=4 barge_falsos=0 limiar=-53.2
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 9824, 't_decisao_ms': 30134, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [3/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [3/20] injetando em 16:35:22 (playback ativo=1)
+  [3/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 14} · eventos=['barge_in', 'interrupted', 'speech_start', 'stats', 'stats', 'stats'] · motor: barge_ativos=6 barge_falsos=0 limiar=-54
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 10048, 't_decisao_ms': 42921, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [4/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [4/20] injetando em 16:35:34 (playback ativo=1)
+  [4/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 19} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=8 barge_falsos=0 limiar=-53.2
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 9952, 't_decisao_ms': 55634, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [5/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [5/20] injetando em 16:35:47 (playback ativo=1)
+  [5/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 24} · eventos=['barge_in', 'interrupted', 'speech_start', 'stats', 'stats', 'stats'] · motor: barge_ativos=10 barge_falsos=0 limiar=-54
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 10272, 't_decisao_ms': 68496, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [6/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [6/20] injetando em 16:36:00 (playback ativo=1)
+  [6/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 29} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=12 barge_falsos=0 limiar=-54
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 10048, 't_decisao_ms': 81755, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [7/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [7/20] injetando em 16:36:13 (playback ativo=1)
+  [7/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 34} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=14 barge_falsos=0 limiar=-52.5
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 10144, 't_decisao_ms': 94534, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [8/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [8/20] injetando em 16:36:27 (playback ativo=1)
+  [8/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 39} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=16 barge_falsos=0 limiar=-53.2
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 9824, 't_decisao_ms': 107834, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [9/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [9/20] injetando em 16:36:40 (playback ativo=1)
+  [9/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 44} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=18 barge_falsos=0 limiar=-53.2
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 9760, 't_decisao_ms': 120835, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [10/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [10/20] injetando em 16:36:52 (playback ativo=1)
+  [10/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 49} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=20 barge_falsos=0 limiar=-52.8
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 10048, 't_decisao_ms': 133668, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [11/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [11/20] injetando em 16:37:05 (playback ativo=1)
+  [11/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 54} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=22 barge_falsos=0 limiar=-51.5
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 10208, 't_decisao_ms': 146546, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [12/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [12/20] injetando em 16:37:18 (playback ativo=1)
+  [12/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 59} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=24 barge_falsos=0 limiar=-54
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 10048, 't_decisao_ms': 159597, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [13/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [13/20] injetando em 16:37:31 (playback ativo=1)
+  [13/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 64} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=26 barge_falsos=0 limiar=-52.2
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 10112, 't_decisao_ms': 172343, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [14/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [14/20] injetando em 16:37:44 (playback ativo=1)
+  [14/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 69} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=28 barge_falsos=0 limiar=-54
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 9888, 't_decisao_ms': 185247, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [15/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [15/20] injetando em 16:37:57 (playback ativo=1)
+  [15/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 74} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=30 barge_falsos=0 limiar=-54
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 9728, 't_decisao_ms': 198278, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [16/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [16/20] injetando em 16:38:09 (playback ativo=1)
+  [16/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 80} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=32 barge_falsos=0 limiar=-54
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 9920, 't_decisao_ms': 210607, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [17/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [17/20] injetando em 16:38:22 (playback ativo=1)
+  [17/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 86} · eventos=['barge_in', 'interrupted', 'speech_start', 'stats', 'stats', 'stats'] · motor: barge_ativos=34 barge_falsos=0 limiar=-54
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 10272, 't_decisao_ms': 222901, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [18/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [18/20] injetando em 16:38:34 (playback ativo=1)
+  [18/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 92} · eventos=['stats', 'barge_in', 'interrupted', 'speech_start', 'stats', 'stats'] · motor: barge_ativos=35 barge_falsos=0 limiar=-54
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 9824, 't_decisao_ms': 234933, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [19/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [19/20] injetando em 16:38:46 (playback ativo=1)
+  [19/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 98} · eventos=['barge_in', 'interrupted', 'speech_start', 'stats', 'stats', 'stats'] · motor: barge_ativos=37 barge_falsos=0 limiar=-53
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 10208, 't_decisao_ms': 247088, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+  [20/20] MODO=vao: 900 ms depois do fim do turno · playback ativo=1
+  [20/20] injetando em 16:38:58 (playback ativo=1)
+  [20/20] ✔ barge · antes={'estado': 'falando', 'ativos': 1, 'chunks': 104} · eventos=['barge_in', 'interrupted', 'speech_start', 'stats', 'stats', 'stats'] · motor: barge_ativos=39 barge_falsos=0 limiar=-54
+        motor: {'type': 'speech_end', 'barge_in': True, 'barge_falso': False, 'curto': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 10464, 't_decisao_ms': 259502, 'detalhe': 'silencio'}
+        motor: {'type': 'speech_start'}
+
+=== JANELA DE PLAYBACK (speaking) — para correlacionar com as injeções:
+    [JANELA] 1790710489.123 speaking=True
+    [JANELA] 1790710489.123 speaking=False
+    [JANELA] 1790710493.700 speaking=True
+    [JANELA] 1790710493.700 speaking=False
+    [JANELA] 1790710494.636 speaking=True
+    [JANELA] 1790710494.638 speaking=False
+    [JANELA] 1790710495.689 speaking=True
+    [JANELA] 1790710495.689 speaking=False
+    [JANELA] 1790710500.665 speaking=True
+    [JANELA] 1790710500.665 speaking=False
+    [JANELA] 1790710501.602 speaking=True
+    [JANELA] 1790710501.602 speaking=False
+    [JANELA] 1790710506.409 speaking=True
+    [JANELA] 1790710506.409 speaking=False
+    [JANELA] 1790710507.356 speaking=True
+    [JANELA] 1790710507.357 speaking=False
+    [JANELA] 1790710508.419 speaking=True
+    [JANELA] 1790710508.419 speaking=False
+    [JANELA] 1790710513.433 speaking=True
+    [JANELA] 1790710513.433 speaking=False
+    [JANELA] 1790710514.370 speaking=True
+    [JANELA] 1790710514.370 speaking=False
+    [JANELA] 1790710519.152 speaking=True
+    [JANELA] 1790710519.152 speaking=False
+    [JANELA] 1790710520.128 speaking=True
+    [JANELA] 1790710520.128 speaking=False
+    [JANELA] 1790710521.208 speaking=True
+    [JANELA] 1790710521.208 speaking=False
+    [JANELA] 1790710526.238 speaking=True
+    [JANELA] 1790710526.238 speaking=False
+    [JANELA] 1790710527.204 speaking=True
+    [JANELA] 1790710527.204 speaking=False
+    [JANELA] 1790710531.873 speaking=True
+    [JANELA] 1790710531.873 speaking=False
+    [JANELA] 1790710532.835 speaking=True
+    [JANELA] 1790710532.835 speaking=False
+    [JANELA] 1790710533.921 speaking=True
+    [JANELA] 1790710533.921 speaking=False
+    [JANELA] 1790710538.985 speaking=True
+    [JANELA] 1790710538.985 speaking=False
+    [JANELA] 1790710539.984 speaking=True
+    [JANELA] 1790710539.984 speaking=False
+    [JANELA] 1790710544.630 speaking=True
+    [JANELA] 1790710544.630 speaking=False
+    [JANELA] 1790710545.654 speaking=True
+    [JANELA] 1790710545.654 speaking=False
+    [JANELA] 1790710546.776 speaking=True
+    [JANELA] 1790710546.776 speaking=False
+    [JANELA] 1790710551.994 speaking=True
+    [JANELA] 1790710551.994 speaking=False
+    [JANELA] 1790710553.225 speaking=True
+    [JANELA] 1790710553.225 speaking=False
+    [JANELA] 1790710557.779 speaking=True
+    [JANELA] 1790710557.779 speaking=False
+    [JANELA] 1790710558.833 speaking=True
+    [JANELA] 1790710558.833 speaking=False
+    [JANELA] 1790710559.907 speaking=True
+    [JANELA] 1790710559.907 speaking=False
+    [JANELA] 1790710565.187 speaking=True
+    [JANELA] 1790710565.187 speaking=False
+    [JANELA] 1790710566.141 speaking=True
+    [JANELA] 1790710566.141 speaking=False
+    [JANELA] 1790710570.718 speaking=True
+    [JANELA] 1790710570.718 speaking=False
+    [JANELA] 1790710571.690 speaking=True
+    [JANELA] 1790710571.690 speaking=False
+    [JANELA] 1790710572.834 speaking=True
+    [JANELA] 1790710572.834 speaking=False
+    [JANELA] 1790710577.915 speaking=True
+    [JANELA] 1790710577.915 speaking=False
+    [JANELA] 1790710578.933 speaking=True
+    [JANELA] 1790710578.933 speaking=False
+    [JANELA] 1790710584.014 speaking=True
+    [JANELA] 1790710584.014 speaking=False
+    [JANELA] 1790710584.974 speaking=True
+    [JANELA] 1790710584.974 speaking=False
+    [JANELA] 1790710586.108 speaking=True
+    [JANELA] 1790710586.108 speaking=False
+    [JANELA] 1790710591.223 speaking=True
+    [JANELA] 1790710591.223 speaking=False
+    [JANELA] 1790710592.278 speaking=True
+    [JANELA] 1790710592.278 speaking=False
+    [JANELA] 1790710596.922 speaking=True
+    [JANELA] 1790710596.922 speaking=False
+    [JANELA] 1790710597.944 speaking=True
+    [JANELA] 1790710597.944 speaking=False
+    [JANELA] 1790710599.118 speaking=True
+    [JANELA] 1790710599.118 speaking=False
+    [JANELA] 1790710604.166 speaking=True
+    [JANELA] 1790710604.166 speaking=False
+    [JANELA] 1790710605.150 speaking=True
+    [JANELA] 1790710605.150 speaking=False
+    [JANELA] 1790710609.902 speaking=True
+    [JANELA] 1790710609.902 speaking=False
+    [JANELA] 1790710610.860 speaking=True
+    [JANELA] 1790710610.860 speaking=False
+    [JANELA] 1790710611.943 speaking=True
+    [JANELA] 1790710611.943 speaking=False
+    [JANELA] 1790710617.004 speaking=True
+    [JANELA] 1790710617.004 speaking=False
+    [JANELA] 1790710617.951 speaking=True
+    [JANELA] 1790710617.951 speaking=False
+    [JANELA] 1790710622.741 speaking=True
+    [JANELA] 1790710622.741 speaking=False
+    [JANELA] 1790710623.744 speaking=True
+    [JANELA] 1790710623.744 speaking=False
+    [JANELA] 1790710624.841 speaking=True
+    [JANELA] 1790710624.841 speaking=False
+    [JANELA] 1790710629.965 speaking=True
+    [JANELA] 1790710629.965 speaking=False
+    [JANELA] 1790710630.976 speaking=True
+    [JANELA] 1790710630.976 speaking=False
+    [JANELA] 1790710635.712 speaking=True
+    [JANELA] 1790710635.712 speaking=False
+    [JANELA] 1790710636.757 speaking=True
+    [JANELA] 1790710636.757 speaking=False
+    [JANELA] 1790710637.875 speaking=True
+    [JANELA] 1790710637.875 speaking=False
+    [JANELA] 1790710642.962 speaking=True
+    [JANELA] 1790710642.962 speaking=False
+    [JANELA] 1790710643.948 speaking=True
+    [JANELA] 1790710643.949 speaking=False
+    [JANELA] 1790710648.589 speaking=True
+    [JANELA] 1790710648.589 speaking=False
+    [JANELA] 1790710649.577 speaking=True
+    [JANELA] 1790710649.577 speaking=False
+    [JANELA] 1790710650.620 speaking=True
+    [JANELA] 1790710650.620 speaking=False
+    [JANELA] 1790710655.754 speaking=True
+    [JANELA] 1790710655.754 speaking=False
+    [JANELA] 1790710656.756 speaking=True
+    [JANELA] 1790710656.756 speaking=False
+    [JANELA] 1790710661.397 speaking=True
+    [JANELA] 1790710661.397 speaking=False
+    [JANELA] 1790710662.396 speaking=True
+    [JANELA] 1790710662.396 speaking=False
+    [JANELA] 1790710663.529 speaking=True
+    [JANELA] 1790710663.529 speaking=False
+    [JANELA] 1790710668.670 speaking=True
+    [JANELA] 1790710668.670 speaking=False
+    [JANELA] 1790710669.721 speaking=True
+    [JANELA] 1790710669.724 speaking=False
+    [JANELA] 1790710674.337 speaking=True
+    [JANELA] 1790710674.337 speaking=False
+    [JANELA] 1790710675.336 speaking=True
+    [JANELA] 1790710675.336 speaking=False
+    [JANELA] 1790710676.551 speaking=True
+    [JANELA] 1790710676.551 speaking=False
+    [JANELA] 1790710681.477 speaking=True
+    [JANELA] 1790710681.477 speaking=False
+    [JANELA] 1790710682.347 speaking=True
+    [JANELA] 1790710682.347 speaking=False
+    [JANELA] 1790710683.330 speaking=True
+    [JANELA] 1790710683.330 speaking=False
+    [JANELA] 1790710687.076 speaking=True
+    [JANELA] 1790710687.076 speaking=False
+    [JANELA] 1790710687.929 speaking=True
+    [JANELA] 1790710687.929 speaking=False
+    [JANELA] 1790710688.904 speaking=True
+    [JANELA] 1790710688.904 speaking=False
+    [JANELA] 1790710693.693 speaking=True
+    [JANELA] 1790710693.693 speaking=False
+    [JANELA] 1790710694.501 speaking=True
+    [JANELA] 1790710694.501 speaking=False
+    [JANELA] 1790710695.417 speaking=True
+    [JANELA] 1790710695.417 speaking=False
+    [JANELA] 1790710699.395 speaking=True
+    [JANELA] 1790710699.395 speaking=False
+    [JANELA] 1790710700.259 speaking=True
+    [JANELA] 1790710700.259 speaking=False
+    [JANELA] 1790710701.175 speaking=True
+    [JANELA] 1790710701.175 speaking=False
+    [JANELA] 1790710706.083 speaking=True
+    [JANELA] 1790710706.083 speaking=False
+    [JANELA] 1790710706.955 speaking=True
+    [JANELA] 1790710706.955 speaking=False
+    [JANELA] 1790710707.899 speaking=True
+    [JANELA] 1790710707.899 speaking=False
+    [JANELA] 1790710711.462 speaking=True
+    [JANELA] 1790710711.462 speaking=False
+    [JANELA] 1790710712.315 speaking=True
+    [JANELA] 1790710712.315 speaking=False
+    [JANELA] 1790710713.229 speaking=True
+    [JANELA] 1790710713.229 speaking=False
+    [JANELA] 1790710718.022 speaking=True
+    [JANELA] 1790710718.022 speaking=False
+    [JANELA] 1790710718.837 speaking=True
+    [JANELA] 1790710718.837 speaking=False
+    [JANELA] 1790710719.740 speaking=True
+    [JANELA] 1790710719.740 speaking=False
+    [JANELA] 1790710723.637 speaking=True
+    [JANELA] 1790710723.637 speaking=False
+    [JANELA] 1790710724.444 speaking=True
+    [JANELA] 1790710724.444 speaking=False
+    [JANELA] 1790710725.370 speaking=True
+    [JANELA] 1790710725.370 speaking=False
+    [JANELA] 1790710730.219 speaking=True
+    [JANELA] 1790710730.219 speaking=False
+    [JANELA] 1790710731.086 speaking=True
+    [JANELA] 1790710731.086 speaking=False
+    [JANELA] 1790710732.021 speaking=True
+    [JANELA] 1790710732.021 speaking=False
+    [JANELA] 1790710736.012 speaking=True
+    [JANELA] 1790710736.012 speaking=False
+    [JANELA] 1790710736.844 speaking=True
+    [JANELA] 1790710736.844 speaking=False
+    [JANELA] 1790710737.797 speaking=True
+    [JANELA] 1790710737.797 speaking=False
+    [JANELA] 1790710742.629 speaking=True
+    [JANELA] 1790710742.629 speaking=False
+    [JANELA] 1790710743.498 speaking=True
+    [JANELA] 1790710743.498 speaking=False
+
+=== RESUMO: 20/20 barges dispararam
+
+=== MOTOR (cumulativo da rodada): {"barge_ativos": 39, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -55.8, "limiar_turno_dbfs": -55.8}
+=== CONTAGEM (cumulativa): {"audio": 106, "barge_in": 39, "interrupted": 39}
+✔ investigação concluída (não falha por cauda)

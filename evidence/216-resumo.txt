@@ -1,0 +1,29 @@
+true-baseline  20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 0, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -23.5, "limiar_turno_dbfs": -23.5}
+true-c         20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 2, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -52.8, "limiar_turno_dbfs": -52.8}
+true-ab        20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 20, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -23.5, "limiar_turno_dbfs": -23.5}
+true-ac        20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 16, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -23.5, "limiar_turno_dbfs": -23.5}
+true-bc        17/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 17, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -23.5, "limiar_turno_dbfs": -23.5}
+true-abc       18/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 18, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -55.8, "limiar_turno_dbfs": -55.8}
+eco-baseline   20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 0, "barge_falsos": 0, "estado": "ouvindo", "limiar_dbfs": -32, "limiar_turno_dbfs": -35}
+eco-c          20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 1, "barge_falsos": 0, "estado": "ouvindo", "limiar_dbfs": -30.8, "limiar_turno_dbfs": -30.8}
+true-a         19/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 12, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -55.8, "limiar_turno_dbfs": -55.8}
+true-b         20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 20, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -23.5, "limiar_turno_dbfs": -23.5}
+vao-baseline    0/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 1, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -53.5, "limiar_turno_dbfs": -56.5}
+vao-ab         20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 39, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -55.8, "limiar_turno_dbfs": -55.8}
+vao-abc        15/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 30, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -23.5, "limiar_turno_dbfs": -23.5}
+eco-baseline2   0/20 barge · 
+eco-abc         0/20 barge · 
+eco-abc2        0/20 barge · 
+eco-abcA       20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 44, "barge_falsos": 1, "estado": "ouvindo", "limiar_dbfs": -55.2, "limiar_turno_dbfs": -55.2}
+eco-abcB       20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 45, "barge_falsos": 0, "estado": "ouvindo", "limiar_dbfs": -42.5, "limiar_turno_dbfs": -45.5}
+vao-quieto-ab   0/20 barge · 
+eco-baselineB  14/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 20, "barge_falsos": 0, "estado": "ouvindo", "limiar_dbfs": -24, "limiar_turno_dbfs": -27}
+eco-ac         20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 40, "barge_falsos": 0, "estado": "ouvindo", "limiar_dbfs": -32, "limiar_turno_dbfs": -32}
+eco-bc         20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 42, "barge_falsos": 2, "estado": "ouvindo", "limiar_dbfs": -53, "limiar_turno_dbfs": -56}
+vao-abcB       20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 25, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -23.5, "limiar_turno_dbfs": -23.5}
+vao-abB        20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 22, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -53.5, "limiar_turno_dbfs": -56.5}
+vao-quieto-abc  0/20 barge · 
+eco-baselineC  19/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 24, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -16.1, "limiar_turno_dbfs": -16.1}
+eco-abC        19/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 29, "barge_falsos": 0, "estado": "ouvindo", "limiar_dbfs": -54.8, "limiar_turno_dbfs": -54.8}
+vao-quieto-abB 20/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 40, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -23.5, "limiar_turno_dbfs": -23.5}
+vao-quieto-abcB 13/20 barge · === MOTOR (cumulativo da rodada): {"barge_ativos": 26, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -23.5, "limiar_turno_dbfs": -23.5}

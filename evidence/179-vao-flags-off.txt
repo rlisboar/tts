@@ -1,0 +1,4 @@
+=== #179 MODO=vao REP=20 · flags=flags-off (TTS_LIVE_BARGE_JANELA_TURNO=0 TTS_LIVE_PLAYBACK_DURACAO=0 TTS_LIVE_ECO_SO_TOCANDO=0) ===
+antes: app.py=279a2024d446 live_turns.py=8b84367879a0
+--- saida do harness ---
+  [serial] live_barge_rep.sh esperando a trava de modelo (dona: live_barge_rep.sh)…

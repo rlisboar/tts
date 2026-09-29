@@ -1,0 +1,160 @@
+### GATE #215 — re-derivação por fora — 2026-09-29T20:45:38Z
+
+== PIN medido (sha256-8, arvore) ==
+app.py                             8db6f8e0
+tests/test_api.py                  b48f5e67
+tests/test_live_turno_pendente.py  ceb14b11
+== PIN medido no commit 4729512 ==
+app.py                             8ad4fd2e
+tests/test_api.py                  2785fa02
+tests/test_live_turno_pendente.py  ceb14b11
+
+== item1 #208 FIX ==
+mutacao=False janela=3.0ms acumulado=10421B entregue=10421B perdidos=0B quedas_de_contador=0 rearmes=12 janelas_com_bytes=9
+VEREDITO: OK
+== item1 #208 MUTACAO ==
+mutacao=True janela=3.0ms acumulado=41104B entregue=38737B perdidos=2367B quedas_de_contador=2 rearmes=42 janelas_com_bytes=42
+  primeira divergencia no byte 949 (bytes perdidos na janela)
+VEREDITO: FALHOU
+
+== item2 #209 INVARIANTE FIX ==
+  ✔ 1ª conexão ocupa o único slot (ready)
+  ✔ 2ª conexão recebe `error{busy}` e close 1013 (semântica preservada)
+  ✔ no INSTANTE do envio do busy o `_live_lock` está LIVRE (o invariante)
+  ✔ depois do busy o slot libera e a conexão seguinte entra (nada ficou preso)
+VEREDITO: OK
+== item2 #209 INVARIANTE MUTACAO ==
+  ✔ 1ª conexão ocupa o único slot (ready)
+  ✔ 2ª conexão recebe `error{busy}` e close 1013 (semântica preservada)
+  ✘ `_live_lock` preso no instante do envio: vistos=[True]
+  ✔ depois do busy o slot libera e a conexão seguinte entra (nada ficou preso)
+VEREDITO: FALHOU
+
+== item2 #209 EFEITO (harness proprio) ==
+  · cena A — `await` com o lock LIVRE (o fix): /health TEM de responder
+    ocioso 1 ms · probe 4 ms respondeu=True
+  ✔ cena A: o processo seguiu atendendo com o `busy` pendurado
+  · cena B (controle) — lock SEGURADO em volta do envio (revertido): TEM de congelar
+    ocioso 1 ms · probe 2002 ms respondeu=False
+  ✔ cena B: congelou (o probe de 2 s estourou) — a medida distingue os dois mundos
+
+falhas: 0
+VEREDITO: OK
+
+== item6 #213 FIX ==
+  ✔ depois do erro o lock está LIVRE e a descoberta seguinte passa (erro não cacheia)
+
+falhas: 0
+VEREDITO: OK
+== item6 #213 MUTACAO ==
+
+falhas: 1
+  - 3 descobertas para 3 GETs simultâneos
+VEREDITO: FALHOU
+
+== item7 #214 ==
+  ✔ árvore restaurada byte a byte depois do teste
+
+falhas: 0
+VEREDITO: OK
+
+== RESIDUAL #208 ==
+  · com perdedor: {'turno_pendente': 20, 'trechos': 1, 'descartados_ms': 0, 'eventos_trechos': [1, 1]}
+  ✔ o conteúdo sobreviveu (o fix do re-arm segura)
+  ✔ contadores preservados
+  ✘ evento diz trechos=1 (2 trechos acumulados)
+
+falhas: 1
+  - evento `turno_pendente` subconta os trechos
+VEREDITO: RESIDUAL CONFIRMADO
+
+== itens 3/4/5 FIX (215-ws.py) ==
+item3 (#210) — session_id do cliente
+  ✔ id próprio do cliente é ADOTADO no ready (resumed=False)
+  ✔ o id adotado NÃO é o gerado pelo servidor (uuid marcado não apareceu)
+  ✔ sem `session_id` o servidor GERA (uuid marcado aparece)
+  ✔ reconexão com o MESMO id retoma a sessão (resumed=True)
+  ✔ id do cliente é retomável por OUTRA chave válida (sem vínculo com a chave)
+  ✔ outro cliente que ADIVINHA o id retoma a sessão (é o contrato escrito)
+  ✔ `_live_sessions` com 1 entrada(s) para o mesmo id (2 WS, o 2º sobrescreve)
+  ✔ id inválido 'id com espaço' recusa o setup e não cria sessão
+  ✔ id inválido 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' recusa o setup e não cria sessão
+  ✔ id inválido 'id/path' recusa o setup e não cria sessão
+  ✔ teto do regex (64 chars) passa: 64 chars
+item4 (#211) — ramo SEM pipeline usa `_live_envia_json`
+    estado no fim do turno: {'st_stage': 'idle', 'buffer': 0, 'truncado': False, 'hist': 1, 'evento': 'turn_complete', 'truncated': True, 'stub': True, 'buffer_bytes': 1000}
+  ✔ turno do stub fechou com `turn_complete` (via `_live_envia_json`)
+  ✔ `st_stage` voltou a idle (o painel para de mentir 'fechando')
+  ✔ buffer do mic zerado no fim do turno
+  ✔ `truncado` foi estampado no evento e consumido (vale por turno)
+  ✔ `_live_hist_pos_turno` rodou (registro de retomada/compressão)
+item5 (#212) — ticket inválido cai para chave/header (LAN/túnel)
+  ✔ ticket válido sozinho: ok 
+  ✔ ticket USADO + ?key= válida: ok (fallback)
+  ✔ ticket INVENTADO + ?key= válida: ok
+  ✔ ticket INVENTADO + header válido: ok
+  ✔ sem chave e ?ticket=inventado recusa (erro unauthorized + 4401)
+  ✔ sem chave e ?ticket= recusa (erro unauthorized + 4401)
+  ✔ sem chave e (sem query) recusa (erro unauthorized + 4401)
+  ✔ ticket tentado foi CONSUMIDO no handshake (não sobra para reuso)
+falhas: 0
+VEREDITO: OK
+
+== itens 4/5 MUTACAO ==
+item3 (#210) — session_id do cliente
+  ✔ id próprio do cliente é ADOTADO no ready (resumed=False)
+  ✔ o id adotado NÃO é o gerado pelo servidor (uuid marcado não apareceu)
+  ✔ sem `session_id` o servidor GERA (uuid marcado aparece)
+  ✔ reconexão com o MESMO id retoma a sessão (resumed=True)
+  ✔ id do cliente é retomável por OUTRA chave válida (sem vínculo com a chave)
+  ✔ outro cliente que ADIVINHA o id retoma a sessão (é o contrato escrito)
+  ✔ `_live_sessions` com 1 entrada(s) para o mesmo id (2 WS, o 2º sobrescreve)
+  ✔ id inválido 'id com espaço' recusa o setup e não cria sessão
+  ✔ id inválido 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' recusa o setup e não cria sessão
+  ✔ id inválido 'id/path' recusa o setup e não cria sessão
+  ✔ teto do regex (64 chars) passa: 64 chars
+item4 (#211) — ramo SEM pipeline usa `_live_envia_json`
+    estado no fim do turno: {'st_stage': 'stt', 'buffer': 1000, 'truncado': True, 'hist': 0, 'evento': 'turn_complete', 'truncated': None, 'stub': True, 'buffer_bytes': 1000}
+  ✔ turno do stub fechou com `turn_complete` (via `_live_envia_json`)
+  ✘ `st_stage` preso em stt
+  ✘ buffer com 1000 bytes presos
+  ✘ `truncado` não foi consumido/estampado: {'st_stage': 'stt', 'buffer': 1000, 'truncado': True, 'hist': 0, 'evento': 'turn_complete', 'truncated': None, 'stub': True, 'buffer_bytes': 1000}
+  ✘ hist_pos_turno rodou 0x
+item5 (#212) — ticket inválido cai para chave/header (LAN/túnel)
+  ✔ ticket válido sozinho: ok 
+  ✘ ticket USADO + ?key= válida: recusa (fallback)
+  ✘ ticket INVENTADO + ?key= válida: recusa
+  ✘ ticket INVENTADO + header válido: recusa
+  ✔ sem chave e ?ticket=inventado recusa (erro unauthorized + 4401)
+  ✔ sem chave e ?ticket= recusa (erro unauthorized + 4401)
+  ✔ sem chave e (sem query) recusa (erro unauthorized + 4401)
+  ✔ ticket tentado foi CONSUMIDO no handshake (não sobra para reuso)
+falhas: 7
+VEREDITO: FALHOU
+
+== item3 MUTACAO (patch textual) ==
+══ cena 1 — app.py COMO ESTÁ (o fix): tem de sair 0
+  ✔ sem `session_id` o servidor GERA (uuid marcado aparece)
+  ✔ reconexão com o MESMO id retoma a sessão (resumed=True)
+  ✔ id do cliente é retomável por OUTRA chave válida (sem vínculo com a chave)
+  ✔ outro cliente que ADIVINHA o id retoma a sessão (é o contrato escrito)
+  ✔ `_live_sessions` com 1 entrada(s) para o mesmo id (2 WS, o 2º sobrescreve)
+  ✔ id inválido 'id com espaço' recusa o setup e não cria sessão
+  ✔ id inválido 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' recusa o setup e não cria sessão
+  ✔ id inválido 'id/path' recusa o setup e não cria sessão
+  ✔ teto do regex (64 chars) passa: 64 chars
+falhas: 0
+VEREDITO: OK
+══ cena 1 saiu 0
+══ cena 2 — app.py REVERTIDO: tem de sair 1
+  ✘ adivinhação do id não retomou: {'type': 'ready', 'session_id': 'zzzzzzzzzz', 'resumed': False, 'voice_id': 'xssvirt-8751', 'audio': {'format': 'pcm16', 'sr': 24000, 'channels': 1}, 'in_audio': {'format': 'pcm16', 'sr': 16000, 'channels': 1}, 'vad': {'silence_ms': 600, 'prefix_ms': 100}}
+  ✔ `_live_sessions` com 1 entrada(s) para o mesmo id (2 WS, o 2º sobrescreve)
+  ✔ id inválido 'id com espaço' recusa o setup e não cria sessão
+  ✔ id inválido 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' recusa o setup e não cria sessão
+  ✔ id inválido 'id/path' recusa o setup e não cria sessão
+  ✔ teto do regex (64 chars) passa: 64 chars
+falhas: 5
+VEREDITO: FALHOU
+══ cena 2 saiu 1
+  ✔ app.py restaurado byte a byte (md5 373c56f71efbb5e484851a3cc8f3f722)
+✔ mordida confirmada (fix 0 · pré-fix 1)

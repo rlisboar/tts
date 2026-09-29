@@ -1,0 +1,63 @@
+### RE-CHECK 2026-09-29T20:48:36Z
+== 215-208-corrida.py
+mutacao=False janela=0.0ms acumulado=18161B entregue=18161B perdidos=0B quedas_de_contador=0 rearmes=0 janelas_com_bytes=0
+VEREDITO: OK
+== 215-208-corrida.py --mutacao
+mutacao=True janela=0.0ms acumulado=17943B entregue=17943B perdidos=0B quedas_de_contador=0 rearmes=0 janelas_com_bytes=0
+VEREDITO: OK
+== 215-ws.py
+  ✔ outro cliente que ADIVINHA o id retoma a sessão (é o contrato escrito)
+  ✔ `_live_sessions` com 1 entrada(s) para o mesmo id (2 WS, o 2º sobrescreve)
+  ✔ id inválido 'id com espaço' recusa o setup e não cria sessão
+  ✔ id inválido 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' recusa o setup e não cria sessão
+  ✔ id inválido 'id/path' recusa o setup e não cria sessão
+  ✔ teto do regex (64 chars) passa: 64 chars
+item4 (#211) — ramo SEM pipeline usa `_live_envia_json`
+    estado no fim do turno: {'st_stage': 'idle', 'buffer': 0, 'truncado': False, 'hist': 1, 'evento': 'turn_complete', 'truncated': True, 'stub': True, 'buffer_bytes': 1000}
+  ✔ turno do stub fechou com `turn_complete` (via `_live_envia_json`)
+  ✔ `st_stage` voltou a idle (o painel para de mentir 'fechando')
+  ✔ buffer do mic zerado no fim do turno
+  ✔ `truncado` foi estampado no evento e consumido (vale por turno)
+  ✔ `_live_hist_pos_turno` rodou (registro de retomada/compressão)
+item5 (#212) — ticket inválido cai para chave/header (LAN/túnel)
+  ✔ ticket válido sozinho: ok 
+  ✔ ticket USADO + ?key= válida: ok (fallback)
+  ✔ ticket INVENTADO + ?key= válida: ok
+  ✔ ticket INVENTADO + header válido: ok
+  ✔ sem chave e ?ticket=inventado recusa (erro unauthorized + 4401)
+  ✔ sem chave e ?ticket= recusa (erro unauthorized + 4401)
+  ✔ sem chave e (sem query) recusa (erro unauthorized + 4401)
+  ✔ ticket tentado foi CONSUMIDO no handshake (não sobra para reuso)
+
+falhas: 0
+VEREDITO: OK
+== 215-213-dsh-models.py
+    descobertas=1 respostas=3 status=[200, 200, 200]
+  ✔ 3 GETs simultâneos com cache frio = 1 descoberta (1 processo)
+  ✔ os 3 GETs responderam 200 (nenhum ficou preso nem falhou)
+  ✔ cache quente reaproveita (nenhuma descoberta nova)
+  ✔ erro do dsh vira 502 explicativo (por request)
+  ✔ depois do erro o lock está LIVRE e a descoberta seguinte passa (erro não cacheia)
+
+falhas: 0
+VEREDITO: OK
+== 215-214-build-codigo.py
+    boot=e7832491 disco_agora=e7832491 version=b511ed7 commit=07a4847f
+  ✔ `codigo` do boot == árvore do boot (a instância descreve o que carregou)
+  ✔ /api/build devolve o codigo do BOOT (e7832491) já na 1ª chamada
+  ✔ outra instância nascida no MESMO estado reporta o mesmo codigo
+  ✔ a árvore mudou de fato (disco agora 3a81ed0c != boot e7832491)
+  ✔ instância que NUNCA tinha servido /api/build segue acusando A depois da edição (era o falso 'bate' do #204/#190)
+  ✔ instância NASCIDA depois da edição acusa B (a divergência é real)
+  ✔ `version`(b511ed7) × `codigo`(e7832491) divergem com árvore suja — o par sustenta 'a instância não é este código'
+  ✔ árvore restaurada byte a byte depois do teste
+
+falhas: 0
+VEREDITO: OK
+== 215-208-corrida.py --janela-ms 3
+mutacao=False janela=3.0ms acumulado=4574B entregue=4574B perdidos=0B quedas_de_contador=0 rearmes=7 janelas_com_bytes=5
+VEREDITO: OK
+== MUTACAO --janela-ms 3
+mutacao=True janela=3.0ms acumulado=17397B entregue=16533B perdidos=864B quedas_de_contador=5 rearmes=18 janelas_com_bytes=18
+  primeira divergencia no byte 1206 (bytes perdidos na janela)
+VEREDITO: FALHOU

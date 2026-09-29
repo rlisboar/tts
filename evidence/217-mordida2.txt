@@ -1,0 +1,34 @@
+  [serial] live_lock_freeze.sh esperando a trava de modelo (dona: live_barge_rep.sh)…
+══ MORDIDA 1/2 — app.py COMO ESTÁ (o fix): tem de sair 0
+  · cena A — `await` com o lock LIVRE (estado do fix)
+    ocioso 3 ms · probe 15 ms (limiar 250 ms)
+  ✔ cena A: o processo seguiu atendendo com o `busy` pendurado (15 ms vs limiar 250 ms)
+  ✔ cena A: o cliente do `busy` recebeu o frame depois da janela
+  · cena B (controle) — lock SEGURADO em volta do envio (estado revertido)
+    ocioso 6 ms · probe 2002 ms · 2º probe 2002 ms (limiar 250 ms)
+  ✔ cena B: congelou como esperado (2002 ms vs limiar 250 ms)
+  ✔ cena B: congelamento PERMANENTE (o 2º probe também estourou)
+
+✔ sem congelamento
+══ MORDIDA 1/2 — saiu 0
+
+══ REVERTENDO a linha do fix
+  · revert: `await` do `busy` para DENTRO do `with _live_lock`
+
+══ MORDIDA 2/2 — app.py REVERTIDO: tem de sair 1 (a cena A tem de congelar)
+  · cena A — `await` com o lock LIVRE (estado do fix)
+    ocioso 3 ms · probe 2001 ms (limiar 250 ms)
+  ✘ cena A CONGELOU: /health não respondeu em 2 s com o `busy` pendurado (limiar 250 ms) — o `await` está sob o lock?
+  ✘ cena A: o cliente do `busy` não recebeu o frame (o envio não completou)
+  · cena B (controle) — lock SEGURADO em volta do envio (estado revertido)
+    ocioso 1 ms · probe 2002 ms · 2º probe 2003 ms (limiar 250 ms)
+  ✔ cena B: congelou como esperado (2002 ms vs limiar 250 ms)
+  ✔ cena B: congelamento PERMANENTE (o 2º probe também estourou)
+
+✘ 2 falha(s)
+══ MORDIDA 2/2 — saiu 1
+
+  · restore: `await` do `busy` de volta para FORA do `with _live_lock`
+  ✔ app.py restaurado byte a byte (md5 373c56f71efbb5e484851a3cc8f3f722)
+✔ mordida confirmada nas duas direções (fix 0 · revertido 1)
+EXIT=0

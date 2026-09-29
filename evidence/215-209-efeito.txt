@@ -1,0 +1,9 @@
+  · cena A — `await` com o lock LIVRE (o fix): /health TEM de responder
+    ocioso 23 ms · probe 62 ms respondeu=True
+  ✔ cena A: o processo seguiu atendendo com o `busy` pendurado
+  · cena B (controle) — lock SEGURADO em volta do envio (revertido): TEM de congelar
+    ocioso 2 ms · probe 2003 ms respondeu=False
+  ✔ cena B: congelou (o probe de 2 s estourou) — a medida distingue os dois mundos
+
+falhas: 0
+VEREDITO: OK

@@ -59,9 +59,9 @@
 # LIMIAR (RELATIVO, não ms absoluto — o runner roda sob `nice 19` + hogs): o probe
 # durante o congelamento tem de ficar abaixo de `max(0.25s, 25× o tempo OCIOSO do
 # /health medido antes)`. Números medidos nesta máquina, nas duas direções:
-#   · fix (cena A)   → ocioso 2–3 ms, probe 20–52 ms → PASSA
-#   · revertido      → ocioso 2 ms, probe 2002 ms (o urlopen de 2 s estoura; o loop
-#                      está preso em `Lock.acquire()`) → FALHA
+#   · fix (cena A)   → ocioso 1–6 ms, probe 15–52 ms → PASSA
+#   · revertido      → ocioso 1–3 ms, probe 2001–2002 ms (o urlopen de 2 s estoura;
+#                      o loop está preso em `Lock.acquire()`) → FALHA
 #   · controle (B)   → congelado e PERMANENTE (2º probe também estoura: 2001 ms)
 # A medida do `revertido` não é "um pouco pior": é o TIMEOUT inteiro, nos dois
 # probes — o piso de 0,25 s só existe para a cena A não virar falso vermelho numa
@@ -73,11 +73,23 @@
 # aceita `TTS_SERIAL=0` (a trava é do pai, e o pai já a segura).
 #
 #   ./tests/live_lock_freeze.sh
+#   MORDIDA=1 ./tests/live_lock_freeze.sh           # as duas rodadas: fix (sai 0) e
+#                                                   # revertido (TEM de sair 1)
 #   FREEZE_SONO=1.0 ./tests/live_lock_freeze.sh     # janela maior (máquina lenta)
 #   TTS_SERIAL=0 ./tests/live_lock_freeze.sh        # já estou com a trava (ver acima)
+#
+# `MORDIDA=1` reverte a linha do fix ELE MESMO (o `await` volta para dentro do
+# `with _live_lock`) e devolve o arquivo no fim — inclusive em Ctrl-C, e por
+# PATCH INVERSO, não por `cp`: se outro agente editar o app.py durante os ~40 s da
+# medida, o hunk dele sobrevive. Enquanto a rodada revertida dura, o invariante
+# `test_busy_e_mandado_fora_do_live_lock` fica vermelho (é o esperado): se uma
+# suíte rodar no meio, nomeie isso em vez de atribuir ao gate.
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Caminho ABSOLUTO do próprio script: o modo MORDIDA se re-invoca DEPOIS do `cd`,
+# e um `$0` relativo de outro diretório (`../tts-rod/tests/…`) deixaria de resolver.
+EU="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 PY="$RAIZ/.venv-mlx/bin/python"
 [ -x "$PY" ] || PY="$(command -v python3)"
 
@@ -86,6 +98,104 @@ PY="$RAIZ/.venv-mlx/bin/python"
 source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
 
 cd "$RAIZ" || exit 1
+
+# ---------------------------------------------------------------------------
+# MORDIDA (MORDIDA=1): as DUAS rodadas num comando só, com o app.py devolvido ao
+# estado do fix no fim. Sem isto o script prova só que o estado ATUAL não congela;
+# com isto, que a medida MORDE (cena A tem de falhar no estado revertido).
+#
+# O revert e o restauro são PATCH TEXTUAL NOS DOIS SENTIDOS (não `cp`): o bloco do
+# `busy` é indentado +4 e depois dedentado -4, então uma edição de terceiro no
+# app.py durante a medida sobrevive ao restauro. A trava de modelo é pega UMA vez
+# (acima); os filhos rodam com `TTS_SERIAL=0`.
+# ---------------------------------------------------------------------------
+if [ "${MORDIDA:-0}" != "0" ]; then
+  APP="$RAIZ/app.py"
+  BAK="$(mktemp -t freeze-app.XXXXXX)"
+  md5_de() { md5 -q "$1" 2>/dev/null || md5sum "$1" | cut -d' ' -f1; }
+  ANTES="$(md5_de "$APP")"
+  cp "$APP" "$BAK"
+
+  # revert: indenta o bloco do `busy` para dentro do `with`; restore: o inverso.
+  # O padrão é o CÓDIGO, não o número da linha — se não casar 1x, o modo falha
+  # alto em vez de reverter outra coisa.
+  mordida_patch() {
+    "$PY" - "$1" <<'PYM'
+import pathlib, sys
+modo = sys.argv[1]
+p = pathlib.Path("app.py"); s = p.read_text()
+ORIG = """    if ocupado:
+        # FORA do lock (#209): `_live_lock` é `threading.Lock` e o mesmo lock é
+        # pego por código SÍNCRONO no handler (`_live_sweep`, `_live_hist_*`).
+        # Com o `await` lá dentro, um send que suspende (peer lento) deixava o
+        # lock preso; a outra corrotina bloqueava a THREAD do event loop — e a
+        # primeira só retomava se o loop rodasse. O slot já foi decidido aqui,
+        # nada mais depende do lock.
+        await ws.send_json(_live_erro(
+            "busy", f"máximo de {_LIVE_MAX_SESSIONS} sessões simultâneas"))
+        await ws.close(code=1013)
+        return
+"""
+DENTRO = "".join(("    " + l if l.strip() else l) for l in ORIG.splitlines(keepends=True))
+de, para = (ORIG, DENTRO) if modo == "revert" else (DENTRO, ORIG)
+if s.count(de) != 1:
+    sys.exit(f"bloco do `busy` não casou 1x (achei {s.count(de)}) no modo {modo}")
+p.write_text(s.replace(de, para))
+print(f"  · {modo}: `await` do `busy` "
+      f"{'para DENTRO do' if modo == 'revert' else 'de volta para FORA do'} `with _live_lock`")
+PYM
+  }
+
+  _restaurado=0
+  restaura() {
+    [ "$_restaurado" = 1 ] && return 0
+    _restaurado=1
+    if mordida_patch restore 2>/dev/null; then
+      :
+    else
+      echo "  ⚠ o bloco do `busy` mudou durante a mordida — restaurando pela cópia"
+      cp "$BAK" "$APP"
+    fi
+    rm -f "$BAK"
+    AGORA="$(md5_de "$APP")"
+    if [ "$AGORA" = "$ANTES" ]; then
+      echo "  ✔ app.py restaurado byte a byte (md5 $ANTES)"
+    else
+      echo "  ⚠ app.py != backup ($AGORA != $ANTES): outro agente editou durante a"
+      echo "    medida — o FIX foi devolvido, confira se o hunk dele sobreviveu"
+    fi
+  }
+  trap 'restaura; serial_solta' EXIT
+  trap 'exit 130' INT TERM
+
+  echo "══ MORDIDA 1/2 — app.py COMO ESTÁ (o fix): tem de sair 0"
+  TTS_SERIAL=0 MORDIDA=0 "$EU"; rc_fix=$?
+  echo "══ MORDIDA 1/2 — saiu $rc_fix"
+  echo
+  echo "══ REVERTENDO a linha do fix"
+  if ! mordida_patch revert; then
+    echo "  ✘ revert falhou — nada foi medido"; restaura; exit 1
+  fi
+  echo
+  echo "══ MORDIDA 2/2 — app.py REVERTIDO: tem de sair 1 (a cena A tem de congelar)"
+  TTS_SERIAL=0 MORDIDA=0 "$EU"; rc_rev=$?
+  echo "══ MORDIDA 2/2 — saiu $rc_rev"
+  echo
+  restaura
+  rc=0
+  if [ "$rc_fix" != 0 ]; then
+    echo "  ✘ no estado do FIX o script devia sair 0 e saiu $rc_fix"
+    rc=1
+  fi
+  if [ "$rc_rev" = 0 ]; then
+    echo "  ✘ NÃO MORDEU: com o `await` sob o lock o script devia sair 1 e saiu 0"
+    rc=1
+  fi
+  [ "$rc" = 0 ] && echo "✔ mordida confirmada nas duas direções (fix 0 · revertido $rc_rev)" \
+                || echo "✘ mordida NÃO confirmada"
+  exit $rc
+fi
+
 "$PY" - <<'PY'
 import base64, json, os, pathlib, shutil, socket, subprocess, sys, tempfile, time
 import urllib.request
