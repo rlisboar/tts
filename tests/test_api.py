@@ -31,6 +31,76 @@ from starlette.websockets import WebSocketDisconnect
 import app
 
 
+def _hash_dos_modulos(base=None) -> str:
+    """sha256-8 do CONTEÚDO dos módulos do build, calculado de forma independente.
+
+    Espelha `app._build_hash` (inclusive o `<ausente>` de módulo faltando), mas lê
+    de `base` — os testes do /api/build apontam `app.BASE` para uma árvore de mentira
+    e precisam do mesmo cálculo do lado de fora.
+    """
+    h = hashlib.sha256()
+    raiz = Path(base) if base is not None else app.BASE
+    for nome in app._BUILD_MODULOS:
+        try:
+            h.update((raiz / nome).read_bytes())
+        except OSError:
+            h.update(b"<ausente>")
+    return h.hexdigest()[:8]
+
+
+# #220: a expectativa do /api/build é CONGELADA NO IMPORT deste módulo, não
+# recalculada no instante da asserção. `app._BUILD_CODIGO` nasce no import do app;
+# este nasce microssegundos depois, na mesma fase de coleta. Recalcular na asserção
+# fazia o par de testes ficar REFÉM DA ÁRVORE VIVA: a árvore é compartilhada por 6
+# agentes, e um colega salvando um módulo no meio da rodada trocava o disco de agora
+# — os dois testes caíam com uma "regressão do /api/build" que não existia (medido
+# no gate do frontend em 20:09Z, com o audio-ml editando durante a rodada).
+# Um save entre o import do app e o deste módulo ainda faz as duas expectativas
+# divergirem: quem trata esse caso é a tolerância por mtime, em
+# `_confere_que_o_codigo_e_do_boot` — e ela só é aceita quando PROVADA.
+_HASH_NO_IMPORT = _hash_dos_modulos()
+
+
+def _modulos_escritos_desde_o_boot(base=None) -> list:
+    """Módulos do build escritos DEPOIS do hash do boot (#220).
+
+    O critério é `mtime > app._BUILD_TS_HASH`: se alguém salvou o arquivo depois de o
+    app hasheá-lo, o hash do boot pode não descrever o conteúdo de agora — e é isso
+    que autoriza a tolerância do par, em vez de assumi-la. `mtime` e não comparação
+    de conteúdo porque um escritor que volta ao estado anterior apagaria o rastro.
+    """
+    raiz = Path(base) if base is not None else app.BASE
+    escritos = []
+    for nome in app._BUILD_MODULOS:
+        try:
+            if (raiz / nome).stat().st_mtime > app._BUILD_TS_HASH:
+                escritos.append(nome)
+        except OSError:
+            pass
+    return escritos
+
+
+def _confere_que_o_codigo_e_do_boot(d: dict) -> None:
+    """O par de asserções do /api/build: conteúdo (#190) e boot (#214), imune à
+    ÁRVORE VIVA (#220).
+
+    Com ninguém tendo escrito desde o boot, a expectativa CONGELADA no import deste
+    módulo tem de bater exatamente — é a prova de que o hash é do CONTEÚDO. Se
+    alguém escreveu (mtime), a tolerância é PROVADA e o que se exige é que a rota
+    siga o boot e não o disco de agora."""
+    assert d["codigo"] == app._BUILD_CODIGO, "o campo tem de ser o hash do BOOT"
+    escritos = _modulos_escritos_desde_o_boot()
+    if escritos:
+        print(f"    [220] escritos depois do boot: {', '.join(escritos)} — "
+              f"tolerância provada por mtime")
+        disco = _hash_dos_modulos()
+        if disco != app._BUILD_CODIGO:
+            assert d["codigo"] != disco, "a rota seguiu o disco de agora, não o boot"
+    else:
+        assert d["codigo"] == _HASH_NO_IMPORT, \
+            "hash é do CONTEÚDO dos módulos (expectativa congelada no import)"
+
+
 @pytest.fixture()
 def client():
     return TestClient(app.app, raise_server_exceptions=False)
@@ -2206,23 +2276,14 @@ def test_setup_sem_voz_e_sem_vozes_grava_devolve_erro(ws_client, live_limpo, mon
 def test_build_diz_qual_codigo_esta_rodando(client, auth):
     """#190: o `/api/build` é o detector de instância velha — o hash tem de vir do
     CONTEÚDO dos módulos (recalculado aqui de forma independente) e a instância velha
-    é reconhecida justamente por não ter esta rota (404)."""
+    é reconhecida justamente por não ter esta rota (404).
+
+    #220: a expectativa é `_HASH_NO_IMPORT` (congelada no import deste módulo), não o
+    disco do instante da asserção — é o que tira o par da dependência do timing."""
     r = client.get("/api/build", headers=auth)
     assert r.status_code == 200
     d = r.json()
-    h = hashlib.sha256()
-    for nome in app._BUILD_MODULOS:
-        h.update((app.BASE / nome).read_bytes())
-    disco = h.hexdigest()[:8]
-    assert d["codigo"] == app._BUILD_CODIGO, "o campo tem de ser o hash do BOOT"
-    if disco == app._BUILD_CODIGO:
-        assert d["codigo"] == disco, "hash é do conteúdo, não do commit"
-    else:
-        # Um TERCEIRO editou um módulo NO MEIO da rodada (a árvore é compartilhada
-        # por 6 agentes): o boot acima continua sendo o contrato do #214 e o disco
-        # de agora é outro hash. Sem esta separação o gate dá 2 falsos vermelhos
-        # por rodada em test_build_*, e o hash do commit não é o alvo aqui.
-        assert d["codigo"] != disco, "com o disco já != boot, a rota tem de seguir o boot"
+    _confere_que_o_codigo_e_do_boot(d)
     assert d["version"] == app._VERSION
     assert d["admin_fields"] == len(app._SETTINGS_ADMIN)
     assert d["boot_ts"] > 0 and d["boot_ms"] >= 0
@@ -2230,11 +2291,39 @@ def test_build_diz_qual_codigo_esta_rodando(client, auth):
     assert client.get("/api/build").status_code == 401, "sob /api/ exige chave"
 
 
+def test_build_par_nao_e_refem_da_arvore_viva(client, auth, tmp_path, monkeypatch):
+    """#220: escrita de terceiro num módulo DEPOIS do import não derruba o par.
+
+    É a mordida do ticket, e monta o cenário que o gate do frontend viveu (20:09Z,
+    com o audio-ml editando durante a rodada): o disco de agora passa a ser OUTRO
+    hash e o par tem de continuar valendo — antes a expectativa era recalculada no
+    instante da asserção e os dois testes caíam."""
+    for nome in app._BUILD_MODULOS:           # cópia preservando o mtime original
+        shutil.copy2(app.BASE / nome, tmp_path / nome)
+    monkeypatch.setattr(app, "BASE", tmp_path)
+    (tmp_path / "live_turns.py").write_text("# escrito por um TERCEIRO depois do import\n")
+    disco = _hash_dos_modulos(tmp_path)
+    assert disco != _HASH_NO_IMPORT, \
+        "cenário não montado: o disco de agora tem de diferir do import"
+    assert "live_turns.py" in _modulos_escritos_desde_o_boot(tmp_path), \
+        "o mtime do módulo escrito é o sinal que autoriza a tolerância"
+    # o par, exercitado também pelo endpoint (é ele o alvo):
+    d = client.get("/api/build", headers=auth).json()
+    _confere_que_o_codigo_e_do_boot(d)
+    assert d["admin_fields"] == len(app._SETTINGS_ADMIN)
+    # o que a asserção ANTIGA (expectativa == disco de agora) diria neste cenário:
+    assert disco != app._BUILD_CODIGO, \
+        "com o disco de agora != boot, a asserção antiga teria ficado vermelha"
+
+
 def test_build_codigo_e_do_boot_nao_do_disco_de_agora(client, auth, tmp_path, monkeypatch):
     """#214: o hash é CONGELADO no import. Editado um módulo depois (sem reiniciar),
     `/api/build` continua reportando o código CARREGADO — se ele fosse calculado no
     1º uso, uma instância que nunca serviu a rota daria "bate" falso contra a árvore
-    e o gate acusaria o alvo errado (o próprio motivo de o #190 existir)."""
+    e o gate acusaria o alvo errado (o próprio motivo de o #190 existir).
+
+    #220: a asserção final compara com o hash do BOOT (`_BUILD_CODIGO`), que é do
+    import — não com uma expectativa recalculada aqui."""
     for nome in app._BUILD_MODULOS:           # árvore de mentira = cópia do repo
         (tmp_path / nome).write_bytes((app.BASE / nome).read_bytes())
     monkeypatch.setattr(app, "BASE", tmp_path)
@@ -2249,6 +2338,8 @@ def test_build_codigo_e_do_boot_nao_do_disco_de_agora(client, auth, tmp_path, mo
     d = client.get("/api/build", headers=auth).json()
     assert d["codigo"] == app._BUILD_CODIGO, \
         "a instância reportou o disco de agora, não o código que carregou"
+    assert d["codigo"] != _hash_dos_modulos(tmp_path), \
+        "e o disco de agora é OUTRO hash: a rota não pode tê-lo seguido"
 
 
 def test_build_exige_chave_fora_do_loopback():

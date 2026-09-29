@@ -1307,6 +1307,10 @@ def _build_hash() -> str:
 # checagem — editar um módulo sem reiniciar e chamar uma vez dava "bate" falso, com
 # o processo rodando o código antigo. São 7 arquivos pequenos: mesmo custo do boot.
 _BUILD_CODIGO = _build_hash()
+# #220: instante EXATO do hash. Um módulo escrito DEPOIS daqui não é descrito por
+# ele (o hash é do conteúdo daquele instante) — é o que o par de testes do /api/build
+# usa para tolerar a árvore viva sem tolerar em silêncio.
+_BUILD_TS_HASH = time.time()
 
 
 @app.get("/api/build")
