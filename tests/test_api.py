@@ -615,6 +615,38 @@ def test_settings_anti_ruido_persiste(client, auth):
                 json={"stt_anti_ruido": True, "stt_denoise": True})
 
 
+def test_save_preserva_chave_de_build_desconhecida(client, auth, monkeypatch):
+    """#197: o save reescreve o arquivo inteiro a partir da RAM — uma chave que ESTA
+    build não conhece (gravada por uma build nova) não pode ser apagada por tabela."""
+    monkeypatch.setattr(app, "_settings_desconhecidas_avisadas", set())
+    disco = _json.loads(app.SETTINGS_PATH.read_text())
+    disco["campo_de_build_nova"] = {"modo": "x"}
+    disco.pop("stt_denoise")                    # e uma nossa ausente volta materializada
+    app.SETTINGS_PATH.write_text(_json.dumps(disco))
+
+    assert client.post("/api/settings", headers=auth,
+                       json={"stt_anti_ruido": True}).status_code == 200
+    depois = _json.loads(app.SETTINGS_PATH.read_text())
+    assert depois["campo_de_build_nova"] == {"modo": "x"}, "chave desconhecida apagada"
+    assert depois["stt_denoise"] == app._settings["stt_denoise"], \
+        "chave nossa não foi materializada a partir da RAM"
+    assert set(app._SETTINGS_DEFAULTS) <= set(depois), "save tirou chave conhecida"
+
+
+def test_save_avisa_uma_vez_por_chave_desconhecida(client, auth, monkeypatch, capsys):
+    """O aviso é sinal de instância/build desatualizada (par do `GET /api/build`) —
+    e é UMA vez por chave, não a cada save."""
+    monkeypatch.setattr(app, "_settings_desconhecidas_avisadas", set())
+    disco = _json.loads(app.SETTINGS_PATH.read_text())
+    disco["campo_de_build_nova"] = 1
+    app.SETTINGS_PATH.write_text(_json.dumps(disco))
+
+    app._save_settings()
+    assert "campo_de_build_nova" in capsys.readouterr().err
+    app._save_settings()
+    assert "campo_de_build_nova" not in capsys.readouterr().err, "avisou de novo"
+
+
 def test_rate_limit_isenta_loopback(client):
     """O navegador no próprio Mac polla a API em sub-segundo por design; o teto de
     120/min virava 429 interno (no log) e derrubava o polling do próprio job."""
@@ -2171,6 +2203,30 @@ def test_setup_sem_voz_e_sem_vozes_grava_devolve_erro(ws_client, live_limpo, mon
         assert exc.value.code == 4400
 
 
+def test_build_diz_qual_codigo_esta_rodando(client, auth):
+    """#190: o `/api/build` é o detector de instância velha — o hash tem de vir do
+    CONTEÚDO dos módulos (recalculado aqui de forma independente) e a instância velha
+    é reconhecida justamente por não ter esta rota (404)."""
+    r = client.get("/api/build", headers=auth)
+    assert r.status_code == 200
+    d = r.json()
+    h = hashlib.sha256()
+    for nome in app._BUILD_MODULOS:
+        h.update((app.BASE / nome).read_bytes())
+    assert d["codigo"] == h.hexdigest()[:8], "hash é do conteúdo, não do commit"
+    assert d["version"] == app._VERSION
+    assert d["admin_fields"] == len(app._SETTINGS_ADMIN)
+    assert d["boot_ts"] > 0 and d["boot_ms"] >= 0
+    assert "app.py" in d["modulos"] and "live_pipeline.py" in d["modulos"]
+    assert client.get("/api/build").status_code == 401, "sob /api/ exige chave"
+
+
+def test_build_exige_chave_fora_do_loopback():
+    c = _ws_cliente("203.0.113.9")
+    assert c.get("/api/build").status_code == 401
+    assert c.get("/api/build", headers={"X-API-Key": app._primary_api_key()}).status_code == 200
+
+
 def test_live_ws_exige_chave_fora_do_loopback(live_limpo):
     c = _ws_cliente("203.0.113.9")
     with c.websocket_connect("/api/live/ws") as ws:
@@ -2760,11 +2816,16 @@ def dsh_limpo(monkeypatch):
 
     `TTS_CHAT_BACKEND_LIVE` entra na lista desde a #176: o env dele tem precedência
     sobre o settings e, sem o delenv, um dono com o Live em `dsh` no ambiente fazia
-    o teste do caminho global medir outra rota."""
+    o teste do caminho global medir outra rota. O CAMPO `chat_backend_live` também é
+    neutralizado: a fixture de estado isola o `settings.json` COPIANDO o do dono, e
+    o seletor do Live (o cenário recomendado no #175!) vaza para toda a suíte —
+    medido: com `chat_backend_live: "dsh"` no arquivo, dois testes do caminho global
+    ficavam vermelhos sem nada de errado no código."""
     for var in ("TTS_CHAT_BACKEND", "TTS_CHAT_BACKEND_LIVE", "TTS_CHAT_DSH_BIN",
                 "TTS_CHAT_DSH_PROFILE",
                 "TTS_CHAT_DSH_MODEL", "TTS_CHAT_DSH_EFFORT"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setitem(app._settings, "chat_backend_live", "")   # vazio = herda
     monkeypatch.setattr(app, "_dsh_models_cache", {})
     monkeypatch.setattr(app, "_chat_dsh_livres", [])
     monkeypatch.setattr(app, "_chat_dsh_chave", None)

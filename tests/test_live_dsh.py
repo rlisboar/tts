@@ -393,7 +393,9 @@ def test_conversa_no_dsh_e_live_no_global(monkeypatch):
     assert app._chat_llm([]) == "via-dsh"
 
 
-def test_backend_do_live_vazio_herda_o_global(monkeypatch):
+def test_backend_do_live_vazio_herda_o_global(monkeypatch, dsh_limpo):
+    # `dsh_limpo` também neutraliza o CAMPO `chat_backend_live` (o dono pode tê-lo
+    # deixado em dsh na tela) — sem ele o vazio do teste não é o vazio de produção.
     monkeypatch.delenv("TTS_CHAT_BACKEND_LIVE", raising=False)
     monkeypatch.setenv("TTS_CHAT_BACKEND", "dsh")
     assert app._chat_backend_live() == "dsh"

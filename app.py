@@ -21,6 +21,11 @@ import subprocess
 import sys
 import threading
 import time
+
+# Início do import do módulo: o `boot_ms` do `GET /api/build` (#190) é medido daqui —
+# é o custo de subida do processo que o dono paga no `./run.sh`.
+_BUILD_INI = time.monotonic()
+_BUILD_TS = time.time()
 import tempfile
 import uuid
 import wave
@@ -321,8 +326,17 @@ if SETTINGS_PATH.exists():
               f"usando defaults: {exc}", flush=True)
 
 
+_settings_desconhecidas_avisadas: set = set()
+
+
 def _save_settings():
-    """Persiste settings.json com TODAS as chaves conhecidas (defaults + overrides)."""
+    """Persiste settings.json com TODAS as chaves conhecidas (defaults + overrides).
+
+    Chaves no DISCO que esta build não conhece são PRESERVADAS (#197): o arquivo é
+    reescrito por inteiro a partir da RAM, e uma instância velha de pé (`run.sh` sem
+    `--reload`) apagava o que uma build nova tinha gravado — o dono perdia a escolha
+    feita na tela nova e o `admin_ignored` não acusava nada. Avisa UMA vez por chave
+    desconhecida (é sinal de instância desatualizada, par do `GET /api/build`)."""
     # garante booleans/números estáveis (JSON true/false, não null)
     _settings["speech_queue"] = bool(_settings.get("speech_queue"))
     try:
@@ -330,6 +344,20 @@ def _save_settings():
     except (TypeError, ValueError):
         _settings["speech_queue_gap_s"] = 0.35
     payload = {k: _settings.get(k, v) for k, v in _SETTINGS_DEFAULTS.items()}
+    try:
+        disco = json.loads(SETTINGS_PATH.read_text())
+    except Exception:  # noqa: BLE001 — sem arquivo/ilegível: o payload conhecido basta
+        disco = {}
+    if isinstance(disco, dict):
+        extras = {k: v for k, v in disco.items() if k not in _SETTINGS_DEFAULTS}
+        if extras:
+            payload.update(extras)       # as nossas têm prioridade; as de fora sobrevivem
+            novas = set(extras) - _settings_desconhecidas_avisadas
+            if novas:
+                _settings_desconhecidas_avisadas.update(novas)
+                print(f"[settings] preservada(s) chave(s) que esta build não conhece: "
+                      f"{', '.join(sorted(novas))} — instância desatualizada?",
+                      file=sys.stderr, flush=True)
     write_json_atomic(SETTINGS_PATH, payload)
     try:
         os.chmod(SETTINGS_PATH, 0o600)
@@ -1251,6 +1279,47 @@ def _wav_duration(path: Path) -> float:
 def health():
     """Liveness p/ monitoramento externo — sem auth, sem detalhe interno."""
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Build do processo VIVO (#190). O `run.sh` sobe `uvicorn` sem `--reload`, então a
+# instância pode estar rodando código de dias atrás: o pin de um ticket não tinha
+# como ser conferido contra ela (uma feature nova ficou INERTE no app do dono e o
+# gate apontou para o alvo errado). `codigo` é o hash do CONTEÚDO dos módulos do
+# servidor — o par (version, codigo) distingue "commit novo" de "código carregado".
+# Fica sob `/api/` e portanto exige chave fora do loopback, como o resto.
+# ---------------------------------------------------------------------------
+_BUILD_MODULOS = ("app.py", "common.py", "backends.py", "tts_worker.py",
+                  "live_pipeline.py", "live_turns.py", "dsh_client.py")
+_build_cache: dict = {}
+
+
+def _build_hash() -> str:
+    """sha256-8 do conteúdo dos módulos do servidor (calculado no 1º uso, cacheado)."""
+    if "codigo" not in _build_cache:
+        h = hashlib.sha256()
+        for nome in _BUILD_MODULOS:
+            try:
+                h.update((BASE / nome).read_bytes())
+            except OSError:
+                h.update(b"<ausente>")
+        _build_cache["codigo"] = h.hexdigest()[:8]
+    return _build_cache["codigo"]
+
+
+@app.get("/api/build")
+def build():
+    """Qual código a INSTÂNCIA VIVA carregou, e há quanto tempo ela está de pé.
+
+    Comparar `codigo` com o sha do ticket diz se a instância é a mesma que o commit;
+    `boot_ms` é a idade do processo (medida do import) e `admin_fields` o tamanho do
+    conjunto de campos administrativos — uma instância antiga tinha 17 campos quando
+    o código já tinha 23, e `POST /api/settings` ignorava o campo novo em silêncio."""
+    return {"ok": True, "version": _VERSION,
+            "boot_ts": int(_BUILD_TS),
+            "boot_ms": int((time.monotonic() - _BUILD_INI) * 1000),
+            "codigo": _build_hash(), "modulos": list(_BUILD_MODULOS),
+            "admin_fields": len(_SETTINGS_ADMIN)}
 
 
 def _git_version() -> str:
@@ -5834,11 +5903,21 @@ def _live_stats_ia(sess: dict) -> dict:
     `pedido` é o que está configurado; `backend` é o que de FATO responde o turno.
     Com `chat_backend=dsh` e o handshake do harness morrendo, o pipeline marca a
     sessão e passa a usar o openai (#146): sem este campo o painel mostraria "dsh"
-    enquanto o texto vinha do endpoint."""
+    enquanto o texto vinha do endpoint.
+
+    `backend` olha o CLIENTE da sessão, não o campo (#196): o `DshClient` nasce no
+    connect e trocar o seletor com a sessão aberta NÃO reconstrói o pipe — seguir o
+    configurado ali anunciava dsh com o texto vindo do endpoint (mesma classe do
+    falso-verde do #151). Pipe sem `_dsh` (sessão ainda nascendo, stub de teste)
+    segue o configurado."""
     pedido = _chat_backend_live()
     pipe = sess.get("pipe")
     caiu = bool(getattr(pipe, "_dsh_indisponivel", False))
-    return {"pedido": pedido, "backend": "openai" if (caiu or pedido != "dsh") else "dsh",
+    if pipe is None or not hasattr(pipe, "_dsh"):
+        tem_dsh = pedido == "dsh"
+    else:
+        tem_dsh = pipe._dsh is not None
+    return {"pedido": pedido, "backend": "openai" if (caiu or not tem_dsh) else "dsh",
             "fallback": caiu, "motivo": str(getattr(pipe, "_dsh_motivo", "") or "")[:200]}
 
 
@@ -6835,9 +6914,11 @@ async def live_ws(ws: WebSocket):
                 sender.cancel()
         # SÓ sai do registry quem ainda é o dono da entrada: numa retomada o `sid` é
         # o do cliente, então o pop incondicional da sessão ANTIGA apagava a NOVA
-        # (ela ficava fora do sweep/TTL e fora da contagem do teto).
-        if _live_sessions.get(sid) is sess:
-            with _live_lock:
+        # (ela ficava fora do sweep/TTL e fora da contagem do teto). A checagem vai
+        # DENTRO do lock: fora dele, uma retomada que nascesse entre o `get` e o
+        # `pop` inseria a sessão nova e o pop da antiga levava a nova junto (#201).
+        with _live_lock:
+            if _live_sessions.get(sid) is sess:
                 _live_sessions.pop(sid, None)
 
 

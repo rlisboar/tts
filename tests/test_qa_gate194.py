@@ -279,9 +279,6 @@ def test_pipeline_que_nao_nasce_fecha_o_dsh_orfao(ws_client, live_limpo, monkeyp
     assert not app._live_sessions, "sessão presa no registry"
 
 
-@pytest.mark.xfail(strict=True, reason="RESIDUAL do #186 (task nova): o `is sess` "
-                   "está FORA do lock, então a retomada que nasce entre a checagem e "
-                   "o pop ainda é apagada. Fix: checar dentro do `with _live_lock`.")
 def test_retomada_que_nasce_DURANTE_o_fechamento_sobrevive(ws_client, live_limpo,
                                                            pipeline_fake, engine_fake,
                                                            hist_limpo):
@@ -289,8 +286,9 @@ def test_retomada_que_nasce_DURANTE_o_fechamento_sobrevive(ws_client, live_limpo
     fecha (não só nas ordens em que uma já morreu). Aqui o lock fica preso durante o
     fechamento e a retomada entra no meio — o pop da antiga não pode levar a nova.
 
-    xfail(strict) enquanto o residual existir: quando o dono mover a checagem para
-    dentro do lock, este teste passa e o `xfail` vira XPASS — aí é só tirar a marca."""
+    Nasceu `xfail(strict)` como residual do #186 e virou teste normal quando o dono
+    moveu a checagem para dentro do `with _live_lock` (task_873b7a0f): sem a marca, um
+    XPASS não deixa o arquivo vermelho."""
     with ws_client.websocket_connect("/api/live/ws") as ws:
         _setup_ok(ws)
         sess = list(app._live_sessions.values())[0]
