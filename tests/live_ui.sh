@@ -304,7 +304,15 @@ try:
             warn: !!(document.getElementById('lxProv').parentElement||{}).classList.contains('warn') })""")
         print("  selo de IA (normal):", ia_normal)
         cobrar(ia_normal["txt"].strip() not in ("", "—"), f"selo de IA vazio no estado normal: {ia_normal['txt']!r}")
-        cobrar(not ia_normal["warn"], "selo de IA marcado como aviso sem fallback")
+        if ROTA_LIVE == "openai":
+            cobrar(not ia_normal["warn"], "selo de IA marcado como aviso sem fallback")
+        else:
+            # fora do stub o selo pode estar marcado por fallback LEGÍTIMO (o dsh
+            # não acha o modelo/endpoint do stub e a sessão segue no openai): o que
+            # se cobra é o aviso ser VISÍVEL e coerente com o que a sessão usa
+            cobrar(ia_normal["warn"] == bool(pg.evaluate("() => LX.obs.dshFallback")),
+                   f"selo de IA e fallback do painel discordam: selo={ia_normal!r}")
+            print("  (rota dsh: aviso de fallback é esperado, não falha)")
 
         # ─── CONTRATO `turno_pendente` (#133/#136): contadores no log e no chip ─
         # Determinístico: injeta o evento do servidor no MESMO `lxRecebe` do
