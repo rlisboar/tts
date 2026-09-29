@@ -2213,8 +2213,16 @@ def test_build_diz_qual_codigo_esta_rodando(client, auth):
     h = hashlib.sha256()
     for nome in app._BUILD_MODULOS:
         h.update((app.BASE / nome).read_bytes())
-    assert d["codigo"] == h.hexdigest()[:8], "hash é do conteúdo, não do commit"
+    disco = h.hexdigest()[:8]
     assert d["codigo"] == app._BUILD_CODIGO, "o campo tem de ser o hash do BOOT"
+    if disco == app._BUILD_CODIGO:
+        assert d["codigo"] == disco, "hash é do conteúdo, não do commit"
+    else:
+        # Um TERCEIRO editou um módulo NO MEIO da rodada (a árvore é compartilhada
+        # por 6 agentes): o boot acima continua sendo o contrato do #214 e o disco
+        # de agora é outro hash. Sem esta separação o gate dá 2 falsos vermelhos
+        # por rodada em test_build_*, e o hash do commit não é o alvo aqui.
+        assert d["codigo"] != disco, "com o disco já != boot, a rota tem de seguir o boot"
     assert d["version"] == app._VERSION
     assert d["admin_fields"] == len(app._SETTINGS_ADMIN)
     assert d["boot_ts"] > 0 and d["boot_ms"] >= 0
@@ -2230,10 +2238,13 @@ def test_build_codigo_e_do_boot_nao_do_disco_de_agora(client, auth, tmp_path, mo
     for nome in app._BUILD_MODULOS:           # árvore de mentira = cópia do repo
         (tmp_path / nome).write_bytes((app.BASE / nome).read_bytes())
     monkeypatch.setattr(app, "BASE", tmp_path)
-    assert app._build_hash() == app._BUILD_CODIGO, "pré-condição: árvore == boot"
-
+    # Sem pré-condição "árvore == boot": com 6 agentes editando a árvore, um módulo
+    # pode mudar entre o import e aqui. O que este teste precisa é que `_build_hash`
+    # LEIA O DISCO (e não cacheie) — é o que a mutação abaixo prova — e que a rota
+    # siga o hash do BOOT.
+    antes = app._build_hash()
     (tmp_path / "live_turns.py").write_text("# editado DEPOIS do import\n")
-    assert app._build_hash() != app._BUILD_CODIGO, "o disco mudou de verdade"
+    assert app._build_hash() != antes, "o disco mudou de verdade"
 
     d = client.get("/api/build", headers=auth).json()
     assert d["codigo"] == app._BUILD_CODIGO, \
@@ -3604,7 +3615,13 @@ class _EngFake:
     estado = None
 
     def estatisticas(self):
-        return {"barge_in": 2, "barge_falso": 1}
+        # chaves REAIS do motor (`barge_in_falso`, `barge_in_com_turno_aberto`) —
+        # o dublê com `barge_falso` mascarava o erro de chave do `_live_stats` (#216).
+        # As DUAS portas do barge entram de propósito: é somá-las que faz o contador
+        # existir no regime do eco (playback começando com o turno JÁ aberto), que é
+        # o regime em que o harness do #216 mede — com só `barge_in` no dublê, um
+        # `_live_stats` que voltasse a ler uma porta só passaria em silêncio.
+        return {"barge_in": 2, "barge_in_com_turno_aberto": 3, "barge_in_falso": 1}
 
 
 def test_live_stats_erro_provedor_e_limiares_no_payload(monkeypatch):
@@ -3628,7 +3645,8 @@ def test_live_stats_erro_provedor_e_limiares_no_payload(monkeypatch):
     assert s["provedor"]["estado"] == "erro" and s["provedor"]["http"] == 530
     assert 900 <= s["provedor"]["idade_ms"] <= 2000
     assert s["motor"]["limiar_dbfs"] == -45.2               # limiares VIGENTES
-    assert s["motor"]["barge_ativos"] == 2 and s["motor"]["barge_falsos"] == 1
+    # 2 (turno novo por barge) + 3 (barge com turno já aberto): o total, não a 1ª porta
+    assert s["motor"]["barge_ativos"] == 5 and s["motor"]["barge_falsos"] == 1
     assert s["playback"]["speaking"] is True and s["playback"]["chunks"] == 12
     assert s["turno"]["stage"] == "tts" and s["turno"]["n"] == 3
     # sem erro e sem provedor marcado: chaves AUSENTES (o frontend usa isso)
@@ -3637,6 +3655,31 @@ def test_live_stats_erro_provedor_e_limiares_no_payload(monkeypatch):
                         {"estado": "desconhecido", "http": None, "ts": 0.0})
     s2 = app._live_stats(sess)
     assert "erro" not in s2 and "provedor" not in s2
+
+
+def test_engine_do_live_nasce_com_as_alavancas_do_167_ligadas(monkeypatch):
+    """O DEFAULT do app é o produto que o dono recebe (#216).
+
+    As três alavancas do #167 nasciam desligadas e cada uma tinha, no código, uma
+    medição que a justificou EM ISOLADO — o fix existia e o app do dono não o
+    entregava. Este teste pina o que a COMBINAÇÃO mediu: as duas que resolvem o vão
+    entram ligadas, a terceira fica fora. Sem ele, um `os.environ.get(..., "0")`
+    reintroduzido em silêncio devolve o comportamento antigo sem quebrar nada."""
+    for k in ("TTS_LIVE_BARGE_JANELA_TURNO", "TTS_LIVE_PLAYBACK_DURACAO",
+              "TTS_LIVE_ECO_SO_TOCANDO"):
+        monkeypatch.delenv(k, raising=False)
+    sess = {"vad": {"prefix_ms": 300, "silence_ms": 500}}
+    cfg = app._live_engine_novo(sess).config
+    assert cfg.barge_janela_turno is True
+    assert cfg.playback_por_duracao is True
+    assert cfg.eco_so_tocando is False
+    # e cada uma continua desligável pelo env (o A/B do harness depende disso)
+    monkeypatch.setenv("TTS_LIVE_BARGE_JANELA_TURNO", "0")
+    monkeypatch.setenv("TTS_LIVE_PLAYBACK_DURACAO", "0")
+    monkeypatch.setenv("TTS_LIVE_ECO_SO_TOCANDO", "1")
+    cfg2 = app._live_engine_novo({"vad": {"prefix_ms": 300, "silence_ms": 500}}).config
+    assert (cfg2.barge_janela_turno, cfg2.playback_por_duracao,
+            cfg2.eco_so_tocando) == (False, False, True)
 
 
 def test_live_ws_stats_para_ao_fechar_a_sessao(ws_client, live_limpo, monkeypatch, caplog):

@@ -38,8 +38,9 @@ IP da LAN, não por `127.0.0.1`.
 | retomada do histórico por `session_id` | `TTS_LIVE_RESUME_TTL_S` | 1800 s |
 | teto do histórico (mensagens / chars) | `TTS_LIVE_HIST_MAX_MSGS` / `TTS_LIVE_HIST_MAX_CHARS` | 24 / 12000 |
 | teto de históricos guardados | `TTS_LIVE_MAX_HISTORICOS` | 32 |
-| janela de barge INTRA-TURNO (#167, hoje desligada — ver medição abaixo) | `TTS_LIVE_BARGE_JANELA_TURNO` | 0 |
-| janela de barge pela DURAÇÃO REAL do chunk (#167, idem) | `TTS_LIVE_PLAYBACK_DURACAO` | 0 |
+| janela de barge INTRA-TURNO (#167/#216, ligada — ver medição abaixo) | `TTS_LIVE_BARGE_JANELA_TURNO` | 1 |
+| janela de barge pela DURAÇÃO REAL do chunk (#167/#216, ligada — idem) | `TTS_LIVE_PLAYBACK_DURACAO` | 1 |
+| eco só como referência com áudio TOCANDO (#167, desligada — idem) | `TTS_LIVE_ECO_SO_TOCANDO` | 0 |
 | cadência do evento `stats` de telemetria | `TTS_LIVE_STATS_MS` | 250 ms (0 desliga) |
 | traço de depuração do turno | `LIVE_DEBUG_TTS=1` | off |
 
@@ -520,34 +521,64 @@ idempotente e só nesse namespace). É inofensivo se a lib corrigir antes — o 
 resultante é o mesmo. Fórmula/invariantes: `tests/test_kokoro_interpolate.py`
 (rápido, sem modelo).
 
-### Barge-in nos VÃOS de geração (#167) — o que ficou ligado e o que não
+### Barge-in nos VÃOS de geração (#167/#216) — o que ficou ligado por default
 
 O motor armava o barge pela JANELA de playback, que era dimensionada pela FILA de
 chunks (`playback_janela_ms` = 900 ms depois do último envio). Nos vãos de LLM/TTS
 (medidos até 20 s) a janela fechava e o onset virava turno NOVO em vez de
-`interrupção` — `tests/live_barge_rep.sh` media ~metade das tentativas.
+`interrupção`.
 
-O que ficou LIGADO por default: calibração de eco a cada INÍCIO de áudio (e não só
-quando a janela estava fechada), braço do barge contando DURANTE a calibração e o
-mínimo de contagem preservado quando a calibração fecha. Medido no harness do
-frontend: **16/20** no cenário degradado (era 3/6 ≈ 50%) e **9/10** no sentido do
-eco (`MIC_FILE=1`), com `tests/live_ui.sh` verde e o corte do barge medido.
+O que ficou LIGADO por default (e é o produto): calibração de eco a cada INÍCIO de
+áudio (e não só quando a janela estava fechada), braço do barge contando DURANTE a
+calibração, mínimo de contagem preservado quando a calibração fecha, mais DUAS
+alavancas de `Config` que o handler aciona (`set_turno_aberto` no 1º áudio e
+`set_speaking(..., duracao_ms=…)` no envio):
 
-Duas alavancas ficaram DESLIGADAS (cada uma é um `Config`, com env próprio):
+- `barge_janela_turno` (`TTS_LIVE_BARGE_JANELA_TURNO`, default **1**): a janela
+  segue o TURNO do assistente e não fecha nos vãos de geração;
+- `playback_por_duracao` (`TTS_LIVE_PLAYBACK_DURACAO`, default **1**): a janela
+  cobre a duração REAL de cada chunk + o backlog em voo — é ela que responde pelo
+  caso "injeção logo APÓS o `turn_complete` com o cliente ainda com áudio na fila".
 
-- `playback_por_duracao` (`TTS_LIVE_PLAYBACK_DURACAO=1`): dimensiona a janela pela
-  duração REAL do chunk + backlog em voo (`set_speaking(True, duracao_ms=…)`).
-  Leva o harness a **19/20**, MAS derruba o `live_ui.sh` (a janela passa a cobrir
-  o tempo de uma fala JÁ terminada e o corte deixa de ser medido). É a alavanca a
-  reconciliar antes de virar default.
-- `barge_janela_turno` (`TTS_LIVE_BARGE_JANELA_TURNO=1`): mantém a janela aberta
-  enquanto o turno do assistente está em voo (`set_turno_aberto`, chamado pelo
-  sender). No sentido do eco ela PIORA (4/10 contra 9/10), por isso também off.
+O que ficou DESLIGADO: `eco_so_tocando` (`TTS_LIVE_ECO_SO_TOCANDO`, default **0**),
+que faz a referência de ENERGIA olhar "toca agora?" em vez da janela. Ela baixa o
+limiar do vão (regime de ocioso em vez do eco), mas na medição da COMBINAÇÃO custa
+nos dois sentidos — inclusive no caso da fala BAIXA no vão, que era a razão de ela
+existir (20/20 sem ela contra 13/20 com ela). Ver abaixo.
 
-Residual conhecido (os 4/20 do default): injeção imediatamente APÓS
-`turn_complete` com o cliente ainda com áudio bufferizado — o servidor não tem a
-posição de reprodução do cliente; é o que a alavanca da duração cobre e o que
-ainda precisa de reconciliação com o `live_ui.sh`.
+#### A medição que virou o default (#216)
+
+As três alavancas nasceram desligadas e cada uma tinha uma medição EM ISOLADO que
+a justificava; o defeito do #167 (o dono não recebia o fix) era exatamente esse
+default. A medição da COMBINAÇÃO está em `evidence/216-DECISAO.md` (script
+`evidence/216-decisivo.sh`, harness `tests/live_barge_rep.sh`, REP=20 por célula,
+dois sentidos). Resumo, com a célula que DECIDE (`MODO=vao`: injeção 900 ms depois
+do `turn_complete`, com o cliente ainda tocando áudio):
+
+| configuração | vão (o defeito) | eco (cortes falsos, menor melhor) | sentido verdadeiro |
+| --- | --- | --- | --- |
+| default antigo (nenhuma) | **0/20** | 34 e 20 | 20/20 |
+| A+B (novo default) | **20/20** e 20/20 | **20** | 20/20 |
+| A+B+C | 15/20 e 20/20 | 44 e 45 | 18/20 |
+
+Com fala BAIXA no vão (`AMP=0.2`, ~−31 dBFS — o caso para o qual C foi inventada) o
+resultado é o mesmo sentido: A+B **20/20**, A+B+C **13/20**.
+
+O que sustenta a decisão é o ECO: toda configuração com `eco_so_tocando` ficou em
+36-45 cortes falsos (C=36, A+C=40, B+C=38, A+B+C=44 e 45) e toda configuração sem
+ela ficou em 20-35 (baseline=34 e 20, A=35, A+B=20, o mínimo medido). O VÃO não
+separa A+B de A+B+C: cada uma foi medida duas vezes e as duas chegaram a 20/20
+(A+B+C fez 15/20 numa das rodadas, com a assinatura `speech_start` SEM barge — o
+mic abre turno no vão e o áudio do assistente, ainda na fila do cliente, segue
+tocando por cima).
+
+`tests/live_ui.sh` passa com o novo default (o corte do barge é exigência dura
+desde o #179). Aviso para quem for reproduzir: a matriz foi medida com a máquina
+carregada e o harness é sensível a carga — o número robusto é o do eco (margem
+grande), não a diferença de 34 para 20 no baseline.
+
+Quem quiser o comportamento antigo tem os três envs (`=0` desliga A e B, `=1`
+liga C) — o A/B do harness depende disso.
 
 ### Cancelamento
 

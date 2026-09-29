@@ -157,34 +157,41 @@ class Config:
     eco_folga_payload_db: float = 8.0             # folga de pico: eco não passa do payload
     envelope_ms: int = 224                        # suavização do nível (decisão)
     playback_janela_ms: int = 900                 # janela de playback (toca + cauda)
-    # Janela de barge INTRA-TURNO (#167) — hoje DESLIGADA por medição.
+    # Janela de barge INTRA-TURNO (#167) — LIGADA por default desde o #216.
     #
     # Ligada, o handler marca o turno do assistente em `set_turno_aberto` e a janela
-    # não fecha nos vãos de LLM/TTS. Medido no `tests/live_barge_rep.sh` (REP=20):
-    # no sentido do barge VERDADEIRO fica no mesmo patamar da direção (a) (16-19/20
-    # contra 17-19/20, variância), mas no sentido do FALSO barge por eco
-    # (`MIC_FILE=1`) ela PIORA forte: 4/10 contra 9/10 da janela pela duração. Por
-    # isso o default é desligado e a API `set_turno_aberto` fica disponível para
-    # quando este lado for trabalhado. Env: TTS_LIVE_BARGE_JANELA_TURNO=1.
-    barge_janela_turno: bool = False
+    # não fecha nos vãos de LLM/TTS (medidos até 20 s). Ficou desligada por uma
+    # medição EM ISOLADO (o sentido do falso barge por eco piorava); a medição da
+    # COMBINAÇÃO (`tests/live_barge_rep.sh`, REP=20, evidência em `evidence/216-*`)
+    # mostrou que o prejuízo era da outra alavanca sozinha, não desta: junto com
+    # `playback_por_duracao` o cenário do defeito (MODO=vao) sai de 0/20 para 20/20
+    # (duas rodadas) e o sentido do eco fica no melhor valor medido (20 cortes
+    # falsos, contra 34 e 20 do baseline e 36-45 de toda célula com `eco_so_tocando`).
+    # Env: TTS_LIVE_BARGE_JANELA_TURNO=0 volta ao comportamento antigo.
+    barge_janela_turno: bool = True
     playback_turno_max_ms: int = 120000           # trava: turno "aberto" esquecido
     playback_audio_max_ms: int = 60000            # teto do áudio "em voo" acumulado
     # #167: janela dimensionada pela DURAÇÃO REAL do chunk (+ backlog em voo).
-    # Medido no `live_barge_rep.sh`: melhora o barge no cenário degradado (19/20
-    # contra 16/20 sem ela; 8/10 contra 9/10 no sentido do eco), MAS derruba o
-    # `live_ui.sh` (o corte deixa de ser medido: a janela passa a cobrir o tempo de
-    # uma fala que já terminou). Por isso o default é DESLIGADO — ligue com
-    # TTS_LIVE_PLAYBACK_DURACAO=1 e reconcilie o `live_ui.sh` antes de virar default.
-    playback_por_duracao: bool = False
+    # LIGADA por default desde o #216: é ela que cobre o áudio que o cliente AINDA
+    # tem na fila quando o turno termina — o residual que o harness mede com
+    # MODO=vao (0/20 sem o par, 20/20 com ele). O `live_ui.sh` que ela derrubava
+    # quando isolada foi reconciliado (o dublê do `set_speaking` recebe `duracao_ms`)
+    # e passa com ela ligada. Env: TTS_LIVE_PLAYBACK_DURACAO=0 desliga.
+    playback_por_duracao: bool = True
     # #167 (direção c): a referência de ENERGIA (piso de eco, limiares, adaptação)
     # passa a olhar "há áudio audível AGORA?" — e não a JANELA. A janela é sobre o
     # TURNO (um onset nela é interrupção); o eco só existe quando algo toca. Nas
     # duas alavancas acima a janela fica aberta nos VÃOS de geração, onde NADA
     # toca: mantendo o eco como referência ali, o humano teria de superar o nível
-    # do TTS que já parou (foi o que mediu o barge FALSO por eco piorando). Com
-    # esta flag o vão cai no regime de ocioso (ruído) sem perder a classificação
-    # de barge. Desligada, nada muda (`_tocando()` == `_playback_ativo()` quando as
-    # duas alavancas estão off).
+    # do TTS que já parou. DESLIGADA: medida em COMBINAÇÃO (#216) ela PIORA o
+    # sentido do ECO com folga — toda célula com ela ficou em 36-45 cortes falsos
+    # contra 20-35 das sem ela (o par A+B, que é o default, dá 20). No vão ela NÃO
+    # separa: 15/20 e 20/20 nas duas rodadas, contra 20/20 e 20/20 do par sem ela.
+    # O caso para o qual ela foi inventada — fala BAIXA no vão (limiar de ocioso em
+    # vez do eco) — também foi medido e TAMBÉM não a favorece: `vao-quieto-*`
+    # (AMP=0.2, ~-31 dBFS) dá 20/20 sem ela e 13/20 com ela, pelo mesmo mecanismo
+    # (o dreno do backlog durante o turno esvazia a janela antes do `turn_complete`).
+    # Ver `evidence/216-DECISAO.md`.
     eco_so_tocando: bool = False
     adaptacao_ruido_db: float = 0.25              # por frame, só fora de voz
     adaptacao_eco_db: float = 0.25                # por frame, só fora de voz

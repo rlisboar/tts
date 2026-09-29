@@ -699,7 +699,7 @@ def test_onset_no_vao_de_geracao_vira_barge_quando_o_turno_esta_aberto():
     """#167 (o defeito): LLM/TTS podem levar segundos até o próximo chunk. Antes,
     a janela fechava 900 ms após o último chunk e a fala do humano no vão virava
     TURNO NOVO em vez de interrupção."""
-    motor, rel = _motor(barge_janela_turno=True)   # opt-in (#167)
+    motor, rel = _motor(barge_janela_turno=True)   # default desde o #216
     vao = lt.Config()._frames_playback + 30   # ~1,4 s sem nada tocando
     _com_vao(motor, rel, vao, turno_aberto=True)
     assert motor.estatisticas()["playback_ativo"] is True

@@ -5951,8 +5951,14 @@ def _live_stats(sess: dict) -> dict:
             limiares = {"limiar_dbfs": round(eng.limiar_energia_dbfs, 1),
                         "limiar_turno_dbfs": round(eng.limiar_energia_turno_dbfs, 1)}
             st = eng.estatisticas()
-            limiares.update({"barge_ativos": st.get("barge_in", 0),
-                             "barge_falsos": st.get("barge_falso", 0)})
+            # `barge_ativos` soma as DUAS portas do barge (turno novo e turno do
+            # usuário já aberto): contar só a primeira deixava o número em 0
+            # justamente no regime em que ele é a medida (mic ouvindo o próprio
+            # TTS, #216). `barge_falsos` lia a chave errada (`barge_falso`) e saía
+            # sempre 0 — a chave do motor é `barge_in_falso`.
+            limiares.update({"barge_ativos": st.get("barge_in", 0)
+                             + st.get("barge_in_com_turno_aberto", 0),
+                             "barge_falsos": st.get("barge_in_falso", 0)})
         except Exception:                     # noqa: BLE001 — telemetria não derruba
             limiares = {}
     erro = sess.get("st_erro")
@@ -6247,14 +6253,19 @@ def _live_engine_novo(sess: dict):
         cfg = _live_turns_mod.Config(
             prefix_ms=sess["vad"]["prefix_ms"],
             silence_ms=sess["vad"]["silence_ms"],
-            # #167: janela de barge colada ao turno (desligável p/ A/B no harness)
+            # #167: janela de barge colada ao turno. LIGADA por default desde o
+            # #216 (medição da COMBINAÇÃO; ver Config.barge_janela_turno):
+            # desligável com `TTS_LIVE_BARGE_JANELA_TURNO=0` para A/B.
             barge_janela_turno=os.environ.get(
-                "TTS_LIVE_BARGE_JANELA_TURNO", "0") != "0",
-            # #167: janela pela duração real do chunk (ver Config.playback_por_duracao)
+                "TTS_LIVE_BARGE_JANELA_TURNO", "1") != "0",
+            # #167: janela pela duração real do chunk (ver Config.playback_por_duracao).
+            # LIGADA por default desde o #216 — é ela que cobre o áudio que o
+            # cliente ainda tem na fila quando o turno termina.
             playback_por_duracao=os.environ.get(
-                "TTS_LIVE_PLAYBACK_DURACAO", "0") != "0",
+                "TTS_LIVE_PLAYBACK_DURACAO", "1") != "0",
             # #167 (direção c): o ECO só vale como referência enquanto há áudio
-            # audível; nos vãos o regime é o de ocioso (ver Config.eco_so_tocando)
+            # audível. Fica DESLIGADA: medida em COMBINAÇÃO (#216) ela piora os
+            # dois sentidos (ver Config.eco_so_tocando).
             eco_so_tocando=os.environ.get(
                 "TTS_LIVE_ECO_SO_TOCANDO", "0") != "0")
     except Exception:                    # noqa: BLE001 — config inválida: usa o padrão
