@@ -235,11 +235,11 @@ try:
             injeta()
         # Barge: injeta fala com áudio do servidor tocando e fecha o turno.
         # Depende de a JANELA DE PLAYBACK do servidor estar aberta no instante do
-        # onset — e ela fecha entre chunks (medido: 3/6 em máquina ociosa, e 0/n quando
-        # a máquina está carregada). Por isso há uma 2ª tentativa depois da fase de
-        # continuidade, e o resultado ainda vira WARN em vez de vermelho (ver no fim):
-        # o alvo do corte segue medido, mas quem PROVA o barge é o harness dedicado
-        # `tests/live_barge_rep.sh` (#161), com o fix no motor (#167).
+        # onset — ela fechava entre chunks (medido: 3/6 em máquina ociosa, e 0/n
+        # quando a máquina estava carregada), o falso vermelho do #161. Com o fix do
+        # #167 (janela colada ao turno) a 1ª tentativa deve bastar; a 2ª continua
+        # aqui como rede do servidor mudo, não como desculpa para o barge não vir.
+        # O corte do alvo (<50 ms) é exigência DURA desde então.
         def tentar_barge(timeout=25000):
             injeta()
             try:
@@ -414,14 +414,14 @@ try:
         cobrar(bool(user.strip()), "não veio transcrição do usuário")
         cobrar(bool(ia.strip()), "não veio texto do assistente")
         cobrar(audio_evs > 0, "nenhum áudio do servidor")
+        # #167 fechou o falso vermelho: com a janela de barge colada ao TURNO (e o
+        # eco só valendo como referência enquanto há áudio tocando) o onset no vão
+        # de geração volta a ser interrupção. Então a exigência voltou a ser DURA —
+        # `BARGE_ESTRITO=1` continua aceito como alias, sem efeito próprio.
+        cobrar(corte is not None,
+               "barge-in não aconteceu nem com fala injetada — sem medição do alvo <50 ms")
         if corte is not None:
             cobrar(corte < 50, f"corte do playback demorou {corte:.1f} ms (alvo <50 ms)")
-        elif os.environ.get("BARGE_ESTRITO"):
-            cobrar(False, "barge-in não aconteceu nem com fala injetada — sem medição do alvo <50 ms")
-        else:
-            print("  ⚠ SEM barge nesta rodada (janela de playback fechada no onset) — "
-                  "WARN, não vermelho; ver #161/#167 e `tests/live_barge_rep.sh`. "
-                  "Use BARGE_ESTRITO=1 para exigir.")
         cobrar(not erros, "erros de JS: " + "; ".join(erros[:3]))
         janelas = [l for l in log.read_text().splitlines() if "DBG-eco" in l]
         for l in janelas: print("  " + l)
