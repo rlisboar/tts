@@ -7347,7 +7347,10 @@ function lxRecebe(ev) {
   switch (m.type) {
     // `ready`: o servidor confirma o setup — só AQUI a sessão está de pé (o
     // onopen do WS não garante pipeline pronto).
-    case "ready":          if (LX.estado === "conectando") lxEstado("ouvindo", "🎙 sessão pronta — fale");
+    // `ready` só sai de "conectando": com o teto decidido no REGISTRO, o servidor
+      // pode mandar `error{busy}` ANTES do ready — e aí o motivo que o erro já
+      // pintou não pode ser sobrescrito por um "ouvindo" otimista (#192).
+      case "ready":          if (LX.estado === "conectando") lxEstado("ouvindo", "🎙 sessão pronta — fale");
                            lxLogEvento("sessão pronta (saída " + ((m.audio || {}).sr || "?") + " Hz)"); break;
     // `prewarm`: informativo (pipeline pré-aquecido). NÃO é turno: não mexe no
     // estado, só na linha de status — se mexesse, um prewarm no meio da fala
@@ -7432,6 +7435,14 @@ function lxRecebe(ev) {
       }
       break;
     case "error":
+      // TIMING — contrato do servidor, não escolha da tela (#192):
+      // · `error{busy}` chega DEPOIS do setup e ANTES do ready, com close 1013 logo
+      //   atrás. O close limpo não é falha de transporte (`LX.erro` só liga em
+      //   `onerror`), então a tela mostra o motivo aqui e fecha como "sessão
+      //   encerrada" — sem acusar "WebSocket caiu".
+      // · `error{pipeline}` chega logo DEPOIS do ready e a sessão SEGUE viva: por
+      //   isso o motivo vai para a coluna IA e o estado sai de "ouvindo" — senão a
+      //   tela fica prometendo fala que não vem.
       // `turno_em_curso` é benigno: o `end_of_speech` (ex.: solta do "segurar para
       // falar") chegou no meio de um turno e o servidor pediu para esperar — o
       // turno segue. Pintar isso de erro derrubava a UI à toa.
