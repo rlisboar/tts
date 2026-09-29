@@ -299,9 +299,14 @@ def test_prewarm_do_dsh_que_falha_marca_indisponivel_e_segue():
     assert dsh.chamadas == [], "marcado: não volta a tentar o dsh"
 
 
-def test_stats_ia_reflete_o_fallback(monkeypatch):
+def test_stats_ia_reflete_o_fallback(monkeypatch, dsh_limpo):
     """`stats.ia` não pode mentir no painel: com o dsh caído, o backend EFETIVO é
-    openai e `fallback` fica true, mesmo com o settings pedindo dsh."""
+    openai e `fallback` fica true, mesmo com o settings pedindo dsh.
+
+    `dsh_limpo` (#205): o `TTS_CHAT_BACKEND` do teste sozinho não basta — o Live lê
+    `TTS_CHAT_BACKEND_LIVE`/`chat_backend_live` ANTES do global, então com o knob
+    exportado (ou o dono escolhendo openai na tela) o `pedido` virava openai e este
+    teste media outra rota."""
     class PipeFalso:
         _dsh_indisponivel = True
         _dsh_motivo = "DshError: rc=1"
@@ -333,7 +338,10 @@ class DshClienteFalso(DshFalso):
 
 
 @pytest.fixture()
-def sessao_min(monkeypatch):
+def sessao_min(monkeypatch, dsh_limpo):
+    # `dsh_limpo` (#205): sem neutralizar `TTS_CHAT_BACKEND_LIVE`/`chat_backend_live`,
+    # o `_live_pipe_novo` abaixo não criava cliente nenhum quando o Live estava em
+    # openai — o teste acusava 0 cliente e media a rota errada.
     monkeypatch.setenv("TTS_CHAT_BACKEND", "dsh")
     monkeypatch.setattr(app.dsh_client, "DshClient", DshClienteFalso)
     DshClienteFalso.criados.clear()
