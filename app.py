@@ -1763,7 +1763,8 @@ def _chat_dsh_cfg() -> dict:
 
 _chat_dsh_lock = threading.Lock()
 _chat_dsh_livres: list = []          # processos quentes e OCIOSOS: [(chave, cli)]
-_chat_dsh_chave: tuple | None = None
+# (o global `_chat_dsh_chave` saiu no #185: quem carrega a chave é o cliente, em
+# `_pool_chave` — o global era escrito e nunca lido)
 _chat_dsh_prewarm_thread: threading.Thread | None = None
 _CHAT_DSH_POOL_MAX = 3
 # campos cuja mudança invalida o processo quente da Conversa (pre-warm + pool)
@@ -1798,18 +1799,16 @@ def _chat_dsh_cliente() -> "dsh_client.DshClient":
     """Cliente quente do pool (processo dsh persistente). Fecha o de config ANTIGA.
 
     A chave (bin/perfil/modelo/effort) viaja CARIMBADA no cliente (`_pool_chave`),
-    não no global: entre a entrega e a devolução o `/api/settings` pode ter trocado a
-    config e o prewarm da nova já ter mexido no global — carimbar na devolução fazia
-    um cliente da config ANTIGA voltar ao pool como se fosse da nova (o próximo
-    turno rodava no modelo antigo, calado)."""
+    não num global: entre a entrega e a devolução o `/api/settings` pode ter trocado a
+    config e o prewarm da nova já ter mexido nele — carimbar na devolução fazia um
+    cliente da config ANTIGA voltar ao pool como se fosse da nova (o próximo turno
+    rodava no modelo antigo, calado)."""
     cfg = _chat_dsh_cfg()
     chave = _chat_dsh_chave_do(cfg)
-    global _chat_dsh_chave
     with _chat_dsh_lock:
         antigos = [(k, c) for k, c in _chat_dsh_livres if k != chave or not c.alive]
         _chat_dsh_livres[:] = [(k, c) for k, c in _chat_dsh_livres
                                if k == chave and c.alive]
-        _chat_dsh_chave = chave
         cli = _chat_dsh_livres.pop()[1] if _chat_dsh_livres else None
     # FORA do lock: `close()` faz `session/close` com timeout de 60 s e um dsh vivo
     # mas mudo não responde — fechando dentro do lock, TODO uso do pool (o próximo

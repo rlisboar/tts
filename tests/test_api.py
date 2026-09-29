@@ -2868,7 +2868,6 @@ def dsh_limpo(monkeypatch):
     monkeypatch.setitem(app._settings, "chat_backend_live", "")   # vazio = herda
     monkeypatch.setattr(app, "_dsh_models_cache", {})
     monkeypatch.setattr(app, "_chat_dsh_livres", [])
-    monkeypatch.setattr(app, "_chat_dsh_chave", None)
     monkeypatch.setattr(app, "_chat_dsh_prewarm_thread", None)
 
 

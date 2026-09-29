@@ -122,7 +122,6 @@ def test_cliente_do_pool_volta_pelo_modelo_DELE_e_o_antigo_e_fechado(dsh_limpo,
     config velha tem de ser FECHADO quando descartado, não largado no pool."""
     fechados = []
     monkeypatch.setattr(app, "_chat_dsh_livres", [])
-    monkeypatch.setattr(app, "_chat_dsh_chave", None)
 
     def cliente_falso(cfg):
         cli = _Cli(cfg["model"])
