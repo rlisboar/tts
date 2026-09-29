@@ -8,6 +8,13 @@
 #   ./tests/live_barge_rep.sh          # N=6 por padrão
 #   REP=10 ./tests/live_barge_rep.sh   # N explícito
 #   MIC_FILE=1 REP=20 ./tests/live_barge_rep.sh   # mic FALSO tocando o wav em loop
+#   MODO=vao REP=20 ./tests/live_barge_rep.sh     # injeta no VÃO (ver abaixo)
+#   AMP=0.2 MODO=vao REP=20 ./tests/live_barge_rep.sh   # vão + fala BAIXA (#216)
+#
+# MODO=vao (#216): em vez de injetar com o playback ATIVO, espera o `turn_complete`
+# e injeta `VAO_MS` (900 ms por padrão) depois, quando a janela de playback
+# dimensionada pela fila já expirou. É o cenário do #167; o modo padrão satura
+# perto de 20/20 e não distingue configurações do motor.
 #
 # DOIS SENTIDOS, e eles precisam de setups diferentes:
 #   • barge VERDADEIRO (sem MIC_FILE): o mic falso do Chromium fica no padrão dele e
@@ -34,7 +41,7 @@ source "$RAIZ/tests/serial.sh"; serial_pega || exit 1
 
 cd "$RAIZ"
 "$PY" - "$RAIZ" <<'PYEOF'
-import base64, json, os, pathlib, socket, statistics, subprocess, sys, threading, time, urllib.request
+import base64, json, math, os, pathlib, socket, statistics, subprocess, sys, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 RAIZ = pathlib.Path(sys.argv[1])
@@ -63,6 +70,9 @@ def porta_livre():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
 
+def _dbfs(x: float) -> float:
+    return 20.0 * math.log10(x) if x > 1e-9 else -120.0
+
 stub_porta = porta_livre()
 threading.Thread(target=HTTPServer(("127.0.0.1", stub_porta), Stub).serve_forever, daemon=True).start()
 
@@ -79,6 +89,20 @@ for w in sorted(pathlib.Path("voices").glob("*.wav")):
     fala = base64.b64encode(pcm).decode()
     wav_path = pathlib.Path("/tmp") / f"live_barge_fala_{SUF}.wav"
     sf.write(str(wav_path), np.frombuffer(pcm, dtype="<i2"), 16000, subtype="PCM_16")
+    # AMP (#216): a MESMA fala, mais baixa. É a única forma de medir a alavanca que
+    # baixa o LIMIAR no vão (`eco_so_tocando`): com a injeção em escala cheia o
+    # estímulo passa do limiar em qualquer configuração e a alavanca não aparece.
+    # A fala cheia continua sendo usada pelo `garante_turno` (o STT precisa dela).
+    amp = float(os.environ.get("AMP", "1") or 1)
+    if amp != 1.0:
+        pcm_b = np.clip(np.frombuffer(pcm, dtype="<i2").astype(np.float32) * amp,
+                        -32768, 32767).astype("<i2").tobytes()
+        fala_baixa = base64.b64encode(pcm_b).decode()
+        v = np.frombuffer(pcm_b, dtype="<i2").astype(np.float32) / 32768.0
+        voz = v[:int(16000 * (len(v) / 16000 - 3))]     # tira a cauda de 3 s
+        print(f"  AMP={amp}: injeção em {_dbfs(float(np.sqrt(np.mean(voz ** 2)))):.1f} dBFS RMS")
+    else:
+        fala_baixa = fala
     break
 if not fala: raise SystemExit("sem voices/*.wav")
 
@@ -119,6 +143,8 @@ try:
     print(f"servidor {base} · stub :{stub_porta} · repetições={REP}")
 
     from playwright.sync_api import sync_playwright
+    motor_final = {}
+    contagem_final = {}
     with sync_playwright() as p:
         args = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]
         if os.environ.get("MIC_FILE"):
@@ -133,7 +159,8 @@ try:
         # instrumenta: eventos do WS com carimbo (o que o motor DECIDIU fica no
         # payload de speech_start/speech_end/barge_in)
         pg.evaluate("""() => {
-            window.__ev = []; window.__sp = []; window.__audio = 0;
+            window.__ev = []; window.__sp = []; window.__audio = 0; window.__motor = {};
+            window.__barges = 0; window.__interr = 0;
             window.__mk = () => {
                 if (!LX.ws) { setTimeout(window.__mk, 50); return; }
                 LX.ws.addEventListener("message", ev => {
@@ -141,6 +168,13 @@ try:
                     let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
                     window.__ev.push({ tipo: m.type, t: performance.now() });
                     if (["speech_start", "speech_end", "barge_in"].includes(m.type)) window.__sp.push(m);
+                    // #216: no sentido do eco a contagem CUMULATIVA de `barge_in` é a
+                    // medida de "o motor se interrompe sozinho?" — ela não depende de
+                    // a injeção pegar a janela aberta (o ✔ por iteração depende).
+                    if (m.type === "barge_in") window.__barges++;
+                    if (m.type === "interrupted") window.__interr++;
+                    // #216: contadores do MOTOR (cumulativos) — diagnóstico
+                    if (m.type === "stats" && m.motor) window.__motor = m.motor;
                 });
             };
             window.__mk();
@@ -148,7 +182,7 @@ try:
         pg.locator("#lxLigar").click()
         pg.wait_for_function("() => LX.ws && LX.ws.readyState === 1", timeout=20000)
 
-        def injeta():
+        def injeta(b64: str | None = None):
             pg.evaluate("""async (b64) => {
                 const bin = atob(b64); const by = new Uint8Array(bin.length);
                 for (let i = 0; i < bin.length; i++) by[i] = bin.charCodeAt(i);
@@ -159,7 +193,7 @@ try:
                     await new Promise(r => setTimeout(r, 25));
                 }
                 if (LX.ws && LX.ws.readyState === 1) LX.ws.send(JSON.stringify({ type: "end_of_speech" }));
-            }""", fala)
+            }""", b64 or fala)
 
         def audio_n():
             return pg.evaluate("() => window.__audio || 0")
@@ -182,9 +216,32 @@ try:
         # 1º turno da sessão: sem ele não há áudio para interromper
         if not garante_turno():
             print("  ⚠ o 1º turno não devolveu áudio — tail do servidor:\n" + tail(12))
+        # #216: MODO=vao — injeta `VAO_MS` DEPOIS de o turno do assistente terminar
+        # (`turn_complete`), com o cliente ainda com áudio na fila. É o VÃO de
+        # geração: a janela de playback dimensionada pela FILA já expirou (900 ms
+        # após o último envio) e é o único cenário em que as alavancas do #167 têm o
+        # que entregar. No modo padrão o harness injeta com playback ATIVO, o que
+        # satura perto do teto e não distingue as configurações.
+        MODO = (os.environ.get("MODO") or "").strip().lower()
+        VAO_MS = int(os.environ.get("VAO_MS", "900"))
         for i in range(1, REP + 1):
+            if MODO == "vao":
+                if not garante_turno():
+                    resultados.append({"i": i, "ok": False, "motivo": "sem áudio do servidor", "assinatura": {}})
+                    print(f"  [{i}/{REP}] ✖ sem áudio do servidor — tail:\n{tail(6)}")
+                    continue
+                pg.evaluate("() => { window.__ev = []; }")
+                try:
+                    pg.wait_for_function(
+                        "() => window.__ev.some(e => e.tipo === 'turn_complete' || e.tipo === 'interrupted')",
+                        timeout=30000)
+                except Exception:
+                    pass
+                pg.wait_for_timeout(VAO_MS)
+                print(f"  [{i}/{REP}] MODO=vao: {VAO_MS} ms depois do fim do turno ·"
+                      f" playback ativo={pg.evaluate('() => LX.ativos.length')}")
             # playback ativo? se já parou, injeta um turno novo e espera o áudio
-            if not pg.evaluate("() => LX.ativos.length > 0"):
+            elif not pg.evaluate("() => LX.ativos.length > 0"):
                 if not garante_turno():
                     resultados.append({"i": i, "ok": False, "motivo": "sem áudio do servidor", "assinatura": {}})
                     print(f"  [{i}/{REP}] ✖ sem áudio do servidor — tail:\n{tail(6)}")
@@ -192,7 +249,8 @@ try:
             print(f"  [{i}/{REP}] injetando em {time.strftime('%H:%M:%S')} (playback ativo={pg.evaluate('() => LX.ativos.length')})")
             marco = pg.evaluate("() => window.__ev.length")
             est0 = pg.evaluate("() => ({ estado: LX.estado, ativos: LX.ativos.length, chunks: (LX.obs.stats||{}).playback ? LX.obs.stats.playback.chunks : null })")
-            injeta()
+            # a injeção de MEDIÇÃO usa a fala em AMP (o `garante_turno` usa a cheia)
+            injeta(fala_baixa)
             ok = True
             try:
                 pg.wait_for_function("() => window.__ev.some(e => e.tipo === 'interrupted')", timeout=15000)
@@ -203,7 +261,11 @@ try:
                 corte = pg.evaluate("() => { const t = window.__ev.find(e => e.tipo === 'interrupted'); return t ? Math.round(performance.now() - t.t) : null; }")
             novos = pg.evaluate("(m) => window.__ev.slice(m).map(e => e.tipo)", marco)
             assin = pg.evaluate("(m) => (window.__sp || []).slice(-2)", marco)
-            print(f"  [{i}/{REP}] {'✔ barge' if ok else '✖ SEM barge'} · antes={est0} · eventos={novos[:6]}")
+            motor_agora = pg.evaluate("() => window.__motor || {}")
+            print(f"  [{i}/{REP}] {'✔ barge' if ok else '✖ SEM barge'} · antes={est0} · eventos={novos[:6]}"
+                  f" · motor: barge_ativos={motor_agora.get('barge_ativos')}"
+                  f" barge_falsos={motor_agora.get('barge_falsos')}"
+                  f" limiar={motor_agora.get('limiar_dbfs')}")
             for s in assin:
                 print("        motor:", {k: s.get(k) for k in ("type", "barge_in", "barge_falso", "curto", "prob", "rms_dbfs", "fala_ms", "t_decisao_ms", "detalhe") if k in s})
             resultados.append({"i": i, "ok": ok, "antes": est0, "eventos": novos, "assinatura": assin})
@@ -213,6 +275,10 @@ try:
             pg.wait_for_timeout(2500)
             pg.evaluate("() => { window.__ev = []; window.__sp = []; }")
 
+        motor_final = pg.evaluate("() => window.__motor || {}")
+        contagem_final = pg.evaluate(
+            "() => ({barge_in: window.__barges || 0, interrupted: window.__interr || 0, "
+            "audio: window.__audio || 0})")
         b.close()
 
     print("\n=== JANELA DE PLAYBACK (speaking) — para correlacionar com as injeções:")
@@ -225,6 +291,12 @@ try:
         print(f"  falha #{r['i']} · antes={r.get('antes')} · eventos={r.get('eventos')}")
         for s in r.get("assinatura") or []:
             print("        motor:", {k: s.get(k) for k in ("type", "barge_in", "barge_falso", "curto", "prob", "rms_dbfs", "fala_ms", "t_decisao_ms", "detalhe") if k in s})
+    # #216: contadores do MOTOR no fim da rodada. No sentido do eco eles são a
+    # medida objetiva do "barge falso": `barge_ativos` conta TODA interrupção que o
+    # motor armou (a maioria ali não tem humano falando) e `barge_falsos` as que
+    # fecharam sem fala além da janela de confirmação.
+    print(f"\n=== MOTOR (cumulativo da rodada): {json.dumps(motor_final, sort_keys=True)}")
+    print(f"=== CONTAGEM (cumulativa): {json.dumps(contagem_final, sort_keys=True)}")
     if ok_n == 0:
         print("✖ NENHUM barge — não é cauda, é quebrado")
         sys.exit(1)
