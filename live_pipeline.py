@@ -24,6 +24,7 @@ alvo "fim-de-fala → 1º áudio ≤ 1,5 s" é só o primeiro.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import threading
@@ -31,7 +32,25 @@ import time
 import wave
 
 import numpy as np
-from queue import Queue
+from queue import Empty, Queue
+
+# Backend de IA "dsh" (DSH-2): com ele o turno NÃO re-renderiza o histórico a cada
+# vez — o contexto vive na sessão ACP e o turno manda só o texto novo (medido no
+# DSH-1: ttft 384–449 ms quente contra 4,4–7,0 s no 1º prompt da sessão). O teto
+# abaixo é o MESMO do LIVE-5 (`_LIVE_HIST_MAX_*` do app): estourou, o próximo turno
+# volta ao modo histórico (persona + resumo + últimos turnos) numa sessão ACP NOVA,
+# reusando o resumo que o `_live_hist_comprime` já produz — sem LLM extra.
+_DSH_CTX_MAX_MSGS = max(2, int(os.environ.get("TTS_DSH_CTX_MAX_MSGS", "24")))
+_DSH_CTX_MAX_CHARS = max(500, int(os.environ.get("TTS_DSH_CTX_MAX_CHARS", "12000")))
+
+# Persona do 1º prompt de CADA sessão ACP — obrigatória no caminho dsh (DSH-2,
+# decisão do PM). Sem ela o harness responde como agente de código e se alonga; e
+# como o perfil entrega o parágrafo INTEIRO num único `agent_message_chunk`, o 1º
+# áudio passa a esperar a geração toda. Fala curta é o que faz o alvo caber.
+_DSH_PERSONA = (
+    "Você conversa por voz com uma pessoa. Responda em 1 a 3 frases curtas, sem "
+    "markdown e sem bloco de código, em tom de conversa."
+)
 
 # ---------------------------------------------------------------------------
 # Chunking por sentença (puro — é o que decide quando o 1º áudio pode nascer)
@@ -123,7 +142,7 @@ class LivePipeline:
                  history: list | None = None, stt=None, llm=None, tts=None,
                  first_max_chars: int = 18, max_chars: int = 160,
                  first_chunk_max_steps: int = 12, prewarm=None,
-                 detectar_eco: bool = True):
+                 detectar_eco: bool = True, dsh=None):
         self.emit_json = emit_json
         self.emit_audio = emit_audio
         self.voice_id = voice_id
@@ -132,9 +151,21 @@ class LivePipeline:
         self.history = list(history or [])
         self._stt = stt or _stt_app
         self._llm = llm or _llm_stream_app
+        # Backend dsh (DSH-2): cliente POR SESSÃO Live, com stream/cancel/prewarm.
+        # Presente, ele substitui o `llm` no turno; ausente/none, o caminho openai
+        # (ou o `llm` injetado pelos testes) fica IDÊNTICO ao de antes.
+        self._dsh = dsh
+        self._dsh_nova = True             # 1º turno manda o contexto renderizado
+        self._dsh_turno = ""              # identidade do turno em voo no dsh
+        self._dsh_indisponivel = False    # #146: dsh morto -> turnos no openai
+        self._dsh_motivo = ""             # motivo do fallback (vai para o `stats`)
         # a voz vem do `setup` da sessão, não do default do app
-        self._tts = tts or (lambda texto, omni: _tts_app(texto, omni,
-                                                         voice_id=self.voice_id))
+        # Sem `tts` injetado, o turno tenta o worker PERSISTENTE da sessão (#152) e
+        # cai no `_tts_app` in-process na 1ª falha (ver `_tts_live`).
+        self._worker = None
+        self._worker_indisponivel = False
+        self._worker_motivo = ""
+        self._tts = tts or self._tts_live
         self._prewarm = prewarm or _prewarm_app
         self.first_max_chars = first_max_chars
         self.max_chars = max_chars
@@ -166,15 +197,85 @@ class LivePipeline:
 
         Passa a voz da sessão: o Metal compila por forma e uma geração SEM o
         clone prompt não aquece o caminho que o turno usa (medido: 0,9 s no 1º
-        chunk sem isto, 0,36 s com)."""
+        chunk sem isto, 0,36 s com).
+
+        O worker persistente (#152) sobe AQUI, fora do turno, e o pre-warm pula o
+        TTS in-process quando ele assumiu (senão o modelo do pai ficaria carregado
+        à toa enquanto o filho tem o mesmo modelo)."""
+        worker_ok = self._worker_sobe()
         try:
-            self._prewarm(voice_id=self.voice_id)
-        except TypeError:                 # prewarm de teste sem o parâmetro
+            self._prewarm(voice_id=self.voice_id, tts_in_process=not worker_ok)
+        except TypeError:                 # prewarm de teste sem os parâmetros
             self._prewarm()
+        if self._dsh is not None:
+            # boot + handshake + prompt curto do dsh: 17–18 s a frio (composição do
+            # perfil no 1º uso do host) e ~0,5 s quente. Roda na thread do
+            # `_live_pipe_start`, então NÃO entra no orçamento do turno.
+            #
+            # Falha AQUI é o caso real (#146): quem morre é o handshake (processo
+            # rc=1, EPERM no perfil do dsh…), não a construção do cliente. Marcar a
+            # sessão como indisponível já no pre-warm evita o turno pagar as
+            # tentativas de backoff com o usuário esperando — o resto da sessão vai
+            # de openai, que é o caminho testado.
+            try:
+                self._dsh.prewarm()
+            except Exception as exc:      # noqa: BLE001
+                self._dsh_morreu(exc)
 
     def close(self) -> None:
         self._saiu = True
         self.cancel()
+        if self._worker is not None:
+            # worker é POR sessão: morre com ela (sem ele o filho ficaria com o
+            # modelo na RAM depois de o cliente ir embora)
+            self._worker.fecha()
+            self._worker = None
+        if self._dsh is not None:
+            try:
+                self._dsh.close()         # cliente é POR sessão: fecha com ela
+            except Exception:             # noqa: BLE001 — fechar é best-effort
+                pass
+
+    # -- TTS do turno: worker persistente da sessão (#152) ------------------
+    def _worker_sobe(self) -> bool:
+        """Sobe o worker persistente no pre-warm (fora do turno).
+
+        False = segue in-process para sempre nesta sessão (família não isolada,
+        knob desligado ou o filho não subiu)."""
+        if not _worker_habilitado():
+            return False
+        self._worker = _LiveWorker(voice_id=self.voice_id)
+        try:
+            self._worker.start()
+            return True
+        except Exception as exc:            # noqa: BLE001 — pre-warm falho não derruba
+            self._worker_indisponivel = True
+            self._worker_motivo = f"{type(exc).__name__}: {exc}"
+            print(f"[live] worker TTS não subiu ({self._worker_motivo}) — "
+                  f"sessão no in-process", flush=True)
+            self._worker.fecha()
+            self._worker = None
+            return False
+
+    def _tts_live(self, texto: str, omni: dict):
+        """TTS do turno: worker persistente; in-process quando ele não serve.
+
+        A 1ª falha do worker (processo morto, timeout, erro do filho) marca a
+        sessão e o chunk é regerado in-process — o usuário não fica sem áudio e os
+        turnos seguintes nem tentam o worker (mesmo padrão do fallback do dsh)."""
+        if not self._worker_indisponivel and _worker_habilitado():
+            if self._worker is None:
+                self._worker = _LiveWorker(voice_id=self.voice_id)
+            if self._worker.ativo:
+                try:
+                    return self._worker.gerar(texto, omni)
+                except Exception as exc:    # noqa: BLE001
+                    self._worker_indisponivel = True
+                    self._worker_motivo = f"{type(exc).__name__}: {exc}"
+                    print(f"[live] worker TTS caiu no turno ({self._worker_motivo})"
+                          f" — in-process daqui em diante", flush=True)
+                    self._worker.fecha()
+        return _tts_app(texto, omni, voice_id=self.voice_id)
 
     # -- entrada ------------------------------------------------------------
     def push_pcm(self, frames: bytes, substituir: bool = False) -> None:
@@ -247,12 +348,120 @@ class LivePipeline:
         return True
 
     def cancel(self) -> None:
-        """Barge-in/`cancel`: derruba geração e fila. Thread-safe e idempotente."""
+        """Barge-in/`cancel`: derruba geração e fila. Thread-safe e idempotente.
+
+        No backend dsh derruba TAMBÉM o `session/prompt` em voo do harness: sem
+        isso a sessão ACP segue gerando depois do barge-in e um chunk tardio
+        entraria no TTS do turno seguinte. Casa por identidade de turno (o
+        `cancel` de um turno velho não mata o novo)."""
         self._cancel.set()
+        if self._dsh is not None and self._dsh_turno:
+            try:
+                self._dsh.cancel(self._dsh_turno)
+            except Exception:             # noqa: BLE001 — cancelar é best-effort
+                pass
 
     @property
     def cancelado(self) -> bool:
         return self._cancel.is_set()
+
+    def _deltas(self, msgs: list, texto: str, turno_id: str):
+        """Deltas de texto do turno — backend dsh quando presente, senão o `llm`.
+
+        MODO SESSÃO: só o 1º turno (e o primeiro depois do teto de contexto) manda
+        o histórico renderizado + persona, porque é ele que ABRE a sessão ACP; os
+        seguintes mandam apenas o texto novo — o contexto fica do lado do harness,
+        que é o que sustenta o ttft de ~0,4 s (medido no DSH-1) contra o reenvio
+        da conversa inteira a cada turno.
+
+        A identidade do turno fica gravada ANTES de qualquer chunk: com ela o
+        `cancel` acha o que derrubar no harness e o laço do turno descarta delta
+        de turno abandonado — o SentenceChunker é o último portão antes do TTS."""
+        if self._dsh is None or self._dsh_indisponivel:
+            # sem dsh: caminho openai. A identidade do turno fica gravada de
+            # qualquer forma — o laço do turno compara com ela e o `cancel` do
+            # barge-in continua achando o turno (o cliente morto ignora).
+            self._dsh_turno = turno_id
+            return self._llm(msgs)
+        return self._deltas_dsh(msgs, texto, turno_id)
+
+    def _deltas_dsh(self, msgs: list, texto: str, turno_id: str):
+        """Deltas pelo dsh, com REDE DE SEGURANÇA para o openai (#146).
+
+        O handshake/boot do harness pode morrer ANTES de qualquer token (binário
+        errado, `~/.dsh` sem permissão de escrita, Node antigo…). Sem isto a sessão
+        ficava MUDA: o pipeline plugava o cliente, o turno estourava em erro e o
+        usuário não ouvia nada. Se o erro vier antes do 1º delta, marcamos o dsh
+        como indisponível, avisamos e refazemos o turno no `llm` (openai) — o
+        usuário é respondido. Falha no MEIO do stream não dá para refazer sem
+        repetir texto: aí o turno fecha com `error{pipeline}`, mas o dsh também
+        fica marcado e o PRÓXIMO turno já nasce no openai."""
+        self._dsh_turno = turno_id
+        if self._dsh_nova:
+            self._dsh_nova = False
+            gen = self._dsh.stream(self._dsh_ctx(texto), turno_id)
+        else:
+            gen = self._dsh.stream(texto, turno_id)
+        try:
+            primeiro = next(gen)          # boot/handshake falham aqui, antes de texto
+        except StopIteration:
+            return
+        except Exception as exc:          # noqa: BLE001 — dsh fora: refaz no openai
+            self._dsh_morreu(exc)
+            yield from self._llm(msgs)
+            return
+        yield primeiro
+        try:
+            yield from gen
+        except Exception as exc:          # noqa: BLE001 — já falou parte do texto
+            self._dsh_morreu(exc, avisa=False)
+            raise
+
+    def _dsh_morreu(self, exc: Exception, avisa: bool = True) -> None:
+        """Marca o dsh como indisponível nesta sessão (uma vez) e libera o processo.
+
+        Sem volta: uma vez marcado, NENHUM turno tenta o dsh de novo (as tentativas
+        de backoff dentro do turno são o que travava o 1º áudio). O motivo fica
+        guardado para o `stats`/log."""
+        if self._dsh_indisponivel:
+            return
+        self._dsh_indisponivel = True
+        self._dsh_motivo = f"{type(exc).__name__}: {exc}"[:300]
+        print(f"[live] dsh indisponível na sessão — turnos seguem no openai: "
+              f"{self._dsh_motivo}", flush=True)
+        try:
+            cliente, self._dsh = self._dsh, None
+            cliente.close()               # órfão NÃO fica pendurado
+        except Exception:                 # noqa: BLE001
+            pass
+        if avisa:
+            self.emit_json({"type": "dsh_indisponivel", "fallback": "openai",
+                            "message": self._dsh_motivo[:200]})
+
+    def _dsh_ctx(self, texto: str) -> list:
+        """Prompt de ABERTURA de sessão ACP: persona + system da sessão + histórico.
+
+        A persona é obrigatória e vai na FRENTE (o harness não tem system prompt no
+        protocolo: quem abre a sessão é este prompt). Vale também para a sessão
+        reaberta pelo teto de contexto — sessão nova, persona nova."""
+        sistema = _DSH_PERSONA
+        if self.system:
+            sistema = f"{sistema}\n\n{self.system}"
+        return ([{"role": "system", "content": sistema}] + list(self.history)
+                + [{"role": "user", "content": texto}])
+
+    def _dsh_pos_turno(self) -> None:
+        """Teto de contexto do dsh, no FIM do turno (fora da latência).
+
+        Estourou, o próximo turno reabre sessão ACP nova com o contexto
+        RENDERIZADO. O resumo não é recalculado aqui: o `_live_hist_comprime` do
+        app já reescreveu `self.history` com a linha "Resumo do que já foi dito",
+        e é ela que entra no prompt da sessão nova (reuso, sem LLM extra)."""
+        if self._dsh is None or self._dsh_nova:
+            return
+        if len(self.history) > _DSH_CTX_MAX_MSGS or \
+                sum(len(m.get("content") or "") for m in self.history) > _DSH_CTX_MAX_CHARS:
+            self._dsh_nova = True
 
     def _parece_eco(self, texto: str) -> bool:
         """Compara com o texto EM REPRODUÇÃO (fallback: último do assistente)."""
@@ -317,10 +526,13 @@ class LivePipeline:
                                       max_chars=self.max_chars)
             msgs = ([{"role": "system", "content": self.system}] if self.system else []) \
                 + self.history + [{"role": "user", "content": texto}]
+            turno_id = f"lt{turno}"
             inteiro = []
-            for delta in self._llm(msgs):
+            for delta in self._deltas(msgs, texto, turno_id):
                 if self.cancelado:
                     break
+                if self._dsh is not None and self._dsh_turno != turno_id:
+                    break                 # identidade: chunk de turno abandonado
                 if lat["first_token_ms"] is None:
                     lat["first_token_ms"] = _ms(t0)
                 inteiro.append(delta)
@@ -343,6 +555,7 @@ class LivePipeline:
             self._fala_em_curso = resposta      # é o que o cliente vai tocar
             self.history += [{"role": "user", "content": texto},
                              {"role": "assistant", "content": resposta}]
+            self._dsh_pos_turno()           # teto de contexto: fora da latência
 
             if self.cancelado:
                 return self._interrompido(lat, t0, turno, estado)
@@ -472,7 +685,27 @@ def _release_app() -> None:
     app._release_mlx_memory(aggressive=True)
 
 
-def _prewarm_app(voice_id: str | None = None) -> None:
+def _stt_aquece(app) -> None:
+    """Uma transcrição curta p/ compilar o whisper (chama o mlx_whisper DIRETO).
+
+    `app._transcribe` curto-circuita no VAD quando não há fala: com um tom (ou
+    silêncio) o whisper nunca era chamado e o 1º turno pagava a compilação dele de
+    qualquer forma (medido: 5 s no 1º turno do smoke). `_stt_lock`: sem ele o
+    prewarm roda Metal junto com um STT em curso. Falha aqui não derruba nada."""
+    try:
+        import mlx_whisper
+        tom = (np.sin(np.linspace(0, 2 * np.pi * 220, 8000)) * 0.3).astype(np.float32)
+        with app._stt_lock:
+            mlx_whisper.transcribe(
+                tom, path_or_hf_repo=app._whisper_repo(), language="pt",
+                temperature=0.0, condition_on_previous_text=False,
+                no_speech_threshold=0.99, logprob_threshold=-3.0,
+                compression_ratio_threshold=9.9)
+    except Exception as exc:              # noqa: BLE001
+        print(f"[live] pre-warm do STT falhou ({type(exc).__name__}) — segue", flush=True)
+
+
+def _prewarm_app(voice_id: str | None = None, tts_in_process: bool = True) -> None:
     """Carrega os modelos E faz uma inferência de cada — uma vez por PROCESSO.
 
     Medido: só carregar não basta — o 1º turno pagava a compilação dos kernels
@@ -481,31 +714,28 @@ def _prewarm_app(voice_id: str | None = None) -> None:
 
     A partir da 2ª sessão do processo só resta garantir os modelos carregados: as
     inferências de aquecimento já não têm o que compilar (e repeti-las por sessão
-    custava ~15 s por teste na suíte)."""
+    custava ~15 s por teste na suíte).
 
+    `tts_in_process=False` (#152): quem aquece o TTS é o worker PERSISTENTE da
+    sessão (ele carrega e aquece no `init`, também fora do turno). Aqui o modelo
+    TTS do pai é LIBERADO em vez de carregado — senão o mesmo modelo viveria duas
+    vezes na RAM do M3. O STT/chat seguem iguais (o worker é só TTS)."""
 
     import app
+    global _PREWARM_FEITO
     with _prewarm_trava:
         app._vad_load()
+        if not tts_in_process:
+            app._unload_local_tts()      # o worker tem o modelo; o pai não precisa
+            if not _PREWARM_FEITO:
+                _stt_aquece(app)
+                _prewarm_chat()
+                _PREWARM_FEITO = True
+            return
         modelo = app._get_model()
-        global _PREWARM_FEITO
         if _PREWARM_FEITO:
             return
-        try:                              # STT: chama o whisper DIRETO
-            # `app._transcribe` curto-circuita no VAD quando não há fala: com um
-            # tom (ou silêncio) o whisper nunca era chamado e o 1º turno pagava a
-            # compilação dele de qualquer forma (medido: 5 s no 1º turno do smoke).
-            # `_stt_lock`: sem ele o prewarm roda Metal junto com um STT em curso.
-            import mlx_whisper
-            tom = (np.sin(np.linspace(0, 2 * np.pi * 220, 8000)) * 0.3).astype(np.float32)
-            with app._stt_lock:
-                mlx_whisper.transcribe(
-                    tom, path_or_hf_repo=app._whisper_repo(), language="pt",
-                    temperature=0.0, condition_on_previous_text=False,
-                    no_speech_threshold=0.99, logprob_threshold=-3.0,
-                    compression_ratio_threshold=9.9)
-        except Exception as exc:                                        # noqa: BLE001
-            print(f"[live] pre-warm do STT falhou ({type(exc).__name__}) — segue", flush=True)
+        _stt_aquece(app)
         try:                              # TTS: um chunk curto compila o decoder
             omni = _perfil_live(primeiro_chunk=True, max_steps=_LIVE_MAX_STEPS)
             sr = int(getattr(modelo, "sample_rate", 24000) or 24000)
@@ -689,6 +919,240 @@ def _idioma_tts() -> str:
     """Idioma do texto p/ o TTS. O do app pode ser "auto" (deixa o modelo detectar)."""
     import app
     return app._settings.get("language") or "auto"
+
+
+# ---------------------------------------------------------------------------
+# Worker TTS PERSISTENTE por sessão (#152)
+#
+# POR QUE: o `tts_worker` (processo filho) isola o crash nativo do Metal, mas paga
+# o load do modelo a cada job — medido com kokoro: 7,5 s de 1º áudio contra 0,24 s
+# no in-process quente. No Live o alvo é 1,5 s, então família isolada ficava
+# impossível. Aqui o filho carrega UMA vez por SESSÃO e atende N turnos pelo
+# protocolo NDJSON do `tts_worker.py --serve`.
+#
+# EXCLUSIVIDADE DE METAL (o desenho): o árbitro continua sendo o `app._gen_lock`,
+# o MESMO lock da geração in-process e do spawn do worker de lote (que o segura
+# pelo job inteiro). `_LiveWorker.start()` e `_LiveWorker.gerar()` seguram esse
+# lock durante toda a operação — logo jamais há duas gerações no Metal: Live
+# (worker ou in-process), Conversa/UI e job de lote se serializam. Com o worker
+# vivo a sessão do Live NÃO gera in-process; na 1ª falha ela marca
+# `worker_indisponivel` e passa a gerar in-process (o filho morre), sem tocar o
+# lock de dentro do lock. O modelo do pai é liberado quando o filho assume
+# (`_unload_local_tts`), senão a RAM do M3 carregaria o mesmo modelo duas vezes.
+# ---------------------------------------------------------------------------
+
+_LIVE_WORKER_LIGADO = os.environ.get("TTS_LIVE_WORKER", "1") != "0"
+
+
+class _WorkerMorto(RuntimeError):
+    """Falha do worker persistente: o chamador cai no in-process."""
+
+
+def _worker_habilitado() -> bool:
+    """Worker só no caminho do Live E para família isolada (as que crasham Metal)."""
+    if not _LIVE_WORKER_LIGADO:
+        return False
+    try:
+        import app
+        return app._current_backend()["family"] in app._ISOLATED_FAMILIES
+    except Exception:                    # noqa: BLE001 — sem app, segue in-process
+        return False
+
+
+def _py_do_projeto() -> str:
+    import sys
+
+    import app
+    py = app.BASE / ".venv-mlx" / "bin" / "python"
+    return str(py) if py.exists() else sys.executable
+
+
+class _LiveWorker:
+    """Cliente do worker persistente — um por sessão do Live.
+
+    Protocolo: NDJSON em stdin/stdout (`tts_worker.py --serve`). Leitor em thread
+    própria porque o `gerar` é chamado da thread de TTS do turno; EOF do filho
+    (crash) chega como `_WorkerMorto` em vez de travar o turno para sempre.
+    """
+
+    def __init__(self, voice_id: str | None = None, *, py=None, script=None,
+                 timeout_s=None):
+        self.voice_id = voice_id
+        self._py = py
+        self._script = script
+        self._timeout = float(timeout_s or os.environ.get("TTS_LIVE_WORKER_TIMEOUT_S", "60"))
+        self._proc = None
+        self._log = None
+        self._leitor = None
+        self._fila: Queue = Queue()
+        self._ativo = False
+        self._n = 0
+
+    @property
+    def ativo(self) -> bool:
+        return self._ativo
+
+    def start(self) -> None:
+        """Spawna o filho e espera o `ready` (load+aquece DENTRO do `_gen_lock`)."""
+        import subprocess
+        import uuid
+
+        import app
+        if self._ativo:
+            return
+        self._log = open(app.OUTPUTS_DIR /
+                         f".live-tts-worker-{os.getpid()}-{uuid.uuid4().hex[:8]}.log",
+                         "w", encoding="utf-8")  # nome único: sessões em paralelo
+        cfg = {
+            "voice_id": self.voice_id or "",
+            "voice_path": "",
+            "language": app._settings.get("language") or "auto",
+            "omni": {},
+            "model": app._settings.get("model"),
+            "settings": {
+                "chunk_max_chars": app._settings.get("chunk_max_chars", 140),
+                "omni_ref_max_s": app._settings.get("omni_ref_max_s", 10.0),
+                "omni_precision": app._settings.get("omni_precision", "bf16"),
+                "audio_gain_db": app._settings.get("audio_gain_db", 0.0),
+                "audio_eq_low_db": app._settings.get("audio_eq_low_db", 0.0),
+                "audio_eq_mid_db": app._settings.get("audio_eq_mid_db", 0.0),
+                "audio_eq_high_db": app._settings.get("audio_eq_high_db", 0.0),
+            },
+            "voices_dir": str(app.VOICES_DIR),
+            "base_dir": str(app.BASE),
+        }
+        trava = app._NO_LOCK if app._use_remote_tts() else app._gen_lock
+        try:
+            with trava:
+                self._proc = subprocess.Popen(
+                    [self._py or _py_do_projeto(),
+                     str(self._script or (app.BASE / "tts_worker.py")), "--serve"],
+                    cwd=str(app.BASE), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=self._log, text=True, bufsize=1,
+                    start_new_session=True,     # grupo próprio: kill limpo
+                )
+                self._leitor = threading.Thread(target=self._le, daemon=True)
+                self._leitor.start()
+                self._envia({"type": "init", "config": cfg})
+                r = self._espera(("ready", "fatal"),
+                                 timeout=float(os.environ.get("TTS_LIVE_WORKER_INIT_S", "300")))
+        except Exception:
+            self.fecha()
+            raise
+        if r.get("type") == "fatal":
+            erro = r.get("error") or "init falhou"
+            self.fecha()
+            raise _WorkerMorto(erro)
+        self._ativo = True
+
+    def _envia(self, obj: dict) -> None:
+        if self._proc is None or self._proc.stdin is None:
+            raise _WorkerMorto("worker não iniciado")
+        try:
+            self._proc.stdin.write(json.dumps(obj, ensure_ascii=False) + "\n")
+            self._proc.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            raise _WorkerMorto(f"stdin: {exc}") from exc
+
+    def _le(self) -> None:
+        proc = self._proc
+        try:
+            for linha in proc.stdout:
+                linha = linha.strip()
+                if not linha:
+                    continue
+                try:
+                    self._fila.put(json.loads(linha))
+                except ValueError:
+                    print(f"[live-worker] fora do protocolo: {linha[:120]}", flush=True)
+        except Exception:                # noqa: BLE001 — leitura best-effort
+            pass
+        finally:
+            self._fila.put({"type": "_eof"})
+
+    def _espera(self, tipos: tuple, timeout: float) -> dict:
+        limite = time.monotonic() + timeout
+        while True:
+            restante = limite - time.monotonic()
+            if restante <= 0:
+                raise _WorkerMorto(f"timeout de {timeout:.0f}s esperando {tipos}")
+            try:
+                msg = self._fila.get(timeout=restante)
+            except Empty:
+                raise _WorkerMorto(f"timeout de {timeout:.0f}s esperando {tipos}") from None
+            if msg.get("type") == "_eof":
+                raise _WorkerMorto("worker morreu (EOF no protocolo)")
+            if msg.get("type") in tipos:
+                return msg
+
+    def gerar(self, texto: str, omni: dict):
+        """Um chunk pelo filho. Levanta `_WorkerMorto` em qualquer falha."""
+        import base64
+
+        import app
+        if not self._ativo:
+            raise _WorkerMorto("worker inativo")
+        self._n += 1
+        trava = app._NO_LOCK if app._use_remote_tts() else app._gen_lock
+        with trava:                      # Metal: uma geração por vez (ver topo)
+            if not self._ativo:
+                raise _WorkerMorto("worker inativo")
+            self._envia({"type": "synth", "id": self._n, "text": texto,
+                         "omni": omni or {}})
+            r = self._espera(("ok", "err"), self._timeout)
+        if r.get("type") == "err":
+            raise _WorkerMorto(r.get("error") or "erro no worker")
+        if r.get("id") != self._n:
+            raise _WorkerMorto(f"resposta fora de ordem (id {r.get('id')} != {self._n})")
+        audio = np.frombuffer(base64.b64decode(r.get("audio_b64") or ""),
+                              dtype=np.float32)
+        if audio.size == 0:
+            raise _WorkerMorto("áudio vazio")
+        return audio
+
+    def fecha(self) -> None:
+        """Encerra o filho (fim/TTL da sessão). Idempotente e best-effort."""
+        self._ativo = False
+        proc = self._proc
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    try:
+                        self._envia({"type": "close"})
+                        proc.wait(timeout=5)
+                    except Exception:    # noqa: BLE001
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except Exception:  # noqa: BLE001
+                            proc.kill()
+            except Exception:            # noqa: BLE001
+                try:
+                    proc.kill()
+                except Exception:        # noqa: BLE001
+                    pass
+            for fluxo in (proc.stdin, proc.stdout):
+                try:
+                    if fluxo is not None:
+                        fluxo.close()
+                except Exception:        # noqa: BLE001
+                    pass
+        self._proc = None
+        if self._log is not None:
+            caminho = self._log.name
+            try:
+                self._log.close()
+            except Exception:            # noqa: BLE001
+                pass
+            self._log = None
+            # log vazio não deixa lixo (suítes criam dezenas de sessões): fica só
+            # quando o filho de fato escreveu algo (warning/erro do modelo)
+            try:
+                p = pathlib.Path(caminho)
+                if p.exists() and p.stat().st_size == 0:
+                    p.unlink()
+            except Exception:            # noqa: BLE001
+                pass
 
 
 # ---------------------------------------------------------------------------

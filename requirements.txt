@@ -15,6 +15,10 @@ soundfile
 scipy
 fastapi
 uvicorn
+# WS: sem `websockets` (ou wsproto) o uvicorn NÃO faz upgrade de WebSocket —
+# o TestClient passa (in-process) e o navegador toma 500. O /api/live/ws depende
+# disto; 17.1 = versão instalada e verificada com o app de pé.
+websockets
 python-multipart
 # < 2026.08.19: YouTube SABR devolve 403 no download (android_vr default).
 yt-dlp>=2026.08.19

@@ -6,9 +6,16 @@ PY=.venv-mlx/bin/python
 [ -x "$PY" ] || PY=python3
 
 # Módulos do épico Live, por dono — entram aqui para o gate estático não ter
-# buraco: live_turns.py + smoke_live_turns.py são do audio-ml (#92/LIVE-2) e
-# live_pipeline.py é do speech-pipeline (#93/LIVE-3). Módulo novo do épico,
-# linha nova aqui.
-"$PY" -m pyflakes app.py common.py tts_worker.py backends.py smoke_sintese.py remote/*.py \
-    live_turns.py smoke_live_turns.py live_pipeline.py tests/*.py client/mic_router.py || exit 1
+# buraco: live_turns.py + smoke_live_turns.py + smoke_worker_persist.py são do
+# audio-ml (#92/LIVE-2, #152) e live_pipeline.py é do speech-pipeline (#93/LIVE-3).
+# Módulo novo do épico, linha nova aqui.
+"$PY" -m pyflakes app.py common.py tts_worker.py backends.py dsh_client.py smoke_sintese.py remote/*.py \
+    live_turns.py smoke_live_turns.py live_pipeline.py smoke_worker_persist.py \
+    tests/*.py client/mic_router.py || exit 1
 "$PY" -m pytest tests/ -q || exit 1
+
+# O pytest acima é o DEFAULT: o caminho LIGADO do worker TTS do Live (família
+# isolada, modelo real) fica FORA dele — os testes marcados `worker_real` (#166)
+# rodam com `TTS_TEST_WORKER=1 $PY -m pytest -m worker_real -q`. O resumo do pytest
+# avisa em todo run quando esse caminho não correu, para o default não ser falso
+# verde; mexeu em live_pipeline.py/tts_worker.py, rode também o `-m worker_real`.

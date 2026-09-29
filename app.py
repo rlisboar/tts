@@ -5,10 +5,13 @@ Fish S2, Chatterbox, Kokoro, PocketTTS, VoxCPM2, Voxtral, etc.
 Tudo local: nenhum áudio ou texto sai da máquina.
 """
 
+import asyncio
 import concurrent.futures
 import hashlib
 import json
+import logging
 import os
+import queue
 import re
 import secrets as _secrets
 import signal
@@ -25,7 +28,9 @@ from collections import OrderedDict
 from collections import defaultdict, deque
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (FastAPI, File, Form, HTTPException, Request, UploadFile,
+                     WebSocket)
+from fastapi import WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -38,6 +43,7 @@ from fastapi.staticfiles import StaticFiles
 # imports locais porque o próprio onnxruntime lê a var ao ser importado.
 os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
+import dsh_client
 from backends import generate_with_backend, list_backends, resolve_backend
 from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,
                     resolve_omni_source, write_json_atomic,
@@ -273,6 +279,19 @@ _SETTINGS_DEFAULTS = {
     "chat_api_key": "",               # vazio = usa remote_api_key
     "chat_system": "",                # instruções da IA (preprompt); vazio = prompt padrão
     "chat_extra": "",                 # JSON com params extras do LLM (reasoning_effort, top_p…)
+    # Backend de IA alternativo: o harness `dsh` via ACP (ver dsh_client.py). "openai"
+    # (default) = endpoint+chave acima, comportamento INTACTO; "dsh" = processo local
+    # com o perfil sem tools. O default do modelo é a rota COM chave deste host (a
+    # rota default do catálogo, `deepseek-official`, falha -32603 sem credencial).
+    "chat_backend": "openai",
+    # Backend SÓ do Live (#176): a recomendação de rota difere entre as duas telas
+    # (no Live o dsh dá 1º token ~0,4 s contra 4–11 s do provedor remoto; na
+    # Conversa o provedor atual serve). VAZIO = herda `chat_backend`.
+    "chat_backend_live": "",
+    "chat_dsh_bin": "dsh",            # `dsh` resolvido no PATH (ou caminho absoluto)
+    "chat_dsh_profile": dsh_client.DSH_DEFAULT_PROFILE,
+    "chat_dsh_model": dsh_client.DSH_DEFAULT_MODEL,   # par opaco JSON ["rota","modelo"]
+    "chat_dsh_effort": "off",         # off|low|high|max (off = orçamento do Live)
     # Verificação de locutor (biometria de voz): off | enforce (só vozes
     # cadastradas) | label (transcreve todos e etiqueta quem falou)
     "speaker_gate": "off",
@@ -1284,6 +1303,9 @@ def status():
     st["vad_backend"] = _vad_backend or None
     # Tamanho do dict do rate limiter (buckets = identidade × path normalizado) e o
     # teto: era invisível e só aparecia como memória crescendo em caixa exposta.
+    st["live_sessions"] = len(_live_sessions)
+    st["live_historicos"] = len(_live_historico)
+    st["live_historicos_max"] = _LIVE_MAX_HISTORICOS
     st["rate_limit_buckets"] = len(_rate_hits)
     st["rate_limit_buckets_max"] = _RATE_MAX_BUCKETS
     with _apikeys_lock:
@@ -1546,12 +1568,23 @@ CHAT_SYSTEM = (
 
 
 def _chat_provider() -> tuple[str, str, str]:
-    """(base_url, model, api_key) efetivos — chat_* com fallback p/ tradução."""
-    base = (_settings.get("chat_base_url") or "").strip() \
+    """(base_url, model, api_key) efetivos — chat_* com fallback p/ tradução.
+
+    `TTS_CHAT_BASE_URL` / `TTS_CHAT_MODEL` / `TTS_CHAT_API_KEY` (ambiente) têm
+    PRECEDÊNCIA sobre as settings: é o que permite teste/smoke apontar para um stub
+    SEM gravar no `settings.json` REAL. Motivo (incidente 2026-09-25): o smoke
+    gravava via POST /api/settings, o `finally` do restore não roda se o run morre
+    — e o snapshot seguinte já era o estado poluído, então o mecanismo não se
+    auto-curava. Com env, o arquivo do dono fica intocado por construção.
+    A precedência é POR CAMPO: setar só `TTS_CHAT_MODEL` não derruba a base URL."""
+    base = (os.environ.get("TTS_CHAT_BASE_URL") or "").strip() \
+        or (_settings.get("chat_base_url") or "").strip() \
         or (_settings.get("remote_base_url") or "").strip()
-    model = (_settings.get("chat_model") or "").strip() \
+    model = (os.environ.get("TTS_CHAT_MODEL") or "").strip() \
+        or (_settings.get("chat_model") or "").strip() \
         or (_settings.get("remote_translate_model") or "gpt-4o-mini")
-    key = (_settings.get("chat_api_key") or "").strip() \
+    key = (os.environ.get("TTS_CHAT_API_KEY") or "").strip() \
+        or (_settings.get("chat_api_key") or "").strip() \
         or (_settings.get("remote_api_key") or "").strip()
     if not base:
         raise HTTPException(400, "Provedor de conversa não configurado "
@@ -1560,6 +1593,13 @@ def _chat_provider() -> tuple[str, str, str]:
 
 
 def _chat_llm(messages: list) -> str:
+    """Devolve o conteúdo da resposta. Despacha pelo backend (`chat_backend`)."""
+    if _chat_backend() == "dsh":
+        return _chat_llm_dsh(messages)
+    return _chat_llm_openai(messages)
+
+
+def _chat_llm_openai(messages: list) -> str:
     """Chama /chat/completions do provedor e devolve o conteúdo da resposta."""
     import urllib.request
     base, model, key = _chat_provider()
@@ -1595,10 +1635,13 @@ def _chat_llm(messages: list) -> str:
         req = urllib.request.Request(f"{base}/chat/completions", data=_corpo(effort),
                                      method="POST", headers=headers)
         try:
+            _provedor_marca("chamando")
             with urllib.request.urlopen(req, timeout=120, context=ctx) as resp:
+                _provedor_marca("ok", getattr(resp, "status", 200))
                 dados = json.loads(resp.read())
             return dados["choices"][0]["message"]["content"] or ""
         except urllib.error.HTTPError as e:
+            _provedor_marca("erro", e.code)
             ultimo_erro = f"HTTP {e.code}"
             if e.code not in (400, 422):
                 raise HTTPException(502, f"Provedor de conversa falhou: HTTP {e.code}")
@@ -1606,8 +1649,220 @@ def _chat_llm(messages: list) -> str:
         except HTTPException:
             raise
         except Exception as e:
+            _provedor_marca("timeout" if "timed out" in str(e).lower() else "erro")
             raise HTTPException(502, f"Provedor de conversa falhou: {e}")
     raise HTTPException(502, f"Provedor de conversa falhou: {ultimo_erro}")
+
+
+# ---------------------------------------------------------------------------
+# Backend de IA "dsh" (harness via ACP) — task_129d2183. O `chat_backend` escolhe
+# entre o endpoint OpenAI-compat acima e o processo local do dsh. `_chat_provider`
+# não muda de assinatura; o caminho openai fica INTACTO. Env por CAMPO, no mesmo
+# padrão do `TTS_CHAT_*`: `TTS_CHAT_BACKEND`/`TTS_CHAT_DSH_{BIN,PROFILE,MODEL,EFFORT}`.
+# ---------------------------------------------------------------------------
+def _chat_backend() -> str:
+    """Backend do caminho da CONVERSA (e herança do Live — ver `_chat_backend_live`)."""
+    v = (os.environ.get("TTS_CHAT_BACKEND") or "").strip().lower() \
+        or str(_settings.get("chat_backend") or "openai").strip().lower()
+    return v if v in ("openai", "dsh") else "openai"
+
+
+def _chat_backend_live() -> str:
+    """Backend do caminho do LIVE (#176) — `chat_backend_live` com fallback ao global.
+
+    POR QUE SEPARAR: as duas telas têm recomendações diferentes (o Live ganha muito
+    com o dsh; a Conversa vai bem no provedor do dono). Um campo global obrigava a
+    escolher entre as duas. Vazio = herda, então quem não mexer nada não muda."""
+    v = (os.environ.get("TTS_CHAT_BACKEND_LIVE") or "").strip().lower() \
+        or str(_settings.get("chat_backend_live") or "").strip().lower()
+    return v if v in ("openai", "dsh") else _chat_backend()
+
+
+def _chat_dsh_cfg() -> dict:
+    """Config do dsh com precedência POR CAMPO do ambiente (setar só um não derruba os outros)."""
+    def campo(sufixo: str, setting: str, default: str) -> str:
+        return (os.environ.get(f"TTS_CHAT_DSH_{sufixo}") or "").strip() \
+            or str(_settings.get(setting) or "").strip() or default
+    return {
+        "bin": campo("BIN", "chat_dsh_bin", "dsh"),
+        "profile": campo("PROFILE", "chat_dsh_profile", dsh_client.DSH_DEFAULT_PROFILE),
+        "model": dsh_client.dsh_model_for_turn(
+            campo("MODEL", "chat_dsh_model", dsh_client.DSH_DEFAULT_MODEL)),
+        "effort": dsh_client.dsh_effort_valido(campo("EFFORT", "chat_dsh_effort", "off")),
+    }
+
+
+_chat_dsh_lock = threading.Lock()
+_chat_dsh_livres: list = []          # processos quentes e OCIOSOS: [(chave, cli)]
+_chat_dsh_chave: tuple | None = None
+_chat_dsh_prewarm_thread: threading.Thread | None = None
+_CHAT_DSH_POOL_MAX = 3
+# campos cuja mudança invalida o processo quente da Conversa (pre-warm + pool)
+_CAMPOS_DHS_BACKEND = ("chat_backend", "chat_backend_live", "chat_dsh_bin",
+                       "chat_dsh_profile",
+                       "chat_dsh_model", "chat_dsh_effort")
+
+
+def _chat_dsh_chave_do(cfg: dict) -> tuple:
+    return (cfg["bin"], cfg["profile"], cfg["model"], cfg["effort"])
+
+
+def _dsh_log(msg: str, tag: str = "chat-dsh") -> None:
+    """Log do caminho dsh (cliente e pre-warm) sai por STDERR, não pelo stdout.
+
+    O stdout do processo é lido como DADO por quem faz `import app` — o teste de
+    telemetria do ORT compara o stdout inteiro de um subprocesso — e o pre-warm
+    sobe em thread, então a linha pode sair antes ou depois do fim do import. O
+    canal separado deixa o stdout determinístico em vez de dependente da corrida
+    (task_6db0e2cc)."""
+    print(f"[{tag}] {msg}", file=sys.stderr, flush=True)
+
+
+def _chat_dsh_novo(cfg: dict) -> "dsh_client.DshClient":
+    return dsh_client.DshClient(
+        bin=cfg["bin"], profile=cfg["profile"], model=cfg["model"],
+        effort=cfg["effort"], cwd=BASE / "outputs" / ".dsh-cwd",
+        on_log=lambda m: _dsh_log(m))
+
+
+def _chat_dsh_cliente() -> "dsh_client.DshClient":
+    """Cliente quente do pool (processo dsh persistente). Fecha o de config ANTIGA.
+
+    A chave (bin/perfil/modelo/effort) viaja CARIMBADA no cliente (`_pool_chave`),
+    não no global: entre a entrega e a devolução o `/api/settings` pode ter trocado a
+    config e o prewarm da nova já ter mexido no global — carimbar na devolução fazia
+    um cliente da config ANTIGA voltar ao pool como se fosse da nova (o próximo
+    turno rodava no modelo antigo, calado)."""
+    cfg = _chat_dsh_cfg()
+    chave = _chat_dsh_chave_do(cfg)
+    global _chat_dsh_chave
+    with _chat_dsh_lock:
+        antigos = [(k, c) for k, c in _chat_dsh_livres if k != chave or not c.alive]
+        _chat_dsh_livres[:] = [(k, c) for k, c in _chat_dsh_livres
+                               if k == chave and c.alive]
+        _chat_dsh_chave = chave
+        cli = _chat_dsh_livres.pop()[1] if _chat_dsh_livres else None
+    # FORA do lock: `close()` faz `session/close` com timeout de 60 s e um dsh vivo
+    # mas mudo não responde — fechando dentro do lock, TODO uso do pool (o próximo
+    # turno da Conversa, o resumo do Live) esperava o processo velho morrer.
+    for _k, antigo in antigos:
+        antigo.close()
+    if cli is None:
+        cli = _chat_dsh_novo(cfg)
+    cli._pool_chave = chave              # a chave viaja COM o cliente
+    return cli
+
+
+def _chat_dsh_devolve(cli: "dsh_client.DshClient") -> None:
+    """Devolve ao pool com a chave DA ENTREGA (não a global de agora).
+
+    O `close()` do descarte roda FORA do lock (mesmo motivo do `_chat_dsh_cliente`)."""
+    chave = getattr(cli, "_pool_chave", None)
+    with _chat_dsh_lock:
+        guardar = bool(chave is not None and cli.alive
+                       and len(_chat_dsh_livres) < _CHAT_DSH_POOL_MAX)
+        if guardar:
+            _chat_dsh_livres.append((chave, cli))
+    if not guardar:
+        cli.close()
+
+
+def _chat_dsh_prewarm(motivo: str = "") -> threading.Thread | None:
+    """Sobe processo + sessão do dsh FORA do 1º turno da Conversa (best-effort).
+
+    Sem custo para quem usa `openai`: nada é spawnado. Nunca bloqueia o chamador
+    (thread), nunca derruba nada e nunca muda o backend — falha só vira log. O
+    `prewarm()` do cliente é idempotente e o processo volta ao pool quente."""
+    global _chat_dsh_prewarm_thread
+    if _chat_backend() != "dsh":
+        return None
+    with _chat_dsh_lock:
+        atual = _chat_dsh_prewarm_thread
+        if atual is not None and atual.is_alive():
+            return atual
+
+    def _rodar() -> None:
+        cli = None
+        try:
+            cli = _chat_dsh_cliente()
+            cli.prewarm()
+            _dsh_log(f"pre-warm ({motivo}) em {cli.ultimo_boot_ms} ms "
+                     f"(sessão {cli.session_id})")
+        except Exception as exc:  # noqa: BLE001 — prewarm é otimização
+            _dsh_log(f"pre-warm falhou ({motivo}): {exc} — segue")
+        finally:
+            if cli is not None:
+                _chat_dsh_devolve(cli)
+
+    th = threading.Thread(target=_rodar, name="chat-dsh-prewarm", daemon=True)
+    with _chat_dsh_lock:
+        _chat_dsh_prewarm_thread = th
+    th.start()
+    return th
+
+
+def _chat_llm_dsh(messages: list) -> str:
+    """`_chat_llm` pelo backend dsh. Modo histórico: a lista vai renderizada num
+    prompt (assinatura preservada) — a Conversa não é sensível a latência."""
+    cli = _chat_dsh_cliente()
+    try:
+        return cli.collect(messages)
+    except dsh_client.DshError as exc:
+        raise HTTPException(502, f"Backend dsh falhou: {exc}")
+    finally:
+        _chat_dsh_devolve(cli)
+
+
+# Aquece o dsh no boot do app quando o backend já é dsh. Não bloqueia nada e, com
+# `chat_backend=openai`, nem chama `which("dsh")`: nenhum processo é spawnado.
+try:
+    _chat_dsh_prewarm("startup")
+except Exception as exc:  # noqa: BLE001 — prewarm é otimização
+    _dsh_log(f"pre-warm inicial falhou: {exc} — segue")
+
+
+_dsh_models_cache: dict = {}
+_DSH_MODELS_TTL_S = 300
+
+
+def _dsh_bridge_estado() -> dict:
+    """Estado do patch do bridge ACP no host (task_159). Nunca levanta.
+
+    O patch vive fora do repo e some em `npm install -g`; sem isto o produto não
+    tem como saber que o caminho dsh regrediu para "resposta inteira no fim"."""
+    try:
+        return dsh_client.estado_bridge(bin=_chat_dsh_cfg()["bin"])
+    except Exception as exc:  # noqa: BLE001 — campo informativo não derruba o endpoint
+        return {"estado": "unknown", "motivo": f"{type(exc).__name__}: {exc}"}
+
+
+@app.get("/api/chat/dsh/models")
+def chat_dsh_models():
+    """Descoberta de modelos/efforts do dsh (o frontend integra a partir daqui)."""
+    cfg = _chat_dsh_cfg()
+    chave = (cfg["bin"], cfg["profile"])
+    agora = time.time()
+    if (_dsh_models_cache.get("chave") == chave
+            and agora - _dsh_models_cache.get("em", 0) < _DSH_MODELS_TTL_S):
+        dados = _dsh_models_cache["dados"]
+    else:
+        try:
+            dados = dsh_client.descobrir_modelos(bin=cfg["bin"], profile=cfg["profile"])
+        except dsh_client.DshError as exc:
+            raise HTTPException(502, f"descoberta do dsh falhou: {exc}")
+        # cacheado JUNTO da descoberta: a tela não paga leitura de arquivo por request
+        dados = {"bridge_info": _dsh_bridge_estado(), **dados}
+        _dsh_models_cache.update({"dados": dados, "chave": chave, "em": agora})
+    bridge = dados.get("bridge_info") or {"estado": "unknown"}
+    return {"ok": True, "backend": "dsh",
+            **{k: v for k, v in dados.items() if k != "bridge_info"},
+            # `bridge` NÃO faz parte do dsh: diz se o HOST tem o patch que entrega
+            # deltas (sem ele a resposta vem inteira no fim). A tela usa para avisar.
+            "bridge": bridge.get("estado", "unknown"),
+            "bridge_detalhe": bridge,
+            "current": {"model": cfg["model"], "effort": cfg["effort"]},
+            "default_model": dsh_client.DSH_DEFAULT_MODEL,
+            "efforts": list(dsh_client.DSH_EFFORTS)}
 
 
 def _chat_parse(conteudo: str) -> dict:
@@ -1714,6 +1969,7 @@ def chat_start(payload: dict):
     objetivo = str((payload or {}).get("objective") or "").strip()
     if not objetivo:
         raise HTTPException(400, "Campo 'objective' obrigatório")
+    _chat_dsh_prewarm("chat/start")    # no-op com `openai`
     contexto = str((payload or {}).get("context") or "").strip()
     sid = uuid.uuid4().hex[:12]
     msgs = [{"role": "user",
@@ -2025,6 +2281,9 @@ _SETTINGS_ADMIN = frozenset({
     "remote_stt_base_url", "remote_stt_key",
     "remote_tts_model", "remote_translate_model", "remote_stt_model",
     "chat_base_url", "chat_model", "chat_api_key",
+    "chat_backend", "chat_backend_live", "chat_dsh_bin", "chat_dsh_profile",
+    "chat_dsh_model",
+    "chat_dsh_effort",
 })
 _SETTINGS_SECRETS = ("remote_api_key", "remote_stt_key", "chat_api_key")
 # marcador da máscara: começa com "•" e nunca é confundido com chave de verdade.
@@ -2254,6 +2513,7 @@ def _voice_path(v) -> Path | None:
 
 
 def _apply_settings(payload: dict):
+    _dsh_antes = tuple(_settings.get(k) for k in _CAMPOS_DHS_BACKEND)
     if "model" in payload:
         m = str(payload["model"] or "").strip()
         if m:
@@ -2403,6 +2663,33 @@ def _apply_settings(payload: dict):
             except (ValueError, TypeError):
                 raise HTTPException(400, "Extras do LLM: informe um JSON válido de objeto, ex. {\"reasoning_effort\": \"low\"}")
         _settings["chat_extra"] = txt
+    if "chat_backend" in payload:
+        b = str(payload["chat_backend"] or "openai").strip().lower()
+        if b not in ("openai", "dsh"):
+            raise HTTPException(400, "chat_backend inválido (openai|dsh)")
+        _settings["chat_backend"] = b
+    if "chat_backend_live" in payload:
+        # vazio é VÁLIDO e significa "herda o global" (#176)
+        bl = str(payload["chat_backend_live"] or "").strip().lower()
+        if bl and bl not in ("openai", "dsh"):
+            raise HTTPException(400, "chat_backend_live inválido (vazio=herda|openai|dsh)")
+        _settings["chat_backend_live"] = bl
+    if "chat_dsh_bin" in payload:
+        _settings["chat_dsh_bin"] = str(payload["chat_dsh_bin"] or "dsh").strip()[:200] or "dsh"
+    if "chat_dsh_profile" in payload:
+        _settings["chat_dsh_profile"] = \
+            str(payload["chat_dsh_profile"] or "").strip()[:80] or dsh_client.DSH_DEFAULT_PROFILE
+    if "chat_dsh_model" in payload:
+        m = str(payload["chat_dsh_model"] or "").strip()[:200]
+        if m and not dsh_client.dsh_model_valido(m):
+            raise HTTPException(400, 'chat_dsh_model inválido: use o par JSON do catálogo, '
+                                     'ex. ["dsflash","deepseek-flash-41"]')
+        _settings["chat_dsh_model"] = m or dsh_client.DSH_DEFAULT_MODEL
+    if "chat_dsh_effort" in payload:
+        e = str(payload["chat_dsh_effort"] or "off").strip().lower()
+        if e not in dsh_client.DSH_EFFORTS:
+            raise HTTPException(400, "chat_dsh_effort inválido (off|low|high|max)")
+        _settings["chat_dsh_effort"] = e
     if "speaker_gate" in payload:
         g = str(payload["speaker_gate"] or "off").strip().lower()
         if g not in ("off", "enforce", "label"):
@@ -2426,6 +2713,10 @@ def _apply_settings(payload: dict):
         _settings["speech_queue_gap_s"] = _clamp(payload["speech_queue_gap_s"], 0.0, 5.0, 0.35)
     _save_settings()
     _autofree_local()                  # se ligado, descarrega já os locais agora redundantes
+    if tuple(_settings.get(k) for k in _CAMPOS_DHS_BACKEND) != _dsh_antes:
+        # trocou de backend/ajuste do dsh: já sobe o processo em thread, para quem
+        # acabou de ligar `dsh` na UI não pagar o boot no 1º turno da Conversa
+        _chat_dsh_prewarm("settings")
     return _settings
 
 
@@ -4140,19 +4431,32 @@ def _wav_to_mono16k(audio_path: Path):
 
 
 # --- Modelos remotos (API OpenAI-compatível): tradução e transcrição opcionais ---
+def _env_base(nome: str) -> str:
+    """Base vinda do AMBIENTE (o override do #103/#107). Vazio = sem override."""
+    return (os.environ.get(nome) or "").strip()
+
+
 def _remote_ready() -> bool:
     # base_url basta; api_key é opcional (endpoints em LAN, ex.: RTX, não têm auth)
     return bool(_settings.get("remote_base_url"))
 
 
 def _use_remote_translate() -> bool:
-    return bool(_settings.get("remote_translate")) and _remote_ready()
+    """Caminho remoto do tradutor.
+
+    ENV PRIMEIRO e já basta: com `TTS_TRANSLATE_BASE_URL` no ambiente o remoto está
+    ativo mesmo com URLs/toggles vazios no settings — senão o override ficava
+    INERTE e o cliente caía no local em silêncio (medido no gate #109: 200 com texto
+    vazio em vez do erro do provedor). Sem env, a regra antiga (toggle + base)."""
+    return bool(_env_base("TTS_TRANSLATE_BASE_URL")) or (
+        bool(_settings.get("remote_translate")) and _remote_ready())
 
 
 def _use_remote_stt() -> bool:
-    # ativo se houver URL dedicada de STT OU a base compartilhada
-    return bool(_settings.get("remote_stt")) and bool(
-        _settings.get("remote_stt_base_url") or _settings.get("remote_base_url"))
+    # idem: env dedicado do STT (ou a base do tradutor) basta para o remoto
+    return bool(_env_base("TTS_STT_BASE_URL") or _env_base("TTS_TRANSLATE_BASE_URL")) \
+        or (bool(_settings.get("remote_stt")) and bool(
+            _settings.get("remote_stt_base_url") or _settings.get("remote_base_url")))
 
 
 def _use_remote_tts() -> bool:
@@ -4319,15 +4623,34 @@ def _translate_prompt(text: str, target: str, emotion: str | None = None) -> str
     return f"{base}\n\nText: {text}"
 
 
+def _traducao_remota_cfg() -> tuple[str, str]:
+    """(base_url, modelo) do tradutor remoto — env > settings, com erro EXPLICATIVO.
+
+    NÃO passa pelo `_chat_provider` de propósito (decisão do PM no mini-gate): o
+    tradutor fala com o 14B do RTX pelo OmniVoice, unificar mudaria a semântica.
+    `TTS_TRANSLATE_BASE_URL`/`TTS_TRANSLATE_MODEL` existem para smoke isolado, no
+    mesmo padrão do `TTS_CHAT_*`.
+    Base vazia antes virava `MissingSchema: Invalid URL '/chat/completions'` cru."""
+    base = (os.environ.get("TTS_TRANSLATE_BASE_URL") or "").strip() \
+        or (_settings.get("remote_base_url") or "").strip()
+    if not base:
+        raise HTTPException(400, "Tradutor remoto não configurado — informe a Base URL "
+                                 "do provedor (Configurações → Rede) ou defina "
+                                 "TTS_TRANSLATE_BASE_URL")
+    modelo = (os.environ.get("TTS_TRANSLATE_MODEL") or "").strip() \
+        or (_settings.get("remote_translate_model") or "gpt-4o-mini")
+    return base.rstrip("/"), modelo
+
+
 def _translate_remote(text: str, target: str, emotion: str | None = None) -> str:
     import requests
 
-    base = _settings["remote_base_url"].rstrip("/")
+    base, modelo = _traducao_remota_cfg()
     r = requests.post(
         f"{base}/chat/completions",
         headers={"Authorization": f"Bearer {_settings['remote_api_key']}",
                  "Content-Type": "application/json"},
-        json={"model": _settings.get("remote_translate_model") or "gpt-4o-mini",
+        json={"model": modelo,
               "temperature": 0.4 if emotion else 0.2,
               "messages": [{"role": "user", "content": _translate_prompt(text, target, emotion)}]},
         timeout=60,
@@ -4340,8 +4663,15 @@ def _translate_remote(text: str, target: str, emotion: str | None = None) -> str
 def _transcribe_remote(audio_path: Path, language: str | None):
     import requests
 
-    # URL/chave dedicadas do STT, se definidas; senão as compartilhadas (RTX)
-    base = (_settings.get("remote_stt_base_url") or _settings["remote_base_url"]).rstrip("/")
+    # URL/chave dedicadas do STT, se definidas; senão as compartilhadas (RTX).
+    # Mesmo defeito do tradutor se ambas estiverem vazias: mensagem explicativa.
+    base = ((os.environ.get("TTS_STT_BASE_URL") or "").strip()
+            or (_settings.get("remote_stt_base_url") or "").strip()
+            or (_settings.get("remote_base_url") or "").strip())
+    if not base:
+        raise HTTPException(400, "STT remoto não configurado — informe a URL do "
+                                 "provedor (Configurações → Rede) ou defina TTS_STT_BASE_URL")
+    base = base.rstrip("/")
     key = _settings.get("remote_stt_key") or _settings.get("remote_api_key") or ""
     data = {"model": _settings.get("remote_stt_model") or "whisper-1",
             "response_format": "verbose_json",
@@ -4424,19 +4754,24 @@ def _whisper_repo() -> str:
 
 
 def _transcribe(audio_path: Path, language: str | None = None, allow_remote: bool = True):
+    caiu_remoto, erro_remoto = False, ""
     if allow_remote and _use_remote_stt():
         try:
             return _transcribe_remote(audio_path, language)
         except Exception as e:  # noqa: BLE001 — RTX fora do ar cai pro local
             print(f"[stt] remoto indisponível ({str(e)[:120]}) — usando local", flush=True)
+            # o cliente precisa distinguir "transcrição vazia" de "o remoto morreu":
+            # vai no resultado (as rotas traduzem para header/campo)
+            caiu_remoto, erro_remoto = True, str(e)[:200]
 
     # Silero VAD: se o áudio não tem fala, o STT nem roda (mata alucinação)
     fala = _vad_tem_fala(audio_path)
     if not fala:
-        return {"text": "", "language": "", "segments": []}
+        return _com_aviso_remoto({"text": "", "language": "", "segments": []},
+                                 caiu_remoto, erro_remoto)
 
     if (_settings.get("stt_local_engine") or "whisper").lower() == "parakeet":
-        return _transcribe_parakeet(audio_path)
+        return _com_aviso_remoto(_transcribe_parakeet(audio_path), caiu_remoto, erro_remoto)
 
     import mlx_whisper
 
@@ -4460,10 +4795,28 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
     del audio
     _touch_use("stt")
     _release_mlx_memory()
-    return r
+    return _com_aviso_remoto(r, caiu_remoto, erro_remoto)
 
 
 _pk = {"model": None, "repo": ""}
+
+
+def _com_aviso_remoto(res, caiu: bool, erro: str = ""):
+    """Marca o resultado do STT quando o remoto falhou e o local assumiu."""
+    if caiu and isinstance(res, dict):
+        return {**res, "remote_fallback": True, "remote_error": erro}
+    return res
+
+
+def _aviso_remoto_headers(alvo, r: dict) -> None:
+    """Aviso no HEADER (o `/v1/audio/*` também devolve text/srt/vtt, então campo no
+    corpo não cobriria tudo). `alvo` é `response.headers` ou o header de um Response."""
+    if not r.get("remote_fallback"):
+        return
+    alvo["X-TTS-Remote-Fallback"] = "1"
+    msg = str(r.get("remote_error") or "")[:150]
+    if msg:
+        alvo["X-TTS-Remote-Error"] = msg.encode("ascii", "replace").decode()
 
 
 def _transcribe_parakeet(audio_path: Path) -> dict:
@@ -5188,11 +5541,13 @@ async def speaker_check(audio: UploadFile = None):
 
 
 @app.post("/api/transcribe")
-def transcribe_audio(audio: UploadFile = None, source_lang: str = Form("auto")):
+def transcribe_audio(response: Response, audio: UploadFile = None,
+                     source_lang: str = Form("auto")):
     """Transcrição pura (sem tradução/TTS): áudio -> texto + segmentos. Usa o
     Whisper local ou remoto, conforme as configurações de modelos remotos."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
+    aviso = {}
     tmp = _save_audio_upload(audio)
     try:
         gate = _speaker_gate_ok(tmp)
@@ -5201,14 +5556,20 @@ def transcribe_audio(audio: UploadFile = None, source_lang: str = Form("auto")):
         r = _transcribe(tmp, language=(source_lang or "auto").lower())
     finally:
         tmp.unlink(missing_ok=True)
+    # remoto caiu e o local assumiu: o cliente PRECISA saber (senão "vazio" e
+    # "provedor morto" ficam indistinguíveis num 200). Header sempre; campo no corpo
+    # porque esta rota é JSON de ponta a ponta.
+    _aviso_remoto_headers(response.headers, r)
+    aviso = {"remote_fallback": True, "remote_error": r.get("remote_error", "")} \
+        if r.get("remote_fallback") else {}
     # filtro anti-alucinação (blacklist "e aí", fragmentos, sem-fala): o
     # /api/transcribe alimenta a Conversa — ruído não vira mensagem
     texto = (r.get("text") or "").strip()
     ok, motivo = _stt_ok(r, texto)
     if not ok:
-        return {"rejected": True, "reason": motivo, "text": ""}
+        return {**aviso, "rejected": True, "reason": motivo, "text": ""}
     segs = r.get("segments") or []
-    out = {"text": (r.get("text") or "").strip(),
+    out = {**aviso, "text": (r.get("text") or "").strip(),
            "language": (r.get("language") or "").strip().lower(),
            "segments": [{"start": float(s.get("start") or 0.0),
                          "end": float(s.get("end") or 0.0),
@@ -5361,6 +5722,1191 @@ def modify_speech(audio: UploadFile = None, voice_id: str = Form(""),
 
 
 # ---------------------------------------------------------------------------
+# Live (LIVE-1) — WS /api/live/ws: conversa por áudio bidirecional.
+#
+# Protocolo (contrato de #93 pipeline e #94 UI):
+#   cliente→servidor: JSON `setup` (1º frame; voice_id/system_instruction/vad/
+#     history), frames BINÁRIOS PCM16 mono 16 kHz (~100 ms), JSON `end_of_speech`,
+#     `cancel`, `ping`.
+#   servidor→cliente: JSON `ready`{session_id,audio{format,sr}}, `speech_start`,
+#     `transcript_user`{text}, `assistant_text`{delta}, `turn_complete`{ms,
+#     audio_bytes}, `interrupted`, `error`{code,message}, `prewarm`{ok},
+#     `stats`{telemetria, ~4 Hz; ver #118}, `pong`; áudio = frames
+#     BINÁRIOS PCM16 mono 24 kHz (formato anunciado no `ready`).
+#   `ready`, `prewarm`, `stats` e `pong` são aditivos ao desenho (handshake,
+#     pre-warm, telemetria e keepalive); `turno_pendente` (#126) também é:
+#     fala com pipeline ocupado é ACUMULADA num pendente (teto 30 s;
+#     `cancel` do cliente limpa, barge-in mantém) em vez de descartada.
+# Auth: mesma política das rotas (loopback dispensa, o resto exige chave válida).
+# Browser não manda header em WebSocket -> `?key=` é aceito aqui (única exceção
+# ao "chave só no header"); header também vale para cliente não-browser.
+# ---------------------------------------------------------------------------
+# LIVE-OBS-1 (#118): telemetria da sessão. Evento `stats` (~4 Hz) e log de
+# METADADOS — NUNCA áudio nem texto transcrito/gerado (invariante de privacidade).
+# Contrato do evento no comentário da task #118 e no LIVE.md.
+_LIVE_STATS_MS = max(0, int(os.environ.get("TTS_LIVE_STATS_MS", "250")))
+_live_log = logging.getLogger("live")
+if not _live_log.handlers:                    # auto-suficiente: não depende do uvicorn
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s [live] %(message)s", "%H:%M:%S"))
+    _live_log.addHandler(_h)
+    # propagate ligado: o `caplog` dos testes (handler no root) precisa ver; sob o
+    # uvicorn o root não tem handler, então o meu handler acima é quem imprime.
+    _live_log.propagate = True
+_live_log.setLevel(logging.WARNING if os.environ.get("LIVE_LOG") == "0" else logging.INFO)
+
+_provedor_estado = {"estado": "desconhecido", "http": None, "ts": 0.0}
+
+
+def _provedor_marca(estado: str, http: int | None = None) -> None:
+    """Estado da última chamada ao provedor de chat (do PROCESSO, não da sessão).
+
+    É o que torna visível nas telas o 530/timeout que antes só aparecia como 502."""
+    _provedor_estado.update({"estado": estado, "http": http, "ts": time.monotonic()})
+
+
+def _live_log_kv(evento: str, **campos) -> None:
+    """Uma linha de metadados: `evento chave=valor …` (nada de áudio/texto)."""
+    _live_log.info("%s %s", evento,
+                   " ".join(f"{k}={v}" for k, v in campos.items() if v is not None))
+
+
+def _live_stage(sess: dict, stage: str) -> None:
+    """Estágio do turno (`idle|stt|llm|tts`) com o tempo do estágio anterior."""
+    if sess.get("st_stage") == stage:
+        return
+    ini = sess.get("st_stage_ini")
+    if ini is not None:
+        sess["st_stage_ms"] = int((time.monotonic() - ini) * 1000)
+        _live_log_kv("stage_fim", sess=sess["id"], stage=sess.get("st_stage"),
+                     ms=sess["st_stage_ms"])
+    else:
+        sess["st_stage_ms"] = 0
+    sess["st_stage"] = stage
+    sess["st_stage_ini"] = time.monotonic() if stage != "idle" else None
+    if stage != "idle":
+        _live_log_kv("stage_inicio", sess=sess["id"], stage=stage)
+
+
+def _live_observa(sess: dict, obj) -> None:
+    """Espia os eventos que SAEM para derivar telemetria (não altera nada)."""
+    if not isinstance(obj, dict):
+        return
+    tipo = obj.get("type")
+    if tipo == "error":
+        sess["st_erro"] = {"code": obj.get("code"), "stage": sess.get("st_stage"),
+                           "ts": time.monotonic()}
+        _live_log_kv("erro", sess=sess["id"], code=obj.get("code"),
+                     stage=sess.get("st_stage"))
+    elif tipo == "transcript_user":
+        _live_stage(sess, "llm")
+    elif tipo == "turn_complete":
+        if obj.get("descartado"):
+            _live_log_kv("turno_descartado", sess=sess["id"], motivo="eco/curto")
+        _live_stage(sess, "idle")
+    elif tipo == "interrupted":
+        _live_log_kv("interrupted", sess=sess["id"], turno=obj.get("turno"))
+        _live_stage(sess, "idle")
+
+
+def _live_marca_prov(sess: dict, prob: float) -> None:
+    if prob:
+        sess["st_prob"] = round(float(prob), 3)
+
+
+def _live_estado_motor(sess: dict) -> str:
+    """Estado para a TELA (deriva o que a FSM não precisa nomear)."""
+    if sess.get("falando"):
+        return "falando"
+    if sess.get("st_stage") == "stt":
+        return "fechando"
+    eng = sess.get("engine")
+    if eng is not None:
+        if getattr(eng, "turno_aberto", False):
+            return "ouvindo"
+        return getattr(getattr(eng, "estado", None), "value", "ocioso")
+    return "ouvindo" if sess.get("turno_aberto") else "ocioso"
+
+
+def _live_stats_ia(sess: dict) -> dict:
+    """Backend de IA efetivo da sessão Live (`stats.ia`) — para o painel OBS.
+
+    `pedido` é o que está configurado; `backend` é o que de FATO responde o turno.
+    Com `chat_backend=dsh` e o handshake do harness morrendo, o pipeline marca a
+    sessão e passa a usar o openai (#146): sem este campo o painel mostraria "dsh"
+    enquanto o texto vinha do endpoint."""
+    pedido = _chat_backend_live()
+    pipe = sess.get("pipe")
+    caiu = bool(getattr(pipe, "_dsh_indisponivel", False))
+    return {"pedido": pedido, "backend": "openai" if (caiu or pedido != "dsh") else "dsh",
+            "fallback": caiu, "motivo": str(getattr(pipe, "_dsh_motivo", "") or "")[:200]}
+
+
+def _live_stats(sess: dict) -> dict:
+    """Payload do evento `stats` (ver contrato na task #118 / LIVE.md)."""
+    agora = time.monotonic()
+    ultimo = sess.get("st_ultimo_frame")
+    eng = sess.get("engine")
+    limiares = {}
+    if eng is not None:
+        try:
+            limiares = {"limiar_dbfs": round(eng.limiar_energia_dbfs, 1),
+                        "limiar_turno_dbfs": round(eng.limiar_energia_turno_dbfs, 1)}
+            st = eng.estatisticas()
+            limiares.update({"barge_ativos": st.get("barge_in", 0),
+                             "barge_falsos": st.get("barge_falso", 0)})
+        except Exception:                     # noqa: BLE001 — telemetria não derruba
+            limiares = {}
+    erro = sess.get("st_erro")
+    ini = sess.get("st_stage_ini")
+    dados = {
+        "type": "stats", "t_ms": int((agora - sess["t0"]) * 1000),
+        "mic": {"frames": sess.get("st_frames", 0), "bytes": sess.get("st_bytes", 0),
+                "desde_ultimo_ms": (int((agora - ultimo) * 1000) if ultimo else None),
+                "dbfs": sess.get("st_dbfs"), "prob": sess.get("st_prob")},
+        "motor": {"estado": _live_estado_motor(sess), **limiares},
+        "turno": {"stage": sess.get("st_stage", "idle"),
+                  "ms": (int((agora - ini) * 1000) if ini else 0),
+                  "n": sess.get("turno", 0), "buffer_bytes": sess.get("buffer_bytes_turno", 0),
+                  "t_decisao_ms": sess.get("t_decisao_ms", 0),
+                  "pendente": bool(sess.get("turno_pendente")),
+                  "pendentes_trechos": sess.get("pendentes_trechos", 0),
+                  "pendentes_descartados_ms": sess.get("pendentes_descartados_ms", 0),
+                  "pendentes_descartados": sess.get("pendentes_descartados", 0)},
+        "playback": {"speaking": bool(sess.get("falando")),
+                     "chunks": sess.get("st_chunks", 0), "bytes": sess.get("st_audio_bytes", 0)},
+        "sessao": {"idade_s": int(time.time() - sess["criada"]),
+                   "ocioso_ms": int((agora - sess["visto"]) * 1000),
+                   "ttl_s": _LIVE_TTL_S, "criadas": len(_live_sessions),
+                   "historicos": len(_live_historico)},
+        # #146: o painel OBS não pode mentir sobre quem respondeu. `pedido` é o
+        # backend escolhido (settings/env); `backend` é o EFEITO real — com o dsh
+        # caído no handshake a sessão segue no openai e `fallback` fica true.
+        "ia": _live_stats_ia(sess),
+    }
+    if erro:
+        dados["erro"] = {"code": erro.get("code"), "stage": erro.get("stage"),
+                         "idade_ms": int((agora - erro["ts"]) * 1000)}
+    if _provedor_estado["ts"]:
+        dados["provedor"] = {"estado": _provedor_estado["estado"],
+                             "http": _provedor_estado["http"],
+                             "idade_ms": int((agora - _provedor_estado["ts"]) * 1000)}
+    return dados
+
+
+_LIVE_MAX_SESSIONS = max(1, int(os.environ.get("TTS_LIVE_MAX_SESSIONS", "4")))
+_LIVE_TTL_S = max(30, int(os.environ.get("TTS_LIVE_TTL_S", "300")))
+_LIVE_SETUP_TIMEOUT_S = 10.0
+_LIVE_MAX_BUFFER = 2 * 1024 * 1024      # PCM16 16k do turno em curso (~1 min de fala)
+# #126: teto do pendente (fala acumulada com o pipeline ocupado). PCM16 mono
+# 16 kHz = 32 kB/s; 30 s ~ 960 kB. Estourou, sai o trecho MAIS ANTIGO.
+_LIVE_PENDENTE_MAX_S = max(1, int(os.environ.get("TTS_LIVE_PENDENTE_MAX_S", "30")))
+_LIVE_PENDENTE_MAX_BYTES = _LIVE_PENDENTE_MAX_S * 32000
+_LIVE_MAX_HISTORY = 200
+_LIVE_AUDIO_SR = 24000                  # o que o servidor ENVIA (o cliente manda 16k)
+_LIVE_TICK_S = 0.2                      # acorda a task de envio p/ checar TTL/fechamento
+_live_lock = threading.Lock()
+_live_sessions: dict = {}
+_live_sweeper_iniciado = False
+
+
+def _live_erro(codigo: str, mensagem: str) -> dict:
+    return {"type": "error", "code": codigo, "message": str(mensagem)[:300]}
+
+
+# Ticket efêmero (LIVE-1.5): browser não manda header em WebSocket, e a chave em
+# query string vaza em access log do uvicorn, log de proxy/túnel e histórico do
+# navegador. Então o cliente pede um ticket por HTTP (`POST /api/live/ticket`, auth
+# normal no header), troca por `?ticket=` no WS e ele morre no handshake: UM uso,
+# 60 s. `?key=` continua aceito (compat) e loopback segue dispensando tudo — em
+# loopback o handshake nem chega a consumir o ticket (auth dispensada), então um
+# smoke que testa "reuso recusado" precisa conectar pelo IP da LAN, não por 127.0.0.1.
+_LIVE_TICKET_TTL_S = 60
+_LIVE_TICKET_MAX = 512                  # tickets pendentes (memória limitada)
+_live_tickets: dict = {}                # ticket -> expira em (monotonic)
+
+
+def _live_ticket_limpa(agora: float | None = None) -> None:
+    agora = agora if agora is not None else time.monotonic()
+    for t, expira in list(_live_tickets.items()):
+        if expira <= agora:
+            _live_tickets.pop(t, None)
+
+
+def _live_ticket_emite() -> str:
+    with _live_lock:
+        _live_ticket_limpa()
+        sobra = len(_live_tickets) - _LIVE_TICKET_MAX + 1
+        if sobra > 0:                    # os mais antigos saem primeiro
+            for t in sorted(_live_tickets, key=_live_tickets.get)[:sobra]:
+                _live_tickets.pop(t, None)
+        ticket = _secrets.token_urlsafe(24)
+        _live_tickets[ticket] = time.monotonic() + _LIVE_TICKET_TTL_S
+    return ticket
+
+
+def _live_ticket_consome(ticket: str) -> bool:
+    """UM uso: o ticket some no handshake, mesmo se a sessão cair depois."""
+    if not ticket:
+        return False
+    with _live_lock:
+        expira = _live_tickets.pop(ticket, None)
+    return expira is not None and expira > time.monotonic()
+
+
+def _live_autentica(ws) -> bool:
+    """MESMA política das rotas: loopback dispensa; o resto precisa de credencial.
+
+    Ordem: `?ticket=` (efêmero, de um uso — o caminho para o browser) → `?key=`
+    (compat) → header (cliente não-browser, ex.: script/RN)."""
+    if _is_local(ws):
+        return True
+    if not _auth_enabled():
+        return True
+    ticket = (ws.query_params.get("ticket") or "").strip()
+    if ticket:
+        return _live_ticket_consome(ticket)
+    chave = (ws.query_params.get("key") or "").strip() or _extract_request_key(ws)
+    return _key_is_valid(chave)
+
+
+@app.post("/api/live/ticket")
+def live_ticket():
+    """Emite um ticket de um uso para o WS (60 s). Auth normal (header).
+
+    O cliente chama isto, conecta em `/api/live/ws?ticket=<ticket>` e a chave de
+    API deixa de aparecer em log/histórico. Loopback pode pular o ticket."""
+    return {"ticket": _live_ticket_emite(), "expires_in": _LIVE_TICKET_TTL_S}
+
+
+def _live_clamp_ms(valor, nome: str, lo: int, hi: int, default: int) -> int:
+    if valor is None:
+        return default
+    try:
+        n = int(valor)
+    except (TypeError, ValueError):
+        raise ValueError(f"vad.{nome} precisa ser inteiro (ms)") from None
+    return int(min(hi, max(lo, n)))
+
+
+def _live_valida_setup(msg: dict) -> dict:
+    """Valida o `setup` com o rigor dos endpoints HTTP (#23/#33): nada entra por
+    confiança, o erro diz o CAMPO e voz desconhecida cai no `_resolve_voice`."""
+    if not isinstance(msg, dict):
+        raise ValueError("setup precisa ser um objeto JSON")
+    voz_pedida = str(msg.get("voice_id") or "").strip()
+    voz = voz_pedida
+    if not voz:
+        voz = _resolve_voice(None)
+    elif voz not in (DESIGN_VOICE_ID,) and voz not in OMNI_PRESETS and not _voice_path(voz):
+        voz = _resolve_voice(voz)
+    sid = str(msg.get("session_id") or "").strip()
+    if sid and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", sid):
+        raise ValueError("session_id inválido (letras, números, _ e -)")
+    system = str(msg.get("system_instruction") or "").strip()[:4000]
+    vad = msg.get("vad") or {}
+    if not isinstance(vad, dict):
+        raise ValueError("vad precisa ser um objeto JSON")
+    hist = msg.get("history") or []
+    if not isinstance(hist, list):
+        raise ValueError("history precisa ser uma lista")
+    history = []
+    for i, h in enumerate(hist[:_LIVE_MAX_HISTORY]):
+        if not isinstance(h, dict):
+            raise ValueError(f"history[{i}] precisa ser um objeto")
+        papel = str(h.get("role") or "").strip().lower()
+        if papel not in ("user", "assistant"):
+            raise ValueError(f"history[{i}].role precisa ser 'user' ou 'assistant'")
+        texto = str(h.get("text") or "").strip()[:4000]
+        if texto:
+            history.append({"role": papel, "text": texto})
+    return {
+        "voice_id": voz,
+        "voice_id_pedido": voz_pedida,
+        "session_id": sid,
+        "system": system,
+        "vad": {"silence_ms": _live_clamp_ms(vad.get("silence_ms"), "silence_ms", 100, 5000, 600),
+                "prefix_ms": _live_clamp_ms(vad.get("prefix_ms"), "prefix_ms", 0, 2000, 100)},
+        "history": history,
+    }
+
+
+def _live_sweep() -> list:
+    """Fecha sessões ociosas (TTL) e varre o histórico de retomada. A marcação é vista pela task de envio, que é
+    quem pode fechar o WS de forma assíncrona."""
+    _live_hist_varre()
+    agora = time.monotonic()
+    with _live_lock:
+        vencidas = [s for s, d in _live_sessions.items()
+                    if agora - d["visto"] > _LIVE_TTL_S]
+        for s in vencidas:
+            _live_sessions[s]["vencida"] = True
+    return vencidas
+
+
+def _live_sweeper():
+    while True:
+        time.sleep(15)
+        try:
+            _live_sweep()
+        except Exception:  # noqa: BLE001 — thread de fundo nunca pode morrer
+            pass
+
+
+def _live_enriquece(sess: dict, obj):
+    """Estampa o ESTADO da sessão nos eventos que saem.
+
+    `truncated` no `turn_complete`: o áudio daquele turno bateu no teto do buffer
+    e o começo foi mantido (o resto é descartado). O `buffer_bytes` em si é do
+    pipeline; até ele emitir, o estado da sessão vai por aqui — e o aviso é
+    zerado depois de reportado, para valer por turno.
+
+    `turn_complete`/`interrupted`/`error` também ACORDAM o observador do turno
+    pendente (#126): o fechamento — mesmo em erro — é a janela em que a fala
+    enfileirada pode abrir, e ela NÃO herda o erro do turno anterior."""
+    if isinstance(obj, dict) and obj.get("type") in ("turn_complete", "interrupted",
+                                                     "error"):
+        if obj.get("type") == "turn_complete":
+            if obj.get("descartado"):         # decisão do pipeline (eco x humano)
+                sess["descartados"] = sess.get("descartados", 0) + 1
+            obj.setdefault("truncated", bool(sess.get("truncado")))
+            sess["truncado"] = False          # aviso vale por turno
+            sess["buffer"] = bytearray()      # turno fechado: o áudio já foi consumido
+            sess["buffer_consumido"] = 0      # (e o marcador volta a zero com ele)
+            try:                              # histórico fora da conexão + compressão
+                _live_hist_pos_turno(sess)
+            except Exception:                 # noqa: BLE001 — nunca derruba o envio
+                pass
+        if sess.get("turno_pendente"):    # #126: turno fechou (ou ERROU) — o
+            _live_acorda_pendente(sess)   # pendente segue e abre quando liberar
+    return obj
+
+
+def _live_janela_turno(sess: dict, aberto: bool) -> None:
+    """#167: liga/desliga o TURNO do assistente no motor de turnos.
+
+    A janela de playback do motor (`live_turns`) era dimensionada pela FILA de
+    chunks: com um chunk por vez ela fechava `playback_janela_ms` (900 ms) depois do
+    último ENVIO, e o onset do humano num VÃO de geração (LLM/TTS; medido até 20 s)
+    deixava de ser lido como interrupção — virava turno novo. Aqui a marca segue o
+    TURNO: abre no 1º áudio e fecha no evento terminal
+    (`turn_complete`/`interrupted`). `set_turno_aberto` é additive no motor: sem
+    este call site nada muda (e `TTS_LIVE_BARGE_JANELA_TURNO=0` desliga para A/B)."""
+    eng = sess.get("engine")
+    fn = getattr(eng, "set_turno_aberto", None)
+    if fn is None:
+        return
+    try:
+        fn(bool(aberto))
+    except Exception:                    # noqa: BLE001 — motor não pode derrubar o WS
+        pass
+
+
+def _live_envia_json(sess: dict, obj: dict) -> None:
+    """Ponto de acoplamento do pipeline (#93): pode ser chamado de QUALQUER thread."""
+    if obj.get("type") in ("turn_complete", "interrupted"):
+        _live_janela_turno(sess, False)  # #167: turno terminou, fecha a janela
+    _live_observa(sess, obj)
+    sess["fila"].put(("json", _live_enriquece(sess, obj)))
+
+
+def _live_envia_audio(sess: dict, pcm: bytes) -> None:
+    if pcm:
+        _live_janela_turno(sess, True)   # #167: turno do assistente com áudio em voo
+        sess["audio_pendente"] = sess.get("audio_pendente", 0) + 1
+        sess["fila"].put(("audio", pcm))
+
+
+def _live_buffer(sess: dict) -> bytes:
+    """Áudio do turno em curso (PCM16 16k). Trunca pelo INÍCIO acima do teto."""
+    return bytes(sess["buffer"])
+
+
+try:                                     # motor de turnos do LIVE-3 (#93)
+    import live_pipeline as _live_mod
+except Exception:                        # noqa: BLE001 — sem o módulo, o stub segura
+    _live_mod = None
+
+try:                                     # FSM de turnos do LIVE-2 (#92)
+    import live_turns as _live_turns_mod
+except Exception:                        # noqa: BLE001 — sem ela, só o PCM cru
+    _live_turns_mod = None
+
+
+def _live_engine_novo(sess: dict):
+    """FSM de turnos da sessão (None = sem o módulo: comportamento antigo).
+
+    `prefix_ms`/`silence_ms` vêm do `setup` do cliente (validados lá). A fala do
+    TTS entra por `set_speaking()` — é dela que sai o limiar adaptativo do eco."""
+    if _live_turns_mod is None:
+        return None
+    try:
+        cfg = _live_turns_mod.Config(
+            prefix_ms=sess["vad"]["prefix_ms"],
+            silence_ms=sess["vad"]["silence_ms"],
+            # #167: janela de barge colada ao turno (desligável p/ A/B no harness)
+            barge_janela_turno=os.environ.get(
+                "TTS_LIVE_BARGE_JANELA_TURNO", "0") != "0",
+            # #167: janela pela duração real do chunk (ver Config.playback_por_duracao)
+            playback_por_duracao=os.environ.get(
+                "TTS_LIVE_PLAYBACK_DURACAO", "0") != "0")
+    except Exception:                    # noqa: BLE001 — config inválida: usa o padrão
+        cfg = None
+    return _live_turns_mod.TurnEngine(config=cfg)
+
+
+def _live_cancela(sess: dict, do_cliente: bool = False) -> None:
+    """Derruba o turno em curso (barge-in ou `cancel` do cliente).
+
+    `do_cliente` (comando `cancel`) limpa TAMBÉM o pendente: o usuário abortou
+    tudo. No barge-in o pendente SEGUE — a fala que interrompeu abre turno
+    próprio (ou já está nele) e é respondida depois."""
+    sess["cancelado"].set()
+    sess["turno"] += 1
+    if do_cliente and sess.pop("turno_pendente", None) is not None:
+        sess["turno_pendente_barge"] = False
+        sess["pendentes_descartados"] = sess.get("pendentes_descartados", 0) + 1
+        _live_pendente_zera_contadores(sess)
+        _live_log_kv("pend_cancelado", sess=sess["id"])
+    _live_log_kv("cancel", sess=sess["id"], turno=sess["turno"])
+    pipe = sess.get("pipe")
+    if pipe is not None:
+        pipe.cancel()
+        if not pipe.ocupado:             # com turno rodando, quem avisa é o pipeline
+            _live_envia_json(sess, {"type": "interrupted", "turn": sess["turno"]})
+    else:
+        _live_envia_json(sess, {"type": "interrupted", "turn": sess["turno"]})
+
+
+_DEBUG_LIVE = os.environ.get("LIVE_DEBUG_TTS") == "1"
+
+
+def _live_abre_turno(sess: dict, pcm: bytes = b"", barge_in: bool = False) -> None:
+    """Abre o turno com o áudio QUE VEIO NO EVENTO (pré-roll já incluído).
+
+    Sem evento (caminho do comando `end_of_speech`), o áudio é o que a sessão
+    acumulou — o tamanho fica registrado para o turno e o buffer é zerado quando o
+    turno fecha.
+
+    Com turno JÁ aberto (o cliente manda `end_of_speech` logo depois do
+    `speech_end` automático do motor), o áudio não é empilhado de novo: o motor
+    já entregou esse mesmo trecho no evento. Sem esta guarda, os bytes ficavam no
+    buffer do pipeline e envenenavam o turno SEGUINTE (medido: turno 1 com 16 kB
+    mudos + 1 kB, e o turno 2 nascendo com o áudio do anterior e truncado).
+
+    O snapshot do buffer só vale o que AINDA não tem dono (`buffer_consumido`:
+    bytes já entregues ao turno em curso ou a um pendente) — sem isso, a fala
+    enfileirada durante um turno sairia com o áudio do turno ANTES repetido."""
+    if not pcm and sess.get("buffer"):
+        pcm = bytes(sess["buffer"][sess.get("buffer_consumido", 0):])
+        # marcador: estes bytes já têm dono (turno aberto ou pendente)
+        sess["buffer_consumido"] = len(sess["buffer"])
+    sess["buffer_bytes_turno"] = len(pcm)
+    # flag do evento: o pipeline usa para separar ECO de humano (decisão do PM);
+    # vai na sessão E como kwarg quando o pipeline aceitar (transição).
+    sess["turno_barge_in"] = bool(barge_in)
+    pipe = sess.get("pipe")
+    if pipe is None:                     # sem pipeline: stub mínimo
+        sess["fila"].put(("json", {"type": "turn_complete", "stub": True,
+                                   "buffer_bytes": len(pcm)}))
+        return
+    if _DEBUG_LIVE:
+        print(f"[live][dbg] abre_turno pcm={len(pcm)} ocupado={pipe.ocupado} "
+              f"turno={sess['turno']}", flush=True)
+    if pipe.ocupado:
+        if pcm:
+            # #126: fala que chega com turno em curso (resposta longa pode levar
+            # dezenas de s) não é mais descartada — vira 1 turno pendente e abre
+            # quando o pipeline liberar. O dono lia o descarte como "parou de
+            # captar". Sem áudio não há o que enfileirar: mantém o aviso antigo.
+            _live_guarda_pendente(sess, pcm, barge_in)
+        else:
+            _live_envia_json(sess, _live_erro("turno_em_curso", "espere o turn_complete"))
+        return
+    # FALHA ALTO e a sessão sobrevive (padrão do `prewarm`): se o pipeline mudar de
+    # assinatura, o cliente VÊ o erro em vez de ficar com turno mudo — o modo
+    # fantasma que a muleta antiga (`except TypeError` seguindo sem o flag) escondia.
+    try:
+        if pcm:
+            pipe.push_pcm(pcm, substituir=True)   # é o turno INTEIRO, não um pedaço
+        if not pipe.end_of_speech(barge=bool(barge_in)):
+            # perdeu a corrida (outro turno abriu entre a checagem e aqui):
+            # a fala vira pendente em vez de sumir (mesma política do ocupado)
+            if pcm:
+                _live_guarda_pendente(sess, pcm, barge_in)
+            else:
+                _live_envia_json(sess, _live_erro("turno_em_curso", "espere o turn_complete"))
+    except Exception as exc:                  # noqa: BLE001 — erro do pipeline, não da sessão
+        # turno MORTO: sem `turn_complete`/`interrupted` vindos do pipeline, a janela
+        # intra-turno (#167) ficaria aberta até a trava de segurança do motor.
+        # Fechar aqui é idempotente (o `set_turno_aberto` do motor aceita repetição).
+        _live_janela_turno(sess, False)
+        _live_envia_json(sess, _live_erro("pipeline", f"{type(exc).__name__}: {exc}"))
+
+
+def _live_pendente_zera_contadores(sess: dict) -> None:
+    """Zera os contadores do evento `turno_pendente` (`trechos`, `descartados_ms`).
+
+    Eles descrevem o pendente ATUAL: consumido (ou descartado pelo `cancel`), o
+    próximo `turno_pendente` começa a contar do zero em vez de herdar o acúmulo
+    do anterior."""
+    sess["pendentes_trechos"] = 0
+    sess["pendentes_descartados_ms"] = 0
+
+
+def _live_guarda_pendente(sess: dict, pcm: bytes, barge_in: bool) -> None:
+    """Acumula o trecho no ÚNICO pendente, para abrir quando o pipeline liberar.
+
+    CONCATENA os pedaços (#126, ajuste do PM): a pessoa costuma completar a
+    frase em dois. Teto de duração (`_LIVE_PENDENTE_MAX_S`): estourou, sai o
+    MAIS ANTIGO — o fim é o que completa a frase — e o evento avisa `truncado`
+    COM QUANTO saiu (`descartados_ms`): o booleano `substituido` não dizia se o
+    corte foi de 20 ms ou de 20 s, e o cliente só podia adivinhar.
+    O flag de barge-in é pegajoso: qualquer pedaço nascido no playback mantém a
+    checagem de eco no turno pendente (transcript que casa com a própria fala
+    não vira resposta)."""
+    if not pcm:
+        return
+    novo = (sess.get("turno_pendente") or b"") + pcm
+    truncado = len(novo) > _LIVE_PENDENTE_MAX_BYTES
+    if truncado:
+        cortados = len(novo) - _LIVE_PENDENTE_MAX_BYTES
+        novo = novo[-_LIVE_PENDENTE_MAX_BYTES:]
+        sess["pendentes_descartados"] = sess.get("pendentes_descartados", 0) + 1
+        # 32 bytes = 1 ms (PCM16 mono 16 kHz) — mesma base do teto
+        sess["pendentes_descartados_ms"] = (sess.get("pendentes_descartados_ms", 0)
+                                            + cortados // 32)
+    sess["pendentes_trechos"] = sess.get("pendentes_trechos", 0) + 1  # trechos ACUMULADOS
+    sess["turno_pendente"] = novo
+    if barge_in:
+        sess["turno_pendente_barge"] = True       # pegajoso: eco-check segue valendo
+    _live_log_kv("turno_pendente", sess=sess["id"], bytes=len(novo),
+                 trechos=sess["pendentes_trechos"], truncado=truncado,
+                 descartados_ms=sess.get("pendentes_descartados_ms", 0),
+                 barge=bool(sess.get("turno_pendente_barge")))
+    # protocolo aditivo: "anotei, respondo já" — o turno em si vem na sequência
+    # (speech_start/turn_complete quando o pipeline liberar)
+    _live_envia_json(sess, {"type": "turno_pendente", "buffer_bytes": len(novo),
+                            "trechos": sess["pendentes_trechos"],
+                            "descartados_ms": sess.get("pendentes_descartados_ms", 0),
+                            "barge_in": bool(sess.get("turno_pendente_barge")),
+                            "truncado": truncado})
+    _live_acorda_pendente(sess)
+
+
+def _live_acorda_pendente(sess: dict) -> None:
+    """Garante UM observador por sessão esperando o pipeline liberar.
+
+    Chamado quando o pendente é guardado, quando um turno fecha (o turno em
+    curso pode ter acabado) e pelo PRÓPRIO observador moribundo (re-arm no fim
+    de `_live_descarrega_pendente`). Nesse último caso a thread ainda consta
+    viva — é a current_thread —, então a checagem de `is_alive` não pode bloquear
+    quem está saindo de armar o sucessor (gate #126/#127, achado 2: sem isso, a
+    fala guardada na janela de morte ficava órfã até o próximo fechamento de
+    turno — ou para sempre, com o pipeline livre)."""
+    t = sess.get("pend_thread")
+    if (t is not None and t is not threading.current_thread()
+            and t.is_alive()):
+        return
+    t = threading.Thread(target=_live_descarrega_pendente, args=(sess,), daemon=True)
+    sess["pend_thread"] = t
+    t.start()
+
+
+def _live_descarrega_pendente(sess: dict) -> None:
+    """Espera o pipeline liberar e abre o turno pendente (1 no máx.).
+
+    O `pop` decide o vencedor: com vários observadores acordados pelo mesmo
+    fechamento, só o primeiro processa. Se o pipeline voltou a ficar ocupado
+    (outra fala abriu turno no intervalo), o pendente VOLTA — o fechamento
+    desse turno acorda um observador de novo. Daemon: morre com a sessão."""
+    pipe = sess.get("pipe")
+    if pipe is None:
+        return
+    try:
+        while not sess.get("fechar") and pipe.ocupado:
+            time.sleep(0.1)
+        pendente = sess.pop("turno_pendente", None)
+        barge = bool(sess.pop("turno_pendente_barge", False))
+        if not pendente or sess.get("fechar"):
+            _live_pendente_zera_contadores(sess)
+            return
+        # contadores do evento descrevem o pendente ATUAL: preservados no re-arm
+        # abaixo (o conteúdo VOLTA) e zerados no fim quando ele é aberto
+        trechos = sess.get("pendentes_trechos", 0)
+        descartados_ms = sess.get("pendentes_descartados_ms", 0)
+        if pipe.ocupado:                  # fechou e abriu outro no intervalo
+            sess["turno_pendente"] = pendente
+            sess["turno_pendente_barge"] = barge
+            sess["pendentes_trechos"] = trechos
+            sess["pendentes_descartados_ms"] = descartados_ms
+            return
+        _live_pendente_zera_contadores(sess)
+        _live_abre_turno(sess, pendente, barge_in=barge)
+    finally:
+        # Fala guardada NA janela de morte deste observador (a guarda viu a
+        # thread viva e não armou outra): sem o re-arm ela ficava órfã até o
+        # próximo fechamento de turno — ou para sempre, com o pipeline livre
+        # (gate #126/#127, achado 2). O `fechar` fora: encerrar a sessão não
+        # pode virar nascedouro de observadores.
+        if sess.get("turno_pendente") and not sess.get("fechar"):
+            _live_acorda_pendente(sess)
+
+
+def _live_trata_eventos(sess: dict, eventos) -> None:
+    """Traduz a FSM (speech_start | speech_end | barge_in) para o protocolo.
+
+    `barge_in` e o `speech_start{barge_in:true}` vêm no MESMO lote: o primeiro
+    derruba o turno em curso, o segundo é a única abertura de turno.
+
+    LATÊNCIA: `t_ms` é RETROAGIDO ao início do áudio (é posição no stream); a
+    latência real da decisão é `t_decisao_ms`, que fica registrado na sessão — é
+    dele que sai o orçamento do LIVE-3 (fim-de-fala → 1º áudio), não do `t_ms.
+    DESCARTE: quem decide agora é o PIPELINE (compara o transcript com o texto do
+    assistente em reprodução: casar = eco → `turn_complete{descartado:true}`;
+    diferir = humano → segue). `curto`/`barge_falso` são dica e não barram mais o
+    STT — a bancada mostrou fala REAL de 384 ms marcada como curta e eco puro de
+    1280 ms passando como turno fantasma."""
+    for ev in eventos:
+        try:
+            dados = ev.to_json()
+        except Exception:                # noqa: BLE001 — evento de outro tipo
+            continue
+        _live_envia_json(sess, dados)
+        _live_marca_prov(sess, getattr(ev, "prob", 0.0))
+        if ev.tipo == "barge_in":
+            _live_log_kv("barge_in", sess=sess["id"], t_ms=ev.t_ms)
+            _live_cancela(sess)
+        elif ev.tipo == "speech_start":
+            _live_log_kv("speech_start", sess=sess["id"], t_ms=ev.t_ms,
+                         prob=getattr(ev, "prob", None))
+        elif ev.tipo == "speech_end":
+            _live_log_kv("speech_end", sess=sess["id"], t_ms=ev.t_ms,
+                         fala_ms=getattr(ev, "fala_ms", None),
+                         curto=getattr(ev, "curto", None),
+                         barge_falso=getattr(ev, "barge_falso", None),
+                         detalhe=getattr(ev, "detalhe", None))
+            _live_stage(sess, "stt")
+            sess["t_decisao_ms"] = int(getattr(ev, "t_decisao_ms", 0) or 0)
+            sess["turno_curto"] = bool(getattr(ev, "curto", False))
+            sess["turno_barge_falso"] = bool(getattr(ev, "barge_falso", False))
+            _live_abre_turno(sess, bytes(getattr(ev, "audio", b"") or b""),
+                             barge_in=bool(getattr(ev, "barge_in", False)))
+
+
+def _dbfs16(pcm: bytes) -> float:
+    """dBFS de um chunk PCM16 — o detector de eco calibra o nível pelo playback."""
+    import numpy as np
+    if len(pcm) < 2:
+        return -120.0
+    a = np.frombuffer(pcm[:len(pcm) - (len(pcm) % 2)], dtype="<i2").astype("float32")
+    if a.size == 0:
+        return -120.0
+    rms = float(np.sqrt(float((a * a).mean())))
+    return 20.0 * float(np.log10(max(rms, 1e-6) / 32768.0))
+
+
+# Taxa do áudio do TTS NO FIO (o pipeline publica em `model.sample_rate`, 24 kHz
+# para o catálogo atual). O sender só tem os BYTES do chunk — daí a constante aqui:
+# é dela que sai a duração real do chunk que dimensiona a janela de playback (#167).
+_LIVE_TTS_RATE = 24000
+
+
+def _live_chunk_ms(pcm: bytes) -> float:
+    """Duração REAL do chunk PCM16 (ms) — o backlog de playback do motor (#167).
+
+    O cliente BUFFERIZA: entre o envio e o alto-falante há a fila inteira, então a
+    janela de barge tem de cobrir o áudio já mandado. Duração por bytes, sem
+    decodificar — o motor só precisa da estimativa de tempo."""
+    return len(pcm) / 2 / (_LIVE_TTS_RATE / 1000.0)
+
+
+def _live_pipe_novo(sess: dict):
+    """Pipeline da sessão (None quando o módulo não está disponível -> stub).
+
+    Os callbacks do pipeline caem na MESMA fila da sessão, então a única task que
+    escreve no WS continua sendo a de envio (nada de send concorrente).
+
+    DSH-2: com `chat_backend=dsh` a sessão ganha um `DshClient` PRÓPRIO (não o pool
+    da Conversa): o `cancel` do barge-in casa por sessão e não vaza entre clientes,
+    e o processo é fechado junto com a sessão. Cliente por sessão + `prewarm` no
+    `_live_pipe_start` = boot de 17-18 s a frio FORA do turno. Construir o cliente
+    é barato (não sobe processo aqui); se algo falhar, a sessão segue no backend
+    openai em vez de nascer muda."""
+    if _live_mod is None:
+        return None
+    historico = [{"role": h["role"], "content": h["text"]} for h in sess["history"]]
+    dsh = None
+    if _chat_backend_live() == "dsh":
+        try:
+            cfg = _chat_dsh_cfg()
+            dsh = dsh_client.DshClient(
+                bin=cfg["bin"], profile=cfg["profile"], model=cfg["model"],
+                effort=cfg["effort"], cwd=BASE / "outputs" / ".dsh-cwd",
+                on_log=lambda m: _dsh_log(m, "live-dsh"))
+        except Exception as exc:                 # noqa: BLE001 — cai no openai
+            print(f"[live] dsh indisponível ({type(exc).__name__}: {exc}) — "
+                  f"sessão no backend openai", flush=True)
+    sess["dsh"] = dsh
+    return _live_mod.LivePipeline(
+        lambda obj: _live_envia_json(sess, obj),
+        lambda pcm: _live_envia_audio(sess, pcm),
+        voice_id=sess["voice_id"], system=sess["system"] or None, history=historico,
+        dsh=dsh)
+
+
+def _live_pipe_start(sess: dict) -> None:
+    """Pre-warm (whisper + TTS frios custam ~5-7 s): fora do caminho do handshake.
+
+    Avisa quando termina (`prewarm`): o 1º turno ANTES disso paga a compilação dos
+    kernels dos modelos (medido: 7,3 s de 1º áudio contra 0,7 s depois) — quem
+    mede o alvo do MVP precisa saber quando o pipeline está quente."""
+    pipe = sess.get("pipe")
+    if pipe is None:
+        return
+    try:
+        pipe.start()
+        _live_envia_json(sess, {"type": "prewarm", "ok": True})
+    except Exception as exc:             # noqa: BLE001 — pre-warm falho não derruba a sessão
+        _live_envia_json(sess, {"type": "prewarm", "ok": False,
+                                "message": f"{type(exc).__name__}: {exc}"})
+        _live_envia_json(sess, _live_erro("prewarm", f"{type(exc).__name__}: {exc}"))
+
+
+def _live_engine(sess: dict) -> None:
+    """STUB do pipeline (o #93 substitui esta função).
+
+    Emite o turno mínimo para o protocolo ser exercitável já: `speech_start` →
+    `turn_complete`. O áudio que o #93 gerar sai por `_live_envia_audio`."""
+    turno = sess["turno"]
+    _live_envia_json(sess, {"type": "speech_start", "turn": turno})
+    if sess["cancelado"].is_set():
+        return
+    _live_envia_json(sess, {"type": "turn_complete", "turn": turno, "stub": True,
+                            "audio_bytes": 0, "buffer_bytes": len(sess["buffer"])})
+
+
+async def _live_sender(sess: dict, ws) -> None:
+    """Única task que escreve no WS (evita corrida de send entre turno e eventos)."""
+    fila = sess["fila"]
+    while True:
+        try:
+            item = await asyncio.to_thread(fila.get, True, _LIVE_TICK_S)
+        except queue.Empty:
+            item = None
+        except asyncio.CancelledError:
+            raise
+        if item is None and _LIVE_STATS_MS and sess["visto"]:
+            agora = time.monotonic()
+            if agora >= sess.get("st_proximo", 0.0):
+                sess["st_proximo"] = agora + _LIVE_STATS_MS / 1000.0
+                _live_envia_json(sess, _live_stats(sess))
+        if item is not None:
+            tipo, payload = item
+            try:
+                if tipo == "json":
+                    await ws.send_json(payload)
+                else:
+                    await ws.send_bytes(payload)
+            except Exception:  # noqa: BLE001 — cliente caiu: a limpeza é do endpoint
+                return
+            if tipo == "audio":
+                sess["st_chunks"] += 1
+                sess["st_audio_bytes"] += len(payload)
+                if sess.get("st_stage") in ("stt", "llm"):   # 1º áudio do turno
+                    _live_stage(sess, "tts")
+                # V1: o playback é marcado NO ENVIO (nivel do chunk mede o eco);
+                # `#94` pode trazer feedback real de playback se o falso barge-in pedir.
+                eng = sess.get("engine")
+                if eng is not None:
+                    if not sess.get("falando"):
+                        sess["falando"] = True
+                    # #167: o cliente BUFFERIZA e ainda vai tocar este chunk — a
+                    # janela de barge tem de cobrir a duração REAL dele. A chamada
+                    # vai a CADA chunk (não só no 1º do turno): o backlog do motor
+                    # é a SOMA do que foi enviado e não tocou, e alimentá-lo só uma
+                    # vez deixava a janela pós-turno com um chunk fixo — onset logo
+                    # depois do `turn_complete`, com o cliente ainda tocando o
+                    # ÚLTIMO trecho (que é longo), virava turno novo (resíduo
+                    # medido). Repetir o `True` é inócuo: a recalibração do eco só
+                    # dispara na borda (`não speaking` -> `speaking`).
+                    eng.set_speaking(True, nivel_dbfs=_dbfs16(payload),
+                                     duracao_ms=_live_chunk_ms(payload))
+                    sess["audio_pendente"] = max(0, sess.get("audio_pendente", 1) - 1)
+                    if sess["audio_pendente"] == 0:
+                        sess["falando"] = False
+                        eng.set_speaking(False)
+        if sess["vencida"] or sess.get("fechar"):
+            try:
+                await ws.send_json({"type": "error", "code": "session_ttl",
+                                    "message": f"sessão ociosa por {_LIVE_TTL_S}s"})
+                await ws.close(code=1000)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+
+# ---------------------------------------------------------------------------
+# LIVE-5 (#95) — sessão longa: histórico fora da conexão (resume) + compressão de
+# contexto. Desenho no comentário da task; aqui o essencial:
+#   · `_live_historico[sid]` guarda msgs/voz/system de uma sessão que caiu, com TTL
+#     de retomada e tetos (por registro e total, evicção previsível — lição do #24);
+#   · `setup.session_id` retoma (o cliente reconecta e continua o contexto);
+#   · acima do limiar, a METADE MAIS ANTIGA vira UM resumo (LLM local, em thread,
+#     fora do caminho da latência); o system_instruction fica separado e sempre no
+#     prompt. Falha do resumo mantém o histórico cru.
+# ---------------------------------------------------------------------------
+_LIVE_RESUME_TTL_S = max(60, int(os.environ.get("TTS_LIVE_RESUME_TTL_S", "1800")))
+_LIVE_HIST_MAX_MSGS = max(4, int(os.environ.get("TTS_LIVE_HIST_MAX_MSGS", "24")))
+_LIVE_HIST_MAX_CHARS = max(1000, int(os.environ.get("TTS_LIVE_HIST_MAX_CHARS", "12000")))
+_LIVE_MAX_HISTORICOS = max(1, int(os.environ.get("TTS_LIVE_MAX_HISTORICOS", "32")))
+_LIVE_RESUME_MAX_BYTES = 4 * 1024 * 1024
+_live_historico: dict = {}          # sid -> {msgs, resumo, voz, system, visto, bytes}
+_live_resume_fn = None              # callable(msgs) -> str; default = _chat_llm
+
+
+def _live_hist_tam(reg: dict) -> int:
+    return sum(len(m.get("content") or m.get("text") or "") for m in reg.get("msgs") or [])
+
+
+def _live_hist_varre(agora: float | None = None) -> list:
+    """TTL de retomada + tetos. `visto` só é tocado em uso/conexão — a sessão que
+    caiu fica retomável; quem nunca volta expira. Evicção pelo mais antigo."""
+    agora = agora if agora is not None else time.monotonic()
+    with _live_lock:
+        for sid, reg in list(_live_historico.items()):
+            if agora - reg.get("visto", 0) > _LIVE_RESUME_TTL_S:
+                _live_historico.pop(sid, None)
+        while len(_live_historico) > _LIVE_MAX_HISTORICOS:
+            mais_antigo = min(_live_historico, key=lambda s: _live_historico[s].get("visto", 0))
+            _live_historico.pop(mais_antigo, None)
+        while sum(_live_hist_tam(r) for r in _live_historico.values()) > _LIVE_RESUME_MAX_BYTES:
+            mais_antigo = min(_live_historico, key=lambda s: _live_historico[s].get("visto", 0))
+            _live_historico.pop(mais_antigo, None)
+    return list(_live_historico)
+
+
+def _live_hist_guarda(sess: dict) -> None:
+    """Grava o contexto da sessão no registro de retomada (fim de turno/desconexão)."""
+    pipe = sess.get("pipe")
+    msgs = []
+    if pipe is not None and getattr(pipe, "history", None):
+        msgs = [{"role": m.get("role"), "content": m.get("content", "")}
+                for m in pipe.history if m.get("content")]
+    elif sess.get("history"):
+        msgs = [{"role": m["role"], "content": m["text"]} for m in sess["history"]]
+    if not msgs:
+        return
+    with _live_lock:
+        reg = _live_historico.setdefault(sess["id"], {})
+        # geração: o registro é do `sid`, mas quem manda nele é a sessão MAIS NOVA.
+        # Sem isto, a sessão antiga (socket zumbi) que morre depois regrava o
+        # contexto velho por cima do da sessão que a retomou.
+        if reg.get("geracao", 0) > sess.get("geracao", 0):
+            return
+        reg.update({"msgs": msgs[-_LIVE_HIST_MAX_MSGS:], "visto": time.monotonic(),
+                    "geracao": sess.get("geracao", 0),
+                    "voz": sess["voice_id"], "system": sess["system"]})
+        reg["resumo"] = sess.get("resumo") or reg.get("resumo") or ""
+    _live_hist_varre()
+
+
+def _live_hist_pega(sid: str) -> dict | None:
+    """Registro retomável (None = desconhecido/expirado)."""
+    if not sid:
+        return None
+    _live_hist_varre()
+    with _live_lock:
+        reg = _live_historico.get(sid)
+        if reg is None:
+            return None
+        reg["visto"] = time.monotonic()
+        return dict(reg)
+
+
+def _live_resumidor(sess: dict):
+    """Resumidor da compressão do LIVE — o backend EFETIVO da sessão, não o da Conversa.
+
+    POR QUE: `_chat_llm` é o caminho da CONVERSA. Com Live=dsh e Conversa no endpoint
+    (a combinação que o #175 recomenda) o resumo saía pelo provedor REMOTO — egress e
+    segundos — e, sem endpoint configurado, falhava 400 e o Live NUNCA comprimia (o
+    contexto só crescia até reabrir a sessão ACP). Segue o backend EFETIVO
+    (`_live_stats_ia`, que já considera o fallback do #146) e, no dsh, usa o POOL: o
+    resumo roda em thread no fim do turno e o cliente DA SESSÃO já pode estar no
+    próximo prompt (-32602, lição do #162/#170)."""
+    if _live_resume_fn is not None:
+        return _live_resume_fn
+    return _chat_llm_dsh if _live_stats_ia(sess)["backend"] == "dsh" else _chat_llm
+
+
+def _live_hist_comprime(sess: dict) -> bool:
+    """Resume a metade mais antiga (assíncrono, no fim do turno). True = comprimiu."""
+    pipe = sess.get("pipe")
+    if pipe is None:
+        return False
+    msgs = list(getattr(pipe, "history", []) or [])
+    if len(msgs) <= _LIVE_HIST_MAX_MSGS and \
+            sum(len(m.get("content") or "") for m in msgs) <= _LIVE_HIST_MAX_CHARS:
+        return False
+    meio = max(1, len(msgs) // 2)
+    antigas, recentes = msgs[:meio], msgs[meio:]
+    try:
+        resumidor = _live_resumidor(sess)
+        resumo = str(resumidor([
+            {"role": "system", "content":
+             "Resuma a conversa abaixo em 3-5 linhas, PRESERVANDO nomes, números e "
+             "decisões combinadas. Responda só o resumo."},
+            *[{"role": m.get("role", "user"), "content": m.get("content", "")} for m in antigas],
+        ]) or "").strip()
+    except Exception as exc:             # noqa: BLE001 — resumo é otimização
+        sess["resumo_erro"] = f"{type(exc).__name__}: {exc}"
+        return False
+    if not resumo:
+        return False
+    novo = [{"role": "system", "content": f"Resumo do que já foi dito: {resumo}"}] + recentes
+    try:
+        pipe.history[:] = novo           # o pipeline usa a MESMA lista
+    except Exception:                    # noqa: BLE001 — instância trocada: recria
+        pipe.history = novo
+    sess["resumo"] = resumo
+    return True
+
+
+def _live_hist_pos_turno(sess: dict) -> None:
+    """Fim de turno: guarda o contexto e, se passou do limiar, comprime em thread."""
+    _live_hist_guarda(sess)
+    if not _live_hist_ja_comprimindo(sess):
+        thr = threading.Thread(target=_live_hist_comprime, args=(sess,), daemon=True)
+        sess["compr_thread"] = thr
+        thr.start()
+
+
+def _live_hist_ja_comprimindo(sess: dict) -> bool:
+    thr = sess.get("compr_thread")
+    return bool(thr and thr.is_alive())
+
+
+@app.websocket("/api/live/ws")
+async def live_ws(ws: WebSocket):
+    await ws.accept()
+    if not _live_autentica(ws):
+        await ws.send_json(_live_erro(
+            "unauthorized",
+            "Sem credencial: pegue um ticket em POST /api/live/ticket e use ?ticket=<t> "
+            "(ou ?key=<chave>); loopback dispensa"))
+        await ws.close(code=4401)
+        return
+    _live_sweep()
+    # o teto NÃO é checado aqui: entre esta linha e o registro há o `await` do setup
+    # (duas conexões passavam juntas e furavam o limite) e só depois do setup se sabe
+    # o `session_id` — uma retomada SUBSTITUI a entrada e não pode levar `busy`.
+    try:
+        primeiro = await asyncio.wait_for(ws.receive(), _LIVE_SETUP_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        await ws.send_json(_live_erro("setup_timeout", "mande o `setup` primeiro"))
+        await ws.close(code=4408)
+        return
+    if primeiro.get("type") == "websocket.disconnect":
+        return
+    if "text" not in primeiro:
+        await ws.send_json(_live_erro("setup_binario", "o 1º frame é o JSON `setup`"))
+        await ws.close(code=4400)
+        return
+    try:
+        cfg = _live_valida_setup(json.loads(primeiro["text"]))
+    except json.JSONDecodeError:
+        await ws.send_json(_live_erro("setup_json", "setup não é JSON válido"))
+        await ws.close(code=4400)
+        return
+    except HTTPException as exc:
+        # `_resolve_voice` levanta HTTPException (404 sem voz gravada) e ela NÃO é
+        # ValueError: sem este ramo o handshake morria sem NENHUM frame (o cliente
+        # ficava pendurado no receive e não sabia que faltava voz).
+        await ws.send_json(_live_erro("setup_invalido", str(exc.detail)))
+        await ws.close(code=4400)
+        return
+    except ValueError as exc:
+        await ws.send_json(_live_erro("setup_invalido", str(exc)))
+        await ws.close(code=4400)
+        return
+
+    retomado = _live_hist_pega(cfg.get("session_id") or "")
+    sid = cfg["session_id"] if retomado else uuid.uuid4().hex[:10]
+    if retomado:
+        # retomada: voz/system do SETUP vencem quando vieram; senão, os guardados
+        cfg = {**cfg,
+               "voice_id": cfg["voice_id"] if cfg.get("voice_id_pedido") else
+                           (retomado.get("voz") or cfg["voice_id"]),
+               "system": cfg["system"] or retomado.get("system", ""),
+               "history": [{"role": m.get("role", "user"), "text": m.get("content", "")}
+                           for m in (retomado.get("msgs") or [])] or cfg["history"]}
+    sess = {
+        "id": sid, "criada": time.time(), "visto": time.monotonic(),
+        # geração: quem nasce depois MANDA no registro de retomada — a sessão antiga
+        # (socket zumbi) não pode sobrescrever o contexto da que a retomou.
+        "geracao": time.monotonic(),
+        "voice_id": cfg["voice_id"], "system": cfg["system"], "vad": cfg["vad"],
+        "history": list(cfg["history"]), "buffer": bytearray(),
+        "resumo": (retomado or {}).get("resumo") or "",
+        "truncado": False, "fila": queue.Queue(), "turno": 0,
+        "cancelado": threading.Event(), "vencida": False, "fechar": False,
+        "turno_thread": None, "pipe": None, "engine": None,
+        "dsh": None,                      # DSH-2: DshClient PRÓPRIO da sessão Live
+        "falando": False, "audio_pendente": 0, "buffer_bytes_turno": 0,
+        "t_decisao_ms": 0, "descartados": 0, "turno_barge_in": False,
+        "turno_curto": False, "turno_barge_falso": False,
+        # #126: 1 turno de fala pendente (pipeline ocupado) + o observador dele
+        "turno_pendente": None, "turno_pendente_barge": False, "pend_thread": None,
+        "pendentes_descartados": 0, "buffer_consumido": 0,
+        # contadores do evento `turno_pendente` (o `substituido` booleano virou
+        # isto): n de trechos acumulados e ms que saíram no teto do pendente
+        "pendentes_trechos": 0, "pendentes_descartados_ms": 0,
+        # telemetria (#118): contadores da sessão, sem trabalho extra relevante
+        "t0": time.monotonic(), "st_frames": 0, "st_bytes": 0, "st_ultimo_frame": None,
+        "st_dbfs": None, "st_prob": None, "st_chunks": 0, "st_audio_bytes": 0,
+        "st_erro": None, "st_stage": "idle", "st_stage_ini": None, "st_stage_ms": 0,
+        "st_proximo": 0.0,
+    }
+    sess["engine"] = _live_engine_novo(sess)
+    _live_log_kv("abre" if not retomado else "resume", sess=sid,
+                 voz=sess["voice_id"], retomado=bool(retomado),
+                 history=len(sess["history"]), criadas=len(_live_sessions))
+    with _live_lock:
+        # teto atômico com a inserção (ver comentário no topo do handler)
+        if sid not in _live_sessions and len(_live_sessions) >= _LIVE_MAX_SESSIONS:
+            await ws.send_json(_live_erro(
+                "busy", f"máximo de {_LIVE_MAX_SESSIONS} sessões simultâneas"))
+            await ws.close(code=1013)
+            return
+        _live_sessions[sid] = sess
+    global _live_sweeper_iniciado
+    if not _live_sweeper_iniciado:
+        _live_sweeper_iniciado = True
+        threading.Thread(target=_live_sweeper, daemon=True).start()
+
+    await ws.send_json({"type": "ready", "session_id": sid, "resumed": bool(retomado),
+                        "voice_id": sess["voice_id"],
+                        "audio": {"format": "pcm16", "sr": _LIVE_AUDIO_SR, "channels": 1},
+                        "in_audio": {"format": "pcm16", "sr": 16000, "channels": 1},
+                        "vad": sess["vad"]})
+    sender = None
+    try:
+        try:
+            # DENTRO do try: um pipeline que não nasce deixava a sessão presa no
+            # registry para sempre (sem task de envio, nada a fechava) e o processo
+            # dsh já criado órfão. Aqui ele degrada — a sessão continua no ar.
+            sess["pipe"] = _live_pipe_novo(sess)
+        except Exception as exc:         # noqa: BLE001 — sessão já está no ar
+            sess["pipe"] = None
+            print(f"[live] pipeline indisponível ({type(exc).__name__}: {exc}) — "
+                  f"sessão segue sem pipeline", flush=True)
+            _live_envia_json(sess, _live_erro("pipeline", f"{type(exc).__name__}: {exc}"))
+        if sess["pipe"] is not None:
+            threading.Thread(target=_live_pipe_start, args=(sess,), daemon=True).start()
+        sender = asyncio.create_task(_live_sender(sess, ws))
+        await _live_loop(sess, ws)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        sess["fechar"] = True
+        sess["cancelado"].set()
+        if sess.get("pipe") is not None:
+            try:
+                sess["pipe"].close()
+            except Exception:            # noqa: BLE001
+                pass
+        elif sess.get("dsh") is not None:     # pipeline não nasceu: o dsh é órfão
+            try:
+                sess["dsh"].close()
+            except Exception:            # noqa: BLE001
+                pass
+        _live_log_kv("fecha", sess=sid, idade_s=int(time.time() - sess["criada"]),
+                     frames=sess.get("st_frames", 0), bytes=sess.get("st_bytes", 0),
+                     chunks=sess.get("st_chunks", 0), turnos=sess.get("turno", 0))
+        try:
+            _live_hist_guarda(sess)       # retomável pelo session_id
+        except Exception:                 # noqa: BLE001
+            pass
+        sess["fila"].put(None)
+        if sender is not None:
+            try:
+                await asyncio.wait_for(sender, 2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                sender.cancel()
+        # SÓ sai do registry quem ainda é o dono da entrada: numa retomada o `sid` é
+        # o do cliente, então o pop incondicional da sessão ANTIGA apagava a NOVA
+        # (ela ficava fora do sweep/TTL e fora da contagem do teto).
+        if _live_sessions.get(sid) is sess:
+            with _live_lock:
+                _live_sessions.pop(sid, None)
+
+
+async def _live_loop(sess: dict, ws) -> None:
+    """Loop de recepção: binário = áudio do turno, texto = comando do protocolo."""
+    while True:
+        msg = await ws.receive()
+        if msg.get("type") == "websocket.disconnect":
+            return
+        sess["visto"] = time.monotonic()
+        if msg.get("bytes"):
+            sess["st_frames"] += 1
+            sess["st_bytes"] += len(msg["bytes"])
+            sess["st_ultimo_frame"] = time.monotonic()
+            sess["st_dbfs"] = round(_dbfs16(bytes(msg["bytes"])), 1)
+            eng = sess.get("engine")
+            if eng is not None:
+                _live_trata_eventos(sess, eng.feed(msg["bytes"]))
+            elif sess.get("pipe") is not None:
+                sess["pipe"].push_pcm(msg["bytes"])   # sem FSM: pipeline por frame
+            buf = sess["buffer"]
+            buf.extend(msg["bytes"])
+            if len(buf) > _LIVE_MAX_BUFFER:      # mantém o INÍCIO do turno
+                del buf[_LIVE_MAX_BUFFER:]
+                # consumido em `_live_enriquece` (estampa `truncated` no
+                # `turn_complete`); com o pipeline ele também rastreia o próprio
+                # flag e o `setdefault` deixa o dele vencer. Este é o ÚNICO
+                # emissor quando não há pipeline (stub) ou engine.
+                sess["truncado"] = True
+            continue
+        if not msg.get("text"):
+            continue
+        try:
+            dados = json.loads(msg["text"])
+        except json.JSONDecodeError:
+            _live_envia_json(sess, _live_erro("json", "frame de texto não é JSON"))
+            continue
+        tipo = str((dados or {}).get("type") or "")
+        if tipo == "ping":
+            _live_envia_json(sess, {"type": "pong", "t": dados.get("t")})
+        elif tipo == "cancel":
+            eng = sess.get("engine")
+            if eng is not None:
+                eng.cancel()
+            _live_cancela(sess, do_cliente=True)   # abortou tudo: pendente sai junto
+        elif tipo == "end_of_speech":
+            eng = sess.get("engine")
+            if eng is not None:          # comando é do cliente: força o fim do turno
+                _live_trata_eventos(sess, eng.flush())
+                continue
+            if sess.get("pipe") is not None:
+                _live_abre_turno(sess)               # usa o buffer da sessão
+                continue
+            if not sess["buffer"]:
+                _live_envia_json(sess, _live_erro("sem_audio", "nenhum frame de áudio recebido"))
+                continue
+            if sess["turno_thread"] and sess["turno_thread"].is_alive():
+                _live_envia_json(sess, _live_erro("turno_em_curso", "espere o turn_complete"))
+                continue
+            sess["cancelado"].clear()
+            sess["turno"] += 1
+            sess["buffer_bytes_turno"] = len(sess["buffer"])   # p/ observabilidade
+            thr = threading.Thread(target=_live_engine, args=(sess,), daemon=True)
+            sess["turno_thread"] = thr
+            thr.start()
+        else:
+            _live_envia_json(sess, _live_erro("comando", f"comando desconhecido: {tipo!r}"))
+
+# ---------------------------------------------------------------------------
 # API compatível com OpenAI (POST /v1/audio/speech) — funciona com o SDK da
 # OpenAI e clientes xAI/Grok apontando base_url para http://127.0.0.1:7860/v1
 # ---------------------------------------------------------------------------
@@ -5432,8 +6978,12 @@ def _segs_to_vtt(segs) -> str:
     return "WEBVTT\n\n" + body
 
 
-def _openai_stt(file, language, response_format, translate):
-    """STT OpenAI-compatível: áudio -> texto (+ segmentos). translate=True traduz p/ inglês."""
+def _openai_stt(file, language, response_format, translate, response=None):
+    """STT OpenAI-compatível: áudio -> texto (+ segmentos). translate=True traduz p/ inglês.
+
+    `response` é a resposta injetada pela rota: o aviso de fallback do remoto vai no
+    HEADER (vale para json/verbose_json/text/srt/vtt; um campo no corpo não cobriria
+    os formatos de texto)."""
     if file is None:
         raise HTTPException(400, "Campo 'file' obrigatório")
     tmp = _save_audio_upload(file)
@@ -5447,13 +6997,21 @@ def _openai_stt(file, language, response_format, translate):
              "text": (s.get("text") or "").strip()} for s in (r.get("segments") or [])]
     if translate and text:                       # /translations -> inglês (agrega; srt/vtt ficam no original)
         text = _translate(text, "en")
+    if response is not None:
+        _aviso_remoto_headers(response.headers, r)
     rf = (response_format or "json").lower()
     if rf == "text":
-        return Response(text + "\n", media_type="text/plain; charset=utf-8")
+        resp = Response(text + "\n", media_type="text/plain; charset=utf-8")
+        _aviso_remoto_headers(resp.headers, r)
+        return resp
     if rf == "srt":
-        return Response(_segs_to_srt(segs), media_type="application/x-subrip; charset=utf-8")
+        resp = Response(_segs_to_srt(segs), media_type="application/x-subrip; charset=utf-8")
+        _aviso_remoto_headers(resp.headers, r)
+        return resp
     if rf == "vtt":
-        return Response(_segs_to_vtt(segs), media_type="text/vtt; charset=utf-8")
+        resp = Response(_segs_to_vtt(segs), media_type="text/vtt; charset=utf-8")
+        _aviso_remoto_headers(resp.headers, r)
+        return resp
     if rf == "verbose_json":
         dur = max((s["end"] for s in segs), default=0.0)
         return {"task": "translate" if translate else "transcribe", "language": lang,
@@ -5464,19 +7022,20 @@ def _openai_stt(file, language, response_format, translate):
 
 
 @app.post("/v1/audio/transcriptions")
-def openai_transcriptions(file: UploadFile = File(...), model: str = Form("whisper-1"),
-                          language: str = Form(None), prompt: str = Form(None),
-                          response_format: str = Form("json"), temperature: float = Form(0.0)):
+def openai_transcriptions(response: Response, file: UploadFile = File(...),
+                          model: str = Form("whisper-1"), language: str = Form(None),
+                          prompt: str = Form(None), response_format: str = Form("json"),
+                          temperature: float = Form(0.0)):
     """STT compatível com OpenAI Whisper. response_format: json|text|srt|verbose_json|vtt."""
-    return _openai_stt(file, language, response_format, translate=False)
+    return _openai_stt(file, language, response_format, translate=False, response=response)
 
 
 @app.post("/v1/audio/translations")
-def openai_translations(file: UploadFile = File(...), model: str = Form("whisper-1"),
-                        prompt: str = Form(None), response_format: str = Form("json"),
-                        temperature: float = Form(0.0)):
+def openai_translations(response: Response, file: UploadFile = File(...),
+                        model: str = Form("whisper-1"), prompt: str = Form(None),
+                        response_format: str = Form("json"), temperature: float = Form(0.0)):
     """STT + tradução p/ inglês (compatível com OpenAI). response_format igual ao de transcriptions."""
-    return _openai_stt(file, None, response_format, translate=True)
+    return _openai_stt(file, None, response_format, translate=True, response=response)
 
 
 @app.post("/v1/audio/speech")

@@ -5,9 +5,21 @@
 > dono — em 2026-09-24 uma varredura inteira não achou a máquina (seção 2). Tudo que
 > depende de confirmação está marcado com `❓`.
 >
-> Última atualização: 2026-09-24 (infra-remote, tasks #16, #27 e #35). Como atualizar: assim
-> que o dono confirmar host/serviço, rode `remote/deploy.sh recon` (§4) e troque os `❓`
-> por valores reais; mantenha a data no topo.
+> Última atualização: 2026-09-29 (infra-remote, tasks #14, #27 e #35 — recon novo em §2,
+> mesma conclusão: host segue ❓). Como atualizar: assim que o dono confirmar
+> host/serviço, rode `remote/deploy.sh recon` (§4) e troque os `❓` por valores reais;
+> mantenha a data no topo.
+
+**O que falta do dono — uma linha só, para repassar:**
+
+```
+host ou IP do servidor RTX  +  usuário de ssh  +  unit e porta do Voxtral
+```
+
+Só isso destrava o `recon`/`compare` (read-only) e, com o OK dele, o `deploy --apply`
+que fecha as tasks #27, #14 e #35. Nada mais está pendente de código: os três patches
+estão versionados e verdes, e o deploy é aditivo — sem `onnxruntime` no venv de lá o
+VAD cai no mesmo jit de hoje, com aviso no log.
 
 ## 1. Inventário
 
@@ -109,8 +121,35 @@ Leitura provável: a máquina CUDA estava **desligada** (ou fora do alcance dest
 | `~/.ssh/config` (sem os audit) e `~/.zsh_history` | só `vm59`; histórico com `192.168.15.49` (offline) e os hosts da frota |
 | `~/.ssh/known_hosts` | nomes da frota (`*.gryffindor|slytherin.eonf.ltd`) já cobertos na tabela acima |
 
+**Recon de 2026-09-29 (infra-remote, tasks #14/#27/#35) — varredura maior, mesma conclusão:**
+
+Neste dia a VPN Firezone estava de pé no Mac (`utun4`, cliente 1.5.18, `100.89.3.11`),
+o que abriu as duas faixas da frota por TCP — foi a primeira vez que deu para **entrar**
+nos hosts e checar GPU por dentro em vez de só sondar porta.
+
+| alvo | resultado |
+|---|---|
+| LAN `192.168.15.0/24` (22/8000/8800/7860 + 2222/22022/2022/22222/9000/11434/5000/8080) | ssh só em `.1` (roteador, pede senha — sem chave, leases DHCP não lidos), `.31`, `.34`, `.59`; `.254` responde só na 8080. **Nada na 8800 nem na 8000** |
+| frota `213.155.16.0/22` + `217.179.88.0/22` (68 hosts vivos, ssh OK em todos com a chave do Mac) | `lspci` sem NVIDIA, sem `/dev/nvidia*`, sem `/root/voxtral`\|`/root/omnivoice` — **nenhum tem GPU**. A porta 8000 dos 4 hosts slytherin de controle (`.20/.34/.43/.54`) é um serviço `java`, não o OmniVoice |
+| 27 IPs DigitalOcean do `~/.ssh/known_hosts` (wp-*/gr-*/builder/spark/vpn-server/…) | ssh OK, **nenhum com GPU** nem com os diretórios do deploy |
+| rotas do Firezone | recursos publicados são só `213.155.16.0/22` (gryffindor) e `217.179.88.0/22` (LAX); a VPN **não** alcança nenhuma outra rede |
+| inventário Ansible do `voldemort` (`/root/ansible-canonical/inventory/hosts.yml`) | 12 baremetal (6 gryffindor + 6 slytherin), os mesmos da tabela acima — a máquina CUDA não está no inventário |
+| `~/.ssh/config.audit` / jump hosts `64.34.89.186` e `64.34.88.234` (TCP 22) | seguem **timeout**; existe perfil OpenVPN para `64.34.89.186:1194/udp` (não conectado) e os `.ovpn` do OpenVPN Connect cobrem 10 destinos (w3block, archanjo, home-sc, AWS…) |
+| `192.168.15.49`, `192.168.200.32` | timeout nas 3 portas |
+| VPS `136.248.119.231` (nginx do `the-dudes`) | só faz proxy para `127.0.0.1:8787`/`7860` — nada do RTX |
+
+Leitura: nem a LAN, nem a frota, nem a VPN, nem o DO, nem o inventário Ansible conhecem a
+máquina. Ela está **fora de todas as redes que este Mac alcança** (desligada, ou numa rede
+própria) — continuar varrendo tem retorno decrescente; o que falta é o dono dizer o host.
+
+Reconferido no mesmo dia às 13:48 (LAN e as duas faixas da frota, portas 22/8000/8800):
+resultado idêntico — 8000 só nos quatro hosts slytherin de controle (serviço `java`),
+**nada na 8800** em nenhum alvo.
+
 Dica para a próxima: `python3 -c` com socket + ThreadPool em 2 portas × 2 faixas leva ~1 min
-e responde "existe GPU exposta?"; `nvidia-smi` ausente não é conclusivo sozinho (ver §3).
+e responde "existe GPU exposta?"; `nvidia-smi` ausente não é conclusivo sozinho (ver §3) —
+e, com a VPN de pé, o discriminante rápido por host é `lspci | grep -ci nvidia` **e**
+`ls /dev/nvidia*` (os dois juntos; `lspci` sozinho pode faltar em imagem mínima).
 
 ## 3. Recon read-only (copiar e colar)
 

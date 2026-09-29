@@ -56,6 +56,7 @@ Uso típico (lado do handler):
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -156,6 +157,25 @@ class Config:
     eco_folga_payload_db: float = 8.0             # folga de pico: eco não passa do payload
     envelope_ms: int = 224                        # suavização do nível (decisão)
     playback_janela_ms: int = 900                 # janela de playback (toca + cauda)
+    # Janela de barge INTRA-TURNO (#167) — hoje DESLIGADA por medição.
+    #
+    # Ligada, o handler marca o turno do assistente em `set_turno_aberto` e a janela
+    # não fecha nos vãos de LLM/TTS. Medido no `tests/live_barge_rep.sh` (REP=20):
+    # no sentido do barge VERDADEIRO fica no mesmo patamar da direção (a) (16-19/20
+    # contra 17-19/20, variância), mas no sentido do FALSO barge por eco
+    # (`MIC_FILE=1`) ela PIORA forte: 4/10 contra 9/10 da janela pela duração. Por
+    # isso o default é desligado e a API `set_turno_aberto` fica disponível para
+    # quando este lado for trabalhado. Env: TTS_LIVE_BARGE_JANELA_TURNO=1.
+    barge_janela_turno: bool = False
+    playback_turno_max_ms: int = 120000           # trava: turno "aberto" esquecido
+    playback_audio_max_ms: int = 60000            # teto do áudio "em voo" acumulado
+    # #167: janela dimensionada pela DURAÇÃO REAL do chunk (+ backlog em voo).
+    # Medido no `live_barge_rep.sh`: melhora o barge no cenário degradado (19/20
+    # contra 16/20 sem ela; 8/10 contra 9/10 no sentido do eco), MAS derruba o
+    # `live_ui.sh` (o corte deixa de ser medido: a janela passa a cobrir o tempo de
+    # uma fala que já terminou). Por isso o default é DESLIGADO — ligue com
+    # TTS_LIVE_PLAYBACK_DURACAO=1 e reconcilie o `live_ui.sh` antes de virar default.
+    playback_por_duracao: bool = False
     adaptacao_ruido_db: float = 0.25              # por frame, só fora de voz
     adaptacao_eco_db: float = 0.25                # por frame, só fora de voz
     eco_faixa_morta_db: float = 3.0               # zona em que o eco não se mexe
@@ -219,6 +239,14 @@ class Config:
     @property
     def _frames_playback(self) -> int:
         return max(1, math.ceil(self.playback_janela_ms / FRAME_MS))
+
+    @property
+    def _frames_turno_assistente_max(self) -> int:
+        return max(1, math.ceil(self.playback_turno_max_ms / FRAME_MS))
+
+    @property
+    def _frames_audio_max(self) -> int:
+        return max(1, math.ceil(self.playback_audio_max_ms / FRAME_MS))
 
     @property
     def _frames_pre(self) -> int:
@@ -314,6 +342,10 @@ class TurnEngine:
         self._onset_frames = 0
         self._barge_frames = 0
         self._playback_frames = 0
+        self._turno_aberto = False          # turno do ASSISTENTE em voo (#167)
+        self._turno_aberto_frames = 0
+        self._playback_restante = 0         # frames a tocar do último chunk (#167)
+        self._debug = os.environ.get("LIVE_TURNS_DEBUG") == "1"
         self._calibrando = False
         self._calibracao_vals: list[float] = []
         self._eco_ausente = False
@@ -356,8 +388,26 @@ class TurnEngine:
         cliente ainda tem áudio bufferizado).
 
         Vale também como "eco ainda é referência": é o que impede o eco
-        residual de virar fala fantasma."""
-        return self._speaking or self._playback_frames > 0
+        residual de virar fala fantasma.
+
+        #167: com `set_turno_aberto(True)` a janela NÃO fecha nos VÃOS de
+        geração (LLM/TTS entre chunks) — antes, um vão maior que
+        `playback_janela_ms` (medido: até 20 s) fazia o onset do humano virar
+        turno NOVO em vez de interrupção. O turno fecha por
+        `set_turno_aberto(False)` e aí vale a cauda normal."""
+        return self._speaking or self._turno_aberto or self._playback_frames > 0
+
+    def _janela_log(self, motivo: str, antes: bool) -> None:
+        """Diagnóstico das transições da JANELA (LIVE_TURNS_DEBUG=1).
+
+        Serve para correlacionar com a injeção do harness de barge: é o estado que
+        arma (ou não) o barge-in."""
+        if not self._debug:
+            return
+        agora = self._playback_ativo()
+        if agora != antes:
+            print(f"[JANELA-ENG] {'ABERTA' if agora else 'fechada'} ({motivo})",
+                  flush=True)
 
     def _base_energia(self) -> float:
         # eco declarado ausente (o playback não somou nível): o regime é o de
@@ -391,6 +441,7 @@ class TurnEngine:
                 "noise_dbfs": round(self._noise_dbfs, 1),
                 "eco_dbfs": round(self._eco_dbfs, 1),
                 "playback_ativo": self._playback_ativo(),
+                "turno_assistente_aberto": self._turno_aberto,
                 "eco_ausente": self._eco_ausente,
                 "hold_to_talk": self._hold or self.config.hold_to_talk,
                 "hold_to_talk_sugerido": bool(
@@ -399,29 +450,68 @@ class TurnEngine:
                     and not self.config.hold_to_talk)}
 
     # -- controle do handler ---------------------------------------------
-    def set_speaking(self, ligado: bool, nivel_dbfs: float | None = None) -> None:
+    def set_speaking(self, ligado: bool, nivel_dbfs: float | None = None,
+                     duracao_ms: float | None = None) -> None:
         """Liga/desliga o estado de playback. `nivel_dbfs` (opcional) é o nível
         do chunk de TTS que vai para o alto-falante: dele sai o palpite inicial
-        do eco, refinado pela EMA enquanto o usuário não fala."""
-        subida = ligado and not self._playback_ativo()
-        if subida:
+        do eco, refinado pela EMA enquanto o usuário não fala.
+
+        #167: a BORDA de áudio (`ligado` vindo de `não speaking`) é o que
+        recalibra o eco — com a janela colada ao turno o pulso True/False por
+        chunk deixou de ser a borda que reabre a janela, e sem isto o
+        `_eco_ausente` declarado num VÃO (nada tocando) ficaria preso mesmo com o
+        TTS voltando a tocar, derrubando o limiar e convidando barge falso."""
+        janela_antes = self._playback_ativo()
+        borda_audio = bool(ligado) and not self._speaking
+        if ligado and duracao_ms and self.config.playback_por_duracao:
+            # #167: o cliente BUFFERIZA — depois do último envio ele ainda vai tocar
+            # TODO o áudio já mandado. Sem isto a janela expirava no meio do próprio
+            # chunk e um onset ali virava turno novo (medido: falha exatamente
+            # depois de `turn_complete`, com o cliente ainda com áudio na fila).
+            # ACUMULA (o backlog é a soma dos chunks) e escoa em tempo real.
+            self._playback_restante = min(
+                self.config._frames_audio_max,
+                self._playback_restante
+                + int(math.ceil(float(duracao_ms) / FRAME_MS))
+                + self.config._frames_cauda)
+        if borda_audio:
             palpite = (nivel_dbfs - self.config.eco_perda_inicial_db
                        if nivel_dbfs is not None else self._noise_dbfs + 6.0)
             self._eco_dbfs = float(np.clip(palpite, self.config.piso_ruido_dbfs,
                                            self.config.teto_ruido_dbfs + 20.0))
-        self._speaking = bool(ligado)
-        self._nivel_payload = nivel_dbfs if ligado else None
-        if subida:
-            # SÓ na borda: no par True/False por chunk, reiniciar a cada chamada
-            # zeraria o contador de barge e a calibração antes de acumularem
-            self._barge_frames = 0
             self._eco_ausente = False
-            self._barge_no_turno_emitido = False
             self._calibrando = True
             self._calibracao_vals = []
+            if not self._playback_ativo():
+                # só com a janela FECHADA (episódio novo de playback) o acumulador
+                # de barge zera e o aviso de "barge com turno aberto" rearma —
+                # assim o par True/False por chunk não repete o evento (#115)
+                self._barge_frames = 0
+                self._barge_no_turno_emitido = False
+        self._speaking = bool(ligado)
+        self._nivel_payload = nivel_dbfs if ligado else None
         if not ligado:
             # o stop não fecha a janela na hora: o cliente ainda tem áudio na fila
-            self._playback_frames = self.config._frames_playback
+            # E ainda vai TOCAR o chunk que acabou de chegar (duração real dele)
+            self._playback_frames = max(self.config._frames_playback,
+                                        self._playback_restante)
+        self._janela_log("set_speaking", janela_antes)
+
+    def set_turno_aberto(self, aberto: bool) -> None:
+        """Marca que o assistente AINDA tem turno em voo (mesmo com a fila vazia).
+
+        É o que mantém a janela de playback viva nos vãos de geração (#167). Quem
+        chama é o handler: `True` no 1º áudio do turno, `False` em
+        `turn_complete`/`interrupted`/cancel/fechamento (idempotente). Sem estas
+        chamadas nada muda — a janela segue a fila, como antes."""
+        janela_antes = self._playback_ativo()
+        self._turno_aberto = bool(aberto) and self.config.barge_janela_turno
+        self._turno_aberto_frames = self.config._frames_turno_assistente_max
+        self._janela_log("set_turno_aberto", janela_antes)
+        if not aberto:
+            # fechou o turno: vale a cauda normal (pode haver áudio no cliente)
+            self._playback_frames = max(self._playback_frames,
+                                        self.config._frames_playback)
 
     def set_hold(self, pressionado: bool) -> list[TurnEvent]:
         """Fallback de UI "segurar pra falar": abre/fecha o turno no botão,
@@ -460,6 +550,7 @@ class TurnEngine:
     def reset(self) -> None:
         self._reset_turno()
         self._playback_frames = 0
+        self._turno_aberto = False
         self._calibrando = False
         self._calibracao_vals = []
         self._env.clear()
@@ -517,14 +608,30 @@ class TurnEngine:
                                                      self._eco_dbfs - 3.0),
                                                  self.config.piso_ruido_dbfs,
                                                  self.config.teto_ruido_dbfs))
+        if not self._speaking and not self._turno_aberto and self._playback_restante:
+            # #167: o backlog só escoa DEPOIS do turno. Com o turno aberto o cliente
+            # está atrasado (ele toca em 1x o que o servidor produziu mais rápido),
+            # então descontar durante a geração consumia o backlog antes do
+            # `turn_complete` e a janela fechava com áudio ainda na fila do cliente.
+            self._playback_restante -= 1
+        if self._turno_aberto and not self._speaking:
+            # trava de segurança (#167): turno "aberto" que o handler esqueceu de
+            # fechar não pode segurar a janela para sempre em vão sem áudio
+            janela_antes = self._playback_ativo()
+            self._turno_aberto_frames -= 1
+            if self._turno_aberto_frames <= 0:
+                self._turno_aberto = False
+                self._janela_log("trava de segurança", janela_antes)
 
         if self._estado is Estado.FALANDO:
             # turno já aberto: o áudio dele NÃO pode ser pulado pela calibração
             eventos = self._avaliar_turno(frame, env_dbfs, prob)
             if self._calibrando:
                 self._calibrar(env_dbfs)
-            else:
-                eventos += self._barge_com_turno_aberto(env_dbfs, prob)
+            # #167: o braço do barge NÃO pode ficar parado durante a calibração do
+            # eco — com a calibração a cada início de áudio, o onset do humano que
+            # já estava falando pagaria `eco_calibracao_ms` inteiro antes de contar
+            eventos += self._barge_com_turno_aberto(env_dbfs, prob)
             return eventos
         if self._calibrando:
             self._calibrar(env_dbfs)
@@ -591,8 +698,12 @@ class TurnEngine:
         self._calibracao_vals = []
         # se o humano já estava falando, conta o que ele já sustentou (o eco não
         # entra: estes frames são reavaliados com o limiar já convergido)
-        self._barge_frames = min(self._fala_no_historico(),
-                                 self.config.eco_calibracao_teto * self.config._frames_calibracao)
+        # #167: o braço do barge conta DESDE o início do áudio (não é zerado pela
+        # recalibração por chunk) — aqui só se garante o mínimo que o histórico
+        # sustenta, sem descartar o que já contou
+        self._barge_frames = max(self._barge_frames,
+                                 min(self._fala_no_historico(),
+                                     self.config.eco_calibracao_teto * self.config._frames_calibracao))
 
     def _eco_sumiu(self, obs_dbfs: float) -> bool:
         """O playback acrescentou eco de verdade?

@@ -604,6 +604,50 @@ def _temp(o: dict, default: float = 0.8) -> float:
     return default
 
 
+def _interpolate_kokoro_seguro(input, size=None, scale_factor=None, mode="nearest",
+                               align_corners=None):
+    """`interpolate` do mlx_audio com o `ceil` protegido contra erro de float.
+
+    O `size` do original é `ceil(n * scale)`: para f0 de 34200 amostras,
+    `34200 * (1/300)` dá 114.00000000000001 e o ceil vira **115**. O `_f02sine`
+    (SineGen) comprime e reexpande em seguida, então o comprimento final vira
+    34500 enquanto o `uv` (derivado do f0, sem interpolação) continua 34200 — e
+    o `noise_amp * mx.random.normal(sine_waves.shape)` do kokoro estoura com
+    "Shapes (1,34200,1) and (1,34500,9) cannot be broadcast".
+
+    Comprimentos afetados são múltiplos de 300 em que o produto erra para cima
+    (medido: 17400, 33600, 34200, 37800 — e textos curtos caem neles: "Ok.",
+    "Oi", "Bom dia", "Certo."). Arredondar o produto antes do ceil devolve a
+    ida-e-volta ao MESMO comprimento.
+    """
+    import math
+
+    from mlx_audio.tts.models.interpolate import interpolate1d
+    if size is None:
+        escala = float(scale_factor[-1] if isinstance(scale_factor, (list, tuple))
+                       else scale_factor)
+        size = max(1, int(math.ceil(round(float(input.shape[-1]) * escala, 9))))
+    elif isinstance(size, (list, tuple)):
+        size = size[-1]
+    return interpolate1d(input, int(size), mode, align_corners)
+
+
+def _patch_kokoro_interpolate() -> bool:
+    """Aplica o patch do `interpolate` no namespace do istftnet (só o Kokoro).
+
+    Não dá para editar o venv: os pinos do requirements reinstalam a lib. O
+    patch é idempotente e não muda mais nada além do arredondamento acima."""
+    try:
+        from mlx_audio.tts.models.kokoro import istftnet
+    except Exception:  # noqa: BLE001
+        return False
+    if getattr(istftnet, "_rod_interp_seguro", False):
+        return True
+    istftnet.interpolate = _interpolate_kokoro_seguro
+    istftnet._rod_interp_seguro = True
+    return True
+
+
 def generate_with_backend(
     model,
     family: str,
@@ -791,6 +835,7 @@ def generate_with_backend(
         kwargs = {"text": text, "voice": voice, "lang_code": klang}
         if abs(speed - 1.0) > 1e-3:
             kwargs["speed"] = speed
+        _patch_kokoro_interpolate()   # bug de ceil do istftnet (ver _patch_*)
         try:
             audio = _collect_audio(model.generate(**kwargs))
         except Exception:
