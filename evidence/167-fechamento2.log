@@ -1,0 +1,15 @@
+=== true (modo padrão) (18:43:47) ===
+  → ok=17/20 · falhas=3
+=== live_ui (ESTRITO) (18:46:53) ===
+  → exit 0 · 1 medição(ões) de corte
+=== resumo (18:47:47) ===
+vao    ok=20/20 falhas=0 cortes==== MOTOR (cumulativo da rodada): {"barge_ativos": 39, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -55.8, "limiar_turno_dbfs": -55.8}
+eco    ok=14/20 falhas=6 cortes==== MOTOR (cumulativo da rodada): {"barge_ativos": 22, "barge_falsos": 0, "estado": "ouvindo", "limiar_dbfs": -24, "limiar_turno_dbfs": -27}
+true   ok=17/20 falhas=3 cortes==== MOTOR (cumulativo da rodada): {"barge_ativos": 18, "barge_falsos": 0, "estado": "ocioso", "limiar_dbfs": -56, "limiar_turno_dbfs": -56}
+  VAD speech_start epoch=1790718450.07
+  VAD speech_end epoch=1790718455.83
+  VAD speech_start epoch=1790718455.83
+  VAD speech_start epoch=1790718463.37
+
+✔ OK — turno real pela UI: mic->worklet->WS->áudio de volta, transcrição e corte do barge-in medido
+=== fim (18:47:47) ===

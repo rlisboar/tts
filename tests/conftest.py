@@ -1,3 +1,4 @@
+import shutil
 import sys
 import warnings
 from pathlib import Path
@@ -161,13 +162,27 @@ def _estado_isolado(tmp_path_factory):
     cópia começa idêntica ao arquivo real, para o processo herdar a config atual
     (defaults + overrides) em vez de defaults secos. Quem quiser o arquivo do
     repo usa `app.BASE / "settings.json"`.
+
+    #224: a cópia é CREDENCIAL — o `settings.json` do dono costuma trazer o
+    `chat_api_key` em texto claro, e o basetemp fica em TMPDIR. Por isso o
+    teardown abaixo apaga SÓ o que esta fixture criou (o resto do basetemp fica
+    em paz, servindo de depuração); a outra ponta, a sessão que NÃO se retém, é
+    o `tmp_path_retention_policy = failed` do `pytest.ini`. As duas são cobradas
+    por `tests/test_tmpdir_sem_credencial.py`.
     """
     import app
 
-    destino = tmp_path_factory.mktemp("estado") / "settings.json"
+    pasta = tmp_path_factory.mktemp("estado")
+    destino = pasta / "settings.json"
     if app.SETTINGS_PATH.exists():
         destino.write_bytes(app.SETTINGS_PATH.read_bytes())
     original = app.SETTINGS_PATH
     app.SETTINGS_PATH = destino
     yield destino
     app.SETTINGS_PATH = original
+    # `ignore_errors`: o pytest pode ter varrido o basetemp antes (sessão verde
+    # com a política `failed`), e num run vermelho é justamente aqui que a cópia
+    # sai do diretório que o pytest vai RETER. Não roda se o processo levar
+    # SIGKILL — aí sobra uma cópia por sessão interrompida, até o
+    # `make_numbered_dir` do pytest varrer (é o resíduo aceito e documentado).
+    shutil.rmtree(pasta, ignore_errors=True)

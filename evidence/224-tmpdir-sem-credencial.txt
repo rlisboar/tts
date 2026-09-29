@@ -1,0 +1,113 @@
+### #224 — a suíte não deixa mais cópia do `settings.json` (com a chave) em TMPDIR
+qa-review · 2026-09-29 ~18:33 local · repo tts-rod @ 588e4d5 (+ WIP de terceiros)
+pytest 9.1.1 · venv .venv-mlx
+
+── ACHADO (reproduzido)
+`/private/tmp/pytest-of-lisboa` acumulava 1 cópia do `settings.json` do dono por
+sessão de pytest, com `chat_api_key` (49 chars) em texto claro. Medido nesta
+sessão, antes do fix:
+    pytest-20/estado0/settings.json                       (chave)
+    pytest-20/test_copia_da_chave_nao_sobrev0/base/estado0/settings.json  (chave)
+O default do pytest (`tmp_path_retention_policy = all`) retinha as 3 últimas
+sessões; o `conftest` copia o arquivo do dono para o basetemp (vetor ARQUIVO do
+#206). O `/private/tmp` do macOS só some no reboot.
+
+── FIX (as duas pontas do enunciado, opções 1+2)
+1. pytest.ini (novo): `tmp_path_retention_policy = failed`
+   → sessão VERDE não é retida (ninguém vai inspecionar); VERMELHA fica.
+2. tests/conftest.py:166-188 — teardown de SESSÃO da fixture `_estado_isolado`:
+   `shutil.rmtree(pasta, ignore_errors=True)` SÓ no `estado0/` que ela mesma criou.
+   É a ponta que vale no run vermelho (basetemp retido) e no filho com
+   `--basetemp` (onde a política do ini não se aplica).
+Não tocado: `qa-home`/`pi-proof`/`dsh-home` (provas de terceiros) e o filho de
+telemetria (relê o settings REAL em `app.BASE`, não a cópia).
+
+── CONTROLES NEGATIVOS (cada ponta tem de morder) — tests/test_tmpdir_sem_credencial.py
+[1] teardown desligado
+    E AssertionError: cópia do settings.json (com a chave) sobreviveu à sessão:
+      ['estado0/settings.json']
+    FAILED tests/test_tmpdir_sem_credencial.py::test_copia_da_chave_nao_sobrevive_a_sessao
+    1 failed, 1 passed
+[2] política `all`
+    E AssertionError: a sessão verde voltaria a ser retida com a cópia da chave dentro
+    E assert 'all' == 'failed'
+    FAILED tests/test_tmpdir_sem_credencial.py::test_ini_nao_retem_sessao_verde
+[3] conftest sem criar a cópia (o controle do filho não pode passar vazio)
+    E AssertionError: o conftest não criou a cópia do settings.json   (dentro do FILHO)
+    1 failed, 1 passed
+[4] dono SEM `settings.json` (arquivo sintético do controle via plugin `_estado_hostil`)
+    2 passed   ← o controle não depende do estado da máquina
+    restaurado: 2 passed
+
+── GATE
+./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py tests/*.py client/mic_router.py
+    → PYFLAKES OK
+./.venv-mlx/bin/python -m pytest tests/ -q
+    → 620 passed, 3 skipped in 239.27s (0:03:59)
+./.venv-mlx/bin/python -m pytest tests/test_app.py -q -k ort_telemetry
+    → 6 passed, 30 deselected (filho de telemetria intacto)
+./.venv-mlx/bin/python -m pytest tests/test_ambiente_neutro.py -q
+    → 5 passed (controles do #206 — vetores ENV e ARQUIVO — seguem verdes)
+
+── DEPOIS (mesma varredura, depois de a suíte verde terminar)
+$ cd /private/tmp/pytest-of-lisboa && ls -la
+    total 0
+    drwx------  2 lisboa  wheel  64 ... .
+    drwxrwxrwt ...                ..          ← nenhuma pasta de sessão, nem symlink
+$ find . -name settings.json
+    (vazio)
+$ find . -name settings.json → com chave não vazia
+    (vazio)
+
+Duas sessões de terceiros correram em paralelo durante a medição (pids 80565 e
+12596, `pytest tests/ -q`): enquanto vivas, cada uma tinha a sua cópia (esperado);
+ao terminarem, saíram junto com o basetemp verde. Estado final: TMPDIR limpo.
+
+── POR QUE A SAÍDA 2 SOZINHA NÃO FECHA O CONTROLE (medido)
+Experimento: teardown LIGADO (saída 2 pura) + `tmp_path_retention_policy = all`
+(o default do repo, sem o `pytest.ini`):
+    $ ./.venv-mlx/bin/python -m pytest tests/test_ambiente_neutro.py -q
+    5 passed in 13.52s
+    $ find /private/tmp/pytest-of-lisboa -name settings.json
+    pytest-0/test_suite_nao_e_refem_do_arqu1/settings.json   ← chave 49
+    pytest-0/test_suite_nao_e_refem_do_arqu0/settings.json   ← chave 49
+A cópia do `conftest` (estado0) some — o teardown funciona — mas
+`test_suite_nao_e_refem_do_arquivo_do_dono` (#206) escreve uma cópia HOSTIL do
+settings do dono no `tmp_path` DO PRÓPRIO TESTE (é o vetor ARQUIVO do #206, e o
+arquivo inteiro vai junto, chave inclusive). Com retenção `all`, `tmp_path`
+sobrevive: 2 arquivos com chave por rodada, sempre. Ou seja, a saída 2 sozinha
+deixa o CONTROLE do ticket vermelho ("NENHUM settings.json remanescente com
+chat_api_key não vazio"). Daí a política `failed` entrar junto: ela tira o
+`tmp_path` do teste que passa, e a cópia hostil sai com ele — sem mexer no
+arquivo do controle do #206.
+
+Nota sobre o `none` (o que o PM mediu como "limpeza ADIADA"): o `failed` não é
+adiado — sessão verde é apagada NO `pytest_sessionfinish` da própria rodada — e
+não leva junto o basetemp que o gate inspeciona, porque VERMELHO é justamente o
+que fica.
+
+── PÓS-RETOMADA (o runner levou um hang no meio; reconferido do zero)
+Re-rodei a suíte e ela acusou 1 vermelho que NÃO era do #224:
+    FAILED tests/test_api.py::test_busy_e_mandado_fora_do_live_lock
+    assert [True] == [False]  (3/3 rodadas)
+Causa: a árvore estava com `app.py` na forma PRÉ-#209 — o revert do modo MORDIDA
+do `tests/live_lock_freeze.sh` sobreviveu a um SIGKILL do runner (o `trap ...
+restaura` não roda em SIGKILL). Resgate:
+    PYTHONPATH=. ./.venv-mlx/bin/python evidence/223-revert-hand.py restore
+    md5 app.py: e31a41a3… → 373c56f71efbb5e484851a3cc8f3f722
+    (o md5 do topo de evidence/223-mordida.txt — byte a byte de volta)
+Guard verde e suíte re-rodada:
+    ./.venv-mlx/bin/python -m pytest tests/ -q → 620 passed, 3 skipped in 225.92s
+Registrado nas tasks #223 e #209 (comentário; o `send_message` estava em bridge 404).
+
+── RESÍDUO ACEITO E ESCRITO
+(a) SIGKILL no meio da sessão não roda teardown → sobra 1 cópia por sessão
+    interrompida até o `make_numbered_dir` do pytest podar (keep=3).
+(b) Run VERMELHO retém o basetemp de propósito, mas já sem a cópia (teardown).
+(c) `test_ambiente_neutro.py` escreve uma cópia HOSTIL do settings do dono no
+    `tmp_path` do próprio teste; com a política `failed` ela sai sozinha quando o
+    teste passa.
+(d) Sessão de TERCEIRO viva no instante da varredura aparece com a cópia dela
+    (esperado: o teardown é no fim da sessão dela). Confirmado com uma sessão
+    concorrente (pid 72434): enquanto viva, `pytest-7/estado0/settings.json`;
+    ao terminar, o dir sai junto com o basetemp verde.

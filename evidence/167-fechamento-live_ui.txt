@@ -1,0 +1,116 @@
+(node:80006) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 49841)
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 318, in _handle_request_noblock
+    self.process_request(request, client_address)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 349, in process_request
+    self.finish_request(request, client_address)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 761, in __init__
+    self.handle()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/server.py", line 436, in handle
+    self.handle_one_request()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/server.py", line 424, in handle_one_request
+    method()
+  File "<stdin>", line 21, in do_POST
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 840, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+servidor de teste em http://127.0.0.1:49709 (stub :49708)
+  rota do Live: openai (stub)
+  sessão pronta · captura (worklet+mic): True
+  continuidade: quadros de mic 209 -> 475 · speech_start acumulados: 17
+  painel OBS: {'stats': True, 'cEnv': '482', 'rec': '11', 'micServ': '1.033 frames · último há 57 ms', 'motor': 'ouvindo', 'ws': 'conectado'}
+  selo de IA (normal): {'txt': 'openai', 'warn': False}
+  pendente 1 trecho: '18:47:46.642📝 fala anotada (40 kB)' · chip 'idle 0 ms · nº 2 · ⚑ pendente'
+  pendente 3 trechos: '18:47:46.643📝 fala anotada (40 kB, 3 trechos)' · chip 'idle 0 ms · nº 2 · ⚑ pendente (3 trechos)'
+  pendente truncado: '18:47:46.643📝 fala anotada (40 kB, 4 trechos, teto de 30 s: 1500 ms do começo fora (mantive o fim), nasceu durante o playback)' · chip 'idle 0 ms · nº 2 · ⚑ pendente (4 trechos)'
+  latência (sem provedor): 'STT 300 ms · 1º token 200 ms · 1º áudio 400 ms · total 900 ms'
+  latência (provedor dominante): 'STT 300 ms · 1º token 4200 ms · 1º áudio 4600 ms · total 5200 ms ⚠ provedor: 1º token em 4200 ms'
+  error{busy} antes do ready → ia='Claro, o dia está bonito hoje. Quer que eu con' estado='erro' · depois do close 1013: estado='desligado' status='sessão encerrada'
+  ready → 'ouvindo' · error{pipeline} depois dele → estado='erro' ia='Claro, o dia está bonito hoje. Quer que eu con'
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.951, 'rms_dbfs': -15.5, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 680}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 8576, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 9606}
+  evento VAD: {'type': 'speech_start', 'barge_in': None, 'prob': None, 'rms_dbfs': None, 'fala_ms': None, 'curto': None, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': None}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.935, 'rms_dbfs': -22.2, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 13906}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 864, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 14435}
+  evento VAD: {'type': 'speech_start', 'barge_in': None, 'prob': None, 'rms_dbfs': None, 'fala_ms': None, 'curto': None, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': None}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.953, 'rms_dbfs': -16.9, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 14506}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 352, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 14869}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.963, 'rms_dbfs': -24.4, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 14931}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 288, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 15494}
+  evento VAD: {'type': 'barge_in', 'barge_in': True, 'prob': 0.931, 'rms_dbfs': -17.5, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': 'energia sustentada 300ms', 't_decisao_ms': 15824}
+  evento VAD: {'type': 'speech_start', 'barge_in': True, 'prob': 0.931, 'rms_dbfs': -17.5, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': 'barge_in', 't_decisao_ms': 15824}
+  evento VAD: {'type': 'speech_start', 'barge_in': None, 'prob': None, 'rms_dbfs': None, 'fala_ms': None, 'curto': None, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': None}
+  evento VAD: {'type': 'speech_end', 'barge_in': True, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 11296, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 18666}
+  evento VAD: {'type': 'speech_start', 'barge_in': None, 'prob': None, 'rms_dbfs': None, 'fala_ms': None, 'curto': None, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': None}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.91, 'rms_dbfs': -18.3, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 19006}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 608, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 19762}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 0.867, 'rms_dbfs': -20.1, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 19916}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 160, 'curto': True, 'barge_falso': False, 'detalhe': 'flush', 't_decisao_ms': 20011}
+  evento VAD: {'type': 'barge_in', 'barge_in': True, 'prob': 1, 'rms_dbfs': -15.6, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': 'energia sustentada 300ms', 't_decisao_ms': 20507}
+  evento VAD: {'type': 'speech_start', 'barge_in': True, 'prob': 1, 'rms_dbfs': -15.6, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': 'barge_in', 't_decisao_ms': 20507}
+  evento VAD: {'type': 'speech_start', 'barge_in': None, 'prob': None, 'rms_dbfs': None, 'fala_ms': None, 'curto': None, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': None}
+  evento VAD: {'type': 'speech_end', 'barge_in': True, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 12000, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 24412}
+  evento VAD: {'type': 'speech_start', 'barge_in': None, 'prob': None, 'rms_dbfs': None, 'fala_ms': None, 'curto': None, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': None}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 1, 'rms_dbfs': -17.4, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 31906}
+  evento VAD: {'type': 'speech_end', 'barge_in': False, 'prob': 0, 'rms_dbfs': -120, 'fala_ms': 13120, 'curto': False, 'barge_falso': False, 'detalhe': 'silencio', 't_decisao_ms': 37665}
+  evento VAD: {'type': 'speech_start', 'barge_in': None, 'prob': None, 'rms_dbfs': None, 'fala_ms': None, 'curto': None, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': None}
+  evento VAD: {'type': 'speech_start', 'barge_in': False, 'prob': 1, 'rms_dbfs': -15.8, 'fala_ms': None, 'curto': False, 'barge_falso': None, 'detalhe': None, 't_decisao_ms': 45206}
+  eventos: ['ready', 'stats', 'speech_start', 'stats', 'stats', 'stats', 'stats', 'stats', 'stats', 'stats', 'stats', 'stats', 'stats', 'stats']
+  transcrição você='É 1984, qualquer um entenderia. É o ataq' ia='Claro, o dia está bonito hoje. Quer que ' · quadros de áudio: 11
+  corte no interrupted: 0 ms · estado final: 'erro'
+  [DBG-eco] t=1790718429.52 ligado=True nivel_payload=-18.86670993634976 duracao_ms=1017.375 limiar=-26.9
+  [DBG-eco] t=1790718429.52 ligado=False nivel_payload=None duracao_ms=None limiar=-26.9
+  [DBG-eco] t=1790718430.37 ligado=True nivel_payload=-15.490367097644969 duracao_ms=930.5833333333334 limiar=-23.5
+  [DBG-eco] t=1790718430.37 ligado=False nivel_payload=None duracao_ms=None limiar=-23.5
+  [DBG-eco] t=1790718431.26 ligado=True nivel_payload=-17.363831186283075 duracao_ms=1405.2083333333333 limiar=-25.4
+  [DBG-eco] t=1790718431.26 ligado=False nivel_payload=None duracao_ms=None limiar=-25.4
+  [DBG-eco] t=1790718433.41 ligado=True nivel_payload=-18.86670993634976 duracao_ms=1017.375 limiar=-26.9
+  [DBG-eco] t=1790718433.41 ligado=False nivel_payload=None duracao_ms=None limiar=-26.9
+  [DBG-eco] t=1790718438.46 ligado=True nivel_payload=-18.86670993634976 duracao_ms=1017.375 limiar=-26.9
+  [DBG-eco] t=1790718438.46 ligado=False nivel_payload=None duracao_ms=None limiar=-26.9
+  [DBG-eco] t=1790718444.33 ligado=True nivel_payload=-18.86670993634976 duracao_ms=1017.375 limiar=-26.9
+  [DBG-eco] t=1790718444.33 ligado=False nivel_payload=None duracao_ms=None limiar=-26.9
+  [DBG-eco] t=1790718445.17 ligado=True nivel_payload=-15.490367097644969 duracao_ms=930.5833333333334 limiar=-23.5
+  [DBG-eco] t=1790718445.17 ligado=False nivel_payload=None duracao_ms=None limiar=-23.5
+  [DBG-eco] t=1790718446.18 ligado=True nivel_payload=-17.363831186283075 duracao_ms=1405.2083333333333 limiar=-25.4
+  [DBG-eco] t=1790718446.18 ligado=False nivel_payload=None duracao_ms=None limiar=-25.4
+  [DBG-eco] t=1790718457.59 ligado=True nivel_payload=-18.86670993634976 duracao_ms=1017.375 limiar=-26.9
+  [DBG-eco] t=1790718457.59 ligado=False nivel_payload=None duracao_ms=None limiar=-26.9
+  [DBG-eco] t=1790718458.37 ligado=True nivel_payload=-15.490367097644969 duracao_ms=930.5833333333334 limiar=-23.5
+  [DBG-eco] t=1790718458.37 ligado=False nivel_payload=None duracao_ms=None limiar=-23.5
+  [DBG-eco] t=1790718459.23 ligado=True nivel_payload=-17.363831186283075 duracao_ms=1405.2083333333333 limiar=-25.4
+  [DBG-eco] t=1790718459.23 ligado=False nivel_payload=None duracao_ms=None limiar=-25.4
+  VAD speech_start epoch=1790718418.85
+  VAD speech_end epoch=1790718427.77
+  VAD speech_start epoch=1790718427.77
+  VAD speech_start epoch=1790718432.07
+  VAD speech_end epoch=1790718432.60
+  VAD speech_start epoch=1790718432.60
+  VAD speech_start epoch=1790718432.67
+  VAD speech_end epoch=1790718433.03
+  VAD speech_start epoch=1790718433.10
+  VAD speech_end epoch=1790718433.66
+  VAD speech_start epoch=1790718434.00
+  VAD speech_start epoch=1790718434.12
+  VAD speech_end epoch=1790718436.83
+  VAD speech_start epoch=1790718436.83
+  VAD speech_start epoch=1790718437.17
+  VAD speech_end epoch=1790718437.93
+  VAD speech_start epoch=1790718438.08
+  VAD speech_end epoch=1790718438.18
+  VAD speech_start epoch=1790718438.68
+  VAD speech_start epoch=1790718439.19
+  VAD speech_end epoch=1790718442.58
+  VAD speech_start epoch=1790718442.58
+  VAD speech_start epoch=1790718450.07
+  VAD speech_end epoch=1790718455.83
+  VAD speech_start epoch=1790718455.83
+  VAD speech_start epoch=1790718463.37
+
+✔ OK — turno real pela UI: mic->worklet->WS->áudio de volta, transcrição e corte do barge-in medido

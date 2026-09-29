@@ -1,0 +1,3 @@
+=== vao (18:13:14) ===
+  → evidence/167-fechamento-vao.txt · ok=20/20 · falhas=0
+=== eco (18:19:34) ===
