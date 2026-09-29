@@ -3,6 +3,12 @@
 Lento (~40–70s): roda só com TTS_TEST_WORKER=1 — fora do pre-commit.
 Teria pegado o bug de aliases no import de common (NameError que só existia
 em runtime do subprocesso).
+
+Os três testes de modelo real levam o marcador **worker_real** (#166), que é o
+endereço óbvio da suíte opcional: `.venv-mlx/bin/python -m pytest -m worker_real`
+sem o env os coleta e SKIPPA; com `TTS_TEST_WORKER=1` roda. O caminho LIGADO do
+worker do Live mora aqui porque depende de modelo — o resto (protocolo, lock,
+fallback) é o `tests/test_live_worker.py`, rápido e no default.
 """
 
 import json
@@ -17,6 +23,7 @@ import pytest
 import app
 
 
+@pytest.mark.worker_real
 @pytest.mark.skipif(not os.environ.get("TTS_TEST_WORKER"),
                     reason="lento: carrega modelo real — rode com TTS_TEST_WORKER=1")
 def test_worker_isolado_smoke(tmp_path):
@@ -64,6 +71,79 @@ def test_worker_isolado_smoke(tmp_path):
     d, sr = sf.read(str(wavs[0]))
     assert len(d) > sr // 2, "áudio curto demais"
     assert float(np.sqrt(np.mean(d ** 2))) > 0.005, "áudio (quase) mudo"
+
+
+# ---------------------------------------------------------------------------
+# modo PERSISTENTE `--serve` (#152) — filho real, kokoro, 2 pedidos
+# ---------------------------------------------------------------------------
+
+@pytest.mark.worker_real
+@pytest.mark.skipif(not os.environ.get("TTS_TEST_WORKER"),
+                    reason="lento: carrega modelo real — rode com TTS_TEST_WORKER=1")
+def test_worker_persistente_serve_smoke(tmp_path, monkeypatch):
+    """O mesmo filho atende N pedidos REUSANDO o modelo (é o ponto da #152).
+
+    O Live tem orçamento de 1,5 s por turno: o worker por job pagava ~7,5 s de
+    recarga a cada turno. Aqui o 2º pedido (o custo real de um turno depois do
+    pre-warm) tem de caber no orçamento, e o áudio não pode sair mudo."""
+    monkeypatch.setitem(app._settings, "model", "kokoro")   # o mais leve do catálogo
+    import time as _t
+
+    import live_pipeline as lp
+
+    w = lp._LiveWorker(voice_id="", timeout_s=180)
+    t0 = _t.time()
+    w.start()
+    carga = _t.time() - t0                  # fora do turno (pre-warm da sessão)
+    try:
+        t1 = _t.time()
+        a = w.gerar("Teste do worker persistente.", {"num_steps": 8})
+        d1 = _t.time() - t1
+        t2 = _t.time()
+        b = w.gerar("Segundo pedido, quente.", {"num_steps": 8})
+        d2 = _t.time() - t2
+    finally:
+        proc = w._proc
+        w.fecha()
+
+    assert a.size > 1000 and b.size > 1000
+    assert float(np.sqrt((a * a).mean())) > 0.01, "1º pedido saiu mudo"
+    assert float(np.sqrt((b * b).mean())) > 0.01, "2º pedido saiu mudo"
+    assert proc.poll() is not None, "o filho tem de morrer no close"
+    print(f"\n[#152] carga (fora do turno) {carga:.1f}s | "
+          f"1º synth {d1 * 1000:.0f} ms | 2º synth {d2 * 1000:.0f} ms")
+    assert d2 < 1.5, f"pedido quente fora do orçamento do Live: {d2:.2f}s"
+
+
+@pytest.mark.worker_real
+@pytest.mark.skipif(not os.environ.get("TTS_TEST_WORKER"),
+                    reason="lento: carrega modelo real — rode com TTS_TEST_WORKER=1")
+def test_pipeline_usa_o_worker_e_fecha_com_a_sessao(tmp_path, monkeypatch):
+    """O CAMINHO LIGADO ponta a ponta, com modelo real (ressalva (a) do gate #158).
+
+    A suíte default é `TTS_LIVE_WORKER=0` (para não carregar modelo) — logo ela não
+    prova que o Live REALMENTE usa o worker. Aqui: família isolada + knob ligado, o
+    turno tem de sair do filho (pid diferente) e o filho tem de morrer com a
+    sessão."""
+    import live_pipeline as lp_mod
+
+    monkeypatch.setitem(app._settings, "model", "kokoro")
+    monkeypatch.setattr(lp_mod, "_LIVE_WORKER_LIGADO", True)
+
+    pipe = lp_mod.LivePipeline(lambda o: None, lambda b: None, voice_id=None)
+    try:
+        pipe.start()                     # pre-warm: sobe o worker fora do turno
+        assert pipe._worker is not None and pipe._worker.ativo
+        assert pipe._worker._proc.pid != os.getpid(), "tem de ser outro processo"
+        perfil = lp_mod._perfil_live(primeiro_chunk=True, max_steps=12)
+        audio = pipe._tts("Primeiro turno real.", perfil)
+        proc = pipe._worker._proc
+    finally:
+        pipe.close()
+
+    assert audio.size > 1000
+    assert float(np.sqrt((audio * audio).mean())) > 0.005, "turno saiu mudo"
+    assert proc.poll() is not None, "o filho tem de morrer com a sessão"
 
 
 # ---------------------------------------------------------------------------

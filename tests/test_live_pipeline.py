@@ -410,6 +410,64 @@ def test_erro_no_tts_vira_evento_error():
     assert not p.ocupado
 
 
+def test_provedor_caindo_nao_para_a_captura_turnos_consecutivos():
+    """Regressão do #117 (dono, mic real): provedor de conversa respondendo 530.
+
+    O turno FALHA (error) mas a sessão não pode morrer: a próxima fala tem de
+    virar transcript de novo, por N turnos, e quando o provedor volta o turno
+    segue completo. É a propriedade que a UI assume (e o relato "grava só o
+    1º trecho e depois para" sugere que alguém não cumpria)."""
+    fala = Fala()
+    estado_llm = {"ok": False}
+
+    def llm(msgs):
+        if not estado_llm["ok"]:
+            raise RuntimeError("Provedor de conversa falhou: HTTP 530")
+        return iter(["voltei. "])
+
+    p = lp.LivePipeline(fala.json, fala.audio, stt=lambda pcm, l: "ainda ouço você",
+                        llm=llm, tts=lambda t, o: np.zeros(100, dtype=np.float32),
+                        prewarm=lambda: None)
+
+    # 3 turnos com o provedor caindo: transcript SEMPRE sai (o usuário vê que a
+    # captura segue viva) e o `ocupado` libera a cada turno (sem travar a fila).
+    for turno in range(3):
+        p.push_pcm(b"\x00\x01" * 800)
+        assert p.end_of_speech(inicia_thread=False) is True
+        assert not p.ocupado, f"turno {turno + 1} travou o pipeline"
+    tipos = fala.tipos()
+    assert tipos.count("transcript_user") == 3, tipos
+    assert tipos.count("error") == 3
+    erros = [e for _, e in fala.eventos if e["type"] == "error"]
+    assert all(e["code"] == "pipeline" and "HTTP 530" in e["message"] for e in erros)
+    # ordem dentro de cada turno: o transcript do usuário vem ANTES do error
+    sequencia = [t for t in tipos if t in ("speech_start", "transcript_user", "error")]
+    assert sequencia == ["speech_start", "transcript_user", "error"] * 3, sequencia
+
+    # provedor volta: o turno seguinte é completo (áudio + histórico)
+    estado_llm["ok"] = True
+    p.push_pcm(b"\x00\x01" * 800)
+    p.end_of_speech(inicia_thread=False)
+    assert "turn_complete" in fala.tipos() and fala.audios
+    assert p.history[-1] == {"role": "assistant", "content": "voltei."}
+
+
+def test_turno_com_transcript_vazio_fecha_limpo_sem_error():
+    """STT não capta fala (silêncio/VAD): turno fecha com `turn_complete` vazio —
+    NUNCA como erro nem preso em `ocupado`. O cliente usa isso para dar o
+    feedback "não captei fala" em vez de parecer surdo (#117)."""
+    fala = Fala()
+    p = lp.LivePipeline(fala.json, fala.audio, stt=lambda pcm, l: "   ",
+                        llm=lambda m: (_ for _ in ()).throw(AssertionError("LLM não!")),
+                        tts=lambda t, o: np.zeros(1, dtype=np.float32),
+                        prewarm=lambda: None)
+    p.push_pcm(b"\x00\x00" * 800)
+    p.end_of_speech(inicia_thread=False)
+    fim = [e for _, e in fala.eventos if e["type"] == "turn_complete"][0]
+    assert fim["transcript"] == "" and fim["audio_bytes"] == 0
+    assert not p.ocupado and "error" not in fala.tipos()
+
+
 # ---------------------------------------------------------------------------
 # PCM
 # ---------------------------------------------------------------------------

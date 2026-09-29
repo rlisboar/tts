@@ -14,6 +14,13 @@
 #   6. remove as chaves de teste
 #
 #   ./tests/admin_ui_flow.sh          # app precisa estar de pé (./run.sh)
+#
+# ⚠ A INSTÂNCIA DE TESTE PRECISA ESCUTAR EM 0.0.0.0 (não só 127.0.0.1): metade da
+# suíte passa pela URL de LAN DE PROPÓSITO — loopback é admin por definição, então
+# só por um IP não-loopback a UI enxerga uma chave de uso. Com bind só no loopback
+# o sintoma é `Connection refused` em `http://<LAN>:<porta>` (a porta já sai do
+# BASE desde a #140) e NÃO é regressão da suíte. O `run.sh` do dono já sobe em
+# 0.0.0.0; instância própria para rodar isto deve usar o mesmo bind.
 set -euo pipefail
 
 BASE="${BASE:-http://127.0.0.1:7860}"
@@ -31,6 +38,14 @@ if ! curl -sf -m 5 -o /dev/null "$BASE/"; then
   echo "✖ app não respondeu em $BASE — rode ./run.sh primeiro" >&2
   exit 1
 fi
+
+# A UI SÓ vê chave de uso por um IP não-loopback, então metade do teste roda em
+# http://<LAN>:<porta>. A porta tem de sair do PRÓPRIO BASE (#140): com :7860
+# fixo, uma instância própria (BASE=…:53203) criava as chaves nela e as usava
+# contra o app do DONO — 401 e, pior, validando build velho.
+PORTA="${BASE##*:}"; PORTA="${PORTA%%/*}"
+case "$PORTA" in ''|*[!0-9]*) PORTA=7860;; esac      # BASE sem porta → default
+LANURL="http://$LAN:$PORTA"
 
 # ids de chaves de teste por prefixo de nome (pega sujeira de rodada que falhou)
 SUF="$$"                       # sufixo por execução (ver comentário no topo)
@@ -91,11 +106,10 @@ echo "chaves de teste: use=${USE_KEY:0:8}… admin=${ADM_KEY:0:8}…"
 
 # ── 1. contrato no servidor ───────────────────────────────────────────────
 echo
-echo "→ contrato (chave de uso fala com http://$LAN:7860)"
-"$PY" - "$LAN" "$USE_KEY" <<'PYEOF'
+echo "→ contrato (chave de uso fala com $LANURL)"
+"$PY" - "$LANURL" "$USE_KEY" <<'PYEOF'
 import json, sys, urllib.request
-lan, use = sys.argv[1], sys.argv[2]
-base = f"http://{lan}:7860"
+base, use = sys.argv[1], sys.argv[2]
 
 def req(metodo, caminho, chave, corpo=None):
     dados = json.dumps(corpo).encode() if corpo is not None else None
@@ -117,16 +131,15 @@ PYEOF
 
 # ── 2. UI: chave de uso e chave admin ────────────────────────────────────
 echo
-echo "→ UI em http://$LAN:7860"
-"$PY" - "$LAN" "$USE_KEY" "$ADM_KEY" "$SUF" <<'PYEOF'
+echo "→ UI em $LANURL"
+"$PY" - "$LANURL" "$USE_KEY" "$ADM_KEY" "$SUF" <<'PYEOF'
 import os, sys, time
 from playwright.sync_api import sync_playwright
 
 SUF = sys.argv[4]                     # mesmo sufixo do shell ($SUF), não o pid do python:
 NOME = f"probe-papel-{SUF}"            # senão o trap não reconhece as chaves como suas
 NOME2 = f"probe-adota-{SUF}"
-lan, use, adm = sys.argv[1], sys.argv[2], sys.argv[3]
-base = f"http://{lan}:7860"
+base, use, adm = sys.argv[1], sys.argv[2], sys.argv[3]
 falhas = []
 
 def cobrar(cond, msg):

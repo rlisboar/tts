@@ -3,23 +3,37 @@
 #
 # É o smoke que o gate do MVP usa, e ele é AUTO-CONTIDO: sobe um provedor de LLM
 # local (SSE, sem rede) e um servidor próprio (porta livre) apontado para o stub
-# por VARIÁVEL DE AMBIENTE (`TTS_CHAT_BASE_URL`/`TTS_CHAT_MODEL`, #103). Assim ele
-# não escreve no `settings.json` do dono — nem quando morre no meio — e não
-# depende do provedor dele estar de pé.
+# por VARIÁVEL DE AMBIENTE (`TTS_CHAT_BACKEND=openai` + `TTS_CHAT_BASE_URL`/
+# `TTS_CHAT_MODEL`, #103). Assim ele não escreve no `settings.json` do dono — nem
+# quando morre no meio —, não depende do provedor dele estar de pé E não troca de
+# rota pelo `chat_backend` que estiver no arquivo (o backend entrou na árvore com o
+# DSH #122/#123, e sem o pino o smoke media a rota do dono, não a stub).
 #
-#   ./tests/live_ws.sh                 # sobe o próprio servidor (porta livre)
+#   ./tests/live_ws.sh                 # sobe o próprio servidor (porta livre, stub)
 #   LIVE_LLM=config ./tests/live_ws.sh # usa o provedor configurado (sem stub)
 #   BASE=http://127.0.0.1:7860 ./tests/live_ws.sh   # usa um servidor já de pé
+#   TTS_CHAT_BACKEND=dsh ./tests/live_ws.sh         # turno pelo harness dsh (o env
+#                                   # do chamador manda; ajuste TTS_CHAT_DSH_BIN se
+#                                   # o `chat_dsh_bin` do settings estiver inválido)
 #
 # Checa: (1) setup/ready; (2) turno completo com transcript dos dois lados;
 # (3) fim-de-fala → PRIMEIRO ÁUDIO ≤ 1500 ms (o alvo do MVP); (4) `cancel`
 # durante o playback → `interrupted` e o áudio para de chegar; (5) sessão
 # fechando limpa.
+#
+# O alvo de 1500 ms vale para ESTE cenário (stub local): com o provedor de chat
+# REMOTO do dono o 1º token sozinho custa segundos e o alvo não cabe — quem medir
+# com `LIVE_LLM=config` tem de dizer que saiu do cenário do alvo (#173, números no
+# LIVE.md).
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$RAIZ/.venv-mlx/bin/python"
 [ -x "$PY" ] || PY="$(command -v python3)"
+
+# Serializa com as outras suítes que carregam modelo — sem isto o alvo de
+# latência do live_ws.sh dá falso vermelho sob contenção de Metal/CPU (#134).
+source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
 export BASE="${BASE:-}"          # vazio = o driver sobe o próprio servidor
 
 "$PY" - "$@" <<'PY'
@@ -133,8 +147,16 @@ def sobe_servidor(porta, stub_porta):
     """Servidor próprio com o stub por ENV — o settings.json do dono fica intocado.
 
     Sem isto o smoke tinha de gravar via POST /api/settings e, se morresse no meio,
-    deixava o provedor de teste no arquivo do dono (incidente de 2026-09-25)."""
+    deixava o provedor de teste no arquivo do dono (incidente de 2026-09-25).
+
+    `TTS_CHAT_BACKEND` PRECISA ser pinado junto: sem ele o backend vem do
+    `settings.json` e, com o dono em `chat_backend: "dsh"`, a suíte saía do stub e
+    media outra rota (achado do gate #135/#137) — e caía quando o dsh não subia, o
+    que virava vermelho FALSO do smoke. O env do CHAMADOR ainda manda (é o que
+    permite `TTS_CHAT_BACKEND=dsh ./tests/live_ws.sh` medir o harness); o pino só
+    impede o settings do dono de decidir sozinho."""
     env = {**os.environ,
+           "TTS_CHAT_BACKEND": os.environ.get("TTS_CHAT_BACKEND") or "openai",
            "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
            "TTS_CHAT_MODEL": "stub-live"}
     log = pathlib.Path("/tmp") / f"live_ws_servidor_{porta}.log"

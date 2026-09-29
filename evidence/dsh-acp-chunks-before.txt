@@ -1,0 +1,19 @@
+== A. resposta CURTA ==
+
+[tts-studio / curta] chars=16 chunks=1 total=410 ms
+    +     410 ms  agent_message_chunk  16 chars
+    tipos: {'agent_message_chunk': 1, 'usage_update': 1}
+
+== B. resposta LONGA (~1,4k chars) ==
+
+[tts-studio / longa] chars=1691 chunks=1 total=74170 ms
+    +   74168 ms  agent_message_chunk  1691 chars
+    tipos: {'agent_message_chunk': 1, 'usage_update': 1}
+
+== C. perfil acp PURO, mesma resposta longa ==
+
+[acp / longa] chars=1544 chunks=3 total=80203 ms
+    +   74117 ms  agent_message_chunk  58 chars
+    +   77490 ms  agent_message_chunk  82 chars
+    +   80203 ms  agent_message_chunk  1404 chars
+    tipos: {'agent_message_chunk': 3, 'usage_update': 3, 'tool_call': 2, 'tool_call_update': 2}

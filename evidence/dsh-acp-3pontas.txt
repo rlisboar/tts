@@ -1,0 +1,19 @@
+== 6 rodada(s) · prompt curto · trace do bridge ligado ==
+  rodada 1: total=0.77s · frames=39 emits=35 chegadas=36
+    bridge: 1º frame t+381 ms · maior gap interno=0.01s
+    cliente: 1ª chegada t+381 ms · maior gap=0.01s · atraso bridge→cliente=0 ms
+  rodada 2: total=0.72s · frames=91 emits=86 chegadas=34
+    bridge: 1º frame t+23 ms · maior gap interno=0.11s
+    cliente: 1ª chegada t+369 ms · maior gap=0.04s · atraso bridge→cliente=346 ms
+  rodada 3: total=0.87s · frames=53 emits=45 chegadas=34
+    bridge: 1º frame t+352 ms · maior gap interno=0.11s
+    cliente: 1ª chegada t+353 ms · maior gap=0.12s · atraso bridge→cliente=1 ms
+  rodada 4: total=0.61s · frames=57 emits=50 chegadas=25
+    bridge: 1º frame t+-0 ms · maior gap interno=0.11s
+    cliente: 1ª chegada t+360 ms · maior gap=0.01s · atraso bridge→cliente=360 ms
+  rodada 5: total=0.80s · frames=44 emits=36 chegadas=36
+    bridge: 1º frame t+231 ms · maior gap interno=0.12s
+    cliente: 1ª chegada t+428 ms · maior gap=0.04s · atraso bridge→cliente=197 ms
+  rodada 6: total=0.85s · frames=40 emits=36 chegadas=37
+    bridge: 1º frame t+371 ms · maior gap interno=0.02s
+    cliente: 1ª chegada t+372 ms · maior gap=0.02s · atraso bridge→cliente=0 ms

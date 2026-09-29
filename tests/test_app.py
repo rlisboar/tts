@@ -612,24 +612,49 @@ def test_vad_reamostra_24k_antes_do_modelo(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("preset, esperado", [(None, "1"), ("0", "0"), ("1", "1")])
-def test_ort_telemetry_default_sem_sobrescrever_usuario(preset, esperado):
+@pytest.mark.parametrize("backend", ["openai", "dsh"])
+def test_ort_telemetry_default_sem_sobrescrever_usuario(preset, esperado, backend, tmp_path):
     """onnxruntime sem $HOME gravável larga um ":memory:.ses" na raiz do repo (e
     um warning no stderr) a cada import — o app.py corta isso com `setdefault`.
     Como é `setdefault` (igual ao `${VAR:-1}` do run.sh), valor explícito do
     usuário MANDA: o teste roda em subprocess com env controlado, senão um
-    `ORT_DISABLE_TELEMETRY=0` no ambiente do pytest faria o gate mentir."""
+    `ORT_DISABLE_TELEMETRY=0` no ambiente do pytest faria o gate mentir.
+
+    Dois pontos para o teste não passar/falhar por CORRIDA nem por estado do dono
+    (task_6db0e2cc): (1) o backend do chat vai EXPLÍCITO por env, nos dois
+    sentidos, com o dsh FALSO (sem depender do dsh instalado nem do
+    `settings.json` real — sem o pino, trocar a Conversa para dsh na tela pintava
+    o gate de vermelho); (2) o filho ESPERA o pre-warm terminar quando ele existe
+    — o log do dsh sai por stderr e o stdout tem de sair limpo COM o pre-warm
+    rodando, que é o que a igualdade exata abaixo cobra."""
     import os
     import subprocess
     import sys
 
-    env = {k: v for k, v in os.environ.items() if k != "ORT_DISABLE_TELEMETRY"}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("ORT_DISABLE_TELEMETRY", "TTS_CHAT_BACKEND", "TTS_CHAT_DSH_BIN")}
     if preset is not None:
         env["ORT_DISABLE_TELEMETRY"] = preset
+    env["TTS_CHAT_BACKEND"] = backend
+    if backend == "dsh":
+        # wrapper para o servidor ACP falso, como o `dsh_fake_bin` do test_api: o
+        # nome não começa com `dsh` de propósito (pula o check de Node).
+        fake = Path(__file__).resolve().parent / "fake_acp.py"
+        wrapper = tmp_path / "fake-acp"
+        wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n')
+        wrapper.chmod(0o755)
+        env["TTS_CHAT_DSH_BIN"] = str(wrapper)
     r = subprocess.run([sys.executable, "-c",
-                        "import os, app; print(os.environ['ORT_DISABLE_TELEMETRY'])"],
+                        "import os, app\n"
+                        "th = getattr(app, '_chat_dsh_prewarm_thread', None)\n"
+                        "if th is not None:\n"
+                        "    th.join(60)\n"
+                        "print(os.environ['ORT_DISABLE_TELEMETRY'])"],
                        capture_output=True, text=True, env=env, cwd=app.BASE)
     assert r.returncode == 0, r.stderr[-300:]
-    assert r.stdout.strip() == esperado
+    assert r.stdout.strip() == esperado, f"stdout do import saiu sujo: {r.stdout!r}"
+    if backend == "dsh":
+        assert "[chat-dsh]" in r.stderr, "o pre-warm não logou — o caminho dsh não correu"
 
 
 # ---------------------------------------------------------------------------

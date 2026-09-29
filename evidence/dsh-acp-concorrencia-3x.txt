@@ -1,0 +1,5 @@
+== TCP cru no provedor · curta · 1 rodada(s) · host=api.ds.model.craton.app · effort=none ==
+  rodada 1: recvs=37 bytes=10804 deltas=35 total=1.81s
+    1º delta=1206 ms · maior gap=0.18s · gaps>1s=0 · deltas depois do maior gap=33
+    recv: 1º=1206 ms maior gap=0.18s recvs com gap>1s=0
+    tempo em gaps>1s: 0.0s de 1.8s

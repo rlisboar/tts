@@ -18,6 +18,7 @@ do modelo ao sinal usado, em vez de fingir que 0.5 vale para os dois.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -679,3 +680,117 @@ print("ok", lt.BACKEND)
     assert r.returncode == 0, r.stderr
     assert "ok torch-jit" in r.stdout
     assert "ONNX indisponível" in r.stdout and "caindo no torch jit" in r.stdout
+
+# ---------------------------------------------------------------------------
+# #167: a janela de barge segue o TURNO do assistente, não a fila de chunks
+# ---------------------------------------------------------------------------
+
+def _com_vao(motor, rel, vao: int, *, turno_aberto: bool | None):
+    """Cenário real: um chunk do TTS toca, a fila esvazia e vem um VÃO de geração."""
+    if turno_aberto is not None:
+        motor.set_turno_aberto(turno_aberto)
+    motor.set_speaking(True, nivel_dbfs=-20.0)
+    _tocar(motor, rel, ECO, 10)              # o chunk está no alto-falante
+    motor.set_speaking(False)                # fila vazia (audio_pendente == 0)
+    _tocar(motor, rel, SILENCIO, vao)
+
+
+def test_onset_no_vao_de_geracao_vira_barge_quando_o_turno_esta_aberto():
+    """#167 (o defeito): LLM/TTS podem levar segundos até o próximo chunk. Antes,
+    a janela fechava 900 ms após o último chunk e a fala do humano no vão virava
+    TURNO NOVO em vez de interrupção."""
+    motor, rel = _motor(barge_janela_turno=True)   # opt-in (#167)
+    vao = lt.Config()._frames_playback + 30   # ~1,4 s sem nada tocando
+    _com_vao(motor, rel, vao, turno_aberto=True)
+    assert motor.estatisticas()["playback_ativo"] is True
+
+    # abrir turno POR barge emite `barge_in` antes do `speech_start` (protocolo)
+    eventos = _tocar(motor, rel, _tom(0.3), lt.Config()._frames_barge + 1)
+    assert [e.tipo for e in eventos] == ["barge_in", "speech_start"]
+    assert all(e.barge_in for e in eventos), "onset no vão tem de ser interrupção"
+
+
+def test_controle_sem_as_chamadas_a_janela_fecha_como_antes():
+    """Contraprova/back-compat: sem `set_turno_aberto`, o vão fecha a janela e o
+    mesmo onset vira turno normal (é o comportamento de hoje)."""
+    motor, rel = _motor()
+    vao = lt.Config()._frames_playback + 30
+    _com_vao(motor, rel, vao, turno_aberto=None)
+    assert motor.estatisticas()["playback_ativo"] is False
+
+    eventos = _tocar(motor, rel, _tom(0.3), lt.Config()._frames_onset + 1)
+    assert [e.tipo for e in eventos] == ["speech_start"]
+    assert eventos[0].barge_in is False
+
+
+def test_fechar_o_turno_devolve_a_cauda_e_nao_o_barge():
+    """`set_turno_aberto(False)` no fim do turno: resta só a cauda da janela."""
+    motor, rel = _motor(barge_janela_turno=True)
+    _com_vao(motor, rel, lt.Config()._frames_playback + 30, turno_aberto=True)
+    motor.set_turno_aberto(False)
+    _tocar(motor, rel, SILENCIO, lt.Config()._frames_playback + 5)
+    assert motor.estatisticas()["playback_ativo"] is False
+
+    eventos = _tocar(motor, rel, _tom(0.3), lt.Config()._frames_onset + 1)
+    assert eventos[0].barge_in is False
+
+
+def test_trava_expira_turno_aberto_esquecido():
+    """Handler que esquece de fechar o turno não segura a janela para sempre."""
+    motor, rel = _motor(playback_turno_max_ms=500, barge_janela_turno=True)
+    motor.set_turno_aberto(True)
+    assert motor.estatisticas()["turno_assistente_aberto"] is True
+    _tocar(motor, rel, SILENCIO, math.ceil(500 / lt.FRAME_MS) + 2)
+    assert motor.estatisticas()["turno_assistente_aberto"] is False
+    assert motor.estatisticas()["playback_ativo"] is False
+
+
+def test_eco_ausente_do_vao_nao_fica_preso_quando_o_audio_volta():
+    """Num vão NADA toca, então o motor declara o eco ausente (limiar de ocioso —
+    é o que deixa o humano entrar). Quando o próximo chunk volta a tocar, esse
+    `eco_ausente` não pode ficar preso: preso, ele derruba o limiar e o próprio
+    eco do TTS entra como fala."""
+    motor, rel = _motor()
+    motor.set_turno_aberto(True)
+    motor.set_speaking(True, nivel_dbfs=-20.0)
+    _tocar(motor, rel, ECO, 10)
+    motor.set_speaking(False)
+    _tocar(motor, rel, SILENCIO, 40)
+    motor._eco_ausente = True                    # como o vão declara
+    motor.set_speaking(True, nivel_dbfs=-20.0)   # TTS voltou a tocar
+    assert motor.estatisticas()["eco_ausente"] is False
+
+
+def test_desligar_a_janela_por_turno_no_config_volta_ao_comportamento_antigo():
+    motor, rel = _motor(barge_janela_turno=False)
+    _com_vao(motor, rel, lt.Config()._frames_playback + 30, turno_aberto=True)
+    assert motor.estatisticas()["turno_assistente_aberto"] is False
+
+
+def test_backlog_de_audio_mantem_a_janela_aberta_ate_tocar():
+    """#167: o cliente BUFFERIZA. Três chunks seguidos deixam a janela aberta pela
+    soma das durações — um onset no fim do último chunk ainda é interrupção (era
+    exatamente a falha medida logo depois do `turn_complete`)."""
+    motor, rel = _motor(playback_por_duracao=True)
+    motor.set_turno_aberto(True)
+    for _ in range(3):
+        motor.set_speaking(True, nivel_dbfs=-20.0, duracao_ms=600)
+        _tocar(motor, rel, ECO, 10)
+        motor.set_speaking(False)
+        _tocar(motor, rel, SILENCIO, 2)
+
+    motor.set_turno_aberto(False)                 # turno terminou
+    _tocar(motor, rel, SILENCIO, 25)              # ~400 ms: a cauda fixa já teria caído
+    assert motor.estatisticas()["playback_ativo"] is True, "backlog tem de segurar a janela"
+
+    eventos = _tocar(motor, rel, _tom(0.3), lt.Config()._frames_barge + 1)
+    assert [e.tipo for e in eventos] == ["barge_in", "speech_start"]
+
+
+def test_backlog_escoa_e_a_janela_fecha():
+    """Terminado o áudio em voo, a janela fecha (senão viraria regime permanente)."""
+    motor, rel = _motor(playback_por_duracao=True)
+    motor.set_speaking(True, nivel_dbfs=-20.0, duracao_ms=200)
+    motor.set_speaking(False)
+    _tocar(motor, rel, SILENCIO, 40)
+    assert motor.estatisticas()["playback_ativo"] is False

@@ -4,9 +4,11 @@ Cobre a classe de bug que escapou antes (nomes indefinidos dentro de funções
 que só rodam em runtime/request).
 """
 
+import contextlib
 import hashlib
 import io
 import json as _json
+import logging
 import re
 import os
 import shutil
@@ -14,6 +16,7 @@ import sys
 import threading
 import time
 import types
+import warnings
 import wave
 import zipfile
 from collections import deque
@@ -23,6 +26,7 @@ import numpy as np
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 import app
 
@@ -47,6 +51,11 @@ def _isolamento_disco(monkeypatch, tmp_path):
     O arquivo já é uma CÓPIA isolada em tmp (ver `_estado_isolado` no conftest),
     então o restore aqui é isolamento dentro do processo — antes ele era também a
     única barreira contra a suíte reescrever o settings.json de produção."""
+    # backend de IA por env: o env MANDA sobre o settings (#103/#176) e, sem isto,
+    # um dono com `TTS_CHAT_BACKEND`/`TTS_CHAT_BACKEND_LIVE` exportado media a rota
+    # dele nos testes do caminho stub (7 falsos vermelhos, gate #177).
+    for var in ("TTS_CHAT_BACKEND", "TTS_CHAT_BACKEND_LIVE"):
+        monkeypatch.delenv(var, raising=False)
     snap = dict(app._settings)
     arq = app.SETTINGS_PATH
     conteudo = arq.read_text() if arq.exists() else None
@@ -1413,6 +1422,7 @@ def test_chat_extra_setting_valida_json(client, auth):
 
 def test_chat_llm_mescla_chat_extra(monkeypatch):
     import urllib.request
+    app._settings["chat_backend"] = "openai"   # este teste é do CORPO da requisição
     app._settings["chat_base_url"] = "https://provedor.teste/v1"
     app._settings["chat_extra"] = '{"reasoning_effort": "high", "top_p": 0.5}'
     capturado = {}
@@ -1447,6 +1457,7 @@ def test_chat_llm_mescla_chat_extra(monkeypatch):
 
 def test_chat_llm_injeta_reasoning_baixo_sem_extra(monkeypatch):
     import urllib.request
+    app._settings["chat_backend"] = "openai"   # este teste é do CORPO da requisição
     app._settings["chat_base_url"] = "https://provedor.teste/v1"
     app._settings["chat_extra"] = ""
     capturado = {}
@@ -2093,3 +2104,1470 @@ def test_apikeys_sem_role_mantem_politica_antiga(client, auth):
     body = client.post("/api/settings", headers=auth,
                        json={"model": "legado/modelo"}).json()
     assert body.get("admin_ignored") == [] and app._settings["model"] == "legado/modelo"
+
+
+# ---------------------------------------------------------------------------
+# Live (LIVE-1) — WS /api/live/ws: sessão, protocolo, auth e tetos.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def live_limpo(monkeypatch):
+    """Zera o registro de sessões e fixa o caminho STUB (sem `live_pipeline`),
+    que é o fallback suportado quando o módulo do LIVE-3 não está disponível."""
+    monkeypatch.setattr(app, "_live_mod", None)
+    monkeypatch.setattr(app, "_live_turns_mod", None)
+    monkeypatch.setattr(app, "_LIVE_STATS_MS", 0)   # telemetria só no teste dela
+    with app._live_lock:
+        app._live_sessions.clear()
+    try:
+        yield
+    finally:
+        with app._live_lock:
+            app._live_sessions.clear()
+
+
+def _ws_cliente(host="127.0.0.1"):
+    """TestClient para WS: loopback por padrão (auth dispensada), outro host p/ testar chave."""
+    return TestClient(app.app, raise_server_exceptions=False, client=(host, 50000))
+
+
+@pytest.fixture()
+def ws_client():
+    """TestClient LOOPBACK: o `client` do módulo usa host 'testclient', que exige chave."""
+    return _ws_cliente()
+
+
+def _recv(ws, timeout=None):
+    """Próximo frame (o WebSocketTestSession não tem timeout no receive)."""
+    return ws.receive()
+
+
+def _setup_ok(ws, **extra):
+    ws.send_json({"type": "setup", **extra})
+    return ws.receive_json()
+
+
+def test_live_ws_loopback_abre_sessao_com_ready(ws_client, live_limpo):
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        pronto = _setup_ok(ws)
+        assert pronto["type"] == "ready"
+        assert pronto["session_id"] and pronto["audio"]["sr"] == 24000
+        assert pronto["in_audio"]["sr"] == 16000
+        with app._live_lock:
+            assert len(app._live_sessions) == 1
+
+
+def test_setup_sem_voz_e_sem_vozes_grava_devolve_erro(ws_client, live_limpo, monkeypatch):
+    """`_resolve_voice` levanta HTTPException (não ValueError): sem ramo próprio o
+    handshake morria sem NENHUM frame — o cliente pendurava no receive e não sabia
+    que faltava voz."""
+    monkeypatch.setattr(app, "list_voices", lambda: [])
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        ws.send_json({"type": "setup"})
+        erro = ws.receive_json()
+        assert erro["code"] == "setup_invalido" and "voz" in erro["message"]
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4400
+
+
+def test_live_ws_exige_chave_fora_do_loopback(live_limpo):
+    c = _ws_cliente("203.0.113.9")
+    with c.websocket_connect("/api/live/ws") as ws:
+        erro = ws.receive_json()
+        assert erro["code"] == "unauthorized"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4401
+    with c.websocket_connect(f"/api/live/ws?key={app._primary_api_key()}") as ws:
+        assert _setup_ok(ws)["type"] == "ready"
+
+
+def test_live_ws_setup_invalido_diz_o_campo(ws_client, live_limpo):
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        ws.send_json({"type": "setup", "history": [{"role": "chefe", "text": "oi"}]})
+        erro = ws.receive_json()
+        assert erro["code"] == "setup_invalido" and "history[0].role" in erro["message"]
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4400
+
+
+def test_live_ws_voz_desconhecida_cai_no_padrao_e_vad_clampa(ws_client, live_limpo):
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        pronto = _setup_ok(ws, voice_id="../fora", vad={"silence_ms": 99999, "prefix_ms": -5})
+        assert pronto["type"] == "ready"
+        assert pronto["vad"] == {"silence_ms": 5000, "prefix_ms": 0}
+        assert pronto["voice_id"] == _resolve_voice_efetiva()
+
+
+def _resolve_voice_efetiva():
+    return app._resolve_voice(None)
+
+
+def test_live_ws_audio_binario_e_turno(ws_client, live_limpo):
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        ws.send_bytes(b"\x00\x01" * 1600)          # 100 ms PCM16 16k
+        ws.send_bytes(b"\x00\x01" * 800)
+        ws.send_json({"type": "end_of_speech"})
+        inicio = _ate(ws, {"speech_start"})
+        fim = _ate(ws, {"turn_complete"})
+        assert inicio["type"] == "speech_start" and fim["type"] == "turn_complete"
+        sess = list(app._live_sessions.values())[0]
+        assert sess["buffer_bytes_turno"] == (1600 + 800) * 2, "o áudio do cliente chegou"
+        assert not sess["buffer"], "o buffer do turno é zerado quando ele fecha"
+        ws.send_json({"type": "cancel"})
+        assert ws.receive_json()["type"] == "interrupted"
+
+
+def test_live_ws_ping_pong_e_comando_desconhecido(ws_client, live_limpo):
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        ws.send_json({"type": "ping", "t": 42})
+        assert ws.receive_json() == {"type": "pong", "t": 42}
+        ws.send_json({"type": "pause"})
+        assert ws.receive_json()["code"] == "comando"
+
+
+def test_pipeline_que_nao_nasce_nao_prende_a_sessao(ws_client, live_limpo, monkeypatch):
+    """`_live_pipe_novo` fora do try deixava a sessão presa no registry (sem task de
+    envio, nada a fechava) e o processo dsh já criado órfão. Agora degrada."""
+    def explode(sess):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(app, "_live_pipe_novo", explode)
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        assert _setup_ok(ws)["type"] == "ready"
+        erro = ws.receive_json()                  # a sessão avisa que ficou sem pipeline
+        assert erro["code"] == "pipeline" and "boom" in erro["message"]
+        ws.send_json({"type": "ping", "t": 7})    # e segue viva
+        assert ws.receive_json() == {"type": "pong", "t": 7}
+    time.sleep(0.2)
+    assert not app._live_sessions, "sessão presa no registry"
+
+
+def test_live_ws_teto_de_sessoes(ws_client, live_limpo, monkeypatch):
+    """O teto é decidido no REGISTRO (atômico com a inserção), não no connect: a
+    checagem antiga ficava antes do `await` do setup e duas conexões que passassem
+    juntas furavam o limite. O cliente manda o `setup` e recebe `busy` + 1013."""
+    monkeypatch.setattr(app, "_LIVE_MAX_SESSIONS", 1)
+    with ws_client.websocket_connect("/api/live/ws") as ws1:
+        _setup_ok(ws1)
+        with ws_client.websocket_connect("/api/live/ws") as ws2:
+            ws2.send_json({"type": "setup"})
+            erro = ws2.receive_json()
+            assert erro["code"] == "busy"
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws2.receive_json()
+            assert exc.value.code == 1013
+
+
+def test_retomada_com_teto_cheio_nao_leva_busy(ws_client, live_limpo, pipeline_fake,
+                                               engine_fake, hist_limpo, monkeypatch):
+    """Retomada SUBSTITUI a entrada do `sid`: com o registry cheio ela não pode
+    levar `busy` (era o que acontecia quando o teto era checado antes do setup)."""
+    monkeypatch.setattr(app, "_LIVE_MAX_SESSIONS", 1)
+    with ws_client.websocket_connect("/api/live/ws") as ws1:
+        _setup_ok(ws1)
+        sess = list(app._live_sessions.values())[0]
+        sess["pipe"].history[:] = [{"role": "user", "content": "meu nome é Ana"}]
+        app._live_hist_guarda(sess)               # registro existe -> retomável
+        sid = sess["id"]
+        with ws_client.websocket_connect("/api/live/ws") as ws2:
+            pronto = _setup_ok(ws2, session_id=sid)
+            assert pronto["type"] == "ready" and pronto["resumed"] is True
+            assert pronto["session_id"] == sid
+
+
+def test_live_ws_ttl_fecha_sessao_ociosa(ws_client, live_limpo, monkeypatch):
+    monkeypatch.setattr(app, "_LIVE_TTL_S", 30)
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        sid = _setup_ok(ws)["session_id"]
+        with app._live_lock:                        # simula ociosidade
+            app._live_sessions[sid]["visto"] = time.monotonic() - 999
+        assert app._live_sweep() == [sid]
+        aviso = ws.receive_json()                   # a task de envio fecha a sessão
+        assert aviso["code"] == "session_ttl"
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()
+    with app._live_lock:
+        assert app._live_sessions == {}
+
+
+def test_live_ws_buffer_trunca_no_teto(ws_client, live_limpo, monkeypatch):
+    monkeypatch.setattr(app, "_LIVE_MAX_BUFFER", 4000)
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        sess = list(app._live_sessions.values())[0]
+        ws.send_bytes(b"\x00\x01" * 5000)           # 10000 bytes > teto
+        ws.send_json({"type": "end_of_speech"})
+        assert _ate(ws, {"speech_start"})["type"] == "speech_start"
+        fim = _ate(ws, {"turn_complete"})
+        assert sess["buffer_bytes_turno"] <= app._LIVE_MAX_BUFFER, "buffer passou do teto"
+        assert fim.get("truncated") is True, "o cliente tem de saber que foi cortado"
+        assert sess["truncado"] is False, "o aviso vale por turno"
+
+
+def test_live_ws_primeiro_frame_precisa_ser_setup(ws_client, live_limpo, monkeypatch):
+    monkeypatch.setattr(app, "_LIVE_SETUP_TIMEOUT_S", 0.2)
+    c = _ws_cliente("203.0.113.9")
+    with c.websocket_connect(f"/api/live/ws?key={app._primary_api_key()}") as ws:
+        ws.send_bytes(b"\x00\x00")                  # binário antes do setup
+        erro = ws.receive_json()
+        assert erro["code"] == "setup_binario"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4400
+
+
+def test_live_ws_sem_setup_fecha_por_timeout(live_limpo, monkeypatch):
+    monkeypatch.setattr(app, "_LIVE_SETUP_TIMEOUT_S", 0.15)
+    c = _ws_cliente("203.0.113.9")
+    with c.websocket_connect(f"/api/live/ws?key={app._primary_api_key()}") as ws:
+        erro = ws.receive_json()
+        assert erro["code"] == "setup_timeout"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4408
+
+
+def test_live_ws_end_of_speech_sem_audio_avisa(ws_client, live_limpo):
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        ws.send_json({"type": "end_of_speech"})
+        assert ws.receive_json()["code"] == "sem_audio"
+
+
+# ---------------------------------------------------------------------------
+# LIVE-1.5 — ticket de um uso (chave fora da query string).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def tickets_limpos():
+    with app._live_lock:
+        app._live_sessions.clear()
+        app._live_tickets.clear()
+    try:
+        yield
+    finally:
+        with app._live_lock:
+            app._live_sessions.clear()
+            app._live_tickets.clear()
+
+
+def test_live_ticket_emite_e_consome_uma_vez(client, auth, tickets_limpos):
+    """#98: o ticket vale UMA vez — o segundo WS com o mesmo ticket é 4401."""
+    t = client.post("/api/live/ticket", headers=auth).json()
+    assert t["expires_in"] == 60 and len(t["ticket"]) > 20
+
+    c = _ws_cliente("203.0.113.9")              # fora do loopback: sem credencial nada passa
+    with c.websocket_connect(f"/api/live/ws?ticket={t['ticket']}") as ws:
+        assert _setup_ok(ws)["type"] == "ready"
+    with c.websocket_connect(f"/api/live/ws?ticket={t['ticket']}") as ws:
+        assert ws.receive_json()["code"] == "unauthorized"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4401
+
+
+def test_live_ticket_expirado_recusa(tickets_limpos):
+    ticket = app._live_ticket_emite()
+    with app._live_lock:                        # envelhece o ticket
+        app._live_tickets[ticket] = time.monotonic() - 1
+    c = _ws_cliente("203.0.113.9")
+    with c.websocket_connect(f"/api/live/ws?ticket={ticket}") as ws:
+        assert ws.receive_json()["code"] == "unauthorized"
+
+
+def test_live_ticket_nao_vaza_memoria(tickets_limpos, monkeypatch):
+    monkeypatch.setattr(app, "_LIVE_TICKET_MAX", 5)
+    emitidos = [app._live_ticket_emite() for _ in range(20)]
+    assert len(app._live_tickets) <= 5
+    assert emitidos[-1] in app._live_tickets           # o mais novo sobrevive
+    assert emitidos[0] not in app._live_tickets        # o mais antigo saiu
+
+
+def test_live_ticket_limpeza_por_ttl(tickets_limpos):
+    t1, t2 = app._live_ticket_emite(), app._live_ticket_emite()
+    with app._live_lock:
+        app._live_tickets[t1] = time.monotonic() - 1
+    app._live_ticket_limpa()
+    assert t1 not in app._live_tickets and t2 in app._live_tickets
+    assert not app._live_ticket_consome("ticket-que-nao-existe")
+    assert not app._live_ticket_consome("")
+
+
+# ---------------------------------------------------------------------------
+# LIVE-3a — adapter do pipeline no `_live_engine` (módulo real, fakes nos modelos).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def pipeline_fake(monkeypatch):
+    """Pipeline real com stt/llm/tts/prewarm fakes (sem MLX)."""
+    import live_pipeline
+    monkeypatch.setattr(app, "_live_mod", live_pipeline)   # (o `live_limpo` zera)
+    monkeypatch.setattr(live_pipeline, "_prewarm_app", lambda: None)
+    monkeypatch.setattr(live_pipeline, "_stt_app", lambda pcm, lang: "que horas são")
+    monkeypatch.setattr(live_pipeline, "_llm_stream_app",
+                        lambda msgs: iter(["São ", "dez ", "horas."]))
+    # `**kw`: o pipeline pode passar contexto extra (ex.: voice_id) para o TTS
+    monkeypatch.setattr(live_pipeline, "_tts_app",
+                        lambda txt, omni, **kw: np.zeros(480, dtype=np.float32))
+    return live_pipeline
+
+
+def _ate(ws, tipos, maximo=15):
+    """Lê até um dos tipos (ignora áudio e eventos de SESSÃO/STREAM, ex.: `prewarm`).
+
+    `maximo` conta eventos úteis, não frames crus: no backend dsh o LLM entrega
+    delta por TOKEN (um `assistant_text` por token, cada um com áudio) e contar
+    frame cru estourava o teto antes do `turn_complete` (task_6db0e2cc). O erro
+    lista o que passou, para um vermelho aqui dizer o que o servidor mandou."""
+    vistos = []
+    while len(vistos) < maximo:
+        m = _recv(ws)
+        if m.get("bytes"):
+            continue
+        ev = _json.loads(m["text"])
+        if ev["type"] in ("stats", "assistant_text", "latency") and ev["type"] not in tipos:
+            continue
+        vistos.append(ev["type"])
+        if ev["type"] in tipos:
+            return ev
+    raise AssertionError(f"não veio nenhum de {tipos} (veio: {vistos})")
+
+
+def _le_turno(ws, maximo=12):
+    """Lê o turno até o fim dele (`turn_complete`, `error` ou `interrupted`).
+
+    `interrupted` é terminal para o turno: sem tratá-lo aqui o `receive()` do
+    teste de cancel ficava bloqueado esperando um `turn_complete` que não vem —
+    até o TTL da sessão (300 s de suíte por causa de um teste).
+
+    `maximo` conta EVENTOS DE CONTROLE, não deltas: no backend dsh o texto vem
+    delta por token, então um turno carrega dezenas de `assistant_text` e o teto
+    ficava estourado antes do fim do turno (task_6db0e2cc)."""
+    eventos, audio, controles = [], 0, 0
+    while controles < maximo:
+        m = ws.receive()
+        if m.get("bytes"):
+            audio += len(m["bytes"])
+            continue
+        ev = _json.loads(m["text"])
+        if ev["type"] in ("prewarm", "stats"):   # eventos de sessão, não do turno
+            continue
+        if ev["type"] != "assistant_text":
+            controles += 1
+        eventos.append(ev)
+        if ev["type"] in ("turn_complete", "error", "interrupted"):
+            break
+    return eventos, audio
+
+
+def test_live_pipeline_roda_o_turno_e_manda_audio(ws_client, live_limpo, pipeline_fake):
+    """O gancho `_live_engine` vira o pipeline: eventos do protocolo + áudio 24k."""
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        assert _setup_ok(ws, history=[{"role": "user", "text": "oi"}])["type"] == "ready"
+        sess = list(app._live_sessions.values())[0]
+        assert sess["pipe"] is not None
+        ws.send_bytes(b"\x00\x01" * 1600)
+        ws.send_json({"type": "end_of_speech"})
+        eventos, audio = _le_turno(ws)
+        tipos = [e["type"] for e in eventos]
+        assert "speech_start" in tipos and tipos[-1] in ("turn_complete", "error"), tipos
+        assert "transcript_user" in tipos and "assistant_text" in tipos
+        assert audio > 0, "o áudio sintetizado tem de sair como binário"
+        # contexto: o replay do setup entra no prompt e o turno é anexado
+        assert [h["role"] for h in sess["pipe"].history] == ["user", "user", "assistant"]
+
+
+def test_live_pipeline_sem_audio_avisa_pelo_pipeline(ws_client, live_limpo, pipeline_fake):
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        ws.send_json({"type": "end_of_speech"})
+        assert _ate(ws, {"error"})["code"] == "sem_audio"
+
+
+def test_live_pipeline_cancel_e_interrupted(ws_client, live_limpo, pipeline_fake, monkeypatch):
+    """`cancel` derruba o pipeline e o cliente recebe `interrupted` (barge-in)."""
+    import live_pipeline as lp
+    monkeypatch.setattr(lp, "_llm_stream_app",
+                        lambda msgs: (time.sleep(0.3) or d for d in ["a", "b"]))
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        ws.send_bytes(b"\x00\x01" * 1600)
+        ws.send_json({"type": "end_of_speech"})
+        assert _ate(ws, {"speech_start"})["type"] == "speech_start"
+        ws.send_json({"type": "cancel"})
+        eventos, _ = _le_turno(ws)
+        assert any(e["type"] == "interrupted" for e in eventos), [e["type"] for e in eventos]
+
+
+def test_live_sem_modulo_cai_no_stub(ws_client, live_limpo):
+    """Fallback: sem `live_pipeline`, o stub antigo segue atendendo o protocolo."""
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        ws.send_bytes(b"\x00\x01" * 1600)
+        ws.send_json({"type": "end_of_speech"})
+        assert _ate(ws, {"speech_start"})["type"] == "speech_start"
+        assert _ate(ws, {"turn_complete"})["stub"] is True
+
+
+# ---------------------------------------------------------------------------
+# LIVE-2 (FSM de turnos) costurada no handler: eventos, flush e set_speaking.
+# ---------------------------------------------------------------------------
+
+class _EvFake:
+    def __init__(self, tipo, audio=b"", **kw):
+        self.tipo, self.audio = tipo, audio
+        self.t_ms, self.ts, self.amostra = 0, 0.0, 0
+        self.t_decisao_ms, self.prob, self.rms_dbfs = 0, 0.0, -120.0
+        self.curto, self.barge_in = kw.get("curto", False), kw.get("barge_in", False)
+        self.fala_ms, self.barge_falso, self.detalhe = kw.get("fala_ms", 0), False, ""
+
+    def to_json(self):
+        d = {"type": self.tipo, "t_ms": self.t_ms, "curto": self.curto,
+             "barge_in": self.barge_in}
+        if self.tipo == "speech_end":
+            d["fala_ms"] = self.fala_ms
+        if self.audio:
+            d["audio_bytes"] = len(self.audio)
+        return d
+
+
+class _EngineFake:
+    """FSM falsa: `feed`/`flush` devolvem eventos roteirizados e registram chamadas."""
+
+    roteiro: list = []
+    calls: list = []
+
+    def __init__(self, config=None):
+        self.config = config
+
+    def feed(self, pcm):
+        _EngineFake.calls.append(("feed", len(pcm)))
+        return list(_EngineFake.roteiro)
+
+    def flush(self):
+        _EngineFake.calls.append(("flush", 0))
+        return list(_EngineFake.roteiro)
+
+    def cancel(self):
+        _EngineFake.calls.append(("cancel", 0))
+        return {}
+
+    def set_speaking(self, ligado, nivel_dbfs=None, duracao_ms=None):
+        # `duracao_ms` é o que a janela de playback passou a mandar junto do ENVIO
+        # do chunk (#167); sem aceitar o kwarg o handler morria no meio e o turno
+        # nunca emitia `turn_complete` (a suíte parecia TRAVAR, não falhar).
+        # Registrado DE PROPÓSITO: um dublê que só engole o kwarg novo esconde o
+        # PRÓXIMO igual a este — o teste abaixo assere que a duração chega.
+        _EngineFake.calls.append(("set_speaking", ligado, nivel_dbfs, duracao_ms))
+
+
+@pytest.fixture()
+def engine_fake(monkeypatch):
+    """Injeta a FSM falsa no lugar de `live_turns` e limpa o roteiro."""
+    _EngineFake.roteiro, _EngineFake.calls = [], []
+    mod = types.SimpleNamespace(TurnEngine=_EngineFake, Config=lambda **kw: kw)
+    monkeypatch.setattr(app, "_live_turns_mod", mod)
+    return _EngineFake
+
+
+def test_live_fsm_eventos_viram_protocolo(ws_client, live_limpo, engine_fake):
+    engine_fake.roteiro = [_EvFake("speech_start")]
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        ws.send_bytes(b"\x00\x01" * 1600)
+        ev = _json.loads(_recv(ws)["text"])
+        assert ev["type"] == "speech_start"
+    assert ("feed", 3200) in engine_fake.calls
+
+
+def test_live_fsm_speech_end_abre_turno_com_o_audio_do_evento(ws_client, live_limpo, engine_fake):
+    engine_fake.roteiro = [_EvFake("speech_start"),
+                           _EvFake("speech_end", audio=b"\x07\x00" * 800, fala_ms=400, curto=True)]
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        ws.send_bytes(b"\x00\x01" * 1600)
+        assert _json.loads(_recv(ws)["text"])["type"] == "speech_start"
+        fim = _json.loads(_recv(ws)["text"])
+        assert fim["type"] == "speech_end" and fim["curto"] is True
+        # o turno abre com o áudio do EVENTO (pré-roll), não com o do handler
+        assert _ate(ws, {"turn_complete"})["type"] == "turn_complete"
+
+
+def test_live_fsm_end_of_speech_do_cliente_chama_flush(ws_client, live_limpo, engine_fake):
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        ws.send_json({"type": "end_of_speech"})
+        for _ in range(40):                      # o handler roda em outra task
+            if any(c[0] == "flush" for c in engine_fake.calls):
+                break
+            time.sleep(0.05)
+        assert any(c[0] == "flush" for c in engine_fake.calls)
+
+
+def test_live_fsm_barge_in_derruba_o_turno(ws_client, live_limpo, engine_fake):
+    engine_fake.roteiro = [_EvFake("barge_in")]
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        ws.send_bytes(b"\x00\x01" * 1600)
+        assert _json.loads(_recv(ws)["text"])["type"] == "barge_in"
+        assert _json.loads(_recv(ws)["text"])["type"] == "interrupted"
+
+
+def test_live_set_speaking_marca_o_playback(ws_client, live_limpo, engine_fake):
+    """Obrigação do handler: marcar/desmarcar o playback — daí sai o limiar do eco."""
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        sess = list(app._live_sessions.values())[0]
+        _live_envia_audio = app._live_envia_audio
+        _live_envia_audio(sess, b"\x10\x27" * 480)      # 2 chunks de áudio
+        _live_envia_audio(sess, b"\x10\x27" * 480)
+        for _ in range(40):
+            if any(c[0] == "set_speaking" for c in engine_fake.calls):
+                break
+            time.sleep(0.05)
+        marcas = [c for c in engine_fake.calls if c[0] == "set_speaking"]
+        assert marcas and marcas[0][1] is True, "precisa marcar speaking ao enviar"
+        assert marcas[0][2] is not None, "o nivel_dbfs do chunk alimenta o limiar do eco"
+        assert marcas[0][3] and marcas[0][3] > 0, \
+            "a duracao_ms do chunk tem de ir junto (#167) — é o que a janela usa"
+        for _ in range(40):
+            if any(len(c) > 1 and c[1] is False for c in marcas):
+                break
+            time.sleep(0.05)
+            marcas = [c for c in engine_fake.calls if c[0] == "set_speaking"]
+        assert marcas[-1][1] is False, "precisa desmarcar quando a fila de áudio zera"
+
+
+def test_live_truncated_no_turn_complete_do_pipeline(ws_client, live_limpo, pipeline_fake, monkeypatch):
+    """O truncamento da sessão chega ao cliente no `turn_complete` (estado da sessão;
+    o `buffer_bytes` em si é do pipeline)."""
+    monkeypatch.setattr(app, "_LIVE_MAX_BUFFER", 1000)
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        sess = list(app._live_sessions.values())[0]
+        ws.send_bytes(b"\\x00\\x01" * 2000)          # 4000 bytes > teto de 1000
+        ws.send_json({"type": "end_of_speech"})
+        eventos, _ = _le_turno(ws)
+        fim = [e for e in eventos if e["type"] == "turn_complete"][0]
+        assert fim["truncated"] is True
+        assert sess["buffer_bytes_turno"] <= 1000
+        ws.send_bytes(b"\\x00\\x01" * 100)           # próximo turno cabe
+        ws.send_json({"type": "end_of_speech"})
+        eventos, _ = _le_turno(ws)
+        assert [e for e in eventos if e["type"] == "turn_complete"][0]["truncated"] is False
+
+
+def test_live_turno_curto_abre_o_turno_com_o_flag_de_barge_in(ws_client, live_limpo,
+                                                               engine_fake, pipeline_fake):
+    """Decisão do PM: o descarte saiu do pré-STT — `curto` é dica e o turno SEMPRE
+    abre; quem decide eco x humano é o pipeline, a partir do flag `barge_in`."""
+    import inspect
+    import live_pipeline
+    assert "barge" in inspect.signature(live_pipeline.LivePipeline.end_of_speech).parameters, \
+        "o nome do kwarg do pipeline mudou: alinhe a chamada em `_live_abre_turno`"
+    engine_fake.roteiro = [_EvFake("speech_end", audio=b"\x01\x00" * 400,
+                                   fala_ms=180, curto=True, barge_in=True)]
+    vistos = []
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        sess = list(app._live_sessions.values())[0]
+
+        # assinatura EXPLÍCITA (sem **k): um kwarg com nome trocado estoura aqui,
+        # em vez de virar "flag nunca chega" silencioso (regressão do #97)
+        def _eos(*a, barge=False, **k):
+            vistos.append(barge)
+            app._live_envia_json(sess, {"type": "turn_complete", "descartado": True,
+                                        "curto": True})
+            return True
+
+        sess["pipe"].end_of_speech = _eos
+        ws.send_bytes(b"\x00\x01" * 1600)
+        fim = _ate(ws, {"turn_complete"})
+        assert vistos == [True], "o flag do evento tem de chegar ao pipeline"
+        assert sess["turno_barge_in"] is True and sess["turno_curto"] is True
+        assert fim["descartado"] is True, "o descarte agora vem do pipeline"
+        assert sess["descartados"] == 1, "o descarte do pipeline é contado"
+
+
+def test_live_t_decisao_ms_registrado_para_o_orcamento(ws_client, live_limpo, engine_fake):
+    """`t_ms` é retroagido; a latência real da decisão é `t_decisao_ms`."""
+    ev = _EvFake("speech_end", audio=b"\\x01\\x00" * 800, fala_ms=400)
+    ev.t_decisao_ms = 1234
+    engine_fake.roteiro = [ev]
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        sess = list(app._live_sessions.values())[0]
+        ws.send_bytes(b"\\x00\\x01" * 1600)
+        assert _ate(ws, {"turn_complete"})["type"] == "turn_complete"
+        assert sess["t_decisao_ms"] == 1234
+
+
+# ---------------------------------------------------------------------------
+# #103 — override por ambiente do provedor de chat (teste/smoke não grava no
+# settings real; incidente do stub de 2026-09-25).
+# ---------------------------------------------------------------------------
+
+def test_chat_provider_env_tem_precedencia(monkeypatch):
+    monkeypatch.setitem(app._settings, "chat_base_url", "http://settings.example/v1")
+    monkeypatch.setitem(app._settings, "chat_model", "modelo-do-arquivo")
+    monkeypatch.setitem(app._settings, "chat_api_key", "chave-do-arquivo")
+    monkeypatch.setenv("TTS_CHAT_BASE_URL", "http://127.0.0.1:53992/v1")
+    monkeypatch.setenv("TTS_CHAT_MODEL", "stub-live")
+    monkeypatch.setenv("TTS_CHAT_API_KEY", "chave-do-stub")
+    assert app._chat_provider() == ("http://127.0.0.1:53992/v1", "stub-live", "chave-do-stub")
+
+
+def test_chat_provider_env_e_por_campo(monkeypatch):
+    """Setar só um campo não derruba os outros (o resto continua vindo do arquivo)."""
+    monkeypatch.setitem(app._settings, "chat_base_url", "http://settings.example/v1")
+    monkeypatch.setitem(app._settings, "chat_model", "modelo-do-arquivo")
+    monkeypatch.delenv("TTS_CHAT_BASE_URL", raising=False)
+    monkeypatch.delenv("TTS_CHAT_API_KEY", raising=False)
+    monkeypatch.setenv("TTS_CHAT_MODEL", "stub-live")
+    base, model, _ = app._chat_provider()
+    assert base == "http://settings.example/v1" and model == "stub-live"
+
+
+def test_chat_provider_sem_env_segue_a_cadeia_antiga(monkeypatch):
+    for var in ("TTS_CHAT_BASE_URL", "TTS_CHAT_MODEL", "TTS_CHAT_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setitem(app._settings, "chat_base_url", "")
+    monkeypatch.setitem(app._settings, "remote_base_url", "http://traducao.example/v1")
+    monkeypatch.setitem(app._settings, "chat_model", "")
+    monkeypatch.setitem(app._settings, "remote_translate_model", "gpt-4o-mini")
+    base, model, _ = app._chat_provider()
+    assert base == "http://traducao.example/v1" and model == "gpt-4o-mini"
+
+
+def test_chat_provider_env_vazio_nao_conta(monkeypatch):
+    monkeypatch.setitem(app._settings, "chat_base_url", "http://settings.example/v1")
+    monkeypatch.setenv("TTS_CHAT_BASE_URL", "   ")
+    assert app._chat_provider()[0] == "http://settings.example/v1"
+
+
+# ---------------------------------------------------------------------------
+# DSH-1 (#122) — backend de IA "dsh" (harness via ACP). O caminho openai fica
+# intacto; aqui o dsh é sempre o fake/`monkeypatch` (sem processo nem Node).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def dsh_limpo(monkeypatch):
+    """Sem env nem cache herdados: cada teste parte do estado de produção limpo.
+
+    `TTS_CHAT_BACKEND_LIVE` entra na lista desde a #176: o env dele tem precedência
+    sobre o settings e, sem o delenv, um dono com o Live em `dsh` no ambiente fazia
+    o teste do caminho global medir outra rota."""
+    for var in ("TTS_CHAT_BACKEND", "TTS_CHAT_BACKEND_LIVE", "TTS_CHAT_DSH_BIN",
+                "TTS_CHAT_DSH_PROFILE",
+                "TTS_CHAT_DSH_MODEL", "TTS_CHAT_DSH_EFFORT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(app, "_dsh_models_cache", {})
+    monkeypatch.setattr(app, "_chat_dsh_livres", [])
+    monkeypatch.setattr(app, "_chat_dsh_chave", None)
+    monkeypatch.setattr(app, "_chat_dsh_prewarm_thread", None)
+
+
+@pytest.fixture()
+def dsh_fake_bin(tmp_path, monkeypatch):
+    """`chat_dsh_bin` apontando para um wrapper que roda o servidor ACP falso.
+
+    Assim o pre-warm exercita o caminho REAL do app (resolve o binário, spawna,
+    handshake, prewarm) sem depender do dsh instalado nem do Node. O nome não
+    começa com `dsh`, de propósito: pula o check de Node e fica hermético."""
+    fake = Path(__file__).resolve().parent / "fake_acp.py"
+    alvo = tmp_path / "fake-acp"
+    alvo.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n')
+    alvo.chmod(0o755)
+    monkeypatch.setitem(app._settings, "chat_backend", "dsh")
+    monkeypatch.setitem(app._settings, "chat_dsh_bin", str(alvo))
+    return str(alvo)
+
+
+def test_prewarm_sobe_o_dsh_sem_abrir_a_conversa(dsh_limpo, dsh_fake_bin):
+    """#155: o processo/sessão já está quente antes do 1º turno da Conversa."""
+    assert app._chat_dsh_livres == []
+    th = app._chat_dsh_prewarm("teste")
+    assert th is not None
+    th.join(20)
+    assert not th.is_alive()
+    assert len(app._chat_dsh_livres) == 1, "o processo quente tem que voltar ao pool"
+    _chave, cli = app._chat_dsh_livres[0]
+    assert cli.alive and cli.session_id, "sessão ACP já aberta pelo pre-warm"
+    assert cli.ultimo_boot_ms > 0
+
+
+def test_prewarm_e_noop_com_openai(dsh_limpo, monkeypatch):
+    """Quem usa openai não paga NADA: sem thread, sem spawn, sem pool."""
+    monkeypatch.setitem(app._settings, "chat_backend", "openai")
+    assert app._chat_dsh_prewarm("teste") is None
+    assert app._chat_dsh_livres == []
+
+
+def test_prewarm_que_falha_nao_derruba_e_so_loga(dsh_limpo, monkeypatch, capsys):
+    monkeypatch.setitem(app._settings, "chat_backend", "dsh")
+    monkeypatch.setitem(app._settings, "chat_dsh_bin", "/nao/existe/dsh")
+    th = app._chat_dsh_prewarm("teste")
+    th.join(20)
+    assert not th.is_alive()                     # thread morre, nada explode
+    assert app._chat_backend() == "dsh"          # backend NÃO muda
+    assert app._chat_dsh_livres == []            # processo morto não fica quente
+    # stderr, não stdout: o stdout é lido como DADO por quem faz `import app`
+    # (teste de telemetria do ORT) e o pre-warm sobe em thread (task_6db0e2cc).
+    assert "pre-warm falhou" in capsys.readouterr().err
+
+
+def test_prewarm_e_idempotente_e_nao_deixa_config_velha_quente(dsh_limpo, dsh_fake_bin):
+    """Duas chamadas não viram dois processos; trocar a config descarta o antigo."""
+    app._chat_dsh_prewarm("t1").join(20)
+    app._chat_dsh_prewarm("t2").join(20)
+    assert len(app._chat_dsh_livres) == 1
+    _chave, antigo = app._chat_dsh_livres[0]
+    novo_modelo = '["openrouter","z-ai/glm-5.3-flash"]'
+    app._settings["chat_dsh_model"] = novo_modelo
+    try:
+        app._chat_dsh_prewarm("t3").join(20)
+        assert len(app._chat_dsh_livres) == 1, "não pode acumular config antiga"
+        _chave, novo = app._chat_dsh_livres[0]
+        assert novo is not antigo
+        assert novo.modelo == novo_modelo
+        assert not antigo.alive, "o processo da config antiga tem que ser fechado"
+    finally:
+        app._settings["chat_dsh_model"] = app.dsh_client.DSH_DEFAULT_MODEL
+
+
+def test_pool_nao_devolve_cliente_da_config_antiga_como_nova(dsh_limpo, dsh_fake_bin):
+    """Cliente EM VOO + prewarm da config nova ANTES da devolução: a chave tem de
+    viajar com o cliente. Carimbada na devolução (chave global de agora), o cliente
+    do modelo antigo voltava ao pool marcado como novo — e o turno seguinte rodava
+    no modelo antigo, calado."""
+    app._settings["chat_dsh_model"] = '["openrouter","modelo-antigo"]'
+    try:
+        antigo = app._chat_dsh_cliente()          # em voo (não devolvido)
+        antigo.prewarm()
+        app._settings["chat_dsh_model"] = '["openrouter","modelo-novo"]'
+        novo = app._chat_dsh_cliente()            # o prewarm da config nova chega antes
+        novo.prewarm()
+        app._chat_dsh_devolve(novo)
+        app._chat_dsh_devolve(antigo)             # devolução DEPOIS da troca
+        assert app._chat_dsh_cliente().modelo == '["openrouter","modelo-novo"]'
+    finally:
+        app._settings["chat_dsh_model"] = app.dsh_client.DSH_DEFAULT_MODEL
+
+
+def test_pool_nao_segura_o_lock_durante_o_close(dsh_limpo, dsh_fake_bin, monkeypatch):
+    """Descartar cliente de config antiga faz `session/close` (timeout de 60 s) e um
+    dsh vivo mas mudo não responde: fechando DENTRO do lock, todo uso do pool — o
+    próximo turno da Conversa, o resumo do Live — esperava o processo velho."""
+    liberado = threading.Event()
+    fechados = []
+
+    class Antigo:
+        alive = True
+
+        def close(self):
+            assert liberado.wait(2.0), "o close segurou o lock do pool"
+            fechados.append(self)
+
+    class Devolvido:
+        alive = True
+        _pool_chave = ("config", "de-agora")
+
+    monkeypatch.setattr(app, "_chat_dsh_livres", [(("config", "velha"), Antigo())])
+    th = threading.Thread(target=app._chat_dsh_cliente)
+    th.start()
+    time.sleep(0.2)                     # a thread já está no close do antigo
+    app._chat_dsh_devolve(Devolvido())  # só precisa do lock: não pode esperar o close
+    liberado.set()
+    th.join(5)
+    assert not th.is_alive()
+    assert fechados, "o cliente da config antiga tem de ser fechado"
+
+
+def test_chat_start_dispara_o_prewarm(dsh_limpo, monkeypatch):
+    chamadas = []
+    monkeypatch.setattr(app, "_chat_dsh_prewarm",
+                        lambda motivo="": chamadas.append(motivo) or None)
+    monkeypatch.setattr(app, "_chat_worker", lambda *a, **k: None)
+    c = TestClient(app.app, raise_server_exceptions=False, client=("127.0.0.1", 50000))
+    r = c.post("/api/chat/start", json={"objective": "abrir a conversa"})
+    assert r.status_code == 200
+    assert chamadas == ["chat/start"]
+
+
+def test_chat_backend_default_e_openai(monkeypatch, dsh_limpo):
+    monkeypatch.setitem(app._settings, "chat_backend", "openai")
+    assert app._chat_backend() == "openai"
+    monkeypatch.setitem(app._settings, "chat_backend", "lixo")
+    assert app._chat_backend() == "openai"
+
+
+def test_chat_backend_env_tem_precedencia(monkeypatch, dsh_limpo):
+    monkeypatch.setitem(app._settings, "chat_backend", "openai")
+    monkeypatch.setenv("TTS_CHAT_BACKEND", "DSH")
+    assert app._chat_backend() == "dsh"
+
+
+def test_chat_dsh_cfg_default_seguro_e_env_por_campo(monkeypatch, dsh_limpo):
+    monkeypatch.setitem(app._settings, "chat_dsh_model", "")
+    monkeypatch.setitem(app._settings, "chat_dsh_effort", "off")
+    cfg = app._chat_dsh_cfg()
+    assert cfg["model"] == '["dsflash","deepseek-flash-41"]'
+    assert cfg["profile"] == "tts-studio"
+    monkeypatch.setenv("TTS_CHAT_DSH_EFFORT", "HIGH")
+    monkeypatch.setenv("TTS_CHAT_DSH_MODEL", '["openrouter","z-ai/glm-5.3-flash"]')
+    cfg = app._chat_dsh_cfg()
+    assert cfg["effort"] == "high"
+    assert cfg["model"] == '["openrouter","z-ai/glm-5.3-flash"]'
+    # rota sem chave volta ao default seguro
+    monkeypatch.setenv("TTS_CHAT_DSH_MODEL", '["deepseek-official","deepseek-v4-pro"]')
+    assert app._chat_dsh_cfg()["model"] == '["dsflash","deepseek-flash-41"]'
+
+
+def test_chat_backend_live_campo_env_admin_e_validacao(client, auth, monkeypatch, dsh_limpo):
+    """#176: campo do Live é separado, admin, e vazio = herda o global."""
+    assert "chat_backend_live" in app._SETTINGS_ADMIN
+    monkeypatch.setitem(app._settings, "chat_backend", "openai")
+    monkeypatch.setitem(app._settings, "chat_backend_live", "")
+    assert app._chat_backend_live() == "openai", "vazio herda o global"
+    monkeypatch.setenv("TTS_CHAT_BACKEND_LIVE", "DSH")
+    assert app._chat_backend_live() == "dsh", "env tem precedência por campo"
+    monkeypatch.delenv("TTS_CHAT_BACKEND_LIVE")
+    # vazio continua válido no POST; inválido é 400 com rollback
+    antes = dict(app._settings)
+    r = client.post("/api/settings", headers=auth, json={"chat_backend_live": "xpto"})
+    assert r.status_code == 400 and "chat_backend_live" in r.json()["detail"]
+    assert app._settings == antes
+    r = client.post("/api/settings", headers=auth, json={"chat_backend_live": "dsh"})
+    assert r.status_code == 200 and app._settings["chat_backend_live"] == "dsh"
+    r = client.post("/api/settings", headers=auth, json={"chat_backend_live": ""})
+    assert r.status_code == 200 and app._settings["chat_backend_live"] == ""
+    assert app._chat_backend_live() == "openai"
+
+
+def test_chat_llm_despacha_para_o_backend_dsh(monkeypatch, dsh_limpo):
+    chamadas = []
+    monkeypatch.setattr(app, "_chat_llm_dsh", lambda msgs: chamadas.append(msgs) or "via-dsh")
+    monkeypatch.setitem(app._settings, "chat_backend", "dsh")
+    assert app._chat_llm([{"role": "user", "content": "oi"}]) == "via-dsh"
+    assert chamadas == [[{"role": "user", "content": "oi"}]]
+    monkeypatch.setitem(app._settings, "chat_backend", "openai")
+    monkeypatch.setattr(app, "_chat_llm_openai", lambda msgs: "via-openai")
+    assert app._chat_llm([]) == "via-openai"
+
+
+def test_dsh_error_vira_502_no_chat_llm(monkeypatch, dsh_limpo):
+    class CliQuebrado:
+        alive = True
+
+        def collect(self, _msgs):
+            raise app.dsh_client.DshError("binário 'dsh' não encontrado no PATH")
+
+        def close(self):
+            pass
+    monkeypatch.setattr(app, "_chat_dsh_cliente", lambda: CliQuebrado())
+    monkeypatch.setitem(app._settings, "chat_backend", "dsh")
+    with pytest.raises(HTTPException) as e:
+        app._chat_llm([])
+    assert e.value.status_code == 502 and "não encontrado" in e.value.detail
+
+
+def test_chat_dsh_campos_sao_admin(dsh_limpo):
+    for campo in ("chat_backend", "chat_dsh_bin", "chat_dsh_profile",
+                  "chat_dsh_model", "chat_dsh_effort"):
+        assert campo in app._SETTINGS_ADMIN
+
+
+def test_post_settings_valida_backend_effort_e_modelo(client, auth, monkeypatch, dsh_limpo):
+    antes = dict(app._settings)
+    r = client.post("/api/settings", headers=auth,
+                    json={"chat_backend": "nada", "speed": 2.0})
+    assert r.status_code == 400 and "chat_backend" in r.json()["detail"]
+    assert app._settings == antes, "400 não pode deixar a RAM divergindo do disco"
+    r = client.post("/api/settings", headers=auth,
+                    json={"chat_dsh_effort": "turbo", "speed": 2.0})
+    assert r.status_code == 400 and "chat_dsh_effort" in r.json()["detail"]
+    r = client.post("/api/settings", headers=auth, json={"chat_dsh_model": "solto"})
+    assert r.status_code == 400 and "chat_dsh_model" in r.json()["detail"]
+    r = client.post("/api/settings", headers=auth, json={
+        "chat_backend": "dsh", "chat_dsh_effort": "low",
+        "chat_dsh_model": '["dsflash","deepseek-flash-41"]', "chat_dsh_profile": "tts-studio"})
+    assert r.status_code == 200
+    assert app._settings["chat_backend"] == "dsh"
+    assert app._settings["chat_dsh_effort"] == "low"
+    # vazio no model volta ao default seguro, não grava string vazia
+    client.post("/api/settings", headers=auth, json={"chat_dsh_model": ""})
+    assert app._settings["chat_dsh_model"] == '["dsflash","deepseek-flash-41"]'
+
+
+def test_get_chat_dsh_models_e_cache(client, auth, monkeypatch, dsh_limpo):
+    chamadas = []
+    monkeypatch.setattr(app.dsh_client, "descobrir_modelos", lambda **kw: chamadas.append(kw) or {
+        "bin": "/usr/local/bin/dsh", "profile": "tts-studio", "node": "25.2.1",
+        "models": [{"id": '["dsflash","deepseek-flash-41"]', "label": "Flash",
+                    "provider": "dsflash", "modelo": "deepseek-flash-41",
+                    "efforts": ["off", "low"], "isDefault": False}]})
+    r = client.get("/api/chat/dsh/models", headers=auth)
+    assert r.status_code == 200
+    corpo = r.json()
+    assert corpo["ok"] and corpo["backend"] == "dsh"
+    assert corpo["models"][0]["id"] == '["dsflash","deepseek-flash-41"]'
+    assert corpo["current"]["effort"] == "off"
+    assert corpo["default_model"] == '["dsflash","deepseek-flash-41"]'
+    assert r.headers["content-type"].startswith("application/json")
+    client.get("/api/chat/dsh/models", headers=auth)
+    assert len(chamadas) == 1, "o discovery sobe um dsh — tem que ter cache"
+
+
+def test_get_chat_dsh_models_erro_explicativo(client, auth, monkeypatch, dsh_limpo):
+    def explode(**_kw):
+        raise app.dsh_client.DshError("node 23.11.0 é antigo: o dsh exige >= 24.2")
+    monkeypatch.setattr(app.dsh_client, "descobrir_modelos", explode)
+    r = client.get("/api/chat/dsh/models", headers=auth)
+    assert r.status_code == 502
+    assert ">= 24.2" in r.json()["detail"]
+
+
+def test_get_chat_dsh_models_traz_estado_do_bridge(client, auth, monkeypatch, dsh_limpo):
+    """#159: o endpoint diz se o HOST tem o patch do bridge — e cacheia junto."""
+    chamadas = []
+    monkeypatch.setattr(app.dsh_client, "descobrir_modelos",
+                        lambda **kw: {"models": [], "bin": "dsh", "profile": "p", "node": "25"})
+    monkeypatch.setattr(app.dsh_client, "estado_bridge",
+                        lambda **kw: chamadas.append(kw) or {
+                            "estado": "clean", "arquivo": "/x/index.js",
+                            "versao": "0.1.5-rc.3", "motivo": "sem o patch"})
+    r = client.get("/api/chat/dsh/models", headers=auth)
+    assert r.status_code == 200
+    assert r.json()["bridge"] == "clean"
+    assert r.json()["bridge_detalhe"]["versao"] == "0.1.5-rc.3"
+    client.get("/api/chat/dsh/models", headers=auth)
+    assert len(chamadas) == 1, "o estado do bridge vem do cache da descoberta"
+    assert chamadas[0]["bin"] == app._chat_dsh_cfg()["bin"]
+
+
+def test_bridge_unknown_nao_quebra_o_endpoint(client, auth, monkeypatch, dsh_limpo):
+    """Degradação: pacote/binário/node ausente → `unknown`, nunca 500."""
+    monkeypatch.setattr(app.dsh_client, "descobrir_modelos",
+                        lambda **kw: {"models": [], "bin": "dsh", "profile": "p", "node": "25"})
+    monkeypatch.setattr(app, "_dsh_bridge_estado",
+                        lambda: {"estado": "unknown", "motivo": "pacote não encontrado"})
+    r = client.get("/api/chat/dsh/models", headers=auth)
+    assert r.status_code == 200
+    assert r.json()["bridge"] == "unknown"
+    assert "não encontrado" in r.json()["bridge_detalhe"]["motivo"]
+
+
+def test_bridge_estado_que_explode_vira_unknown(monkeypatch, dsh_limpo):
+    def explode(**_kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(app.dsh_client, "estado_bridge", explode)
+    assert app._dsh_bridge_estado()["estado"] == "unknown"
+    assert "boom" in app._dsh_bridge_estado()["motivo"]
+
+
+def test_rota_dsh_models_nao_colide_com_chat_sid(client, auth, monkeypatch, dsh_limpo):
+    """`/api/chat/{sid}` (uma barra) não pode engolir `/api/chat/dsh/models`."""
+    monkeypatch.setattr(app.dsh_client, "descobrir_modelos",
+                        lambda **kw: {"models": [], "bin": "dsh", "profile": "p", "node": "25"})
+    assert client.get("/api/chat/dsh/models", headers=auth).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# LIVE-5 (#95) — retomada por session_id, compressão de contexto e tetos.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def hist_limpo(monkeypatch):
+    with app._live_lock:
+        app._live_historico.clear()
+    monkeypatch.setattr(app, "_live_resume_fn", lambda msgs: "RESUMO curto")
+    yield
+    with app._live_lock:
+        app._live_historico.clear()
+
+
+def test_resume_restaura_contexto(ws_client, live_limpo, pipeline_fake, engine_fake, hist_limpo):
+    """Novo WS com `session_id` repõe o contexto e o `ready` avisa `resumed`."""
+    engine_fake.roteiro = [_EvFake("speech_end", audio=b"\x01\x00" * 800, fala_ms=400)]
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        assert _setup_ok(ws, system_instruction="persona X")["resumed"] is False
+        sess = list(app._live_sessions.values())[0]
+        sess["pipe"].history[:] = [{"role": "user", "content": "meu nome é Ana"},
+                                   {"role": "assistant", "content": "prazer, Ana"}]
+        sid = sess["id"]
+        voz_original = sess["voice_id"]
+        ws.send_bytes(b"\x00\x01" * 1600)      # turno → guarda o contexto
+        assert _ate(ws, {"turn_complete"})["type"] == "turn_complete"
+    # retomada SEM `voice_id` no setup: contexto, system E VOZ voltam do registro
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        pronto = _setup_ok(ws, session_id=sid)
+        assert pronto["resumed"] is True and pronto["session_id"] == sid
+        novo = list(app._live_sessions.values())[0]
+        assert [m["content"] for m in novo["pipe"].history][:2] == [
+            "meu nome é Ana", "prazer, Ana"]
+        assert novo["system"] == "persona X", "system entra no prompt, fora do resumo"
+        assert novo["voice_id"] == voz_original, "a voz da sessão tem de voltar"
+    # e quando o setup MANDA voz, ela vence a guardada
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        pronto = _setup_ok(ws, session_id=sid, voice_id="__design__")
+        assert pronto["resumed"] is True and pronto["voice_id"] == "__design__"
+
+
+def test_resume_sem_voice_id_usa_a_voz_do_registro(ws_client, live_limpo, pipeline_fake,
+                                                   engine_fake, hist_limpo):
+    """Regressão medida no re-gate do #97: sem este caso, a retomada volta a usar a
+    voz PADRÃO em silêncio (o `system` tinha o teste, a voz não).
+
+    Caminho é o real: o setup pede uma voz (design), o turno guarda o registro e a
+    retomada — SEM `voice_id` — tem de anunciar e usar a MESMA voz guardada."""
+    engine_fake.roteiro = [_EvFake("speech_end", audio=b"\x01\x00" * 800, fala_ms=400)]
+    voz_padrao = app._resolve_voice(None)
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        pronto = _setup_ok(ws, voice_id="__design__")
+        assert pronto["voice_id"] == "__design__" and pronto["voice_id"] != voz_padrao
+        sess = list(app._live_sessions.values())[0]
+        sid = sess["id"]
+        ws.send_bytes(b"\x00\x01" * 1600)
+        assert _ate(ws, {"turn_complete"})["type"] == "turn_complete"
+
+    with ws_client.websocket_connect("/api/live/ws") as ws:      # SEM voice_id
+        pronto = _setup_ok(ws, session_id=sid)
+        assert pronto["resumed"] is True
+        assert pronto["voice_id"] == "__design__", "a voz guardada tem de voltar"
+        assert pronto["voice_id"] != voz_padrao, "não pode cair na voz padrão"
+        assert list(app._live_sessions.values())[0]["voice_id"] == "__design__"
+
+
+def test_retomada_com_sessao_antiga_viva_nao_derruba_a_nova(ws_client, live_limpo,
+                                                            pipeline_fake, engine_fake,
+                                                            hist_limpo):
+    """O `sid` da retomada é o do cliente: o pop incondicional do `finally` da sessão
+    ANTIGA apagava a entrada da NOVA — ela saía do sweep/TTL e da contagem do teto, e
+    o registro de retomada voltava a ser regravado com o contexto velho."""
+    engine_fake.roteiro = [_EvFake("speech_end", audio=b"\x01\x00" * 800, fala_ms=400)]
+    with contextlib.ExitStack() as pilha:
+        ws1 = pilha.enter_context(ws_client.websocket_connect("/api/live/ws"))
+        _setup_ok(ws1)
+        sess = list(app._live_sessions.values())[0]
+        sess["pipe"].history[:] = [{"role": "user", "content": "meu nome é Ana"}]
+        sid = sess["id"]
+        ws1.send_bytes(b"\x00\x01" * 1600)
+        assert _ate(ws1, {"turn_complete"})["type"] == "turn_complete"
+        antiga = sess
+        ws2 = pilha.enter_context(ws_client.websocket_connect("/api/live/ws"))
+        assert _setup_ok(ws2, session_id=sid)["resumed"] is True
+        nova = app._live_sessions[sid]
+        nova["pipe"].history[:] = [{"role": "user", "content": "contexto novo"}]
+        app._live_hist_guarda(nova)
+        ws1.close()                                # a ANTIGA morre com a nova viva
+        time.sleep(0.4)
+        assert sid in app._live_sessions, "a sessão NOVA saiu do registry"
+        # escrita atrasada da antiga (socket zumbi) não pode voltar o contexto
+        app._live_hist_guarda(antiga)
+        assert app._live_historico[sid]["msgs"][0]["content"] == "contexto novo"
+
+
+def test_resume_recusa_id_desconhecido_e_expirado(ws_client, live_limpo, hist_limpo, monkeypatch):
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        assert _setup_ok(ws, session_id="nao-existe")["resumed"] is False
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        assert _setup_ok(ws)["resumed"] is False
+        sid = list(app._live_sessions.values())[0]["id"]
+        app._live_historico[sid] = {"msgs": [{"role": "user", "content": "oi"}],
+                                    "visto": time.monotonic() - 10 ** 6}
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        assert _setup_ok(ws, session_id=sid)["resumed"] is False, "TTL vencido"
+
+
+def test_resume_valida_session_id(ws_client, live_limpo, hist_limpo):
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        ws.send_json({"type": "setup", "session_id": "id com espaço"})
+        assert ws.receive_json()["code"] == "setup_invalido"
+
+
+def test_compressao_do_live_segue_o_backend_efetivo(ws_client, live_limpo, pipeline_fake,
+                                                    hist_limpo, monkeypatch):
+    """Live=dsh com a Conversa no endpoint (a combinação que o #175 recomenda): o
+    resumo do Live sai pelo dsh, não pelo remoto. Com o dsh marcado indisponível
+    (#146), cai no endpoint — é o backend EFETIVO da sessão."""
+    monkeypatch.setattr(app, "_live_resume_fn", None)
+    monkeypatch.setitem(app._settings, "chat_backend", "openai")
+    monkeypatch.setitem(app._settings, "chat_backend_live", "dsh")
+    chamados = []
+    monkeypatch.setattr(app, "_chat_llm", lambda msgs: chamados.append("openai") or "R")
+    monkeypatch.setattr(app, "_chat_llm_dsh", lambda msgs: chamados.append("dsh") or "R")
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        sess = list(app._live_sessions.values())[0]
+        hist = lambda: [{"role": "user", "content": "x" * 300} for _ in range(40)]
+        sess["pipe"].history[:] = hist()
+        assert app._live_hist_comprime(sess) is True
+        assert chamados == ["dsh"], "o resumo do Live tem de seguir o backend do Live"
+        sess["pipe"]._dsh_indisponivel = True
+        sess["pipe"].history[:] = hist()
+        assert app._live_hist_comprime(sess) is True
+        assert chamados == ["dsh", "openai"], "dsh caído -> resumo no backend efetivo"
+
+
+def test_compressao_dispara_no_limiar_e_preserva_recentes(ws_client, live_limpo, pipeline_fake, hist_limpo, monkeypatch):
+    monkeypatch.setattr(app, "_LIVE_HIST_MAX_MSGS", 4)
+    vistos = []
+    monkeypatch.setattr(app, "_live_resume_fn", lambda msgs: vistos.append(msgs) or "RESUMO")
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        sess = list(app._live_sessions.values())[0]
+        sess["pipe"].history[:] = [{"role": "user", "content": f"m{i}"} for i in range(5)]
+        app._live_hist_pos_turno(sess)
+        for _ in range(60):
+            if sess["pipe"].history and sess["pipe"].history[0]["content"].startswith("Resumo"):
+                break
+            time.sleep(0.05)
+        assert vistos, "o resumidor não foi chamado"
+        assert sess["pipe"].history[0]["content"].startswith("Resumo do que já foi dito:")
+        assert sess["pipe"].history[-1]["content"] == "m9" or sess["pipe"].history[-1]["content"] == "m4"
+
+
+def test_compressao_que_falha_mantem_o_cru(ws_client, live_limpo, pipeline_fake, hist_limpo, monkeypatch):
+    monkeypatch.setattr(app, "_LIVE_HIST_MAX_MSGS", 2)
+    monkeypatch.setattr(app, "_live_resume_fn",
+                        lambda msgs: (_ for _ in ()).throw(RuntimeError("llm fora")))
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        sess = list(app._live_sessions.values())[0]
+        sess["pipe"].history[:] = [{"role": "user", "content": f"m{i}"} for i in range(4)]
+        assert app._live_hist_comprime(sess) is False
+        assert len(sess["pipe"].history) == 4, "sem resumo o histórico fica cru"
+        assert "RuntimeError" in sess["resumo_erro"]
+
+
+def test_caps_do_historico_sao_previsiveis(ws_client, live_limpo, hist_limpo, monkeypatch):
+    monkeypatch.setattr(app, "_LIVE_MAX_HISTORICOS", 3)
+    monkeypatch.setattr(app, "_LIVE_RESUME_TTL_S", 30)
+    with app._live_lock:
+        for i in range(6):
+            app._live_historico[f"s{i}"] = {"msgs": [{"role": "user", "content": f"m{i}"}],
+                                            "visto": time.monotonic() - (10 - i)}
+    app._live_hist_varre()
+    assert len(app._live_historico) == 3, "teto total"
+    assert set(app._live_historico) == {"s3", "s4", "s5"}, "saíram os mais antigos"
+
+
+def test_status_publica_historicos(client, auth, hist_limpo):
+    d = client.get("/api/status", headers=auth).json()
+    assert isinstance(d["live_historicos"], int) and d["live_historicos_max"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# #107 — tradutor/STT remotos: base vazia dá erro EXPLICATIVO (não MissingSchema).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def sem_bases_remotas(monkeypatch):
+    for var in ("TTS_TRANSLATE_BASE_URL", "TTS_TRANSLATE_MODEL", "TTS_STT_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setitem(app._settings, "remote_base_url", "")
+    monkeypatch.setitem(app._settings, "remote_stt_base_url", "")
+
+
+def test_traducao_base_vazia_da_400_explicativo(sem_bases_remotas):
+    """Antes: `MissingSchema: Invalid URL '/chat/completions'` cru."""
+    with pytest.raises(HTTPException) as exc:
+        app._traducao_remota_cfg()
+    assert exc.value.status_code == 400 and "Base URL" in exc.value.detail
+    with pytest.raises(HTTPException) as exc2:      # e pelo caminho que o cliente usa
+        app._translate_remote("olá", "en")
+    assert exc2.value.status_code == 400
+
+
+def test_traducao_env_tem_precedencia(sem_bases_remotas, monkeypatch):
+    monkeypatch.setitem(app._settings, "remote_base_url", "http://rtx.example/v1")
+    monkeypatch.setenv("TTS_TRANSLATE_BASE_URL", "http://127.0.0.1:53993/v1")
+    monkeypatch.setenv("TTS_TRANSLATE_MODEL", "modelo-do-smoke")
+    assert app._traducao_remota_cfg() == ("http://127.0.0.1:53993/v1", "modelo-do-smoke")
+
+
+def test_traducao_sem_env_segue_a_cadeia_antiga(sem_bases_remotas, monkeypatch):
+    monkeypatch.setitem(app._settings, "remote_base_url", "http://rtx.example/v1/")
+    base, modelo = app._traducao_remota_cfg()
+    assert base == "http://rtx.example/v1" and modelo == app._settings["remote_translate_model"]
+
+
+def test_stt_remoto_base_vazia_tambem_e_explicativo(sem_bases_remotas, tmp_path):
+    import wave as _wave
+    p = tmp_path / "a.wav"
+    with _wave.open(str(p), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * 160)
+    with pytest.raises(HTTPException) as exc:
+        app._transcribe_remote(p, "pt")
+    assert exc.value.status_code == 400 and "STT remoto" in exc.value.detail
+
+
+# ---------------------------------------------------------------------------
+# #101/#108 — contraprova dos filtros do venv: o que é NOSSO não pode sumir.
+# ---------------------------------------------------------------------------
+
+def test_filtros_do_venv_escondem_so_o_que_e_do_venv():
+    """Contraprova dos filtros (#101/#108), avaliando os filtros INSTALADOS.
+
+    Sem `simplefilter` aqui de propósito: `recwarn`/`simplefilter` põem um filtro
+    na frente e enxergam tudo; o `catch_warnings` cru copia os filtros correntes,
+    que é o que o gate realmente aplica."""
+    with warnings.catch_warnings(record=True) as capturados:
+        warnings.warn(RuntimeWarning("invalid value encountered in divide"))   # venv
+        warnings.warn(DeprecationWarning("builtin type SwigPyPacked has no __module__ attribute"))  # venv
+        warnings.warn(RuntimeWarning("aviso nosso de teste"))                 # nosso
+    textos = [str(w.message) for w in capturados]
+    assert textos == ["aviso nosso de teste"], textos
+
+
+def test_live_erro_do_pipeline_nao_derruba_a_sessao(ws_client, live_limpo, engine_fake, pipeline_fake):
+    """F1 (aprovado pelo PM): assinatura divergente do pipeline falha ALTO (o cliente
+    recebe `error{pipeline}`) e a sessão continua viva — antes, a muleta engolia e o
+    turno ficava mudo."""
+    engine_fake.roteiro = [_EvFake("speech_end", audio=b"\\x01\\x00" * 400, fala_ms=400)]
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        sess = list(app._live_sessions.values())[0]
+
+        def _eos_assinatura_velha(*a, barge_in=False):    # ← o nome antigo
+            return True
+
+        sess["pipe"].end_of_speech = _eos_assinatura_velha
+        ws.send_bytes(b"\\x00\\x01" * 1600)                  # dispara o turno
+        erro = _ate(ws, {"error"})
+        assert erro["code"] == "pipeline" and "TypeError" in erro["message"]
+        ws.send_json({"type": "ping", "t": 9})               # ...e a sessão segue de pé
+        assert _ate(ws, {"pong"})["t"] == 9
+
+
+# ---------------------------------------------------------------------------
+# LIVE-OBS-1 (#118) — telemetria da sessão: evento `stats` no WS + log de
+# metadados. O esquema é o contrato publicado na task (e no LIVE.md).
+# ---------------------------------------------------------------------------
+
+def test_live_ws_stats_esquema_e_cadencia(ws_client, live_limpo, monkeypatch):
+    """`stats` chega periodicamente SEM tráfego do cliente, com o esquema do
+    contrato, contadores acumulados do mic e relógio monotônico — é dele que o
+    painel (#119) tira os medidores e a suspeita de captação travada."""
+    monkeypatch.setattr(app, "_LIVE_STATS_MS", 30)          # cadência rápida de suíte
+    monkeypatch.setattr(app, "_LIVE_TICK_S", 0.02)
+    monkeypatch.setattr(app, "_provedor_estado",
+                        {"estado": "desconhecido", "http": None, "ts": 0.0})
+    pcm = b"\x00\x40" * 1600                                # ~100 ms @16 kHz PCM16
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        assert _setup_ok(ws)["type"] == "ready"
+        ws.send_bytes(pcm)
+        stats, prazo = [], time.monotonic() + 2.0
+        while len(stats) < 3 and time.monotonic() < prazo:
+            m = ws.receive()
+            if m.get("bytes"):
+                continue
+            ev = _json.loads(m["text"])
+            if ev["type"] == "stats":
+                stats.append(ev)
+    assert len(stats) == 3, "cadência: 3 stats em ~2 s com STATS_MS=30"
+    s = stats[-1]
+    assert s["t_ms"] >= 0
+    assert s["mic"]["frames"] == 1 and s["mic"]["bytes"] == len(pcm)
+    assert s["mic"]["desde_ultimo_ms"] is not None
+    assert isinstance(s["mic"]["dbfs"], float)              # RMS medido no SERVIDOR
+    assert s["motor"]["estado"] in {"ocioso", "ouvindo", "falando", "fechando"}
+    assert s["turno"]["stage"] in {"idle", "stt", "llm", "tts"}
+    assert s["playback"]["speaking"] is False and s["playback"]["chunks"] == 0
+    assert s["sessao"]["ttl_s"] == app._LIVE_TTL_S and s["sessao"]["criadas"] >= 1
+    assert "erro" not in s and "provedor" not in s          # ausentes quando não houve
+    tms = [x["t_ms"] for x in stats]
+    assert tms == sorted(tms)                               # relógio da sessão monotônico
+    assert tms[1] - tms[0] >= 20                            # espaçados, não em rajada
+
+
+class _EngFake:
+    """Mínimo que o `_live_stats` consulta no motor (limiares vigentes + contadores)."""
+
+    limiar_energia_dbfs = -45.2
+    limiar_energia_turno_dbfs = -48.1
+    turno_aberto = False
+    estado = None
+
+    def estatisticas(self):
+        return {"barge_in": 2, "barge_falso": 1}
+
+
+def test_live_stats_erro_provedor_e_limiares_no_payload(monkeypatch):
+    """Último erro da sessão (código + estágio + idade), estado do provedor de
+    chat DO PROCESSO (torna o 530/timeout visível — hipótese (b) do #117) e
+    limiares vigentes do motor entram no `stats`; sem ocorrência, a chave sai."""
+    agora = time.monotonic()
+    monkeypatch.setattr(app, "_provedor_estado",
+                        {"estado": "erro", "http": 530, "ts": agora - 1.0})
+    sess = {"id": "s-tel", "t0": agora, "criada": time.time() - 5, "visto": agora,
+            "turno": 3, "buffer_bytes_turno": 6400, "t_decisao_ms": 486,
+            "engine": _EngFake(), "falando": True, "st_frames": 7, "st_bytes": 22400,
+            "st_ultimo_frame": agora, "st_dbfs": -31.4, "st_prob": 0.87,
+            "st_chunks": 12, "st_audio_bytes": 284160, "st_erro": None,
+            "st_stage": "tts", "st_stage_ini": agora - 0.8, "st_stage_ms": 0}
+    sess["st_stage"] = "tts"                                # o erro veio no estágio tts
+    app._live_observa(sess, {"type": "error", "code": "pipeline", "message": "boom"})
+    s = app._live_stats(sess)
+    assert s["erro"]["code"] == "pipeline" and s["erro"]["stage"] == "tts"
+    assert 0 <= s["erro"]["idade_ms"] <= 500                # idade conta DESDE o erro
+    assert s["provedor"]["estado"] == "erro" and s["provedor"]["http"] == 530
+    assert 900 <= s["provedor"]["idade_ms"] <= 2000
+    assert s["motor"]["limiar_dbfs"] == -45.2               # limiares VIGENTES
+    assert s["motor"]["barge_ativos"] == 2 and s["motor"]["barge_falsos"] == 1
+    assert s["playback"]["speaking"] is True and s["playback"]["chunks"] == 12
+    assert s["turno"]["stage"] == "tts" and s["turno"]["n"] == 3
+    # sem erro e sem provedor marcado: chaves AUSENTES (o frontend usa isso)
+    sess["st_erro"] = None
+    monkeypatch.setattr(app, "_provedor_estado",
+                        {"estado": "desconhecido", "http": None, "ts": 0.0})
+    s2 = app._live_stats(sess)
+    assert "erro" not in s2 and "provedor" not in s2
+
+
+def test_live_ws_stats_para_ao_fechar_a_sessao(ws_client, live_limpo, monkeypatch, caplog):
+    """Com a sessão fechada o emissor de `stats` termina (o `finally` aguarda a
+    task), a sessão sai do registro e o log registra `fecha` com os contadores."""
+    monkeypatch.setattr(app, "_LIVE_STATS_MS", 30)
+    monkeypatch.setattr(app, "_LIVE_TICK_S", 0.02)
+    caplog.set_level(logging.INFO, logger="live")
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        sid = _setup_ok(ws)["session_id"]
+        for _ in range(50):                                 # 1ª stats tem de chegar
+            m = ws.receive()
+            if not m.get("bytes") and _json.loads(m["text"])["type"] == "stats":
+                break
+        else:
+            pytest.fail("nenhuma stats antes do fechar")
+    for _ in range(100):                                    # fechou → limpeza rodou
+        with app._live_lock:
+            if sid not in app._live_sessions:
+                break
+        time.sleep(0.02)
+    with app._live_lock:
+        assert sid not in app._live_sessions
+    fecha = [r.getMessage() for r in caplog.records if r.getMessage().startswith("fecha")]
+    assert fecha and sid in fecha[-1]
+
+
+def test_live_ws_log_só_metadados(ws_client, live_limpo, pipeline_fake, caplog):
+    """Invariante de privacidade (#118): o log `live` NUNCA contém áudio nem
+    texto transcrito/gerado — só metadados. O transcript SAI no fio
+    (`transcript_user`), mas não pode vazar para o log."""
+    caplog.set_level(logging.INFO, logger="live")
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        _setup_ok(ws)
+        ws.send_bytes(b"\x01\x00" * 1600)
+        ws.send_json({"type": "end_of_speech"})
+        assert _ate(ws, ("turn_complete",))["type"] == "turn_complete"
+    texto = caplog.text
+    assert "que horas são" not in texto                     # transcript do STT fake
+    assert "dez" not in texto and "horas" not in texto      # deltas do LLM fake
+    msgs = [r.getMessage() for r in caplog.records]         # formato: `evento chave=valor`
+    assert any(m.startswith("abre") for m in msgs)
+    assert any(m.startswith("stage_inicio") and "stage=llm" in m for m in msgs)
+    assert any(m.startswith("stage_fim") and "stage=llm" in m for m in msgs)
+    assert any(m.startswith("fecha") for m in msgs)
+
+
+def test_gates_do_remoto_ligam_com_env_mesmo_com_settings_vazio(sem_bases_remotas, monkeypatch):
+    """#112: o override do tradutor/STT era INERTE — os gates só olhavam o settings,
+    então o cliente caía no local em silêncio (200 vazio em vez do erro do provedor)."""
+    assert app._use_remote_translate() is False and app._use_remote_stt() is False
+    monkeypatch.setenv("TTS_TRANSLATE_BASE_URL", "http://127.0.0.1:53992/v1")
+    assert app._use_remote_translate() is True, "env sozinho tem de ativar o remoto"
+    assert app._use_remote_stt() is True, "STT herda a base do tradutor"
+    monkeypatch.delenv("TTS_TRANSLATE_BASE_URL")
+    assert app._use_remote_translate() is False
+    monkeypatch.setenv("TTS_STT_BASE_URL", "http://127.0.0.1:53992/v1")
+    assert app._use_remote_stt() is True and app._use_remote_translate() is False
+
+
+def test_gates_sem_env_seguem_a_regra_antiga(monkeypatch):
+    for var in ("TTS_TRANSLATE_BASE_URL", "TTS_STT_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setitem(app._settings, "remote_base_url", "")
+    monkeypatch.setitem(app._settings, "remote_translate", True)
+    monkeypatch.setitem(app._settings, "remote_stt", True)
+    assert app._use_remote_translate() is False, "toggle sem base continua local"
+    monkeypatch.setitem(app._settings, "remote_base_url", "http://rtx.example/v1")
+    assert app._use_remote_translate() is True and app._use_remote_stt() is True
+
+
+def test_traducao_com_env_usa_o_remoto_de_verdade(sem_bases_remotas, monkeypatch):
+    """Caminho do cliente: com o env setado, `_translate` vai ao remoto (o chamador
+    vê o erro do provedor em vez de cair no local)."""
+    chamadas = []
+
+    class _Resp:
+        ok = True
+        text = ""
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {"content": "olá"}}]}
+
+    def _post(url, **kw):
+        chamadas.append(url)
+        return _Resp()
+
+    import requests
+    monkeypatch.setattr(requests, "post", _post)
+    monkeypatch.setenv("TTS_TRANSLATE_BASE_URL", "http://127.0.0.1:53992/v1")
+    assert app._translate("hello", "pt") == "olá"
+    assert chamadas == ["http://127.0.0.1:53992/v1/chat/completions"]
+
+
+# ---------------------------------------------------------------------------
+# #114 — remoto morto cai no local: o cliente distingue "vazio" de "caiu".
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def remoto_morto(monkeypatch):
+    """Gate do STT ligado (env) + remoto que estoura + VAD dizendo "sem fala"."""
+    monkeypatch.setenv("TTS_STT_BASE_URL", "http://127.0.0.1:53992/v1")
+    def _morre(*a, **k):
+        raise RuntimeError("HTTP 530 do provedor")
+    monkeypatch.setattr(app, "_transcribe_remote", _morre)
+    monkeypatch.setattr(app, "_vad_tem_fala", lambda p: False)
+
+
+def _sobe_wav(client, rota="/api/transcribe", **kw):
+    buf = io.BytesIO(_wav_bytes(0.2))
+    return client.post(rota, headers=auth_headers(client),
+                       files={"audio": ("a.wav", buf.getvalue(), "audio/wav")}, **kw)
+
+
+def test_transcribe_avisa_quando_o_remoto_cai(client, remoto_morto):
+    """Antes: 200 com texto vazio e só um print no servidor — indistinguível."""
+    r = _sobe_wav(client)
+    assert r.status_code == 200
+    assert r.headers.get("x-tts-remote-fallback") == "1"
+    assert "530" in r.headers.get("x-tts-remote-error", "")
+    body = r.json()
+    assert body["remote_fallback"] is True and body["remote_error"]
+    assert body["text"] == ""
+
+
+def test_transcribe_sem_queda_nao_avisa(client, monkeypatch):
+    monkeypatch.setenv("TTS_STT_BASE_URL", "http://127.0.0.1:53992/v1")
+    monkeypatch.setattr(app, "_transcribe_remote",
+                        lambda p, lang: {"text": "ok", "language": "pt", "segments": []})
+    r = _sobe_wav(client)
+    assert r.status_code == 200 and r.json()["text"] == "ok"
+    assert "x-tts-remote-fallback" not in r.headers
+    assert "remote_fallback" not in r.json()
+
+
+def test_openai_transcriptions_avisa_no_header_ate_em_texto(client, remoto_morto):
+    """O formato `text` não tem corpo JSON: o header é o que cobre todos."""
+    buf = io.BytesIO(_wav_bytes(0.2))
+    r = client.post("/v1/audio/transcriptions", headers=auth_headers(client),
+                    files={"file": ("a.wav", buf.getvalue(), "audio/wav")},
+                    data={"response_format": "text"})
+    assert r.status_code == 200 and r.headers.get("x-tts-remote-fallback") == "1"

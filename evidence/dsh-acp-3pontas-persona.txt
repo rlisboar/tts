@@ -1,0 +1,26 @@
+== busca de turno LENTO com trace (prompt persona) ==
+== 8 rodada(s) · prompt persona · trace do bridge ligado ==
+  rodada 1: total=0.71s · frames-tex=21 emits=21 commit=1 chegadas=22
+    bridge: 1º frame t+415 ms · maior gap interno=0.02s
+    cliente: 1ª chegada t+416 ms · maior gap=0.02s · atraso bridge→cliente=1 ms
+  rodada 2: total=43.02s · frames-tex=10 emits=10 commit=1 chegadas=11
+    bridge: 1º frame t+1127 ms · maior gap interno=41.77s
+    cliente: 1ª chegada t+1128 ms · maior gap=41.77s · atraso bridge→cliente=0 ms
+  rodada 3: total=1.01s · frames-tex=24 emits=24 commit=1 chegadas=25
+    bridge: 1º frame t+388 ms · maior gap interno=0.53s
+    cliente: 1ª chegada t+388 ms · maior gap=0.53s · atraso bridge→cliente=0 ms
+  rodada 4: total=1.23s · frames-tex=23 emits=23 commit=1 chegadas=24
+    bridge: 1º frame t+379 ms · maior gap interno=0.71s
+    cliente: 1ª chegada t+380 ms · maior gap=0.71s · atraso bridge→cliente=1 ms
+  rodada 5: total=0.74s · frames-tex=20 emits=20 commit=1 chegadas=21
+    bridge: 1º frame t+380 ms · maior gap interno=0.10s
+    cliente: 1ª chegada t+381 ms · maior gap=0.10s · atraso bridge→cliente=1 ms
+  rodada 6: total=22.68s · frames-tex=28 emits=28 commit=1 chegadas=29
+    bridge: 1º frame t+715 ms · maior gap interno=21.60s
+    cliente: 1ª chegada t+716 ms · maior gap=21.60s · atraso bridge→cliente=1 ms
+  rodada 7: total=0.93s · frames-tex=17 emits=17 commit=1 chegadas=18
+    bridge: 1º frame t+375 ms · maior gap interno=0.52s
+    cliente: 1ª chegada t+376 ms · maior gap=0.52s · atraso bridge→cliente=1 ms
+  rodada 8: total=0.99s · frames-tex=16 emits=16 commit=1 chegadas=17
+    bridge: 1º frame t+400 ms · maior gap interno=0.54s
+    cliente: 1ª chegada t+401 ms · maior gap=0.54s · atraso bridge→cliente=1 ms
