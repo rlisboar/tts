@@ -7,6 +7,7 @@ tests/test_deploy_sh.py — é assim que o quoting e os caminhos aparecem.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -229,6 +230,16 @@ def _sha(env: dict[str, str], rev: str, qual: str = "dev") -> str:
     return _git("rev-parse", rev, cwd=cwd, env=env)
 
 
+def _arvore(env: dict[str, str]) -> dict[str, str]:
+    """Snapshot da ÁRVORE do mini (caminho → sha256), fora do .git: é o que o
+    dry-run não pode mexer (o gate pediu snapshot, não só HEAD/launch)."""
+    raiz = Path(env["TTS_MINI_DIR"])
+    return {
+        str(f.relative_to(raiz)): hashlib.sha256(f.read_bytes()).hexdigest()
+        for f in sorted(raiz.rglob("*")) if f.is_file() and ".git" not in f.parts
+    }
+
+
 def _head(env: dict[str, str], qual: str = "mini") -> str:
     cwd = Path(env["TTS_MINI_DIR"] if qual == "mini" else env["TTS_MINI_REPO"])
     return _git("rev-parse", "HEAD", cwd=cwd, env=env)
@@ -352,12 +363,15 @@ def test_smoke_falha_quando_o_job_de_sintese_erra(amb):
 # -------------------------------------------------------------------- deploy
 
 def test_deploy_dry_run_nao_toca_em_nada(amb):
+    antes = _arvore(amb)
     r = _run(amb, "deploy")
     assert r.returncode == 0, _saida(r)
     assert "(dry-run" in r.stdout and "publicar o rev alvo em origin/main (2 commit(s)" in r.stdout
     assert _log(amb, "launch") == []
     assert _head(amb, "mini") == _origin_head(amb)          # origin intacto
     assert "pip install -r requirements.txt" in r.stdout
+    # árvore BYTE a byte: nem o preview de deps (que vai para o /tmp) entra aqui
+    assert _arvore(amb) == antes, "o dry-run mexeu na árvore do mini"
 
 
 def test_deploy_apply_publica_puxa_instala_reinicia_e_smoke(amb):
