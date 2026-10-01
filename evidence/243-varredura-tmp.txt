@@ -1,0 +1,55 @@
+VARREDURA DA CASA — CAMINHO FIXO EM /tmp (classe #12/#83/#224/#240) — task #243
+infra-remote, 2026-10-01. Método: grep por `/tmp/` literal em scripts/testes da casa
+(remote/*.sh, run.sh, tunnel.sh, cloudflare.sh, TTS-STUDIO.command, tests/*.sh,
+tests/*.py, evidence/*.sh, evidence/*.py, smoke_worker_persist.py), veredito por
+arquivo e conserto com sufixo por execução (`RUN="$$"`, `{os.getpid()}`, mktemp).
+A varredura virou TESTE ESTÁTICO: tests/test_tmp_unico.py (falha em caminho fixo novo).
+
+== CONSERTADOS (colidiam sob execução paralela) ==
+evidence/202-gate.sh      /tmp/202-settings.bak, /tmp/202-keys.bak
+                          -> RUN="$$" nos dois + no trap que RESTAURA o estado do dono
+                             (paralelo podia restaurar o backup do outro) — 2 pontos de cp
+evidence/223-verifica.sh  /tmp/223-item{1,2,7}.log -> /tmp/223-item*-$RUN.log
+evidence/232-mordidas.sh  /tmp/mordida.log, /tmp/232-status.sh, /tmp/232-ancestral.sh
+                          -> sufixo $RUN (aqui `S` já era o script; usei RUN)
+evidence/225-celulas.sh   /tmp/225-index-{com,sem}-fix.html -> sufixo (os DOIS scripts
+evidence/225-extra.sh     do #225 usavam os MESMOS nomes: colisão cruzada)
+evidence/179-controle.sh  /tmp/179-controle.txt + /tmp/179-<rot>.log -> sufixo
+evidence/236-gate.sh      /tmp/m236.log -> "$T/m236.log" (dentro do mktemp que já existia)
+evidence/246-verifica.sh  /tmp/246/** -> /tmp/246-$RUN/** (mkdir + 3 referências)
+evidence/207-residual-janela.py   /tmp/207-stub-worker.py -> -{os.getpid()}
+evidence/205-controle-familia.py  /tmp/gate205-plugs    -> -{os.getpid()}
+evidence/194-fora-187-188.py      /tmp/gate194/**        -> /tmp/gate194-{os.getpid()}/**
+evidence/194-repro-independente.py idem
+smoke_worker_persist.py   /tmp/ev152-{lote,baseline}    -> -{os.getpid()}
+tests/live_ui.sh          /tmp/live_ui_servidor.log -> LIVE_UI_LOG (export com $$);
+                          o python lê a env (179 e 223 podem rodar em paralelo)
+tests/hash_deep_link.sh   /tmp/hash_deep_link_servidor.log -> HASH_DEEP_LOG (idem)
+tests/live_lock_freeze.sh /tmp/freeze-ultimo-{A,B}.log -> +{os.getpid()} (a cópia
+                          sobrevive ao rmtree e é a pista do diagnóstico)
+evidence/232-contraprova-real.sh — procurava o nome FIXO do preview no mini; hoje o
+                          preview é único por execução: passou a globar e a conferir
+                          que NENHUM resíduo ficou na árvore
+
+== MANTIDOS (compartilhados POR DESENHO — estão na allowlist do teste) ==
+/tmp/tts-rod-modelo.lock      mutex de modelo entre processos (serial.sh/serial_lock.sh)
+/tmp/tts-studio.log           log do app — um por máquina (run.sh, TTS-STUDIO.command)
+/tmp/tts-tunnel.log           log do túnel — um por máquina (tunnel.sh)
+/tmp/dsh4a-trace.{on,jsonl}   handshake do probe com o app (a PRESENÇA do .on liga o trace)
+/tmp/dsh-home                 DSH_HOME (cache) — compartilhar é o ponto
+/tmp/dsh4b-{probe,wire}.py    o app CARREGA o probe desse caminho (protocolo)
+/private/tmp/pytest-of-*      diretório do próprio pytest
+/tmp/medir_aceite_eco.py      receita manual (comentário)
+/tests/limpa_bytecode.sh: /tmp/bak — receita manual (comentário)
+
+== JÁ OK ANTES ==
+remote/deploy_mini.sh  preview com -$$ (#240); /tmp/tts-studio.log é do mini (por máquina)
+tests/dsh_ui.sh        mktemp -d /tmp/tts-dsh-home-$$.XXXXXX
+tests/serial_lock.sh   mktemp + $SUF=$$
+
+== MORDIDA ==
+evidence/243-mordidas.txt (script .sh): reintroduz o caminho fixo em três arquivos e a
+varredura cai — os três "[ok] mordeu", com restauração byte a byte.
+
+== CONVENÇÃO ==
+scripts/README.md, seção "Convenção: temporário em /tmp é ÚNICO por execução".

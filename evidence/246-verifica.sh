@@ -24,10 +24,10 @@ import json, pathlib
 d = json.loads(pathlib.Path("settings.json").read_text())
 for v in ("low", "high"):
     h = dict(d); h["chat_dsh_effort"] = v
-    pathlib.Path(f"/tmp/246/hostil-{v}.json").write_text(json.dumps(h))
+    pathlib.Path(f"/tmp/246-$RUN/hostil-{v}.json").write_text(json.dumps(h))
 EOF
 
-roda() { QA206_SETTINGS="/tmp/246/hostil-$1.json" PYTHONPATH=tests "$PY" \
+roda() { QA206_SETTINGS="/tmp/246-$RUN/hostil-$1.json" PYTHONPATH=tests "$PY" \
          -m pytest tests/test_live_dsh.py -q -p _estado_hostil 2>&1 | tail -3; }
 
 echo "### 1) hostil low (o caso do achado) — esperado: 25 passed"

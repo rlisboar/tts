@@ -66,3 +66,20 @@ rm /tmp/dsh4a-trace.on                              # volta ao default
 O alvo está fora do workspace: o patch (e o `dsh`, que reescreve
 `~/.dsh/profiles/<perfil>/cordis.yml`) precisa de FS para `/opt/homebrew` e `~/.dsh`.
 Em sandbox restrito o `dsh` morre com `EPERM` no boot.
+## Convenção: temporário em `/tmp` é ÚNICO por execução
+
+Classe de bug que já mordeu a equipe quatro vezes (#12, #83, #224, #240): caminho FIXO
+em `/tmp` compartilhado entre processos — dois scripts ao mesmo tempo reescrevem/apagam
+o mesmo arquivo e um lê o do outro. No #240 o efeito foi barrar o commit de um colega
+com falso vermelho que MUDava de rodada em rodada (o hook roda a suíte inteira).
+
+- script/teste da casa: `RUN="$$"` no topo e sufixo em todo caminho temporário
+  (`/tmp/coisa-$RUN.log`), ou `mktemp -d /tmp/nome.XXXXXX` para diretório;
+- em Python: `{os.getpid()}` no nome, ou `tempfile.mkdtemp()`;
+- limpeza no fim (`trap ... EXIT` quando o script mexe em estado do dono);
+- **exceção**: arquivo que dois processos DEVEM enxergar igual — mutex
+  (`/tmp/tts-rod-modelo.lock`), log do app/túnel (um por máquina), handshake de probe.
+  Esses ficam fixos e justificados.
+
+A varredura é um teste: `tests/test_tmp_unico.py` (asserção ESTÁTICA — varre os scripts
+e testes e falha em caminho fixo novo, com lista explícita das exceções).

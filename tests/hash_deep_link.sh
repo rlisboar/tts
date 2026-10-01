@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# log do servidor desta execução (paralelo com outras suítes)
+export HASH_DEEP_LOG="${HASH_DEEP_LOG:-/tmp/hash_deep_link_servidor-$$.log}"
 # Regressão do deep-link por hash (#128, task_22184151): a rota por `location.hash`
 # não existia — abrir http://127.0.0.1:7860/#live caía na tela padrão, porque o
 # hash só era lido depois do load e nada escutava `hashchange`.
@@ -35,7 +38,7 @@ def porta_livre():
 
 porta = porta_livre()
 env = {**os.environ, "LIVE_UI_PORT": str(porta)}
-log = pathlib.Path("/tmp/hash_deep_link_servidor.log")
+log = pathlib.Path(os.environ.get("HASH_DEEP_LOG") or "/tmp/hash_deep_link_servidor.log")
 _launcher = '''
 import os, uvicorn, app
 uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["LIVE_UI_PORT"]))

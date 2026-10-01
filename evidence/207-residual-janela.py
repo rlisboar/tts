@@ -28,8 +28,9 @@ sys.path.insert(0, str(RAIZ / "tests"))
 import app                                        # noqa: E402
 import live_pipeline as lp                        # noqa: E402
 from test_live_worker import STUB                 # noqa: E402
+import os
 
-STUB_PATH = Path("/tmp/207-stub-worker.py")
+STUB_PATH = Path(f"/tmp/207-stub-worker-{os.getpid()}.py")   # sufixo: paralelo não troca o stub
 STUB_PATH.write_text(STUB)
 
 

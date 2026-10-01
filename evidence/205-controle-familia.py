@@ -27,7 +27,7 @@ PY = str(RAIZ / ".venv-mlx/bin/python")
 TESTE = RAIZ / "tests/test_live_dsh.py"
 ALVOS = ["tests/test_live_dsh.py::test_stats_ia_reflete_o_fallback",
          "tests/test_live_dsh.py::test_app_cria_cliente_por_sessao_e_fecha_com_ela"]
-PLUGS = pathlib.Path("/tmp/gate205-plugs")
+PLUGS = pathlib.Path(f"/tmp/gate205-plugs-{os.getpid()}")   # sufixo: paralelo não troca os plugs
 falhas = []
 
 

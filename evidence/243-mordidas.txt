@@ -1,0 +1,12 @@
+== 1 — 202-gate.sh perde o RUN (backup de settings volta a ser global)
+   alvo: evidence/202-gate.sh · teste: tests/test_tmp_unico.py
+   resultado: 2 failed, 9 passed in 0.24s
+   [ok] mordeu (falhou, rc=1)
+== 2 — 246-verifica.sh volta ao diretório compartilhado
+   alvo: evidence/246-verifica.sh · teste: tests/test_tmp_unico.py
+   resultado: 1 failed, 10 passed in 0.24s
+   [ok] mordeu (falhou, rc=1)
+== 3 — deploy_mini.sh perde o sufixo do preview (o caso do #240)
+   alvo: remote/deploy_mini.sh · teste: tests/test_tmp_unico.py
+   resultado: 1 failed, 10 passed in 0.46s
+   [ok] mordeu (falhou, rc=1)

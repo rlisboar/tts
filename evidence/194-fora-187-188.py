@@ -42,7 +42,7 @@ import uvicorn
 uvicorn.run(app.app, host="127.0.0.1", port={porta}, log_level="warning")
 """
     env = {**os.environ, "ORT_DISABLE_TELEMETRY": "1"}
-    log = pathlib.Path(f"/tmp/gate194/srv_{porta}.log")
+    log = pathlib.Path(f"/tmp/gate194-{os.getpid()}/srv_{porta}.log")
     p = subprocess.Popen([PY, "-c", launcher], cwd=str(RAIZ), env=env,
                          stdout=log.open("w"), stderr=subprocess.STDOUT, start_new_session=True)
     for _ in range(300):
@@ -109,7 +109,7 @@ async def cenario_188(porta):
 procs = []
 try:
     # ─── servidor A: SEM voz (VOICES_DIR vazio e sem presets) ────────────────
-    vazio = pathlib.Path("/tmp/gate194/voices-vazio")
+    vazio = pathlib.Path(f"/tmp/gate194-{os.getpid()}/voices-vazio")
     vazio.mkdir(parents=True, exist_ok=True)
     pa = porta_livre()
     procs.append(sobe(f'app.VOICES_DIR = pathlib.Path("{vazio}")\napp.OMNI_PRESETS = {{}}', pa))

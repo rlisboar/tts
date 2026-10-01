@@ -34,6 +34,7 @@ import numpy as np                      # noqa: E402
 
 import app                              # noqa: E402
 import live_pipeline as lp              # noqa: E402
+import os
 
 MODELO = "kokoro"
 TEXTO = "Claro, o dia está bonito hoje."
@@ -141,7 +142,7 @@ def cenario_paralelo(resultados: dict):
     lp._LIVE_WORKER_LIGADO = True
     pipe = lp.LivePipeline(lambda o: None, lambda b: None, voice_id=None)
     pipe.start()
-    casa = Path("/tmp/ev152-lote")
+    casa = Path(f"/tmp/ev152-lote-{os.getpid()}")
     dur_lote, erros = {}, []
 
     def lote():
@@ -177,7 +178,7 @@ def main() -> int:
     cenario_worker(resultados)
     cenario_pos_worker(resultados)      # E: in-process DEPOIS de usar o worker
 
-    lote = cenario_worker_por_job(Path("/tmp/ev152-baseline"))
+    lote = cenario_worker_por_job(Path(f"/tmp/ev152-baseline-{os.getpid()}"))
     print(f"{'[C] worker POR JOB (baseline do problema)':42s} {lote:8.0f} ms",
           flush=True)
 

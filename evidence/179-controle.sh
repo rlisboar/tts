@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# sufixo por execução: os logs e o resumo não podem ser de outra rodada
+RUN="$$"
 # CONTROLE do #179 — prova os DOIS lados do modo do barge do tests/live_ui.sh.
 #
 # O ticket inverteu o default (estrito) e deixou `BARGE_ESTRITO=0` como escape.
@@ -13,10 +16,10 @@
 #   esperado EXIT=1  · BARGE_ESTRITO=1 + SIMULA_SEM (estrito REPROVA a MESMA rodada)
 #   esperado EXIT=1  · BARGE_ESTRITO=   + SIMULA_SEM (vazio não relaxa)
 #
-# Uso: ./evidence/179-controle.sh   (logs em /tmp/179-*.log)
+# Uso: ./evidence/179-controle.sh   (logs em /tmp/179-*-$$.log)
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-resumo=/tmp/179-controle.txt
+resumo="/tmp/179-controle-$RUN.txt"
 : > "$resumo"
 
 # 5 rodadas em fila, e o time inteiro usa a mesma trava de modelo: a espera padrão
@@ -25,7 +28,7 @@ export TTS_SERIAL_ESPERA="${TTS_SERIAL_ESPERA:-7200}"
 
 roda() {
   local rot="$1"; shift
-  local out="/tmp/179-${rot}.log"
+  local out="/tmp/179-${rot}-$RUN.log"
   env "$@" ./tests/live_ui.sh > "$out" 2>&1
   local rc=$?
   local avisos; avisos=$(grep -c "tolerado por BARGE_ESTRITO=0" "$out" || true)

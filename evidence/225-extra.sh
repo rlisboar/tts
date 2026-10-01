@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# sufixo por execução: os DOIS scripts do #225 usavam os MESMOS nomes em /tmp
+RUN="$$"
 # #225 — célula EXTRA (só se as células do 225-celulas.sh não pegarem o defeito).
 #
 # Mesmo protocolo ANTES/DEPOIS trocando só o cliente, mas com VAO_MS maior: o alvo
@@ -16,10 +19,10 @@ celula() {
   env "$@" ./tests/live_barge_rep.sh > "evidence/$saida" 2>&1
   echo "  exit=$? · $(grep -oE 'CORTE \(#225\): .*' "evidence/$saida" | tail -1)"
 }
-trap 'cp /tmp/225-index-com-fix.html static/index.html' EXIT
+trap 'cp /tmp/225-index-com-fix-$RUN.html static/index.html' EXIT
 for fase in antes depois; do
-  if [ "$fase" = antes ]; then CLI=/tmp/225-index-sem-fix.html; else CLI=/tmp/225-index-com-fix.html; fi
+  if [ "$fase" = antes ]; then CLI=/tmp/225-index-sem-fix-$RUN.html; else CLI=/tmp/225-index-com-fix-$RUN.html; fi
   celula "$CLI" "225-$fase-vao-${VAO_MS}ms.txt" REP=20 MODO=vao VAO_MS="$VAO_MS"
 done
-cp /tmp/225-index-com-fix.html static/index.html
+cp /tmp/225-index-com-fix-$RUN.html static/index.html
 echo "=== FIM $(date -u +%H:%M:%SZ) — cliente COM o fix restaurado ==="

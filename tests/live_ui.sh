@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# log do servidor desta execução (179/223 podem rodar em paralelo)
+export LIVE_UI_LOG="${LIVE_UI_LOG:-/tmp/live_ui_servidor-$$.log}"
 # E2E da UI Live (task #94) contra um servidor PRÓPRIO com o stub de chat por ENV
 # (#103) — assim o settings.json do dono fica intocado. O BACKEND também vai por
 # env (`TTS_CHAT_BACKEND=openai`): com o dono em `chat_backend: "dsh"` a suíte
@@ -111,7 +114,7 @@ def _barge_estrito():
     """Duro por padrão (#167 fechou); `0`/`false`/`no` relaxam. Vazio = estrito."""
     return (os.environ.get("BARGE_ESTRITO") or "").strip().lower() not in ("0", "false", "no", "nao")
 BARGE_ESTRITO = _barge_estrito()
-log = pathlib.Path("/tmp/live_ui_servidor.log")
+log = pathlib.Path(os.environ.get("LIVE_UI_LOG") or "/tmp/live_ui_servidor.log")
 # Instrumenta SEM editar arquivo de outro agente: envolve `set_speaking` para
 # registrar o nível que vem do payload do TTS e o limiar resultante. É o número
 # que falta para saber se o alvo (estímulo >= limiar) é alcançável pelo mic.
@@ -249,7 +252,7 @@ try:
             pg.wait_for_function("() => window.__ev.some(e => e.tipo === 'speech_start')", timeout=25000)
         except Exception:
             print("  ⚠ servidor mudo no 1º turno — re-injetando (diag abaixo)")
-            print("  servidor (tail):", "".join(open("/tmp/live_ui_servidor.log").readlines()[-6:]) if os.path.exists("/tmp/live_ui_servidor.log") else "-")
+            print("  servidor (tail):", "".join(open(log).readlines()[-6:]) if os.path.exists(log) else "-")
             injeta()
         # Barge: injeta fala com áudio do servidor tocando e fecha o turno.
         # Com a janela de playback colada ao TURNO a 1ª tentativa basta; a 2ª
@@ -417,6 +420,100 @@ try:
         cobrar("pipeline não subiu" in r192["d"]["ia"], f"motivo do pipeline não aparece na coluna IA: {r192['d']['ia']!r}")
         cobrar("ouvindo" not in r192["d"]["estado"],
                f"com o pipeline morto a tela segue prometendo fala (estado {r192['d']['estado']!r})")
+
+        # ─── #244: `error{session_substituida}` — a sessão NÃO segue viva ───────
+        # Contrato aditivo do #222: um `setup` com session_id JÁ VIVO faz a conexão
+        # nova assumir o id e o SERVIDOR fecha a antiga (error + close 1000). A UI
+        # não manda `session_id` (P3), então o caminho só se alcança por FORA: um
+        # 2º WS do próprio navegador, mirando o sid que o `ready` desta aba anunciou.
+        # O close 1000 é LIMPO (sem `onerror`): sem a precedência do ramo, o
+        # `onclose` sobrescreveria o motivo real com "sessão encerrada" — é isso que
+        # as asserções abaixo cobram (por isso o real, e não só o evento injetado).
+        sid_ui = None
+        for x in eventos:
+            try: m = json.loads(x)
+            except Exception: continue
+            if m.get("type") == "ready" and m.get("session_id"): sid_ui = m["session_id"]
+        cobrar(sid_ui is not None, "não capturei o session_id do `ready` — a substituição não tem como mirar")
+        if sid_ui:
+            r244 = pg.evaluate("""async (sid) => {
+                const status = () => (document.getElementById('lxStatus').textContent || '');
+                const estado = () => (document.getElementById('lxEstado').textContent || '');
+                const ia = () => (document.getElementById('lxIA').textContent || '');
+                const ws = new WebSocket(lxWsUrl());
+                const pronto = await new Promise(res => {
+                    ws.onopen = () => ws.send(JSON.stringify({ type: 'setup', session_id: sid }));
+                    ws.onmessage = ev => { if (typeof ev.data !== 'string') return;
+                        const m = JSON.parse(ev.data);
+                        if (m.type === 'ready') res({ ready: true, sid: m.session_id });
+                        else if (m.type === 'error') res({ ready: false, erro: m });
+                    };
+                    ws.onclose = () => res({ ready: false, fechou: true });
+                    setTimeout(() => res({ timeout: true }), 10000);
+                });
+                // o servidor fecha a aba ANTIGA: a tela tem de dizer POR QUE e parar
+                // de prometer sessão viva. Cada espera tem o SEU prazo: o `reagiu`
+                // pode consumir a janela inteira (quando o close sobrescreve o aviso
+                // no mesmo tick, o estado final já não o mostra) e o `fechou` não
+                // pode herdar um deadline vencido.
+                const espera = async (f, ms = 8000) => { const t = performance.now();
+                    while (performance.now() - t < ms) {
+                        if (f()) return true; await new Promise(r => setTimeout(r, 50)); } return false; };
+                const reagiu = await espera(() => status().includes('substituída'));
+                const durante = { status: status(), estado: estado(), ia: ia() };
+                // `LX.obs.ws` é pintado no `onclose` REAL: "código 1000" prova que o
+                // fechamento veio do servidor (o onclose manual do bloco #192 usou 1013)
+                const fechou = await espera(() => (LX.obs.ws || '').includes('fechado (código 1000)'));
+                const depois = { status: status(), estado: estado() };
+                try { ws.close(); } catch (e) {}
+                return { pronto, reagiu, durante, fechou, depois };
+            }""", sid_ui)
+            print(f"  #244 substituição REAL (2º WS no mesmo sid {sid_ui[:8]}…): "
+                  f"ready={r244['pronto'].get('ready')} · tela reagiu={r244['reagiu']} · "
+                  f"close 1000 visto={r244['fechou']}")
+            print(f"      durante: estado={r244['durante']['estado']!r} status={r244['durante']['status']!r}")
+            print(f"      depois do close: status={r244['depois']['status']!r}")
+            cobrar(bool(r244["pronto"].get("ready")), f"2º WS no mesmo sid não abriu: {r244['pronto']!r}")
+            cobrar(r244["pronto"].get("sid") == sid_ui, f"o 2º WS não recebeu o sid de volta: {r244['pronto']!r}")
+            cobrar(r244["reagiu"], f"a tela não avisou a substituição (status {r244['durante']['status']!r})")
+            cobrar("substituída" in r244["durante"]["status"],
+                   f"status não diz que a aba foi substituída: {r244['durante']['status']!r}")
+            cobrar("session_substituida" in r244["durante"]["ia"] and "outra conexão assumiu" in r244["durante"]["ia"],
+                   f"motivo do servidor não aparece na coluna IA: {r244['durante']['ia']!r}")
+            cobrar("ouvindo" not in r244["durante"]["estado"] and "viva" not in r244["durante"]["status"],
+                   f"a sessão substituída ficou como viva: estado={r244['durante']['estado']!r}")
+            cobrar(r244["fechou"], "o close 1000 real do servidor não chegou (LX.obs.ws sem o fechamento)")
+            cobrar("substituída" in r244["depois"]["status"] and "encerrada" not in r244["depois"]["status"],
+                   f"o close LIMPO sobrescreveu o motivo da substituição: {r244['depois']['status']!r}")
+            # o painel do Live rola por dentro (a página cabe na viewport): leva a
+            # linha de status à vista antes da foto, senão a evidência sai cortada.
+            # A foto da PÁGINA mostra o log + a coluna IA; o recorte da linha de
+            # status é o que fica legível sem depender do scroll do painel.
+            try: pg.evaluate("() => { const e = document.getElementById('lxStatus'); e && e.scrollIntoView({block: 'center'}); }")
+            except Exception: pass
+            pg.screenshot(path=str(RAIZ / "evidence" / "244-live-substituida.png"))
+            try:
+                pg.locator("#lxStatus").screenshot(path=str(RAIZ / "evidence" / "244-live-substituida-status.png"))
+            except Exception as e:
+                print("  (recorte do status falhou:", e, ")")
+            print("  evidência: evidence/244-live-substituida.png")
+
+        # o MESMO ramo, injetado (isolado do servidor): o contrato do cliente é o
+        # ramo próprio — a preservação no close fica por conta do bloco real acima
+        # (aqui `LX.ws` já foi desligado pelo onclose manual do #192).
+        r244i = pg.evaluate("""() => {
+            LX.substituida = false;
+            lxRecebe({ data: JSON.stringify({ type: 'error', code: 'session_substituida',
+                message: 'outra conexão assumiu este session_id; esta foi fechada pelo servidor' }) });
+            return { status: document.getElementById('lxStatus').textContent,
+                     estado: document.getElementById('lxEstado').textContent,
+                     ia: document.getElementById('lxIA').textContent,
+                     flag: LX.substituida };
+        }""")
+        print(f"  #244 evento injetado: estado={r244i['estado']!r} status={r244i['status']!r} flag={r244i['flag']}")
+        cobrar(r244i["flag"], "o ramo session_substituida não levantou a flag LX.substituida")
+        cobrar("substituída" in r244i["status"], f"evento injetado não avisa na tela: {r244i['status']!r}")
+        cobrar("viva" not in r244i["status"], f"evento injetado caiu no texto genérico: {r244i['status']!r}")
 
         ev = [((json.loads(x).get("type") if x.startswith("{") else x) if x != "<bin>" else "<audio>") for x in eventos]
         for e in (pg.evaluate("() => window.__sp || []") or []):

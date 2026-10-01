@@ -42,7 +42,7 @@ def cobrar(c, m):
 # ---------------------------------------------------------------- A) #185
 def parte_a_pool_real():
     print("\n[A] #185 — pool REAL (fake_acp), carimbo na entrega")
-    fake = pathlib.Path("/tmp/gate194/fake-acp")
+    fake = pathlib.Path(f"/tmp/gate194-{os.getpid()}/fake-acp")
     fake.write_text(f'#!/bin/sh\nexec "{PY}" "{RAIZ}/tests/fake_acp.py" "$@"\n')
     fake.chmod(0o755)
     os.environ["TTS_CHAT_DSH_BIN"] = str(fake)
@@ -169,7 +169,7 @@ import app
 import uvicorn
 uvicorn.run(app.app, host="127.0.0.1", port={porta}, log_level="warning")
 """
-    log = pathlib.Path(f"/tmp/gate194/srv194_{porta}.log")
+    log = pathlib.Path(f"/tmp/gate194-{os.getpid()}/srv194_{porta}.log")
     p = subprocess.Popen([PY, "-c", launcher], cwd=str(RAIZ), env=dict(os.environ),
                          stdout=log.open("w"), stderr=subprocess.STDOUT, start_new_session=True)
     for _ in range(300):

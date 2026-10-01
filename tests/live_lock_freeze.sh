@@ -372,7 +372,7 @@ def cena(preso):
         logf.flush()
         print("    ── log do servidor (tail) ──")
         print("      " + "\n      ".join(logp.read_text().splitlines()[-20:]))
-        shutil.copy(logp, f"/tmp/freeze-ultimo-{'B' if preso else 'A'}.log")
+        shutil.copy(logp, f"/tmp/freeze-ultimo-{os.getpid()}-{'B' if preso else 'A'}.log")
         raise
     finally:
         logf.close()

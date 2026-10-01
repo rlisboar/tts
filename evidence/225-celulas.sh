@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# sufixo por execução: os DOIS scripts do #225 usavam os MESMOS nomes em /tmp
+RUN="$$"
 # #225 — o assistente tem de CALAR quando o usuário fala, inclusive quando o
 # servidor NÃO classifica barge (a janela de playback é uma ESTIMATIVA; quando ela
 # fecha antes, o onset vira `speech_start` sem `barge_in` e nenhum `interrupted`
@@ -21,8 +24,8 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 PY="$PWD/.venv-mlx/bin/python"
-CLI_COM=/tmp/225-index-com-fix.html
-CLI_SEM=/tmp/225-index-sem-fix.html
+CLI_COM=/tmp/225-index-com-fix-$RUN.html
+CLI_SEM=/tmp/225-index-sem-fix-$RUN.html
 
 cp static/index.html "$CLI_COM"
 "$PY" - <<'EOF'
@@ -35,7 +38,7 @@ bloco = """                           if (LX.ativos.length) {
                            }
 """
 assert bloco in html, "bloco do #225 não está no index.html — nada a medir"
-pathlib.Path("/tmp/225-index-sem-fix.html").write_text(html.replace(bloco, "", 1))
+pathlib.Path("/tmp/225-index-sem-fix-$RUN.html").write_text(html.replace(bloco, "", 1))
 print("variante sem fix gerada")
 EOF
 
