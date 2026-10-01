@@ -1,0 +1,34 @@
+== deploy (rev alvo 3e663a60ff3a… (3e663a6))
+  [aviso] árvore local com WIP (não commitado NÃO vai para produção):
+     M LIVE.md
+     M app.py
+     M evidence/214-midrun-edit.py
+    A  evidence/228-janela-mid-start.txt
+    A  evidence/228-probe-com-fix.txt
+  push: nada a publicar (origin já contém o rev alvo)
+== mini
+  deps: pulado (--sem-deps)
+  backup do estado atual:
+    sha=cb36edbe4081d52421a4969690e2cf41349ac672
+    data=2026-10-01 01:42:19
+  fetch + switch para o rev alvo:
+    agora: 3e663a6 chore: ignora .grok/ (config local do runner de agentes)
+  reiniciando studio.tts.server…
+    kickstart-ok
+  esperando 6s o run.sh subir a porta…
+== smoke (rev alvo 3e663a60ff3a…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN com a chave do mini → 200
+  [FALHA] LAN /api/build sem "codigo" (versão anterior ao #190?)
+  [FALHA] LAN /api/live/ws devolveu 401 (esperado 101; falta websockets?)
+  [FALHA] LAN index.html (5cc17bc0393a…) ≠ rev alvo (da1a3c4e67c7…)
+  [ok] LAN POST /api/tts real: job 1020a76fae em ~5s, peça 0 com 95438 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público com a chave do mini → 200
+  [FALHA] público /api/build sem "codigo" (versão anterior ao #190?)
+  [FALHA] público /api/live/ws devolveu 401 (esperado 101; falta websockets?)
+  [FALHA] público index.html (a6ea55968509…) ≠ rev alvo (da1a3c4e67c7…)
+  [ok] público POST /api/tts real: job 36d7a6b1c6 em ~1s, peça 0 com 95438 bytes
+RC=0

@@ -98,10 +98,13 @@ case "$url" in
         corpo="{\\"ok\\":true,\\"codigo\\":\\"$c\\",\\"boot_ms\\":${T_CURL_BOOT_MS:-1000}}"
       else codigo=401; fi ;;
   */api/live/ws*) codigo="${T_CURL_WS_CODE:-101}" ;;
-  */) arquivo="$T_MINI_DIR/static/index.html" ;;
+  */) arquivo="$T_MINI_DIR/static/index.html"; nonce=1 ;;
 esac
 if [ $so_codigo = 1 ]; then print -rn -- "$codigo"
-elif [ -n "$arquivo" ]; then cat "$arquivo"      # sem command substitution: preserva o \\n final
+elif [ -n "$arquivo" ]; then
+  # o app real injeta nonce="…" POR REQUEST no HTML servido (CSP): o shim imita
+  if [ -n "${nonce:-}" ]; then sed -E 's/<html/<html nonce="rnd${RANDOM}"/' "$arquivo"
+  else cat "$arquivo"; fi      # cat direto: preserva o \\n final do arquivo
 else print -rn -- "$corpo"; fi
 """)
     return d
@@ -127,6 +130,8 @@ def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
         TTS_MINI_ESPERA="0",
         TTS_MINI_REPO=str(tmp_path / "dev"),
         TTS_PUBLIC_HOST="tts.exemplo.test",
+        # sem TTS_MINI_PREVIEW de propósito: o teste de F1 prova o DEFAULT (/tmp do
+        # mini), não um override que mascararia a regressão para dentro da árvore
     )
     (tmp_path / "gitconfig").write_text("[init]\n\tdefaultBranch = main\n")
 
@@ -137,6 +142,9 @@ def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
     semente.mkdir()
     for m in MODULOS:
         (semente / m).write_text(f"# {m} versao 1\n")
+    # o app.py do fixture espelha o de verdade nas rotas que o smoke checa por REV:
+    # a base (v1) NÃO as tem; a v2 as introduz (como o #190 e o épico Live fizeram).
+    (semente / "app.py").write_text(APP_SEM_ROTAS)
     (semente / "static").mkdir()
     (semente / "static" / "index.html").write_text("<html>v1</html>\n")
     (semente / "requirements.txt").write_text("fastapi\nwebsockets\n")
@@ -172,13 +180,17 @@ exit 0
     _git("remote", "add", "origin", str(origem), cwd=semente, env=env)
     _git("push", "-q", "origin", "main", cwd=semente, env=env)
 
-    # dev: de onde o deploy publica — um commit novo à frente do origin
+    # dev: de onde o deploy publica — DOIS commits à frente do origin (v2 traz as
+    # rotas; v3 é o HEAD), para haver um corte antigo de verdade a que apontar.
     dev = tmp_path / "dev"
     _git("clone", "-q", str(origem), str(dev), cwd=tmp_path, env=env)
-    (dev / "app.py").write_text("# app.py versao 2\n")
+    (dev / "app.py").write_text(APP_COM_ROTAS)
     (dev / "static" / "index.html").write_text("<html>v2</html>\n")
     _git("add", "-A", cwd=dev, env=env)
     _git("commit", "-qm", "v2", cwd=dev, env=env)
+    (dev / "static" / "index.html").write_text("<html>v3</html>\n")
+    _git("add", "-A", cwd=dev, env=env)
+    _git("commit", "-qm", "v3", cwd=dev, env=env)
     # o mini: clone de produção, parado no commit antigo
     _git("clone", "-q", str(origem), str(tmp_path / "mini"), cwd=tmp_path, env=env)
     return env
@@ -196,6 +208,25 @@ def _saida(r: subprocess.CompletedProcess) -> str:
 def _log(env: dict[str, str], nome: str) -> list[str]:
     p = Path(env[f"T_{nome.upper()}_LOG"])
     return p.read_text().splitlines() if p.exists() else []
+
+
+APP_SEM_ROTAS = "# app.py versao 1 (sem as rotas novas)\n"
+APP_COM_ROTAS = ('# app.py versao 2\n'
+                 '@app.get("/api/build")\n'
+                 'def build(): ...\n'
+                 '@app.websocket("/api/live/ws")\n'
+                 'async def live_ws(ws): ...\n')
+
+
+def _branch(env: dict[str, str], qual: str = "mini") -> str:
+    """Branch atual do repo — falha se estiver DETACHED (é o ponto do F3)."""
+    cwd = Path(env["TTS_MINI_DIR"] if qual == "mini" else env["TTS_MINI_REPO"])
+    return _git("symbolic-ref", "--short", "HEAD", cwd=cwd, env=env)
+
+
+def _sha(env: dict[str, str], rev: str, qual: str = "dev") -> str:
+    cwd = Path(env["TTS_MINI_DIR"] if qual == "mini" else env["TTS_MINI_REPO"])
+    return _git("rev-parse", rev, cwd=cwd, env=env)
 
 
 def _head(env: dict[str, str], qual: str = "mini") -> str:
@@ -227,7 +258,7 @@ def test_recon_avisa_sem_estado_de_deploy(amb):
 def test_compare_acusa_producao_atras_e_aponta_o_ff(amb):
     r = _run(amb, "compare")
     assert r.returncode == 1
-    assert "[DIFERENTE] produção 1 commit(s) atrás do rev alvo" in r.stdout
+    assert "[DIFERENTE] produção 2 commit(s) atrás do rev alvo" in r.stdout
     assert "alvo é descendente da produção" in r.stdout
     assert "[DIFERENTE] app.py" in r.stdout and "[DIFERENTE] static/index.html" in r.stdout
     assert CHAVE not in r.stdout
@@ -323,7 +354,7 @@ def test_smoke_falha_quando_o_job_de_sintese_erra(amb):
 def test_deploy_dry_run_nao_toca_em_nada(amb):
     r = _run(amb, "deploy")
     assert r.returncode == 0, _saida(r)
-    assert "(dry-run" in r.stdout and "publicar o rev alvo em origin/main (1 commit(s)" in r.stdout
+    assert "(dry-run" in r.stdout and "publicar o rev alvo em origin/main (2 commit(s)" in r.stdout
     assert _log(amb, "launch") == []
     assert _head(amb, "mini") == _origin_head(amb)          # origin intacto
     assert "pip install -r requirements.txt" in r.stdout
@@ -379,10 +410,13 @@ def test_deploy_mostra_o_delta_de_deps_do_rev_alvo_e_instala(amb):
     assert r.returncode == 0, _saida(r)
     assert "Would install websockets-17.1" in r.stdout
     assert "nada a instalar" not in r.stdout
-    # o arquivo de preview é o do REV ALVO, não o do mini (que ainda é o antigo)
-    preview = Path(amb["TTS_MINI_DIR"]) / ".deploy-mini-requirements-preview"
+    # o arquivo de preview é o do REV ALVO (não o do mini, que ainda é o antigo) e
+    # fica FORA da árvore do mini: o dry-run não pode sujar a produção (F1)
+    preview = Path("/tmp/deploy-mini-requirements-preview")
     alvo = _git("show", "HEAD:requirements.txt", cwd=Path(amb["TTS_MINI_REPO"]), env=amb)
     assert preview.read_text().strip() == alvo.strip() == "fastapi\nwebsockets"
+    assert not (Path(amb["TTS_MINI_DIR"]) / ".deploy-mini-requirements-preview").exists(), \
+        "o preview voltou para dentro da árvore do mini"
 
     r = _run(amb, "deploy", "--apply")
     assert r.returncode == 0, _saida(r)
@@ -408,6 +442,74 @@ def test_deploy_reinicia_quando_o_processo_esta_velho(amb):
     assert "nada a fazer" not in r.stdout
     assert _log(amb, "launch") == [f"kickstart -k gui/{os.getuid()}/{LABEL}"]
     assert r.returncode == 1 and "instância não é o rev alvo" in r.stdout
+
+
+def test_alvo_por_rev_sobe_o_corte_e_nao_o_head(amb):
+    """F2: `TTS_MINI_REV` tem de valer — fixar ALVO_REV=HEAD deixaria a suíte verde."""
+    corte = _sha(amb, "HEAD~1")                     # v2: existe, é antigo, e NÃO é o HEAD
+    amb["TTS_MINI_REV"] = corte
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 0, _saida(r)
+    assert f"rev alvo {corte[:12]}" in r.stdout
+    assert _head(amb, "mini") == corte              # o mini ficou no CORTE
+    assert _head(amb, "mini") != _head(amb, "dev")  # e não no HEAD
+
+
+def test_mini_termina_em_branch_prod_e_nao_detached(amb):
+    """F3: trocar `switch -C` por `--detach` deixaria a suíte verde — o `_branch`
+    falha se o HEAD estiver solto."""
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 0, _saida(r)
+    assert _branch(amb) == f"prod-{_head(amb, 'dev')[:12]}"
+
+    r = _run(amb, "rollback", "--apply")
+    assert r.returncode == 0, _saida(r)
+    assert _branch(amb) == f"prod-{_head(amb, 'mini')[:12]}"
+
+
+def test_compare_avisa_alvo_nao_descendente_do_que_esta_no_ar(amb):
+    """F4: remover o `merge-base --is-ancestor` do compare deixaria a suíte verde."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    corte = _sha(amb, "HEAD~1")                     # v2 é ANTERIOR ao que está no ar
+    amb["TTS_MINI_REV"] = corte
+    r = _run(amb, "compare")
+    assert r.returncode == 1
+    assert "produção NÃO é ancestral do alvo" in r.stdout
+    assert "rewind/desvio" in r.stdout
+
+
+def test_smoke_nao_exige_rota_ausente_no_rev_alvo(amb):
+    """O corte do passo 1 é anterior ao #190 e ao épico Live: o smoke tem de dizer
+    "ausente NESTE rev", não "falha" — senão um alvo antigo nunca fecha verde."""
+    base = _sha(amb, "HEAD~2")                      # v1: sem /api/build nem /api/live/ws
+    amb["TTS_MINI_REV"] = base
+    r = _run(amb, "smoke")
+    assert r.returncode == 0, _saida(r)
+    assert r.stdout.count("/api/build ausente NESTE rev") == 2
+    assert r.stdout.count("/api/live/ws ausente NESTE rev") == 2
+    assert "FALHA" not in r.stdout
+
+
+def test_redeploy_do_mesmo_alvo_preserva_o_alvo_de_rollback(amb):
+    """Re-deploy do MESMO rev não pode sobrescrever o estado com o próprio alvo —
+    senão o rollback vira no-op e perde a produção anterior."""
+    antes = _head(amb, "mini")
+    estado = Path(amb["TTS_MINI_DIR"]) / ".deploy-mini-estado"
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    assert f"sha={antes}" in estado.read_text()
+
+    # 2º deploy, tudo batendo: "nada a fazer" e o estado intacto
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 0, _saida(r)
+    assert "nada a fazer" in r.stdout
+    assert f"sha={antes}" in estado.read_text()
+
+    # 3º deploy com a instância viva divergindo (não é "nada a fazer"): passa pelo
+    # backup e tem de PRESERVAR o estado em vez de gravar o próprio alvo
+    amb["T_CURL_BUILD_CODIGO"] = "deadbeef"
+    r = _run(amb, "deploy", "--apply")
+    assert "alvo de rollback anterior é preservado" in r.stdout
+    assert f"sha={antes}" in estado.read_text(), "o estado foi sobrescrito com o alvo"
 
 
 # ------------------------------------------------------------------ rollback

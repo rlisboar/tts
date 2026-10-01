@@ -1,0 +1,12 @@
+=== DEPOIS do passo 1 — 2026-10-01 01:43:57 -03 ===
+rev no ar: 3e663a60ff3a2a818eda32261da7a0056defd666
+branch:    prod-3e663a60ff3a  (nao detached)
+arvore:    0 rastreado(s) modificado(s)
+estado:    sha=cb36edbe4081d52421a4969690e2cf41349ac672 data=2026-10-01 01:42:19 
+uptime:    1:43  up 9 days,  4:53, 1 user, load averages: 1.11 1.20 1.23
+processo:  pid 68738 na 7860
+index:     servido (sem o nonce injetado) == blob do rev alvo: da1a3c4e67c74533 x da1a3c4e67c74533
+tts real:  200 no /health publico
+rollback:  == rollback para cb36edbe4081… (2026-10-01 01:42:19)
+processo novo (prova do restart): Thu Oct  1 01:42:24 2026     01:40
+gate do kickstart (log): INFO:     192.168.15.34:55183 - "GET /health HTTP/1.1" 200 OK 

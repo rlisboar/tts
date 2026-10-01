@@ -306,13 +306,18 @@ O que ele garante:
   senão para **antes** de reiniciar (restart derruba a produção por alguns segundos);
 - deps são conferidas contra o `requirements.txt` **do rev alvo** (o do mini, antes do
   fetch, ainda é o antigo — foi assim que um preview mentiu "nada a instalar" enquanto
-  faltava o `websockets`, sem o qual o `/api/live/ws` responde 500 no navegador);
+  faltava o `websockets`, sem o qual o `/api/live/ws` responde 500 no navegador). O
+  preview vai para o **/tmp do mini**, não para a árvore: dry-run não suja produção;
 - `smoke` confere `GET /api/voices` **com a chave do mini** (LAN e público), o `codigo`
   do `/api/build` contra o hash dos módulos do rev alvo — pega "código novo no disco,
   processo velho" (a feature inerte do #190) —, `boot_ms` do restart e um
-  **`POST /api/tts` real** até a peça 0 sair com bytes;
+  **`POST /api/tts` real** até a peça 0 sair com bytes. Duas checagens são conscientes
+  do ALVO: `/api/build` e `/api/live/ws` só são exigidas se o rev alvo tiver a rota
+  (num corte anterior ao #190/épico Live o smoke diz "ausente NESTE rev", não "falha"),
+  e a paridade do `index.html` ignora o `nonce="…"` que o app injeta por request (CSP);
 - `deploy` grava `.deploy-mini-estado` (sha + data) e um `.deploy-mini-freeze-*` no mini
-  antes de mexer — é o que o `rollback` usa. Deps **não** voltam sozinhas no rollback
+  antes de mexer — é o que o `rollback` usa. Re-deploy do MESMO rev **preserva** o
+  estado (senão o rollback viraria no-op); deps **não** voltam sozinhas no rollback
   (o freeze fica lá para um `pip install -r` manual, se precisar).
 
 ### Plano em dois passos (recomendação do PM, 2026-09-30)

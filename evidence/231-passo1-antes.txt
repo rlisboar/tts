@@ -1,0 +1,10 @@
+=== ANTES do passo 1 (read-only) — 2026-10-01 01:36:55 -03 ===
+rev: cb36edbe4081d52421a4969690e2cf41349ac672
+branch: main
+uptime: 1:36  up 9 days,  4:46, 1 user, load averages: 1.44 1.37 1.29
+arvore: 0 rastreado(s) modificado(s)
+md5 app.py: 5fd78618aa5f75c5867431d6fc6c5d6d
+pid 7860: 8274
+servico: 1
+origin/main local: 05878659134ede3e74e9742a6ef692c0f05540ac
+alvo do passo 1: 3e663a60ff3a2a818eda32261da7a0056defd666

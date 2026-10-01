@@ -1,0 +1,24 @@
+MORDIDA DOS 3 BUGS DE ZSH (task #231, pedido do gate #232 item 6)
+infra-remote, 2026-10-01. Método: reintroduzir a forma quebrada no remote/deploy_mini.sh,
+rodar o teste específico, restaurar. Commit sob gate: 0587865 (os 3 arquivos).
+
+=== BUG 1 — `"$1:requirements.txt"` (o zsh lê `:r` como modificador e come a letra) ===
+patch: show "${1}:requirements.txt" -> show "$1:requirements.txt"
+teste: tests/test_deploy_mini_sh.py::test_deploy_mostra_o_delta_de_deps_do_rev_alvo_e_instala
+resultado: 1 failed  (o arquivo de preview fica vazio: `git show` procura
+           "<sha>equirements.txt" e o delta de deps some)
+
+=== BUG 2 — `"$ALVO_SHA:refs/heads/main"` (mesmo modificador, agora no refspec) ===
+patch: push origin "${ALVO_SHA}:refs/heads/main" -> "$ALVO_SHA:refs/heads/main"
+teste: tests/test_deploy_mini_sh.py::test_deploy_apply_publica_puxa_instala_reinicia_e_smoke
+resultado: 1 failed  ("src refspec <sha>efs/heads/main does not match any";
+           "failed to push some refs")
+
+=== BUG 3 — `status` é read-only no zsh (alias de $?) ===
+patch: `local ... estado_job ...` e usos -> `status`
+teste: tests/test_deploy_mini_sh.py::test_smoke_faz_sintese_real_e_pode_pular
+resultado: 1 failed  ("smoke_tts:11: read-only variable: status" — o job de síntese
+           real nem chega a ser conferido)
+
+Restauração conferida: `git diff --stat remote/deploy_mini.sh` vazio depois de cada volta.
+Os três testes usados são os mesmos que o gate deve contraprovar.

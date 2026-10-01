@@ -53,8 +53,10 @@ PUBLICO="${TTS_PUBLIC_HOST:-tts.the-dudes.com}"
 ESPERA="${TTS_MINI_ESPERA:-6}"                    # run.sh sobe o uvicorn; smoke espera a porta
 BOOT_MS_MAX="${TTS_MINI_BOOT_MS:-120000}"         # pós-deploy: processo novo, não instância velha
 TTS_TIMEOUT="${TTS_MINI_TTS_TIMEOUT:-120}"        # teto do job de síntese real no smoke
-ESTADO=".deploy-mini-estado"                      # fica no repo do mini (untracked)
-REQ_PREVIEW=".deploy-mini-requirements-preview"   # requirements DO REV ALVO (untracked)
+ESTADO=".deploy-mini-estado"                      # no repo do mini (untracked; só o --apply escreve)
+# O preview de deps vai para o /tmp DO MINI, não para a árvore do repo: sem isso o
+# dry-run sujava a árvore de produção (F1 do gate #232 — o script promete "nada muda").
+REQ_PREVIEW="${TTS_MINI_PREVIEW:-/tmp/deploy-mini-requirements-preview}"
 MODULOS=(app.py common.py backends.py tts_worker.py live_pipeline.py live_turns.py dsh_client.py)
 ARQ_PARIDADE=(app.py static/index.html)
 
@@ -84,8 +86,15 @@ falhas=0
 distante() { "${SSH[@]}" "$USUARIO@$HOST" "$1"; }         # $1 = comando (string única)
 # O diretório é expandido NO MINI ($HOME de lá), não aqui.
 cd_remoto() { case "$DIR" in /*) print -r -- "$DIR" ;; *) print -r -- "\$HOME/$DIR" ;; esac; }
+preview_caminho() { case "$REQ_PREVIEW" in /*) print -r -- "$REQ_PREVIEW" ;; *) print -r -- "$(cd_remoto)/$REQ_PREVIEW" ;; esac; }
 sha_blob() { git -C "$LOCAL_REPO" show "$1:$2" 2>/dev/null | shasum -a 256 | awk '{print $1}'; }
+conteudo_blob() { git -C "$LOCAL_REPO" show "$1:$2" 2>/dev/null; }
 sha_arq()  { distante "shasum -a 256 '$1' 2>/dev/null | awk '{print \$1}'" | head -1; }
+# O app injeta `nonce="…"` por request no HTML servido (CSP): tira dos dois lados
+# antes de comparar conteúdo.
+sem_nonce() { sed -E 's/ nonce="[^"]*"//g'; }
+# A rota existe no CÓDIGO DO REV ALVO? (rota ausente ≠ falha do smoke)
+tem_rota() { git -C "$LOCAL_REPO" show "${1}:app.py" 2>/dev/null | grep -qF "$2"; }
 git_remoto() { distante "cd $(cd_remoto) && git $1"; }
 
 # `codigo` do /api/build: sha256-8 da CONCATENAÇÃO dos módulos, na ordem em que o
@@ -141,6 +150,11 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
     print -r -- "  [FALHA] $rotulo recusou a chave do mini ($c)"; falhas=1
   fi
   # /api/build: prova que a INSTÂNCIA VIVA carregou o rev alvo (não só o disco).
+  # A rota só é exigida quando o rev alvo a tem — num corte anterior ao #190 o
+  # smoke tem de dizer "não existe neste rev", não "falha".
+  if ! tem_rota "$REV_ALVO" '@app.get("/api/build")'; then
+    print -r -- "  [ok] $rotulo /api/build ausente NESTE rev (anterior ao #190) — esperado"
+  else
   corpo="$(curl -s -m 8 -H "X-API-Key: $chave" "$base/api/build" 2>/dev/null)"
   if print -r -- "$corpo" | grep -q '"codigo"'; then
     local no_ar esperado boot
@@ -161,10 +175,15 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
       print -r -- "  [aviso] boot_ms=$boot (instância antiga: ok fora do pós-deploy)"
     fi
   else
-    print -r -- "  [FALHA] $rotulo /api/build sem \"codigo\" (versão anterior ao #190?)"; falhas=1
+    print -r -- "  [FALHA] $rotulo /api/build sem \"codigo\" (rota existe no rev alvo — versão errada no ar?)"; falhas=1
+  fi
   fi
   # WS: o TestClient passa sem upgrade; no navegador sem `websockets` o /api/live/ws
-  # dá 500 — este é o único jeito de pegar isso sem navegador.
+  # dá 500 — este é o único jeito de pegar isso sem navegador. Como o /api/build,
+  # só é exigido quando o rev alvo tem a rota (o corte do passo 1 é anterior ao épico).
+  if ! tem_rota "$REV_ALVO" '@app.websocket("/api/live/ws")'; then
+    print -r -- "  [ok] $rotulo /api/live/ws ausente NESTE rev (anterior ao épico Live) — esperado"
+  else
   c="$(curl -s -m 5 -o /dev/null -w '%{http_code}' \
        -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" \
        -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
@@ -174,12 +193,15 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
     000) print -r -- "  [aviso] $rotulo WS sem resposta em 5s (timeout do curl, não necessariamente erro)" ;;
     *)   print -r -- "  [FALHA] $rotulo /api/live/ws devolveu $c (esperado 101; falta websockets?)"; falhas=1 ;;
   esac
-  # Paridade de conteúdo: o index servido tem que ser o blob do rev alvo.
+  fi
+  # Paridade de conteúdo: o index servido tem que ser o blob do rev alvo. O app
+  # injeta `nonce="…"` POR REQUEST no HTML (CSP), então a paridade é do conteúdo —
+  # o nonce sai dos dois lados antes do sha (sem isso a checagem nunca fecha).
   local sha_no_ar sha_esperado
-  sha_no_ar="$(curl -s -m 10 "$base/" 2>/dev/null | shasum -a 256 | awk '{print $1}')"
-  sha_esperado="$(sha_blob "$REV_ALVO" static/index.html)"
+  sha_no_ar="$(curl -s -m 10 "$base/" 2>/dev/null | sem_nonce | shasum -a 256 | awk '{print $1}')"
+  sha_esperado="$(conteudo_blob "$REV_ALVO" static/index.html | sem_nonce | shasum -a 256 | awk '{print $1}')"
   if [ "$sha_no_ar" = "$sha_esperado" ]; then
-    print -r -- "  [ok] $rotulo index.html = blob do rev alvo"
+    print -r -- "  [ok] $rotulo index.html = blob do rev alvo (nonce do CSP ignorado)"
   else
     print -r -- "  [FALHA] $rotulo index.html (${sha_no_ar[1,12]}…) ≠ rev alvo (${sha_esperado[1,12]}…)"
     falhas=1
@@ -317,9 +339,10 @@ push_necessario() { # 0 = sim (o rev alvo ainda não está no origin)
 deps_preview() { # $1 = rev alvo; escreve o requirements no mini e devolve o "Would install"
   # ${1} com chaves: `"$1:requirements.txt"` o zsh lê como modificador `:r` e vira
   # "...equirements.txt" (o sha não é ambíguo, o `git show` só não acha o arquivo).
+  local prev; prev="$(preview_caminho)"
   git -C "$LOCAL_REPO" show "${1}:requirements.txt" 2>/dev/null \
-    | "${SSH[@]}" "$USUARIO@$HOST" "cat > $(cd_remoto)/$REQ_PREVIEW" || return 0
-  distante "cd $(cd_remoto) && ./.venv-mlx/bin/pip install --dry-run -r $REQ_PREVIEW 2>&1 | grep -E 'Would install|^ERROR' | tail -3"
+    | "${SSH[@]}" "$USUARIO@$HOST" "cat > '$prev'" || return 0
+  distante "cd $(cd_remoto) && ./.venv-mlx/bin/pip install --dry-run -r '$prev' 2>&1 | grep -E 'Would install|^ERROR' | tail -3"
 }
 
 deploy() {
@@ -381,7 +404,12 @@ deploy() {
     return 0
   fi
   print -r -- "  backup do estado atual:"
-  distante "cd $(cd_remoto) && printf 'sha=%s\ndata=%s\n' \"\$(git rev-parse HEAD)\" \"\$(date '+%F %T')\" > $ESTADO && ./.venv-mlx/bin/pip freeze > .deploy-mini-freeze-\$(date +%F-%H%M%S) && cat $ESTADO" | sed 's/^/    /'
+  # O estado é o alvo do ROLLBACK: num re-deploy do MESMO rev ele não pode ser
+  # sobrescrito com o próprio alvo (senão o rollback vira no-op e perde o alvo real).
+  if [ "$(alvo_no_ar)" = "$ALVO_SHA" ]; then
+    print -r -- "    (mini já no rev alvo — o alvo de rollback anterior é preservado)"
+  fi
+  distante "cd $(cd_remoto) && { [ \"\$(git rev-parse HEAD)\" = '$ALVO_SHA' ] || printf 'sha=%s\ndata=%s\n' \"\$(git rev-parse HEAD)\" \"\$(date '+%F %T')\" > $ESTADO; } && ./.venv-mlx/bin/pip freeze > .deploy-mini-freeze-\$(date +%F-%H%M%S) && cat $ESTADO" | sed 's/^/    /'
   # `switch -C prod-<sha>` (e não checkout --detach): o mini fica numa branch com
   # nome, o próximo deploy não se perde em detached HEAD e o rollback é o mesmo passo.
   print -r -- "  fetch + switch para o rev alvo:"
@@ -396,7 +424,7 @@ deploy() {
   if [ "$DEPS" = 1 ]; then
     distante "cd $(cd_remoto) && ./.venv-mlx/bin/pip install -r requirements.txt 2>&1 | tail -3" | sed 's/^/    /'
   fi
-  distante "cd $(cd_remoto) && rm -f $REQ_PREVIEW"
+  distante "cd $(cd_remoto) && rm -f '$(preview_caminho)'"
   print -r -- "  reiniciando $LABEL…"
   distante "launchctl kickstart -k gui/\$(id -u)/$LABEL && echo kickstart-ok" | sed 's/^/    /'
   print -r -- "  esperando ${ESPERA}s o run.sh subir a porta…"
