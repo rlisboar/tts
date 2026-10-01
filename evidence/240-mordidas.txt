@@ -1,0 +1,13 @@
+== 1 — default volta a ser caminho FIXO (colide entre execuções)
+   teste: tests/test_deploy_mini_sh.py::test_dois_deploys_em_paralelo_nao_disputam_o_preview
+   resultado: 1 failed in 3.81s
+   [ok] mordeu (falhou, rc=1)
+== 2 — default fixo: asserção estática também pega
+   teste: tests/test_deploy_mini_sh.py::test_preview_default_e_unico_por_execucao_e_fora_da_arvore
+   resultado: 1 failed in 4.87s
+   [ok] mordeu (falhou, rc=1)
+== 3 — preview volta para dentro da árvore do mini (F1 do #232)
+   teste: tests/test_deploy_mini_sh.py::test_deploy_dry_run_nao_toca_em_nada
+   resultado: 1 failed in 2.69s
+   [ok] mordeu (falhou, rc=1)
+script restaurado byte a byte (igual ao backup)

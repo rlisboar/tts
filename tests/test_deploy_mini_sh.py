@@ -148,7 +148,7 @@ def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
     (semente / "app.py").write_text(APP_SEM_ROTAS)
     (semente / "static").mkdir()
     (semente / "static" / "index.html").write_text("<html>v1</html>\n")
-    (semente / "requirements.txt").write_text("fastapi\nwebsockets\n")
+    (semente / "requirements.txt").write_text("fastapi\n")   # v2 acrescenta websockets
     (semente / ".venv-mlx" / "bin").mkdir(parents=True)
     _shim(semente / ".venv-mlx" / "bin" / "python", """
 case " $* " in
@@ -186,6 +186,7 @@ exit 0
     dev = tmp_path / "dev"
     _git("clone", "-q", str(origem), str(dev), cwd=tmp_path, env=env)
     (dev / "app.py").write_text(APP_COM_ROTAS)
+    (dev / "requirements.txt").write_text("fastapi\nwebsockets\n")
     (dev / "static" / "index.html").write_text("<html>v2</html>\n")
     _git("add", "-A", cwd=dev, env=env)
     _git("commit", "-qm", "v2", cwd=dev, env=env)
@@ -238,6 +239,14 @@ def _arvore(env: dict[str, str]) -> dict[str, str]:
         str(f.relative_to(raiz)): hashlib.sha256(f.read_bytes()).hexdigest()
         for f in sorted(raiz.rglob("*")) if f.is_file() and ".git" not in f.parts
     }
+
+
+def _preview_do_output(saida: str) -> str:
+    """Caminho do preview impresso pelo deploy (único por execução, #240)."""
+    for linha in saida.splitlines():
+        if "preview:" in linha:
+            return linha.split("preview:")[1].split("(")[0].strip()
+    raise AssertionError(f"o deploy não imprimiu o caminho do preview:\n{saida}")
 
 
 def _head(env: dict[str, str], qual: str = "mini") -> str:
@@ -376,6 +385,34 @@ def test_rc_fiel_esperado_para_o_alvo_nao_derruba_e_inesperado_derruba(amb):
     assert _run(amb, "deploy", "--apply").returncode == 1
 
 
+def test_preview_default_e_unico_por_execucao_e_fora_da_arvore(amb):
+    """#240: caminho FIXO em /tmp falso-vermelha sob execuções paralelas (um reescreve
+    e apaga o arquivo do outro). O default tem de ser único por execução e fora da
+    árvore do mini — asserção estática no script + duas execuções seguidas."""
+    script = (REPO / "remote" / "deploy_mini.sh").read_text()
+    linha = next(l for l in script.splitlines() if l.startswith("REQ_PREVIEW="))
+    assert 'TTS_MINI_PREVIEW:-/tmp/deploy-mini-requirements-preview-' in linha, linha
+    assert "$$" in linha, f"default sem unicidade por execução: {linha}"
+
+    p1 = _preview_do_output(_run(amb, "deploy").stdout)
+    p2 = _preview_do_output(_run(amb, "deploy").stdout)
+    assert p1 != p2, "duas execuções usaram o MESMO arquivo de preview"
+    assert p1.startswith("/tmp/") and not p1.startswith(str(Path(amb["TTS_MINI_DIR"])))
+
+
+def test_dois_deploys_em_paralelo_nao_disputam_o_preview(amb):
+    """Reprodução do #240: duas rodadas simultâneas com o mesmo ambiente. Com caminho
+    fixo, uma apaga o arquivo da outra (FileNotFoundError / conteúdo trocado)."""
+    procs = [subprocess.Popen([ZSH, "-f", str(SCRIPT), "deploy"], env=amb,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+             for _ in range(2)]
+    saidas = [p.communicate()[0] for p in procs]
+    rcs = [p.returncode for p in procs]
+    assert rcs == [0, 0], f"uma das rodadas paralelas falhou: {rcs}\n{saidas}"
+    caminhos = [_preview_do_output(s) for s in saidas]
+    assert len(set(caminhos)) == 2, f"as duas rodadas compartilharam o preview: {caminhos}"
+
+
 # -------------------------------------------------------------------- deploy
 
 def test_deploy_dry_run_nao_toca_em_nada(amb):
@@ -441,8 +478,9 @@ def test_deploy_mostra_o_delta_de_deps_do_rev_alvo_e_instala(amb):
     assert "Would install websockets-17.1" in r.stdout
     assert "nada a instalar" not in r.stdout
     # o arquivo de preview é o do REV ALVO (não o do mini, que ainda é o antigo) e
-    # fica FORA da árvore do mini: o dry-run não pode sujar a produção (F1)
-    preview = Path("/tmp/deploy-mini-requirements-preview")
+    # fica FORA da árvore do mini: o dry-run não pode sujar a produção (F1). O
+    # caminho é único por execução (#240), então vem do próprio output.
+    preview = Path(_preview_do_output(r.stdout))
     alvo = _git("show", "HEAD:requirements.txt", cwd=Path(amb["TTS_MINI_REPO"]), env=amb)
     assert preview.read_text().strip() == alvo.strip() == "fastapi\nwebsockets"
     assert not (Path(amb["TTS_MINI_DIR"]) / ".deploy-mini-requirements-preview").exists(), \

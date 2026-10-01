@@ -81,7 +81,7 @@ s = s.replace("tem_rota() { git -C \"$LOCAL_REPO\" show \"${1}:app.py\" 2>/dev/n
 p.write_text(s)' \
   tests/test_deploy_mini_sh.py::test_smoke_nao_exige_rota_ausente_no_rev_alvo
 
+# contra o BACKUP (e não contra o HEAD): o script pode ter trabalho não commitado
+if cmp -s "$S" "$BAK"; then print -r -- "script restaurado byte a byte (igual ao backup)"
+else print -r -- "[ATENÇÃO] o script ficou DIFERENTE do backup — restaure antes de confiar na suíte"; fi
 rm -f "$BAK"
-if git diff --quiet -- "$S"; then print -r -- "árvore do script restaurada (byte a byte)"
-else print -r -- "[ATENÇÃO] o script ficou DIFERENTE do backup — restaure antes de confiar na suíte"
-fi

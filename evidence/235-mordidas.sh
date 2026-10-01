@@ -59,7 +59,7 @@ assert n != s, "patch 3 não casou"
 p.write_text(n)' \
   tests/test_deploy_mini_sh.py::test_rc_fiel_esperado_para_o_alvo_nao_derruba_e_inesperado_derruba
 
+# contra o BACKUP (e não contra o HEAD): o script pode ter trabalho não commitado
+if cmp -s "$S" "$BAK"; then print -r -- "script restaurado byte a byte (igual ao backup)"
+else print -r -- "[ATENÇÃO] o script ficou DIFERENTE do backup — restaure antes de confiar na suíte"; fi
 rm -f "$BAK"
-if git diff --quiet -- "$S"; then print -r -- "árvore do script restaurada (byte a byte)"
-else print -r -- "[ATENÇÃO] o script ficou DIFERENTE do backup — restaure antes de confiar na suíte"
-fi

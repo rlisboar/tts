@@ -56,7 +56,9 @@ TTS_TIMEOUT="${TTS_MINI_TTS_TIMEOUT:-120}"        # teto do job de síntese real
 ESTADO=".deploy-mini-estado"                      # no repo do mini (untracked; só o --apply escreve)
 # O preview de deps vai para o /tmp DO MINI, não para a árvore do repo: sem isso o
 # dry-run sujava a árvore de produção (F1 do gate #232 — o script promete "nada muda").
-REQ_PREVIEW="${TTS_MINI_PREVIEW:-/tmp/deploy-mini-requirements-preview}"
+# E o nome leva $$: com caminho FIXO, dois deploys/suítes ao mesmo tempo reescrevem e
+# apagam o MESMO arquivo e um lê o do outro (falso vermelho intermitente — #240).
+REQ_PREVIEW="${TTS_MINI_PREVIEW:-/tmp/deploy-mini-requirements-preview-$$}"
 MODULOS=(app.py common.py backends.py tts_worker.py live_pipeline.py live_turns.py dsh_client.py)
 ARQ_PARIDADE=(app.py static/index.html)
 
@@ -377,6 +379,7 @@ deploy() {
   if [ "$DEPS" = 1 ]; then
     deps="$(deps_preview "$ALVO_SHA")"
     print -r -- "  deps: pip install -r requirements.txt (do rev alvo)"
+    print -r -- "    preview: $(preview_caminho)  (fora da árvore do mini)"
     if [ -n "$deps" ]; then print -r -- "$deps" | sed 's/^/    /'
     else print -r -- "    nada a instalar (o venv já satisfaz o requirements)"; fi
   else
@@ -384,6 +387,8 @@ deploy() {
   fi
   if [ "$APPLY" = 0 ]; then
     print -r -- "  (dry-run: rode com --apply para push + backup + switch + deps + restart + smoke)"
+    # o arquivo fica (o caminho sai no output): é o que prova que o preview usou o
+    # requirements DO REV ALVO, não o do mini. O --apply limpa no fim.
     return 0
   fi
 
