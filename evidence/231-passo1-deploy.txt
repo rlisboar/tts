@@ -39,3 +39,12 @@ RC=0
     status do launchd, index servido == blob do rev alvo.
 --- 2a rodada com o smoke corrigido (rc=0, 14 checagens [ok]): evidence/231-passo1-2arodada.txt
 --- smoke READ-ONLY contra o alvo atual (rc=0, sem restart, sem pip): evidence/235-smoke-read-only.txt
+
+--- NOTA SOBRE O RC DESTA RODADA: **rc=1, e NÃO por falha da subida**.
+    Dois dos três pontos eram ESPERADOS para este alvo: o corte 3e663a6 é de 24/09,
+    anterior ao #190 (/api/build) e ao épico Live (/api/live/ws) — as rotas não existem
+    nele. O terceiro era lacuna do PRÓPRIO smoke (paridade do index comparando byte a
+    byte contra um HTML com nonce do CSP por resposta), corrigida depois.
+    A subida em si foi confirmada por fora (PM): index normalizado == blob do alvo, CSP
+    ativo, TTS real nos dois caminhos com peça, 401 sem chave e 200 com a chave do mini.
+    A 2a rodada, já com o smoke corrigido, deu rc=0: evidence/231-passo1-2arodada.txt.
