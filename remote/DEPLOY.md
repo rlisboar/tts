@@ -5,8 +5,10 @@
 > dono — em 2026-09-24 uma varredura inteira não achou a máquina (seção 2). Tudo que
 > depende de confirmação está marcado com `❓`.
 >
-> Última atualização: 2026-09-29 (infra-remote, tasks #14, #27 e #35 — recon novo em §2,
-> mesma conclusão: host segue ❓). Como atualizar: assim que o dono confirmar
+> A **produção** do app (Mac mini / `tts.the-dudes.com`) é outro alvo e está na §6 —
+> ela existe, é usada e tem deploy próprio (`remote/deploy_mini.sh`).
+>
+> Última atualização: 2026-09-30 (infra-remote, task #231 — §6 nova: produção no Mac mini). Como atualizar: assim que o dono confirmar
 > host/serviço, rode `remote/deploy.sh recon` (§4) e troque os `❓` por valores reais;
 > mantenha a data no topo.
 
@@ -269,7 +271,68 @@ Pendente de confirmação (item 1). Quando o dono responder, `recon` preenche:
 - Túnel do app (não confundir): o destino é **sempre o IP de LAN da máquina do TTS**,
   nunca `127.0.0.1` (loopback na VPS dispensa chave).
 
-## 6. Arquivos relacionados
+## 6. Produção no Mac mini (tts.the-dudes.com)
 
-`remote/deploy.sh` · `remote/auth_policy.py` · `remote/omni_server.py` · `remote/voxtral_server.py` · `README.md` §"servidores `remote/`"
+Alvo **diferente** dos servidores RTX: a produção do app é um **checkout git no Mac mini**
+(`192.168.15.34`, usuário `lisboa`, `~/Documents/tts-rod`), servido pelo agente launchd
+`studio.tts.server` (que é um `ssh lisboa@127.0.0.1 start-server.sh` com `KeepAlive`; o
+script faz `pkill` do `run.sh`/`uvicorn` e re-executa) e exposto ao público pelo
+Cloudflare Tunnel do próprio mini. **Não há auto-pull**: quem sobe código é o
+`remote/deploy_mini.sh` — sem ele a produção congela no commit do dia em que foi
+instalada (foi o achado #231: 66 commits / 8 dias, com o app em uso).
+
+```
+./remote/deploy_mini.sh recon                 # read-only: host, git, serviço, deps, uso
+./remote/deploy_mini.sh compare               # rev alvo × o que está no ar
+./remote/deploy_mini.sh smoke                 # no ar: /health, auth, /api/build, WS, index, TTS real
+TTS_MINI_REV=<corte> ./remote/deploy_mini.sh deploy [--apply]   # push → backup → switch → deps → restart → smoke
+./remote/deploy_mini.sh rollback [--apply]    # volta o SHA salvo pelo último deploy
+```
+
+Sem `--apply` nada muda (nem no `origin`). `--sem-push` pula a publicação, `--sem-deps`
+pula o `pip install` e `--sem-tts` pula a síntese real. Config por env: `TTS_MINI_HOST`,
+`TTS_MINI_USER`, `TTS_MINI_DIR`, `TTS_MINI_LABEL`, `TTS_MINI_PORT`, `TTS_PUBLIC_HOST`,
+`TTS_MINI_REV` (rev alvo; padrão `HEAD`).
+
+O alvo é um **rev**, não necessariamente o HEAD: `TTS_MINI_REV=3e663a6` sobe um corte
+específico. O mini fica numa branch `prod-<sha>` (não detached, para o próximo deploy não
+se perder) e o `rollback` repete o mesmo passo com o sha que o deploy salvou.
+
+O que ele garante:
+
+- o que sobe é o **commit** (HEAD ou o corte pedido), não a árvore viva — WIP não
+  commitado fica de fora (o script avisa o que ficou);
+- o mini tem que estar **limpo**, e o alvo tem que existir no mini depois do fetch —
+  senão para **antes** de reiniciar (restart derruba a produção por alguns segundos);
+- deps são conferidas contra o `requirements.txt` **do rev alvo** (o do mini, antes do
+  fetch, ainda é o antigo — foi assim que um preview mentiu "nada a instalar" enquanto
+  faltava o `websockets`, sem o qual o `/api/live/ws` responde 500 no navegador);
+- `smoke` confere `GET /api/voices` **com a chave do mini** (LAN e público), o `codigo`
+  do `/api/build` contra o hash dos módulos do rev alvo — pega "código novo no disco,
+  processo velho" (a feature inerte do #190) —, `boot_ms` do restart e um
+  **`POST /api/tts` real** até a peça 0 sair com bytes;
+- `deploy` grava `.deploy-mini-estado` (sha + data) e um `.deploy-mini-freeze-*` no mini
+  antes de mexer — é o que o `rollback` usa. Deps **não** voltam sozinhas no rollback
+  (o freeze fica lá para um `pip install -r` manual, se precisar).
+
+### Plano em dois passos (recomendação do PM, 2026-09-30)
+
+Produção é usada e não assistida: não subir a árvore em movimento de uma vez.
+
+1. **Corte `3e663a6`** (24/09 23:45, último commit antes do épico Live) — só o
+   endurecimento, já gateado. **Código só, `--sem-deps`**: o delta de requirements no
+   intervalo é `httpx2`/`httpcore2`/`truststore` (teste), `importlib_resources` e o
+   `silero-vad==6.2.1`, que é **downgrade** do 6.2.2 que já roda em produção.
+   `TTS_MINI_REV=3e663a6 ./remote/deploy_mini.sh deploy --apply --sem-deps`
+2. **HEAD + `websockets` no venv** (obrigatório para o `/api/live/ws`; sem ele o
+   navegador toma 500), quando a fila do Live fechar. Aí sim `pip install` e smoke de
+   VAD (por causa do downgrade do silero).
+
+Medido em 2026-09-30 (dry-run, nada aplicado): produção em `cb36edb`; o corte exige
+publicar 18 commits, o HEAD exige 64; delta de deps do HEAD = `httpcore2 httpx2
+importlib_resources silero-vad-6.2.1 truststore websockets`.
+
+## 7. Arquivos relacionados
+
+`remote/deploy.sh` · `remote/deploy_mini.sh` · `remote/auth_policy.py` · `remote/omni_server.py` · `remote/voxtral_server.py` · `README.md` §"servidores `remote/`"
 · `tunnel.sh` (Mac↔VPS) · `cloudflare.sh` (conector no Mac mini).
