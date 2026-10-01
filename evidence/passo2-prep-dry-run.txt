@@ -1,0 +1,18 @@
+=== PREP PASSO 2 — dry-run read-only com alvo = HEAD (d252693) — 2026-10-01 03:07:26 ===
+# nada muda no mini; é o número que o GO vai executar
+
+== deploy (rev alvo d25269369284… (HEAD))
+  [aviso] árvore local com WIP (não commitado NÃO vai para produção):
+     M LIVE.md
+     M app.py
+     M evidence/214-midrun-edit.py
+     M evidence/215-208-residual.py
+    A  evidence/221-contadores-perdedor.txt
+  push: nada a publicar (origin já contém o rev alvo)
+== mini
+  deps: pip install -r requirements.txt (do rev alvo)
+    preview: /tmp/deploy-mini-requirements-preview-91758  (fora da árvore do mini)
+    Would install httpcore2-2.13.1 httpx2-2.13.1 importlib_resources-7.1.0 silero-vad-6.2.1 truststore-0.10.4 websockets-17.1
+  (dry-run: rode com --apply para push + backup + switch + deps + restart + smoke)
+
+rc=0
