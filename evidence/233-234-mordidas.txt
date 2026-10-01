@@ -1,25 +1,31 @@
 == F1 — preview de deps na árvore do mini
    teste: tests/test_deploy_mini_sh.py::test_deploy_mostra_o_delta_de_deps_do_rev_alvo_e_instala
-   resultado: 1 failed in 1.43s
+   resultado: 1 failed in 5.29s
+   (nada restaurado? diff limpo — árvore já era igual)
    [ok] mordeu (falhou)
 == F2 — TTS_MINI_REV ignorado (alvo fixo em HEAD)
    teste: tests/test_deploy_mini_sh.py::test_alvo_por_rev_sobe_o_corte_e_nao_o_head
-   resultado: 1 failed in 2.33s
+   resultado: 1 failed in 6.56s
+   (nada restaurado? diff limpo — árvore já era igual)
    [ok] mordeu (falhou)
 == F3 — mini termina DETACHED
    teste: tests/test_deploy_mini_sh.py::test_mini_termina_em_branch_prod_e_nao_detached
-   resultado: 1 failed in 2.33s
+   resultado: 1 failed in 4.60s
+   (nada restaurado? diff limpo — árvore já era igual)
    [ok] mordeu (falhou)
 == F4 — compare sem merge-base (não-descendente passa batido)
    teste: tests/test_deploy_mini_sh.py::test_compare_avisa_alvo_nao_descendente_do_que_esta_no_ar
-   resultado: 1 failed in 2.63s
+   resultado: 1 failed in 8.05s
+   (nada restaurado? diff limpo — árvore já era igual)
    [ok] mordeu (falhou)
 == SMOKE — paridade do index sem tirar o nonce do CSP
    teste: tests/test_deploy_mini_sh.py::test_deploy_apply_publica_puxa_instala_reinicia_e_smoke
-   resultado: 1 failed in 2.60s
+   resultado: 1 failed in 4.78s
+   (nada restaurado? diff limpo — árvore já era igual)
    [ok] mordeu (falhou)
 == SMOKE — rota ausente no rev alvo tratada como falha
    teste: tests/test_deploy_mini_sh.py::test_smoke_nao_exige_rota_ausente_no_rev_alvo
-   resultado: 1 failed in 1.51s
+   resultado: 1 failed in 2.61s
+   (nada restaurado? diff limpo — árvore já era igual)
    [ok] mordeu (falhou)
-fim. confira: git diff --stat remote/deploy_mini.sh
+árvore do script restaurada (byte a byte)

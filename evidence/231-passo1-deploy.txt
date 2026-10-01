@@ -32,3 +32,10 @@
   [FALHA] público index.html (a6ea55968509…) ≠ rev alvo (da1a3c4e67c7…)
   [ok] público POST /api/tts real: job 36d7a6b1c6 em ~1s, peça 0 com 95438 bytes
 RC=0
+
+--- ESTADO FINAL (o arquivo morria no smoke): evidence/231-passo1-estado-final.txt
+    rev no ar 3e663a60ff3a…, branch prod-3e663a60ff3a (nao detached), arvore limpa,
+    .deploy-mini-estado = sha=cb36edbe4081… (alvo do rollback), uptime novo do servico,
+    status do launchd, index servido == blob do rev alvo.
+--- 2a rodada com o smoke corrigido (rc=0, 14 checagens [ok]): evidence/231-passo1-2arodada.txt
+--- smoke READ-ONLY contra o alvo atual (rc=0, sem restart, sem pip): evidence/235-smoke-read-only.txt

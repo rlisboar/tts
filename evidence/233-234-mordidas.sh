@@ -82,4 +82,6 @@ p.write_text(s)' \
   tests/test_deploy_mini_sh.py::test_smoke_nao_exige_rota_ausente_no_rev_alvo
 
 rm -f "$BAK"
-print -r -- "fim. confira: git diff --stat remote/deploy_mini.sh"
+if git diff --quiet -- "$S"; then print -r -- "árvore do script restaurada (byte a byte)"
+else print -r -- "[ATENÇÃO] o script ficou DIFERENTE do backup — restaure antes de confiar na suíte"
+fi

@@ -360,6 +360,22 @@ def test_smoke_falha_quando_o_job_de_sintese_erra(amb):
     assert "terminou em error" in r.stdout
 
 
+def test_rc_fiel_esperado_para_o_alvo_nao_derruba_e_inesperado_derruba(amb):
+    """Item 3 do #235: ponto ESPERADO para o rev alvo (rota que o corte não tem) sai
+    [ok] e NÃO derruba o deploy; ponto INESPERADO (instância viva com outro código)
+    derruba. O rc do script é o sinal de aceitação da subida — tem de ser fiel."""
+    base = _sha(amb, "HEAD~2")                      # v1: sem as rotas
+    amb["TTS_MINI_REV"] = base
+    r = _run(amb, "smoke")
+    assert r.returncode == 0, _saida(r)             # esperado-para-o-alvo: passa
+    assert "FALHA" not in r.stdout
+
+    amb.pop("TTS_MINI_REV")
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    amb["T_CURL_BUILD_CODIGO"] = "deadbeef"         # inesperado: carregado ≠ alvo
+    assert _run(amb, "deploy", "--apply").returncode == 1
+
+
 # -------------------------------------------------------------------- deploy
 
 def test_deploy_dry_run_nao_toca_em_nada(amb):
