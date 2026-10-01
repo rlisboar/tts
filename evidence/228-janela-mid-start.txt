@@ -1,0 +1,56 @@
+### #228 — `close()` DENTRO do `_LiveWorker.start()` deixa filho órfão (residual do #207)
+2026-09-29 ~23:4x local · repo tts-rod · achado do review do #207 (evidence/207-residual-janela.py, commit c348e2a)
+
+A janela do #207 era a CRIAÇÃO do worker (`close()` dentro do `__init__`, quando
+`self._worker` ainda não existe — o `if self._saiu` seguinte acha o worker pelo
+atributo e fecha). A janela deste ticket é a seguinte e mais larga: `close()` DEPOIS
+de `self._worker = w` e DURANTE `w.start()` (abertura do log, montagem do `cfg`,
+`Popen`, espera do `ready`).
+
+ORDEM QUE DEIXA ÓRFÃO (medida, sem o fix): o `close()` vê `self._worker`, chama
+`fecha()` — que não tem processo para matar, o filho ainda não existe — e zera a
+referência; o `start()` termina de subir o filho; o `if self._saiu` do `start()`
+chama `close()` de novo, mas `self._worker` já é `None`, então o filho que acabou de
+nascer não é fechado por ninguém. Filho vivo com o modelo na RAM — mesma classe do
+#207 (no WS: uma thread leitora por conexão curta).
+
+── PROVA 1 — probe do #207 (o achado), SEM e COM o fix
+    $ ./.venv-mlx/bin/python evidence/207-residual-janela.py     # saída crua: 228-probe-{sem,com}-fix.txt
+
+SEM fix (HEAD, `git checkout -- live_pipeline.py`) — EXIT=0 (furo):
+    · close ANTES do spawn: start() 131 ms · _saiu=True · pipe._worker=None · filho vivo=True · ativo=True
+      ✘ ÓRFÃO: o filho nasceu depois do `close()` e ninguém o fechou
+    · close DEPOIS do spawn: filho vivo=False · ativo=False   ✔
+    ✘ FURO: a janela entre `self._worker = w` e o Popen deixa o filho órfão
+
+COM fix (ramo novo em `_worker_sobe`, `live_pipeline.py:279-290`) — EXIT=1 (coberto):
+    · close ANTES do spawn: start() 130 ms · _saiu=True · pipe._worker=None · filho vivo=False · ativo=False ✔
+    · close DEPOIS do spawn: filho vivo=False · ativo=False ✔
+    ✔ coberto nas duas janelas
+
+── PROVA 2 — teste novo falha SEM o fix (padrão dos 5 testes do #207)
+    $ pytest tests/test_live_dsh.py::test_close_dentro_do_start_do_worker_nao_deixa_filho_orfao -q
+SEM fix: 1 failed — `assert True is False` em `criados[0].vivo is False`
+    (saída crua: 228-teste-sem-fix.txt)
+COM fix: passa (228-teste-com-fix.txt: tests/test_live_dsh.py 24 passed in 2.63s)
+
+── FIX (3 linhas, ramo de sucesso do `_worker_sobe`, ao lado do nome local `w` do #207)
+    if self._saiu:      # o `close()` caiu DURANTE o `start()` do worker
+        w.fecha()       # o filho nasceu depois do `close()`: fecha AQUI
+        if self._worker is w:
+            self._worker = None
+        return False
+
+`fecha()` é idempotente e best-effort (docstring do próprio método), e o guarda
+`self._worker is w` evita zerar a referência de um worker criado no meio por outro
+caminho (`_tts_live`). O `if self._saiu: self.close()` do `start()` continua no
+lugar; agora ele só não é mais a ÚNICA rede — a referência já foi solta pelo close
+que caiu no meio.
+
+LIMITE: só `live_pipeline.py` + teste; `dsh_client.py` intocado (o retry do
+`_garantir` segue legítimo, decisão do #207).
+
+── SUÍTE
+    $ ./.venv-mlx/bin/python -m pyflakes live_pipeline.py tests/test_live_dsh.py   → EXIT=0
+    $ ./.venv-mlx/bin/python -m pytest tests/ -q                                  → 622 passed, 3 skipped
+    $ TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest tests/ -m worker_real -q → (worker REAL, filho do modelo)

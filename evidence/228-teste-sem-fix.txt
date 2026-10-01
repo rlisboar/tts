@@ -1,0 +1,6 @@
+tests/test_live_dsh.py:519: AssertionError
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+=========================== short test summary info ============================
+FAILED tests/test_live_dsh.py::test_close_dentro_do_start_do_worker_nao_deixa_filho_orfao - assert True is False
+ +  where True = <test_live_dsh.test_close_dentro_do_start_do_worker_nao_deixa_filho_orfao.<locals>.WorkerFalso object at 0x106360530>.vivo
+1 failed in 0.19s

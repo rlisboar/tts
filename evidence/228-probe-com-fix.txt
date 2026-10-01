@@ -1,0 +1,5 @@
+  · close ANTES do spawn: start() 130 ms · _saiu=True · pipe._worker=None · filho vivo=False · ativo=False
+    ✔ o filho foi fechado junto com a sessão
+  · close DEPOIS do spawn: start() 127 ms · _saiu=True · pipe._worker=None · filho vivo=False · ativo=False
+    ✔ o filho foi fechado junto com a sessão
+  ✔ coberto nas duas janelas

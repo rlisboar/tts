@@ -268,7 +268,6 @@ class LivePipeline:
         self._worker = w
         try:
             w.start()
-            return True
         except Exception as exc:            # noqa: BLE001 — pre-warm falho não derruba
             self._worker_indisponivel = True
             self._worker_motivo = f"{type(exc).__name__}: {exc}"
@@ -278,6 +277,17 @@ class LivePipeline:
             if self._worker is w:           # close() já zerou: não ressuscitar
                 self._worker = None
             return False
+        if self._saiu:
+            # #228: o `close()` caiu DURANTE o `start()` do worker. Ele viu
+            # `self._worker`, chamou `fecha()` — que não tinha processo nenhum para
+            # matar, o filho ainda não existia — e soltou a referência. O filho que
+            # acabou de nascer não é de ninguém: fecha AQUI, que é imediato e não
+            # depende de um segundo `close()` achar a referência (ele já não acha).
+            w.fecha()
+            if self._worker is w:
+                self._worker = None
+            return False
+        return True
 
     def _tts_live(self, texto: str, omni: dict):
         """TTS do turno: worker persistente; in-process quando ele não serve.

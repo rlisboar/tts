@@ -1,0 +1,5 @@
+  · close ANTES do spawn: start() 131 ms · _saiu=True · pipe._worker=None · filho vivo=True · ativo=True
+    ✘ ÓRFÃO: o filho nasceu depois do `close()` e ninguém o fechou
+  · close DEPOIS do spawn: start() 141 ms · _saiu=True · pipe._worker=None · filho vivo=False · ativo=False
+    ✔ o filho foi fechado junto com a sessão
+  ✘ FURO: a janela entre `self._worker = w` e o Popen deixa o filho órfão

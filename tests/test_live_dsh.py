@@ -485,6 +485,41 @@ def test_close_na_criacao_do_worker_nao_deixa_filho_orfao(dsh_limpo, monkeypatch
     assert pipe._worker is None
 
 
+def test_close_dentro_do_start_do_worker_nao_deixa_filho_orfao(dsh_limpo, monkeypatch):
+    """#228 (residual do #207): a janela seguinte, e mais larga — o `close()` cai
+    DEPOIS de `self._worker = w` e DURANTE o `w.start()`.
+
+    Nessa ordem o `close()` vê a referência, chama `fecha()` sem nada para matar (o
+    filho ainda não existe) e solta a referência; o filho nasce depois e o
+    `if self._saiu` do `start()` já não acha ninguém para fechar."""
+    monkeypatch.setenv("TTS_CHAT_BACKEND", "openai")   # isola do dsh
+    monkeypatch.setattr(lp, "_worker_habilitado", lambda: True)
+    criados = []
+
+    class WorkerFalso:
+        def __init__(self, voice_id=None):
+            self.fechado = False
+            self.vivo = False
+            criados.append(self)
+
+        def start(self):
+            pipe.close()                 # já passou a atribuição; o filho não existe
+            self.vivo = True             # o filho "nasce" DEPOIS do close()
+
+        def fecha(self):
+            self.fechado = True
+            self.vivo = False
+
+    monkeypatch.setattr(lp, "_LiveWorker", WorkerFalso)
+    pipe = app._live_pipe_novo(_sessao("worker-mid-start"))
+    pipe._prewarm = lambda **kw: None
+    pipe.start()
+    assert len(criados) == 1, "o worker tinha de ter sido criado"
+    assert criados[0].fechado is True, "o filho nasceu depois do close() e ficou órfão"
+    assert criados[0].vivo is False
+    assert pipe._worker is None
+
+
 def test_backend_do_live_e_do_live_a_conversa_segue_no_global(monkeypatch):
     """#176: `chat_backend_live=dsh` + `chat_backend=openai` — o Live usa o harness e
     a Conversa continua no endpoint do dono (era o que faltava para a recomendação do

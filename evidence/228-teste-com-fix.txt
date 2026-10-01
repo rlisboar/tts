@@ -1,0 +1,3 @@
+........................                                                 [100%]
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+24 passed in 2.63s
