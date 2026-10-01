@@ -1,0 +1,34 @@
+== deploy (rev alvo 3e663a60ff3a… (3e663a6))
+  [aviso] árvore local com WIP (não commitado NÃO vai para produção):
+     M app.py
+     M evidence/214-midrun-edit.py
+    A  evidence/228-janela-mid-start.txt
+    A  evidence/228-probe-com-fix.txt
+    A  evidence/228-probe-sem-fix.txt
+  push: nada a publicar (origin já contém o rev alvo)
+== mini
+  deps: pulado (--sem-deps)
+  backup do estado atual:
+    (mini já no rev alvo — o alvo de rollback anterior é preservado)
+    sha=cb36edbe4081d52421a4969690e2cf41349ac672
+    data=2026-10-01 01:42:19
+  fetch + switch para o rev alvo:
+    agora: 3e663a6 chore: ignora .grok/ (config local do runner de agentes)
+  reiniciando studio.tts.server…
+    kickstart-ok
+  esperando 6s o run.sh subir a porta…
+== smoke (rev alvo 3e663a60ff3a…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN com a chave do mini → 200
+  [ok] LAN /api/build ausente NESTE rev (anterior ao #190) — esperado
+  [ok] LAN /api/live/ws ausente NESTE rev (anterior ao épico Live) — esperado
+  [ok] LAN index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] LAN POST /api/tts real: job 32443ebf78 em ~3s, peça 0 com 95438 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público com a chave do mini → 200
+  [ok] público /api/build ausente NESTE rev (anterior ao #190) — esperado
+  [ok] público /api/live/ws ausente NESTE rev (anterior ao épico Live) — esperado
+  [ok] público index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] público POST /api/tts real: job dba7f7b8ad em ~1s, peça 0 com 95438 bytes

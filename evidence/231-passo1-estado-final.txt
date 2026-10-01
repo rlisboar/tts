@@ -1,0 +1,13 @@
+=== ESTADO FINAL DA PRODUCAO — passo 1, 2026-10-01 02:02:10 -03 ===
+rev no ar:      3e663a60ff3a2a818eda32261da7a0056defd666
+rev curto:      3e663a6  (corte do passo 1: endurecimento de 24/09, anterior ao épico Live)
+branch:         prod-3e663a60ff3a   <- branch, NAO detached
+arvore:         0 rastreado(s) modificado(s)
+rollback:       sha=cb36edbe4081d52421a4969690e2cf41349ac672 data=2026-10-01 01:42:19    <- alvo do rollback (producao anterior)
+uptime servico: Thu Oct  1 02:01:15 2026     00:57
+launchd:        69251	255	studio.tts.server
+porta 7860:     pid 69268 escutando
+publico:        200 no /health (LAN: 200)
+index servido:  da1a3c4e67c7 (normalizado) x da1a3c4e67c7 (blob do alvo)
+venv:           intocado (passo 1 foi --sem-deps)
+--- smoke da rodada: evidence/231-passo1-2arodada.txt (rc=0, 14 checagens [ok])

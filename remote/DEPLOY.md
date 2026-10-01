@@ -320,6 +320,15 @@ O que ele garante:
   estado (senão o rollback viraria no-op); deps **não** voltam sozinhas no rollback
   (o freeze fica lá para um `pip install -r` manual, se precisar).
 
+### Atenção em produção (chave legada)
+
+A produção do mini roda hoje com uma chave **sem papel** em `.apikeys.json`. Pela regra
+de compatibilidade do `_admin_is_allowed`, chave sem papel **continua admin enquanto
+`TTS_ROD_ADMIN_KEY` não estiver setada**. Se alguém setar essa variável no mini (plist do
+`studio.tts.server` / `run.sh`), a chave atual **perde o admin** e a UI quebra nos campos
+admin (`/api/settings`, seletor de modelo). Antes de setar: dar `role: "admin"` à chave
+na UI (Acesso) ou criar a chave admin e configurá-la.
+
 ### Plano em dois passos (recomendação do PM, 2026-09-30)
 
 Produção é usada e não assistida: não subir a árvore em movimento de uma vez.
