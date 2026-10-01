@@ -592,6 +592,16 @@ desde o #179). Aviso para quem for reproduzir: a matriz foi medida com a máquin
 carregada e o harness é sensível a carga — o número robusto é o do eco (margem
 grande), não a diferença de 34 para 20 no baseline.
 
+#### Cuidado ao comparar ECO entre sessões: fixe `eco_so_tocando`
+
+A célula de eco (`MIC_FILE=1`) é sensível a C: com `TTS_LIVE_ECO_SO_TOCANDO=1` por
+env, a MESMA célula deu **10/10** rodadas com barge e **18 `interrupted`** (1,8 por
+repetição); com o default (C=0) deu **3/10, 6/10 e 7/20** (6, 7 e 12 `interrupted` —
+0,6–0,7 por repetição, o patamar do A+B medido acima). Dois números de eco de sessões
+diferentes só são comparáveis se C estiver FIXO: ao reproduzir, exporte o env e diga
+qual valor usou no relatório — nunca "default" implícito. Medição do gate do #180:
+`evidence/180-recheck-eco*.txt`.
+
 Quem quiser o comportamento antigo tem os três envs (`=0` desliga A e B, `=1`
 liga C) — o A/B do harness depende disso.
 
