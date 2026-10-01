@@ -1,0 +1,17 @@
+=== REPRO DO RELATO (#240): duas rodadas da suíte do arquivo EM PARALELO — 2026-10-01 02:39:40 -03 ===
+# comando exato do relato, sem --basetemp nem isolamento:
+#   pytest tests/test_deploy_mini_sh.py -q  (duas vezes, em paralelo)
+# resultado: rc A=0  rc B=0
+# A: 31 passed in 49.43s
+# B: 31 passed in 49.43s
+
+# antes do fix (relato do speech-pipeline): 1 failed/28 passed intermitente, com o teste que falha MUDANDO
+# fix: commit 7cab566 — preview em caminho único por execução (/tmp/deploy-mini-requirements-preview-$$)
+# mordida: evidence/240-mordidas.txt (default fixo derruba o teste paralelo e o estático; preview na árvore derruba o dry-run)
+
+--- RE-RODADA depois do isolamento no harness (formato sugerido pelo PM) ---
+# fixture passa a exportar TTS_MINI_PREVIEW no tmp_path do pytest (isolado por teste);
+# só DOIS testes desligam o env de propósito: o do DEFAULT e o de execução PARALELA
+# (é o cenário de produção: dois deploys concorrentes no mesmo ambiente).
+# comando: pytest tests/test_deploy_mini_sh.py -q (duas vezes, em paralelo)
+# resultado: rc A=0 rc B=0 — 31 passed nas duas

@@ -131,8 +131,9 @@ def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
         TTS_MINI_ESPERA="0",
         TTS_MINI_REPO=str(tmp_path / "dev"),
         TTS_PUBLIC_HOST="tts.exemplo.test",
-        # sem TTS_MINI_PREVIEW de propósito: o teste de F1 prova o DEFAULT (/tmp do
-        # mini), não um override que mascararia a regressão para dentro da árvore
+        # preview isolado por teste (#240): o /tmp GLOBAL do script é estado
+        # compartilhado entre processos concorrentes — só UM teste o exercita
+        TTS_MINI_PREVIEW=str(tmp_path / "preview-requirements"),
     )
     (tmp_path / "gitconfig").write_text("[init]\n\tdefaultBranch = main\n")
 
@@ -394,6 +395,7 @@ def test_preview_default_e_unico_por_execucao_e_fora_da_arvore(amb):
     assert 'TTS_MINI_PREVIEW:-/tmp/deploy-mini-requirements-preview-' in linha, linha
     assert "$$" in linha, f"default sem unicidade por execução: {linha}"
 
+    amb.pop("TTS_MINI_PREVIEW")                     # só aqui o DEFAULT é exercitado
     p1 = _preview_do_output(_run(amb, "deploy").stdout)
     p2 = _preview_do_output(_run(amb, "deploy").stdout)
     assert p1 != p2, "duas execuções usaram o MESMO arquivo de preview"
@@ -403,6 +405,9 @@ def test_preview_default_e_unico_por_execucao_e_fora_da_arvore(amb):
 def test_dois_deploys_em_paralelo_nao_disputam_o_preview(amb):
     """Reprodução do #240: duas rodadas simultâneas com o mesmo ambiente. Com caminho
     fixo, uma apaga o arquivo da outra (FileNotFoundError / conteúdo trocado)."""
+    # sem override: os dois deploys usam o DEFAULT do script (único por execução) —
+    # é o cenário de produção (dois deploys concorrentes), não o do harness isolado
+    amb.pop("TTS_MINI_PREVIEW")
     procs = [subprocess.Popen([ZSH, "-f", str(SCRIPT), "deploy"], env=amb,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
              for _ in range(2)]
