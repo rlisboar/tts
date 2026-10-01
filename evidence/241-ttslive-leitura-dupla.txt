@@ -1,0 +1,49 @@
+### #241 — `_tts_live` lê `self._worker` DUAS vezes: `close()` no meio estoura AttributeError
+2026-10-01 ~03:1x local · repo tts-rod · achado do gate #229 (família #207/#228 — mesma classe: close() concorrente no meio do ciclo de vida do worker)
+
+CÓDIGO ANTES (live_pipeline.py, `_tts_live`):
+
+    if self._worker is None:
+        self._worker = _LiveWorker(voice_id=self.voice_id)   # atribuição
+    if self._worker.ativo:                                    # 2ª LEITURA
+
+`close()` na thread do WS entre a atribuição e a 2ª leitura zera a referência
+(`self._worker = None` no `close()`, linha 249) e a linha seguinte estoura
+`AttributeError: 'NoneType' object has no attribute 'ativo'` no MEIO do turno — em
+vez de o TTS cair para o in-process. Não deixa processo órfão (o filho nem chegou a
+subir; quem sobe é o `start()` do pre-warm, já coberto pelo #207/#228): a exceção é
+o dano.
+
+── PROVA 1 — probe do gate, SEM e COM o fix
+    $ ./.venv-mlx/bin/python evidence/229-probe-ttslive.py   # 0 = furo, 1 = coberto
+
+SEM fix (HEAD, `git checkout -- live_pipeline.py`) → EXIT=0, evidence/241-probe-sem-fix.txt:
+    ✘ FURO: AttributeError na 2ª leitura de `_worker` ('NoneType' object has no attribute 'ativo')
+COM fix → EXIT=1, evidence/241-probe-com-fix.txt:
+    ✔ sem furo: a 2ª leitura achou o worker
+
+── PROVA 2 — teste novo em tests/test_live_dsh.py (padrão dos 5 do #207)
+    test_tts_live_com_close_entre_as_duas_leituras_nao_estoura
+Força a ordem de FORA (o SETTER do atributo chama `close()` logo depois de guardar o
+valor: "atribuiu → close() → leu"), afirma que não há AttributeError, que o turno
+cai no in-process, que o worker criado no meio é FECHADO e que `_worker` volta a None.
+SEM fix: `1 failed — AttributeError: 'NoneType' object has no attribute 'ativo'`
+    (evidence/241-teste-sem-fix.txt, apontando live_pipeline.py:301)
+COM fix: `25 passed in 4.97s` na suíte do arquivo (evidence/241-teste-com-fix.txt)
+
+── FIX (nome local, mesmo padrão do `w` do #207/#228)
+    w = self._worker
+    if w is None:
+        w = self._worker = _LiveWorker(voice_id=self.voice_id)
+    if w.ativo: ...   # e `w.gerar(...)` / `w.fecha()` logo abaixo
+
+O turno anda com `w`; o `close()` que cai no meio pode zerar `self._worker` à vontade.
+Com o worker já fechado, `w.ativo` é False e o turno cai no in-process SEM marcar
+`_worker_indisponivel` (não inventa estado de fallback para uma sessão que está indo
+embora). O ramo `except` segue marcando a sessão quando o `gerar` falha.
+
+── SUÍTE
+    $ ./.venv-mlx/bin/python -m pyflakes live_pipeline.py tests/test_live_dsh.py   → EXIT=0
+    $ ./.venv-mlx/bin/python -m pytest tests/ -q                                  → ver /tmp/241-suite.log
+
+LIMITE: só `live_pipeline.py` + teste; `dsh_client.py` intocado.

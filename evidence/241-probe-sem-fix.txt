@@ -1,0 +1,3 @@
+  ✘ FURO: AttributeError na 2ª leitura de `_worker` ('NoneType' object has no attribute 'ativo')
+    fix de 1 linha: usar nome local — `w = self._worker = _LiveWorker(...)`; `if w.ativo:`
+EXIT_SEM_FIX=0

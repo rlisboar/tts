@@ -520,6 +520,57 @@ def test_close_dentro_do_start_do_worker_nao_deixa_filho_orfao(dsh_limpo, monkey
     assert pipe._worker is None
 
 
+def test_tts_live_com_close_entre_as_duas_leituras_nao_estoura(dsh_limpo, monkeypatch):
+    """#241 (família #207/#228): `_tts_live` lê `self._worker` DUAS vezes — a
+    atribuição e, na linha seguinte, `self._worker.ativo`. Um `close()` da thread
+    do WS entre as duas zerava a referência e o turno estourava
+    `AttributeError: 'NoneType' object has no attribute 'ativo'` no meio, em vez
+    de cair no in-process.
+
+    A corrida é forçada de fora: o SETTER do atributo chama `close()` logo DEPOIS
+    de guardar o valor — é exatamente a ordem "atribuiu → close() → leu"."""
+    monkeypatch.setenv("TTS_CHAT_BACKEND", "openai")   # isola do dsh
+    monkeypatch.setattr(lp, "_worker_habilitado", lambda: True)
+    monkeypatch.setattr(lp, "_tts_app", lambda texto, omni, voice_id=None: "in-process")
+    criados = []
+
+    class WorkerFalso:
+        def __init__(self, voice_id=None):
+            self._ativo = True
+            self.fechado = False
+            criados.append(self)
+
+        @property
+        def ativo(self):
+            return self._ativo
+
+        def fecha(self):
+            self.fechado = True
+            self._ativo = False
+
+        def gerar(self, texto, omni):
+            return "pelo-worker"
+
+    monkeypatch.setattr(lp, "_LiveWorker", WorkerFalso)
+    pipe = app._live_pipe_novo(_sessao("worker-leitura-dupla"))
+
+    def _get(self):
+        return self.__dict__.get("_worker")
+
+    def _set(self, v):
+        self.__dict__["_worker"] = v
+        if v is not None and self.__dict__.pop("_arme", False):
+            self.close()                 # cai entre a atribuição e a 2ª leitura
+
+    monkeypatch.setattr(type(pipe), "_worker", property(_get, _set), raising=False)
+    pipe.__dict__["_arme"] = True
+
+    assert pipe._tts_live("teste", {}) == "in-process"
+    assert len(criados) == 1, "o worker tinha de ter sido criado"
+    assert criados[0].fechado is True, "o worker criado no meio tem de ser fechado"
+    assert pipe._worker is None
+
+
 def test_backend_do_live_e_do_live_a_conversa_segue_no_global(monkeypatch):
     """#176: `chat_backend_live=dsh` + `chat_backend=openai` — o Live usa o harness e
     a Conversa continua no endpoint do dono (era o que faltava para a recomendação do

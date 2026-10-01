@@ -296,17 +296,22 @@ class LivePipeline:
         sessão e o chunk é regerado in-process — o usuário não fica sem áudio e os
         turnos seguintes nem tentam o worker (mesmo padrão do fallback do dsh)."""
         if not self._worker_indisponivel and _worker_habilitado():
-            if self._worker is None:
-                self._worker = _LiveWorker(voice_id=self.voice_id)
-            if self._worker.ativo:
+            # nome local (#241, família #207/#228): o `close()` da thread do WS
+            # pode cair entre a leitura e o uso e zerar `self._worker` — o turno
+            # anda com `w`, senão a 2ª leitura estoura `AttributeError` em None no
+            # meio do turno em vez de cair no in-process.
+            w = self._worker
+            if w is None:
+                w = self._worker = _LiveWorker(voice_id=self.voice_id)
+            if w.ativo:
                 try:
-                    return self._worker.gerar(texto, omni)
+                    return w.gerar(texto, omni)
                 except Exception as exc:    # noqa: BLE001
                     self._worker_indisponivel = True
                     self._worker_motivo = f"{type(exc).__name__}: {exc}"
                     print(f"[live] worker TTS caiu no turno ({self._worker_motivo})"
                           f" — in-process daqui em diante", flush=True)
-                    self._worker.fecha()
+                    w.fecha()
         return _tts_app(texto, omni, voice_id=self.voice_id)
 
     # -- entrada ------------------------------------------------------------

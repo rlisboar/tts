@@ -11,6 +11,7 @@ import threading
 import time
 
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 import app
 from test_api import (  # noqa: F401 — fixtures, não estão no conftest
@@ -87,8 +88,14 @@ def test_socket_ANTIGO_morrendo_nao_apaga_a_sessao_retomada(ws_client, live_limp
 def test_retomada_nao_rouba_a_entrada_da_sessao_antiga(ws_client, live_limpo,
                                                        pipeline_fake, engine_fake,
                                                        hist_limpo):
-    """Ordem inversa (a do autor): o NOVO fecha primeiro. O antigo continua dono da
-    própria entrada e volta a valer — nada de pop cruzado."""
+    """Ordem inversa (a do autor): o NOVO fecha primeiro. O antigo não pode levar a
+    entrada junto — nada de pop cruzado.
+
+    #222 MUDOU O CONTRATO AQUI: o antigo deixou de terminar "pelo próprio socket"
+    (ficava vivo e fora do registro, fora do sweep e da contagem do teto). Agora
+    quem o fecha é o SERVIDOR, no registro da nova, com motivo próprio
+    (`session_substituida`). O que segue igual: a entrada é da NOVA e o `pop` de
+    uma não derruba a outra."""
     with contextlib.ExitStack() as pilha:
         ws1 = pilha.enter_context(ws_client.websocket_connect("/api/live/ws"))
         _setup_ok(ws1)
@@ -98,20 +105,31 @@ def test_retomada_nao_rouba_a_entrada_da_sessao_antiga(ws_client, live_limpo,
         sid = sess_velha["id"]
         ws2 = pilha.enter_context(ws_client.websocket_connect("/api/live/ws"))
         _setup_ok(ws2, session_id=sid)
-        assert app._live_sessions[sid] is not sess_velha
+        sess_nova = app._live_sessions[sid]
+        assert sess_nova is not sess_velha
+        # #222: o antigo é fechado pelo servidor AGORA (o `visto` dele não importa
+        # mais: ele saiu do registro e o sweep por TTL não o alcança)
+        for _ in range(10):                        # o `prewarm` pode vir antes
+            aviso = ws1.receive_json()
+            if aviso.get("code"):
+                break
+        assert aviso["code"] == "session_substituida", aviso
+        with pytest.raises(WebSocketDisconnect):
+            ws1.receive_json()
+        assert app._live_sessions.get(sid) is sess_nova, \
+            "o fechamento do antigo levou a entrada da nova"
+        ws2.send_json({"type": "ping", "t": 9})
+        for _ in range(10):
+            m = ws2.receive_json()
+            if m.get("type") == "pong":
+                break
+        assert m == {"type": "pong", "t": 9}, f"a sessão nova morreu junto ({m})"
         ws2.close()
         time.sleep(0.4)
         # CONTRATO (documentado no #186): a entrada do `sid` é da sessão NOVA; quando
-        # ela morre, o registry esvazia mesmo com o socket ANTIGO vivo — o antigo
-        # termina pelo próprio socket (a TTL vale para a registrada). O que NÃO pode
-        # é o pop de uma derrubar a entrada da outra enquanto ela vive (teste acima).
+        # ela morre, o registry esvazia — e o antigo, já fechado pelo servidor, não
+        # ressuscita nem regrava nada.
         assert sid not in app._live_sessions, app._live_sessions
-        ws1.send_json({"type": "ping", "t": 9})
-        for _ in range(10):
-            m = ws1.receive_json()
-            if m.get("type") == "pong":
-                break
-        assert m == {"type": "pong", "t": 9}, "o socket antigo morreu junto (não devia)"
 
 
 # ---------------------------------------------------------------- #185 (P2)

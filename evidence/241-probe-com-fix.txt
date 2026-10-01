@@ -1,0 +1,2 @@
+  ✔ sem furo: a 2ª leitura achou o worker
+EXIT_COM_FIX=1

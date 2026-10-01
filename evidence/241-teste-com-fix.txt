@@ -1,0 +1,4 @@
+[live-dsh] [dsh stderr] FAKE_ACP PROMPT "oi"
+...........                                                [100%]
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+25 passed in 4.97s

@@ -6645,6 +6645,21 @@ def _live_engine(sess: dict) -> None:
                             "audio_bytes": 0, "buffer_bytes": len(sess["buffer"])})
 
 
+def _live_motivo_fechamento(sess: dict) -> tuple[str, str] | None:
+    """Por que a task de envio deve fechar o socket (None = a sessão segue).
+
+    A ordem importa: `substituida` vence `fechar` (o socket antigo sai pelo
+    motivo REAL — outra conexão assumiu o id — e não como "ocioso")."""
+    if sess["vencida"]:
+        return "session_ttl", f"sessão ociosa por {_LIVE_TTL_S}s"
+    if sess.get("substituida"):
+        return "session_substituida", ("outra conexão assumiu este session_id; "
+                                       "esta foi fechada pelo servidor")
+    if sess.get("fechar"):
+        return "session_ttl", f"sessão ociosa por {_LIVE_TTL_S}s"
+    return None
+
+
 async def _live_sender(sess: dict, ws) -> None:
     """Única task que escreve no WS (evita corrida de send entre turno e eventos)."""
     fila = sess["fila"]
@@ -6695,10 +6710,11 @@ async def _live_sender(sess: dict, ws) -> None:
                     if sess["audio_pendente"] == 0:
                         sess["falando"] = False
                         eng.set_speaking(False)
-        if sess["vencida"] or sess.get("fechar"):
+        motivo = _live_motivo_fechamento(sess)
+        if motivo is not None:
             try:
-                await ws.send_json({"type": "error", "code": "session_ttl",
-                                    "message": f"sessão ociosa por {_LIVE_TTL_S}s"})
+                await ws.send_json({"type": "error", "code": motivo[0],
+                                    "message": motivo[1]})
                 await ws.close(code=1000)
             except Exception:  # noqa: BLE001
                 pass
@@ -6916,7 +6932,8 @@ async def live_ws(ws: WebSocket):
         "history": list(cfg["history"]), "buffer": bytearray(),
         "resumo": (retomado or {}).get("resumo") or "",
         "truncado": False, "fila": queue.Queue(), "turno": 0,
-        "cancelado": threading.Event(), "vencida": False, "fechar": False,
+        "cancelado": threading.Event(), "vencida": False, "substituida": False,
+        "fechar": False,
         "turno_thread": None, "pipe": None, "engine": None,
         "dsh": None,                      # DSH-2: DshClient PRÓPRIO da sessão Live
         "falando": False, "audio_pendente": 0, "buffer_bytes_turno": 0,
@@ -6940,10 +6957,24 @@ async def live_ws(ws: WebSocket):
                  history=len(sess["history"]), criadas=len(_live_sessions))
     with _live_lock:
         # teto atômico com a inserção (ver comentário no topo do handler)
-        ocupado = (sid not in _live_sessions
-                   and len(_live_sessions) >= _LIVE_MAX_SESSIONS)
+        anterior = _live_sessions.get(sid)
+        ocupado = (anterior is None and len(_live_sessions) >= _LIVE_MAX_SESSIONS)
         if not ocupado:
+            if anterior is not None:
+                # #222: o id do cliente JÁ está vivo (reconexão que não fechou o
+                # socket antigo, ou dois clientes com o mesmo id). A entrada é
+                # sobrescrita e a sessão antiga continuaria VIVA e FORA do
+                # registro — fora do sweep (nunca vencida, só morria quando o
+                # cliente lembrasse de fechar) e fora da contagem do teto, que
+                # assim era contornável reusando o id. Política: quem nasce
+                # depois MANDA (mesma regra do registro de retomada) e a antiga
+                # sai pelo caminho do fechamento, com motivo PRÓPRIO — ela não
+                # ficou ociosa, foi substituída.
+                anterior["substituida"] = True
             _live_sessions[sid] = sess
+    if anterior is not None and not ocupado:
+        _live_log_kv("substitui", sess=sid, antiga_s=int(time.time() - anterior["criada"]),
+                     turnos=anterior.get("turno", 0))
     if ocupado:
         # FORA do lock (#209): `_live_lock` é `threading.Lock` e o mesmo lock é
         # pego por código SÍNCRONO no handler (`_live_sweep`, `_live_hist_*`).

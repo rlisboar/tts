@@ -1,0 +1,12 @@
+        if not self._worker_indisponivel and _worker_habilitado():
+            if self._worker is None:
+                self._worker = _LiveWorker(voice_id=self.voice_id)
+>           if self._worker.ativo:
+               ^^^^^^^^^^^^^^^^^^
+E           AttributeError: 'NoneType' object has no attribute 'ativo'
+
+live_pipeline.py:301: AttributeError
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+=========================== short test summary info ============================
+FAILED tests/test_live_dsh.py::test_tts_live_com_close_entre_as_duas_leituras_nao_estoura - AttributeError: 'NoneType' object has no attribute 'ativo'
+1 failed in 0.56s

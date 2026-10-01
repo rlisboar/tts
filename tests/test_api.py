@@ -2481,6 +2481,45 @@ def test_retomada_com_teto_cheio_nao_leva_busy(ws_client, live_limpo, pipeline_f
             assert pronto["session_id"] == sid
 
 
+def test_sid_repetido_com_socket_vivo_substitui_a_antiga(ws_client, live_limpo,
+                                                         monkeypatch):
+    """#222: id do cliente JÁ vivo é reusado (reconexão que não fechou o socket
+    antigo / dois clientes com o mesmo id). A entrada era sobrescrita e a sessão
+    antiga continuava VIVA e FORA do registro: fora do sweep (nunca vencida, só
+    morria se o cliente fechasse) e fora da contagem do teto — com teto 1, N
+    sockets com o mesmo id passavam. Política: quem nasce depois manda (mesma
+    regra do registro de retomada) e a antiga é fechada pelo servidor com motivo
+    PRÓPRIO (`session_substituida`), não como "ociosa"."""
+    monkeypatch.setattr(app, "_LIVE_MAX_SESSIONS", 1)
+    with ws_client.websocket_connect("/api/live/ws") as ws1:
+        sid = _setup_ok(ws1)["session_id"]
+        antiga = list(app._live_sessions.values())[0]
+        with ws_client.websocket_connect("/api/live/ws") as ws2:
+            pronto = _setup_ok(ws2, session_id=sid)   # mesmo id e teto 1: sem busy
+            assert pronto["type"] == "ready" and pronto["session_id"] == sid
+            assert antiga["substituida"] is True, "a antiga não foi marcada para sair"
+            with app._live_lock:
+                assert len(app._live_sessions) == 1, "o teto foi furado pelo id repetido"
+                assert app._live_sessions[sid] is not antiga, "a entrada não trocou de dono"
+            antiga["visto"] = time.monotonic() - 999     # "ociosa" no papel
+            assert app._live_sweep() == [], \
+                "a substituída saiu do registro: o sweep por TTL não a alcança"
+            # o MOTIVO não pode ser "ociosa": é outro caminho (a marcação acima
+            # é o gatilho da task de envio) — sem esta linha, mutar o motivo
+            # penduraria o `receive_json` abaixo em vez de falhar
+            assert app._live_motivo_fechamento(antiga)[0] == "session_substituida"
+            aviso = ws1.receive_json()                   # o servidor fecha a antiga
+            assert aviso["code"] == "session_substituida"
+            with pytest.raises(WebSocketDisconnect):
+                ws1.receive_json()
+            with app._live_lock:                         # o pop da antiga não leva a nova
+                assert app._live_sessions[sid] is not antiga
+            ws2.send_json({"type": "ping"})              # a nova segue atendendo
+            assert _ate(ws2, {"pong"})["type"] == "pong"
+    with app._live_lock:
+        assert app._live_sessions == {}, "sessão presa no registro"
+
+
 def test_live_ws_ttl_fecha_sessao_ociosa(ws_client, live_limpo, monkeypatch):
     monkeypatch.setattr(app, "_LIVE_TTL_S", 30)
     with ws_client.websocket_connect("/api/live/ws") as ws:

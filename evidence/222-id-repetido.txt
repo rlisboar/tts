@@ -1,0 +1,26 @@
+=== #222 — ANTES (marcação removida: a antiga fica viva e fora do registro) ===
+6973:                pass  # MUT
+A) mesmo id x3 com TTS_LIVE_MAX_SESSIONS=1 -> 3 ready(s), registro=1
+   ✔ os 3 abriram (o teto NÃO barra id repetido — desenho do #210)
+B) fechamento nos sockets antigos -> [None, None]
+   último socket vivo -> {'type': 'pong', 't': None}
+   ✔ o registro é do socket NOVO
+C) id diferente com o teto cheio -> error / busy
+   ✔ o `busy` segue valendo para id NOVO
+
+falhas: 1
+  - antigos não receberam `session_substituida`: [None, None]
+EXIT=1
+
+=== #222 — DEPOIS (marcação + motivo próprio) ===
+A) mesmo id x3 com TTS_LIVE_MAX_SESSIONS=1 -> 3 ready(s), registro=1
+   ✔ os 3 abriram (o teto NÃO barra id repetido — desenho do #210)
+B) fechamento nos sockets antigos -> ['session_substituida', 'session_substituida']
+   ✔ os antigos saíram pelo caminho do fechamento, com motivo próprio
+   último socket vivo -> {'type': 'pong', 't': None}
+   ✔ o registro é do socket NOVO
+C) id diferente com o teto cheio -> error / busy
+   ✔ o `busy` segue valendo para id NOVO
+
+falhas: 0
+EXIT=0

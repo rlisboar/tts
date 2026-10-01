@@ -1,0 +1,3 @@
+...                                                                      [100%]
+[worker] caminho LIGADO do worker do Live correu neste run (marcador worker_real)
+3 passed, 656 deselected in 30.59s
