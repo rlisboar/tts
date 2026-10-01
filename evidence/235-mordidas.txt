@@ -1,16 +1,21 @@
 == 1 — paridade do index SEM normalizar o nonce
-   patch aplicado: 1+/1-
+   patch aplicado: 5+/1-
    teste: tests/test_deploy_mini_sh.py::test_deploy_apply_publica_puxa_instala_reinicia_e_smoke
-   resultado: 1 failed in 2.55s
+   resultado: 1 failed in 2.61s
    [ok] mordeu (falhou, rc=1)
 == 2 — rota decidida pelo HEAD (não pelo rev alvo)
-   patch aplicado: 1+/1-
+   patch aplicado: 5+/1-
    teste: tests/test_deploy_mini_sh.py::test_smoke_nao_exige_rota_ausente_no_rev_alvo
-   resultado: 1 failed in 1.62s
+   resultado: 1 failed in 1.33s
    [ok] mordeu (falhou, rc=1)
 == 3 — rc sempre 0 (ponto inesperado não derruba)
-   patch aplicado: 1+/1-
+   patch aplicado: 5+/1-
    teste: tests/test_deploy_mini_sh.py::test_rc_fiel_esperado_para_o_alvo_nao_derruba_e_inesperado_derruba
-   resultado: 1 failed in 3.14s
+   resultado: 1 failed in 3.48s
    [ok] mordeu (falhou, rc=1)
-árvore do script restaurada (byte a byte)
+script restaurado byte a byte (igual ao backup)
+== 2b — rota tratada como sempre ausente (passo 2 passaria verde sem a rota)
+   patch aplicado: 5+/1-
+   teste: tests/test_deploy_mini_sh.py::test_smoke_exige_as_rotas_quando_o_rev_alvo_as_tem
+   resultado: 1 failed in 2.31s
+   [ok] mordeu (falhou, rc=1)

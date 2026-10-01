@@ -62,4 +62,14 @@ p.write_text(n)' \
 # contra o BACKUP (e não contra o HEAD): o script pode ter trabalho não commitado
 if cmp -s "$S" "$BAK"; then print -r -- "script restaurado byte a byte (igual ao backup)"
 else print -r -- "[ATENÇÃO] o script ficou DIFERENTE do backup — restaure antes de confiar na suíte"; fi
+# item 2 (caso OPOSTO, do passo 2): rota sempre "ausente" → o teste que EXIGE cai
+morde "2b — rota tratada como sempre ausente (passo 2 passaria verde sem a rota)" '
+from pathlib import Path
+p = Path("remote/deploy_mini.sh"); s = p.read_text()
+n = s.replace("tem_rota() { git -C \"$LOCAL_REPO\" show \"${1}:app.py\" 2>/dev/null | grep -qF \"$2\"; }",
+              "tem_rota() { return 1; }")
+assert n != s, "patch 2b não casou"
+p.write_text(n)' \
+  tests/test_deploy_mini_sh.py::test_smoke_exige_as_rotas_quando_o_rev_alvo_as_tem
+
 rm -f "$BAK"

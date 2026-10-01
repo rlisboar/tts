@@ -428,6 +428,10 @@ deploy() {
     || { print -r -- "  [PARA] switch para o rev alvo falhou — nada foi reiniciado"; return 1; }
   if [ "$DEPS" = 1 ]; then
     distante "cd $(cd_remoto) && ./.venv-mlx/bin/pip install -r requirements.txt 2>&1 | tail -3" | sed 's/^/    /'
+    # Registro do DEPOIS (o ANTES é o .deploy-mini-freeze-* gravado no backup): o
+    # rollback precisa saber o que entrou — no passo 2 o venv SAI do "intocado"
+    # (websockets é obrigatório para o /api/live/ws).
+    distante "cd $(cd_remoto) && ./.venv-mlx/bin/pip freeze > .deploy-mini-freeze-depois-\$(date +%F-%H%M%S) && (./.venv-mlx/bin/python -c 'import websockets; print(\"    websockets\", websockets.__version__)' 2>/dev/null || echo '    websockets ausente')" | sed 's/^/  /'
   fi
   distante "cd $(cd_remoto) && rm -f '$(preview_caminho)'"
   print -r -- "  reiniciando $LABEL…"

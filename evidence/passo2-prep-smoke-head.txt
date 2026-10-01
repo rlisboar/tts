@@ -1,0 +1,22 @@
+=== PREP DO PASSO 2: smoke read-only com o alvo = HEAD atual (produção ainda no corte) — 2026-10-01 02:56:19 -03 ===
+# alvo: cc2e23f (test(deploy): harness isola o preview por teste; só default)
+# esperado: FALHA nas rotas (o corte não as tem) e no index — é o retrato do que o passo 2 muda
+
+== smoke (rev alvo cc2e23f520c5…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN com a chave do mini → 200
+  [FALHA] LAN /api/build sem "codigo" (rota existe no rev alvo — versão errada no ar?)
+  [FALHA] LAN /api/live/ws devolveu 401 (esperado 101; falta websockets?)
+  [FALHA] LAN index.html (da1a3c4e67c7…) ≠ rev alvo (bbfd73eadff0…)
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público com a chave do mini → 200
+  [FALHA] público /api/build sem "codigo" (rota existe no rev alvo — versão errada no ar?)
+  [FALHA] público /api/live/ws devolveu 401 (esperado 101; falta websockets?)
+  [FALHA] público index.html (da1a3c4e67c7…) ≠ rev alvo (bbfd73eadff0…)
+
+rc=0
+
+# produção (para comparação): 3e663a6 em prod-3e663a60ff3a
+# CORREÇÃO da medição de rc (o echo em branco engolia o $?): rc REAL do smoke acima = 1 (1 = as rotas do alvo são EXIGIDAS e o corte ainda não as tem)

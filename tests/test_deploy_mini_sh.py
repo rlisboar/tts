@@ -92,11 +92,12 @@ case "$url" in
       else codigo=401; fi ;;
   */api/build)
       if [ $tem_chave = 1 ]; then
+        codigo="${T_CURL_BUILD_CODE:-200}"
         # `codigo` = hash dos módulos do mini AGORA (ou o forçado pelo teste) e
         # boot_ms curto: é a instância viva que o smoke confere. ${=} força a
         # separação por espaço (zsh não separa variável sem aspas).
         c="${T_CURL_BUILD_CODIGO:-$(cd "$T_MINI_DIR" && cat ${=T_MODULOS} 2>/dev/null | /usr/bin/shasum -a 256 | cut -c1-8)}"
-        corpo="{\\"ok\\":true,\\"codigo\\":\\"$c\\",\\"boot_ms\\":${T_CURL_BOOT_MS:-1000}}"
+        [ "$codigo" = 200 ] && corpo="{\\"ok\\":true,\\"codigo\\":\\"$c\\",\\"boot_ms\\":${T_CURL_BOOT_MS:-1000}}"
       else codigo=401; fi ;;
   */api/live/ws*) codigo="${T_CURL_WS_CODE:-101}" ;;
   */) arquivo="$T_MINI_DIR/static/index.html"; nonce=1 ;;
@@ -368,6 +369,26 @@ def test_smoke_falha_quando_o_job_de_sintese_erra(amb):
     r = _run(amb, "smoke")
     assert r.returncode == 1
     assert "terminou em error" in r.stdout
+
+
+def test_smoke_exige_as_rotas_quando_o_rev_alvo_as_tem(amb):
+    """Caso OPOSTO do passo 1 (o do alvo antigo é o outro teste): no rev do HEAD as
+    rotas /api/build e /api/live/ws EXISTEM, então o smoke tem de EXIGI-LAS — se as
+    duas checagens só souberem ignorar, o passo 2 passa verde com a rota faltando."""
+    assert _run(amb, "deploy", "--apply").returncode == 0     # alvo = dev HEAD (tem as rotas)
+
+    amb["T_CURL_BUILD_CODE"] = "404"                          # rota existe e não responde
+    r = _run(amb, "smoke")
+    assert r.returncode == 1, _saida(r)
+    assert '/api/build sem "codigo"' in r.stdout
+    assert "ausente NESTE rev" not in r.stdout.split("/api/build")[0][-80:]
+
+    amb.pop("T_CURL_BUILD_CODE")
+    amb["T_CURL_WS_CODE"] = "500"                             # rota existe e não sobe
+    r = _run(amb, "smoke")
+    assert r.returncode == 1, _saida(r)
+    assert "/api/live/ws devolveu 500" in r.stdout
+    assert "ausente NESTE rev" not in r.stdout
 
 
 def test_rc_fiel_esperado_para_o_alvo_nao_derruba_e_inesperado_derruba(amb):
