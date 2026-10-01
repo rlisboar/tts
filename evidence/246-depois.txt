@@ -1,0 +1,19 @@
+### 1) hostil low (o caso do achado) — esperado: 25 passed
+.........................                                                [100%]
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+25 passed in 2.34s
+
+### 2) hostil high — esperado: 25 passed
+.........................                                                [100%]
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+25 passed in 2.35s
+
+### 3) MORDIDA: effort HARDCODED em off no _live_pipe_novo + dono em low — esperado: 1 failed
+  - low
+  + off
+1 failed, 24 passed in 2.52s
+
+### 4) app.py restaurado + bytecode limpo — esperado: 25 passed
+..............                                                [100%]
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+25 passed in 2.47s

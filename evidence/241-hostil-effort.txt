@@ -1,0 +1,15 @@
+### #241 (achado de fora): o arquivo do DONO decide o veredito da suíte pelo campo chat_dsh_effort
+2026-10-01 · repro do speech-pipeline, pego por acaso: 1ª tentativa de commit do #241 caiu nisto
+
+# settings.json do dono com o campo em 'low' (cópia em /tmp), filho do controle #206:
+$ QA206_SETTINGS=/tmp/241-hostil-effort.json PYTHONPATH=tests ./.venv-mlx/bin/python -m pytest tests/test_live_dsh.py -q -p _estado_hostil
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+=========================== short test summary info ============================
+FAILED tests/test_live_dsh.py::test_app_cria_cliente_por_sessao_e_fecha_com_ela - AssertionError: orçamento do Live: effort off
+assert 'low' == 'off'
+  
+  - off
+  + low
+1 failed, 24 passed in 2.08s
+
+com o dono em 'off' (como está agora) o mesmo filho passa: 25 passed.

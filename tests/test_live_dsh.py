@@ -356,7 +356,15 @@ def test_app_cria_cliente_por_sessao_e_fecha_com_ela(sessao_min):
     assert len(DshClienteFalso.criados) == 1, "um cliente por sessão Live"
     cli = DshClienteFalso.criados[0]
     assert sess["dsh"] is cli and pipe._dsh is cli
-    assert cli.cfg["effort"] == "off", "orçamento do Live: effort off"
+    # O Live SEGUE o campo do dono — `off` é o DEFAULT, não um valor forçado (a UI
+    # diz o mesmo: "o Live usa a MESMA config do dsh da Conversa", e `effort ≠ off`
+    # pode estourar o orçamento de latência, com aviso). Cravar "off" aqui deixava
+    # a suíte refém do settings.json do dono (#246): com o campo em `low`, o filho
+    # hostil do #206 acusava. Comparar com o cfg RESOLVIDO segue pinando o que
+    # importa (o cliente nasce do cfg do app, não de um literal) e fica verde em
+    # qualquer estado do dono.
+    assert cli.cfg["effort"] == app._chat_dsh_cfg()["effort"], \
+        "o cliente do Live tem de nascer do cfg resolvido (effort do dono)"
 
     pipe.close()
     assert cli.fechado is True, "fechar a sessão fecha o processo do dsh"

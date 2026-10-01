@@ -1,0 +1,14 @@
+### repro #246 — settings do dono com chat_dsh_effort=low (cópia hostil)
+$ QA206_SETTINGS=/tmp/246-hostil-effort.json PYTHONPATH=tests ./.venv-mlx/bin/python -m pytest tests/test_live_dsh.py -q -p _estado_hostil
+E         - off
+E         + low
+
+tests/test_live_dsh.py:359: AssertionError
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+=========================== short test summary info ============================
+FAILED tests/test_live_dsh.py::test_app_cria_cliente_por_sessao_e_fecha_com_ela - AssertionError: orçamento do Live: effort off
+assert 'low' == 'off'
+  
+  - off
+  + low
+1 failed, 24 passed in 2.49s
