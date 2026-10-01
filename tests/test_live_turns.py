@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -869,3 +870,23 @@ def test_sem_a_flag_tocando_acompanha_a_janela():
     assert motor._tocando() == motor._playback_ativo() is True    # cauda da janela
     _tocar(motor, rel, SILENCIO, lt.Config()._frames_playback + 2)
     assert motor._tocando() == motor._playback_ativo() is False
+
+
+def test_cliente_corta_o_playback_no_onset_mesmo_sem_barge():
+    """#225: o onset do usuário tem de CALAR o assistente também quando o servidor
+    NÃO classifica barge.
+
+    A janela de playback do servidor é uma ESTIMATIVA do que o cliente ainda vai
+    tocar; quando ela fecha antes (cliente atrasado, regime do #216), o onset vira
+    `speech_start` sem `barge_in` e nenhum `interrupted` vem — sem corte, o
+    assistente segue falando por cima do usuário. Quem sabe o que está na fila é o
+    CLIENTE: o corte mora no handler de `speech_start`.
+
+    Guarda de TEXTO (a suíte não roda JS): se a linha sair do `index.html`, o
+    defeito volta sem nenhum teste vermelho."""
+    html = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()
+    bloco = re.search(r'case "speech_start":(.*?)break;', html, re.S)
+    assert bloco, "o handler de `speech_start` sumiu do static/index.html"
+    corpo = bloco.group(1)
+    assert "LX.ativos.length" in corpo and "lxCancelaPlayback()" in corpo, \
+        "`speech_start` deixou de cortar o playback com fila (#225)"

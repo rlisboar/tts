@@ -7360,6 +7360,16 @@ function lxRecebe(ev) {
                            LX.obs.pendenteTrechos = 0;
                            if (LX.obs.stats && LX.obs.stats.turno)
                              LX.obs.stats.turno.pendente = false;  // snapshot velho (até 250 ms) não re-acende o chip
+                           // #225: o cliente é a ÚNICA ponta que sabe o que ainda tem na
+                           // fila. A janela de playback do servidor é ESTIMATIVA: quando ela
+                           // fecha antes de o cliente terminar de tocar, o onset não vira
+                           // barge e o `interrupted` não vem — sem isto o assistente segue
+                           // falando por cima do usuário. Mesma política do barge (se o
+                           // `interrupted` vier depois, o corte é idempotente).
+                           if (LX.ativos.length) {
+                             lxCancelaPlayback();
+                             lxLogEvento("⏹ cortei o assistente — você começou a falar");
+                           }
                            lxEstado("pensando", "✋ ouvi você…");
                            lxLogEvento("▶ fala começou"); break;
     case "speech_end":     lxLogEvento("⏹ fala terminou — "

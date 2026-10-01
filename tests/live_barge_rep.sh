@@ -28,6 +28,13 @@
 # O harness imprime a taxa de barge; para o sentido FALSO olhe também `barge_falso`
 # no payload do `speech_end` (é o campo que o motor usa para o eco).
 #
+# CORTE (#225): por iteração sai também a FILA (ms de áudio que o cliente ainda vai
+# tocar no instante do onset) e se o playback foi CORTADO, com latência. O corte é
+# do CLIENTE (`lxCancelaPlayback`) e chega por dois caminhos: `interrupted` (barge)
+# ou `speech_start` com fila (#225) — o servidor não sabe o que o cliente bufferiza,
+# então o cliente é a única ponta que pode decidir. O resumo `=== CORTE (#225)` conta
+# os casos com fila que seguiram tocando por cima (o defeito).
+#
 # NÃO falha por si (é investigação): imprime um resumo com taxa e assinaturas e
 # sai 1 só se NENHUM barge funcionou (aí sim há algo quebrado, não cauda).
 set -euo pipefail
@@ -161,6 +168,20 @@ try:
         pg.evaluate("""() => {
             window.__ev = []; window.__sp = []; window.__audio = 0; window.__motor = {};
             window.__barges = 0; window.__interr = 0;
+            // #225: mede o CORTE do playback no onset — é o que faz o assistente
+            // calar quando o usuário fala. A porta única é `lxCancelaPlayback`
+            // (barge via `interrupted` OU corte no `speech_start`, #225); sem o
+            // wrapper, "o áudio seguiu tocando por cima" não tem número.
+            window.__cortes = [];
+            const _canc = window.lxCancelaPlayback;
+            window.lxCancelaPlayback = function () {
+                try {
+                    const c = LX.ctxPlay;
+                    window.__cortes.push({ t: performance.now(), ativos: LX.ativos.length,
+                        restante_ms: c ? Math.max(0, Math.round((LX.proximo - c.currentTime) * 1000)) : 0 });
+                } catch (e) {}
+                return _canc.apply(this, arguments);
+            };
             window.__mk = () => {
                 if (!LX.ws) { setTimeout(window.__mk, 50); return; }
                 LX.ws.addEventListener("message", ev => {
@@ -249,6 +270,12 @@ try:
             print(f"  [{i}/{REP}] injetando em {time.strftime('%H:%M:%S')} (playback ativo={pg.evaluate('() => LX.ativos.length')})")
             marco = pg.evaluate("() => window.__ev.length")
             est0 = pg.evaluate("() => ({ estado: LX.estado, ativos: LX.ativos.length, chunks: (LX.obs.stats||{}).playback ? LX.obs.stats.playback.chunks : null })")
+            # #225: FILA = o que o cliente ainda vai tocar AGORA (segundos de áudio
+            # agendado). É a medida do "fala por cima": se o onset não corta, o
+            # assistente segue audível por estes ms enquanto o usuário fala.
+            fila_ms = pg.evaluate("() => { const c = LX.ctxPlay; return c ? Math.max(0, Math.round((LX.proximo - c.currentTime) * 1000)) : 0; }")
+            cortes0 = pg.evaluate("() => (window.__cortes || []).length")
+            pg.evaluate("() => { window.__inj = performance.now(); }")
             # a injeção de MEDIÇÃO usa a fala em AMP (o `garante_turno` usa a cheia)
             injeta(fala_baixa)
             ok = True
@@ -259,16 +286,24 @@ try:
             corte = None
             if ok:
                 corte = pg.evaluate("() => { const t = window.__ev.find(e => e.tipo === 'interrupted'); return t ? Math.round(performance.now() - t.t) : null; }")
+            # #225: o corte do playback pode vir do `interrupted` (barge) OU do
+            # `speech_start` (onset fora da janela). O que importa é: cortou?
+            novo_corte = pg.evaluate("(n) => { const c = (window.__cortes || []).slice(n); return c.length ? c[0] : null; }", cortes0)
+            corte_ms = (round(novo_corte["t"] - pg.evaluate("() => window.__inj"))
+                        if novo_corte else None)
             novos = pg.evaluate("(m) => window.__ev.slice(m).map(e => e.tipo)", marco)
             assin = pg.evaluate("(m) => (window.__sp || []).slice(-2)", marco)
             motor_agora = pg.evaluate("() => window.__motor || {}")
             print(f"  [{i}/{REP}] {'✔ barge' if ok else '✖ SEM barge'} · antes={est0} · eventos={novos[:6]}"
-                  f" · motor: barge_ativos={motor_agora.get('barge_ativos')}"
+                  f" · fila={fila_ms}ms · " + (f"cortou em {corte_ms}ms" if corte_ms is not None
+                                               else ("✖ SEM CORTE (tocou por cima)" if fila_ms >= 400 else "sem fila"))
+                  + f" · motor: barge_ativos={motor_agora.get('barge_ativos')}"
                   f" barge_falsos={motor_agora.get('barge_falsos')}"
                   f" limiar={motor_agora.get('limiar_dbfs')}")
             for s in assin:
                 print("        motor:", {k: s.get(k) for k in ("type", "barge_in", "barge_falso", "curto", "prob", "rms_dbfs", "fala_ms", "t_decisao_ms", "detalhe") if k in s})
-            resultados.append({"i": i, "ok": ok, "antes": est0, "eventos": novos, "assinatura": assin})
+            resultados.append({"i": i, "ok": ok, "antes": est0, "eventos": novos, "assinatura": assin,
+                               "fila_ms": fila_ms, "corte_ms": corte_ms})
             if not ok:
                 print(f"        tail do servidor:\n{tail(6)}")
             # deixa assentar antes da próxima (senão a injeção pega o turno anterior)
@@ -286,6 +321,16 @@ try:
         if "[JANELA]" in l: print("   ", l)
     ok_n = sum(1 for r in resultados if r["ok"])
     print(f"\n=== RESUMO: {ok_n}/{len(resultados)} barges dispararam")
+    # #225: o alvo aqui é o CORTE, não o barge. "Com fila" = o cliente tinha áudio
+    # para tocar no instante do onset (>=400 ms, acima do ruído de medição): nesses
+    # casos o assistente TEM de calar — pelo `interrupted` (barge) ou pelo corte no
+    # `speech_start` (onset fora da janela). Sem corte, ele fala por cima.
+    com_fila = [r for r in resultados if (r.get("fila_ms") or 0) >= 400]
+    cortados = [r for r in com_fila if r.get("corte_ms") is not None]
+    lats = sorted(r["corte_ms"] for r in cortados)
+    print(f"=== CORTE (#225): com fila>=400ms: {len(com_fila)} · cortou: {len(cortados)}"
+          f" · tocando por cima: {len(com_fila) - len(cortados)}"
+          + (f" · latência do corte mediana={lats[len(lats) // 2]}ms" if lats else ""))
     falhas = [r for r in resultados if not r["ok"]]
     for r in falhas:
         print(f"  falha #{r['i']} · antes={r.get('antes')} · eventos={r.get('eventos')}")

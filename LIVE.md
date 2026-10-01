@@ -49,12 +49,27 @@ antes disso a checagem ficava no connect e duas conexões que passassem juntas f
 limite — e o cliente só descobre que o `session_id` retoma depois de mandar o `setup`,
 então `busy` chega nesse ponto (uma retomada SUBSTITUI a entrada e não conta).
 
+`session_id` REPETIDO com a sessão ainda VIVA (reconexão que não fechou o socket
+antigo, ou dois clientes com o mesmo id) segue a mesma regra — quem nasce depois
+manda — e a antiga é fechada pelo SERVIDOR com `error{session_substituida}` + close
+1000. Sem isso ela continuava viva e FORA do registro (o teto é `len(_live_sessions)`):
+fora do sweep por TTL (nunca vencia, só morria se o cliente fechasse) e fora da
+contagem — com teto 1, N sockets com o mesmo id conviviam. Id NOVO com o teto cheio
+continua levando `busy` (#222).
+
 Protocolo (o contrato completo está no comentário da seção no `app.py`):
 cliente → `setup` (1º frame; `session_id` opcional retoma), PCM16 16 kHz, `end_of_speech`,
 `cancel`, `ping`; servidor → `ready{resumed}`, `speech_start`/`speech_end`, áudio PCM16
 24 kHz, `transcript_user`, `assistant_text`, `turn_complete`, `interrupted`, `error`,
 `prewarm{ok}`, `pong` e `stats` (telemetria, abaixo). Turno marcado `curto`/`barge_falso`
 **abre igual** — quem descarta por eco é o pipeline (por texto, não por tempo).
+
+Corte do playback no ONSET (#225): o cliente corta o áudio do assistente ao receber
+`speech_start` **se ainda tiver fila** (`LX.ativos`), e não só no `interrupted`. A
+janela de playback do servidor é uma ESTIMATIVA do que o cliente ainda vai tocar;
+quando ela fecha antes (cliente atrasado/regime do #216), o onset vira turno NOVO sem
+`barge_in` e nenhum `interrupted` vem — sem o corte, o assistente seguia falando por
+cima do usuário. O `interrupted` do barge é o outro caminho de corte (idempotente).
 
 Fala que chega com turno em curso NÃO é mais descartada (#126): os trechos se
 ACUMULAM num único pendente (frase completada em dois pedaços vira um turno só) e

@@ -1,0 +1,16 @@
+variante sem fix gerada
+=== FASE antes (cliente: 225-index-sem-fix.html) ===
+### 225-antes-vao-default.txt [225-index-sem-fix.html] 02:52:00Z
+  exit=0 · CORTE (#225): com fila>=400ms: 19 · cortou: 19 · tocando por cima: 0 · latência do corte mediana=148ms
+### 225-antes-vao-eco-tocando.txt [225-index-sem-fix.html] 03:03:47Z
+  exit=1 · CORTE (#225): com fila>=400ms: 18 · cortou: 0 · tocando por cima: 18
+### 225-antes-eco.txt [225-index-sem-fix.html] 03:14:17Z
+  exit=0 · CORTE (#225): com fila>=400ms: 17 · cortou: 14 · tocando por cima: 3 · latência do corte mediana=895ms
+=== FASE depois (cliente: 225-index-com-fix.html) ===
+### 225-depois-vao-default.txt [225-index-com-fix.html] 03:18:18Z
+  exit=0 · CORTE (#225): com fila>=400ms: 19 · cortou: 19 · tocando por cima: 0 · latência do corte mediana=142ms
+### 225-depois-vao-eco-tocando.txt [225-index-com-fix.html] 03:22:57Z
+  exit=0 · CORTE (#225): com fila>=400ms: 19 · cortou: 19 · tocando por cima: 0 · latência do corte mediana=112ms
+### 225-depois-eco.txt [225-index-com-fix.html] 03:32:21Z
+  exit=0 · CORTE (#225): com fila>=400ms: 15 · cortou: 14 · tocando por cima: 1 · latência do corte mediana=988ms
+=== FIM 03:35:43Z — cliente COM o fix restaurado ===
