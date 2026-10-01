@@ -1,0 +1,36 @@
+# gate #226 — 2026-10-01T05:23:38Z · HEAD=68ec138
+378c4efcb7d330992b73166cae2da607
+ce8491c03cd5052dbafc6febc2390265
+90f36ef3e1930b03b68c578c255bb209
+
+══ 1/3 — SEM escritor (árvore parada: o par tem de usar a prova EXATA)
+__________________ test_build_par_nao_e_refem_da_arvore_viva ___________________
+    [220] escritos depois do boot: live_turns.py — tolerância provada por mtime
+5 passed, 219 deselected in 1.31s
+══ 1/3 — saiu 0
+
+══ 2/3 — COM escritor em live_turns.py (a árvore viva se mexendo)
+___________________ test_build_diz_qual_codigo_esta_rodando ____________________
+    [220] escritos depois do boot: live_turns.py — tolerância provada por mtime
+__________________ test_build_par_nao_e_refem_da_arvore_viva ___________________
+    [220] escritos depois do boot: live_turns.py — tolerância provada por mtime
+5 passed, 219 deselected in 1.59s
+══ 2/3 — saiu 0
+    codigo=2befb0d0 (boot) · hash no import=2befb0d0
+    · a expectativa congelada bate com o boot: prova EXATA aplicável
+    · a asserção ANTIGA passaria em 6/10 amostras com a árvore se mexendo
+    ✔ o par de hoje não depende da fase do escritor
+══ 3/3 — MORDIDA: expectativa congelada sabotada (tem de sair 1, árvore parada)
+___________________ test_build_diz_qual_codigo_esta_rodando ____________________
+__________________ test_build_par_nao_e_refem_da_arvore_viva ___________________
+1 failed, 4 passed, 219 deselected in 1.26s
+══ 3/3 — saiu 1
+
+
+✔ o par não é refém da árvore viva — e morde quando a expectativa mente
+script exit=0
+
+## md5 DEPOIS
+378c4efcb7d330992b73166cae2da607
+ce8491c03cd5052dbafc6febc2390265
+90f36ef3e1930b03b68c578c255bb209

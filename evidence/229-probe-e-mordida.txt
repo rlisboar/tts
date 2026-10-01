@@ -1,0 +1,29 @@
+# gate #229 — probe e mordida — 2026-10-01T05:20:57Z
+md5 live_pipeline.py: fd3da52ffa64b951f05bfaf95854e836
+
+== probe COM o fix (esperado exit 1 = coberto) ==
+  · close ANTES do spawn: start() 86 ms · _saiu=True · pipe._worker=None · filho vivo=False · ativo=False
+    ✔ o filho foi fechado junto com a sessão
+  · close DEPOIS do spawn: start() 61 ms · _saiu=True · pipe._worker=None · filho vivo=False · ativo=False
+    ✔ o filho foi fechado junto com a sessão
+  ✔ coberto nas duas janelas
+exit=1
+
+== mordida: bloco do #228 removido ==
+FAILED tests/test_live_dsh.py::test_close_dentro_do_start_do_worker_nao_deixa_filho_orfao - assert True is False
+ +  where True = <test_live_dsh.test_close_dentro_do_start_do_worker_nao_deixa_filho_orfao.<locals>.WorkerFalso object at 0x117e1f470>.vivo
+1 failed in 0.49s
+  · close ANTES do spawn: start() 52 ms · _saiu=True · pipe._worker=None · filho vivo=True · ativo=True
+    ✘ ÓRFÃO: o filho nasceu depois do `close()` e ninguém o fechou
+  · close DEPOIS do spawn: start() 55 ms · _saiu=True · pipe._worker=None · filho vivo=False · ativo=False
+    ✔ o filho foi fechado junto com a sessão
+  ✘ FURO: a janela entre `self._worker = w` e o Popen deixa o filho órfão
+probe sem fix exit=0 (0 = FURO)
+restaurado byte-a-byte · md5=fd3da52ffa64b951f05bfaf95854e836
+
+--: line 1: _tts_live: command not found
+--: line 1: _worker: command not found
+== achado NOVO (família):  lê  duas vezes ==
+  ✘ FURO: AttributeError na 2ª leitura de `_worker` ('NoneType' object has no attribute 'ativo')
+    fix de 1 linha: usar nome local — `w = self._worker = _LiveWorker(...)`; `if w.ativo:`
+exit=0 (0 = FURO)

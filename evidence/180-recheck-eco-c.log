@@ -1,0 +1,3 @@
+=== RESUMO: 10/10 barges dispararam
+=== MOTOR (cumulativo da rodada): {"barge_ativos": 18, "barge_falsos": 0, "estado": "ouvindo", "limiar_dbfs": -42.7, "limiar_turno_dbfs": -42.7}
+=== CONTAGEM (cumulativa): {"audio": 30, "barge_in": 18, "interrupted": 18}

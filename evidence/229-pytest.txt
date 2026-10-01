@@ -1,0 +1,120 @@
+# pytest (gate #229) — 2026-10-01T04:48:30Z · HEAD=0587865
+fd3da52ffa64b951f05bfaf95854e836
+43ed7af7887fe102d241fa621534bddc
+7f0ce46f8659951e0d65b31f97acbb5f
+ce8491c03cd5052dbafc6febc2390265
+........................................................................ [ 10%]
+........................................................................ [ 21%]
+...............................[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+.........................[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd).
+[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)....[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+........... [ 32%]
+........................................................................ [ 43%]
+....................................................FFF................. [ 54%]
+........................................................................ [ 65%]
+........................................................................ [ 76%]
+........................................................................ [ 87%]
+........................................................................ [ 98%]
+..sss..                                                                  [100%]
+=================================== FAILURES ===================================
+__________ test_compare_avisa_alvo_nao_descendente_do_que_esta_no_ar ___________
+
+amb = {'COLORTERM': 'truecolor', 'PYTHONUNBUFFERED': '1', 'GROK_HOME': '/Users/lisboa/.grok-custom', 'THE_DUDES_AGENT_TOKEN_FILE': '/var/folders/5y/g9_r4r5976l6gdddcltfg13w0000gn/T/the-dudes/ag-sIhqc8/agent.token', ...}
+
+        assert _branch(amb) == f"prod-{_head(amb, 'mini')[:12]}"
+    
+    
+    def test_compare_avisa_alvo_nao_descendente_do_que_esta_no_ar(amb):
+        """F4: remover o `merge-base --is-ancestor` do compare deixaria a suíte verde."""
+        assert _run(amb, "deploy", "--apply").returncode == 0
+>       corte = _sha(amb, "HEAD~1")                     # v2 é ANTERIOR ao que está no ar
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: assert 0 == 1
+E        +  where 0 = CompletedProcess(args=['/bin/zsh', '-f', '/Users/lisboa/Documents/tts-rod/remote/deploy_mini.sh', 'compare'], returnco...alvo × arquivo no ar)\n  [IGUAL]     app.py 168a91d48beb…\n  [IGUAL]     static/index.html 81a230db0b04…\n', stderr='').returncode
+
+tests/test_deploy_mini_sh.py:473: AssertionError
+________________ test_smoke_nao_exige_rota_ausente_no_rev_alvo _________________
+
+amb = {'COLORTERM': 'truecolor', 'PYTHONUNBUFFERED': '1', 'GROK_HOME': '/Users/lisboa/.grok-custom', 'THE_DUDES_AGENT_TOKEN_FILE': '/var/folders/5y/g9_r4r5976l6gdddcltfg13w0000gn/T/the-dudes/ag-sIhqc8/agent.token', ...}
+
+        assert "rewind/desvio" in r.stdout
+    
+    
+    def test_smoke_nao_exige_rota_ausente_no_rev_alvo(amb):
+        """O corte do passo 1 é anterior ao #190 e ao épico Live: o smoke tem de dizer
+        "ausente NESTE rev", não "falha" — senão um alvo antigo nunca fecha verde."""
+>       base = _sha(amb, "HEAD~2")                      # v1: sem /api/build nem /api/live/ws
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: == smoke (rev alvo 5c71035d7144…)
+E           [ok] LAN /health 200
+E           [ok] LAN sem chave → 401 (loopback não isenta)
+E           [ok] LAN com a chave do mini → 200
+E           [FALHA] LAN /api/build codigo=33ffa293 ≠ esperado c6b83e98 (instância não é o rev alvo)
+E           [ok] processo novo (boot_ms=1000)
+E           [ok] LAN WebSocket 101 (uvicorn com upgrade)
+E           [FALHA] LAN index.html (56c9ec513800…) ≠ rev alvo (81a230db0b04…)
+E           [ok] LAN POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes
+E           [ok] público /health 200
+E           [ok] público sem chave → 401 (loopback não isenta)
+E           [ok] público com a chave do mini → 200
+E           [FALHA] público /api/build codigo=33ffa293 ≠ esperado c6b83e98 (instância não é o rev alvo)
+E           [ok] processo novo (boot_ms=1000)
+E           [ok] público WebSocket 101 (uvicorn com upgrade)
+E           [FALHA] público index.html (56c9ec513800…) ≠ rev alvo (81a230db0b04…)
+E           [ok] público POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/bin/zsh', '-f', '/Users/lisboa/Documents/tts-rod/remote/deploy_mini.sh', 'smoke'], returncode...3800…) ≠ rev alvo (81a230db0b04…)\n  [ok] público POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes\n', stderr='').returncode
+
+tests/test_deploy_mini_sh.py:484: AssertionError
+___________ test_redeploy_do_mesmo_alvo_preserva_o_alvo_de_rollback ____________
+
+amb = {'COLORTERM': 'truecolor', 'PYTHONUNBUFFERED': '1', 'GROK_HOME': '/Users/lisboa/.grok-custom', 'THE_DUDES_AGENT_TOKEN_FILE': '/var/folders/5y/g9_r4r5976l6gdddcltfg13w0000gn/T/the-dudes/ag-sIhqc8/agent.token', ...}
+
+        assert "FALHA" not in r.stdout
+    
+    
+    def test_redeploy_do_mesmo_alvo_preserva_o_alvo_de_rollback(amb):
+        """Re-deploy do MESMO rev não pode sobrescrever o estado com o próprio alvo —
+        senão o rollback vira no-op e perde a produção anterior."""
+        antes = _head(amb, "mini")
+        estado = Path(amb["TTS_MINI_DIR"]) / ".deploy-mini-estado"
+        assert _run(amb, "deploy", "--apply").returncode == 0
+>       assert f"sha={antes}" in estado.read_text()
+E       AssertionError: assert 'alvo de rollback anterior é preservado' in '== deploy (rev alvo 74f879648735… (HEAD))\n  push: nada a publicar (origin já contém o rev alvo)\n== mini\n  deps: pi...ml = blob do rev alvo (nonce do CSP ignorado)\n  [ok] público POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes\n'
+E        +  where '== deploy (rev alvo 74f879648735… (HEAD))\n  push: nada a publicar (origin já contém o rev alvo)\n== mini\n  deps: pi...ml = blob do rev alvo (nonce do CSP ignorado)\n  [ok] público POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes\n' = CompletedProcess(args=['/bin/zsh', '-f', '/Users/lisboa/Documents/tts-rod/remote/deploy_mini.sh', 'deploy', '--apply']... rev alvo (nonce do CSP ignorado)\n  [ok] público POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes\n', stderr='').stdout
+
+tests/test_deploy_mini_sh.py:499: AssertionError
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+=========================== short test summary info ============================
+FAILED tests/test_deploy_mini_sh.py::test_compare_avisa_alvo_nao_descendente_do_que_esta_no_ar - AssertionError: assert 0 == 1
+ +  where 0 = CompletedProcess(args=['/bin/zsh', '-f', '/Users/lisboa/Documents/tts-rod/remote/deploy_mini.sh', 'compare'], returnco...alvo × arquivo no ar)\n  [IGUAL]     app.py 168a91d48beb…\n  [IGUAL]     static/index.html 81a230db0b04…\n', stderr='').returncode
+FAILED tests/test_deploy_mini_sh.py::test_smoke_nao_exige_rota_ausente_no_rev_alvo - AssertionError: == smoke (rev alvo 5c71035d7144…)
+    [ok] LAN /health 200
+    [ok] LAN sem chave → 401 (loopback não isenta)
+    [ok] LAN com a chave do mini → 200
+    [FALHA] LAN /api/build codigo=33ffa293 ≠ esperado c6b83e98 (instância não é o rev alvo)
+    [ok] processo novo (boot_ms=1000)
+    [ok] LAN WebSocket 101 (uvicorn com upgrade)
+    [FALHA] LAN index.html (56c9ec513800…) ≠ rev alvo (81a230db0b04…)
+    [ok] LAN POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes
+    [ok] público /health 200
+    [ok] público sem chave → 401 (loopback não isenta)
+    [ok] público com a chave do mini → 200
+    [FALHA] público /api/build codigo=33ffa293 ≠ esperado c6b83e98 (instância não é o rev alvo)
+    [ok] processo novo (boot_ms=1000)
+    [ok] público WebSocket 101 (uvicorn com upgrade)
+    [FALHA] público index.html (56c9ec513800…) ≠ rev alvo (81a230db0b04…)
+    [ok] público POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes
+  
+assert 1 == 0
+ +  where 1 = CompletedProcess(args=['/bin/zsh', '-f', '/Users/lisboa/Documents/tts-rod/remote/deploy_mini.sh', 'smoke'], returncode...3800…) ≠ rev alvo (81a230db0b04…)\n  [ok] público POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes\n', stderr='').returncode
+FAILED tests/test_deploy_mini_sh.py::test_redeploy_do_mesmo_alvo_preserva_o_alvo_de_rollback - AssertionError: assert 'alvo de rollback anterior é preservado' in '== deploy (rev alvo 74f879648735… (HEAD))\n  push: nada a publicar (origin já contém o rev alvo)\n== mini\n  deps: pi...ml = blob do rev alvo (nonce do CSP ignorado)\n  [ok] público POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes\n'
+ +  where '== deploy (rev alvo 74f879648735… (HEAD))\n  push: nada a publicar (origin já contém o rev alvo)\n== mini\n  deps: pi...ml = blob do rev alvo (nonce do CSP ignorado)\n  [ok] público POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes\n' = CompletedProcess(args=['/bin/zsh', '-f', '/Users/lisboa/Documents/tts-rod/remote/deploy_mini.sh', 'deploy', '--apply']... rev alvo (nonce do CSP ignorado)\n  [ok] público POST /api/tts real: job j1 em ~0s, peça 0 com 15 bytes\n', stderr='').stdout
+3 failed, 649 passed, 3 skipped in 283.41s (0:04:43)
+exit=1
+## md5 DEPOIS
+fd3da52ffa64b951f05bfaf95854e836
+43ed7af7887fe102d241fa621534bddc
+7f0ce46f8659951e0d65b31f97acbb5f
+ce8491c03cd5052dbafc6febc2390265

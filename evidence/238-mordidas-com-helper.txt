@@ -1,0 +1,18 @@
+# mordidas do gate #232 — 2026-10-01T05:49:37Z
+  md5 do script antes: 540159d1593498c109ee9546b6c27a32
+## bug 1: "$1:requirements.txt" (zsh come o :r)
+  [ok]     deps_preview sem chaves → MORDE (esperado MORDE)
+## bug 2: "$ALVO_SHA:refs/heads/main"
+  [ok]     push sem chaves → MORDE (esperado MORDE)
+## status read-only do zsh (o corpo TODO tem de usar o nome)
+  (corpo do smoke_tts: 8 usos renomeados)
+  [ok]     var status no smoke_tts → MORDE (esperado MORDE)
+## compare: aviso de alvo NÃO-descendente — a suíte usa?
+  [ok]     aviso de não-descendente → MORDE
+## TTS_MINI_REV (alvo por rev) — a suíte usa?
+  [ok]     TTS_MINI_REV ignorado → MORDE (esperado MORDE)
+## branch prod-<sha> (não detached) — a suíte usa?
+  [ok]     switch --detach no deploy → MORDE (esperado MORDE)
+  [ok]     switch --detach no rollback → MORDE (esperado MORDE)
+  md5 do script depois: 540159d1593498c109ee9546b6c27a32
+rc=0

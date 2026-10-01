@@ -1,0 +1,23 @@
+chaves de teste: use=9d034266… admin=a5b64626…
+
+→ contrato (chave de uso fala com http://192.168.15.48:7860)
+  is_admin=False · 23 campos admin · segredos mascarados: ['chat_api_key']
+  POST com campo admin -> admin_ignored=['remote_base_url'] (sem 403) · não-admin aplicou: speed 1.77 -> 1.25
+
+→ UI em http://192.168.15.48:7860
+(node:83133) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  selo: '🔒 chave de uso' · travados: 22 · cfgSpeed travado: False
+  CSP: 0 meta(s) · erro frame-ancestors: False · violação forçada acusada: True
+  salvar com chave de uso -> 'salvo ✔ — 20 campo(s) precisam de chave admin: chat_backend, chat_backend_live, Base URL da Conversa, chat_dsh_bin e mais 16'
+  403 -> status=403 bar=flex
+  contraprova admin: selo='🔑 chave admin' travados=0 segredo_revelado=True
+  chave criada pela UI com papel -> selo da linha: '🔒 uso'
+  depois de trocar o papel -> selo da linha: '🔑 admin'
+  aviso no load normal: (nenhum, correto)
+  campo protegido sem marcador -> 1 aviso(s): [admin] campo administrativo sem campo na UI (falta data-adm
+  controle negativo: 14 controles com data-setting, nenhum acusado
+  adotando uma chave de uso -> selo: '🔒 CHAVE DE USO' · criar chave travado: True
+  blip de 400 ms no load -> tela montou: True
+
+✔ OK — chave de uso vê o que não pode, salva nomeando o que ficou de fora, 403 explica o caminho, admin destrava tudo, o papel se cria/troca/apaga pela UI e adotar uma chave de uso rebaixa a sessão na hora

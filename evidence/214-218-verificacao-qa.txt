@@ -1,0 +1,48 @@
+### #214 e #218 — verificação de gate pelo qa-review (independente do relato do fix)
+2026-09-29 ~18:5x local · repo tts-rod · app.py md5 de partida e de volta:
+373c56f71efbb5e484851a3cc8f3f722
+
+O board (the-dudes) está em bridge 404 ("agent not in any project") desde a
+retomada, então a verificação vai por arquivo em vez de comentário na task.
+
+── #218 `_chat_dsh_devolve` não deduplica (task_985ed2db)
+CÓDIGO (conferido no DISCO, app.py:1841-1850): a checagem por identidade está
+DENTRO do lock e ANTES do cálculo do `guardar`; o `close()` do descarte segue FORA
+do lock. Comentário explica a identidade (`is`) e por que a entrada já presente não
+pode ser fechada.
+
+MORDIDA (removida a linha `if any(c is cli for _k, c in _chat_dsh_livres): return`):
+    $ pytest tests/test_api.py::test_devolucao_dupla_nao_duplica_o_pool -q
+    E  assert 2 == 1
+    E  AssertionError: devolução dupla duplicou o pool
+    1 failed
+Sintoma EXATO do ticket (pool com duas entradas idênticas). Com a linha:
+    $ pytest tests/test_api.py -q -k "devolucao_dupla or pool_nao_segura or pool"
+    3 passed, 219 deselected
+
+O teste cobre os três pontos do aceite (pool com UMA entrada; a entrada sendo o
+MESMO objeto; `b is not c` na entrega seguinte) e a nota de comportamento do
+`alive`/`prewarm` do segundo cliente (cliente nunca spawnado é recusado pelo pool,
+não é bug do ticket) está correta e documentada. Sem ressalva.
+
+── #214 `_build_hash` cacheado no 1º uso (task_46804fc2)
+CÓDIGO (conferido no DISCO): `_BUILD_CODIGO = _build_hash()` congelado no IMPORT
+(app.py:1309) e a rota `/api/build` devolve o CONGELADO (app.py:1312-1330);
+`_build_hash()` continua lendo o disco — que é o que o gate precisa para comparar
+o pin do ticket com a árvore.
+
+MORDIDA (rota voltando a calcular no request, `"codigo": _build_hash()`):
+    $ pytest tests/test_api.py::test_build_codigo_e_do_boot_nao_do_disco_de_agora -q
+    E  assert 'c285c2fa' == '807cf69a'
+    1 failed
+Com a rota congelada:
+    $ pytest tests/test_api.py -q -k build
+    4 passed, 218 deselected
+
+A redação do teste está certa ao NÃO exigir "árvore == boot" como pré-condição
+(com o time editando em paralelo, um módulo pode mudar entre o import e o teste):
+o que ele prova é que `_build_hash` lê o disco e que a ROTA segue o boot. Sem
+ressalva.
+
+── ESTADO
+`app.py` devolvido byte a byte nas duas mordidas (md5 conferido: 373c56f7…).

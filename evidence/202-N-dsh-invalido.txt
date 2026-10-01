@@ -1,0 +1,22 @@
+(node:82427) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+servidor de teste em http://127.0.0.1:58136 · dsh=/opt/homebrew/bin/dsh
+  cenário: bin='/nao/existe/dsh' profile='perfil-que-nao-existe' · normalizado={'chat_dsh_bin': '/opt/homebrew/bin/dsh', 'chat_dsh_profile': 'tts-studio'} (backend original: 'openai')
+  endpoint: 11 modelo(s) · node 25.2
+  salvo='openai' · form='openai' · dshEscondido=False
+  dsh selecionado → dshVisivel: True · openai escondido: True
+  backend do Live: {'existe': True, 'admin': True, 'opcoes': ['', 'openai', 'dsh'], 'valor': 'dsh'} · hint: O Live usa o backend próprio: dsh (harness local).
+  Live com backend próprio: O Live usa o backend próprio: Endpoint + chave.
+  evidência: evidence/178-backend-live-heranca.png
+  Conversa=endpoint + Live=dsh → {'dshVisivel': True, 'nota': False}
+  Conversa=dsh + Live=endpoint → {'dshVisivel': True, 'openaiVisivel': True, 'nota': True}
+  placeholder do binário: resolvido: /opt/homebrew/bin/dsh
+  catálogo: {'n': 11, 'valor': '["dsflash","deepseek-flash-41"]', 'efforts': ['off', 'low', 'high', 'max']} · status: ✔ falei com o dsh em 3 ms · 11 modelo(s) em 4 provedor(es) · node 25.2
+  erro exibido: ✖ não consegui falar com o dsh em 15 ms: descoberta do dsh falhou: '/nao/existe/dsh' não existe (ajuste chat_d
+  marcados como admin: {'chat_backend': True, 'chat_backend_live': True, 'chat_dsh_bin': True, 'chat_dsh_profile': True, 'chat_dsh_model': True, 'chat_dsh_effort': True}
+  payload do save: {'chat_backend': 'dsh', 'chat_backend_live': '', 'chat_dsh_bin': '/opt/homebrew/bin/dsh', 'chat_dsh_profile': 'tts-studio', 'chat_dsh_model': '["dsflash","deepseek-flash-41"]', 'chat_dsh_effort': 'low'}
+  restaurado pela tela: openai · Live: dsh
+  devolvido ao dono: {'chat_dsh_bin': '/nao/existe/dsh', 'chat_dsh_profile': 'perfil-que-nao-existe', 'chat_dsh_model': '["dsflash","deepseek-flash-41"]'}
+  pageerror: [] · console.error de script: []
+
+✔ OK — escolha de backend de IA (endpoint+chave x dsh) com modelo/effort, backend próprio do Live com herança visível, erro visível e payload completo.

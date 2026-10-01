@@ -1,0 +1,5 @@
+# gate #202 — snapshot do estado do dono — 2026-10-01T05:54:28Z
+7cbccae83527dc3e22e23bb155c097ce96018553c7f4e7e28f93a79f25654559  settings.json
+a65e455d59f84fbe1cb9d1f388c56c07c8a61a2739bc03b700d019f5c0903298  .apikeys.json
+speed=1.77
+chaves: ['padrão']

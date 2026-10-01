@@ -1,0 +1,4 @@
+=== RESUMO: 3/10 barges dispararam
+=== CORTE (#225): com fila>=400ms: 10 · cortou: 10 · tocando por cima: 0 · latência do corte mediana=2379ms
+=== MOTOR (cumulativo da rodada): {"barge_ativos": 6, "barge_falsos": 0, "estado": "ouvindo", "limiar_dbfs": -24, "limiar_turno_dbfs": -27}
+=== CONTAGEM (cumulativa): {"audio": 58, "barge_in": 6, "interrupted": 6}

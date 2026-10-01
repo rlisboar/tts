@@ -1,0 +1,35 @@
+=== #221 — ANTES (app.py do HEAD 3490bcc: o perdedor zera os contadores fora do lock) ===
+$ git show HEAD:app.py > /tmp/app.head221.py; cp /tmp/app.head221.py app.py
+$ PYTHONPATH=. ./.venv-mlx/bin/python evidence/215-208-residual.py   # repro por fora (gate #215)
+  · controle (1 observador): {'turno_pendente': 20, 'trechos': 2, 'descartados_ms': 0, 'eventos_trechos': [1, 2]}
+  ✔ controle: sem perdedor, os contadores ficam corretos
+  · com perdedor: {'turno_pendente': 20, 'trechos': 1, 'descartados_ms': 0, 'eventos_trechos': [1, 1]}
+  ✔ o conteúdo sobreviveu (o fix do re-arm segura)
+  ✔ contadores preservados
+  ✘ evento diz trechos=1 (2 trechos acumulados)
+
+falhas: 1
+  - evento `turno_pendente` subconta os trechos
+VEREDITO: RESIDUAL CONFIRMADO
+EXIT=1
+
+$ pytest tests/test_live_turno_pendente.py -q -k perdedor
+E       AssertionError: o observador perdedor zerou os contadores
+E       assert 0 == 1
+1 failed, 18 deselected in 1.27s
+
+=== #221 — DEPOIS (pop + contadores na MESMA seção crítica; o re-arm SOMA) ===
+$ PYTHONPATH=. ./.venv-mlx/bin/python evidence/215-208-residual.py
+  · controle (1 observador): {'turno_pendente': 20, 'trechos': 2, 'descartados_ms': 0, 'eventos_trechos': [1, 2]}
+  ✔ controle: sem perdedor, os contadores ficam corretos
+  · com perdedor: {'turno_pendente': 20, 'trechos': 2, 'descartados_ms': 0, 'eventos_trechos': [1, 2]}
+  ✔ o conteúdo sobreviveu (o fix do re-arm segura)
+  ✔ contadores preservados
+  ✔ evento conta os 2 trechos
+
+falhas: 0
+VEREDITO: OK
+EXIT=0
+
+$ pytest tests/test_live_turno_pendente.py -q
+19 passed in 3.24s

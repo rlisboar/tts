@@ -1,0 +1,30 @@
+# pytest FINAL2 (gates #226/#229) — 2026-10-01T05:41:00Z · HEAD=7cab566
+1398242b6fca9e22812d796d8e13aa28
+378c4efcb7d330992b73166cae2da607
+b3000328d19735d51c0a688549aa1bac
+3ff6391deb71a56b8ebf434e5e9a11ad
+........................................................................ [ 10%]
+........................................................................ [ 21%]
+...................[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)..........[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd).
+......[chat-dsh] [dsh stderr] FAKE_ACP SESSAO s1
+[chat-dsh] [dsh stderr] FAKE_ACP CONFIG model ["openrouter","z-ai/glm-5.3-flash"]
+[chat-dsh] [dsh stderr] FAKE_ACP CONFIG reasoning_effort off
+.[chat-dsh] [dsh stderr] FAKE_ACP PROMPT "oi".[chat-dsh] [dsh stderr] FAKE_ACP ENV_HOME sim
+[chat-dsh] [dsh stderr] FAKE_ACP SESSAO s1
+.[chat-dsh] [dsh stderr] FAKE_ACP CONFIG model ["dsflash","deepseek-flash-41"]...........................[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+...... [ 32%]
+........................................................................ [ 43%]
+........................................................................ [ 54%]
+........................................................................ [ 65%]
+........................................................................ [ 76%]
+........................................................................ [ 87%]
+........................................................................ [ 98%]
+.......sss..                                                             [100%]
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+657 passed, 3 skipped in 325.33s (0:05:25)
+exit=0
+## md5 DEPOIS
+7fe35e09fd0290f42d2844926384bad4
+378c4efcb7d330992b73166cae2da607
+b3000328d19735d51c0a688549aa1bac
+3ff6391deb71a56b8ebf434e5e9a11ad

@@ -1,0 +1,15 @@
+== contraprova REAL em lisboa@192.168.15.34 — 2026-10-01T05:10:20Z
+  estado de partida: 3e663a60ff3a2a818eda32261da7a0056defd666 · arquivos na árvore: 47884
+  (outputs/ fora do hash: produção é USADA e um job mexe nele)
+  [ok]   R1 recon: árvore/HEAD/serviço intocados · rc=0 (refs do mini podem ter andado: fetch, por desenho)
+      última linha:   chave do mini: 48 bytes
+  [ok]   R2 compare: nada mudou no mini (árvore/HEAD/refs/serviço) · rc=1
+      última linha:   [DIFERENTE] static/index.html: rev alvo bbfd73eadff0… × no ar da1a3c4e67c7…
+  [ok]   R3 smoke --sem-tts: nada mudou no mini (árvore/HEAD/refs/serviço) · rc=1
+      última linha:   [FALHA] público index.html (da1a3c4e67c7…) ≠ rev alvo (bbfd73eadff0…)
+  [ok]   R4 deploy dry-run: nada mudou no mini (árvore/HEAD/refs/serviço) · rc=0
+      última linha:   (dry-run: rode com --apply para push + backup + switch + deps + restart + smoke)
+  [ok]   R4 grava o preview FORA da árvore (/tmp no mini) — F1 corrigido
+== R5 smoke com TTS real (a árvore muda: job em outputs/)
+  [ok]   R5 POST /api/tts real concluiu com peça (rc=1)
+== FIM: falhas=0

@@ -1,0 +1,15 @@
+== smoke (rev alvo 3e663a60ff3a…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN com a chave do mini → 200
+  [ok] LAN /api/build ausente NESTE rev (anterior ao #190) — esperado
+  [ok] LAN /api/live/ws ausente NESTE rev (anterior ao épico Live) — esperado
+  [ok] LAN index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] LAN POST /api/tts real: job 1912120209 em ~2s, peça 0 com 95438 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público com a chave do mini → 200
+  [ok] público /api/build ausente NESTE rev (anterior ao #190) — esperado
+  [ok] público /api/live/ws ausente NESTE rev (anterior ao épico Live) — esperado
+  [ok] público index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] público POST /api/tts real: job 23779ed197 em ~1s, peça 0 com 95438 bytes

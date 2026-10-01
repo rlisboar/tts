@@ -1,0 +1,8 @@
+# gate #202 — célula 3 (campo FORA do escopo mexido no meio da rodada) — 2026-10-01T05:59:35Z
+base=7cbccae83527dc3e22e23bb155c097ce96018553c7f4e7e28f93a79f25654559 campo=audio_gain_db
+  valor antes do meu toque: 0.0
+  mexi FORA do escopo: audio_gain_db=3.5
+  suíte rc=0
+  valor depois da rodada: 3.5
+  PRESERVADO
+  restaurado para 0.0 · sha=7cbccae83527dc3e22e23bb155c097ce96018553c7f4e7e28f93a79f25654559

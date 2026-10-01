@@ -1,0 +1,54 @@
+# pytest tests/ -q — 2026-09-30T03:10:48Z · HEAD=c348e2a
+ce8491c03cd5052dbafc6febc2390265
+90f36ef3e1930b03b68c578c255bb209
+fd3da52ffa64b951f05bfaf95854e836
+378c4efcb7d330992b73166cae2da607
+e426ab2a8a7dc830c2c7914687c22183
+........................................................................ [ 11%]
+........................................................................ [ 22%]
+.............................................................[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)........... [ 33%]
+........................................................................ [ 44%]
+........................................................................ [ 55%]
+........................................................................ [ 66%]
+........................................................................ [ 77%]
+........................................................................ [ 88%]
+........F............................................................sss [ 99%]
+..                                                                       [100%]
+=================================== FAILURES ===================================
+____________ test_cliente_corta_o_playback_no_onset_mesmo_sem_barge ____________
+
+    def test_cliente_corta_o_playback_no_onset_mesmo_sem_barge():
+        """#225: o onset do usuário tem de CALAR o assistente também quando o servidor
+        NÃO classifica barge.
+    
+        A janela de playback do servidor é uma ESTIMATIVA do que o cliente ainda vai
+        tocar; quando ela fecha antes (cliente atrasado, regime do #216), o onset vira
+        `speech_start` sem `barge_in` e nenhum `interrupted` vem — sem corte, o
+        assistente segue falando por cima do usuário. Quem sabe o que está na fila é o
+        CLIENTE: o corte mora no handler de `speech_start`.
+    
+        Guarda de TEXTO (a suíte não roda JS): se a linha sair do `index.html`, o
+        defeito volta sem nenhum teste vermelho."""
+        html = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()
+        bloco = re.search(r'case "speech_start":(.*?)break;', html, re.S)
+        assert bloco, "o handler de `speech_start` sumiu do static/index.html"
+        corpo = bloco.group(1)
+>       assert "LX.ativos.length" in corpo and "lxCancelaPlayback()" in corpo, \
+            "`speech_start` deixou de cortar o playback com fila (#225)"
+E       AssertionError: `speech_start` deixou de cortar o playback com fila (#225)
+E       assert ('LX.ativos.length' in '   LX.obs.pendente = false;   // a fala anotada está abrindo agora (#129)\n                           LX.obs.pendente...                     lxEstado("pensando", "✋ ouvi você…");\n                           lxLogEvento("▶ fala começou"); ')
+
+tests/test_live_turns.py:891: AssertionError
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+=========================== short test summary info ============================
+FAILED tests/test_live_turns.py::test_cliente_corta_o_playback_no_onset_mesmo_sem_barge - AssertionError: `speech_start` deixou de cortar o playback com fila (#225)
+assert ('LX.ativos.length' in '   LX.obs.pendente = false;   // a fala anotada está abrindo agora (#129)\n                           LX.obs.pendente...                     lxEstado("pensando", "✋ ouvi você…");\n                           lxLogEvento("▶ fala começou"); ')
+1 failed, 646 passed, 3 skipped in 337.53s (0:05:37)
+[chat-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+exit=1
+## md5 DEPOIS
+ce8491c03cd5052dbafc6febc2390265
+90f36ef3e1930b03b68c578c255bb209
+fd3da52ffa64b951f05bfaf95854e836
+378c4efcb7d330992b73166cae2da607
+e426ab2a8a7dc830c2c7914687c22183

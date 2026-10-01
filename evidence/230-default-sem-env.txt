@@ -1,0 +1,12 @@
+Config() default             : True True False
+app._live_engine_novo default: True True False
+
+-- escape POR ALAVANCA (uma env de cada vez, as outras limpas) --
+TTS_LIVE_BARGE_JANELA_TURNO      -> (False, True, False)
+TTS_LIVE_PLAYBACK_DURACAO        -> (True, False, False)
+TTS_LIVE_ECO_SO_TOCANDO          -> (True, True, True)
+
+-- as 3 juntas (volta ao produto de antes do #167) --
+todas em 0: (False, False, False)
+
+OK — default liga A+B, mantém C fora, e as TRÊS seguem desligáveis por env

@@ -1,0 +1,10 @@
+  [ok]   alvo sem rotas: deploy --apply rc=0 e smoke sem FALHA (esperado-para-o-alvo não derruba)
+      linhas: 4 ausente(s)
+  [ok]   alvo com rotas + rota que não responde: smoke ACUSA (rc=1)
+  [ok]   trocar só o alvo (corte-velho) volta a NÃO acusar → decisão é do rev, não do HEAD
+  [ok]   paridade do index fecha COM nonce por resposta (normalização ativa)
+  [ok]   mordida nonce (normalização removida) → MORDE
+  [ok]   mordida rota decidida pelo HEAD → MORDE
+  [ok]   mordida rc sempre 0 → MORDE
+  [ok]   script restaurado byte a byte (ad402a8e197c3a4dce9a57de727d58a5)
+== FIM: falhas=0

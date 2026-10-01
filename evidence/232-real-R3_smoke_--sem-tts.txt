@@ -1,0 +1,13 @@
+== smoke (rev alvo d25269369284…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN com a chave do mini → 200
+  [FALHA] LAN /api/build sem "codigo" (rota existe no rev alvo — versão errada no ar?)
+  [FALHA] LAN /api/live/ws devolveu 401 (esperado 101; falta websockets?)
+  [FALHA] LAN index.html (da1a3c4e67c7…) ≠ rev alvo (bbfd73eadff0…)
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público com a chave do mini → 200
+  [FALHA] público /api/build sem "codigo" (rota existe no rev alvo — versão errada no ar?)
+  [FALHA] público /api/live/ws devolveu 401 (esperado 101; falta websockets?)
+  [FALHA] público index.html (da1a3c4e67c7…) ≠ rev alvo (bbfd73eadff0…)

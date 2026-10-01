@@ -1,0 +1,35 @@
+# gate #229 — rodada final — 2026-10-01T05:29:54Z · HEAD=fd5d03d
+md5 live_pipeline.py=b3000328d19735d51c0a688549aa1bac tests/test_live_dsh.py=3ff6391deb71a56b8ebf434e5e9a11ad
+
+== 1) probe do achado (#207/#228): esperado exit 1 = coberto ==
+  · close ANTES do spawn: start() 51 ms · _saiu=True · pipe._worker=None · filho vivo=False · ativo=False
+    ✔ o filho foi fechado junto com a sessão
+  · close DEPOIS do spawn: start() 49 ms · _saiu=True · pipe._worker=None · filho vivo=False · ativo=False
+    ✔ o filho foi fechado junto com a sessão
+  ✔ coberto nas duas janelas
+exit=1
+
+== 2) probe NOVO (_tts_live, task #241): esperado exit 1 = sem furo ==
+  ✔ sem furo: a 2ª leitura achou o worker
+exit=1
+
+== 3) testes da família (novo + os 5 do #207 + worker) ==
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+25 passed in 3.09s
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+14 passed in 3.52s
+
+--: command substitution: line 2: syntax error: unexpected end of file from `if' command on line 1
+== 4) MORDIDA do #228: bloco  do _worker_sobe removido ==
+ +  where True = <test_live_dsh.test_close_dentro_do_start_do_worker_nao_deixa_filho_orfao.<locals>.WorkerFalso object at 0x106fc7920>.vivo
+1 failed in 0.34s
+    ✔ o filho foi fechado junto com a sessão
+  ✘ FURO: a janela entre `self._worker = w` e o Popen deixa o filho órfão
+probe sem fix exit=0 (0 = FURO)
+restaurado
+
+== 5) MORDIDA do #241: nome local do _tts_live revertido ==
+  ✘ FURO: AttributeError na 2ª leitura de `_worker` ('NoneType' object has no attribute 'ativo')
+    fix de 1 linha: usar nome local — `w = self._worker = _LiveWorker(...)`; `if w.ativo:`
+probe exit=0 (0 = FURO)
+restaurado byte-a-byte · md5=b3000328d19735d51c0a688549aa1bac

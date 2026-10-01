@@ -1,0 +1,23 @@
+== host
+  Mac-mini.local
+  Darwin 27.0.0 arm64
+  3:03  up 9 days,  6:13, 1 user, load averages: 1.23 1.13 1.10
+  RAM: 16 GB
+  disco: 43Gi livres (24% usado)
+== git do mini
+  HEAD 3e663a6 2026-09-24 23:45:28 -0300 chore: ignora .grok/ (config local do runner de agentes)
+  distância até origin/main: 0 local, 59 atrás
+== serviço
+  69251	255	studio.tts.server
+  porta: Python  69268 lisboa    6u  IPv4 0xba3bca3208324ac3      0t0  TCP *:7860 (LISTEN)
+== venv e deps do caminho novo
+  Python 3.12.4
+  dep: websockets False
+  dep: importlib_resources False
+== uso (log de produção)
+  POST /api/tts no log: 3764
+  log: 8312487 Oct 1 03:03
+== estado do último deploy (se houve)
+  sha=cb36edbe4081d52421a4969690e2cf41349ac672
+  data=2026-10-01 01:42:19
+  chave do mini: 48 bytes

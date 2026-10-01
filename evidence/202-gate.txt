@@ -1,0 +1,30 @@
+# gate #202 — 2026-10-01T05:54:46Z · pins: dsh_ui.sh=bffc59c0ecb6474065549b00ab7669e1 admin_ui_flow.sh=d94c0b2ef1fd25a645b6a4e0c32caa77
+  [base] settings=7cbccae83527dc3e22e23bb155c097ce96018553c7f4e7e28f93a79f25654559 keys=a65e455d59f84fbe1cb9d1f388c56c07c8a61a2739bc03b700d019f5c0903298 speed=1.77
+== P) controle positivo (byte a byte)
+  [ok]   tests/dsh_ui.sh EXIT=0
+  [ok]   tests/dsh_ui.sh devolveu settings.json byte a byte
+  [ok]   tests/dsh_ui.sh não tocou .apikeys.json
+      pageerror/console.error: 1
+  [FALHA] tests/admin_ui_flow.sh saiu 1
+  [ok]   tests/admin_ui_flow.sh devolveu settings.json byte a byte
+  [ok]   tests/admin_ui_flow.sh não tocou .apikeys.json
+      pageerror/console.error: 0
+  [ok]   estado do dono intacto ao fim do P
+== N) controle negativo (dsh inválido: normaliza para a rodada, devolve o inválido)
+  [ok]   dsh_ui.sh EXIT=0 com dsh inválido
+  [ok]   o inválido VOLTOU inválido (não 'consertou' o dono)
+      bin= /nao/existe/dsh profile= perfil-que-nao-existe
+  [ok]   estado do dono restaurado após o N
+== S) SIGINT no meio
+  [ok]   SIGINT: settings.json intacto
+  [ok]   SIGINT: nenhuma chave teste-ui-*/probe-* órfã
+      (rc do SIGINT=1)
+== estado final
+  [final] settings=7cbccae83527dc3e22e23bb155c097ce96018553c7f4e7e28f93a79f25654559 keys=a65e455d59f84fbe1cb9d1f388c56c07c8a61a2739bc03b700d019f5c0903298 speed=1.77
+  [ok]   byte a byte idêntico ao snapshot inicial
+== FIM: falhas=1
+
+# NOTA: esta foi a 1ª rodada, SEM app no ar — o admin_ui_flow.sh exige BASE
+# respondendo (não sobe servidor próprio) e saiu 1 só por isso; o settings ficou
+# intacto. A rodada válida, com ./run.sh no ar, é evidence/202-gate2.txt (falhas=0),
+# mesmos md5 de suíte. Ver veredito na task_0db9c015.

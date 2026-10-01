@@ -1,0 +1,15 @@
+# gate #238 — prova do falso PASSA por bytecode velho — 2026-10-01T05:49:14Z
+md5 app.py: 7fe35e09fd0290f42d2844926384bad4
+
+== célula: mordida no default do #230 (mesmo tamanho) + mtime devolvido ==
+mordida aplicada · tamanho=338309 · mtime=02:42:28
+
+— SEM limpar bytecode (falso PASSA):
+1 passed in 0.29s
+
+— COM tests/limpa_bytecode.sh (MORDE):
+  [bytecode] 1 .pyc removido(s) — a próxima medição compila da fonte
+1 failed in 0.35s
+
+restaurado byte-a-byte · md5=7fe35e09fd0290f42d2844926384bad4
+1 passed in 0.35s

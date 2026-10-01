@@ -1,0 +1,39 @@
+# pytest (gate #229, 2ª) — 2026-10-01T05:13:01Z · HEAD=78a9c62
+fd3da52ffa64b951f05bfaf95854e836
+43ed7af7887fe102d241fa621534bddc
+7f0ce46f8659951e0d65b31f97acbb5f
+ce8491c03cd5052dbafc6febc2390265
+18b581a4ebbdf120ca8ea22fec979433
+........................................................................ [ 10%]
+........................................................................ [ 21%]
+...................[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+.......................[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+..............[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+..[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+..[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+.[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+...[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+..[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+...[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+... [ 32%]
+.[live-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+....................................................................... [ 43%]
+........................................................................ [ 54%]
+........................................................................ [ 65%]
+.................[live-dsh] [dsh stderr] FAKE_ACP SESSAO s1
+[live-dsh] [dsh stderr] FAKE_ACP CONFIG model ["dsflash","deepseek-flash-41"]
+[live-dsh] [dsh stderr] FAKE_ACP CONFIG reasoning_effort off.
+...................................................... [ 76%]
+........................................................................ [ 87%]
+........................................................................ [ 98%]
+...sss..                                                                 [100%]
+[worker] caminho LIGADO do worker do Live NÃO correu neste run: TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
+653 passed, 3 skipped in 313.85s (0:05:13)
+[chat-dsh] [dsh] subindo: /opt/homebrew/bin/dsh --profile tts-studio (cwd=/Users/lisboa/Documents/tts-rod/outputs/.dsh-cwd)
+exit=0
+## md5 DEPOIS
+fd3da52ffa64b951f05bfaf95854e836
+43ed7af7887fe102d241fa621534bddc
+7f0ce46f8659951e0d65b31f97acbb5f
+ce8491c03cd5052dbafc6febc2390265
+18b581a4ebbdf120ca8ea22fec979433

@@ -1,0 +1,10 @@
+# gate #226 — sabotagens — 2026-10-01T05:24:04Z
+  md5 antes: 378c4efcb7d330992b73166cae2da607 ce8491c03cd5052dbafc6febc2390265 
+  (o par entrou pela TOLERÂNCIA provada)
+  [ok]    S1a tolerância forçada (TS=0): rc=0 (esperado PASS)
+  (ramo EXATO: sem a linha da tolerância)
+  [FALHA] S1b ramo exato (TS futuro): caiu (rc=1) e tinha de passar
+  [ok]    S1c expectativa sabotada morde: rc=1 (esperado FALHAR)
+  (par revertido à forma antiga)
+  [ok]    S2 forma antiga COM escritor cai: rc=1 (esperado FALHAR)
+  md5 depois: 378c4efcb7d330992b73166cae2da607 ce8491c03cd5052dbafc6febc2390265 

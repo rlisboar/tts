@@ -1,0 +1,38 @@
+# #236 — rodada real read-only no mini (alvo ATUAL 3e663a6) — 2026-10-01T06:03:32Z
+== smoke (rev alvo 3e663a60ff3a…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN com a chave do mini → 200
+  [ok] LAN /api/build ausente NESTE rev (anterior ao #190) — esperado
+  [ok] LAN /api/live/ws ausente NESTE rev (anterior ao épico Live) — esperado
+  [ok] LAN index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] LAN POST /api/tts real: job acf352180a em ~2s, peça 0 com 95438 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público com a chave do mini → 200
+  [ok] público /api/build ausente NESTE rev (anterior ao #190) — esperado
+  [ok] público /api/live/ws ausente NESTE rev (anterior ao épico Live) — esperado
+  [ok] público index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] público POST /api/tts real: job 523bf674b3 em ~1s, peça 0 com 95438 bytes
+smoke rc=0
+
+== dry-run continua seco ==
+== contraprova REAL em lisboa@192.168.15.34 — 2026-10-01T06:03:37Z
+  estado de partida: 3e663a60ff3a2a818eda32261da7a0056defd666 · arquivos na árvore: 47884
+  (outputs/ fora do hash: produção é USADA e um job mexe nele)
+  [ok]   R1 recon: árvore/HEAD/serviço intocados · rc=0 (refs do mini podem ter andado: fetch, por desenho)
+      ref: < REF 78a9c62cd011f52149af204245a84460ddd4a88c refs/remotes/origin/HEAD
+      ref: > REF d25269369284a90c363cebad17cde98f2e09e4e7 refs/remotes/origin/HEAD
+      ref: < REF 78a9c62cd011f52149af204245a84460ddd4a88c refs/remotes/origin/main
+      ref: > REF d25269369284a90c363cebad17cde98f2e09e4e7 refs/remotes/origin/main
+      última linha:   chave do mini: 48 bytes
+  [ok]   R2 compare: nada mudou no mini (árvore/HEAD/refs/serviço) · rc=1
+      última linha:   [DIFERENTE] static/index.html: rev alvo bbfd73eadff0… × no ar da1a3c4e67c7…
+  [ok]   R3 smoke --sem-tts: nada mudou no mini (árvore/HEAD/refs/serviço) · rc=1
+      última linha:   [FALHA] público index.html (da1a3c4e67c7…) ≠ rev alvo (bbfd73eadff0…)
+  [ok]   R4 deploy dry-run: nada mudou no mini (árvore/HEAD/refs/serviço) · rc=0
+      última linha:   (dry-run: rode com --apply para push + backup + switch + deps + restart + smoke)
+  [ok]   R4 grava o preview FORA da árvore (/tmp no mini) — F1 corrigido
+== R5 smoke com TTS real (a árvore muda: job em outputs/)
+  [ok]   R5 POST /api/tts real concluiu com peça (rc=1)
+== FIM: falhas=0
