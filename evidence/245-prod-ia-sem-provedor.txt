@@ -1,0 +1,32 @@
+=== PÓS-SUBIDA (read-only, contra a produção) — o caminho de IA não tem provedor ===
+2026-10-01 ~03:37 -03 · audio-ml (achado para o gate pós-deploy #245; nada foi escrito)
+
+Estado do alvo (o resto do smoke está em evidence/231-passo2-*): mini em d252693,
+/api/build ok (codigo=858fe0d4), /health 200, WS público 101 — o deploy está no ar.
+
+settings.json do mini, campos de IA — TODOS VAZIOS:
+  chat_base_url=''  chat_api_key=''  chat_model=''
+  remote_base_url=''  remote_api_key=''
+  chat_backend / chat_backend_live AUSENTES (default = openai)
+  dsh: AUSENTE do mini (`which dsh` → not found; ~/.dsh não existe)
+  voices/: 21+ vozes presentes (o Live tem voz para resolver)
+
+PROBE REAL (read-only; não toca settings):
+  $ K=$(cat .apikey)
+  $ S=$(curl -s -H "X-API-Key: $K" -H "Content-Type: application/json" \
+        -X POST http://127.0.0.1:7860/api/chat/start -d '{"objective":"teste pos-deploy"}')
+    -> 200 {"session_id":"19e458b21bc5","status":"thinking"}
+  $ curl -s -H "X-API-Key: $K" -H "Content-Type: application/json" \
+        -X POST http://127.0.0.1:7860/api/chat/19e458b21bc5 -d '{"message":"oi"}'
+    -> 200 {"ok":true,"status":"thinking"}
+  $ curl -s -H "X-API-Key: $K" http://127.0.0.1:7860/api/chat/19e458b21bc5
+    -> "error": "400: Provedor de conversa não configurado
+                 (Configurações → Rede: Base URL OpenAI-compat)"
+
+CONSEQUÊNCIA: no ar, a Conversa E o passo de chat do Live devolvem esse 400 até o
+dono configurar a Base URL (Configurações → Rede). O dsh — rota RECOMENDADA do Live
+nos docs — não existe no mini, então a rota de produção é openai-compat.
+
+NÃO é falha do deploy (código novo no ar, rotas novas respondem). É CONFIG pendente
+do dono; a pergunta de produto é se a tela do Live deve avisar antes do 1º turno
+(hoje o erro só aparece depois de o usuário falar e esperar).

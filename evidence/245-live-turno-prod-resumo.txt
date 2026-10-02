@@ -1,0 +1,25 @@
+=== DIGEST do turno REAL no Live da produção (full: 245-live-turno-prod.txt; script: .py) ===
+# 2026-10-01 ~03:41 -03 · audio-ml · read-only (nenhuma escrita no mini)
+# alvo: mini d252693, wss://tts.the-dudes.com/api/live/ws (caminho PÚBLICO, igual ao navegador)
+# fala: 3,5 s de voices/320afe68b8.wav -> PCM16 16 kHz; setup + end_of_speech
+
+# turno REAL contra wss://tts.the-dudes.com/api/live/ws · fala de 3.5s de voices/320afe68b8.wav
+<< {"type":"ready","session_id":"51c3b851c9","resumed":false,"voice_id":"7b620feaba","audio":{"format":"pcm16","sr":24000,"channels":1},"in_audio":{"format":"pcm16","sr":16000,"channels":1},"vad":{"silence_ms":600,"prefix_ms":100}}
+>> fala enviada (112000 bytes em PCM16 16 kHz)
+<< [  1.0s] {"type": "prewarm", "ok": true}
+<< [  1.0s] {"type": "speech_start", "t_ms": 0, "ts": 1790836680.067, "amostra": 0, "t_decisao_ms": 96, "prob": 0.999, "rms_dbfs": -21.4, "curto": false, "barge_in": false, "audio_bytes": 10240}
+<< [  1.0s] {"type": "speech_end", "t_ms": 782, "ts": 1790836680.753, "amostra": 51200, "t_decisao_ms": 782, "prob": 0.0, "rms_dbfs": -120.0, "curto": false, "barge_in": false, "detalhe": "flush", "fala_ms": 2528, "barge_falso": false, "audio_bytes": 102400}
+<< [  1.0s] {"type": "speech_start", "turn": 1, "buffer_bytes": 102400}
+<< [  2.4s] {"type": "transcript_user", "text": "Caraca, meu irmão, tô bolado com essa parada."}
+<< [  2.4s] {"type": "error", "code": "pipeline", "message": "HTTPException: 400: Provedor de conversa não configurado (Configurações → Rede: Base URL OpenAI-compat)"}
+<< [306.3s] {"type": "error", "code": "session_ttl", "message": "sessão ociosa por 300s"}
+fim do probe
+
+--- último stats antes do TTL (prova do estágio PRESO em 'llm'; a linha é truncada em 500 chars) ---
+<< [305.9s] {"type": "stats", "t_ms": 305632, "mic": {"frames": 35, "bytes": 112000, "desde_ultimo_ms": 304871, "dbfs": -49.4, "prob": 0.999}, "motor": {"estado": "ocioso", "limiar_dbfs": -45.0, "limiar_turno_dbfs": -48.0, "barge_ativos": 0, "barge_falsos": 0}
+...
+
+LEITURA: handshake/auth/ready OK; prewarm OK (1,0 s); VAD detecta a fala; STT transcreve CERTO
+("Caraca, meu irmão, tô bolado com essa parada."); o turno MORRE no chat com 400 (provedor não
+configurado) -> error{pipeline}. A sessão sobrevive, mas o estágio fica preso em 'llm' (t_ms=305s,
+turno.ms crescendo) até o TTL de 300 s — o painel OBS diz 'IA pensando' num turno morto.

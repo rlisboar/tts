@@ -1,0 +1,40 @@
+=== #227 — MUTAÇÃO 1: tolerância desligada no par do /api/build ===
+$ sed -i '' 's/^    if escritos:$/    if False:  # MUT1/' tests/test_api.py
+$ pytest tests/test_api.py -q -k build
+E       AssertionError: hash é do CONTEÚDO dos módulos (expectativa congelada no import)
+E       assert 'e4dbf769' == '00000000'
+E         
+E         - 00000000
+E         + e4dbf769
+E       AssertionError: o par não passou pela tolerância — o teste não mediu o que promete
+E       assert '[220] escritos depois do boot' in ''
+E        +  where '' = CaptureResult(out='', err='').out
+E        +    where CaptureResult(out='', err='') = readouterr()
+E        +      where readouterr = <_pytest.capture.CaptureFixture object at 0x106b44800>.readouterr
+2 failed, 5 passed, 219 deselected in 0.48s
+
+=== #227 — MUTAÇÃO 2: `_BUILD_CODIGO` vira literal (prova de CONTEÚDO) ===
+$ sed -i '' 's/^_BUILD_CODIGO = _build_hash()$/... = "cafe1234"/' app.py
+$ pytest tests/test_api.py -q -k build
+E       AssertionError: hash é do CONTEÚDO dos módulos (expectativa congelada no import)
+E       assert 'cafe1234' == '1c68da24'
+E         
+E         - 1c68da24
+E         + cafe1234
+E       AssertionError: hash é do CONTEÚDO dos módulos (expectativa congelada no import)
+E       assert 'cafe1234' == '1c68da24'
+E         
+E         - 1c68da24
+E         + cafe1234
+E       AssertionError: premissa do mutante do #227
+E       assert 'cafe1234' != 'cafe1234'
+E        +  where 'cafe1234' = app._BUILD_CODIGO
+3 failed, 4 passed, 219 deselected in 0.72s
+
+=== #227 — CONTROLE: com o código de agora ===
+7 passed, 219 deselected in 0.30s
+
+=== #227 — ÁRVORE DEVOLVIDA pelo experimento do #214 (item 3) ===
+$ md5 -q live_pipeline.py > antes; PYTHONPATH=evidence pytest tests/test_api.py -k build -q -p 214-midrun-edit; md5 -q live_pipeline.py > depois
+7 passed, 219 deselected in 0.07s
+  ✔ o experimento devolveu live_pipeline.py (md5 igual antes/depois)

@@ -1,0 +1,17 @@
+md5 original: b7583e6400dac36a19f1f3242db2d22c
+── mordida A (ramo dedicado): '} else if (m.code === "session_substituida") {' -> '} else if (false && m.code === "session_substituida") {'
+  ✔ suíte caiu (rc=1):
+      · a tela não avisou a substituição (status 'sessão encerrada')
+      · status não diz que a aba foi substituída: 'sessão encerrada'
+      · o close LIMPO sobrescreveu o motivo da substituição: 'sessão encerrada'
+      · o ramo session_substituida não levantou a flag LX.substituida
+      · evento injetado não avisa na tela: 'sessão viva — fale de novo para tentar'
+      · evento injetado caiu no texto genérico: 'sessão viva — fale de novo para tentar'
+── mordida B (precedência no onclose): 'if (LX.substituida) lxEstado("desligado", LX_SUBSTITUIDA);' -> 'if (false) lxEstado("desligado", LX_SUBSTITUIDA);'
+  ✔ suíte caiu (rc=1):
+      · a tela não avisou a substituição (status 'sessão encerrada')
+      · status não diz que a aba foi substituída: 'sessão encerrada'
+      · o close LIMPO sobrescreveu o motivo da substituição: 'sessão encerrada'
+
+✔ mordidas OK — as duas metades do fix têm teste que morde (evidências 244-mordida-{A,B}.txt)
+EXIT=0

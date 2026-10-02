@@ -1,0 +1,18 @@
+=== #242 — SABOTAGEM S1b: `_BUILD_TS_HASH` no futuro desliga a tolerância por mtime ===
+$ sed -i '' 's/^_BUILD_TS_HASH = time.time()$/... = time.time() + 3600/' app.py
+1313:_BUILD_TS_HASH = time.time() + 3600
+
+--- ANTES (critério só por mtime: nada é 'escrito depois do boot') ---
+E       AssertionError: o mtime do módulo escrito é o sinal que autoriza a tolerância
+E       assert 'live_turns.py' in []
+E        +  where [] = _modulos_escritos_desde_o_boot(PosixPath('/private/tmp/pytest-of-lisboa/pytest-182/test_build_par_nao_e_refem_da_0'))
+E       AssertionError: cenário não montado: falta o mtime > boot que autoriza a tolerância
+
+--- DEPOIS (skew = tudo conta como escrito, lado seguro) ---
+7 passed, 219 deselected in 2.31s
+
+--- CONTROLE (sem sabotagem, código de agora) ---
+7 passed, 219 deselected in 1.90s
+
+--- (recaptura) ANTES: só o critério por mtime, com o TS sabotado ---
+3 failed, 4 passed, 219 deselected in 0.95s

@@ -1,0 +1,43 @@
+=== GATE PÓS-DEPLOY PASSO 2 — CONTRAPROVA POR FORA (read-only, sem apply) — task_b559e5bd #245 ===
+Data: 2026-10-01 ~03:30-03:45 (local) · alvo declarado: d25269369284a90c363cebad17cde98f2e09e4e7
+Método: tudo contra a máquina real (mini .34) e o público, sem tocar em nada; smoke do repo rodado por mim.
+
+1) REV NO AR == ALVO (ssh read-only)
+   branch: prod-d25269369284 (NÃO detached) · HEAD: d25269369284a90c363cebad17cde98f2e09e4e7
+   árvore: limpa (só untracked de deploy: .deploy-mini-estado + freezes)
+   .deploy-mini-estado: sha=3e663a60ff3a2a818eda32261da7a0056defd666 (rollback do passo 2 = passo 1) OK
+
+2) O AR SERVE O REV (por fora, nonce normalizado)
+   codigo esperado (meu cálculo: sha256 dos blobs do rev, 8 chars) = 858fe0d4
+   /api/build LAN codigo=858fe0d4 · público codigo=858fe0d4   → instância viva carregou o rev
+   index servido (sem nonce) sha=bbfd73eadff0bd6a… == blob do rev static/index.html (LAN e público)
+   smoke do script: ver item 7 (único vermelho era falso positivo, reproduzido)
+
+3) ROTAS NOVAS
+   /api/build: 200 com chave (LAN+público) · /api/voices sem chave 401, com chave 200 (LAN+público)
+   /api/live/ws: LAN 101; público 101 com --http1.1; SEM a flag 401 (curl negocia h2 com o Cloudflare
+   e o upgrade é mecanismo h1 — o origin recebe sem upgrade; navegador é h1)
+   E2E do WS (python do mini + websockets, setup→ready): LAN ready sr=24000 · PÚBLICO ready sr=24000
+
+4) VENV DO MINI: diff freeze antes(032931) x depois(032936) = 6 itens, TODOS de requirements/lock:
+   + httpcore2==2.13.1 + httpx2==2.13.1 + importlib_resources==7.1.0 + truststore==0.10.4
+   + websockets==17.1 (preview anunciado) · silero-vad 6.2.2→6.2.1 (alinhado ao pin ==6.2.1)
+   O venv local verificado tem exatamente essas versões (requirements.lock + freeze local conferidos).
+   Contexto: o passo 1 subiu com --sem-deps; o passo 2 completou a instalação do requirements.
+
+5) PRODUÇÃO SEGUE SERVINDO: /health 200; POST /api/tts real + peça em bytes (LAN e público, 2 rodadas);
+   GET /api/voices com a chave do mini 200 (LAN e público).
+
+6) LOG/UPTIME: PID novo 74223 (lstart 03:29:38, condiz com o restart do deploy; boot_ms do pós-deploy
+   4991/16156 na evidência). A chave APARECE no log só pelo caminho compat ?key= dos probes do smoke
+   (56 linhas) — o browser usa ?ticket= (não vaza). Sem segredo além disso.
+
+7) SMOKE (comando do repo, TTS_MINI_REV=d252693):
+   ANTES do fix: rc=1, ÚNICO vermelho = [FALHA] público /api/live/ws 401 (falso positivo do item 3)
+   DEPOIS do fix do infra (--http1.1 + comentário + teste com shim h2/h1): rc=0, 16 checagens [ok],
+   incluindo "público WebSocket 101". Suíte tests/test_deploy_mini_sh.py 33 passed.
+   MORDIDA provada por mim: removida a flag → test_ws_probe_faz_handshake_h1_como_o_navegador FALHA;
+   restaurada → passa.
+
+VEREDITO: subida ÍNTEGRA e funcionalmente correta; a evidência do deploy tinha 1 falso vermelho
+(smoke h2), já corrigido em paralelo pelo infra com teste que morde. Pendência: commit do fix (WIP).
