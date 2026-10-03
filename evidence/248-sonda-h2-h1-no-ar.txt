@@ -1,0 +1,11 @@
+# Sonda h2 × h1 do /api/live/ws contra o AR (#248, gate pós-deploy passo 2)
+# Data: 2026-10-03T01:22:14Z · read-only · chave via .apikeys.json (sem eco)
+# Comando do smoke (remote/deploy_mini.sh:193): curl --http1.1 com headers de upgrade; sonda sem a flag para reproduzir o falso-vermelho.
+# LAN: http://192.168.15.34:7860 · público: https://tts.the-dudes.com (Cloudflare Tunnel)
+
+LAN      h1_upgrade=101  h2_upgrade=101 1.1   health=200 1.1   (http sem TLS: curl sempre h1; 'h2' só confirma negociação 1.1)
+PÚBLICO  h1_upgrade=101  h2_upgrade=401 2     health=200 2     (h2 para o cliente: upgrade não chega ao origin → middleware 401)
+
+Conclusão: reproduce o achado do #247/#248 no ar — o upgrade de WS é mecanismo h1.
+Com --http1.1 (fix do smoke) o público fecha 101; sem a flag, falso-vermelho 401 embora o navegador (h1) conecte.
+/health 200 nos dois caminhos e nos dois protocolos: produção de pé durante a sonda.
