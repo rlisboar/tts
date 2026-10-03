@@ -3778,13 +3778,83 @@ def test_live_stats_erro_provedor_e_limiares_no_payload(monkeypatch):
     # 2 (turno novo por barge) + 3 (barge com turno já aberto): o total, não a 1ª porta
     assert s["motor"]["barge_ativos"] == 5 and s["motor"]["barge_falsos"] == 1
     assert s["playback"]["speaking"] is True and s["playback"]["chunks"] == 12
-    assert s["turno"]["stage"] == "tts" and s["turno"]["n"] == 3
+    # #250: `error{pipeline}` é TERMINAL — o estágio volta a "idle" (o estágio da
+    # morte fica preservado no `st_erro.stage`, conferido acima); antes ficava
+    # preso em "tts" com o `ms` crescendo até o TTL.
+    assert s["turno"]["stage"] == "idle" and s["turno"]["n"] == 3
     # sem erro e sem provedor marcado: chaves AUSENTES (o frontend usa isso)
     sess["st_erro"] = None
     monkeypatch.setattr(app, "_provedor_estado",
                         {"estado": "desconhecido", "http": None, "ts": 0.0})
     s2 = app._live_stats(sess)
     assert "erro" not in s2 and "provedor" not in s2
+
+
+class _EngJanela:
+    """Motor que REGISTRA `set_turno_aberto` — a janela do #167 precisa de dono
+    observável (o `_live_janela_turno` só chama quando o motor tem o método)."""
+
+    def __init__(self):
+        self.turno_aberto = False
+        self.marcas = []
+
+    def set_turno_aberto(self, aberto):
+        self.marcas.append(bool(aberto))
+        self.turno_aberto = bool(aberto)
+
+    def estatisticas(self):
+        return {"barge_in": 0, "barge_in_com_turno_aberto": 0, "barge_in_falso": 0}
+
+
+class _FilaFake:
+    def __init__(self):
+        self.itens = []
+
+    def put(self, x):
+        self.itens.append(x)
+
+
+def test_live_erro_pipeline_fecha_o_turno_e_a_janela():
+    """#250 (probe pós-subida, prod d252693): `error{code:"pipeline"}` deixa a
+    sessão VIVA, mas o turno MORREU — o livro-caixa só fechava em
+    `turn_complete`/`interrupted`. Dois estragos medidos em produção: o
+    `stats.turno.stage` ficava preso em "llm" com o `ms` crescendo até o TTL
+    (painel anunciando "IA pensando" num turno morto, ao lado do motor "ocioso"),
+    e a janela do #167 ficava ABERTA quando o turno já tinha mandado áudio — a
+    fala seguinte era lida como barge de um turno que não existe. Agora o erro
+    terminal fecha a janela e volta o estágio a "idle"; o estágio ONDE morreu
+    fica no `st_erro.stage`. Erros que NÃO fecham turno (`turno_em_curso`,
+    `sem_audio`, `busy`…) não tocam em nada."""
+    agora = time.monotonic()
+    eng = _EngJanela()
+    sess = {"id": "s-250", "t0": agora, "criada": time.time() - 5, "visto": agora,
+            "turno": 1, "engine": eng, "st_erro": None, "fila": _FilaFake(),
+            "st_stage": "llm", "st_stage_ini": agora - 2.0, "st_stage_ms": 0}
+    eng.set_turno_aberto(True)               # o turno já mandou áudio (#167 aberta)
+    app._live_envia_json(sess, {"type": "error", "code": "pipeline",
+                                "message": "BadRequestError: chat sem provedor"})
+    assert sess["st_stage"] == "idle" and sess["st_stage_ini"] is None
+    assert sess["st_erro"]["code"] == "pipeline" and sess["st_erro"]["stage"] == "llm"
+    assert eng.marcas == [True, False], \
+        "a janela do #167 tem de FECHAR no error terminal"
+    assert eng.turno_aberto is False
+    s = app._live_stats(sess)
+    assert s["turno"]["stage"] == "idle" and s["turno"]["ms"] == 0
+    assert s["erro"]["stage"] == "llm"       # estágio da morte preservado
+    # ...e o evento segue para o cliente (nada foi engolido):
+    canal, obj = sess["fila"].itens[0]
+    assert canal == "json" and obj["type"] == "error" and obj["code"] == "pipeline"
+
+    # erros que NÃO fecham turno: estágio e janela intocados (contrato antigo)
+    eng2 = _EngJanela()
+    sess2 = {"id": "s-250b", "t0": agora, "criada": time.time() - 5, "visto": agora,
+             "turno": 1, "engine": eng2, "st_erro": None, "fila": _FilaFake(),
+             "st_stage": "stt", "st_stage_ini": agora - 0.2, "st_stage_ms": 0}
+    app._live_envia_json(sess2, {"type": "error", "code": "turno_em_curso",
+                                 "message": "ocupado"})
+    assert sess2["st_stage"] == "stt" and eng2.marcas == []
+    app._live_observa(sess2, {"type": "error", "code": "sem_audio", "message": "x"})
+    assert sess2["st_stage"] == "stt"
 
 
 def test_engine_do_live_nasce_com_as_alavancas_do_167_ligadas(monkeypatch):

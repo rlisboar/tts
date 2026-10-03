@@ -5881,7 +5881,14 @@ def _live_stage(sess: dict, stage: str) -> None:
 
 
 def _live_observa(sess: dict, obj) -> None:
-    """Espia os eventos que SAEM para derivar telemetria (não altera nada)."""
+    """Espia os eventos que SAEM para derivar telemetria (não altera nada).
+
+    Exceção (#250): `error{code:"pipeline"}` é TERMINAL — o turno morreu e a
+    sessão sobrevive (por desenho), mas só `turn_complete`/`interrupted` fechavam
+    o livro-caixa: `st_stage` ficava preso em "llm"/"tts" com `st_stage_ini`
+    correndo (`stats.turno.ms` crescendo até o TTL, painel anunciando "IA
+    pensando" num turno morto). Volta a "idle" AQUI; o estágio onde morreu fica
+    preservado no `st_erro.stage` (gravado antes do reset)."""
     if not isinstance(obj, dict):
         return
     tipo = obj.get("type")
@@ -5890,6 +5897,8 @@ def _live_observa(sess: dict, obj) -> None:
                            "ts": time.monotonic()}
         _live_log_kv("erro", sess=sess["id"], code=obj.get("code"),
                      stage=sess.get("st_stage"))
+        if obj.get("code") == "pipeline":      # #250: turno terminal, sessão viva
+            _live_stage(sess, "idle")
     elif tipo == "transcript_user":
         _live_stage(sess, "llm")
     elif tipo == "turn_complete":
@@ -6217,8 +6226,15 @@ def _live_janela_turno(sess: dict, aberto: bool) -> None:
 
 def _live_envia_json(sess: dict, obj: dict) -> None:
     """Ponto de acoplamento do pipeline (#93): pode ser chamado de QUALQUER thread."""
-    if obj.get("type") in ("turn_complete", "interrupted"):
-        _live_janela_turno(sess, False)  # #167: turno terminou, fecha a janela
+    terminal = obj.get("type") in ("turn_complete", "interrupted") or (
+        obj.get("type") == "error" and obj.get("code") == "pipeline")
+    if terminal:
+        # #167: turno acabou, fecha a janela. #250: `error{pipeline}` também —
+        # turno que morreu DEPOIS de mandar áudio deixava a janela aberta até a
+        # trava de frames e a fala seguinte era lida como barge de um turno que
+        # não existe. Erros que NÃO fecham turno (`turno_em_curso`, `sem_audio`,
+        # `busy`, `json`, `comando`) ficam de fora.
+        _live_janela_turno(sess, False)
     _live_observa(sess, obj)
     sess["fila"].put(("json", _live_enriquece(sess, obj)))
 

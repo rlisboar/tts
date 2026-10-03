@@ -113,7 +113,11 @@ dele; contrato completo no comentário da task #118. Formato:
   explica um barge-in não disparar);
 - `turno.stage` (`idle|stt|llm|tts`) com `ms` no estágio e `t_decisao_ms` do
   orçamento de latência; `playback.speaking` é a MESMA janela que alimenta o
-  limiar de eco (`set_speaking`);
+  limiar de eco (`set_speaking`). `error{code:"pipeline"}` é TERMINAL para o
+  turno (#250): o estágio volta a `idle` (o `ms` para de crescer) e a janela de
+  barge do turno fecha — o estágio ONDE o turno morreu fica em
+  `erro.stage`; os erros que não fecham turno (`turno_em_curso`, `sem_audio`,
+  `busy`…) não tocam no estágio;
 - `erro` e `provedor` só aparecem quando há ocorrência; `provedor` é do
   PROCESSO (não da sessão) e mostra `ok|erro{http}|timeout` da última chamada
   ao provedor de chat.
