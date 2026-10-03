@@ -3,8 +3,10 @@
 #
 # S1a: `app._BUILD_TS_HASH = 0` (passado) → TODO módulo parece "escrito depois do
 #      boot": a TOLERÂNCIA é forçada e o par NÃO pode cair (árvore parada).
-# S1b: `_BUILD_TS_HASH` no futuro → nenhum módulo "escrito": o ramo EXATO é forçado
-#      e o par passa porque a expectativa congelada == boot.
+# S1b: `_BUILD_TS_HASH` no futuro → nenhum mtime o alcança. Com o fix do #242 o
+#      skew liga a TOLERÂNCIA para o lado seguro (tudo conta como escrito) e o par
+#      passa POR ALI — antes (89d0dd8) a tolerância ficava inerte e o próprio teste
+#      novo do #220 caía (`assert "live_turns.py" in escritos`).
 # S1c: `_HASH_NO_IMPORT` sabotado → o ramo exato tem de MORDER (cai).
 # S2 : par revertido à forma ANTIGA (expectativa recalculada na asserção) com um
 #      ESCRITOR de verdade rodando em live_turns.py → tem de cair (é o defeito #220).
@@ -42,25 +44,25 @@ echo "$saida" | grep -q "\[220\] escritos depois do boot" && echo "  (o par entr
 veredito "S1a tolerância forçada (TS=0)" "$rc" 0
 cp "$bak_ap" "$AP"
 
-# S1b — ramo exato forçado
+# S1b — skew (TS no futuro): a tolerância é ASSUMIDA (#242)
 $PY - "$AP" <<'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
 alvo = "_BUILD_TS_HASH = time.time()"
 assert s.count(alvo) == 1
-p.write_text(s.replace(alvo, "_BUILD_TS_HASH = time.time() + 3600   # S1b: nada escrito depois do boot"))
+p.write_text(s.replace(alvo, "_BUILD_TS_HASH = time.time() + 3600   # S1b: skew — nada escrito"))
 PY
 saida="$(roda)"; rc=$?
-echo "$saida" | grep -q "\[220\] escritos depois do boot" && echo "  [FALHA] S1b: entrou pela tolerância" \
-  || echo "  (ramo EXATO: sem a linha da tolerância)"
-veredito "S1b ramo exato (TS futuro)" "$rc" 0
+echo "$saida" | grep -q "\[220\] escritos depois do boot" && echo "  (skew: o par entrou pela TOLERÂNCIA assumida — #242)" \
+  || echo "  [FALHA] S1b: com o skew a tolerância tinha de valer"
+veredito "S1b skew: tolerância assumida (TS futuro)" "$rc" 0
 cp "$bak_ap" "$AP"
 
 # S1c — expectativa congelada mentindo: o exato tem de morder
 $PY - "$TA" <<'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
-alvo = "_HASH_NO_IMPORT = _hash_dos_modulos()"
+alvo = "_HASH_NO_IMPORT = _hash_do_snapshot(_SNAPSHOT)"
 assert s.count(alvo) == 1
 p.write_text(s.replace(alvo, '_HASH_NO_IMPORT = "00000000"   # S1c'))
 PY

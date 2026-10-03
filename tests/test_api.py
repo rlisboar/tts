@@ -68,12 +68,18 @@ def _modulos_escritos_desde_o_boot(base=None) -> list:
     app hasheá-lo, o hash do boot pode não descrever o conteúdo de agora — e é isso
     que autoriza a tolerância do par, em vez de assumi-la. `mtime` e não comparação
     de conteúdo porque um escritor que volta ao estado anterior apagaria o rastro.
+
+    #242: com o TS no FUTURO (relógio recuado por NTP, ou a sabotagem do gate) nenhum
+    mtime é maior que ele e a tolerância ficava INERTE. Skew é assumido para o lado
+    seguro: tudo conta como escrito (a tolerância liga e a prova de conteúdo segue
+    valendo por `_HASH_NO_IMPORT`).
     """
     raiz = Path(base) if base is not None else app.BASE
+    skew = app._BUILD_TS_HASH > time.time()
     escritos = []
     for nome in app._BUILD_MODULOS:
         try:
-            if (raiz / nome).stat().st_mtime > app._BUILD_TS_HASH:
+            if skew or (raiz / nome).stat().st_mtime > app._BUILD_TS_HASH:
                 escritos.append(nome)
         except OSError:
             pass
