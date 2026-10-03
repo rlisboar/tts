@@ -6285,11 +6285,16 @@ def _live_cancela(sess: dict, do_cliente: bool = False) -> None:
     próprio (ou já está nele) e é respondida depois."""
     sess["cancelado"].set()
     sess["turno"] += 1
-    if do_cliente and sess.pop("turno_pendente", None) is not None:
-        sess["turno_pendente_barge"] = False
-        sess["pendentes_descartados"] = sess.get("pendentes_descartados", 0) + 1
-        _live_pendente_zera_contadores(sess)
-        _live_log_kv("pend_cancelado", sess=sess["id"])
+    if do_cliente:
+        # pop + zero na MESMA seção crítica do guarda (#221): sem isso o guarda
+        # pode acumular entre o `pop` e o zero e o pendente NOVO nasce com o
+        # contador zerado depois de já ter contado (mesma classe do perdedor)
+        with _live_pend_lock(sess):
+            if sess.pop("turno_pendente", None) is not None:
+                sess["turno_pendente_barge"] = False
+                sess["pendentes_descartados"] = sess.get("pendentes_descartados", 0) + 1
+                _live_pendente_zera_contadores(sess)
+                _live_log_kv("pend_cancelado", sess=sess["id"])
     _live_log_kv("cancel", sess=sess["id"], turno=sess["turno"])
     pipe = sess.get("pipe")
     if pipe is not None:
@@ -6428,30 +6433,41 @@ def _live_guarda_pendente(sess: dict, pcm: bytes, barge_in: bool) -> None:
         sess["turno_pendente"] = novo
         if barge_in:
             sess["turno_pendente_barge"] = True   # pegajoso: eco-check segue valendo
-    _live_log_kv("turno_pendente", sess=sess["id"], bytes=len(novo),
-                 trechos=sess["pendentes_trechos"], truncado=truncado,
-                 descartados_ms=sess.get("pendentes_descartados_ms", 0),
-                 barge=bool(sess.get("turno_pendente_barge")))
+        # os contadores do evento são LIDOS AQUI, ainda no lock: fora dele o
+        # observador pode zerá-los (o `pop` zera, #221) entre o incremento e a
+        # leitura, e o evento sairia com `trechos = 0`
+        trechos = sess["pendentes_trechos"]
+        descartados_ms = sess.get("pendentes_descartados_ms", 0)
+        barge = bool(sess.get("turno_pendente_barge"))
+    _live_log_kv("turno_pendente", sess=sess["id"], bytes=len(novo), trechos=trechos,
+                 truncado=truncado, descartados_ms=descartados_ms, barge=barge)
     # protocolo aditivo: "anotei, respondo já" — o turno em si vem na sequência
     # (speech_start/turn_complete quando o pipeline liberar)
     _live_envia_json(sess, {"type": "turno_pendente", "buffer_bytes": len(novo),
-                            "trechos": sess["pendentes_trechos"],
-                            "descartados_ms": sess.get("pendentes_descartados_ms", 0),
-                            "barge_in": bool(sess.get("turno_pendente_barge")),
-                            "truncado": truncado})
+                            "trechos": trechos, "descartados_ms": descartados_ms,
+                            "barge_in": barge, "truncado": truncado})
     _live_acorda_pendente(sess)
 
 
-def _live_pend_rearma(sess: dict, pendente: bytes, barge: bool) -> None:
+def _live_pend_rearma(sess: dict, pendente: bytes, barge: bool,
+                      trechos: int = 0, descartados_ms: int = 0) -> None:
     """Devolve o pendente que o observador tirou — SEM apagar o que chegou depois.
 
     O guarda pode ter acumulado um trecho novo entre o `pop` e este re-arm: o
     re-arm antigo regravava o valor que ele leu e o trecho NOVO sumia (#208).
     Aqui o antigo vem PRIMEIRO (é o mais antigo na linha do tempo) e o barge é
-    pegajoso — qualquer pedaço nascido no playback mantém a checagem de eco."""
+    pegajoso — qualquer pedaço nascido no playback mantém a checagem de eco.
+
+    Os contadores do pendente que VOLTA vêm por parâmetro e são SOMADOS aos do
+    intervalo (#221): o `pop` os zerou (é o zero atômico com o guarda) e o
+    pendente re-armado tem de voltar contando o que já acumulou — senão o
+    próximo evento subconta."""
     with _live_pend_lock(sess):
         novo = sess.get("turno_pendente") or b""
         sess["turno_pendente"] = pendente + novo
+        sess["pendentes_trechos"] = sess.get("pendentes_trechos", 0) + trechos
+        sess["pendentes_descartados_ms"] = (sess.get("pendentes_descartados_ms", 0)
+                                            + descartados_ms)
         if barge:
             sess["turno_pendente_barge"] = True
 
@@ -6488,19 +6504,28 @@ def _live_descarrega_pendente(sess: dict) -> None:
     try:
         while not sess.get("fechar") and pipe.ocupado:
             time.sleep(0.1)
+        # #221: `pop` e contadores na MESMA seção crítica, e só quem LEVOU o
+        # pendente os toca. Antes o zero ficava fora do lock e o observador
+        # PERDEDOR (pop = None, caso NORMAL quando dois acordam no mesmo
+        # fechamento) zerava entre o `pop` do vencedor e o re-arm dele: o
+        # pendente que voltava a existir ficava com `trechos = 0` e o próximo
+        # evento SUBCONTAVA. Zerar aqui também é atômico com o guarda — o trecho
+        # que ele acumular depois já conta para o pendente NOVO.
         with _live_pend_lock(sess):       # #208: o guarda pode estar acumulando
             pendente = sess.pop("turno_pendente", None)
-            barge = bool(sess.pop("turno_pendente_barge", False))
+            if pendente:
+                barge = bool(sess.pop("turno_pendente_barge", False))
+                trechos = sess.get("pendentes_trechos", 0)
+                descartados_ms = sess.get("pendentes_descartados_ms", 0)
+                _live_pendente_zera_contadores(sess)
         if not pendente or sess.get("fechar"):
-            _live_pendente_zera_contadores(sess)
             return
-        # contadores do evento descrevem o pendente ATUAL: ficam como estão no
-        # re-arm (o guarda já contou o que chegou no intervalo) e são zerados
-        # quando ele é aberto
+        # contadores do evento descrevem o pendente ATUAL: no re-arm voltam
+        # JUNTO com ele (o re-arm SOMA, não regrava) — e o guarda já contou o
+        # que chegou no intervalo
         if pipe.ocupado:                  # fechou e abriu outro no intervalo
-            _live_pend_rearma(sess, pendente, barge)
+            _live_pend_rearma(sess, pendente, barge, trechos, descartados_ms)
             return
-        _live_pendente_zera_contadores(sess)
         _live_abre_turno(sess, pendente, barge_in=barge)
     finally:
         # Fala guardada NA janela de morte deste observador (a guarda viu a

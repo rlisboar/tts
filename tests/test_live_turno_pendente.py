@@ -228,6 +228,82 @@ def test_contadores_zeram_por_pendente():
     assert novo["trechos"] == 1 and novo["descartados_ms"] == 0
 
 
+class CanalPortao(CanalFalso):
+    """`ocupado` responde False na 1ª leitura de CADA thread (sai do laço) e True
+    nas seguintes (o `pop` já aconteceu → o caminho é o RE-ARM). O portão
+    sincroniza dois observadores para que cheguem JUNTOS ao `pop` — é a corrida
+    que o `_live_acorda_pendente` cria na janela entre o `is_alive` e a escrita
+    de `pend_thread`."""
+
+    def __init__(self):
+        super().__init__()
+        self.portao = threading.Event()
+        self._vistos = set()
+        self._trava_vistos = threading.Lock()
+        self._ocupado = True
+
+    @property
+    def ocupado(self):
+        tid = threading.get_ident()
+        with self._trava_vistos:
+            primeiro = tid not in self._vistos
+            self._vistos.add(tid)
+        if primeiro:
+            self.portao.wait(5)
+            return False
+        return self._ocupado
+
+
+def test_observador_perdedor_nao_zera_os_contadores(monkeypatch):
+    """#221: dois observadores acordados pelo MESMO fechamento é o caso NORMAL (o
+    `pop` decide: um processa, o outro leva None). O perdedor zerava os
+    contadores FORA do lock — entre o `pop` do vencedor e o re-arm dele — e o
+    pendente que voltava a existir ficava com `trechos = 0`: o evento seguinte
+    SUBCONTAVA (2 trechos acumulados, evento dizendo 1).
+
+    A janela é montada de propósito: o re-arm do vencedor é atrasado, e o
+    perdedor só entra quando o pendente já está EM VOO (`turno_pendente` = None
+    após o `pop`) — assim o `pop` dele devolve None SEM depender de corrida."""
+    pipe = CanalPortao()
+    sess = _sessao(pipe)
+    sess["pendentes_trechos"] = 0
+    sess["pendentes_descartados_ms"] = 0
+    _eventos(sess)
+
+    lento = app._live_pend_rearma
+
+    def rearma_lento(s, p, b, *a, **k):           # é a janela do perdedor
+        time.sleep(1.0)
+        try:
+            return lento(s, p, b, *a, **k)        # assinatura COM os contadores
+        except TypeError:                         # app.py de antes do #221
+            return lento(s, p, b)
+    monkeypatch.setattr(app, "_live_pend_rearma", rearma_lento)
+
+    app._live_guarda_pendente(sess, b"\x01" * 10, False)   # arma O1 (preso no portão)
+    assert _espera(lambda: sess.get("pend_thread") is not None)
+    pipe.portao.set()                             # O1 sai do laço e faz o `pop`
+    assert _espera(lambda: sess.get("turno_pendente") is None), "O1 não levou o pendente"
+
+    # o PERDEDOR: entra com o pendente em voo (pop feito, re-arm a caminho) — o
+    # `if not pendente` dele é o ramo que zerava os contadores
+    perdedor = threading.Thread(target=app._live_descarrega_pendente, args=(sess,),
+                                daemon=True)
+    perdedor.start()
+    perdedor.join(3)
+    assert _espera(lambda: sess.get("turno_pendente") is not None), "o pendente não voltou"
+    assert sess["pendentes_trechos"] == 1, "o observador perdedor zerou os contadores"
+
+    app._live_guarda_pendente(sess, b"\x02" * 10, False)   # 2º trecho: o evento conta 2
+    novo = [e for e in _eventos(sess) if e["type"] == "turno_pendente"][-1]
+    assert novo["trechos"] == 2, "o evento `turno_pendente` subconta os trechos"
+
+    pipe.libera()                                 # o pendente abre com o conteúdo INTEIRO
+    assert _espera(lambda: bool(pipe.aceitos)), "o pendente não abriu"
+    assert pipe.aceitos[-1][0] == b"\x01" * 10 + b"\x02" * 10, \
+        "o conteúdo se perdeu (é o #208 de novo)"
+
+
 def test_pipe_livre_abre_o_turno_na_hora_sem_enfileirar():
     pipe = CanalFalso()
     sess = _sessao(pipe)

@@ -82,9 +82,9 @@ def cenario(com_perdedor: bool):
     vistos, original = eventos()
     lento = app._live_pend_rearma
 
-    def rearma_lento(s, p, b):     # dá tempo do perdedor passar pelo `pop`
-        time.sleep(0.4)
-        return lento(s, p, b)
+    def rearma_lento(s, p, b, *a, **k):   # dá tempo do perdedor passar pelo `pop`
+        time.sleep(0.4)                   # (`*a`: o re-arm passou a levar os
+        return lento(s, p, b, *a, **k)    # contadores do pendente — fix do #221)
 
     app._live_pend_rearma = rearma_lento
     try:
