@@ -1,0 +1,10 @@
+== REPRO ANTES do fix (GIT_INDEX_FILE=/tmp/probe-257 + pytest)
+100755 602f22648a4fb5eedc029f7157f560ffa01b77ae 0	.venv-mlx/bin/pip
+100755 1f651e1c8d2e0b1298ae7e01ba009d8819805578 0	.venv-mlx/bin/python
+
+== PÓS-fix (GIT_INDEX_FILE=/tmp/probe-257b + pytest): entradas venv no probe = 0
+
+== MORDIDA (hook e teste revertidos ao estado pré-fix):
+100755 602f22648a4fb5eedc029f7157f560ffa01b77ae 0	.venv-mlx/bin/pip
+100755 1f651e1c8d2e0b1298ae7e01ba009d8819805578 0	.venv-mlx/bin/python
+(o mesmo 602f2264 que derrubava commits parciais)

@@ -122,6 +122,16 @@ else print -rn -- "$corpo"; fi
 def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
     """origin bare + clone do mini (em cb36edb falso) + clone de dev (com HEAD novo)."""
     env = dict(os.environ)
+    # Um commit parcial (`git commit -- <paths>`) exporta GIT_INDEX_FILE para o
+    # hook, e o hook roda este pytest: se o fixture herdasse, os subprocessos
+    # git daqui (add -A no semente, commit...) escreveriam as entradas do
+    # repositório-fixture (.venv-mlx/bin/pip, blob que não existe no nosso
+    # object DB) NO índice do commit — o 'invalid object / Error building
+    # trees' que derrubou commits desde o passo 2 (#257). Limpa o ambiente
+    # herdado do git antes de semear os repositórios de teste.
+    for _var in ("GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE",
+                 "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+        env.pop(_var, None)
     env.update(
         PATH=f"{shims}:{env['PATH']}",
         GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",

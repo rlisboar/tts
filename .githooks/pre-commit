@@ -5,6 +5,14 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 PY=.venv-mlx/bin/python
 [ -x "$PY" ] || PY=python3
 
+# Um commit parcial (`git commit -- <paths>`) exporta GIT_INDEX_FILE apontando
+# para o índice temporário do próprio commit; o pytest abaixo herda, e os
+# subprocessos git dos testes escrevem entradas de fixture (ex.:
+# .venv-mlx/bin/pip, blob que não existe no nosso object DB) NO índice do
+# commit → 'invalid object ... Error building trees' (#257). Limpa o ambiente
+# herdado do git antes de rodar os testes.
+unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+
 # Módulos do épico Live, por dono — entram aqui para o gate estático não ter
 # buraco: live_turns.py + smoke_live_turns.py + smoke_worker_persist.py são do
 # audio-ml (#92/LIVE-2, #152) e live_pipeline.py é do speech-pipeline (#93/LIVE-3).
