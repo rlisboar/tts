@@ -6960,7 +6960,12 @@ const obsTtsM = criaObsMonitor("obsTts", { compacto: true }); // sem áudio capt
    devolve eventos JSON + PCM16 24 kHz. Estado centralizado em LX.estado e o botão
    só REFLETE — foi assim que a Conversa se queimou com botão dessincronizado. */
 const LX = { ws: null, estado: "desligado", ctxCap: null, noCap: null, stream: null,
-             fonte: null, ctxPlay: null, ativos: [], proximo: 0, ptt: false, erro: false };
+             fonte: null, ctxPlay: null, ativos: [], proximo: 0, ptt: false, erro: false,
+             substituida: false };   // #244: o servidor fechou ESTA por takeover do id
+
+// #244 (contrato aditivo do #222): motivo único do ramo `session_substituida` —
+// a mesma frase no `case "error"` e no `onclose` (o close chega logo atrás).
+const LX_SUBSTITUIDA = "esta aba foi substituída por outra conexão com o mesmo session_id";
 
 /* OBS-2 (#119): instrumentação do cliente — contadores, medidores, latências e
    log de eventos. É o painel que teria diagnosticado o #117 na hora: frames do
@@ -7039,6 +7044,7 @@ function lxEnviaBin(int16) {
 async function lxwsConectar() {
   lxEstado("conectando", "abrindo sessão…");
   LX.erro = false;
+  LX.substituida = false;      // #244: o aviso de substituição é DA SESSÃO que caiu
   // contadores zeram POR SESSÃO (o painel descreve a sessão corrente)
   LX.obs = { env: 0, rec: 0, stats: null, lat: null, latHist: [], raf: 0, tick: 0,
              bufs: {}, picos: {}, ws: "abrindo…", pendente: false, pendenteTrechos: 0,
@@ -7068,7 +7074,12 @@ async function lxwsConectar() {
     LX.obs.dshFallback = null;   // aviso é DA SESSÃO: morre com ela (#150)
     lxAvisaDsh();
     lxObsWs("fechado (código " + ev.code + ")", LX.erro);
-    if (LX.erro) lxEstado("erro", "✖ WebSocket caiu — /api/live/ws está no ar? (código " + ev.code + ")");
+    // #244: o close da substituição é LIMPO (1000, sem `onerror` — `LX.erro` fica
+    // falso), então sem esta precedência o motivo real morreria aqui como "sessão
+    // encerrada". A substituição vem ANTES de `LX.erro`: é causa conhecida e
+    // precisa; "WebSocket caiu" seria diagnóstico pior para o mesmo close.
+    if (LX.substituida) lxEstado("desligado", LX_SUBSTITUIDA);
+    else if (LX.erro) lxEstado("erro", "✖ WebSocket caiu — /api/live/ws está no ar? (código " + ev.code + ")");
     else lxEstado("desligado", "sessão encerrada");
   };
 }
@@ -7453,6 +7464,10 @@ function lxRecebe(ev) {
       // · `error{pipeline}` chega logo DEPOIS do ready e a sessão SEGUE viva: por
       //   isso o motivo vai para a coluna IA e o estado sai de "ouvindo" — senão a
       //   tela fica prometendo fala que não vem.
+      // · `error{session_substituida}` (#244, contrato aditivo do #222) chega com a
+      //   sessão MORTA: outra conexão assumiu este session_id e o SERVIDOR fecha
+      //   esta logo atrás (close 1000). Ramo PRÓPRIO — o texto genérico abaixo
+      //   ("sessão viva — fale de novo") mentiria aqui.
       // `turno_em_curso` é benigno: o `end_of_speech` (ex.: solta do "segurar para
       // falar") chegou no meio de um turno e o servidor pediu para esperar — o
       // turno segue. Pintar isso de erro derrubava a UI à toa.
@@ -7460,6 +7475,17 @@ function lxRecebe(ev) {
         // legado (#126): com áudio o servidor ANOTA a fala (`turno_pendente`) em vez
         // de recusar; isso aqui resta só nos caminhos sem áudio — hint neutro
         if ($("lxStatus")) $("lxStatus").textContent = "⏳ turno em curso — aguarde o fim da resposta";
+      } else if (m.code === "session_substituida") {
+        // O close é LIMPO (1000), então `LX.erro` fica falso e o `onclose` pintaria
+        // "sessão encerrada" por cima: a flag preserva o motivo real até lá.
+        LX.substituida = true;
+        lxQuebraLinha("lxIA");
+        const msgSub = "✖ " + (m.message || "outra conexão assumiu este session_id")
+                     + " [session_substituida]";
+        lxLinha("lxIA", "lx-erro", msgSub);
+        lxLogEvento(msgSub, "e-erro");
+        // o servidor já fechou: a sessão NÃO segue viva — o botão volta a "Ligar"
+        lxEstado("desligado", LX_SUBSTITUIDA);
       } else {
         // erro de pipeline/sessão (ex.: provedor de conversa fora): a sessão
         // segue viva. Além do hint, linha visível na coluna IA — o hint some no
@@ -7494,7 +7520,9 @@ function lxDesligar() {
   lxCancelaPlayback();
   if (LX.ws) { const w = LX.ws; LX.ws = null; try { w.close(1000, "cliente desligou"); } catch (e) {} }
   lxParaCaptura();
-  lxEstado("desligado", "sessão encerrada");
+  // #244: desligar uma sessão que o SERVIDOR já substituiu não é "encerrada" —
+  // o motivo real (outra conexão assumiu o id) fica na tela
+  lxEstado("desligado", LX.substituida ? LX_SUBSTITUIDA : "sessão encerrada");
 }
 if ($("lxLimpar")) $("lxLimpar").onclick = () => {
   // array, não parênteses: `("a", "b")` vira a string "b" e o for...of iterava

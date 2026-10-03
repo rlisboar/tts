@@ -57,6 +57,14 @@ fora do sweep por TTL (nunca vencia, só morria se o cliente fechasse) e fora da
 contagem — com teto 1, N sockets com o mesmo id conviviam. Id NOVO com o teto cheio
 continua levando `busy` (#222).
 
+Na ponta do cliente o código é PRÓPRIO (#244): a UI Live trata `session_substituida`
+em ramo dedicado, porque aqui a sessão NÃO segue viva (o close 1000 vem logo atrás) —
+ao contrário de `error{pipeline}`, em que ela segue e a tela continua prometendo fala.
+O aviso "esta aba foi substituída por outra conexão com o mesmo session_id" fica na
+tela e o `onclose` limpo não o sobrescreve com "sessão encerrada". Como a UI ainda não
+manda `session_id` no `setup`, o caminho só se alcança por cliente de API/script (ou
+um 2º socket mirando o id da aba).
+
 Protocolo (o contrato completo está no comentário da seção no `app.py`):
 cliente → `setup` (1º frame; `session_id` opcional retoma), PCM16 16 kHz, `end_of_speech`,
 `cancel`, `ping`; servidor → `ready{resumed}`, `speech_start`/`speech_end`, áudio PCM16
