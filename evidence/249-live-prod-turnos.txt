@@ -1,0 +1,24 @@
+=== 249 · SESSÃO REAL (modo turnos) — LAN 192.168.15.34:7860, rev d252693 ===
+# comando: LIVE_KEY=$(ssh lisboa@192.168.15.34 'cat .apikey') ./.venv-mlx/bin/python evidence/249-live-prod-sessao.py turnos
+# (chave oculta; 48 chars)
+# sessão REAL no Live da produção · ws://192.168.15.34:7860/api/live/ws · modo=turnos
+# fala: 3.5s de voices/320afe68b8.wav · RMS -21.1 dBFS
+# read-only: nenhum settings/chave do dono é tocado
+
+===== TURNO 1 (mesma sessão) =====
+<< [   0.02s] {"type": "ready", "session_id": "35e3b2b831", "resumed": false, "voice_id": "7b620feaba", "audio": {"format": "pcm16", "sr": 24000, "channels": 1}, "in_audio": {"format": "pcm16", "sr": 16000, "channels": 1}, "vad": {"silence_ms": 600, "prefix_ms": 100}}
+<< [   0.02s] {"type": "prewarm", "ok": true}
+>> fala enviada (112000 bytes PCM16 16 kHz)
+<< [   0.76s] {"type": "speech_start", "t_ms": 0, "ts": 1790981913.62, "amostra": 0, "t_decisao_ms": 80, "prob": 1.0, "rms_dbfs": -21.4, "curto": false, "barge_in": false, "audio_bytes": 10240}
+<< [   0.77s] {"type": "speech_end", "t_ms": 754, "ts": 1790981914.294, "amostra": 51200, "t_decisao_ms": 754, "prob": 0.0, "rms_dbfs": -120.0, "curto": false, "barge_in": false, "detalhe": "flush", "fala_ms": 2496, "barge_falso": false, "audio_bytes": 102400}
+<< [   0.78s] {"type": "speech_start", "turn": 1, "buffer_bytes": 102400}
+<< [   1.19s] stats motor={"estado": "fechando", "limiar_dbfs": -45.0, "limiar_turno_dbfs": -48.0, "barge_ativos": 0, "barge_falsos": 0} turno.stage=stt/422ms n=0 playback.speaking=False chunks=0
+<< [   2.03s] stats motor={"estado": "fechando", "limiar_dbfs": -45.0, "limiar_turno_dbfs": -48.0, "barge_ativos": 0, "barge_falsos": 0} turno.stage=stt/1253ms n=0 playback.speaking=False chunks=0
+<< [   4.01s] {"type": "transcript_user", "text": "Caraca, meu irmão, tô bolado com essa parada."}
+<< [   4.02s] {"type": "error", "code": "pipeline", "message": "HTTPException: 400: Provedor de conversa não configurado (Configurações → Rede: Base URL OpenAI-compat)"}
+== turno 1: terminal=error:pipeline 1º_áudio=Nonems áudio_24k=0B
+[turno morreu antes do TTS — worker/latência não exercitáveis nesta config]
+
+# total: áudio 24 kHz recebido=0B, eventos=16
+fim da sessão
+RC=0

@@ -1,0 +1,3 @@
+=== 249 · WORKER/ORPHAN CHECK (read-only) — ANTES da sessão ===
+# comando: ssh lisboa@192.168.15.34 'pgrep -fl "tts_worker"; echo rc=$?'
+rc=1

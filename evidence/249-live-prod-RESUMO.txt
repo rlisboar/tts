@@ -1,0 +1,53 @@
+=== 249 · RESUMO — caminho de ÁUDIO do Live em PRODUÇÃO (read-only) ===
+2026-10-02 · audio-ml · alvo: mini 192.168.15.34:7860 (LAN), rev d252693 no ar
+(leitura pública via Cloudflare evitada de propósito: task_8e9eed92 — falso vermelho HTTP/2)
+
+O QUE ESTÁ NO AR (evidence/249-live-prod-estado.txt)
+  /api/build: version=d252693, codigo=858fe0d4, modulos do Live presentes
+  settings de IA: model=omnivoice, chat_backend=openai,
+  chat_base_url='' chat_api_key='' chat_model='' (provedor de conversa AUSENTE)
+  defaults do motor CONFIRMADOS no rev d252693 (git show d252693:live_turns.py):
+    barge_janela_turno=True (A), playback_por_duracao=True (B), eco_so_tocando=False (C)
+  — o serviço roda com o DEFAULT novo A+B, sem env. Nada foi setado.
+
+SESSÃO REAL (evidence/249-live-prod-turnos.txt — cliente WS próprio, não a sonda curl)
+  WS ws://192.168.15.34:7860/api/live/ws?key=<chave do mini> → ready + prewarm ok.
+  Fala real (3,5 s de voices/320afe68b8.wav, RMS -21,1 dBFS):
+    speech_start t_decisao_ms=80, prob=1.0          (VAD ONNX abre o turno)
+    speech_end fala_ms=2496, detalhe=flush          (end_of_speech fecha)
+    transcript_user = "Caraca, meu irmão, tô bolado com essa parada."  (STT correto)
+    error{pipeline} 400 "Provedor de conversa não configurado"  (mesmo achado do #245)
+  A sessão sobrevive ao erro (padrão F1) e fechou limpa no cliente.
+
+  (a) WORKER PERSISTENTE / ÓRFÃO (evidence/249-live-prod-worker-{antes,durante}.txt):
+      ANTES: 0 processos tts_worker · DURANTE (sessão aberta, setup ok): 0
+      DEPOIS (cliente saiu): 0 — NENHUM órfão.
+      Mas: com model=omnivoice o worker persistente NEM ENGAJA
+      (live_pipeline._worker_habilitado() exige família de app._ISOLATED_FAMILIES;
+      omnivoice é in-process de propósito). "Worker sobrevive ENTRE TURNOS" não é
+      exercitável na config de produção atual — a metade "sem órfão" PASSA.
+
+  (b) BARGE NO VÃO com o default A+B — BLOQUEADO pela config do dono:
+      o turno morre no LLM (400) antes do TTS. Sem áudio do assistente não existe
+      playback, logo não existe vão de geração nem fila do cliente.
+
+  (c) CORTE DO PLAYBACK (#225) — BLOQUEADO pelo mesmo motivo (sem TTS não há playback).
+
+  (d) ECO sem barge falso — BLOQUEADO idem (a célula de eco devolve o áudio do TTS
+      recebido; sem TTS recebido, não há o que devolver).
+
+O QUE FICOU DE FORA (e não por env)
+  Nada precisou de env: o bloqueio das células (b)(c)(d) é CONFIG do dono
+  (provedor de conversa vazio no settings.json do mini; dsh nem instalado lá).
+  Como está, ler esses 3 números em produção exigiria escrever no estado do dono —
+  proibido por esta task. O cliente evidence/249-live-prod-sessao.py já tem os
+  modos `vao` e `eco` prontos (célula MODO=vao do #216: injeção 900 ms pós
+  turn_complete com fila no cliente; célula de eco: áudio recebido 24k→16k
+  devolvido no mic + silêncio pós-playback caçando fala fantasma) — roda no dia
+  em que o provedor existir, sem nenhuma mudança.
+
+NOTAS
+  - #250 (error{pipeline} deixa stage='llm' preso) foi documentado no probe #245;
+    hoje o turno morreu no mesmo ponto (não re-mediado: fechei a sessão cedo).
+  - Privacidade: só GETs + sessões WS; nenhum POST/settings tocado; chave nunca
+    impressa (48 chars, oculta). Nenhum restart.

@@ -1,0 +1,11 @@
+=== 249 · ESTADO DA PRODUÇÃO (read-only, 2026-10-02) ===
+# comando: curl -s -H 'X-API-Key: $K' http://192.168.15.34:7860/api/build
+{"ok":true,"version":"d252693","boot_ts":1790836178,"boot_ms":145728716,"codigo":"858fe0d4","modulos":["app.py","common.py","backends.py","tts_worker.py","live_pipeline.py","live_turns.py","dsh_client.py"],"admin_fields":23}
+# campos de IA do GET /api/settings (chave de uso, segredos ocultos):
+model='omnivoice'
+chat_backend='openai'
+chat_backend_live=''
+chat_base_url=''
+chat_api_key=''
+chat_model=''
+chat_dsh_bin='dsh'

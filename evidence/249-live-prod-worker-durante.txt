@@ -1,0 +1,11 @@
+=== 249 · WORKER/ORPHAN CHECK — DURANTE a sessão WS aberta (2ª tentativa) ===
+# sessão WS aberta com setup confirmado; check a 4s; cliente sai; check a 3s depois
+ready: {"type":"ready","session_id":"193141f411","resumed":false,"voice_id":"7b620feaba
+--- DURANTE (sessão aberta) ---
+-- tts_worker --
+rc=1
+-- servidor --
+74223 /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python ./.venv-mlx/bin/uvicorn app:app --host 0.0.0.0 --port 7860
+--- DEPOIS (cliente saiu) ---
+-- tts_worker --
+rc=1
