@@ -54,6 +54,7 @@ ESPERA="${TTS_MINI_ESPERA:-6}"                    # run.sh sobe o uvicorn; smoke
 BOOT_MS_MAX="${TTS_MINI_BOOT_MS:-120000}"         # pós-deploy: processo novo, não instância velha
 TTS_TIMEOUT="${TTS_MINI_TTS_TIMEOUT:-120}"        # teto do job de síntese real no smoke
 ESTADO=".deploy-mini-estado"                      # no repo do mini (untracked; só o --apply escreve)
+BOOT_MARKER=".deploy-mini-boot"                   # instantâneo (epoch) do restart, no repo do mini
 # O preview de deps vai para o /tmp DO MINI, não para a árvore do repo: sem isso o
 # dry-run sujava a árvore de produção (F1 do gate #232 — o script promete "nada muda").
 # E o nome leva $$: com caminho FIXO, dois deploys/suítes ao mesmo tempo reescrevem e
@@ -169,12 +170,34 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
       print -r -- "  [FALHA] $rotulo /api/build codigo=$no_ar ≠ esperado $esperado (instância não é o rev alvo)"
       falhas=1
     fi
-    if [ -n "$boot" ] && [ "$boot" -lt "$BOOT_MS_MAX" ]; then
-      print -r -- "  [ok] processo novo (boot_ms=$boot)"
-    elif [ "$POS_DEPLOY" = 1 ]; then
-      print -r -- "  [FALHA] boot_ms=$boot ≥ $BOOT_MS_MAX — reiniciou de verdade?"; falhas=1
-    else
-      print -r -- "  [aviso] boot_ms=$boot (instância antiga: ok fora do pós-deploy)"
+    if [ -n "$boot" ]; then
+      if [ "$POS_DEPLOY" = 1 ]; then
+        # Novidade do boot ANCORADA no marcador de restart (.deploy-mini-boot,
+        # epoch escrito pelo próprio script logo após o kickstart): o boot do
+        # processo vivo (agora_do_mini - boot_ms) tem de ser ≥ ao marcador.
+        # A janela fixa de 120 s mentia quando o processo novo demorava a
+        # carregar o modelo — ou quando o smoke rodava tarde (#252).
+        local ref agora boot_wall
+        ref="$(distante "cd $(cd_remoto) 2>/dev/null && cat $BOOT_MARKER 2>/dev/null")"
+        ref="${ref//[[:space:]]/}"
+        if [ -n "$ref" ]; then
+          agora="$(distante 'date +%s' | tr -d '[:space:]')"
+          boot_wall=$(( agora - boot / 1000 ))
+          if [ "$boot_wall" -ge "$ref" ]; then
+            print -r -- "  [ok] processo novo (boot ${boot_wall}s ≥ marcador do restart ${ref}s — #252)"
+          else
+            print -r -- "  [FALHA] processo anterior ao restart (boot ${boot_wall}s < marcador ${ref}s) — reiniciou de verdade?"; falhas=1
+          fi
+        elif [ "$boot" -lt "$BOOT_MS_MAX" ]; then
+          print -r -- "  [ok] processo novo (boot_ms=$boot)"
+        else
+          print -r -- "  [aviso] sem marcador de restart no mini — novidade do boot NÃO verificada (boot_ms=$boot)"
+        fi
+      elif [ "$boot" -lt "$BOOT_MS_MAX" ]; then
+        print -r -- "  [ok] processo novo (boot_ms=$boot)"
+      else
+        print -r -- "  [aviso] boot_ms=$boot — a verificação de novo-processo ancorada no marcador roda só no pós-deploy (#252)"
+      fi
     fi
   else
     print -r -- "  [FALHA] $rotulo /api/build sem \"codigo\" (rota existe no rev alvo — versão errada no ar?)"; falhas=1
@@ -439,6 +462,10 @@ deploy() {
   fi
   distante "cd $(cd_remoto) && rm -f '$(preview_caminho)'"
   print -r -- "  reiniciando $LABEL…"
+  # O marcador vai ANTES do kickstart: todo processo que subir depois dele é o
+  # novo (boot ≥ marcador); escrito depois, o próprio atraso do ssh acusava
+  # FALHA de 1 s no processo genuinamente novo.
+  distante "cd $(cd_remoto) && date +%s > $BOOT_MARKER"   # âncora do smoke pós-deploy (#252)
   distante "launchctl kickstart -k gui/\$(id -u)/$LABEL && echo kickstart-ok" | sed 's/^/    /'
   print -r -- "  esperando ${ESPERA}s o run.sh subir a porta…"
   sleep "$ESPERA"
@@ -462,6 +489,7 @@ rollback() {
   fi
   distante "cd $(cd_remoto) && git switch --quiet -C 'prod-${sha[1,12]}' '$sha' && git log -1 --format='  agora: %h %s'" | sed 's/^/  /'
   print -r -- "  reiniciando $LABEL…"
+  distante "cd $(cd_remoto) && date +%s > $BOOT_MARKER"   # âncora do smoke pós-deploy (#252)
   distante "launchctl kickstart -k gui/\$(id -u)/$LABEL && echo kickstart-ok" | sed 's/^/  /'
   print -r -- "  [nota] deps NÃO voltam sozinhas: o freeze do deploy está em .deploy-mini-freeze-* no mini"
   sleep "$ESPERA"

@@ -1,0 +1,26 @@
+#252 — aviso de boot_ms ancorado no marcador do restart (.deploy-mini-boot)
+
+ANTES (janela fixa de 120 s), cenário real do gate do passo 2 (marker do
+restart há 1 h, processo de pé há 3 min — boot_ms=180000):
+  [FALHA] boot_ms=180000 ≥ 120000 — reiniciou de verdade?
+  …ou, fora do pós-deploy: [aviso] boot_ms=331893 (instância antiga: ok fora
+  do pós-deploy) — com a instância JÁ NOVA (o texto mentia).
+
+DEPOIS (âncora): o smoke lê .deploy-mini-boot (epoch gravado pelo próprio
+script ANTES do kickstart), calcula boot_wall = agora_do_mini - boot_ms e:
+  boot_wall ≥ marcador → [ok] processo novo (boot 1790992733s ≥ marcador do
+  restart 1790989076s — #252)
+  boot_wall < marcador → [FALHA] processo anterior ao restart
+  sem marcador (pós-deploy) → [aviso] sem marcador de restart — novidade do
+  boot NÃO verificada (nunca afirma 'instância antiga' como fato)
+  fora do pós-deploy → [aviso] boot_ms=… — a verificação ancorada roda só no
+  pós-deploy (neutro, sem afirmar)
+
+MORDIDA (revertendo a âncora para a janela fixa): o teste
+test_smoke_pos_deploy_ancora_o_boot_no_marcador_do_restart cai com
+"[FALHA] boot_ms=180000 ≥ 120000 — reiniciou de verdade?" — a mentira
+reproduzida; com a âncora, 37 passed.
+
+Detalhe de implementação descoberto no caminho: o marcador é gravado ANTES
+do kickstart — gravado depois, o próprio atraso do ssh acusava FALHA de 1 s
+no processo genuinamente novo (peguei isso no teste).

@@ -11,6 +11,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -98,7 +99,16 @@ case "$url" in
         # boot_ms curto: é a instância viva que o smoke confere. ${=} força a
         # separação por espaço (zsh não separa variável sem aspas).
         c="${T_CURL_BUILD_CODIGO:-$(cd "$T_MINI_DIR" && cat ${=T_MODULOS} 2>/dev/null | /usr/bin/shasum -a 256 | cut -c1-8)}"
-        [ "$codigo" = 200 ] && corpo="{\\"ok\\":true,\\"codigo\\":\\"$c\\",\\"boot_ms\\":${T_CURL_BOOT_MS:-1000}}"
+        # boot_ms coerente com o marcador do restart (#252): como o mini real,
+        # o shim reporta a idade do processo desde .deploy-mini-boot; override
+        # explícito (T_CURL_BOOT_MS) continua valendo para cenários dirigidos.
+        bm="${T_CURL_BOOT_MS:-}"
+        if [ -z "$bm" ]; then
+          mk="$(cat "$T_MINI_DIR/.deploy-mini-boot" 2>/dev/null)"
+          if [ -n "$mk" ]; then bm=$(( ( $(date +%s) - mk ) * 1000 )); fi
+        fi
+        bm="${bm:-1000}"
+        [ "$codigo" = 200 ] && corpo="{\\"ok\\":true,\\"codigo\\":\\"$c\\",\\"boot_ms\\":$bm}"
       else codigo=401; fi ;;
   */api/live/ws*)
       # o upgrade é mecanismo h1: pelo Cloudflare em h2 o origin recebe SEM upgrade
@@ -660,3 +670,59 @@ def test_rollback_sem_estado_avisa(amb):
     assert r.returncode == 0
     assert "[aviso] nenhum .deploy-mini-estado" in r.stdout
     assert _log(amb, "launch") == []
+
+
+# --- #252: a novidade do boot é ancorada no marcador do restart (.deploy-mini-boot),
+# não numa janela fixa de 120 s — que mentia quando o processo novo demorava a
+# carregar o modelo (ou quando o smoke rodava tarde depois do restart).
+def test_smoke_pos_deploy_ancora_o_boot_no_marcador_do_restart(amb):
+    """boot_ms alto (modelo carregando) NÃO é mais 'instância antiga': o boot do
+    processo vivo (agora - boot_ms) ≥ marcador do restart → ok."""
+    assert _run(amb, "deploy", "--apply").returncode == 0  # o deploy grava o marcador
+    # restart há 1 h (marcador reescrito) e processo de pé há 3 min: a janela
+    # fixa de 120 s mentia ("instância antiga"); a âncora diz processo novo.
+    (Path(amb["TTS_MINI_DIR"]) / ".deploy-mini-boot").write_text(f"{int(time.time()) - 3600}\n")
+    amb["T_CURL_BOOT_MS"] = "180000"        # boot há 3 min: > janela fixa
+    amb["TTS_MINI_POS_DEPLOY"] = "1"
+    amb["TTS_MINI_REV"] = _sha(amb, "HEAD", "mini")
+    r = _run(amb, "smoke")
+    assert r.returncode == 0, _saida(r)
+    assert "processo novo (boot " in r.stdout and "marcador do restart" in r.stdout
+    assert "instância antiga" not in r.stdout
+
+
+def test_smoke_pos_deploy_falha_quando_o_processo_e_anterior_ao_restart(amb):
+    """Boot ANTES do marcador = instância velha no ar depois do restart: FALHA."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    amb["T_CURL_BOOT_MS"] = "360000000"     # processo vivo "começou" há ~100 dias
+    amb["TTS_MINI_POS_DEPLOY"] = "1"
+    amb["TTS_MINI_REV"] = _sha(amb, "HEAD", "mini")
+    r = _run(amb, "smoke")
+    assert r.returncode == 1, _saida(r)
+    assert "[FALHA] processo anterior ao restart" in r.stdout
+
+
+def test_smoke_pos_deploy_sem_marcador_nao_mente(amb):
+    """Sem marcador não dá para afirmar nada: boot curto → ok pela janela; boot
+    longo → aviso honesto ('não verificada'), nunca 'instância antiga' como fato."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    (Path(amb["TTS_MINI_DIR"]) / ".deploy-mini-boot").unlink()  # apaga a âncora
+    amb["T_CURL_BOOT_MS"] = "999999999"
+    amb["TTS_MINI_POS_DEPLOY"] = "1"
+    amb["TTS_MINI_REV"] = _sha(amb, "HEAD", "mini")
+    r = _run(amb, "smoke")
+    assert r.returncode == 0, _saida(r)
+    assert "[aviso] sem marcador de restart" in r.stdout
+    assert "instância antiga" not in r.stdout
+
+
+def test_smoke_fora_do_pos_deploy_avisa_sem_afirmar(amb):
+    """Fora do pós-deploy o smoke não tem marcador para ancorar: boot longo vira
+    aviso neutro — o texto antigo dizia 'instância antiga' até com instância NOVA."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    amb["T_CURL_BOOT_MS"] = "331893"        # o caso real do gate do passo 2
+    amb["TTS_MINI_REV"] = _sha(amb, "HEAD", "mini")
+    r = _run(amb, "smoke")
+    assert r.returncode == 0, _saida(r)
+    assert "só no pós-deploy" in r.stdout
+    assert "instância antiga" not in r.stdout
