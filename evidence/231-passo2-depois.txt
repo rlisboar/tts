@@ -1,0 +1,57 @@
+=== PASSO 2 — DEPOIS (read-only) — 2026-10-01T03:35:32-03:00 ===
+rev: d25269369284a90c363cebad17cde98f2e09e4e7
+branch: prod-d25269369284
+rastreado-sujo: 0
+estado:
+sha=3e663a60ff3a2a818eda32261da7a0056defd666
+data=2026-10-01 03:29:31
+freezes:
+.deploy-mini-freeze-2026-10-01-014219
+.deploy-mini-freeze-2026-10-01-020110
+.deploy-mini-freeze-2026-10-01-032931
+.deploy-mini-freeze-depois-2026-10-01-032936
+websockets: 17.1
+pid: 74223
+74223 Thu Oct  1 03:29:38 2026       05:54
+74208	255	studio.tts.server
+index no disco: …
+shasum: static/index.html: No such file or directory
+== diff do freeze (ANTES × DEPOIS) — só o que o passo 2 mudou no venv:
+antes=.deploy-mini-freeze-2026-10-01-032931 depois=.deploy-mini-freeze-depois-2026-10-01-032936
+31a32
+> httpcore2==2.13.1
+32a34
+> httpx2==2.13.1
+35a38
+> importlib_resources==7.1.0
+99c102
+< silero-vad==6.2.2
+---
+> silero-vad==6.2.1
+120a124
+> truststore==0.10.4
+130a135
+> websockets==17.1
+== linha de base do freeze (passo 1, 020110) × agora:
+31a32
+> httpcore2==2.13.1
+32a34
+> httpx2==2.13.1
+35a38
+> importlib_resources==7.1.0
+99c102
+< silero-vad==6.2.2
+---
+> silero-vad==6.2.1
+120a124
+> truststore==0.10.4
+130a135
+> websockets==17.1
+== anotação de deps no estado de rollback (pedido do PM):
+sha=3e663a60ff3a2a818eda32261da7a0056defd666
+data=2026-10-01 03:29:31
+deps=websockets==17.1 (+ httpcore2 httpx2 importlib_resources truststore; silero-vad 6.2.2->6.2.1 pelo pin do rev)
+rollback-deps=./.venv-mlx/bin/pip uninstall -y websockets
+== index no disco (sha256-16) e boot do processo:
+index disco: bbfd73eadff0bd6a…
+index rev alvo (blob): bbfd73eadff0bd6a…

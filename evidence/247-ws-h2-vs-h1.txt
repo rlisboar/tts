@@ -1,0 +1,7 @@
+=== ACHADO #247: a sonda WS do smoke false-vermelha o caminho público (curl h2 × Cloudflare) — 2026-10-01T03:36:44-03:00 ===
+# mesma URL, mesmo header de upgrade: em HTTP/2 (padrão do curl em https) o edge NÃO converte para upgrade e o origin responde 401 (middleware, sem header de chave); em h1 dá 101 (o navegador é h1)
+público default -> 401
+público http1.1 -> 101
+# LAN (http, h1 sempre): 101
+# sem upgrade (GET puro), key na query × no header:
+  público query -> 401  header -> 404

@@ -1,0 +1,19 @@
+=== PASSO 2 — SMOKE DEPOIS (sonda WS com --http1.1, igual ao navegador) — 2026-10-01T03:35:10-03:00 ===
+== smoke (rev alvo d25269369284…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN com a chave do mini → 200
+  [ok] LAN /api/build codigo=858fe0d4 = rev alvo d25269369284…
+  [aviso] boot_ms=331893 (instância antiga: ok fora do pós-deploy)
+  [ok] LAN WebSocket 101 (uvicorn com upgrade)
+  [ok] LAN index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] LAN POST /api/tts real: job 280d161473 em ~2s, peça 0 com 95438 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público com a chave do mini → 200
+  [ok] público /api/build codigo=858fe0d4 = rev alvo d25269369284…
+  [aviso] boot_ms=340443 (instância antiga: ok fora do pós-deploy)
+  [ok] público WebSocket 101 (uvicorn com upgrade)
+  [ok] público index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] público POST /api/tts real: job 4b9242444c em ~1s, peça 0 com 95438 bytes
+RC=0

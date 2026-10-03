@@ -1,0 +1,2 @@
+ +    where CompletedProcess(args=['/bin/zsh', '-f', '/Users/lisboa/Documents/tts-rod/remote/deploy_mini.sh', 'deploy', '--apply']...8/test_rollback_dry_run_nao_muda0/origin.git\n   2a17c54..53e8875  53e88751f2b24689c598544173316f1d7c5058b1 -> main\n') = _run({'COLORTERM': 'truecolor', 'GROK_HOME': '/Users/lisboa/.grok-custom', 'THE_DUDES_AGENT_TOKEN_FILE': '/var/folders/5y/g9_r4r5976l6gdddcltfg13w0000gn/T/the-dudes/ag-gDFJiE/agent.token', 'GROK_XAI_ENABLED': '0', ...}, 'deploy', '--apply')
+17 failed, 16 passed in 45.12s

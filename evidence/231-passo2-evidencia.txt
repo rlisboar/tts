@@ -1,0 +1,47 @@
+== .deploy-mini-estado (rollback armado)
+sha=3e663a60ff3a2a818eda32261da7a0056defd666
+data=2026-10-01 03:29:31
+deps=websockets==17.1 (+ httpcore2 httpx2 importlib_resources truststore; silero-vad 6.2.2->6.2.1 pelo pin do rev)
+rollback-deps=./.venv-mlx/bin/pip uninstall -y websockets
+
+== websockets AGORA no venv do mini
+17.1
+
+== diff freeze ANTES (032931) → DEPOIS (032936)
+31a32
+> httpcore2==2.13.1
+32a34
+> httpx2==2.13.1
+35a38
+> importlib_resources==7.1.0
+99c102
+< silero-vad==6.2.2
+---
+> silero-vad==6.2.1
+120a124
+> truststore==0.10.4
+130a135
+> websockets==17.1
+diff_rc=1
+
+== websockets no freeze DEPOIS
+websockets==17.1
+
+== limpeza do preview do dry-run/apply (caminho do proprio output)
+previews removidos
+== check de import + carga REAL do VAD no venv do mini (como o app carrega)
+imports ok: silero_vad 6.2.1
+VAD onnx carregado: OnnxWrapper
+import_rc=0
+
+== silero-vad no freeze ANTES (032931, producao antes do passo deps)
+silero-vad==6.2.2
+== silero-vad no freeze DEPOIS (032936)
+silero-vad==6.2.1
+== estado de rollback atualizado (degrau pip completo: uninstall websockets + restaurar silero-vad 6.2.2)
+sha=3e663a60ff3a2a818eda32261da7a0056defd666
+data=2026-10-01 03:29:31
+deps=websockets==17.1 (+ httpcore2 httpx2 importlib_resources truststore; silero-vad 6.2.2->6.2.1 pelo pin do rev)
+rollback-deps=./.venv-mlx/bin/pip uninstall -y websockets
+rollback-deps-2=./.venv-mlx/bin/pip install "silero-vad==6.2.2"
+estado_rc=0

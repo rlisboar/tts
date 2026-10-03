@@ -314,7 +314,11 @@ O que ele garante:
   **`POST /api/tts` real** até a peça 0 sair com bytes. Duas checagens são conscientes
   do ALVO: `/api/build` e `/api/live/ws` só são exigidas se o rev alvo tiver a rota
   (num corte anterior ao #190/épico Live o smoke diz "ausente NESTE rev", não "falha"),
-  e a paridade do `index.html` ignora o `nonce="…"` que o app injeta por request (CSP);
+  e a paridade do `index.html` ignora o `nonce="…"` que o app injeta por request (CSP).
+  O WS é sondado com **`--http1.1`**: o upgrade é mecanismo h1 e contra o Cloudflare
+  (h2 entre cliente e edge) o pedido chega no origin SEM upgrade — o middleware
+  devolve 401 e a sonda false-vermelhava o caminho público embora o navegador
+  (h1) conecte (#247).
 - `deploy` grava `.deploy-mini-estado` (sha + data) e um `.deploy-mini-freeze-*` no mini
   antes de mexer — é o que o `rollback` usa. Re-deploy do MESMO rev **preserva** o
   estado (senão o rollback viraria no-op); deps **não** voltam sozinhas no rollback
@@ -338,9 +342,15 @@ Produção é usada e não assistida: não subir a árvore em movimento de uma v
    intervalo é `httpx2`/`httpcore2`/`truststore` (teste), `importlib_resources` e o
    `silero-vad==6.2.1`, que é **downgrade** do 6.2.2 que já roda em produção.
    `TTS_MINI_REV=3e663a6 ./remote/deploy_mini.sh deploy --apply --sem-deps`
+   — **EXECUTADO em 2026-10-01 01:42** (`prod-3e663a60ff3a`, smoke verde;
+   `evidence/231-passo1-*.txt`).
 2. **HEAD + `websockets` no venv** (obrigatório para o `/api/live/ws`; sem ele o
    navegador toma 500), quando a fila do Live fechar. Aí sim `pip install` e smoke de
    VAD (por causa do downgrade do silero).
+   — **EXECUTADO em 2026-10-01 03:29** no rev `d252693` (= HEAD da hora do dry-run;
+   `prod-d25269369284`, smoke verde nos dois caminhos, WS público provado com cliente
+   real; `evidence/231-passo2-*.txt`). Rollback armado em `3e663a6`
+   (`.deploy-mini-estado`, com o `pip uninstall -y websockets` anotado).
 
 Medido em 2026-09-30 (dry-run, nada aplicado): produção em `cb36edb`; o corte exige
 publicar 18 commits, o HEAD exige 64; delta de deps do HEAD = `httpcore2 httpx2

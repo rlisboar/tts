@@ -1,0 +1,44 @@
+=== PASSO 2 — DEPLOY (--apply --sem-push) — 2026-10-01T03:29:29-03:00 ===
+# comando: TTS_MINI_REV=d252693 ./remote/deploy_mini.sh deploy --apply --sem-push
+== deploy (rev alvo d25269369284… (d252693))
+  [aviso] árvore local com WIP (não commitado NÃO vai para produção):
+     M LIVE.md
+     M app.py
+     M evidence/214-midrun-edit.py
+     M evidence/215-208-residual.py
+     M live_turns.py
+  push: nada a publicar (origin já contém o rev alvo)
+== mini
+  deps: pip install -r requirements.txt (do rev alvo)
+    preview: /tmp/deploy-mini-requirements-preview-51098  (fora da árvore do mini)
+    Would install httpcore2-2.13.1 httpx2-2.13.1 importlib_resources-7.1.0 silero-vad-6.2.1 truststore-0.10.4 websockets-17.1
+  backup do estado atual:
+    sha=3e663a60ff3a2a818eda32261da7a0056defd666
+    data=2026-10-01 03:29:31
+  fetch + switch para o rev alvo:
+    agora: d252693 test(deploy): smoke EXIGE as rotas quando o rev alvo as tem + registro do pip DEPOIS (prep do passo 2)
+    
+    [notice] A new release of pip is available: 26.1.2 -> 26.2.1
+    [notice] To update, run: /Users/lisboa/Documents/tts-rod/.venv-mlx/bin/python3.12 -m pip install --upgrade pip
+      websockets 17.1
+  reiniciando studio.tts.server…
+    kickstart-ok
+  esperando 6s o run.sh subir a porta…
+== smoke (rev alvo d25269369284…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN com a chave do mini → 200
+  [ok] LAN /api/build codigo=858fe0d4 = rev alvo d25269369284…
+  [ok] processo novo (boot_ms=4991)
+  [ok] LAN WebSocket 101 (uvicorn com upgrade)
+  [ok] LAN index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] LAN POST /api/tts real: job 2264139ad4 em ~4s, peça 0 com 95438 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público com a chave do mini → 200
+  [ok] público /api/build codigo=858fe0d4 = rev alvo d25269369284…
+  [ok] processo novo (boot_ms=16156)
+  [FALHA] público /api/live/ws devolveu 401 (esperado 101; falta websockets?)
+  [ok] público index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] público POST /api/tts real: job 70102b6bed em ~1s, peça 0 com 95438 bytes
+RC=1

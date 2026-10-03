@@ -186,7 +186,11 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
   if ! tem_rota "$REV_ALVO" '@app.websocket("/api/live/ws")'; then
     print -r -- "  [ok] $rotulo /api/live/ws ausente NESTE rev (anterior ao épico Live) — esperado"
   else
-  c="$(curl -s -m 5 -o /dev/null -w '%{http_code}' \
+  # `--http1.1`: o upgrade é mecanismo h1. Contra o Cloudflare (que fala h2 com o
+  # cliente) o pedido chega no origin SEM upgrade e o middleware devolve 401 — o
+  # probe false-vermelhava o caminho público embora o navegador (h1) conecte.
+  # Achado do passo 2 NO AR (#247): sem a flag, o público acusa 401 e o LAN 101.
+  c="$(curl -s -m 5 --http1.1 -o /dev/null -w '%{http_code}' \
        -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" \
        -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
        "$base/api/live/ws?key=$chave" 2>/dev/null | tail -1)"

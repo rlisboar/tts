@@ -1,0 +1,65 @@
+=== PASSO 2 — ANTES (read-only) — 2026-10-01T03:29:10-03:00 ===
+# mini: rev/branch/árvore/estado/freezes/venv/porta
+rev: 3e663a60ff3a2a818eda32261da7a0056defd666
+branch: prod-3e663a60ff3a
+rastreado-sujo: 0
+estado: sha=cb36edbe4081d52421a4969690e2cf41349ac672 data=2026-10-01 01:42:19 
+freezes: .deploy-mini-freeze-2026-10-01-014219 .deploy-mini-freeze-2026-10-01-020110 
+websockets: ModuleNotFoundError: No module named 'websockets'
+python: Python 3.12.4
+pid: 69268
+69268 Thu Oct  1 02:01:15 2026     01:27:56
+69251	255	studio.tts.server
+== recon (refs do mini atualizados; árvore/serviço intocados)
+== host
+  Mac-mini.local
+  Darwin 27.0.0 arm64
+  3:29  up 9 days,  6:38, 1 user, load averages: 1.24 1.30 1.18
+  RAM: 16 GB
+  disco: 43Gi livres (24% usado)
+== git do mini
+  HEAD 3e663a6 2026-09-24 23:45:28 -0300 chore: ignora .grok/ (config local do runner de agentes)
+  distância até origin/main: 0 local, 63 atrás
+== serviço
+  69251	255	studio.tts.server
+  porta: Python  69268 lisboa    6u  IPv4 0xba3bca3208324ac3      0t0  TCP *:7860 (LISTEN)
+== venv e deps do caminho novo
+  Python 3.12.4
+  dep: websockets False
+  dep: importlib_resources False
+== uso (log de produção)
+  POST /api/tts no log: 3766
+  log: 8318217 Oct 1 03:29
+== estado do último deploy (se houve)
+  sha=cb36edbe4081d52421a4969690e2cf41349ac672
+  data=2026-10-01 01:42:19
+  chave do mini: 48 bytes
+== compare (alvo d252693)
+== rev
+  alvo do deploy:    d25269369284… (d252693)
+  local (HEAD):      8daa3f5dbe8c…
+  origin/main:       8daa3f5dbe8c…
+  no ar (mini HEAD): 3e663a60ff3a…
+  [DIFERENTE] produção 59 commit(s) atrás do rev alvo
+  alvo é descendente da produção (subida direta)
+== árvore do mini
+  [ok] limpa (pull não vai conflitar)
+== conteúdo (blob do rev alvo × arquivo no ar)
+  [DIFERENTE] app.py: rev alvo e8a146ca67ad… × no ar 1a78757d118c…
+  [DIFERENTE] static/index.html: rev alvo bbfd73eadff0… × no ar da1a3c4e67c7…
+== smoke ANTES (produção ainda no corte; rotas do alvo ausentes = FALHA esperada)
+== smoke (rev alvo d25269369284…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN com a chave do mini → 200
+  [FALHA] LAN /api/build sem "codigo" (rota existe no rev alvo — versão errada no ar?)
+  [FALHA] LAN /api/live/ws devolveu 401 (esperado 101; falta websockets?)
+  [FALHA] LAN index.html (da1a3c4e67c7…) ≠ rev alvo (bbfd73eadff0…)
+  [ok] LAN POST /api/tts real: job 2e9886e8ff em ~2s, peça 0 com 95438 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público com a chave do mini → 200
+  [FALHA] público /api/build sem "codigo" (rota existe no rev alvo — versão errada no ar?)
+  [FALHA] público /api/live/ws devolveu 401 (esperado 101; falta websockets?)
+  [FALHA] público index.html (da1a3c4e67c7…) ≠ rev alvo (bbfd73eadff0…)
+  [ok] público POST /api/tts real: job 0f7fbdd453 em ~1s, peça 0 com 95438 bytes

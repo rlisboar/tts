@@ -1,0 +1,5 @@
+=== WS REAL pelo caminho público (h1 upgrade, igual ao navegador) — 2026-10-01T03:31:05-03:00 ===
+handshake: 101 OK
+1º frame: type=ready
+ready: session=f95302bed6 audio={'format': 'pcm16', 'sr': 24000, 'channels': 1}
+RC=0

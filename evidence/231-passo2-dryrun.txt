@@ -1,0 +1,13 @@
+== deploy (rev alvo d25269369284… (d252693))
+  [aviso] árvore local com WIP (não commitado NÃO vai para produção):
+     M LIVE.md
+     M app.py
+     M evidence/214-midrun-edit.py
+     M evidence/215-208-residual.py
+    M  evidence/226-sabotagens.sh
+  push: nada a publicar (origin já contém o rev alvo)
+== mini
+  deps: pip install -r requirements.txt (do rev alvo)
+    preview: /tmp/deploy-mini-requirements-preview-28646  (fora da árvore do mini)
+    nada a instalar (o venv já satisfaz o requirements)
+  (dry-run: rode com --apply para push + backup + switch + deps + restart + smoke)

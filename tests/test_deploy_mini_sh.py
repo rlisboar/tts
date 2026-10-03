@@ -68,12 +68,13 @@ exit 0
 """)
     _shim(d / "curl", """
 # curl falso: decide pela URL; -w '%{http_code}' imprime só o código
-url=""; tem_chave=0; so_codigo=0; arquivo=""; metodo=GET
+url=""; tem_chave=0; so_codigo=0; arquivo=""; metodo=GET; http1=0
 for ((i = 1; i <= $#; i++)); do
   case "${@[i]}" in
     http*) url="${@[i]}" ;;
     -X) metodo="${@[i+1]}" ;;
     -H) [[ "${@[i+1]}" == X-API-Key:* ]] && tem_chave=1 ;;
+    --http1.1) http1=1 ;;
     -w) so_codigo=1 ;;
   esac
 done
@@ -99,7 +100,12 @@ case "$url" in
         c="${T_CURL_BUILD_CODIGO:-$(cd "$T_MINI_DIR" && cat ${=T_MODULOS} 2>/dev/null | /usr/bin/shasum -a 256 | cut -c1-8)}"
         [ "$codigo" = 200 ] && corpo="{\\"ok\\":true,\\"codigo\\":\\"$c\\",\\"boot_ms\\":${T_CURL_BOOT_MS:-1000}}"
       else codigo=401; fi ;;
-  */api/live/ws*) codigo="${T_CURL_WS_CODE:-101}" ;;
+  */api/live/ws*)
+      # o upgrade é mecanismo h1: pelo Cloudflare em h2 o origin recebe SEM upgrade
+      # e o middleware devolve 401 (navegador, h1, conecta). O shim imita isso para
+      # que o probe sem --http1.1 false-vermelhe igual à produção (#247).
+      print -r -- "WS $url h1=$http1" >> "$T_CURL_LOG"
+      if [ $http1 = 1 ]; then codigo="${T_CURL_WS_CODE:-101}"; else codigo="${T_CURL_WS_CODE_H2:-401}"; fi ;;
   */) arquivo="$T_MINI_DIR/static/index.html"; nonce=1 ;;
 esac
 if [ $so_codigo = 1 ]; then print -rn -- "$codigo"
@@ -331,6 +337,21 @@ def test_smoke_avisa_quando_o_ws_nao_sobe(amb):
     r = _run(amb, "smoke")
     assert r.returncode == 1
     assert "/api/live/ws devolveu 401" in r.stdout
+
+
+def test_ws_probe_faz_handshake_h1_como_o_navegador(amb):
+    """Achado do passo 2 NO AR (#247): o upgrade é mecanismo h1 — pelo Cloudflare
+    (h2 entre cliente e edge) o pedido chega no origin SEM upgrade e o middleware
+    devolve 401, embora o navegador (h1) conecte. Sem `--http1.1` o smoke
+    false-vermelha o caminho público (o shim imita: h2 → 401)."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    Path(amb["T_CURL_LOG"]).unlink()          # o deploy já rodou um smoke; isola o meu
+    r = _run(amb, "smoke")
+    assert r.returncode == 0, _saida(r)
+    ws = [l for l in _log(amb, "curl") if l.startswith("WS ")]
+    assert len(ws) == 2, ws                                # LAN + público
+    assert all(l.endswith("h1=1") for l in ws), ws        # as duas com --http1.1
+    assert r.stdout.count("WebSocket 101") == 2
 
 
 def test_smoke_avisa_sem_a_chave_do_mini(amb):
