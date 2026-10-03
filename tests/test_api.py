@@ -31,21 +31,36 @@ from starlette.websockets import WebSocketDisconnect
 import app
 
 
-def _hash_dos_modulos(base=None) -> str:
-    """sha256-8 do CONTEÚDO dos módulos do build, calculado de forma independente.
+def _snapshot_dos_modulos(base=None) -> dict:
+    """{nome: (mtime, bytes)} do conteúdo dos módulos do build, lido de `base`.
 
-    Espelha `app._build_hash` (inclusive o `<ausente>` de módulo faltando), mas lê
-    de `base` — os testes do /api/build apontam `app.BASE` para uma árvore de mentira
-    e precisam do mesmo cálculo do lado de fora.
+    Espelha `app._build_hash` (inclusive o `<ausente>` de módulo faltando), mas do
+    lado de fora — os testes do /api/build apontam `app.BASE` para uma árvore de
+    mentira e precisam do mesmo cálculo. #227: guardar os BYTES (e não reler o
+    disco na asserção) é o que dá a prova de conteúdo com um escritor em curso —
+    a releitura pega a fase oposta à do `codigo` e a prova virava moeda.
     """
-    h = hashlib.sha256()
     raiz = Path(base) if base is not None else app.BASE
+    fora = {}
     for nome in app._BUILD_MODULOS:
         try:
-            h.update((raiz / nome).read_bytes())
+            st = (raiz / nome).stat()
+            fora[nome] = (st.st_mtime, (raiz / nome).read_bytes())
         except OSError:
-            h.update(b"<ausente>")
+            fora[nome] = (0.0, None)              # ausente conta como `<ausente>`
+    return fora
+
+
+def _hash_do_snapshot(snap: dict) -> str:
+    h = hashlib.sha256()
+    for nome in app._BUILD_MODULOS:
+        h.update(snap[nome][1] if snap[nome][1] is not None else b"<ausente>")
     return h.hexdigest()[:8]
+
+
+def _hash_dos_modulos(base=None) -> str:
+    """sha256-8 do CONTEÚDO de AGORA dos módulos (releitura do disco)."""
+    return _hash_do_snapshot(_snapshot_dos_modulos(base))
 
 
 # #220: a expectativa do /api/build é CONGELADA NO IMPORT deste módulo, não
@@ -58,7 +73,15 @@ def _hash_dos_modulos(base=None) -> str:
 # Um save entre o import do app e o deste módulo ainda faz as duas expectativas
 # divergirem: quem trata esse caso é a tolerância por mtime, em
 # `_confere_que_o_codigo_e_do_boot` — e ela só é aceita quando PROVADA.
-_HASH_NO_IMPORT = _hash_dos_modulos()
+#
+# #227: a expectativa vem do SNAPSHOT (bytes + mtimes tirados AQUI), não de uma
+# releitura do disco na asserção — com um escritor em curso a releitura pega a fase
+# oposta à do `codigo`. `_JANELA_SUJA` marca o caso em que a nossa cópia já não
+# descreve o que o boot hasheou (escrita entre o boot e este import): só ali a prova
+# de conteúdo não vale.
+_SNAPSHOT = _snapshot_dos_modulos()
+_HASH_NO_IMPORT = _hash_do_snapshot(_SNAPSHOT)
+_JANELA_SUJA = [n for n, (m, _) in _SNAPSHOT.items() if m > app._BUILD_TS_HASH]
 
 
 def _modulos_escritos_desde_o_boot(base=None) -> list:
@@ -93,7 +116,12 @@ def _confere_que_o_codigo_e_do_boot(d: dict) -> None:
     Com ninguém tendo escrito desde o boot, a expectativa CONGELADA no import deste
     módulo tem de bater exatamente — é a prova de que o hash é do CONTEÚDO. Se
     alguém escreveu (mtime), a tolerância é PROVADA e o que se exige é que a rota
-    siga o boot e não o disco de agora."""
+    siga o boot e não o disco de agora.
+
+    #227: a prova de CONTEÚDO não depende de a árvore estar quieta — o SNAPSHOT é
+    anterior ao escritor, então ela vale igual com a árvore viva (é o que impede o
+    campo de virar literal). A exceção é a escrita NA JANELA entre o boot e este
+    import (`_JANELA_SUJA`): aí a nossa cópia descreve outro conteúdo."""
     assert d["codigo"] == app._BUILD_CODIGO, "o campo tem de ser o hash do BOOT"
     escritos = _modulos_escritos_desde_o_boot()
     if escritos:
@@ -102,9 +130,10 @@ def _confere_que_o_codigo_e_do_boot(d: dict) -> None:
         disco = _hash_dos_modulos()
         if disco != app._BUILD_CODIGO:
             assert d["codigo"] != disco, "a rota seguiu o disco de agora, não o boot"
-    else:
-        assert d["codigo"] == _HASH_NO_IMPORT, \
-            "hash é do CONTEÚDO dos módulos (expectativa congelada no import)"
+        if _JANELA_SUJA:
+            return                       # a nossa cópia não descreve o boot
+    assert d["codigo"] == _HASH_NO_IMPORT, \
+        "hash é do CONTEÚDO dos módulos (expectativa congelada no import)"
 
 
 @pytest.fixture()
@@ -2320,6 +2349,54 @@ def test_build_par_nao_e_refem_da_arvore_viva(client, auth, tmp_path, monkeypatc
     # o que a asserção ANTIGA (expectativa == disco de agora) diria neste cenário:
     assert disco != app._BUILD_CODIGO, \
         "com o disco de agora != boot, a asserção antiga teria ficado vermelha"
+
+
+def _arvore_com_escrita_de_terceiro(tmp_path, monkeypatch):
+    """Cenário do escritor em curso: árvore de mentira + módulo escrito AGORA
+    (mtime > boot, o que liga a tolerância do #220). Devolve o que o disco de
+    agora vale, para o chamador conferir a premissa."""
+    for nome in app._BUILD_MODULOS:
+        shutil.copy2(app.BASE / nome, tmp_path / nome)
+    monkeypatch.setattr(app, "BASE", tmp_path)
+    (tmp_path / "live_turns.py").write_text("# escrito por um TERCEIRO\n")
+    assert "live_turns.py" in _modulos_escritos_desde_o_boot(tmp_path), \
+        "cenário não montado: falta o mtime > boot que autoriza a tolerância"
+    return _hash_dos_modulos(tmp_path)
+
+
+def test_build_tolerancia_nao_pode_ser_apagada_em_silencio(client, auth, tmp_path,
+                                                           monkeypatch):
+    """#227 (mutação 1): com um escritor, quem responde é a TOLERÂNCIA — o par não
+    pode passar pela expectativa exata.
+
+    A sabotagem é a expectativa (`_HASH_NO_IMPORT` que não descreve o boot, como se
+    a cópia do teste fosse de outro conteúdo: é o caso da JANELA). O par TEM de
+    seguir verde por ALI; com a tolerância desligada (`if escritos:` -> `if False:`),
+    o ramo exato compara com a expectativa sabotada e reprova."""
+    disco = _arvore_com_escrita_de_terceiro(tmp_path, monkeypatch)
+    assert disco != app._BUILD_CODIGO, "premissa: o disco de agora não é o boot"
+    test_api = sys.modules[__name__]
+    monkeypatch.setattr(test_api, "_HASH_NO_IMPORT", "00000000")
+    monkeypatch.setattr(test_api, "_JANELA_SUJA", ["live_turns.py"])
+    _confere_que_o_codigo_e_do_boot(client.get("/api/build", headers=auth).json())
+
+
+def test_build_conteudo_do_codigo_vale_com_arvore_viva(client, auth, tmp_path,
+                                                       monkeypatch, capsys):
+    """#227 (mutação 2): a prova de CONTEÚDO (#190) não pode depender de a árvore
+    estar quieta.
+
+    Mesmo cenário do escritor, sem sabotar nada: o par passa PELA tolerância (o
+    marcador prova o caminho) e, ainda assim, `codigo` tem de reproduzir o SNAPSHOT
+    do import — é o que impede o campo de virar literal (`_BUILD_CODIGO = "cafe1234"`
+    passava batido: o ramo da tolerância só olhava o disco)."""
+    disco = _arvore_com_escrita_de_terceiro(tmp_path, monkeypatch)
+    d = client.get("/api/build", headers=auth).json()
+    assert disco != app._BUILD_CODIGO, "premissa: o disco de agora não é o boot"
+    assert app._BUILD_CODIGO != "cafe1234", "premissa do mutante do #227"
+    _confere_que_o_codigo_e_do_boot(d)
+    assert "[220] escritos depois do boot" in capsys.readouterr().out, \
+        "o par não passou pela tolerância — o teste não mediu o que promete"
 
 
 def test_build_codigo_e_do_boot_nao_do_disco_de_agora(client, auth, tmp_path, monkeypatch):
