@@ -1,0 +1,30 @@
+== deploy (rev alvo d25269369284… (d252693))
+  [aviso] árvore local com WIP (não commitado NÃO vai para produção):
+     M LIVE.md
+     M evidence/244-live-substituida.png
+     M evidence/244-mordida-A.txt
+     M static/index.html
+  push: nada a publicar (origin já contém o rev alvo)
+== mini
+  deps: pip install -r requirements.txt (do rev alvo)
+    preview: /tmp/deploy-mini-requirements-preview-87547  (fora da árvore do mini)
+    nada a instalar (o venv já satisfaz o requirements)
+  nada a fazer (rev alvo no ar, sem deps novas e código já carregado) — restart recarrega modelo, então não reinicia
+== smoke (rev alvo d25269369284…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN com a chave do mini → 200
+  [ok] LAN /api/build codigo=858fe0d4 = rev alvo d25269369284…
+  [aviso] boot_ms=154111207 (instância antiga: ok fora do pós-deploy)
+  [ok] LAN WebSocket 101 (uvicorn com upgrade)
+  [ok] LAN index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] LAN POST /api/tts real: job a2bfb372ef em ~2s, peça 0 com 95438 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público com a chave do mini → 200
+  [ok] público /api/build codigo=858fe0d4 = rev alvo d25269369284…
+  [aviso] boot_ms=154120073 (instância antiga: ok fora do pós-deploy)
+  [ok] público WebSocket 101 (uvicorn com upgrade)
+  [ok] público index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] público POST /api/tts real: job afbd62de1d em ~1s, peça 0 com 95438 bytes
+rc=0
