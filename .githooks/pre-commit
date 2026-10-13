@@ -25,7 +25,7 @@ unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OB
 # e derruba tanto o F401 quanto o F811 derivado (que só dispara em
 # 'redefinition of UNUSED'). Exemplo vivo: tests/test_qa_gate176.py.
 "$PY" -m pyflakes app.py common.py tts_worker.py backends.py dsh_client.py smoke_sintese.py remote/*.py \
-    live_turns.py smoke_live_turns.py live_pipeline.py smoke_worker_persist.py \
+    live_turns.py smoke_live_turns.py live_pipeline.py smoke_worker_persist.py live_rnnoise.py \
     tests/*.py client/mic_router.py || exit 1
 "$PY" -m pytest tests/ -q || exit 1
 

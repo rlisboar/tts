@@ -39,3 +39,7 @@ server.log
 
 # config local do runner de agentes (pode conter credenciais) — nunca versionar
 .grok/
+
+# rascunhos locais: backups de probes e artefatos avulsos de sessão (o que
+# importa vira evidence/ ou teste versionado)
+tmp/
