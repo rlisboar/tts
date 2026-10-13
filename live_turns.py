@@ -18,7 +18,10 @@ Barge-in (MVP): durante `speaking` o mic continua sendo consumido. O eco do
 alto-falante é tratado com **limiar adaptativo + energia sustentada por
 `barge_in_ms` (~300 ms)**, sem AEC: o playback começa (`set_speaking`), o motor
 calibra o nível do eco na primeira janela de áudio de verdade e o candidato
-precisa passar `eco + barge_in_margin_db` por 300 ms seguidos. O pré-roll do
+precisa passar `eco + barge_in_margin_db` por 300 ms seguidos. Voz que não
+chega nesses 4 dB ainda interrompe se o Silero fica alto (`barge_prob_alta`,
+~0,85) e o envelope dá um salto sobre o piso de eco recente (`barge_degrau_db`):
+eco plano não passa, e a margem de 4 dB não zera. O pré-roll do
 buffer cobre `barge_in_ms + prefix_ms + rampa do envelope`, então a primeira
 sílaba do humano entra no turno mesmo tendo sido gravada antes de o detector
 decidir. Nada disso é chute: `smoke_live_turns.py` mede 85% de barge-in
@@ -140,6 +143,13 @@ class Config:
     onset_ms: int = 2 * FRAME_MS                  # 2 frames confirmam o início
     barge_in_ms: int = 300                        # energia sustentada exigida
     barge_in_margin_db: float = 4.0               # margem sobre o nível de eco (medido)
+    # #273: a voz no alto-falante sobe o piso e a fala normal não passa
+    # eco+4 dB, então o speech_start não sai e o cliente não corta. Caminho
+    # paralelo — não substitui a margem. Silero de fala nítida (a ordem do
+    # barge da Conversa) E um salto do envelope sobre o piso recente. Eco
+    # plano fica abaixo do degrau.
+    barge_prob_alta: float = 0.85
+    barge_degrau_db: float = 2.0
     fala_threshold: float = 0.5                   # prob mínima do Silero
     energia_margin_db: float = 6.0                # margem p/ ABRIR turno
     energia_margin_turno_db: float = 3.0          # margem p/ MANTER turno (histerese)
@@ -212,6 +222,13 @@ class Config:
             raise ValueError(f"onset_ms precisa ser >= {FRAME_MS} (1 frame)")
         if not 0.0 < self.fala_threshold < 1.0:
             raise ValueError("fala_threshold precisa estar em (0, 1)")
+        if not 0.0 < self.barge_prob_alta < 1.0:
+            raise ValueError("barge_prob_alta precisa estar em (0, 1)")
+        if self.barge_degrau_db <= 0:
+            raise ValueError("barge_degrau_db precisa ser > 0 (eco plano não é barge)")
+        if self.barge_degrau_db >= self.barge_in_margin_db:
+            raise ValueError(
+                "barge_degrau_db fica abaixo da margem de eco — não a substitui")
         if not self.piso_ruido_dbfs < self.teto_ruido_dbfs < 0:
             raise ValueError("piso/teto de ruído são dBFS (negativos), com piso < teto")
 
@@ -366,6 +383,7 @@ class TurnEngine:
         self._calibrando = False
         self._calibracao_vals: list[float] = []
         self._eco_ausente = False
+        self._degrau_base: float | None = None   # piso travado no salto (#273)
         self._barge_no_turno_emitido = False
         self._nivel_payload: float | None = None
         self._pre_env: deque[float] = deque(maxlen=self.config._frames_pre)
@@ -786,12 +804,48 @@ class TurnEngine:
     def _voz(self, env_dbfs: float, prob: float, limiar_dbfs: float) -> bool:
         return prob >= self.config.fala_threshold and env_dbfs >= limiar_dbfs
 
+    def _env_antes(self) -> float:
+        """Envelope uma janela atrás (~200 ms). É o que separa salto de rampa."""
+        n = self.config._frames_envelope
+        hist = self._historico
+        if len(hist) <= n:
+            return self._eco_dbfs
+        return float(hist[-1 - n].env_dbfs)
+
+    def _degrau_sobre_eco(self, env_dbfs: float, prob: float) -> bool:
+        """Fala por cima do TTS que não alcança eco + 4 dB.
+
+        O Silero alto sozinho é o próprio eco (é fala). Conta quando o
+        envelope sobe `barge_degrau_db` dentro de uma janela (~200 ms) e
+        fica acima do piso travado nesse instante. Eco plano e rampa lenta
+        não passam. Sem eco declarado, o limiar de ocioso já cobre.
+        """
+        if (prob < self.config.barge_prob_alta or self._eco_ausente
+                or not self._ref_audio()):
+            self._degrau_base = None
+            return False
+        degrau = self.config.barge_degrau_db
+        if self._degrau_base is None:
+            if env_dbfs < self._eco_dbfs + degrau:
+                return False
+            if env_dbfs < self._env_antes() + degrau:
+                return False
+            self._degrau_base = self._eco_dbfs
+        elif env_dbfs < self._degrau_base + degrau:
+            self._degrau_base = None
+            return False
+        return True
+
     def _adaptar(self, dbfs: float, prob: float) -> None:
         """Pisos adaptativos (ruído de fundo e eco). Só fora de voz — senão a
         EMA persegue a própria fala — e congelados no modo `hold`."""
         if self._hold:
             return
         if self._voz(dbfs, prob, self.limiar_energia_dbfs):
+            return
+        # #273: candidato a degrau não pode deixar o piso subir atrás da voz.
+        # Senão os frames entre +2 e +4 dB nunca sustentam os 300 ms.
+        if self._degrau_sobre_eco(dbfs, prob):
             return
         if self._ref_audio() and not self._eco_ausente:
             # O eco NÃO pode seguir o envelope para baixo: nas pausas entre
@@ -819,7 +873,8 @@ class TurnEngine:
             return []
 
         if self._playback_ativo():
-            voz = self._voz(dbfs, prob, self.limiar_energia_dbfs)
+            voz = (self._voz(dbfs, prob, self.limiar_energia_dbfs)
+                   or self._degrau_sobre_eco(dbfs, prob))
             self._barge_frames = self._barge_frames + 1 if voz else 0
             self._onset_frames = 0
             if self._barge_frames >= self.config._frames_barge:
@@ -924,6 +979,7 @@ class TurnEngine:
         self._silencio_frames = 0
         self._onset_frames = 0
         self._barge_frames = 0
+        self._degrau_base = None
         self._barge_no_turno_emitido = False
 
     def _evento(self, tipo: str, t_ms: int, amostra: int, audio: bytes, **kw) -> TurnEvent:

@@ -34,6 +34,8 @@ import wave
 import numpy as np
 from queue import Empty, Queue
 
+from dsh_client import DshError
+
 # Backend de IA "dsh" (DSH-2): com ele o turno NÃO re-renderiza o histórico a cada
 # vez — o contexto vive na sessão ACP e o turno manda só o texto novo (medido no
 # DSH-1: ttft 384–449 ms quente contra 4,4–7,0 s no 1º prompt da sessão). O teto
@@ -51,6 +53,53 @@ _DSH_PERSONA = (
     "Você conversa por voz com uma pessoa. Responda em 1 a 3 frases curtas, sem "
     "markdown e sem bloco de código, em tom de conversa."
 )
+
+# Teto do 1º delta FALÁVEL (#264). O cliente só solta o parágrafo do thought
+# (≤400 chars) DEPOIS do settle; com effort=off ignorado isso foi medido em
+# ~178 s e ~95k de reasoning — o mic ficava mudo dentro do `next()`, e o
+# `tts_thread.join(180)` nem chegava a sintetizar. 12 s cancela o harness e
+# cai no openai. O join de 180 da SÍNTESE não muda.
+def _env_positivo(nome: str, padrao: float) -> float:
+    bruto = os.environ.get(nome, "")
+    if not bruto.strip():
+        return padrao
+    try:
+        valor = float(bruto)
+    except ValueError:
+        return padrao
+    return valor if valor > 0 else padrao
+
+
+_DSH_FIRST_DELTA_S = _env_positivo("TTS_LIVE_DSH_FIRST_DELTA_S", 12.0)
+
+# PCM do TTS no fio (o mesmo 24 kHz do catálogo). Cada chunk entra na fila
+# como o lxToca — max(now, fim) + duração — porque o 1º já toca enquanto o
+# seguinte sintetiza. Somar o PCM inteiro no fim contaria de novo o que já
+# saiu do alto-falante (#269). O relógio do TurnEngine fecha a janela de
+# barge cedo (#167); esta cauda é outra conta.
+_TTS_SR = 24000
+
+
+def _eco_cauda_s() -> float:
+    """Cauda curta DEPOIS do playback estimado.
+
+    É a janela que o TurnEngine já publica (`Config.playback_janela_ms`,
+    default 900). Não é o cvEco de 12 s da tela Conversa."""
+    try:
+        import live_turns
+        ms = float(live_turns.Config().playback_janela_ms)
+    except Exception:                     # noqa: BLE001 — default do motor
+        ms = 900.0
+    return max(0.05, ms / 1000.0)
+
+
+def _fechar_cliente_dsh(cliente) -> None:
+    """`close()` fora do turno: com prompt ainda em voo o session/close pode
+    levar o timeout de controle (60 s) e seguraria o fallback openai."""
+    try:
+        cliente.close()
+    except Exception:                     # noqa: BLE001 — close é best-effort
+        pass
 
 # ---------------------------------------------------------------------------
 # Chunking por sentença (puro — é o que decide quando o 1º áudio pode nascer)
@@ -181,6 +230,13 @@ class LivePipeline:
         # da checagem de eco; o `history[-1]` só entra como fallback (num barge-in
         # no começo do turno ele ainda seria o do turno anterior).
         self._fala_em_curso = ""
+        # Fila do playback, no mesmo relógio do lxToca: fim do último chunk
+        # agendado. Não é a soma do PCM. `_render_ate` é esse fim + a cauda
+        # do motor, para o turno que abre DEPOIS, quando `_barge_turno` já
+        # é falso. `_fala_em_curso` muda no meio da síntese.
+        self._play_fim = 0.0
+        self._render_texto = ""
+        self._render_ate = 0.0
 
         self._cancel = threading.Event()
         self._fala = bytearray()          # PCM16 16 kHz do turno em curso
@@ -423,7 +479,7 @@ class LivePipeline:
         return self._deltas_dsh(msgs, texto, turno_id)
 
     def _deltas_dsh(self, msgs: list, texto: str, turno_id: str):
-        """Deltas pelo dsh, com REDE DE SEGURANÇA para o openai (#146).
+        """Deltas pelo dsh, com REDE DE SEGURANÇA para o openai (#146 / #259 / #264).
 
         O handshake/boot do harness pode morrer ANTES de qualquer token (binário
         errado, `~/.dsh` sem permissão de escrita, Node antigo…). Sem isto a sessão
@@ -432,29 +488,145 @@ class LivePipeline:
         como indisponível, avisamos e refazemos o turno no `llm` (openai) — o
         usuário é respondido. Falha no MEIO do stream não dá para refazer sem
         repetir texto: aí o turno fecha com `error{pipeline}`, mas o dsh também
-        fica marcado e o PRÓXIMO turno já nasce no openai."""
+        fica marcado e o PRÓXIMO turno já nasce no openai.
+
+        O 1º delta tem teto (`_DSH_FIRST_DELTA_S`): o cliente de thought-only só
+        entrega o parágrafo curto DEPOIS do settle, e o provedor pode gastar
+        minutos nisso. Estourou sem texto → cancela o turno, `_dsh_morreu` uma
+        vez e cai no openai. Settle vazio (StopIteration, sem thought) continua
+        a rede da #259. Cancel no meio não mata o dsh. Delta que já chegou não
+        é repetido pelo openai.
+
+        O pull é UM delta por vez, na MESMA ordem do `for` do turno: puxar o
+        stream inteiro numa thread adiantaria o 2º token e a guarda de
+        identidade (`_dsh_turno`) veria o turno trocado antes de emitir o 1º."""
         self._dsh_turno = turno_id
         if self._dsh_nova:
             self._dsh_nova = False
             gen = self._dsh.stream(self._dsh_ctx(texto), turno_id)
         else:
             gen = self._dsh.stream(texto, turno_id)
-        try:
-            primeiro = next(gen)          # boot/handshake falham aqui, antes de texto
-        except StopIteration:
-            return
-        except Exception as exc:          # noqa: BLE001 — dsh fora: refaz no openai
-            self._dsh_morreu(exc)
-            yield from self._llm(msgs)
-            return
-        yield primeiro
-        try:
-            yield from gen
-        except Exception as exc:          # noqa: BLE001 — já falou parte do texto
-            self._dsh_morreu(exc, avisa=False)
-            raise
+        fila: Queue = Queue()
+        pedido = threading.Event()
+        parar = threading.Event()
 
-    def _dsh_morreu(self, exc: Exception, avisa: bool = True) -> None:
+        def _puxar() -> None:
+            try:
+                while not parar.is_set():
+                    pedido.wait()
+                    pedido.clear()
+                    if parar.is_set():
+                        return
+                    try:
+                        delta = next(gen)
+                    except StopIteration:
+                        if not parar.is_set():
+                            fila.put(("fim", None))
+                        return
+                    if parar.is_set():
+                        return
+                    fila.put(("delta", delta))
+            except Exception as exc:      # noqa: BLE001 — o turno decide o fallback
+                if not parar.is_set():
+                    fila.put(("erro", exc))
+            finally:
+                try:
+                    gen.close()
+                except Exception:         # noqa: BLE001
+                    pass
+
+        pedido.set()
+        pull = threading.Thread(target=_puxar, name="live-dsh-delta", daemon=True)
+        pull.start()
+        try:
+            yield from self._deltas_dsh_fila(
+                fila, pedido, parar, pull, msgs, texto, turno_id)
+        finally:
+            parar.set()
+            pedido.set()                  # acorda o pull se estiver no wait
+
+    def _deltas_dsh_fila(self, fila: Queue, pedido: threading.Event,
+                         parar: threading.Event, pull: threading.Thread,
+                         msgs: list, texto: str, turno_id: str):
+        """Consome a fila do pull. O teto vale SÓ para o primeiro item."""
+        prazo = time.monotonic() + _DSH_FIRST_DELTA_S
+        primeiro = True
+        while True:
+            if self.cancelado:
+                return
+            if primeiro:
+                restante = prazo - time.monotonic()
+                if restante <= 0:
+                    item = self._fila_ou_none(fila, 0)
+                    if item is None:
+                        if self.cancelado or not (texto or "").strip():
+                            return
+                        # para o pull antes do cancel: thought que settleia
+                        # depois do teto não pode entrar na fila e virar fala
+                        parar.set()
+                        pedido.set()
+                        self._dsh_teto_estourou(turno_id)
+                        yield from self._llm(msgs)
+                        return
+                else:
+                    item = self._fila_ou_none(fila, min(0.05, restante))
+                    if item is None:
+                        continue
+            else:
+                item = self._fila_ou_none(fila, 0.05)
+                if item is None:
+                    if not pull.is_alive() and fila.empty():
+                        return
+                    continue
+            tipo, payload = item
+            if tipo == "erro":
+                if self.cancelado:
+                    return
+                if primeiro:
+                    self._dsh_morreu(payload)
+                    if (texto or "").strip():
+                        yield from self._llm(msgs)
+                    return
+                self._dsh_morreu(payload, avisa=False)
+                raise payload
+            if tipo == "fim":
+                if primeiro and not self.cancelado and (texto or "").strip():
+                    self._dsh_morreu(DshError(
+                        "dsh encerrou sem emitir nenhum token"))
+                    yield from self._llm(msgs)
+                return
+            if self.cancelado:
+                return                    # chunk tardio não passa do teto nem do barge-in
+            primeiro = False
+            yield payload
+            pedido.set()
+
+    @staticmethod
+    def _fila_ou_none(fila: Queue, timeout: float):
+        try:
+            if timeout <= 0:
+                return fila.get_nowait()
+            return fila.get(timeout=timeout)
+        except Empty:
+            return None
+
+    def _dsh_teto_estourou(self, turno_id: str) -> None:
+        """1º delta não veio a tempo: cancela o reasoning e mata o dsh UMA vez.
+
+        O `close()` vai em thread: o processo ainda está no thought de ~95k e
+        o session/close síncrono esperaria até 60 s antes do openai falar."""
+        cliente = self._dsh
+        if cliente is not None:
+            try:
+                cliente.cancel(turno_id)
+            except Exception:             # noqa: BLE001 — cancelar é best-effort
+                pass
+        self._dsh_morreu(
+            DshError(f"dsh sem delta falável em {_DSH_FIRST_DELTA_S:g}s"),
+            fecha_async=True)
+
+    def _dsh_morreu(self, exc: Exception, avisa: bool = True,
+                    *, fecha_async: bool = False) -> None:
         """Marca o dsh como indisponível nesta sessão (uma vez) e libera o processo.
 
         Sem volta: uma vez marcado, NENHUM turno tenta o dsh de novo (as tentativas
@@ -468,7 +640,14 @@ class LivePipeline:
               f"{self._dsh_motivo}", flush=True)
         try:
             cliente, self._dsh = self._dsh, None
-            cliente.close()               # órfão NÃO fica pendurado
+            if cliente is None:
+                pass
+            elif fecha_async:
+                threading.Thread(
+                    target=_fechar_cliente_dsh, args=(cliente,),
+                    name="live-dsh-close", daemon=True).start()
+            else:
+                cliente.close()           # órfão NÃO fica pendurado
         except Exception:                 # noqa: BLE001
             pass
         if avisa:
@@ -500,14 +679,52 @@ class LivePipeline:
                 sum(len(m.get("content") or "") for m in self.history) > _DSH_CTX_MAX_CHARS:
             self._dsh_nova = True
 
+    def _agendar_chunk(self, audio_bytes: int) -> None:
+        """Um chunk que acabou de sair no fio, no relógio do lxToca.
+
+        `proximo = max(agora, proximo) + duração`. O que já foi tocado não
+        volta para a conta no fim do turno."""
+        if audio_bytes <= 0:
+            return
+        dur = audio_bytes / float(_TTS_SR * 2)
+        agora = time.monotonic()
+        self._play_fim = max(agora, self._play_fim) + dur
+
+    def _marcar_render(self, texto: str) -> None:
+        """Fecha a referência de eco deste turno.
+
+        A cauda começa quando a fila acaba (`_play_fim`), não agora + PCM
+        inteiro. Sem chunk emitido não arma. No cancel o cliente já deu
+        stop (lxCancelaPlayback no speech_start): o que ainda estava
+        agendado não toca, então a janela é só a cauda a partir de agora.
+        """
+        texto = (texto or "").strip()
+        if not texto or self._play_fim <= 0:
+            return
+        self._render_texto = texto
+        if self.cancelado:
+            agora = time.monotonic()
+            self._play_fim = agora
+            self._render_ate = agora + _eco_cauda_s()
+            return
+        self._render_ate = self._play_fim + _eco_cauda_s()
+
     def _parece_eco(self, texto: str) -> bool:
-        """Compara com o texto EM REPRODUÇÃO (fallback: último do assistente)."""
+        """Eco da própria voz — no barge-in OU na cauda logo depois do playback.
+
+        Fora dessas janelas não compara: o humano pode repetir a frase minutos
+        depois. "Sim." continua passando (`_parece_eco` exige ≥2 palavras e
+        sobreposição ≥0.6). Sem AEC."""
         if not self.detectar_eco:
             return False
-        ref = self._fala_em_curso
-        if not ref and self.history and self.history[-1].get("role") == "assistant":
-            ref = self.history[-1].get("content") or ""
-        return _parece_eco(texto, ref)
+        if self._barge_turno:
+            ref = self._fala_em_curso
+            if not ref and self.history and self.history[-1].get("role") == "assistant":
+                ref = self.history[-1].get("content") or ""
+            return _parece_eco(texto, ref)
+        if not self._render_texto or time.monotonic() > self._render_ate:
+            return False
+        return _parece_eco(texto, self._render_texto)
 
     @property
     def ocupado(self) -> bool:
@@ -528,6 +745,7 @@ class LivePipeline:
         erro_worker: list = []
         lat: dict = {"stt_ms": None, "first_token_ms": None, "first_chunk_ms": None,
                      "first_audio_ms": None}
+        self._play_fim = 0.0          # speech_start no cliente zera a fila
         try:
             self.emit_json({"type": "speech_start", "turn": turno,
                             "buffer_bytes": bytes_entrada})
@@ -543,8 +761,9 @@ class LivePipeline:
                                 "truncated": truncado})
                 self._truncado = False
                 return
-            if self._barge_turno and self._parece_eco(texto):
-                # era o próprio TTS voltando pelo mic: não gasta LLM/TTS e avisa
+            if self._parece_eco(texto):
+                # era o próprio TTS voltando pelo mic (barge ou cauda): não
+                # gasta LLM/TTS, não entra no history
                 self.emit_json({"type": "turn_complete", "turn": turno,
                                 "ms": _ms(t0), "audio_bytes": 0, "eco": True,
                                 "descartado": True, "buffer_bytes": bytes_entrada,
@@ -590,6 +809,7 @@ class LivePipeline:
                 raise erro_worker[0]
             resposta = "".join(inteiro).strip()
             self._fala_em_curso = resposta      # é o que o cliente vai tocar
+            self._marcar_render(resposta)
             self.history += [{"role": "user", "content": texto},
                              {"role": "assistant", "content": resposta}]
             self._dsh_pos_turno()           # teto de contexto: fora da latência
@@ -634,6 +854,7 @@ class LivePipeline:
                 pcm = _pcm16(audio)
                 self.emit_audio(pcm)
                 estado["audio_bytes"] += len(pcm)
+                self._agendar_chunk(len(pcm))
                 if primeiro:
                     lat["first_chunk_ms"] = _ms(t0)
                     lat["first_audio_ms"] = _ms(t0)

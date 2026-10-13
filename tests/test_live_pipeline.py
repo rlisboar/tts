@@ -361,6 +361,172 @@ def test_barge_com_transcript_de_eco_descarta_sem_gastar_llm_ou_tts():
                           "content": "Então, o dia está bonito hoje."}]
 
 
+def test_eco_na_cauda_sem_barge_nao_entra_no_history_nem_chama_llm():
+    """#266: turno que abre DEPOIS da janela de barge (barge=False) ainda é
+    eco se o transcript casa com a fala que acabou de sair no alto-falante."""
+    fala = Fala()
+    frases = iter(["oi", "o dia está bonito"])
+    chamadas = []
+
+    def llm(msgs):
+        chamadas.append(msgs[-1]["content"])
+        yield "Então, o dia está bonito hoje. "
+
+    p = lp.LivePipeline(
+        fala.json, fala.audio,
+        stt=lambda pcm, lang: next(frases),
+        llm=llm, tts=lambda t, o: np.zeros(2400, dtype=np.float32),
+        prewarm=lambda: None)
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False, barge=False)
+    assert chamadas == ["oi"]
+    assert p._render_texto.startswith("Então, o dia está bonito")
+    assert p._render_ate > time.monotonic()
+
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False, barge=False)
+    assert chamadas == ["oi"], "eco na cauda não pode chamar o LLM"
+    assert all(h.get("content") != "o dia está bonito" for h in p.history)
+    fins = [e for _, e in fala.eventos if e["type"] == "turn_complete"]
+    assert fins[-1]["eco"] is True and fins[-1]["descartado"] is True
+    assert fins[-1]["audio_bytes"] == 0
+
+
+def test_fala_diferente_na_cauda_chama_o_llm():
+    """Sobreposição <0.6 não é eco — inclusive o "Sim." que o corte por tempo perdia."""
+    fala = Fala()
+    frases = iter(["oi", "sim"])
+    chamadas = []
+
+    def llm(msgs):
+        chamadas.append(msgs[-1]["content"])
+        if msgs[-1]["content"] == "oi":
+            yield "Então, o dia está bonito hoje. "
+        else:
+            yield "pois não. "
+
+    p = lp.LivePipeline(
+        fala.json, fala.audio,
+        stt=lambda pcm, lang: next(frases),
+        llm=llm, tts=lambda t, o: np.zeros(2400, dtype=np.float32),
+        prewarm=lambda: None)
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False, barge=False)
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False, barge=False)
+    assert chamadas == ["oi", "sim"]
+    assert p.history[-1]["content"] == "pois não."
+    assert not any(e.get("eco") for _, e in fala.eventos
+                   if e["type"] == "turn_complete")
+
+
+def test_cauda_nao_reconta_pcm_que_ja_tocou():
+    """#269: o 2º chunk demora mais que a duração do 1º. A cauda é o fim
+    agendado (lxToca) + 900 ms, não now + PCM inteiro + 900 ms. O dublê
+    instantâneo esconde isso. Passada essa cauda, repetir a frase chama o LLM."""
+    fala = Fala()
+    frases = iter(["oi", "Então, o dia está bonito hoje."])
+    chamadas = []
+    agenda = []
+
+    def llm(msgs):
+        chamadas.append(msgs[-1]["content"])
+        if len(chamadas) == 1:
+            yield "Então, o dia está bonito hoje. "
+        else:
+            yield "nova fala aqui."
+
+    def tts(chunk, omni):
+        if agenda:
+            time.sleep(0.9)                 # maior que os 0,6 s do 1º chunk
+        return np.zeros(14400, dtype=np.float32)
+
+    def audio(b):
+        agora = time.monotonic()
+        dur = len(b) / float(lp._TTS_SR * 2)
+        base = agenda[-1] if agenda else 0.0
+        agenda.append(max(agora, base) + dur)
+        fala.audio(b)
+
+    p = lp.LivePipeline(
+        fala.json, audio, stt=lambda pcm, lang: next(frases),
+        llm=llm, tts=tts, prewarm=lambda: None)
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False, barge=False)
+
+    assert len(agenda) >= 2, "o 2º chunk tem de nascer depois do 1º"
+    cauda = lp._eco_cauda_s()
+    assert abs(p._render_ate - (agenda[-1] + cauda)) < 0.05
+    total = sum(len(b) for _, b in fala.audios) / float(lp._TTS_SR * 2)
+    errado = time.monotonic() + total + cauda
+    assert p._render_ate < errado - 0.35, "contou de novo o PCM que já tocou"
+
+    limite = p._render_ate + 0.02
+    falta = limite - time.monotonic()
+    assert falta < (errado - time.monotonic()) - 0.25
+    if falta > 0:
+        time.sleep(falta)
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False, barge=False)
+    assert chamadas == ["oi", "Então, o dia está bonito hoje."], \
+        "depois da cauda certa a frase repetida é fala"
+
+
+def test_cancel_nao_arma_cauda_no_audio_cortado():
+    """#269: speech_start no cliente dá stop. O PCM que ainda estava na
+    fila não entra na cauda — só o resíduo a partir do corte."""
+    fala = Fala()
+    box = {}
+
+    def tts(chunk, omni):
+        box["tts"] = box.get("tts", 0) + 1
+        if box["p"]._play_fim > 0:
+            box["p"].cancel()
+            return np.ones(24000, dtype=np.float32)    # audível se vazasse
+        return np.zeros(24000, dtype=np.float32)       # 1 s, ainda na fila
+
+    p = lp.LivePipeline(
+        fala.json, fala.audio,
+        stt=lambda pcm, lang: "oi",
+        llm=lambda m: iter(["Então, o dia está bonito hoje. "]),
+        tts=tts, prewarm=lambda: None)
+    box["p"] = p
+    box["tts"] = 0
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False, barge=False)
+
+    assert box["tts"] >= 2, "o 2º chunk chegou a sintetizar"
+    assert len(fala.audios) == 1, "PCM depois do cancel religaria a voz"
+    assert "interrupted" in fala.tipos()
+    assert p._render_texto.startswith("Então, o dia está bonito")
+    assert abs((p._render_ate - p._play_fim) - lp._eco_cauda_s()) < 1e-6
+    assert time.monotonic() - p._play_fim < 0.15
+
+
+def test_eco_fora_da_cauda_volta_a_ser_fala():
+    """Passada a cauda, repetir a frase do assistente é fala do usuário."""
+    fala = Fala()
+    frases = iter(["oi", "o dia está bonito"])
+    chamadas = []
+
+    def llm(msgs):
+        chamadas.append(msgs[-1]["content"])
+        yield "Então, o dia está bonito hoje. "
+
+    p = lp.LivePipeline(
+        fala.json, fala.audio,
+        stt=lambda pcm, lang: next(frases),
+        llm=llm, tts=lambda t, o: np.zeros(2400, dtype=np.float32),
+        prewarm=lambda: None)
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False, barge=False)
+    p._render_ate = 0.0                    # cauda já passou
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False, barge=False)
+    assert chamadas == ["oi", "o dia está bonito"]
+    assert p.history[-2]["content"] == "o dia está bonito"
+
+
 def test_barge_com_fala_curta_do_humano_NAO_e_descartado_como_eco():
     """O caso que o corte por tempo perdia: "Sim." durante o playback."""
     fala = Fala()

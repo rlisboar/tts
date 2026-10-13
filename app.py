@@ -48,6 +48,80 @@ from fastapi.staticfiles import StaticFiles
 # imports locais porque o próprio onnxruntime lê a var ao ser importado.
 os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
+# Piso de descritores no boot do servidor (antes de qualquer load): o dsh
+# scandira ~/.dsh/sessions e some libs abrem fd em rajada; um teto duro
+# herdado baixo (zsh/launchd já variou 256→2048→4096 — EMFILE real) mata o
+# handshake. Subir SOFT até HARD não pede privilégio; o run.sh também tenta.
+def _piso_nofile() -> None:
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        alvo = max(soft, min(hard, 65536))
+        if alvo > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (alvo, hard))
+    except Exception:
+        pass
+
+
+def _nofile_nao_desce(atual: tuple[int, int], pedido: tuple[int, int]) -> tuple[int, int]:
+    """Combina dois tetos de NOFILE sem nunca descer o que o processo já tem.
+
+    mlx_lm/utils.py faz `setrlimit(2048, 4096)` no import, achando que o piso
+    do macOS é 256. Se o boot já subiu (run.sh / `_piso_nofile`), esse call
+    ABAIXA o hard — e sem privilégio o processo não recupera. O dsh depois
+    morre com EMFILE. Subir continua valendo: num piso de 256, o (2048, 4096)
+    do mlx ainda ajuda.
+    """
+    import resource
+    inf = resource.RLIM_INFINITY
+    cur_soft, cur_hard = atual
+    req_soft, req_hard = pedido
+
+    def _max_teto(a: int, b: int) -> int:
+        if a == inf or b == inf:
+            return inf
+        return a if a > b else b
+
+    new_hard = _max_teto(cur_hard, req_hard)
+    new_soft = cur_soft if cur_soft > req_soft else req_soft
+    if new_hard != inf and new_soft > new_hard:
+        new_soft = new_hard
+    return (new_soft, new_hard)
+
+
+def _guarda_setrlimit(orig, getrlimit):
+    """`resource.setrlimit` que recusa descer RLIMIT_NOFILE. Os outros limites passam."""
+    import resource
+
+    def guarded(which, limits):
+        if which != resource.RLIMIT_NOFILE:
+            return orig(which, limits)
+        try:
+            atual = getrlimit(resource.RLIMIT_NOFILE)
+            novo = _nofile_nao_desce(atual, (int(limits[0]), int(limits[1])))
+            if novo == tuple(atual):
+                return None
+            return orig(which, novo)
+        except Exception:
+            return orig(which, limits)
+
+    return guarded
+
+
+def _instala_guarda_nofile() -> None:
+    """Uma vez por processo, antes do import preguiçoso do mlx_lm."""
+    import resource
+    if getattr(resource.setrlimit, "_tts_guarda_nofile", False):
+        return
+    guarded = _guarda_setrlimit(resource.setrlimit, resource.getrlimit)
+    guarded._tts_guarda_nofile = True  # type: ignore[attr-defined]
+    resource.setrlimit = guarded
+
+
+_piso_nofile()
+_instala_guarda_nofile()
+
+
 import dsh_client
 from backends import generate_with_backend, list_backends, resolve_backend
 from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,
@@ -6261,6 +6335,54 @@ try:                                     # FSM de turnos do LIVE-2 (#92)
 except Exception:                        # noqa: BLE001 — sem ela, só o PCM cru
     _live_turns_mod = None
 
+try:                                     # RNNoise no PCM do Live, antes do feed (#278)
+    import live_rnnoise as _live_rnnoise_mod
+except Exception:                        # noqa: BLE001 — sem o módulo, o PCM segue cru
+    _live_rnnoise_mod = None
+
+
+def _live_rnnoise_novo():
+    """Filtro da sessão Live. None = desligado (`TTS_LIVE_RNNOISE=0`) ou sem módulo.
+
+    `abrir` roda em thread para não segurar o handshake. Se o modelo não
+    carregar, o primeiro frame segue cru e o aviso sai uma vez."""
+    if _live_rnnoise_mod is None or not _live_rnnoise_mod.ligado():
+        return None
+    ns = _live_rnnoise_mod.RnnoiseAoVivo()
+    threading.Thread(target=ns.abrir, name="rnnoise-abre", daemon=True).start()
+    return ns
+
+
+def _live_rnnoise_derruba(sess: dict, motivo: str) -> None:
+    """Tira o filtro da sessão. O frame que falhou segue cru; os próximos também."""
+    ns = sess.pop("rnnoise", None)
+    if ns is not None:
+        try:
+            ns.fechar()
+        except Exception:                # noqa: BLE001
+            pass
+    _live_log.warning("rnnoise desligado (%s) — Live segue sem o filtro", motivo)
+
+
+def _live_pcm_limpo(sess: dict, pcm: bytes) -> bytes:
+    """RNNoise no frame, ANTES de `TurnEngine.feed`. Mesmo tamanho, ou o PCM cru.
+
+    Limpar o wav depois do `speech_end` não tira a ventoinha do VAD nem do
+    barge-in: a decisão lê este frame. Tamanho diferente quebraria o relógio
+    (o motor conta amostras), então nesse caso o filtro sai e o cru entra."""
+    ns = sess.get("rnnoise")
+    if ns is None:
+        return pcm
+    try:
+        sai = ns.processa(pcm)
+    except Exception as exc:             # noqa: BLE001 — o turno não pode morrer aqui
+        _live_rnnoise_derruba(sess, f"{type(exc).__name__}: {exc}")
+        return pcm
+    if not isinstance(sai, (bytes, bytearray)) or len(sai) != len(pcm):
+        _live_rnnoise_derruba(sess, "tamanho diferente do frame")
+        return pcm
+    return bytes(sai)
+
 
 def _live_engine_novo(sess: dict):
     """FSM de turnos da sessão (None = sem o módulo: comportamento antigo).
@@ -7039,6 +7161,10 @@ async def live_ws(ws: WebSocket):
                         "vad": sess["vad"]})
     sender = None
     try:
+        # dentro do try: o `finally` mata o ffmpeg mesmo se o pipeline não nascer.
+        # O `abrir` corre enquanto o cliente liga o microfone. O NS do navegador
+        # continua no Live; este é o outro filtro, no PCM, e não passa por afftdn.
+        sess["rnnoise"] = _live_rnnoise_novo()
         try:
             # DENTRO do try: um pipeline que não nasce deixava a sessão presa no
             # registry para sempre (sem task de envio, nada a fechava) e o processo
@@ -7056,6 +7182,12 @@ async def live_ws(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        ns = sess.pop("rnnoise", None)
+        if ns is not None:
+            try:
+                ns.fechar()
+            except Exception:            # noqa: BLE001
+                pass
         sess["fechar"] = True
         sess["cancelado"].set()
         if sess.get("pipe") is not None:
@@ -7099,17 +7231,25 @@ async def _live_loop(sess: dict, ws) -> None:
             return
         sess["visto"] = time.monotonic()
         if msg.get("bytes"):
+            cru = bytes(msg["bytes"])
+            # thread: o prime do ffmpeg pode levar ~0,2 s no 1º frame e o
+            # sender (TTS) precisa continuar no event loop. Sem filtro, o
+            # cru entra direto — a suíte não paga o hop.
+            if sess.get("rnnoise") is not None:
+                pcm = await asyncio.to_thread(_live_pcm_limpo, sess, cru)
+            else:
+                pcm = cru
             sess["st_frames"] += 1
-            sess["st_bytes"] += len(msg["bytes"])
+            sess["st_bytes"] += len(pcm)
             sess["st_ultimo_frame"] = time.monotonic()
-            sess["st_dbfs"] = round(_dbfs16(bytes(msg["bytes"])), 1)
+            sess["st_dbfs"] = round(_dbfs16(pcm), 1)
             eng = sess.get("engine")
             if eng is not None:
-                _live_trata_eventos(sess, eng.feed(msg["bytes"]))
+                _live_trata_eventos(sess, eng.feed(pcm))
             elif sess.get("pipe") is not None:
-                sess["pipe"].push_pcm(msg["bytes"])   # sem FSM: pipeline por frame
+                sess["pipe"].push_pcm(pcm)   # sem FSM: pipeline por frame
             buf = sess["buffer"]
-            buf.extend(msg["bytes"])
+            buf.extend(pcm)
             if len(buf) > _LIVE_MAX_BUFFER:      # mantém o INÍCIO do turno
                 del buf[_LIVE_MAX_BUFFER:]
                 # consumido em `_live_enriquece` (estampa `truncated` no
@@ -7187,7 +7327,11 @@ def _resolve_voice(voice) -> str:
     padrao = _settings["default_voice"]
     if padrao and any(v["id"] == padrao for v in voices):
         return padrao
-    return voices[0]["id"]  # mais recente
+    # fallback precisa de voz SINTETIZÁVEL: sem .wav a síntese por clone quebra
+    # com FileNotFoundError no meio da frase da IA (toda resposta muda). Vozes
+    # virtuais só servem para DESIGN (tratado acima), não para este endpoint.
+    usaveis = [v for v in voices if (_p := _voice_path(v["id"])) is not None and _p.exists()]
+    return (usaveis or voices)[0]["id"]  # mais recente sintetizável
 
 
 def _encode_audio(wav_path: Path, fmt: str, speed: float) -> tuple[bytes, str]:

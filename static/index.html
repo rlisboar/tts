@@ -1970,7 +1970,7 @@
   .lx-chip.big { font-size: 13px; padding: 4px 14px; }
   .lx-chip.big.err { color: var(--err); border-color: var(--err-border); }
   .lx-chip.warn { color: var(--warn); border-color: var(--warn); }
-  .lx-chip.big.ok { border-color: var(--ok); }
+  .lx-chip.ok { border-color: var(--ok); }
   .lx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 3px 14px; font-size: 12px; color: var(--muted); }
   .lx-grid b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
   .lx-log-mini { max-height: 132px; overflow-y: auto; font-size: 11.5px; line-height: 1.55; font-variant-numeric: tabular-nums; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 6px 10px; }
@@ -2449,7 +2449,7 @@
             <div class="lx-meters">
               <div class="lx-meter">
                 <div class="lx-lab2"><span>mic</span><span id="lxMicDb">—</span></div>
-                <div class="lx-meterbar" title="nível do mic (RMS) — a marca vermelha é o limiar VIGENTE de abertura de turno, do evento stats">
+                <div class="lx-meterbar" title="nível do mic DEPOIS do passa-alta e do ganho (o que vai no PCM). A marca vermelha é o limiar VIGENTE de abertura de turno, do evento stats">
                   <div class="bar" id="lxMicBar"></div>
                   <div class="peak" id="lxMicPeak"></div>
                   <div class="mark" id="lxMicMark"></div>
@@ -2469,6 +2469,7 @@
               <span class="lx-chip">motor <b id="lxMotor">—</b></span>
               <span class="lx-chip">turno <b id="lxTurno">—</b></span>
               <span class="lx-chip" title="backend que de FATO responde o turno (o servidor publica em stats.backend)">backend chat <b id="lxProv">—</b></span>
+              <span class="lx-chip ok" id="lxNs" title="noiseSuppression do navegador, sempre ligado no Live — o checkbox de Configurações não manda aqui. Nas outras telas ele fica off porque o servidor já roda afftdn; duas supressões comem consoante. O PCM do Live não passa por afftdn.">ventoinha <b>supressão ligada</b></span>
             </div>
             <div class="lx-grid">
               <span>frames enviados <b id="lxCEnv">0</b></span>
@@ -2477,6 +2478,7 @@
               <span>mic no servidor <b id="lxMicServ">—</b></span>
               <span>taxa de captura <b id="lxCtx">—</b></span>
               <span>entrada <b id="lxDev">—</b></span>
+              <span title="passa-alta e ganho de Configurações → Microfone, no PCM do Live. O slider vale na hora, sem reabrir a sessão.">filtro do mic <b id="lxFiltro">—</b></span>
             </div>
             <div class="lx-grid" style="grid-template-columns: 1fr">
               <span>latência do turno <b id="lxLat">—</b></span>
@@ -2674,8 +2676,11 @@
         </div>
         <p class="hint" style="margin-top:6px">Espectro ao vivo: a marca vertical é o passa-alta — o que fica
           à esquerda dela é o que ele corta. <b>Piso de ruído</b> é o nível com você calado; a sensibilidade
-          deve ficar ~4× acima dele. Se aparecer "amostras estouradas", baixe o ganho. Estes ajustes valem
-          para o microfone de todas as telas (voz, tradutor, conversa, transcrição, biometria).</p>
+          deve ficar ~4× acima dele. Se aparecer "amostras estouradas", baixe o ganho. Ganho e passa-alta
+          valem para voz, tradutor, conversa, transcrição, biometria e o Live (no Live o slider entra na
+          hora, sem reabrir a sessão). Este checkbox de supressão fica desligado nessas telas de propósito:
+          o servidor já denoisa com afftdn, e as duas juntas comem consoante. No Live a supressão de ruído
+          estacionário (ventoinha) fica sempre ligada, fora deste checkbox — o PCM do Live não passa pelo afftdn.</p>
         <div class="cfg-sec-h">Anti-ruído da transcrição</div>
         <label class="check"><input type="checkbox" id="sttFiltros" checked> filtrar transcrição suspeita (rejeita ruído e alucinação)</label>
         <label class="check"><input type="checkbox" id="sttDenoise" checked> denoise do microfone no servidor (ffmpeg afftdn)</label>
@@ -4594,8 +4599,10 @@ const CONT_GRACE_MS = 2500; // teto duro: se a fala não der respiro, corta mesm
 // ns (noiseSuppression do navegador) off por padrão na captura contínua: a
 // gravação de voz já desliga de propósito, o servidor denoisa no ffmpeg
 // (afftdn, medido como neutro para a acurácia) — suprimir duas vezes come
-// consoante e custa palavra no Whisper. JSON.parse protegido: um micFx corrompido
-// no localStorage derrubava este script inteiro e a UI nascia morta.
+// consoante e custa palavra no Whisper. O Live é a exceção (lxCaptura): o PCM
+// dele não passa por afftdn, então o NS fica sempre ligado lá, independente
+// deste flag. JSON.parse protegido: um micFx corrompido no localStorage
+// derrubava este script inteiro e a UI nascia morta.
 let micFxSaved = {};
 try { micFxSaved = JSON.parse(localStorage.getItem("micFx") || "{}") || {}; } catch { micFxSaved = {}; }
 const micFx = Object.assign({ gain: 1, hp: 90, thresh: 0.015, ns: false, silenceHold: 700, minUtter: 350, contMax: 4500 },
@@ -5082,13 +5089,17 @@ function initMicControls() {
   $("micThresh").value = micFx.thresh; $("micThreshOut").textContent = micFx.thresh.toFixed(3);
   $("micNs").checked = micFx.ns;
   $("micGain").oninput = () => { micFx.gain = +$("micGain").value; $("micGainOut").textContent = micFx.gain.toFixed(1);
-    if (micGraph) micGraph.gain.gain.value = micFx.gain; saveMicFx(); };
+    if (micGraph) micGraph.gain.gain.value = micFx.gain;
+    if (LX.gainCap) LX.gainCap.gain.value = micFx.gain;
+    lxPintaFiltroLive(); saveMicFx(); };
   $("micHp").oninput = () => { micFx.hp = +$("micHp").value; $("micHpOut").textContent = micFx.hp + " Hz";
-    if (micGraph) micGraph.hp.frequency.value = micFx.hp; saveMicFx(); };
+    if (micGraph) micGraph.hp.frequency.value = micFx.hp;
+    lxAplicaHp(LX.hpCap, micFx.hp);
+    lxPintaFiltroLive(); saveMicFx(); };
   $("micThresh").oninput = () => { micFx.thresh = +$("micThresh").value; VAD.thresh = micFx.thresh;
     $("micThreshOut").textContent = micFx.thresh.toFixed(3); updateMicMark(); saveMicFx(); };
   $("micNs").onchange = () => { micFx.ns = $("micNs").checked; saveMicFx();
-    toast("Supressão muda na próxima vez que abrir o mic"); };
+    toast("Supressão muda na próxima abertura do mic — o Live não usa este checkbox"); };
   $("micSilence").value = micFx.silenceHold; $("micSilenceOut").textContent = micFx.silenceHold + " ms";
   $("micMinUtter").value = micFx.minUtter; $("micMinUtterOut").textContent = micFx.minUtter + " ms";
   $("micSilence").oninput = () => { micFx.silenceHold = +$("micSilence").value; VAD.silenceHoldMs = micFx.silenceHold;
@@ -5107,6 +5118,7 @@ function initMicControls() {
     };
   }
   updateMicMark();
+  lxPintaFiltroLive();
 }
 
 /* --- Aquecimento: carrega whisper + LLM antes da 1ª frase (paraleliza) --- */
@@ -6960,7 +6972,8 @@ const obsTtsM = criaObsMonitor("obsTts", { compacto: true }); // sem áudio capt
    devolve eventos JSON + PCM16 24 kHz. Estado centralizado em LX.estado e o botão
    só REFLETE — foi assim que a Conversa se queimou com botão dessincronizado. */
 const LX = { ws: null, estado: "desligado", ctxCap: null, noCap: null, stream: null,
-             fonte: null, ctxPlay: null, ativos: [], proximo: 0, ptt: false, erro: false,
+             fonte: null, hpCap: null, gainCap: null, mudoCap: null,
+             ctxPlay: null, ativos: [], proximo: 0, ptt: false, erro: false,
              substituida: false };   // #244: o servidor fechou ESTA por takeover do id
 
 // #244 (contrato aditivo do #222): motivo único do ramo `session_substituida` —
@@ -7095,6 +7108,28 @@ function lxSetup() {
   });
 }
 
+// Passa-alta do Live. Hz 0 = filtro fora (allpass de magnitude 1): um highpass
+// em 0 Hz degenera (polo em z=1). Q 0.707 é o mesmo Butterworth do
+// micFilteredStream. O nó fica na cadeia o tempo todo para o slider valer
+// sem reabrir a sessão.
+function lxAplicaHp(node, hz) {
+  if (!node) return;
+  node.Q.value = 0.707;
+  if (hz > 0) {
+    node.type = "highpass";
+    node.frequency.value = hz;
+  } else {
+    node.type = "allpass";
+    node.frequency.value = 1000;
+  }
+}
+function lxPintaFiltroLive() {
+  const el = $("lxFiltro");
+  if (!el) return;
+  el.textContent = (micFx.hp > 0 ? micFx.hp + " Hz" : "passa-alta off")
+                 + " · ganho " + micFx.gain.toFixed(1);
+}
+
 async function lxCaptura() {
   // Origem NÃO segura (ex.: IP da LAN em http) não tem `navigator.mediaDevices`:
   // o erro saía como "Not supported" e não dizia o que fazer. Medido: 127.0.0.1 é
@@ -7102,27 +7137,52 @@ async function lxCaptura() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     throw new Error("mic exige origem segura — abra por http://127.0.0.1:7860 (IP da LAN em http não serve)");
   }
+  // NS SEMPRE ligado, independente de micFx.ns. As outras telas seguem o
+  // checkbox (default off) porque o afftdn do servidor já denoisa o upload —
+  // duas supressões comem consoante. Este PCM não passa por afftdn.
   const stream = await navigator.mediaDevices.getUserMedia({
-    audio: micAudioConstraints({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false }) });
+    audio: micAudioConstraints({ echoCancellation: true, noiseSuppression: true, autoGainControl: false }) });
   LX.stream = stream;
   // captura a 16 kHz: o worklet entrega já na taxa do protocolo, sem resample
   const ctx = new AudioContext({ sampleRate: 16000 });
-  await ctx.audioWorklet.addModule("/live-worklet.js");
-  const no = new AudioWorkletNode(ctx, "live-capture");
-  // playback em contexto próprio, na taxa que o servidor manda (24 kHz)
-  LX.ctxPlay = new AudioContext({ sampleRate: 24000 });
-  const mudo = ctx.createGain(); mudo.gain.value = 0;
-  ctx.createMediaStreamSource(stream).connect(no); no.connect(mudo); mudo.connect(ctx.destination);
-  // OBS-2: tap do mic para o medidor (analyser não precisa ligar ao destino para puxar)
-  LX.anMic = ctx.createAnalyser(); LX.anMic.fftSize = 2048;
-  ctx.createMediaStreamSource(stream).connect(LX.anMic);
-  // saída: o playback passa pelo bus -> analyser -> destino (lxToca conecta no bus)
-  LX.bus = LX.ctxPlay.createGain();
-  LX.anOut = LX.ctxPlay.createAnalyser(); LX.anOut.fftSize = 2048;
-  LX.bus.connect(LX.anOut); LX.anOut.connect(LX.ctxPlay.destination);
-  no.port.onmessage = e => lxEnviaBin(e.data);
-  LX.ctxCap = ctx; LX.noCap = no;
+  let play = null;
+  try {
+    await ctx.audioWorklet.addModule(APP_BASE + "/live-worklet.js");
+    const no = new AudioWorkletNode(ctx, "live-capture");
+    // playback em contexto próprio, na taxa que o servidor manda (24 kHz)
+    play = new AudioContext({ sampleRate: 24000 });
+    const fonte = ctx.createMediaStreamSource(stream);
+    const hp = ctx.createBiquadFilter();
+    lxAplicaHp(hp, micFx.hp);
+    const ganho = ctx.createGain();
+    ganho.gain.value = micFx.gain;
+    // cadeia: mic (já com NS do navegador) → passa-alta → ganho → worklet.
+    // O mudo segura o relógio do contexto sem soltar som no alto-falante.
+    // NÃO suspender este contexto durante o TTS: a captura tem que seguir
+    // o tempo todo (barge-in e o turno seguinte dependem dos frames).
+    const mudo = ctx.createGain(); mudo.gain.value = 0;
+    fonte.connect(hp); hp.connect(ganho); ganho.connect(no);
+    no.connect(mudo); mudo.connect(ctx.destination);
+    // medidor vê o mesmo sinal que o worklet (depois do filtro), não o cru
+    const anMic = ctx.createAnalyser(); anMic.fftSize = 2048;
+    ganho.connect(anMic);
+    const bus = play.createGain();
+    const anOut = play.createAnalyser(); anOut.fftSize = 2048;
+    bus.connect(anOut); anOut.connect(play.destination);
+    no.port.onmessage = e => lxEnviaBin(e.data);
+    LX.ctxPlay = play; LX.ctxCap = ctx; LX.noCap = no;
+    LX.fonte = fonte; LX.hpCap = hp; LX.gainCap = ganho; LX.mudoCap = mudo;
+    LX.anMic = anMic; LX.bus = bus; LX.anOut = anOut;
+  } catch (e) {
+    try { stream.getTracks().forEach(t => t.stop()); } catch (e2) {}
+    LX.stream = null;
+    try { ctx.close(); } catch (e2) {}
+    try { play && play.close(); } catch (e2) {}
+    throw e;
+  }
   lxObsInicia(ctx, stream);
+  lxPintaFiltroLive();
+  lxLogEvento("mic: supressão de ventoinha ligada · " + $("lxFiltro").textContent);
   if (LX.estado !== "erro") lxEstado("ouvindo", "🎙 fale — interrompo falando por cima");
 }
 
@@ -7131,7 +7191,11 @@ function lxParaCaptura() {
   try { LX.anMic && LX.anMic.disconnect(); } catch (e) {}
   try { LX.bus && LX.bus.disconnect(); } catch (e) {}
   try { LX.anOut && LX.anOut.disconnect(); } catch (e) {}
+  try { LX.hpCap && LX.hpCap.disconnect(); } catch (e) {}
+  try { LX.gainCap && LX.gainCap.disconnect(); } catch (e) {}
+  try { LX.mudoCap && LX.mudoCap.disconnect(); } catch (e) {}
   LX.anMic = LX.anOut = LX.bus = null;
+  LX.hpCap = LX.gainCap = LX.mudoCap = null;
   try { LX.noCap && (LX.noCap.port.onmessage = null); } catch (e) {}
   try { LX.fonte && LX.fonte.disconnect(); } catch (e) {}
   try { LX.stream && LX.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
@@ -7367,7 +7431,12 @@ function lxRecebe(ev) {
     // estado, só na linha de status — se mexesse, um prewarm no meio da fala
     // trocaria o estado debaixo do usuário.
     case "prewarm":        if ($("lxStatus")) $("lxStatus").textContent = "⚡ pipeline pré-aquecido"; break;
-    case "speech_start":   LX.obs.pendente = false;   // a fala anotada está abrindo agora (#129)
+    case "speech_start":   // quebra de linha por SESSÃO DE VOZ (#246): cada falar
+                           // seu abre linha nova na coluna "você" — antes, só a
+                           // coluna da IA quebrava (no turno completo) e os
+                           // falares seguidos grudavam num parágrafo único.
+                           lxQuebraLinha("lxUser");
+                           LX.obs.pendente = false;   // a fala anotada está abrindo agora (#129)
                            LX.obs.pendenteTrechos = 0;
                            if (LX.obs.stats && LX.obs.stats.turno)
                              LX.obs.stats.turno.pendente = false;  // snapshot velho (até 250 ms) não re-acende o chip
@@ -7436,6 +7505,7 @@ function lxRecebe(ev) {
     // esperando um áudio que nunca vem.
     case "turn_complete":
       lxQuebraLinha("lxIA");
+      lxQuebraLinha("lxUser");   // #246: fecha também a linha do usuário (idempotente; cobre turno sem speech_start)
       lxLogEvento("✓ turno " + (m.turn != null ? m.turn : "—")
                 + (m.ms != null ? " — " + m.ms + " ms" : "")
                 + (m.audio_bytes ? " · áudio " + Math.round(m.audio_bytes / 1024) + " kB" : "")

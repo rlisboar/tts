@@ -10,7 +10,10 @@ Protocolo (referência: claudinhos/daemon/src/runners/turns/dsh.ts):
   spawn `dsh --profile <perfil>` → `initialize{protocolVersion:1}` →
   `session/new{cwd, mcpServers:[]}` → `session/set_config_option(model|reasoning_effort)`
   → `session/prompt{prompt:[{type:"text",text}]}`. O texto chega em `session/update`
-  com `update.sessionUpdate == "agent_message_chunk"`. `session/cancel` cancela o
+  com `update.sessionUpdate == "agent_message_chunk"`. GLM com effort=off às vezes
+  NÃO manda esse chunk: a resposta falável fica no fim do `agent_thought_chunk`.
+  Nesse caso o turno entrega UM delta curto (último parágrafo, teto
+  `_FALA_THOUGHT_TETO`) — nunca o reasoning inteiro. `session/cancel` cancela o
   turno em voo (notification). `session/close` + SIGTERM/SIGKILL no fim.
   stdout é SÓ protocolo; logs do filho vão para stderr (-> on_log).
 
@@ -68,6 +71,9 @@ _PREWARM_CANCEL_ESPERA_S = 5.0
 #: Esperas crescentes: uma tentativa por espera (#172).
 _TRANSIENTE_ESPERAS = (0.25, 0.75, 2.0)
 _TRANSIENTE_TENTATIVAS = 1 + len(_TRANSIENTE_ESPERAS)
+#: teto do delta falável extraído de um turno que só veio em reasoning.
+#: O TTS não pode ler os ~95k do thought; a resposta medida cabe no último parágrafo.
+_FALA_THOUGHT_TETO = 400
 
 
 class DshError(Exception):
@@ -376,9 +382,94 @@ def _nao_duplicar(texto: str, parcial: bool | None, emitido: str,
     return texto
 
 
+def _acumula_thought(atual: str, pedaco: str) -> str:
+    """Junta um `agent_thought_chunk` ao thought do turno.
+
+    O bridge manda deltas curtos; o `block-end` às vezes repete o texto inteiro.
+    Snapshot (o pedaço já contém o acumulado) substitui; o resto concatena.
+    Sem isto o fallback falaria o reasoning duplicado."""
+    if not pedaco:
+        return atual
+    if not atual or pedaco.startswith(atual):
+        return pedaco
+    return atual + pedaco
+
+
+def _corta_teto(texto: str, teto: int) -> str:
+    """Sufixo de no máximo `teto` chars, de preferência começando numa frase."""
+    if len(texto) <= teto:
+        return texto.strip()
+    janela = texto[-teto:]
+    for i, ch in enumerate(janela):
+        if ch in ".!?\n…" and i + 1 < len(janela):
+            resto = janela[i + 1:].lstrip()
+            if resto:
+                return resto
+    espaco = janela.find(" ")
+    if 0 < espaco < 60:
+        return janela[espaco + 1:].strip()
+    return janela.strip()
+
+
+def _fala_do_thought(texto: str, teto: int = _FALA_THOUGHT_TETO) -> str:
+    """Um delta falável a partir de um turno que só veio em reasoning.
+
+    O GLM com effort=off (já no header; o provedor ignora) deixa a resposta no
+    FINAL do thought e zero `agent_message_chunk`. Entregar o thought inteiro
+    faria o TTS ler ~95k. Pega o último parágrafo não vazio e corta no teto.
+    """
+    bruto = (texto or "").replace("\r\n", "\n").strip()
+    if not bruto:
+        return ""
+    paras = [p.strip() for p in bruto.split("\n\n") if p.strip()]
+    fala = paras[-1] if paras else bruto
+    if len(paras) <= 1 and len(fala) > teto and "\n" in fala:
+        linhas = [ln.strip() for ln in fala.splitlines() if ln.strip()]
+        if linhas and len(linhas[-1]) <= teto:
+            fala = linhas[-1]
+    if len(fala) > teto:
+        fala = _corta_teto(fala, teto)
+    return fala.strip()
+
+
 # ---------------------------------------------------------------------------
 # Cliente
 # ---------------------------------------------------------------------------
+def _raise_nofile() -> None:  # pragma: no cover — roda no filho pós-fork, pré-exec
+    """Sobe o piso de fds do filho do dsh até o teto permitido.
+
+    O dsh scandira os diretórios de sessão sob ~/.dsh ao subir; com o piso
+    default de 256 fds (launchd) e centenas de sessões vivas, o handshake
+    morre com EMFILE antes mesmo do initialize. Idempotente e inofensivo.
+    """
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        # hard herdado pode vir BAIXO (zsh launchd derruba para 4096 — EMFILE
+        # real do #259). Subir o hard sem privilégio é negado no macOS, mas
+        # o kernel aceita por-processo até kern.maxfilesperproc (184320) —
+        # e o hard do USUÁRIO no launchd é unlimited. Tentar subir AMBOS;
+        # se negado, fica no par herdado.
+        alvo = max(soft, 65536)
+        try:
+            if alvo > hard:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (alvo, alvo))
+            elif alvo > soft:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (alvo, hard))
+        except Exception:
+            pass
+        # fallback garantido: nem que o alvo alto seja negado, o SOFT sobe até o
+        # HARD herdado (sempre permitido) — 2048 herdado vira pelo menos 4096.
+        try:
+            if soft < hard:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+        except Exception:
+            pass
+    except Exception:  # noqa: BLE001 — nunca impedir o spawn por causa disso
+        pass
+
+
 class DshClient:
     """UM cliente = UM processo `dsh` persistente + UMA sessão ACP.
 
@@ -450,6 +541,7 @@ class DshClient:
         self.ultimo_boot_ms = 0
         self.ultimo_ttft_ms = 0
         self.ultimas_thought_chars = 0
+        self._thought = ""                 # reasoning acumulado do turno atual
         self.chunks_emitidos = 0        # deltas efetivamente entregues (métrica)
         self.chunks_duplicados = 0      # chunks absorvidos pela anti-duplicação
 
@@ -545,8 +637,25 @@ class DshClient:
         argv = self._argv()
         self._log(f"[dsh] subindo: {' '.join(argv)} (cwd={cwd})")
         try:
+            import resource as _r
+            _sf, _hd = _r.getrlimit(_r.RLIMIT_NOFILE)
+            # Alguma lib derruba o RLIMIT do processo em runtime (observado:
+            # 65536 no startup → 2048 no 1º turno — EMFILE real). Re-aplicar
+            # o piso aqui: subir SOFT até HARD é sempre permitido.
+            alvo = max(_sf, min(_hd, 65536))
+            if alvo > _sf:
+                try:
+                    _r.setrlimit(_r.RLIMIT_NOFILE, (alvo, _hd))
+                except Exception:
+                    pass
+            _sf2, _hd2 = _r.getrlimit(_r.RLIMIT_NOFILE)
+            self._log(f"[dsh] rlimit NOFILE pai: soft={_sf2} hard={'unlimited' if _hd2 == 4294967295 or _hd2 > 10**12 else _hd2} (era {_sf})")
+        except Exception:
+            pass
+        try:
             proc = subprocess.Popen(
                 argv, cwd=str(cwd), env={**_env_minimo(), **self._env_extra},
+                preexec_fn=_raise_nofile,  # dsh scandira tudo sob ~/.dsh — precisa de fds
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError as exc:
             raise DshError(f"não foi possível executar {argv[0]!r}: {exc}") from exc
@@ -947,7 +1056,13 @@ class DshClient:
                     self._buffer.append((str(texto), parcial))
                     self._cond.notify_all()
         elif tipo == "agent_thought_chunk":
-            self.ultimas_thought_chars += len((update.get("content") or {}).get("text") or "")
+            # Não entra no buffer de fala. O fallback (um parágrafo, no settle)
+            # só lê isto se o turno fechar com zero `agent_message_chunk`.
+            pedaco = str((update.get("content") or {}).get("text") or "")
+            if pedaco:
+                with self._cond:
+                    self._thought = _acumula_thought(self._thought, pedaco)
+                    self.ultimas_thought_chars = len(self._thought)
 
     def _responder(self, rid: int, result) -> None:
         self._escrever({"jsonrpc": "2.0", "id": rid, "result": result})
@@ -971,6 +1086,8 @@ class DshClient:
         with self._cond:
             self._buffer.clear()
             self._fim_turno = None
+            self._thought = ""
+            self.ultimas_thought_chars = 0
 
     def cancel(self, turno_id: str) -> None:
         """Cancela o turno: `session/cancel` + marca p/ o iterador DESCARTAR o chunk
@@ -1134,6 +1251,21 @@ class DshClient:
             pass
         if resultado.get("err"):
             raise DshError(str(resultado["err"]))
+        # Turno que settleou mudo (zero message chunk, thought > 0). UM delta,
+        # curto. Cancelado ou turno trocado não fala — o barge-in não pode
+        # sintetizar o reasoning que chegou atrasado. Lê o thought DEPOIS do
+        # settle: os chunks já foram roteados antes do result do prompt.
+        if (not emitido and not self.cancelado(turno_id)
+                and self._turno_atual == turno_id):
+            with self._cond:
+                fala_thought = _fala_do_thought(self._thought)
+            if fala_thought:
+                self.chunks_emitidos += 1
+                if not self.ultimo_ttft_ms:
+                    self.ultimo_ttft_ms = int((time.perf_counter() - t0) * 1000)
+                self._log(f"[dsh] turno só-reasoning: delta falável "
+                          f"{len(fala_thought)} chars (thought {self.ultimas_thought_chars})")
+                yield fala_thought
         # NOTA: o slot NÃO é liberado aqui. Quem libera é o leitor, no settle da
         # resposta (#170/#172) — inclusive se este gerador for abandonado antes.
 

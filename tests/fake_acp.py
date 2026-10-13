@@ -27,6 +27,12 @@ CFG = {
     "comitado": os.environ.get("FAKE_ACP_COMITADO") or None,
     "chunk_delay_s": float(os.environ.get("FAKE_ACP_CHUNK_DELAY_S", "0")),
     "thought": os.environ.get("FAKE_ACP_THOUGHT", ""),
+    # lista de chunks de thought (deltas). Ausente = um único FAKE_ACP_THOUGHT.
+    "thoughts": json.loads(os.environ.get("FAKE_ACP_THOUGHTS", "null")),
+    # um thought por prompt, na ordem (testa que o turno novo não herda o anterior)
+    "thought_seq": json.loads(os.environ.get("FAKE_ACP_THOUGHT_SEQ", "null")),
+    # emite o thought DEPOIS do 1º message chunk (no meio da fala), não antes
+    "thought_mid": os.environ.get("FAKE_ACP_THOUGHT_MID") == "1",
     "permission": os.environ.get("FAKE_ACP_PERMISSION") == "1",
     "prompt_error": json.loads(os.environ.get("FAKE_ACP_PROMPT_ERROR", "null")),
     "die_after_prompts": int(os.environ.get("FAKE_ACP_DIE_AFTER_PROMPTS", "0")),
@@ -129,6 +135,22 @@ def pede_permissao() -> None:
 _permission_wait: dict = {}
 
 
+def _emitir_thoughts(session_id: str) -> None:
+    seq = CFG["thought_seq"]
+    if isinstance(seq, list) and seq:
+        texto = seq[min(max(_prompts, 1) - 1, len(seq) - 1)]
+        partes = [texto] if texto else []
+    else:
+        partes = CFG["thoughts"]
+    if not isinstance(partes, list):
+        partes = [CFG["thought"]] if CFG["thought"] else []
+    for texto in partes:
+        if not texto:
+            continue
+        atualizar(session_id, {"sessionUpdate": "agent_thought_chunk",
+                               "content": {"type": "text", "text": texto}})
+
+
 def _chunk(session_id: str, text: str, parcial) -> None:
     update = {"sessionUpdate": "agent_message_chunk",
               "content": {"type": "text", "text": text}}
@@ -157,9 +179,8 @@ def turno(session_id: str, rid: int, texto: str) -> None:
         return
     if CFG["permission"]:
         pede_permissao()
-    if CFG["thought"]:
-        atualizar(session_id, {"sessionUpdate": "agent_thought_chunk",
-                               "content": {"type": "text", "text": CFG["thought"]}})
+    if not CFG["thought_mid"]:
+        _emitir_thoughts(session_id)
     if primeiro and CFG["prewarm_ttft_s"]:
         # dorme OLHANDO o cancel (salvo quando o teste quer o pior caso), para o
         # `session/cancel` do cliente valer: é o que libera o slot do prewarm
@@ -176,7 +197,12 @@ def turno(session_id: str, rid: int, texto: str) -> None:
         if CFG["chunk_delay_s"]:
             time.sleep(CFG["chunk_delay_s"])
         if not _cancel.is_set():
-            _chunk(session_id, "".join(CFG["chunks"]), None)
+            texto_msg = "".join(CFG["chunks"])
+            # vazio = turno sem agent_message_chunk (thought-only)
+            if texto_msg:
+                _chunk(session_id, texto_msg, None)
+        if CFG["thought_mid"] and not _cancel.is_set():
+            _emitir_thoughts(session_id)
     else:
         # "deltas" (pós-patch, sem comitado) e "deltas+comitado" (patch que marca
         # em vez de suprimir, ou pacote revertido no meio)
@@ -194,6 +220,8 @@ def turno(session_id: str, rid: int, texto: str) -> None:
             _chunk(session_id, enviar,
                    None if "sem-marca" in modo else True)
             log("DELTA", i)
+            if i == 0 and CFG["thought_mid"]:
+                _emitir_thoughts(session_id)
         envia_comitado = modo.startswith("deltas+") or modo.startswith("deltas-vazios")
         if not _cancel.is_set() and envia_comitado:
             _chunk(session_id, CFG["comitado"] or "".join(CFG["chunks"]),

@@ -52,6 +52,12 @@ _ENV_INTERRUPTOR = ("TTS_TEST_WORKER", "TTS_LIVE_WORKER")
 _ENV_DO_DONO = {k: os.environ.pop(k) for k in sorted(os.environ)
                 if k.startswith(_ENV_NEUTRO) and k not in _ENV_INTERRUPTOR}
 
+# #278: o RNNoise do Live sobe um ffmpeg por sessão. Default do app é ligado;
+# a suíte não paga isso — o filtro real está em tests/test_live_rnnoise.py.
+# Fica DEPOIS da neutralização: `TTS_LIVE_*` do dono já foi retirado, e este
+# valor é o da sessão de teste, não o ambiente dele.
+os.environ["TTS_LIVE_RNNOISE"] = "0"
+
 # `DeprecationWarning: builtin type SwigPyPacked/SwigPyObject has no __module__
 # attribute`. EMISSOR pinçado: os bindings SWIG que entram junto com
 # `import onnxruntime` (o primeiro a carregar é

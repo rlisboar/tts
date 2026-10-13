@@ -423,6 +423,90 @@ def test_par_deltas_mais_comitado_com_texto_repetido(monkeypatch):
         assert c.chunks_duplicados == 0
 
 
+def test_acumula_thought_delta_e_snapshot():
+    a = dsh_client._acumula_thought
+    assert a("", "abc") == "abc"
+    assert a("abc", "") == "abc"
+    assert a("abc", "def") == "abcdef"
+    assert a("abc", "abcdef\n\nFim.") == "abcdef\n\nFim."
+
+
+def test_fala_do_thought_ultimo_paragrafo_e_teto():
+    """A fala é o último parágrafo, nunca o muro de reasoning. Teto 400."""
+    f = dsh_client._fala_do_thought
+    assert f("") == ""
+    assert f("   \n\n  ") == ""
+    assert f("só um parágrafo curto.") == "só um parágrafo curto."
+    longo = ("pensando " * 200) + "\n\n" + ("ainda " * 100) + "\n\nResposta curta."
+    assert f(longo) == "Resposta curta."
+    assert len(f(longo)) <= dsh_client._FALA_THOUGHT_TETO
+    assert f(longo) != longo.strip()
+    muro = "A" * 900
+    assert len(f(muro)) <= dsh_client._FALA_THOUGHT_TETO
+    assert f(muro) != muro
+    frase = ("palavra " * 80) + "Fim da frase. Esta é a fala."
+    assert len(frase) > dsh_client._FALA_THOUGHT_TETO
+    assert f(frase) == "Esta é a fala."
+
+
+def test_thought_only_entrega_um_delta_curto(monkeypatch):
+    """Turno sem agent_message_chunk: exatamente um delta, o último parágrafo."""
+    raciocinio = ("x" * 5000) + "\n\n" + ("mais " * 80) + "\n\nResposta curta e falável."
+    c = cliente(monkeypatch, env={
+        "FAKE_ACP_CHUNKS": "[]",
+        "FAKE_ACP_THOUGHTS": json.dumps([raciocinio[:100], raciocinio]),
+    })
+    try:
+        partes = list(c.stream("oi", "t1"))
+    finally:
+        c.close()
+    assert partes == ["Resposta curta e falável."]
+    assert len(partes[0]) <= dsh_client._FALA_THOUGHT_TETO
+    assert c.chunks_emitidos == 1
+    assert c.ultimas_thought_chars == len(raciocinio)
+    assert "x" * 50 not in partes[0]
+
+
+def test_thought_only_nao_vaza_entre_turnos(monkeypatch):
+    """O 2º turno não herda o thought do 1º (senão a fala vira 'Um.Dois.')."""
+    c = cliente(monkeypatch, env={
+        "FAKE_ACP_CHUNKS": "[]",
+        "FAKE_ACP_THOUGHT_SEQ": json.dumps(["zzzz\n\nUm.", "Dois."]),
+    })
+    try:
+        assert "".join(c.stream("oi", "t1")) == "Um."
+        assert "".join(c.stream("oi", "t2")) == "Dois."
+    finally:
+        c.close()
+
+
+def test_message_chunk_ignora_thought(monkeypatch):
+    """Message normal não muda, e thought no meio da message não duplica a fala."""
+    thought = "raciocinio longo que nao pode ser falado\n\nIsto não é fala."
+    c = cliente(monkeypatch, env={"FAKE_ACP_THOUGHT": thought})
+    try:
+        texto = "".join(c.stream("oi", "t1"))
+    finally:
+        c.close()
+    assert texto == "Olá, mundo!"
+    assert "Isto não é fala." not in texto
+    assert c.ultimas_thought_chars == len(thought)
+
+    c = cliente(monkeypatch, env={
+        "FAKE_ACP_MODO": "deltas",
+        "FAKE_ACP_CHUNKS": json.dumps(["Bom ", "dia."]),
+        "FAKE_ACP_THOUGHT": thought,
+        "FAKE_ACP_THOUGHT_MID": "1",
+    })
+    try:
+        partes = list(c.stream("oi", "t2"))
+    finally:
+        c.close()
+    assert partes == ["Bom ", "dia."]
+    assert c.chunks_emitidos == 2
+    assert all("Isto não é fala." not in p for p in partes)
+
+
 def test_nao_duplicar_regras():
     """Função pura: cada regra da anti-duplicação, incluindo a marca do patch."""
     f = dsh_client._nao_duplicar

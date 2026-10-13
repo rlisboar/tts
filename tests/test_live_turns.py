@@ -94,6 +94,8 @@ def test_defaults_do_protocolo():
     assert cfg.prefix_ms == 100
     assert cfg.barge_in_ms == 300
     assert cfg.silence_ms >= lt.SILENCE_MS_MINIMO_STT
+    assert cfg.barge_prob_alta == 0.85
+    assert 0 < cfg.barge_degrau_db < cfg.barge_in_margin_db
 
 
 def test_silencio_abaixo_de_500_avisa():
@@ -312,6 +314,61 @@ def test_eco_puro_nao_dispara_barge_in():
     _tocar(motor2, rel2, ECO, 80)
     motor2.set_speaking(True, nivel_dbfs=-18.0)
     assert _tocar(motor2, rel2, ECO, 60) == []
+
+
+def test_degrau_abaixo_de_4db_com_silero_alto_dispara_barge():
+    """#273: no playback a voz não passa eco+4 dB e o cliente nunca corta.
+
+    Silero alto sustentado e um salto do envelope abrem barge_in. O mesmo
+    Silero em eco plano, no nível calibrado, não abre. A margem de 4 dB fica.
+    """
+    rel = [0.0]
+    prob = {"v": 0.02}
+
+    def scorer(frame):
+        return prob["v"]
+
+    motor = lt.TurnEngine(lt.Config(), scorer=scorer, relogio=lambda: rel[0],
+                          agora=lambda: 1_700_000_000.0)
+    _tocar(motor, rel, SILENCIO, 20)
+    motor.set_speaking(True, nivel_dbfs=-18.0)
+    assert _tocar(motor, rel, ECO, 40) == []          # calibra o piso
+    assert motor.estatisticas()["eco_ausente"] is False
+    piso = motor.estatisticas()["eco_dbfs"]
+
+    prob["v"] = 0.95                                  # eco plano, Silero de fala
+    assert _tocar(motor, rel, ECO, 40) == []
+    assert motor.estatisticas()["barge_in"] == 0
+
+    salto_db = 2.5                                    # acima do degrau, abaixo de 4
+    voz = _tom(0.03 * 10 ** (salto_db / 20.0))
+    eventos = _tocar(motor, rel, voz, 40)
+    barges = [e for e in eventos if e.tipo == "barge_in"]
+    assert barges, "degrau com Silero alto tem de interromper"
+    assert barges[0].rms_dbfs < piso + lt.Config().barge_in_margin_db
+    assert barges[0].rms_dbfs >= piso + lt.Config().barge_degrau_db
+
+
+def test_rampa_lenta_do_eco_nao_vira_barge():
+    """Subida de 3,5 dB em 2 s é o TTS inchando, não um salto. Silero alto."""
+    rel = [0.0]
+    prob = {"v": 0.02}
+
+    def scorer(frame):
+        return prob["v"]
+
+    motor = lt.TurnEngine(lt.Config(), scorer=scorer, relogio=lambda: rel[0],
+                          agora=lambda: 1_700_000_000.0)
+    _tocar(motor, rel, SILENCIO, 20)
+    motor.set_speaking(True, nivel_dbfs=-18.0)
+    assert _tocar(motor, rel, ECO, 40) == []
+    prob["v"] = 0.95
+    amps = np.linspace(0.03, 0.03 * 10 ** (3.5 / 20.0), 60)
+    eventos = []
+    for amp in amps:
+        eventos += motor.feed(_tom(float(amp)))
+        rel[0] += F / lt.SAMPLE_RATE
+    assert [e for e in eventos if e.tipo == "barge_in"] == []
 
 
 def test_eco_nao_contamina_o_piso_de_ruido():

@@ -1,0 +1,14 @@
+sh.rnnn — pesos RNNoise "somnolent-hogwash" (sinal: fala; ruído: ambiente de gravação,
+incluindo ventoinha). Cópia versionada: o Live não baixa modelo no boot.
+
+Origem do arquivo: https://github.com/GregorR/rnnoise-models
+(somnolent-hogwash / sh.rnnn). O README desse repositório declara que os pesos
+não são obra criativa e não estão sujeitos a copyright.
+
+O formato "rnnoise-nu model file version 1" é o que o filtro ffmpeg `arnndn` lê.
+O algoritmo RNNoise e o filtro arnndn são BSD-3-Clause
+(Copyright Xiph.Org Foundation, Mozilla, Jean-Marc Valin, Gregor Richards).
+
+Medido neste repo contra um piso estacionário sintético (tom grave + ruído):
+o modelo original empacotado com o RNNoise (std.rnnn, BSD) quase não abaixa o
+nível cheio; este sh.rnnn abaixa. Por isso ele é o que o Live carrega.

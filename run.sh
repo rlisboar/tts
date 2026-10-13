@@ -3,10 +3,40 @@
 # Reinicia sozinho se o processo morrer com segfault/OOM (exit ≠ 0,130,143).
 cd "$(dirname "$0")"
 
+# O dsh scandira ~/.dsh/sessions ao subir; com o teto duro herdado baixo
+# (zsh/launchd variam: 4096-256) o handshake morre com EMFILE. O kernel aceita
+# 184320 por processo (kern.maxfilesperproc); subir o SOFT até o HARD herdado
+# é permitido sem privilégio e resolve. O _raise_nofile do dsh_client cobre o
+# filho; isto aqui cobre o próprio processo do app (imports/load abrem fds tb).
+_soft=$(ulimit -Sn); _hard=$(ulimit -Hn)
+if [ "$_hard" != "unlimited" ] && [ "$_soft" -lt "$_hard" ]; then
+  ulimit -Sn "$_hard" 2>/dev/null || true
+fi
+if [ "$_hard" = "unlimited" ] || [ "$(ulimit -Sn)" -lt 65536 ]; then
+  ulimit -Sn 65536 2>/dev/null || true   # best-effort: hard unlimited aceita subir
+fi
+
 # onnxruntime tenta gravar o ID de telemetria em $HOME; com HOME não-gravável
 # (sandbox/CI) ele cai num arquivo ":memory:.ses" no CWD, que é a raiz do repo.
 # O app é local/offline: desligar a telemetria mata o artefato e o warning.
 export ORT_DISABLE_TELEMETRY="${ORT_DISABLE_TELEMETRY:-1}"
+
+# DSH_HOME dedicado ao TTS: o dsh scandira ~/.dsh/sessions a cada handshake e o
+# HOME compartilhado acumula milhares de sessões de outros usos — EMFILE no
+# handshake do Live (#259). Home próprio, raso e sob nosso controle; credentials
+# e profiles ficam em ~/$DSH_HOME (symlinks abaixo).
+if [ -z "$DSH_HOME" ]; then
+  export DSH_HOME="$HOME/.dsh-tts"
+  mkdir -p "$DSH_HOME"
+  # profiles/settings precisam ser COPIA (o dsh resolve o path canônico do home;
+  # symlink para ~/.dsh/profiles não é encontrado). Sessions NÃO copia: cada
+  # processo dsh cria as suas aqui dentro, raso e sob controle do sweeper.
+  [ -d "$HOME/.dsh/profiles" ] && cp -R "$HOME/.dsh/profiles" "$DSH_HOME/" 2>/dev/null
+  [ -f "$HOME/.dsh/settings.yaml" ] && cp "$HOME/.dsh/settings.yaml" "$DSH_HOME/" 2>/dev/null
+  # .credentials.yaml (GLM_API_KEY e rotas) É LIDO DO HOME DEDICADO — sem ele o
+  # handshake sobe mas o TURNO falha ("no credential for provider route glm").
+  [ -f "$HOME/.dsh/.credentials.yaml" ] && cp "$HOME/.dsh/.credentials.yaml" "$DSH_HOME/" 2>/dev/null
+fi
 
 if [ ! -d .venv-mlx ]; then
   echo "Criando ambiente virtual (Python 3.12)…"
@@ -43,6 +73,10 @@ fi
 # 0.0.0.0 = acessível na rede local (outros dispositivos usam o IP/hostname do Mac)
 # loop: Metal/MLX às vezes segfaulta (exit 139) ao trocar modelos pesados —
 # sobe de novo sozinho, a menos que o usuário encerre (Ctrl+C = 130) ou kill (143/SIGTERM).
+# Sweeper: sessões dsh do TTS >48h viram lixo (handshakes antigos) e o scandir
+# delas é o que estoura EMFILE — manter o diretório raso em cada boot.
+find "$DSH_HOME/sessions" -mindepth 2 -maxdepth 2 -type d -mtime +2 -exec rm -rf {} + 2>/dev/null &
+
 while true; do
   ./.venv-mlx/bin/uvicorn app:app --host 0.0.0.0 --port 7860
   code=$?

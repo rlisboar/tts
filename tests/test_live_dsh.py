@@ -132,6 +132,10 @@ def test_primeiro_turno_manda_contexto_e_os_seguintes_so_o_texto():
     assert any("combinamos ontem" in m.get("content", "") for m in ctx)
     assert turno_id.startswith("lt"), "identidade de turno vai para o harness"
 
+    # A fala renderizada é "bom dia" — igual ao STT falso. Dentro da cauda
+    # (#266) isso é eco e não chega no dsh. Aqui a cauda já passou: o segundo
+    # "Bom dia" é turno novo e prova o contrato da sessão.
+    p._render_ate = 0.0
     p.push_pcm(_fala_nova())
     p.end_of_speech(inicia_thread=False)
 
@@ -224,6 +228,154 @@ def test_erro_do_dsh_vira_error_pipeline_sem_matar_a_sessao():
     assert fala.tipos().count("turn_complete") == 2
 
 
+def test_stop_iteration_sem_deltas_faz_fallback_para_llm():
+    """#259: modelo dsh encerra sem nenhum delta (StopIteration no 1º next)
+    não pode deixar o Live mudo. Marca dsh_morreu e faz fallback para o LLM."""
+    fala, dsh = Fala(), DshFalso()
+
+    def llm_openai(msgs):
+        yield "resposta fallback"
+
+    p = _pipeline(fala, dsh, deltas=(), llm=llm_openai)
+
+    p.end_of_speech(inicia_thread=False)
+
+    eventos_indisp = [e for e in fala.eventos if e["type"] == "dsh_indisponivel"]
+    assert len(eventos_indisp) == 1
+    assert "dsh encerrou sem emitir nenhum token" in eventos_indisp[0]["message"]
+    assert p._dsh_indisponivel is True
+    assert "dsh encerrou sem emitir nenhum token" in p._dsh_motivo
+    assert fala.texto() == "resposta fallback"
+    assert len(fala.audios) > 0
+    assert "error" not in fala.tipos()
+
+    # Segundo turno segue no LLM sem tentar dsh
+    p.push_pcm(_fala_nova())
+    p.end_of_speech(inicia_thread=False)
+    assert fala.tipos().count("turn_complete") == 2
+    assert len(dsh.chamadas) == 1, "segundo turno não tenta o dsh morto"
+
+
+def test_stop_iteration_com_texto_vazio_nao_marca_morreu():
+    """Texto vazio não deve matar o dsh nem fazer fallback."""
+    fala, dsh = Fala(), DshFalso()
+    p = _pipeline(fala, dsh, deltas=())
+    deltas = list(p._deltas_dsh([], "", "t1"))
+    assert deltas == []
+    assert p._dsh_indisponivel is False
+
+
+def test_stop_iteration_quando_cancelado_nao_marca_morreu():
+    """Turno cancelado (barge-in) que encerra com StopIteration não mata o dsh."""
+    fala, dsh = Fala(), DshFalso()
+    p = _pipeline(fala, dsh, deltas=())
+    p.cancel()
+    deltas = list(p._deltas_dsh([], "Bom dia", "t1"))
+    assert deltas == []
+    assert p._dsh_indisponivel is False
+
+
+def test_delta_curto_do_thought_vira_audio_sem_fallback():
+    """#264: o cliente entrega UM delta (parágrafo ≤400) depois do settle.
+    Dentro do teto isso é fala normal — não mata o dsh e não chama o openai."""
+    fala, dsh = Fala(), DshFalso()
+    falados = []
+
+    def llm_openai(msgs):
+        falados.append(msgs)
+        yield "nao deveria"
+
+    p = _pipeline(fala, dsh, deltas=("Resposta curta.",), llm=llm_openai)
+    p.end_of_speech(inicia_thread=False)
+
+    assert fala.texto() == "Resposta curta."
+    assert len(fala.audios) > 0
+    assert falados == []
+    assert dsh.cancelados == []
+    assert p._dsh_indisponivel is False
+    assert "dsh_indisponivel" not in fala.tipos()
+    assert "error" not in fala.tipos()
+
+
+def test_primeiro_delta_alem_do_teto_cai_no_openai_uma_vez(monkeypatch):
+    """#264: thought-only que só falaria depois do settle (~178 s medidos) não
+    pode segurar o mic. Estourou o teto → cancel + dsh_indisponivel uma vez +
+    openai. O delta atrasado não duplica a fala."""
+    monkeypatch.setattr(lp, "_DSH_FIRST_DELTA_S", 0.4)
+    fala, dsh = Fala(), DshFalso()
+    falados = []
+
+    def llm_openai(msgs):
+        falados.append(1)
+        yield "pelo openai"
+
+    p = _pipeline(fala, dsh, llm=llm_openai)
+
+    def stream(msgs, turno_id):
+        # yield from torna isto gerador: sem yield a chamada rodaria o
+        # sleep no thread do turno e o teto nunca dispararia.
+        dsh.chamadas.append((msgs, turno_id))
+        while turno_id not in dsh.cancelados and not p.cancelado:
+            time.sleep(0.01)
+        yield from ()
+
+    dsh.stream = stream
+    t0 = time.perf_counter()
+    p.end_of_speech(inicia_thread=False)
+    gasto = time.perf_counter() - t0
+
+    assert gasto < 3.0, f"teto não cortou o turno: {gasto:.2f}s"
+    assert fala.texto() == "pelo openai"
+    assert len(fala.audios) > 0
+    assert "error" not in fala.tipos()
+    avisos = [e for e in fala.eventos if e["type"] == "dsh_indisponivel"]
+    assert len(avisos) == 1
+    assert "sem delta falável" in avisos[0]["message"]
+    assert avisos[0]["fallback"] == "openai"
+    assert p._dsh_indisponivel is True
+    assert dsh.cancelados == [dsh.chamadas[0][1]]
+    assert _espera(lambda: dsh.fechado, 2.0)
+    completos = [e for e in fala.eventos if e["type"] == "turn_complete"]
+    assert completos and completos[0].get("audio_bytes", 0) > 0
+
+    p.push_pcm(_fala_nova())
+    p.end_of_speech(inicia_thread=False)
+    assert len(dsh.chamadas) == 1, "segundo turno não tenta o dsh morto"
+    assert falados == [1, 1]
+    assert fala.tipos().count("turn_complete") == 2
+
+
+def test_cancel_enquanto_espera_o_primeiro_delta_nao_mata_o_dsh(monkeypatch):
+    """#264: barge-in antes do 1º delta não é thought-only estourado.
+    Não marca o dsh morto e não fala o fallback."""
+    monkeypatch.setattr(lp, "_DSH_FIRST_DELTA_S", 2.0)
+    fala, dsh = Fala(), DshFalso()
+    falados = []
+
+    def llm_openai(msgs):
+        falados.append(1)
+        yield "nao"
+
+    p = _pipeline(fala, dsh, llm=llm_openai)
+
+    def stream(msgs, turno_id):
+        dsh.chamadas.append((msgs, turno_id))
+        while not p.cancelado and turno_id not in dsh.cancelados:
+            time.sleep(0.01)
+        yield from ()
+
+    dsh.stream = stream
+    p.end_of_speech(inicia_thread=True)
+    assert _espera(lambda: dsh.chamadas, 2.0)
+    p.cancel()
+    assert _espera(lambda: "interrupted" in fala.tipos(), 2.0)
+    assert p._dsh_indisponivel is False
+    assert falados == []
+    assert "dsh_indisponivel" not in fala.tipos()
+    assert fala.texto() == ""
+    assert "turn_complete" not in fala.tipos()
+
+
 # ---------------------------------------------------------------------------
 # Ciclo de vida: prewarm no start, close fecha o cliente, teto de contexto
 # ---------------------------------------------------------------------------
@@ -244,6 +396,9 @@ def test_teto_de_contexto_reabre_sessao_com_contexto(monkeypatch):
     p.end_of_speech(inicia_thread=False)
     assert isinstance(dsh.chamadas[0][0], list)
 
+    # Mesmo caso do teste de contexto: "Bom dia" na cauda seria eco da
+    # própria resposta. Fora da cauda o turno reabre a sessão.
+    p._render_ate = 0.0
     p.push_pcm(_fala_nova())                # estourou o teto no fim do turno
     p.end_of_speech(inicia_thread=False)
 

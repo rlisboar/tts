@@ -416,6 +416,66 @@ def test_voice_path_recusa_traversal_symlink_quebrado_e_aninhado(vozes_isoladas)
     assert app._voice_path(str(vd / "voz-ok")) == vd / "voz-ok.wav"   # absoluto p/ dentro
 
 
+def test_resolve_voice_pula_meta_sem_wav(monkeypatch, vozes_isoladas):
+    """Fallback do clone não pode escolher a voz mais recente se ela não tem WAV.
+
+    JSON sem amostra (ou preset virtual) quebra a síntese com FileNotFoundError
+    no meio da frase. O pedido explícito por id continua devolvendo esse id —
+    quem pediu, pediu. O fallback (voz ausente / desconhecida) é que pula.
+    """
+    vd, _ = vozes_isoladas
+    (vd / "sem-wav.json").write_text(_json.dumps({
+        "id": "sem-wav", "name": "Sem WAV", "created_at": "2099-01-01T00:00:00"}))
+    monkeypatch.setitem(app._settings, "default_voice", None)
+    for pedido in (None, "nao-existe"):
+        escolhida = app._resolve_voice(pedido)
+        assert escolhida != "sem-wav"
+        assert app._voice_path(escolhida) is not None
+    assert app._resolve_voice("sem-wav") == "sem-wav"
+    monkeypatch.setitem(app._settings, "default_voice", "voz-ok")
+    assert app._resolve_voice(None) == "voz-ok"
+
+
+def test_nofile_nao_desce_quando_o_mlx_pede_2048():
+    """O setrlimit do mlx_lm não pode baixar um teto que o boot já subiu.
+
+    Sem privilégio, hard que desceu para 4096 não volta. Piso baixo ainda sobe.
+    """
+    inf = 2**63 - 1
+    f = app._nofile_nao_desce
+    assert f((65536, 65536), (2048, 4096)) == (65536, 65536)
+    assert f((65536, inf), (2048, 4096)) == (65536, inf)
+    assert f((256, 256), (2048, 4096)) == (2048, 4096)
+    assert f((2048, 4096), (65536, 65536)) == (65536, 65536)
+    assert f((100, inf), (50, 4096)) == (100, inf)
+
+
+def test_guarda_setrlimit_nao_chama_o_real_se_nada_sobe():
+    """Descer NOFILE vira no-op. Outro recurso, e uma subida, passam intactos."""
+    import resource
+    chamadas = []
+    atual = {"nofile": (65536, 2**63 - 1)}
+
+    def orig(which, limits):
+        chamadas.append((which, limits))
+        if which == resource.RLIMIT_NOFILE:
+            atual["nofile"] = tuple(limits)
+
+    def getrlimit(which):
+        assert which == resource.RLIMIT_NOFILE
+        return atual["nofile"]
+
+    guarded = app._guarda_setrlimit(orig, getrlimit)
+    guarded(resource.RLIMIT_NOFILE, (2048, 4096))
+    assert chamadas == []
+    assert atual["nofile"] == (65536, 2**63 - 1)
+    # subir o soft vale; o hard ilimitado não pode ser cortado para 70000
+    guarded(resource.RLIMIT_NOFILE, (70000, 70000))
+    assert chamadas == [(resource.RLIMIT_NOFILE, (70000, 2**63 - 1))]
+    guarded(resource.RLIMIT_CORE, (0, 0))
+    assert chamadas[-1] == (resource.RLIMIT_CORE, (0, 0))
+
+
 def test_settings_default_voice_nao_aceita_traversal(client, auth, monkeypatch, vozes_isoladas):
     vd, sentinela = vozes_isoladas
     assert client.post("/api/settings", headers=auth,
@@ -2742,8 +2802,16 @@ def test_live_ticket_limpeza_por_ttl(tickets_limpos):
 
 @pytest.fixture()
 def pipeline_fake(monkeypatch):
-    """Pipeline real com stt/llm/tts/prewarm fakes (sem MLX)."""
+    """Pipeline real com stt/llm/tts/prewarm fakes (sem MLX).
+
+    O settings do dono pode estar em `chat_backend=dsh`. Sem este pin o Live
+    sobe o dsh de verdade e o turno espera o reasoning do GLM (minutos) em vez
+    do llm fake — a suíte deixa de ser hermética."""
     import live_pipeline
+    for var in ("TTS_CHAT_BACKEND", "TTS_CHAT_BACKEND_LIVE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setitem(app._settings, "chat_backend", "openai")
+    monkeypatch.setitem(app._settings, "chat_backend_live", "")
     monkeypatch.setattr(app, "_live_mod", live_pipeline)   # (o `live_limpo` zera)
     monkeypatch.setattr(live_pipeline, "_prewarm_app", lambda: None)
     monkeypatch.setattr(live_pipeline, "_stt_app", lambda pcm, lang: "que horas são")
@@ -3623,10 +3691,14 @@ def test_resume_valida_session_id(ws_client, live_limpo, hist_limpo):
 
 
 def test_compressao_do_live_segue_o_backend_efetivo(ws_client, live_limpo, pipeline_fake,
-                                                    hist_limpo, monkeypatch):
+                                                    hist_limpo, dsh_fake_bin, monkeypatch):
     """Live=dsh com a Conversa no endpoint (a combinação que o #175 recomenda): o
     resumo do Live sai pelo dsh, não pelo remoto. Com o dsh marcado indisponível
-    (#146), cai no endpoint — é o backend EFETIVO da sessão."""
+    (#146), cai no endpoint — é o backend EFETIVO da sessão.
+
+    O bin é o do fake (`dsh_fake_bin`): sem o pin o teste lia o settings.json do
+    dono, que apontava o bin para um wrapper no tempdir do sistema — e virava
+    vermelho assim que o sistema limpava o diretório."""
     monkeypatch.setattr(app, "_live_resume_fn", None)
     monkeypatch.setitem(app._settings, "chat_backend", "openai")
     monkeypatch.setitem(app._settings, "chat_backend_live", "dsh")
@@ -4090,6 +4162,15 @@ def test_transcribe_avisa_quando_o_remoto_cai(client, remoto_morto):
 
 
 def test_transcribe_sem_queda_nao_avisa(client, monkeypatch):
+    """Sem queda do remoto: sem header e sem campo de fallback.
+
+    O dublê devolve "ok" de propósito. Com `stt_anti_ruido` ligado a blacklist
+    rejeita a frase inteira e o 200 volta com texto vazio — o teste só ficava
+    verde enquanto o settings.json do dono tinha o filtro desligado (virou
+    true às 23:31). Pina o filtro aqui. A blacklist não muda: em produção,
+    com o filtro ligado, "ok" continua rejeitado.
+    """
+    monkeypatch.setitem(app._settings, "stt_anti_ruido", False)
     monkeypatch.setenv("TTS_STT_BASE_URL", "http://127.0.0.1:53992/v1")
     monkeypatch.setattr(app, "_transcribe_remote",
                         lambda p, lang: {"text": "ok", "language": "pt", "segments": []})
