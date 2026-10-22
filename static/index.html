@@ -7754,7 +7754,8 @@ async function lxwsConectar() {
     }
   }
   let ws;
-  try { ws = new WebSocket(lxWsUrl() + q); }
+  // #478: oferece a versão do protocolo; servidor antigo ignora e negocia vazio
+  try { ws = new WebSocket(lxWsUrl() + q, "tts-live.v1"); }
   catch (e) { lxEstado("erro", "✖ URL de WebSocket inválida: " + e.message); return; }
   LX.ws = ws;
   ws.binaryType = "arraybuffer";

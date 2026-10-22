@@ -8190,6 +8190,8 @@ def _live_stats(sess: dict) -> dict:
     ini = sess.get("st_stage_ini")
     dados = {
         "type": "stats", "t_ms": int((agora - sess["t0"]) * 1000),
+        # #478: `None` = negociado ou cliente sem header (normal); texto = recusa
+        "subprotocolo": sess.get("subprotocolo_recusado"),
         "mic": {"frames": sess.get("st_frames", 0), "bytes": sess.get("st_bytes", 0),
                 "desde_ultimo_ms": (int((agora - ultimo) * 1000) if ultimo else None),
                 "dbfs": sess.get("st_dbfs"), "prob": sess.get("st_prob")},
@@ -8318,6 +8320,28 @@ def _live_ticket_vale(ticket: str) -> bool:
     with _live_lock:
         expira = _live_tickets.get(ticket)
     return expira is not None and expira > time.monotonic()
+
+
+# Versão do protocolo do WS do Live (#478). O subprotocolo é NEGOCIADO, não
+# exigido: cliente que não manda `Sec-WebSocket-Protocol` continua igual, e é o
+# caminho antigo (`client/`, smokes) que a compatibilidade precisa preservar.
+_LIVE_SUBPROTOCOLO = "tts-live.v1"
+
+
+def _live_negocia_subprotocolo(ws) -> tuple[str | None, str | None]:
+    """Devolve `(aceito, motivo_de_recusa)` para o `Sec-WebSocket-Protocol`.
+
+    `aceito` vai no `accept(subprotocol=…)`: `None` sem header (comportamento de
+    hoje). Se o cliente pedir uma versão que não existe, `motivo` explica no
+    `stats` — em vez de o handshake falhar com o cliente sem saber por quê.
+    """
+    cru = (ws.headers.get("sec-websocket-protocol") or "").strip()
+    if not cru:
+        return None, None
+    pedidos = [p.strip() for p in cru.split(",") if p.strip()]
+    if _LIVE_SUBPROTOCOLO in pedidos:
+        return _LIVE_SUBPROTOCOLO, None
+    return None, f"subprotocolo pedido sem versão conhecida: {', '.join(pedidos)}"
 
 
 def _live_autentica(ws) -> bool:
@@ -9571,7 +9595,10 @@ def _live_hist_ja_comprimindo(sess: dict) -> bool:
 
 @app.websocket("/api/live/ws")
 async def live_ws(ws: WebSocket):
-    await ws.accept()
+    # #478: negocia a versão do protocolo no handshake. Sem header o aceite é o de
+    # sempre; com o header certo, o `Sec-WebSocket-Protocol` é respondido.
+    _sub, _motivo_sub = _live_negocia_subprotocolo(ws)
+    await ws.accept(subprotocol=_sub)
     if not _live_autentica(ws):
         await ws.send_json(_live_erro(
             "unauthorized",
@@ -9643,6 +9670,9 @@ async def live_ws(ws: WebSocket):
         "truncado": False, "fila": _LiveFila(_LIVE_FILA_MAX_BYTES), "turno": 0,
         "cancelado": threading.Event(), "vencida": False, "substituida": False,
         "fechar": False,
+        # #478: cliente que pediu versão de protocolo desconhecida fica sem
+        # subprotocolo negociado — o motivo vai no `stats` para não ser silencioso.
+        "subprotocolo_recusado": _motivo_sub,
         "turno_thread": None, "pipe": None, "engine": None,
         "dsh": None,                      # DSH-2: DshClient PRÓPRIO da sessão Live
         "falando": False, "audio_pendente": 0, "buffer_bytes_turno": 0,
