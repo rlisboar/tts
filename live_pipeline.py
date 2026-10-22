@@ -1068,7 +1068,11 @@ def _janela_ate(alvo: list[str], dito: list[str], divergencias: int) -> bool:
 
 # O filtro anti-alucinação do Live (#465): LIGADO por padrão e independente do
 # `stt_anti_ruido` do app (que governa o ditado da Conversa e está desligado no
-# settings do dono). Desligar exige este env, de propósito.
+# settings do dono). PROVISÓRIO: é recomendação do PM, o dono ainda não decidiu —
+# se ele recusar, o revert é esta constante e o `forcar=` do `_stt_app`.
+# LIMITAÇÃO CONHECIDA: lido no IMPORT, então desligar exige env + restart e não há
+# botão na tela. Se ele pedir botão, isto vira SETTING (e o import vira leitura por
+# turno, como o `stt_anti_ruido` do app).
 _LIVE_ANTI_RUIDO = os.environ.get("TTS_LIVE_ANTI_RUIDO", "1") != "0"
 
 # Tolerância do casamento contíguo (#301). `minimo` de acerto vira `1 - minimo` de
@@ -1311,7 +1315,7 @@ def _stt_app(pcm16_le_16k: bytes, language: str | None,
                 julga["motivo"] = "stt" if r.get("language") else "vad"
             return ""
         # `forcar`: no Live o filtro vale INDEPENDENTE de `stt_anti_ruido`
-        # (decisão do dono, #465). Aqui não há texto digitado para corrigir:
+        # (recomendação do PM, PROVISÓRIA até o dono decidir, #465). Aqui não há texto digitado para corrigir:
         # alucinação do Whisper vira RESPOSTA falada. Na Conversa o setting segue
         # mandando. `TTS_LIVE_ANTI_RUIDO=0` é a única saída, e é de processo: o
         # setting de ditado do dono está desligado e não pode desligar isto junto.

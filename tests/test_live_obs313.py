@@ -331,3 +331,40 @@ def test_cancel_nao_incrementa_o_turno():
 
 if __name__ == "__main__":                   # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# -- dublês antigos sem o kwarg `espera` não podem derrubar o turno ---------
+def test_tts_app_antigo_sem_espera_nao_derrubar_o_turno(monkeypatch):
+    """`espera` é só medição: dublê de 2 args (padrão antigo) tem de continuar
+    servindo em vez de estourar `TypeError` no meio do TTS (#313)."""
+    import numpy as np
+
+    eventos: list = []
+    audios: list = []
+    p = lp.LivePipeline(eventos.append, audios.append,
+                        stt=lambda pcm, l: "fala",
+                        llm=lambda msgs: iter(["resposta. "]),
+                        prewarm=lambda: None)          # `_tts` = `_tts_live`
+    monkeypatch.setattr(lp, "_worker_habilitado", lambda: False)
+    monkeypatch.setattr(lp, "_tts_app", lambda texto, omni: np.ones(8, dtype=np.float32))
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False)
+    assert audios, "o áudio tem de sair mesmo com o dublê de 2 argumentos"
+    assert "error" not in [e["type"] for e in eventos]
+
+
+def test_duble_com_espera_continua_recebendo_a_medicao(monkeypatch):
+    import numpy as np
+
+    recebeu: dict = {}
+    p = lp.LivePipeline(lambda o: None, lambda pcm: None, stt=lambda pcm, l: None,
+                        llm=lambda msgs: None, prewarm=lambda: None)
+    monkeypatch.setattr(lp, "_worker_habilitado", lambda: False)
+
+    def _tts(texto, omni, espera=None):
+        recebeu["tem"] = espera is not None
+        return np.ones(4, dtype=np.float32)
+
+    monkeypatch.setattr(lp, "_tts_app", _tts)
+    p._tts_live("oi", {})
+    assert recebeu.get("tem") is True        # com assinatura, a medição passa

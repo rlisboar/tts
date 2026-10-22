@@ -4124,6 +4124,22 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
     return meta
 
 
+def _guarda_original(voice_id: str) -> None:
+    """Cópia intocável da referência ANTES da primeira sobrescrita (#443).
+
+    `denoise` e `replace` são `use` por decisão (consumo não apaga voz), mas
+    gravam NO LUGAR: com uma chave `use` num aparelho da LAN a voz clonada do
+    dono se descaracterizava sem volta. O `.orig.wav` é criado uma vez e nunca
+    reescrito — sobrescrever de novo não o toca."""
+    origem = VOICES_DIR / f"{voice_id}.wav"
+    destino = VOICES_DIR / f"{voice_id}.orig.wav"
+    if destino.exists() or not origem.exists():
+        return
+    tmp = VOICES_DIR / f".orig-{voice_id}"
+    shutil.copy2(origem, tmp)
+    os.replace(tmp, destino)
+
+
 @app.post("/api/voices/{voice_id}/denoise")
 def denoise_voice(voice_id: str, payload: dict = None):
     """Limpa o ruído de fundo de uma voz JÁ existente, sobrescrevendo o .wav. O
@@ -4143,6 +4159,7 @@ def denoise_voice(voice_id: str, payload: dict = None):
         raise HTTPException(400, "A limpeza derrubou o nível demais (RMS caiu mais de "
                                  "20 dB) — a amostra original foi mantida")
     data = _referencia_pronta(data, sr)
+    _guarda_original(voice_id)          # antes de sobrescrever (#443)
     sf.write(str(path), data, sr, subtype="PCM_16")
     _conds_cache.clear()
     _cache_limpa()           # a amostra mudou: todo áudio dela em cache caiu
@@ -4153,6 +4170,36 @@ def denoise_voice(voice_id: str, payload: dict = None):
             m = json.loads(jp.read_text())
             m["duration"] = duration
             m["denoised"] = True
+            write_json_atomic(jp, m)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": True, "duration": duration}
+
+
+@app.post("/api/voices/{voice_id}/restore-original")
+def restore_voice_original(request: Request, voice_id: str):
+    """Devolve a referência como era antes do primeiro denoise/replace (#443).
+
+    O `.orig.wav` é guardado na primeira sobrescrita; restaurar devolve o arquivo
+    byte a byte e re-invalida o clone em cache. O `.orig` NÃO é apagado — dá para
+    restaurar de novo depois de outra edição."""
+    _exige_admin(request)
+    voice_id = _safe_id(voice_id)
+    orig = VOICES_DIR / f"{voice_id}.orig.wav"
+    if not orig.exists():
+        raise HTTPException(404, "Esta voz não tem original guardado")
+    tmp = VOICES_DIR / f".rest-{voice_id}"
+    shutil.copy2(orig, tmp)
+    os.replace(tmp, VOICES_DIR / f"{voice_id}.wav")
+    _conds_cache.clear()
+    _cache_limpa()
+    duration = _wav_duration(VOICES_DIR / f"{voice_id}.wav")
+    jp = VOICES_DIR / f"{voice_id}.json"
+    if jp.exists():
+        try:
+            m = json.loads(jp.read_text())
+            m["duration"] = duration
+            m.pop("denoised", None)          # voltou ao original
             write_json_atomic(jp, m)
         except Exception:  # noqa: BLE001
             pass
@@ -4711,6 +4758,7 @@ def replace_voice_audio(voice_id: str, audio: UploadFile = File(...)):
     tmp.unlink(missing_ok=True)
     if a.ndim > 1:
         a = a.mean(axis=1)
+    _guarda_original(voice_id)          # antes de sobrescrever (#443)
     sf.write(str(wav), a, sr, subtype="PCM_16")
     dur = _wav_duration(wav)
     if dur < 1:
@@ -4759,7 +4807,7 @@ def delete_voice(request: Request, voice_id: str):
     # (import) reusaria o envio antigo se o mtime coincidisse — some junto
     _remote_voice_cache.pop(voice_id, None)
     removed = False
-    for ext in ("wav", "json"):
+    for ext in ("wav", "json", "orig.wav"):     # o original vai junto (#443)
         path = VOICES_DIR / f"{voice_id}.{ext}"
         if path.exists():
             path.unlink()

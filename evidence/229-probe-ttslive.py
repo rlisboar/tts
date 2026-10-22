@@ -41,7 +41,7 @@ class WorkerFalso:
 
 lp._LiveWorker = WorkerFalso
 lp._worker_habilitado = lambda: True
-lp._tts_app = lambda texto, omni, voice_id=None: "in-process"
+lp._tts_app = lambda texto, omni, **kw: "in-process"  # **kw: kwargs opcionais
 
 sess = {"id": "corrida", "voice_id": None, "system": None, "history": [],
         "fila": queue.Queue()}

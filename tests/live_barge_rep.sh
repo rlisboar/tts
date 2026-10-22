@@ -43,6 +43,17 @@ RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$RAIZ/.venv-mlx/bin/python"
 [ -x "$PY" ] || PY="$(command -v python3)"
 export REP="${REP:-6}"
+# Veredito de GATE (#469): a rodada passa com ao menos `LIMIAR` barges. Default
+# `REP - 2` (tolera duas falhas em REP=6): medido aqui 4–5/6 com 6 agentes na
+# máquina — o instrumento depende do mic falso e do limiar adaptativo, não é
+# determinístico, e um limiar apertado reprovaria por carga e não por defeito.
+# `REP` alto continua de diagnóstico, com as assinaturas impressas nas falhas.
+export LIMIAR="${LIMIAR:-$(( REP > 3 ? REP - 2 : REP - 1 > 0 ? REP - 1 : REP ))}"
+# Duração injetada por iteração (#469). O wav INTEIRO (8–23 s) estourava o teto de
+# 30 s do pendente quando o turno anterior ainda rodava, e o turno era descartado
+# por `_stt_ok` no fim — a rodada não media barge, media espera. 3 s produzem turno
+# e cabem folgado.
+export INJ_S="${INJ_S:-3}"
 
 source "$RAIZ/tests/serial.sh"; serial_pega || exit 1
 
@@ -53,6 +64,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 RAIZ = pathlib.Path(sys.argv[1])
 REP = int(os.environ.get("REP", "6"))
+LIMIAR = int(os.environ.get("LIMIAR", "6"))
 SUF = str(os.getpid())
 
 class Stub(BaseHTTPRequestHandler):
@@ -119,17 +131,23 @@ env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        # o Live tem backend PRÓPRIO: sem este pin o dono com `chat_backend_live: dsh`
        # tirava o harness do stub e a contagem de barge media outra rota (#195)
        "TTS_CHAT_BACKEND_LIVE": os.environ.get("TTS_CHAT_BACKEND_LIVE") or "openai",
-       "BARGE_PORT": str(porta), "ORT_DISABLE_TELEMETRY": "1"}
+       "BARGE_PORT": str(porta), "ORT_DISABLE_TELEMETRY": "1",
+       "BARGE_SETTINGS": f"/tmp/live_barge_settings_{SUF}.json",
+       "BARGE_APIKEYS": f"/tmp/live_barge_apikeys_{SUF}.json"}
 log = pathlib.Path("/tmp") / f"live_barge_rep_{SUF}.log"
 # Instrumenta a JANELA DE PLAYBACK do servidor (sem editar arquivo de outro dono):
 # é ela que arma o barge. Imprime quando abre/fecha, para correlacionar com a injeção.
 _launcher = '''
-import os, sys, time, uvicorn, live_turns, app
+import os, sys, time, pathlib, uvicorn, live_turns, app
 _orig = live_turns.TurnEngine.set_speaking
 def _patched(self, ligado, nivel_dbfs=None, **kw):
     _orig(self, ligado, nivel_dbfs, **kw)   # **kw: duracao_ms do #167
     print(f"[JANELA] {time.time():.3f} speaking={ligado}", file=sys.stderr, flush=True)
 live_turns.TurnEngine.set_speaking = _patched
+# settings/chaves em tmp: a rodada não lê nem escreve os arquivos do dono
+app.SETTINGS_PATH = pathlib.Path(os.environ["BARGE_SETTINGS"])
+app.APIKEYS_PATH = pathlib.Path(os.environ["BARGE_APIKEYS"])
+app.API_KEY = None
 uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["BARGE_PORT"]), log_level="info")
 '''
 
@@ -142,6 +160,7 @@ def tail(n=8):
     try: return "".join(log.read_text().splitlines(keepends=True)[-n:])
     except Exception: return "-"
 
+ok_n = -1                          # -1 = morreu antes do veredito: log fica
 try:
     for _ in range(300):
         if proc.poll() is not None: raise SystemExit(f"servidor morreu (log {log})")
@@ -203,18 +222,22 @@ try:
         pg.locator("#lxLigar").click()
         pg.wait_for_function("() => LX.ws && LX.ws.readyState === 1", timeout=20000)
 
+        INJ_S = float(os.environ.get("INJ_S", "3"))
+
         def injeta(b64: str | None = None):
-            pg.evaluate("""async (b64) => {
+            pg.evaluate("""async ([b64, INJ_S]) => {
                 const bin = atob(b64); const by = new Uint8Array(bin.length);
                 for (let i = 0; i < bin.length; i++) by[i] = bin.charCodeAt(i);
                 const i16 = new Int16Array(by.buffer);
-                for (let i = 0; i + 1600 <= i16.length; i += 1600) {
+                const ini = Math.min(i16.length, 16000 * 0.5);          // pula o ataque
+                const fim = Math.min(i16.length, ini + 16000 * INJ_S);
+                for (let i = ini; i + 1600 <= fim; i += 1600) {
                     if (!LX.ws || LX.ws.readyState !== 1) break;
                     LX.ws.send(i16.slice(i, i + 1600).buffer);
                     await new Promise(r => setTimeout(r, 25));
                 }
                 if (LX.ws && LX.ws.readyState === 1) LX.ws.send(JSON.stringify({ type: "end_of_speech" }));
-            }""", b64 or fala)
+            }""", [b64 or fala, INJ_S])
 
         def audio_n():
             return pg.evaluate("() => window.__audio || 0")
@@ -245,7 +268,24 @@ try:
         # satura perto do teto e não distingue as configurações.
         MODO = (os.environ.get("MODO") or "").strip().lower()
         VAO_MS = int(os.environ.get("VAO_MS", "900"))
+        def espera_settle(timeout=25000):
+            """Espera o turno ANTERIOR fechar antes de injetar de novo (#469).
+
+            Sem isto a injeção caía no `stage=stt`/prewarm do turno anterior, virava
+            PENDENTE e a rodada media espera: era a causa das falhas "sem áudio do
+            servidor" e do pendente truncado no teto de 30 s."""
+            pg.evaluate("() => { window.__ev = []; }")
+            try:
+                pg.wait_for_function(
+                    "() => window.__ev.some(e => e.tipo === 'turn_complete'"
+                    " || e.tipo === 'interrupted')", timeout=timeout)
+            except Exception:
+                pass
+            pg.wait_for_timeout(150)
+
         for i in range(1, REP + 1):
+            if i > 1:
+                espera_settle()
             if MODO == "vao":
                 if not garante_turno():
                     resultados.append({"i": i, "ok": False, "motivo": "sem áudio do servidor", "assinatura": {}})
@@ -342,14 +382,26 @@ try:
     # fecharam sem fala além da janela de confirmação.
     print(f"\n=== MOTOR (cumulativo da rodada): {json.dumps(motor_final, sort_keys=True)}")
     print(f"=== CONTAGEM (cumulativa): {json.dumps(contagem_final, sort_keys=True)}")
+    print(f"\n=== BARGE: {ok_n}/{REP} (limiar {LIMIAR})")
     if ok_n == 0:
         print(f"✖ NENHUM barge — não é cauda, é quebrado (log: {log})")
         sys.exit(1)
-    print("✔ investigação concluída (não falha por cauda)")
+    if ok_n < LIMIAR:
+        print(f"✖ REPROVADO: {ok_n}/{REP} abaixo do limiar {LIMIAR} (log: {log})")
+        sys.exit(1)
+    print(f"✔ APROVADO: {ok_n}/{REP} ≥ {LIMIAR}")
 finally:
     try: os.killpg(os.getpgid(proc.pid), 15)
     except Exception: proc.terminate()
-for _sobra in (log, wav_path):          # verde não deixa lixo em /tmp
-    try: _sobra.unlink()
-    except Exception: pass
+    # temporários saem SEMPRE — e DENTRO do `finally`: o `sys.exit` do veredito
+    # propaga e o código depois do `finally` nunca roda (o wav ficava para trás).
+    # O LOG fica só na reprovação, porque é o que se lê.
+    if ok_n >= LIMIAR:                 # verde não deixa nem o log
+        try: log.unlink()
+        except Exception: pass
+    for _sobra in (wav_path,
+                   pathlib.Path(f"/tmp/live_barge_settings_{SUF}.json"),
+                   pathlib.Path(f"/tmp/live_barge_apikeys_{SUF}.json")):
+        try: _sobra.unlink()
+        except Exception: pass
 PYEOF

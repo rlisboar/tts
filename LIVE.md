@@ -85,6 +85,10 @@ digitado para corrigir); na Conversa o setting continua mandando. A única saíd
 filtro no Live é o env de processo `TTS_LIVE_ANTI_RUIDO=0`; o setting de ditado não o
 desliga justamente porque lá ele está desligado por escolha do dono.
 
+> **Provisório.** Este forçar é recomendação do PM, não decisão do dono. E o env é
+> lido no IMPORT: desligar exige restart e **não há botão na tela** — se o dono pedir
+> o botão, isto vira setting próprio (lido por turno), não env de processo.
+
 `hold{on:bool}` liga o fallback "segurar pra falar": o motor abre e fecha o turno no
 BOTÃO, sem heurístico de VAD; `stats.motor.hold_to_talk_sugerido` é o aviso de que vale
 ligá-lo (sobe quando `taxa_falso_barge_in` passa do limite).

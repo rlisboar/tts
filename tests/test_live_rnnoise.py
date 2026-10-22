@@ -527,6 +527,10 @@ def test_fechar_nao_bloqueia_o_event_loop():
 
     ns = RnnoiseAoVivo()
     assert ns.abrir() is True
+    # `_mata` lento de propósito: sem isto o `fechar` às vezes volta em <10 ms e o
+    # loop não chega a tiquetar, dando 0 sem ter travado nada (intermitente)
+    original = ns._mata
+    ns._mata = lambda p: (time.sleep(0.15), original(p))[1]
     try:
         assert ns.processa(_pcm(np.zeros(FRAME // 2, dtype=np.float32)))  # exercita
 
@@ -553,7 +557,7 @@ def test_fechar_nao_bloqueia_o_event_loop():
 
         durante = asyncio.run(fluxo())
         # bloquear o loop daria 0 (o sleep só roda depois); off-loop ele continua
-        assert durante >= 1, f"o fechamento travou o loop ({durante} tiques)"
+        assert durante >= 5, f"o fechamento travou o loop ({durante} tiques)"
         assert ns.ativo is False
         ns.fechar()                                # idempotente
     finally:

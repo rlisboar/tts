@@ -163,6 +163,12 @@ devolve a lista em `admin_ignored`, que a tela exibe com nome humano. Ação que
 exige admin e leva `403` abre a faixa de chave com o passo a passo
 (`Configurações → Acesso → Nova chave → papel admin`).
 
+`remote_tts_extra` (JSON de parâmetros extras do servidor remoto) é campo de
+**admin**: ele é aplicado sobre o corpo de *todos* os trechos, então uma chave de
+uso que mandasse `{"text": …}` reescreveria o job alheio. `text` e `voice` dentro
+do extra são ignorados de propósito (são por trecho) — o servidor avisa no stderr;
+o resto (`speed`, `num_steps`, …) vale.
+
 Para quem mexe no HTML: um campo administrativo precisa do marcador
 `data-admin-setting="<nome da setting>"` — é ele que faz o travamento valer (o
 servidor decide a lista, a UI cruza). Se o servidor promover um nome a admin sem
@@ -222,6 +228,22 @@ Podcast). Escolha uma na lista de vozes e gere — na primeira vez o app cria um
 amostra-semente e a salva como voz normal (ancorando o timbre para ficar consistente
 entre os trechos); "resetar" recria essa amostra. Para uma voz sob medida, use o campo
 **voice design** (`instruct`) com a sua própria descrição.
+
+### Limpar ruído e substituir o áudio da voz (e como desfazer)
+
+`POST /api/voices/{id}/denoise` e `.../replace` melhoram/substituem a amostra de
+referência de uma voz **no lugar**, e são liberados para chave `use` — um aparelho
+da LAN ajusta a própria voz sem precisar de admin. Como a referência é sobrescrita,
+a **primeira** alteração guarda uma cópia intocável em `voices/<id>.orig.wav`
+(edições seguintes não a tocam) e o admin desfaz com:
+
+```
+curl -X POST -H "X-API-Key: $ADMIN" $BASE/api/voices/<id>/restore-original
+curl -X DELETE -H "X-API-Key: $ADMIN" $BASE/api/voices/<id>   # apaga a voz e o .orig junto
+```
+
+O `.orig.wav` entra no export de vozes e no backup do estado, e some junto com a
+voz. Sem ele (voz nunca editada) o restore responde 404.
 
 ### Idioma
 
@@ -406,6 +428,10 @@ próprio (server block dedicado + `location /`) também funciona, sem o
 prefixo. `TTS_TUNNEL_IF=enX` sobrescreve a interface de rede detectada;
 `./tunnel.sh uninstall` remove o agente.
 
+O zip do mic-router carrega a **chave primária em texto claro**, então baixá-lo
+exige chave de **admin** (`403` para `role: "use"`); o `GET /api/apikeys` segue
+acessível a qualquer chave, só que mascarado.
+
 O destino do `-R` é **validado** antes de abrir o ssh: só 10/8, 172.16/12 e
 192.168/16 passam. Se a interface escolhida não tiver endereço (ex.:
 `TTS_TUNNEL_IF=lo0`) ou se o endereço não for de LAN (VPN na rota default,
@@ -478,7 +504,7 @@ mostra o token quando você precisar copiá-lo na mão.
 Teste: `https://tts.seu-dominio/health` → `{"ok":true,"boot_ts":…,"rev":…}`; o mesmo
 host sem chave em `/api/status` → `401` (chave exigida fora do loopback). Textos
 longos não batem no limite de 100 s de primeiro byte do Cloudflare porque a UI usa
-`/api/tts/jobs` (polling de trechos).
+`/api/tts/jobs/{job_id}/pieces/{i}` (polling de trechos).
 
 `boot_ts`/`rev` no `/health` são para vigia: 200 sozinho não distingue "de pé" de
 "de pé no código de ontem". Monitoração e rotação de log: `remote/health_probe.sh`

@@ -9,6 +9,11 @@ Duas camadas, de propósito:
    `tests/test_vad_deprecation.py`. Prova o que só o modelo prova: o caminho é
    ONNX, o módulo não puxa MLX e ninguém abre socket.
 
+   O áudio desse caso vem de `tests/fixtures/voz_curta_16k.wav` (VERSIONADO: 2,6 s,
+   16 kHz mono, ~93 kB, sílabas harmônicas geradas por código). É fala SINTÉTICA:
+   serve para o VAD abrir o turno, **não** mede qualidade de transcrição. A voz do
+   dono continua tendo caso próprio, com skip nomeado, porque `voices/` é local.
+
 Nota de realismo (medido): o Silero responde ~0.95 em fala de verdade e fica
 *borderline* (0.02–0.8, instável) em vogal sintética — os harmônicos não têm
 transição de formante. Por isso a integração prefere um wav de `voices/`
@@ -693,24 +698,37 @@ def sintetica(n):
 
 
 def voz_de_referencia(n):
-    """Voz real do dono se houver `voices/`; `VAD_SEM_VOZ=1` força a sintética.
+    """De onde vem o áudio: `VAD_FONTE` = `fixture` | `dono` | `sintetica`.
 
-    O caminho sintético é o HERMÉTICO (máquina limpa, CI): `voices/` é dado local,
-    não versionado, e o teste não pode depender dele (#404)."""
+    `fixture` é o padrão e é o caminho do CI: `tests/fixtures/voz_curta_16k.wav`,
+    VERSIONADO (fala sintética, <100 kB). `dono` lê `voices/`, que é dado local e
+    não entra no git — quem pede `dono` quer justamente a voz dele. `sintetica` é a
+    onda harmônica tosca, que serve só para o caminho sem arquivo nenhum."""
     import os
     from pathlib import Path
-    wavs = [] if os.environ.get("VAD_SEM_VOZ") == "1" else sorted(Path("voices").glob("*.wav"))
-    if not wavs:
-        return sintetica(n), False
+    fonte = ("sintetica" if os.environ.get("VAD_SEM_VOZ") == "1"
+             else os.environ.get("VAD_FONTE") or "fixture")
+    if fonte == "sintetica":
+        return sintetica(n), "sintetica"
+    caminho = None
+    if fonte == "fixture":
+        f = Path("tests/fixtures/voz_curta_16k.wav")
+        caminho = f if f.is_file() else None
+    if caminho is None:                       # `dono`, ou fixture faltando
+        wavs = sorted(Path("voices").glob("*.wav"))
+        if not wavs:
+            return sintetica(n), "sintetica"
+        caminho = wavs[0]
     import soundfile as sf
     from scipy.signal import resample_poly
-    a, sr = sf.read(str(wavs[0]), dtype="float32")
+    a, sr = sf.read(str(caminho), dtype="float32")
     a = resample_poly(a, 16000, int(sr)).astype(np.float32)
     a = a / max(1e-9, float(np.max(np.abs(a)))) * 0.3
-    return np.tile(a, int(np.ceil(n / len(a))))[:n], True
+    return np.tile(a, int(np.ceil(n / len(a))))[:n], fonte
 
 
-voz, real = voz_de_referencia(16000)
+voz, fonte = voz_de_referencia(16000)
+real = fonte != "sintetica"
 # janela de 1 s inteira, não 0,5 s: o 1º wav em ordem alfabética pode abrir com
 # silêncio (medido: 290 ms em `voices/1e8e1479ae.wav`) e a mediana dos primeiros
 # 0,5 s dava 0,03 — o teste dependia de qual voz estava no disco.
@@ -722,7 +740,7 @@ voz, real = voz_de_referencia(16000)
 probs = [lt.scorer_silero(voz[i:i + 512]) for i in range(0, 16000 - 511, 512)]
 prob = float(np.median(probs))
 limiar = 0.5
-if not real:
+if fonte != "dono":                     # fixture/sintética: limiar calibrado no sinal
     # sinal sintético é só harmonicamente parecido com fala: metade da própria
     # mediana (o teste quer "o modelo responde"; abaixo disso ele não responde a nada)
     limiar = max(0.02, min(0.5, prob * 0.5))
@@ -743,7 +761,8 @@ assert fim.detalhe == "silencio" and fim.curto is False and fim.fala_ms >= 400
 assert vistos and all(s == (512,) for s in vistos)
 assert lt.BACKEND == "onnx", "caminho do VAD saiu do ONNX: %r" % (lt.BACKEND,)
 assert not _rede, _rede
-print("ok onnx prob=%.3f limiar=%.3f real=%s fala_ms=%d" % (prob, limiar, real, fim.fala_ms))
+print("ok onnx prob=%.3f limiar=%.3f real=%s fonte=%s fala_ms=%d"
+      % (prob, limiar, real, fonte, fim.fala_ms))
 '''
 
 
@@ -759,12 +778,25 @@ def _tem_voz_gravada() -> bool:
     return bool(list((RAIZ / "voices").glob("*.wav")))
 
 
-@pytest.mark.skipif(not _tem_voz_gravada(), reason="sem `voices/`: a voz real é dado do dono")
-def test_integracao_onnx_com_voz_REAL():
-    """Mesmo caminho, contra a voz do dono — skip quando `voices/` não existe."""
-    r = _subproc(INTEGRACAO)
+def test_integracao_onnx_com_o_FIXTURE_de_voz():
+    """Fala de verdade (fixture versionado) — é o caso que o CI roda.
+
+    `tests/fixtures/voz_curta_16k.wav`: 2,6 s, 16 kHz mono, ~93 kB, VERSIONADO e
+    gerado com sílabas harmônicas (não é voz humana e NÃO mede qualidade de
+    transcrição — mede que o VAD abre o turno nesse áudio, com `fala_ms` acima do
+    mínimo). Não depende de `voices/`."""
+    r = _subproc(INTEGRACAO, VAD_FONTE="fixture")
     assert r.returncode == 0, r.stderr
-    assert "ok onnx" in r.stdout and "real=True" in r.stdout, r.stdout
+    assert "ok onnx" in r.stdout and "fonte=fixture" in r.stdout, r.stdout
+    assert "real=True" in r.stdout, r.stdout
+
+
+@pytest.mark.skipif(not _tem_voz_gravada(), reason="sem `voices/`: a voz real é dado do dono")
+def test_integracao_onnx_com_voz_DO_DONO():
+    """A voz do DONO (dado local, fora do git) — este é o skip nomeado que fica."""
+    r = _subproc(INTEGRACAO, VAD_FONTE="dono")
+    assert r.returncode == 0, r.stderr
+    assert "ok onnx" in r.stdout and "fonte=dono" in r.stdout, r.stdout
 
 
 def test_fallback_para_o_jit_e_logado_nao_silencioso():
