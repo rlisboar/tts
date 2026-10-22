@@ -8221,7 +8221,8 @@ def _live_stats(sess: dict) -> dict:
                      "chunks": sess.get("st_chunks", 0), "bytes": sess.get("st_audio_bytes", 0),
                      "fila_bytes": getattr(sess.get("fila"), "bytes", 0),
                      "fila_itens": _live_fila_itens(sess),
-                     "fila_descartados": getattr(sess.get("fila"), "descartados", 0)},
+                     "fila_descartados": getattr(sess.get("fila"), "descartados", 0),
+                     "underruns": sess.get("st_underruns", 0)},
         "sessao": {"idade_s": int(time.time() - sess["criada"]),
                    "ocioso_ms": int((agora - sess["visto"]) * 1000),
                    "ttl_s": _LIVE_TTL_S, "criadas": len(_live_sessions),
@@ -8644,6 +8645,21 @@ def _live_envia_json(sess: dict, obj: dict) -> None:
         _live_janela_turno(sess, False)
     _live_observa(sess, obj)
     sess["fila"].put(("json", _live_enriquece(sess, obj)))
+
+
+def _live_conta_underrun(sess: dict, nbytes: int) -> None:
+    """#492: incrementa `st_underruns` quando o vão entre dois chunks passa do
+    próprio tamanho do anterior (+250 ms) — buffer de playback vazio no cliente.
+    Quem demora porque o TTS é lento enche a fila, então não conta.
+    Duração em 24 kHz mono 16 bits: 48 bytes/ms.
+    """
+    agora = time.monotonic()
+    sess["st_underruns"] = sess.get("st_underruns", 0)
+    anterior = sess.get("st_ultimo_chunk")
+    if anterior is not None and (agora - anterior) * 1000 > sess.get("st_ultimo_dur_ms", 0) + 250:
+        sess["st_underruns"] += 1
+    sess["st_ultimo_chunk"] = agora
+    sess["st_ultimo_dur_ms"] = nbytes / 48.0
 
 
 def _live_envia_audio(sess: dict, pcm: bytes) -> None:
@@ -9416,6 +9432,8 @@ async def _live_sender(sess: dict, ws) -> None:
                 sess["st_audio_bytes"] += len(payload)
                 if sess.get("st_stage") in ("stt", "llm"):   # 1º áudio do turno
                     _live_stage(sess, "tts")
+                    sess["st_ultimo_chunk"] = None      # #492: não conta o vão entre turnos
+                _live_conta_underrun(sess, len(payload))   # #492
                 # V1: o playback é marcado NO ENVIO (nivel do chunk mede o eco);
                 # `#94` pode trazer feedback real de playback se o falso barge-in pedir.
                 eng = sess.get("engine")
@@ -9698,6 +9716,10 @@ async def live_ws(ws: WebSocket):
         # telemetria (#118): contadores da sessão, sem trabalho extra relevante
         "t0": time.monotonic(), "st_frames": 0, "st_bytes": 0, "st_ultimo_frame": None,
         "st_dbfs": None, "st_prob": None, "st_chunks": 0, "st_audio_bytes": 0,
+        # #492: fome do buffer de playback — contada quando o intervalo entre
+        # dois chunks passa do próprio tamanho do anterior (+250 ms). Não pega
+        # quem demora porque o TTS é lento (aí a fila cresce, não esvazia).
+        "st_underruns": 0, "st_ultimo_chunk": None, "st_ultimo_dur_ms": 0,
         "st_erro": None, "st_stage": "idle", "st_stage_ini": None, "st_stage_ms": 0,
         "st_proximo": 0.0,
     }

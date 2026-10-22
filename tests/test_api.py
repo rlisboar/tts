@@ -5259,6 +5259,22 @@ def test_live_erro_do_pipeline_nao_derruba_a_sessao(ws_client, live_limpo, engin
 # metadados. O esquema é o contrato publicado na task (e no LIVE.md).
 # ---------------------------------------------------------------------------
 
+def test_underrun_conta_so_o_vao_maior_que_o_chunk(monkeypatch):
+    """#492: `underruns` mede FOME do buffer de playback — vão entre chunks maior
+    que o próprio chunk anterior + 250 ms. TTS lento enche a fila e não conta;
+    cliente que não drena, sim. O campo tem de sair no `stats`.
+    """
+    sess = {"id": "s-fome", "t0": time.monotonic(), "criada": time.time(),
+            "visto": time.monotonic(), "turno": 1, "engine": _EngFake()}
+    app._live_conta_underrun(sess, 24000)          # 500 ms de áudio: 1º chunk
+    app._live_conta_underrun(sess, 24000)          # logo em seguida: sem fome
+    assert sess["st_underruns"] == 0
+    sess["st_ultimo_chunk"] -= 1.0                 # 1000 ms > 500 + 250
+    app._live_conta_underrun(sess, 24000)
+    assert sess["st_underruns"] == 1
+    assert app._live_stats(sess)["playback"]["underruns"] == 1
+
+
 def test_live_ws_stats_esquema_e_cadencia(ws_client, live_limpo, monkeypatch):
     """`stats` chega periodicamente SEM tráfego do cliente, com o esquema do
     contrato, contadores acumulados do mic e relógio monotônico — é dele que o
