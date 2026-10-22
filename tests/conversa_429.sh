@@ -13,6 +13,10 @@
 #   ./tests/conversa_429.sh          # app precisa estar de pé (./run.sh)
 set -euo pipefail
 
+# Serializa com as outras que carregam modelo: esta suíte gera fala pelo TTS e,
+# em paralelo, o alvo de latência do live_ws/obs vira falso vermelho (#134).
+source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
+
 BASE="${BASE:-http://127.0.0.1:7860}"
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$RAIZ/.venv-mlx/bin/python"

@@ -34,18 +34,33 @@ if [ -z "$LAN" ]; then
   exit 1
 fi
 
-if ! curl -sf -m 5 -o /dev/null "$BASE/"; then
-  echo "✖ app não respondeu em $BASE — rode ./run.sh primeiro" >&2
-  exit 1
-fi
+# Serializa com as outras que carregam modelo (#134): esta suíte gera por TTS.
+source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
 
 # A UI SÓ vê chave de uso por um IP não-loopback, então metade do teste roda em
 # http://<LAN>:<porta>. A porta tem de sair do PRÓPRIO BASE (#140): com :7860
 # fixo, uma instância própria (BASE=…:53203) criava as chaves nela e as usava
 # contra o app do DONO — 401 e, pior, validando build velho.
 PORTA="${BASE##*:}"; PORTA="${PORTA%%/*}"
-case "$PORTA" in ''|*[!0-9]*) PORTA=7860;; esac      # BASE sem porta → default
+case "$PORTA" in
+  ''|*[!0-9]*)
+    # BASE sem porta: se o host não é loopback, o default 7860 aponta para o app
+    # do DONO — a suíte então mede o build errado e cria chaves lá. Exige a porta.
+    HOST_BASE="${BASE#*://}"; HOST_BASE="${HOST_BASE%%/*}"
+    case "$HOST_BASE" in
+      ''|127.0.0.1|localhost|'[::1]') PORTA=7860 ;;
+      *)
+        echo "✖ BASE sem porta ($BASE): informe a porta da instância de teste," >&2
+        echo "  ex.: BASE=http://$HOST_BASE:53203 $0" >&2
+        exit 1 ;;
+    esac ;;
+esac
 LANURL="http://$LAN:$PORTA"
+
+if ! curl -sf -m 5 -o /dev/null "$BASE/"; then
+  echo "✖ app não respondeu em $BASE — rode ./run.sh primeiro" >&2
+  exit 1
+fi
 
 # ids de chaves de teste por prefixo de nome (pega sujeira de rodada que falhou)
 SUF="$$"                       # sufixo por execução (ver comentário no topo)
@@ -230,6 +245,35 @@ with sync_playwright() as p:
     cobrar(criar is True, "Nova chave devia estar desabilitada com chave de uso")
     cobrar(not (segredo.startswith("••••") and "mascarado" not in ph),
            "segredo mascarado sem aviso no placeholder")
+    # --- AÇÕES elevadas com chave de uso (task #412) ---
+    # O servidor responde 403 `Chave administrativa necessária (papel admin)`.
+    # A tela trava ANTES do clique e diz o motivo no title; sem isso a pessoa só
+    # descobria depois — e no desligar a tela ainda parecia ter funcionado.
+    acoes = ["shutdownBtn", "proxyTunnelOn", "proxyTunnelRestart",
+             "unloadModelsBtn", "importVoicesBtn", "exportVoicesBtn", "clearAll"]
+    estado_acoes = pg.evaluate("""ids => ids.map(id => {
+        const el = document.getElementById(id);
+        return el ? { id, desab: el.disabled, titulo: el.title || "" } : { id, falta: true };
+    })""", acoes)
+    for a in estado_acoes:
+        cobrar(not a.get("falta"), f"ação elevada #{a['id']} não existe na tela")
+        cobrar(a.get("desab") is True, f"#{a['id']} devia estar desabilitado com chave de uso")
+        cobrar("administrativa" in a.get("titulo", "").lower(),
+               f"#{a['id']} desabilitado sem dizer o motivo (title: {a.get('titulo')!r})")
+    # e o 403 do servidor continua explicado no cliente quando ele chega.
+    # Alvo: "Apagar todos" — responde 403 e não apaga nada; o Desligar derrubaria
+    # a instância no meio da rodada. `confirm` stubado para não parar o fluxo.
+    pg.evaluate("""() => {
+        const orig = window.confirm; window.confirm = () => true;
+        const b = document.getElementById('clearAll');
+        b.disabled = false; b.click();
+        setTimeout(() => { window.confirm = orig; }, 100);
+    }""")
+    pg.wait_for_timeout(900)
+    aviso = pg.text_content("#keyBarText") or ""
+    cobrar("administrativa" in aviso.lower(),
+           f"o 403 do servidor não foi explicado na faixa ({aviso[:80]!r})")
+    pg.evaluate("document.getElementById('keyBar').style.display = 'none'")  # não contaminar a fase seguinte
     # --- CSP pelo header (task #36): sem <meta> e com a policy APLICADA ---
     # Reintroduzir um <meta> traz de volta o erro de frame-ancestors (ignorado em
     # meta) e a aplicação tardia; e com o meta fora, se o header cair a policy
