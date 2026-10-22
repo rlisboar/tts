@@ -66,6 +66,37 @@ def isolado(tmp_path, monkeypatch):
         app._ENCERRANDO.release()
 
 
+def _assenta(limite_s: float = 1.0) -> float:
+    """Espera os registries esvaziarem e devolve quanto tempo levou.
+
+    Não é afrouxamento: um teste ANTERIOR pode fechar o WS dele numa thread e o
+    `_live_sessions.pop` chegar DEPOIS do `clear()` do `isolado` — o teardown que
+    exige 0 via 1 sem que nada tenha vazado de fato (#433). Se sobrar de verdade, o
+    limite estoura e a asserção continua reprovando.
+    """
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < limite_s:
+        if not app._live_sessions and not app._chat_dsh_livres:
+            break
+        time.sleep(0.01)
+    return time.monotonic() - t0
+
+
+@pytest.fixture(autouse=True)
+def _registries_limpos():
+    """Todo teste deste arquivo começa com os registries ZERADOS e cobra isso.
+
+    O `isolado` já limpava, mas só onde ele era pedido e só no setup; aqui vale para
+    o arquivo inteiro e a limpeza é VERIFICADA (mordida: sem o clear, o teste de
+    baixo reprova). Nada é restaurado por conta própria: quem devolve é o `isolado`.
+    """
+    app._live_sessions.clear()
+    app._chat_dsh_livres.clear()
+    with app._jobs_lock:
+        app._jobs.clear()
+    assert _assenta() < 0.5, "registries não assentaram antes do teste"
+
+
 def _sessao_falsa(sid="s1"):
     return {"id": sid, "cancelado": threading.Event(), "fechar": False,
             "fila": type("F", (), {"bytes": 0, "descartados": 0})(),
@@ -99,7 +130,19 @@ def test_teardown_fecha_live_dsh_workers_e_salva_historico(isolado, monkeypatch)
             filho.kill()
 
 
+# Cobre o `_assenta` (e o autouse): a sessão sai do registry numa THREAD, DEPOIS do
+# ponto em que o teste antigo lia — é o mecanismo exato do #433 (o `pop` do fecho do
+# WS chegando atrás do `clear()`). Sem a espera, a leitura é 1 e reprova.
+def test_assenta_absorve_remocao_tardia_de_sessao():
+    app._live_sessions["tardia"] = _sessao_falsa("tardia")
+    threading.Timer(0.05, lambda: app._live_sessions.pop("tardia", None)).start()
+    assert app._live_sessions, "a sessão saiu cedo demais"
+    _assenta()
+    assert not app._live_sessions, "o `_assenta` não esperou a remoção tardia"
+
+
 def test_teardown_nao_estoura_sem_nada_aberto(isolado):
+    _assenta()                      # o autouse já zerou; garante que não voltou
     feito = app._encerra_tudo("teste")
     assert feito["live"] == 0 and feito["workers"] == 0
 
