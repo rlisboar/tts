@@ -41,7 +41,7 @@ if [ -z "$LAN" ]; then
 fi
 
 # Serializa com as outras que carregam modelo (#134): esta suíte gera por TTS.
-source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
 
 # A UI SÓ vê chave de uso por um IP não-loopback, então metade do teste roda em
 # http://<LAN>:<porta>. A porta tem de sair do PRÓPRIO BASE (#140): com :7860
@@ -105,11 +105,35 @@ if [ "${BASE_ORIGINAL##*:}" = "7860" ] && [ "${ADMIN_UI_NO_DONO:-}" != "1" ]; th
   exit 1
 fi
 
+# Instância que NÃO é loopback exige chave em todo request (loopback é admin por
+# definição). Sem um cabeçalho nos `curl` daqui, o `cria_chave` toma 401 e o
+# `json.load` estoura com JSONDecodeError — sem dizer que era auth.
+# A chave NUNCA é impressa: só o comprimento/máscara.
+CHAVE_TESTE="${TESTE_API_KEY:-${TTS_ROD_ADMIN_KEY:-}}"
+CABECALHO_CHAVE=()
+[ -n "$CHAVE_TESTE" ] && CABECALHO_CHAVE=(-H "X-API-Key: $CHAVE_TESTE")
+
 if ! curl -sf -m 5 -o /dev/null "$BASE/"; then
   echo "✖ app não respondeu em $BASE — rode ./run.sh primeiro" >&2
   exit 1
 fi
+
+# Origem não-loopback exige credencial em todo request. Sem a chave, o 401 do
+# `cria_chave` virava JSONDecodeError três linhas depois — sem dizer o motivo.
+if [ -n "$BASE_ORIGINAL" ]; then
+  HOST_ALVO="${BASE#*://}"; HOST_ALVO="${HOST_ALVO%%/*}"; HOST_ALVO="${HOST_ALVO%%:*}"
+  case "$HOST_ALVO" in
+    127.0.0.1|localhost|'[::1]') ;;
+    *)
+      if [ -z "$CHAVE_TESTE" ]; then
+        echo "✖ BASE de LAN precisa de chave: exporte TESTE_API_KEY=<chave admin> (ou TTS_ROD_ADMIN_KEY)" >&2
+        echo "  a chave vai só no cabeçalho X-API-Key e não é impressa" >&2
+        exit 1
+      fi ;;
+  esac
+fi
 LANURL="http://$LAN:$PORTA"
+
 
 # ids de chaves de teste por prefixo de nome (pega sujeira de rodada que falhou)
 SUF="$$"                       # sufixo por execução (ver comentário no topo)
@@ -119,7 +143,7 @@ if [ "${1:-}" = "--limpar-velhos" ]; then LIMPAR_VELHOS=1; fi
 ids_de_teste() {
   # -c (não heredoc!): com heredoc o stdin vira o PROGRAMA e o json.load da
   # saída do curl falha em silêncio — foi assim que a limpeza parou de limpar.
-  curl -sf "$BASE/api/apikeys" 2>/dev/null | "$PY" -c '
+  curl -sf ${CABECALHO_CHAVE[@]+"${CABECALHO_CHAVE[@]}"} "$BASE/api/apikeys" 2>/dev/null | "$PY" -c '
 import sys, json
 suf, modo = sys.argv[1], sys.argv[2]
 try:
@@ -148,22 +172,22 @@ for k in dados.get("keys", []):
 }
 
 cria_chave() {  # $1 = nome, $2 = role -> "id:secret"
-  curl -sf -X POST -H "Content-Type: application/json" \
+  curl -sf ${CABECALHO_CHAVE[@]+"${CABECALHO_CHAVE[@]}"} -X POST -H "Content-Type: application/json" \
     -d "{\"name\":\"$1\",\"role\":\"$2\"}" "$BASE/api/apikeys" \
     | "$PY" -c "import sys,json;k=json.load(sys.stdin)['key'];print(k['id']+':'+k['secret'])"
 }
 
 # limpa resto de rodada morta (nome de outro sufixo E antigo) — rodada viva tem
 # segundos de idade, então não é tocada
-for id in $(ids_de_teste velhos); do curl -sf -X DELETE "$BASE/api/apikeys/$id" >/dev/null 2>&1 || true; done
+for id in $(ids_de_teste velhos); do curl -sf ${CABECALHO_CHAVE[@]+"${CABECALHO_CHAVE[@]}"} -X DELETE "$BASE/api/apikeys/$id" >/dev/null 2>&1 || true; done
 USE="$(cria_chave "teste-ui-use-$SUF" use)"
 ADM="$(cria_chave "teste-ui-admin-$SUF" admin)"
 USE_ID="${USE%%:*}"; USE_KEY="${USE#*:}"
 ADM_ID="${ADM%%:*}"; ADM_KEY="${ADM#*:}"
 limpar() {
-  curl -sf -X DELETE "$BASE/api/apikeys/$USE_ID" >/dev/null 2>&1 || true
-  curl -sf -X DELETE "$BASE/api/apikeys/$ADM_ID" >/dev/null 2>&1 || true
-  for id in $(ids_de_teste); do curl -sf -X DELETE "$BASE/api/apikeys/$id" >/dev/null 2>&1 || true; done
+  curl -sf ${CABECALHO_CHAVE[@]+"${CABECALHO_CHAVE[@]}"} -X DELETE "$BASE/api/apikeys/$USE_ID" >/dev/null 2>&1 || true
+  curl -sf ${CABECALHO_CHAVE[@]+"${CABECALHO_CHAVE[@]}"} -X DELETE "$BASE/api/apikeys/$ADM_ID" >/dev/null 2>&1 || true
+  for id in $(ids_de_teste); do curl -sf ${CABECALHO_CHAVE[@]+"${CABECALHO_CHAVE[@]}"} -X DELETE "$BASE/api/apikeys/$id" >/dev/null 2>&1 || true; done
 }
 # EXIT cobre saída normal E falha (`set -e`); INT/TERM cobrem Ctrl-C e o harness
 # matando a rodada. `limpar` é idempotente, então rodar duas vezes (INT + EXIT)
