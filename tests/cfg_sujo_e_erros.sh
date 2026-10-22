@@ -15,12 +15,55 @@
 # Chromium headless. Só o `#speakerGate` é tocado — e o valor é DEVOLVIDO no fim.
 set -euo pipefail
 
-BASE="${BASE:-http://127.0.0.1:7860}"
+BASE_ORIGINAL="${BASE:-}"        # o que o chamador pediu (vazio = instância própria)
+BASE=""
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$RAIZ/.venv-mlx/bin/python"
 [ -x "$PY" ] || PY="$(command -v python3)"
 
 command -v curl >/dev/null || { echo "curl não encontrado"; exit 1; }
+
+# Instância PRÓPRIA por padrão (#466): a suíte grava settings de verdade, e sem
+# isto cada rodada escrevia no `settings.json` do dono. Settings e chaves em /tmp,
+# no idioma do `admin_ui_flow.sh`; `BASE` explícito continua sendo opt-in e o
+# `:7860` é recusado sem `NO_DONO=1`.
+SERVIDOR_PID=""
+if [ -z "$BASE_ORIGINAL" ]; then
+  PORTA="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"
+  APK="$(mktemp -t apikeys-cfgsujo.XXXXXX 2>/dev/null || echo "/tmp/apikeys-cfgsujo.$$")"
+  SET="$(mktemp -t settings-cfgsujo.XXXXXX 2>/dev/null || echo "/tmp/settings-cfgsujo.$$")"
+  rm -f "$APK" "$SET"
+  LOG="$(mktemp -t cfgsujo-servidor.XXXXXX 2>/dev/null || echo "/tmp/cfgsujo-servidor.$$")"
+  "$PY" -c "
+import pathlib, sys, uvicorn, app
+app.APIKEYS_PATH = pathlib.Path(sys.argv[1])
+app.SETTINGS_PATH = pathlib.Path(sys.argv[2])
+app._load_apikeys()
+uvicorn.run(app.app, host='127.0.0.1', port=int(sys.argv[3]), log_level='warning')
+" "$APK" "$SET" "$PORTA" > "$LOG" 2>&1 &
+  SERVIDOR_PID=$!
+  BASE="http://127.0.0.1:$PORTA"
+  limpa_servidor() {
+    [ -n "$SERVIDOR_PID" ] && kill "$SERVIDOR_PID" 2>/dev/null || true
+    rm -f "$APK" "$SET"
+  }
+  trap 'limpa_servidor' EXIT INT TERM
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    curl -sf -m 2 -o /dev/null "$BASE/" && break
+    sleep 0.5
+  done
+fi
+
+# BASE veio de fora: usa a dele (a checagem de dono abaixo decide se vale)
+[ -n "$BASE_ORIGINAL" ] && BASE="$BASE_ORIGINAL"
+
+if [ "${BASE_ORIGINAL##*:}" = "7860" ] && [ "${NO_DONO:-}" != "1" ]; then
+  echo "✖ BASE aponta para o :7860 (app do dono): a suíte grava settings nele." >&2
+  echo "  Sem BASE ela sobe instância própria; para usar a do dono mesmo assim:" >&2
+  echo "  NO_DONO=1 BASE=$BASE_ORIGINAL $0" >&2
+  exit 1
+fi
+
 curl -sf -m 5 -o /dev/null "$BASE/" || { echo "✖ app não respondeu em $BASE — rode ./run.sh primeiro" >&2; exit 1; }
 
 # O `try/finally` do Python NAO roda em SIGTERM (o sinal mata a shell e o filho):
@@ -33,7 +76,7 @@ restaura_gate() {
   curl -s -m 5 -X POST "$BASE/api/settings" -H 'Content-Type: application/json' \
        -d "{\"speaker_gate\":\"$ORIG\"}" >/dev/null 2>&1 || true
 }
-trap 'kill "$FILHO" 2>/dev/null; restaura_gate' EXIT INT TERM
+trap 'kill "$FILHO" 2>/dev/null; restaura_gate; limpa_servidor 2>/dev/null || true' EXIT INT TERM
 
 BASE="$BASE" "$PY" - <<'PYEOF' &
 import json, os, signal, sys, urllib.request
