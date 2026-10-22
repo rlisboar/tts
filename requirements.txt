@@ -32,6 +32,20 @@ phonemizer-fork
 #   ./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py tests/*.py client/mic_router.py
 pytest
 pyflakes
+# CI (#293): o run não tem humano olhando. `--timeout` (pytest-timeout) derruba
+# teste pendurado em vez de gastar o job; `--reruns` (pytest-rerunfailures)
+# absorve asserção por RELÓGIO — `test_guarda_de_identidade_reavaliada_a_cada_delta`
+# já falhou 1x com 6 agentes na mesma máquina e passou 3/3 isolada.
+pytest-timeout
+pytest-rerunfailures
+# #385: medidor de cobertura. Ferramenta de MANUTENÇÃO, não do gate — o alvo
+# (`--cov=...`) roda à mão antes de fechar épico (comando no README) e serve para
+# mostrar o que uma mudança DESCOBRE, não para exigir número por commit.
+pytest-cov
+# `tests/test_ci_workflow.py` lê o `.github/workflows/ci.yml` como dado (o YAML
+# não é rodado por ninguém antes do push). Vem junto com transformers, mas aqui
+# é dependência DECLARADA do teste — não dá para depender de transitivo.
+pyyaml
 # TestClient (tests/test_api.py) usa httpx2 (linha abaixo). A `httpx` continua
 # necessária para huggingface_hub/weasel (download de modelos) — não remover.
 httpx

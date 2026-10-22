@@ -43,3 +43,5 @@ server.log
 # rascunhos locais: backups de probes e artefatos avulsos de sessão (o que
 # importa vira evidence/ ou teste versionado)
 tmp/
+# log de sonda local (ex.: rodar a suíte em container para medir o CI)
+.ci-probe.log

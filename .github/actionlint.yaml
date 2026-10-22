@@ -1,0 +1,9 @@
+# Labels de runner SELF-HOSTED que o repositório usa — o `actionlint` só conhece
+# as labels hospedadas por padrão e acusaria `tts-mini` como desconhecida.
+#
+# `tts-mini` é o runner do Mac mini de produção (#293, `remote/ci_runner.sh`): o
+# label dedicado impede que outro runner self-hosted futuro roube o job da suíte,
+# que é macOS/arm64 na prática.
+self-hosted-runner:
+  labels:
+    - tts-mini

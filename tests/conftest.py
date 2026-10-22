@@ -24,6 +24,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # chave). O cabeçalho do pytest (abaixo) imprime isto em TODO run, para quem roda
 # só o default não achar que cobriu. Evidência de latência à parte:
 # `./.venv-mlx/bin/python smoke_worker_persist.py`.
+#
+# #388: aviso não é exigência. `tests/test_worker_real_exigido.py` fica VERMELHO
+# quando o diff toca `tts_worker.py`/`live_pipeline.py` e o env não está setado — o
+# hook seta sozinho quando a área é commitada e o CI compara com a base do PR.
 # (o `live_ws.sh` usa o modelo do settings.json: `TTS_ROD_MODEL` só vale quando o
 #  arquivo não tem "model" — com settings.json preenchido, família isolada ponta a
 #  ponta exige trocar o `model` do settings ou passar pelo teste do pipeline.)
@@ -44,10 +48,18 @@ os.environ.setdefault("TTS_LIVE_WORKER", "0")
 # `monkeypatch` no próprio teste (padrão já usado no repo). As redes pontuais
 # (`dsh_limpo`, `delenv` locais) FICAM: são a regressão de quem editar este arquivo.
 #
+# `TTS_ROD_*` entrou junto (#384): é o prefixo do APP, e dois deles decidem o
+# modelo de papel — `TTS_ROD_ADMIN_KEY` e `TTS_ROD_API_KEY` são lidos no import
+# (app.py:521-522). Medido: com `TTS_ROD_ADMIN_KEY` exportada (é o que o README
+# manda usar) a suíte verde virava 11 failed + 6 errors, porque toda chave deixa
+# de ser admin e com ela some o `is_admin` que os testes cobram. Ficou de fora do
+# #206 por descuido de prefixo, não por decisão.
+#
 # DUAS EXCEÇÕES, de propósito — são INTERRUPTORES do dono, não comportamento a
 # neutralizar: `TTS_TEST_WORKER` (liga o caminho lento com modelo real, ver o topo)
-# e `TTS_LIVE_WORKER` (o default que este arquivo acabou de definir).
-_ENV_NEUTRO = ("TTS_CHAT_", "TTS_LIVE_", "TTS_TEST_")
+# e `TTS_LIVE_WORKER` (o default que este arquivo acabou de definir). Nenhum
+# `TTS_ROD_*` é interruptor: todos são configuração, então todos caem.
+_ENV_NEUTRO = ("TTS_CHAT_", "TTS_LIVE_", "TTS_TEST_", "TTS_ROD_")
 _ENV_INTERRUPTOR = ("TTS_TEST_WORKER", "TTS_LIVE_WORKER")
 _ENV_DO_DONO = {k: os.environ.pop(k) for k in sorted(os.environ)
                 if k.startswith(_ENV_NEUTRO) and k not in _ENV_INTERRUPTOR}

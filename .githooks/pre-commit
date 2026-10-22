@@ -26,8 +26,40 @@ unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OB
 # 'redefinition of UNUSED'). Exemplo vivo: tests/test_qa_gate176.py.
 "$PY" -m pyflakes app.py common.py tts_worker.py backends.py dsh_client.py smoke_sintese.py remote/*.py \
     live_turns.py smoke_live_turns.py live_pipeline.py smoke_worker_persist.py live_rnnoise.py \
+    smoke_eco_regra.py \
     tests/*.py client/mic_router.py || exit 1
+
+# #388: o caminho REAL do worker (modelo verdadeiro + lock de Metal) era só aviso.
+# Se o commit toca a área, ele entra na rodada; se não toca, ninguém paga o
+# runtime. `TTS_REAL_BASE` diz ao `test_worker_real_exigido` qual diff olhar (ele
+# fecha o caso de alguém rodar o pytest à mão, sem passar por aqui).
+#
+# DOIS diffs e não só `--cached`: este hook limpa `GIT_INDEX_FILE` (l.14, #257), e
+# num commit PARCIAL (`git commit -- tts_worker.py`) o índice que conta é o
+# temporário do próprio git — o `--cached` aqui lê o índice de verdade e NÃO vê o
+# arquivo. Medido na revisão de #388: com a área só suja, a detecção passava reto.
+# A união pega os dois casos; o excesso (árvore suja em arquivo alheio) é o lado
+# seguro, que só custa o runtime real.
+AREA_REAL='^(tts_worker\.py|live_pipeline\.py)$'
+export TTS_REAL_BASE=--cached
+if git diff --cached --name-only | grep -qE "$AREA_REAL" \
+    || git diff --name-only | grep -qE "$AREA_REAL"; then
+    export TTS_TEST_WORKER=1
+    echo "[hook] área do worker no commit: o caminho real roda junto"
+fi
 "$PY" -m pytest tests/ -q || exit 1
+
+# #387: suítes `.sh` do estágio RÁPIDO (sem navegador, auto-contido, ~19 s). Só
+# quando o diff toca área que elas podem regredir — no resto, um aviso basta. A
+# classificação dos três estágios (e por que `instancia` não roda aqui) está em
+# tests/SHELL-SUITES.md. `git diff --cached` porque é commit, não árvore.
+AREA_SH='^(static/|client/|app\.py|live_[a-z_]*\.py|tests/|\.githooks/|pytest\.ini)'
+if git diff --cached --name-only | grep -qE "$AREA_SH"; then
+    bash tests/run_sh.sh rapido || exit 1
+else
+    echo "[hook] suítes .sh: diff fora da área — estágio rápido pulado" \
+         "(rode: tests/run_sh.sh rapido)"
+fi
 
 # O pytest acima é o DEFAULT: o caminho LIGADO do worker TTS do Live (família
 # isolada, modelo real) fica FORA dele — os testes marcados `worker_real` (#166)
