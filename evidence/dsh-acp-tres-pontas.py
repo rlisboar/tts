@@ -21,7 +21,20 @@ sys.path.insert(0, str(RAIZ))
 import dsh_client  # noqa: E402
 from dsh_client import DshClient  # noqa: E402
 
-TRACE = pathlib.Path("/tmp/dsh4a-trace.jsonl")
+# O bridge grava um arquivo POR PROCESSO (`/tmp/dsh4a-trace.<pid>.jsonl`) desde a
+# #370: um trace único era compartilhado por todo dsh do host e crescia sem teto.
+TRACE_GLOB = "/tmp/dsh4a-trace.*.jsonl"
+
+
+def _trace_linhas() -> list:
+    """Linhas de trace de TODOS os processos, na ordem de escrita."""
+    linhas = []
+    for arq in sorted(pathlib.Path("/tmp").glob("dsh4a-trace.*.jsonl")):
+        try:
+            linhas += [ln for ln in arq.read_text().splitlines() if ln.strip()]
+        except OSError:
+            continue
+    return linhas
 LIGA = pathlib.Path("/tmp/dsh4a-trace.on")
 PROMPTS = {
     "curta": "Você é um assistente. Responda em 1 ou 2 frases. Agora: por que o ceu e azul?",
@@ -48,8 +61,8 @@ def maior(ts):
 
 def uma_rodada(i):
     LIGA.write_text("")
-    if TRACE.exists():
-        TRACE.unlink()
+    for velho in pathlib.Path("/tmp").glob("dsh4a-trace.*.jsonl"):
+        velho.unlink(missing_ok=True)
     chegada = []
 
     original = dsh_client.DshClient._rota_update
@@ -68,7 +81,7 @@ def uma_rodada(i):
         # o prewarm JÁ streama: o fd do filho aponta para o arquivo vivo, então
         # marco a contagem de linhas e ignoro tudo o que veio antes (não dá para
         # apagar o arquivo: o fd do filho continuaria apontando para o inode morto).
-        corte = len(TRACE.read_text().splitlines()) if TRACE.exists() else 0
+        corte = len(_trace_linhas())
         for tentativa in range(3):
             chegada.clear()
             t0 = time.time() * 1000.0
@@ -86,8 +99,7 @@ def uma_rodada(i):
         dsh_client.DshClient._rota_update = original
         c.close()
 
-    todas = ([json.loads(l) for l in TRACE.read_text().splitlines() if l.strip()]
-              if TRACE.exists() else [])
+    todas = [json.loads(l) for l in _trace_linhas()]
     linhas = todas[corte:]
     frames = [x["t"] for x in linhas if x["k"] == "frame" and x.get("tipo") == "text-delta"]
     emits = [x["t"] for x in linhas if x["k"] == "emit"]
