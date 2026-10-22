@@ -65,6 +65,12 @@ BACKEND_LIVE = (os.environ.get("TTS_CHAT_BACKEND_LIVE")
 ALVO_VALE = BACKEND_LIVE == "openai"
 falhas, avisos = [], []
 
+#: caminho do log do servidor desta rodada (o `sobe_servidor` preenche). É global
+#: porque a mensagem de falha e a limpeza acontecem em OUTRO escopo, onde `log`
+#: local não existe (`NameError: name 'log' is not defined`).
+LOG = None
+
+
 def ok(msg):
     print(f"  ✔ {msg}")
 
@@ -179,7 +185,8 @@ def sobe_servidor(porta, stub_porta):
            "TTS_CHAT_BACKEND_LIVE": BACKEND_LIVE,
            "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
            "TTS_CHAT_MODEL": "stub-live"}
-    log = pathlib.Path("/tmp") / f"live_ws_servidor_{porta}.log"
+    global LOG
+    log = LOG = pathlib.Path("/tmp") / f"live_ws_servidor_{porta}.log"
     proc = subprocess.Popen(
         [str(RAIZ / ".venv-mlx" / "bin" / "uvicorn"), "app:app",
          "--host", "127.0.0.1", "--port", str(porta)],
@@ -409,7 +416,7 @@ async def principal():
 
     print()
     if falhas:
-        print(f"✘ {len(falhas)} falha(s) (log do servidor: {log}):")
+        print(f"✘ {len(falhas)} falha(s) (log do servidor: {LOG}):")
         for f in falhas:
             print(f"   - {f}")
         sys.exit(1)
@@ -417,7 +424,7 @@ async def principal():
       + ("" if ALVO_VALE else f" (alvo de {ALVO_MS} ms é do cenário stub; Live em {BACKEND_LIVE!r})"))
     if avisos:
         print(f"({len(avisos)} aviso(s))")
-    try: log.unlink()                   # rodada verde não deixa lixo em /tmp
+    try: LOG.unlink()                   # rodada verde não deixa lixo em /tmp
     except Exception: pass
 
 asyncio.run(principal())
