@@ -39,8 +39,10 @@ COMPARTILHADOS = {
     "tts-studio.log": "log do app — um por máquina (run.sh/TTS-STUDIO.command)",
     "tts-tunnel.log": "log do túnel — um por máquina (tunnel.sh)",
     "dsh4a-trace.on": "handshake do probe com o app: a PRESENÇA do arquivo liga o trace",
-    "dsh4a-trace.jsonl": "trace escrito pelo app, lido pelo probe (doc-referenciado)",
+    "dsh4a-trace.": "trace do bridge: um arquivo POR PID (`...jsonl.<pid>`), presença do `.on` liga (sufixo dinâmico)",
     "dsh-home": "DSH_HOME (cache de sessões) — compartilhar é o ponto",
+    "x": "/tmp/x é caminho FALSO de modelo em fake (não precisa existir; só retorno de lambda)",
+    "x.sh": "caminho FALSO de script em fake (idem, não precisa existir)",
     "pytest-of": "diretório do próprio pytest (o sufixo -<user>/pytest-N é dele)",
     "bak": "receita do tests/limpa_bytecode.sh (só comentário, cópia manual)",
     "deploy-mini-requirements-preview": "nome-base: no script leva -$$; nos scripts de mordida é a forma quebrada DE PROPÓSITO",
@@ -54,8 +56,15 @@ COMPARTILHADOS = {
 # com sufixo por execução (`... or "/tmp/nome-antigo.log"`). `{porta}` é o sufixo
 # que o fallback do `hash_deep_link.sh` usa: a porta livre é escolhida POR
 # EXECUÇÃO (`porta_livre()`), então duas rodadas não escrevem no mesmo arquivo.
+# `{porta}`/`{SUF}` são o mesmo caso do lado PYTHON: a variável vem do shell e é
+# interpolada num f-string dentro do heredoc, então a linha do Python não tem o
+# `$` e o regex não a veria.
+# `process.pid`/`${process.pid}`/`<pid>`/`*`: nome POR PROCESSO escrito com
+# placeholder (o trace do app, #370, deixou de ser arquivo único justamente por
+# isso) — o sufixo não é literal, é gerado em runtime.
 TOKEN_POR_EXECUCAO = re.compile(
-    r"\$\$|\$RUN|\$\{RUN\}|\$SUF|\$T\b|XXXXXX|\{os\.getpid\(\)\}|\{porta\}|mktemp|os\.environ")
+    r"\$\$|\$RUN|\$\{RUN\}|\$SUF|\$T\b|XXXXXX|\{os\.getpid\(\)\}|\{porta\}|\{SUF\}|"
+    r"process\.pid|\$\{process\.pid\}|<pid>|\*|mktemp|os\.environ")
 LITERAL = re.compile(r"/tmp/([A-Za-z0-9._-]+)")
 
 
