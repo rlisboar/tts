@@ -204,8 +204,31 @@ def _pid_cmd(pid) -> str:
         return ""
 
 
+# Segredo em argumento de linha de comando: `--token X`, `--token=X`, `Bearer X`,
+# `?key=X`. A cmdline do pai é IMPRESSA no log de sinal, e esse log pode ir para
+# arquivo em /tmp (0644) — sem máscara, um `cloudflared --token …` deixa o token
+# em claro ali (#423, item 4 do gate #440).
+_RE_ARG_SEGREDO = re.compile(
+    r"(?i)((?:--?|/)(?:token|key|apikey|api[_-]key|secret|password|senha)\b\s*=?\s*)(\S+)")
+_RE_BEARER = re.compile(r"(?i)(bearer\s+)(\S+)")
+_RE_QS_SEGREDO = re.compile(r"(?i)([?&](?:key|token|apikey|secret)=)([^&\s]+)")
+
+
+def _mascara_segredo(v: str) -> str:
+    """`***` + os 4 últimos: dá para comparar dois logs sem expor o valor."""
+    return "***" + v[-4:] if len(v) > 8 else "***"
+
+
+def _mascara_cmd(cmd: str) -> str:
+    """Cmdline com os valores sensíveis mascarados (para LOG, não para decidir)."""
+    if not cmd:
+        return cmd
+    cmd = _RE_ARG_SEGREDO.sub(lambda m: m.group(1) + _mascara_segredo(m.group(2)), cmd)
+    cmd = _RE_BEARER.sub(lambda m: m.group(1) + _mascara_segredo(m.group(2)), cmd)
+    return _RE_QS_SEGREDO.sub(lambda m: m.group(1) + _mascara_segredo(m.group(2)), cmd)
+
+
 def _pid_vivo(pid) -> bool:
-    """True se o processo existe (sem depender do ps)."""
     try:
         pid = int(pid)
     except (TypeError, ValueError):
@@ -1047,8 +1070,10 @@ app = FastAPI(title="TTS-STUDIO", root_path=_BASE_PATH or "")
 def _assinatura_do_sinal(signum: int) -> None:
     try:
         ppid = os.getppid()
-        pai = _pid_cmd(ppid)[:200] or "?"
-        eu = _pid_cmd(os.getpid())[:160] or "?"
+        # mascaradas: o log pode ir para arquivo em /tmp e o pai pode carregar
+        # segredo em argumento (`cloudflared --token …`, gate #440 item 4)
+        pai = _mascara_cmd(_pid_cmd(ppid))[:200] or "?"
+        eu = _mascara_cmd(_pid_cmd(os.getpid()))[:160] or "?"
         print(f"[sinal] {signal.Signals(signum).name} — pai={ppid} ({pai}) · eu={eu}",
               file=sys.stderr, flush=True)
     except Exception:  # noqa: BLE001 — registro nunca pode impedir o encerramento
