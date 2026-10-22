@@ -414,8 +414,12 @@ def test_handler_abre_o_filtro_e_fecha_no_finally(monkeypatch):
             assert _espera_ate(lambda: fed), "o motor nunca viu o frame"
             assert fed == [limpo], "o frame que o motor viu não passou pelo filtro"
             assert bytes(sess["buffer"]) == limpo
-        # sair do `with` fecha o ws: o `finally` do handler tem de soltar o filtro
-        _espera_ate(lambda: criados[0].fechou)
+            # fecha o ws AINDA dentro do `with`: saindo do contexto o portal do
+            # TestClient pode encerrar antes de o `finally` do handler terminar o
+            # `await to_thread(fechar)` e o teste dava falso vermelho (~15 %)
+            ws.close()
+            assert _espera_ate(lambda: criados[0].fechou), \
+                "o `finally` do handler não chamou `fechar()`"
     finally:
         with app._live_lock:
             app._live_sessions.clear()
