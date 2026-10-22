@@ -1408,7 +1408,8 @@ def test_stt_fatia_em_janelas_com_sobreposicao(monkeypatch):
     assert len(vistos) == 3, vistos
     assert vistos[0] == 16000 * 30
     assert all(v <= 16000 * 30 for v in vistos)
-    assert r["text"].count("pedaço") == 3
+    # palavras repetidas na emenda (todas as janelas dizem "pedaço") saem uma vez
+    assert r["text"] == "pedaço"
     # o segundo segmento começa depois do primeiro (offset da janela aplicado)
     assert r["segments"][1]["start"] > r["segments"][0]["start"] + 20
 

@@ -52,6 +52,31 @@ def test_vinte_minutos_passam_e_acima_do_teto_da_413(tmp_path, monkeypatch):
     assert exc.value.status_code == 413
 
 
+def test_costura_das_janelas_nao_duplica_nem_come_palavra(monkeypatch):
+    """A sobreposição de 1 s transcreve a palavra da emenda: ela não pode repetir."""
+    import sys
+    import types
+
+    # cada janela termina/começa com a MESMA palavra ("emenda") no meio do texto
+    falas = iter(["primeira parte emenda", "emenda segunda parte", "emenda fim"])
+    vistos = []
+
+    def _transcreve(audio, **kw):
+        vistos.append(len(audio))
+        return {"text": next(falas), "language": "pt", "segments": []}
+
+    monkeypatch.setitem(sys.modules, "mlx_whisper",
+                        types.SimpleNamespace(transcribe=_transcreve))
+    audio = np.zeros(16000 * 65, dtype=np.float32)
+    r = app._transcreve_em_janelas(audio, None)
+    assert r["text"].lower().split().count("emenda") == 2, r["text"]
+    assert "primeira" in r["text"] and "fim" in r["text"], r["text"]
+
+
+def test_24_7_vira_palavra_falada():
+    assert common.sanitize_text("aberto 24/7") == "aberto vinte e quatro por sete."
+
+
 def test_cache_de_voz_remota_podado(monkeypatch):
     monkeypatch.setattr(app, "_REMOTE_VOICE_CACHE_MAX", 3)
     app._remote_voice_cache.clear()
@@ -94,7 +119,7 @@ def test_mic_sem_clip_duro_e_sem_degrau():
 
 
 def test_24_7_e_sn_falados_certo():
-    assert "24 por 7" in common.sanitize_text("aberto 24/7")
+    assert "vinte e quatro por sete" in common.sanitize_text("aberto 24/7")
     assert "sim ou não" in common.sanitize_text("S/N")
 
 

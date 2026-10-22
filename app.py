@@ -6680,6 +6680,7 @@ def _transcreve_em_janelas(audio, lang, sr: int = 16000):
     passo = int((JANELA_STT_S - SOBREPOSICAO_STT_S) * sr)
     janela = int(JANELA_STT_S * sr)
     textos, segmentos = [], []
+    anterior = ""
     for ini in range(0, max(1, len(audio)), passo):
         pedaco = audio[ini:ini + janela]
         if not len(pedaco):
@@ -6696,7 +6697,18 @@ def _transcreve_em_janelas(audio, lang, sr: int = 16000):
         )
         t = (r.get("text") or "").strip()
         if t:
-            textos.append(t)
+            # a sobreposição de 1 s transcreve de novo a palavra da emenda: tira o
+            # maior sufixo do anterior que casa com o prefixo deste (sem comer
+            # palavra que só exista de um lado)
+            if anterior:
+                p_ant, p_nov = anterior.split(), t.split()
+                for k in range(min(6, len(p_ant), len(p_nov)), 0, -1):
+                    if [w.lower() for w in p_ant[-k:]] == [w.lower() for w in p_nov[:k]]:
+                        t = " ".join(p_nov[k:]).strip()
+                        break
+            if t:
+                textos.append(t)
+                anterior = t
         for seg in (r.get("segments") or []):
             segmentos.append({**seg,
                               "start": float(seg.get("start", 0.0)) + ini / sr,

@@ -213,6 +213,21 @@ def motivo_anomalia(audio, sr: int, chunk: str, speed: float = 1.0) -> str:
     return ""
 
 
+_UNIDADES = ("zero", "um", "dois", "três", "quatro", "cinco", "seis", "sete",
+             "oito", "nove", "dez", "onze", "doze", "treze", "quatorze", "quinze",
+             "dezesseis", "dezessete", "dezoito", "dezenove")
+_DEZENAS = ("", "", "vinte", "trinta", "quarenta", "cinquenta", "sessenta",
+            "setenta", "oitenta", "noventa")
+
+
+def _numero_em_palavras(n: int) -> str:
+    """0..99 em pt-BR, para a barra numérica virar fala natural."""
+    if n < 20:
+        return _UNIDADES[n]
+    dezena, unidade = divmod(n, 10)
+    return _DEZENAS[dezena] + (f" e {_UNIDADES[unidade]}" if unidade else "")
+
+
 def sanitize_text(text: str) -> str:
     """Limpeza leve para o tokenizer multilíngue (Qwen3) do OmniVoice.
 
@@ -224,8 +239,11 @@ def sanitize_text(text: str) -> str:
     text = unicodedata.normalize("NFC", text)
     # "S/N" tem leitura própria e não é "ou" genérico
     text = re.sub(r"\bS\s*/\s*N\b", "sim ou não", text)
-    # barra entre DÍGITOS é "por" ("24/7", "3/4"), não "ou" (#329)
-    text = re.sub(r"(\d)\s*/\s*(\d)", r"\1 por \2", text)
+    # barra entre DÍGITOS é "por" e os números viram PALAVRAS ("24/7" falado
+    # "vinte e quatro por sete"), não dígito lido a esmo (#329)
+    text = re.sub(r"(?<![\d.,])(\d{1,2})\s*/\s*(\d{1,2})(?![\d.,])",
+                  lambda m: f"{_numero_em_palavras(int(m.group(1)))} por "
+                            f"{_numero_em_palavras(int(m.group(2)))}", text)
     # símbolos com leitura natural em pt
     text = (text.replace("%", " por cento").replace("&", " e ")
                 .replace("+", " mais ").replace("°", " graus ")
