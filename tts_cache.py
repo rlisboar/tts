@@ -33,6 +33,10 @@ _CHAVES_OMNI = (
     "audio_chunk_threshold", "temperature", "top_p", "top_k", "repetition_penalty",
     "max_tokens", "exaggeration", "cfg_weight", "min_p", "chunk_length",
     "speaker", "kokoro_voice", "pocket_voice", "voxtral_voice",
+    # EQ/ganho são aplicados DEPOIS da geração, mas mudam o áudio: o app os põe
+    # no `omni` da chave (`_cache_chave`) e sem eles aqui o hash os descartava —
+    # mexer no equalizador servia áudio no nível antigo (achado do gate #328).
+    "audio_eq_low_db", "audio_eq_mid_db", "audio_eq_high_db", "audio_gain_db",
 )
 
 
