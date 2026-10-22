@@ -46,6 +46,9 @@ _PRIME_TETO_S = 0.6
 _ESPERA_S = 0.04
 
 _avisou: set[str] = set()
+# stdin já fechado pelo `_mata` chega como ValueError ("I/O operation on
+# closed file") quando o `fechar()` corre junto de uma escrita — não é OSError.
+_ERRO_PIPE = (BrokenPipeError, OSError, ValueError)
 _avisou_lock = threading.Lock()
 
 
@@ -107,6 +110,9 @@ class RnnoiseAoVivo:
         self._pronto = threading.Event()
         self._ok = False
         self._vivo = False
+        # `fechar()` pode correr com `abrir()` (a sessão cai no handshake). A flag
+        # fecha a janela: ver `_abrir`/`processa`/`fechar` (#374).
+        self._fechado = False
         self.faltas = 0          # bytes completados com zero (não deu tempo)
         self._leitor: threading.Thread | None = None
         self._erros: threading.Thread | None = None
@@ -144,10 +150,22 @@ class RnnoiseAoVivo:
         except OSError as exc:
             _avisa(f"rnnoise não subiu ({exc}) — Live segue sem o filtro")
             return False
-        self._proc = proc
-        self._vivo = True
-        self._leitor = threading.Thread(target=self._ler, name="rnnoise-stdout", daemon=True)
-        self._erros = threading.Thread(target=self._ler_err, name="rnnoise-stderr", daemon=True)
+        # A ATRIBUIÇÃO é o ponto de encontro com o `fechar()` (#374/F1). Fora do
+        # `_lock`, um `fechar` que caísse entre o `Popen` e esta linha lia `_proc`
+        # como None, não matava nada e o ffmpeg ficava vivo para sempre, com o
+        # objeto já fechado (só morria com o app). Sob o lock o `_fechado` é
+        # rechecado: ou ele já levou o `_proc` embora — e nós matamos ESTE —, ou
+        # ele acha o nosso aqui e mata.
+        with self._lock:
+            if self._fechado:
+                self._mata(proc)
+                return False
+            self._proc = proc
+            self._vivo = True
+        self._leitor = threading.Thread(target=self._ler, args=(proc,),
+                                        name="rnnoise-stdout", daemon=True)
+        self._erros = threading.Thread(target=self._ler_err, args=(proc,),
+                                       name="rnnoise-stderr", daemon=True)
         self._leitor.start()
         self._erros.start()
         # o modelo é lido no start; se o caminho ou o filtro forem inválidos,
@@ -158,7 +176,7 @@ class RnnoiseAoVivo:
             return False
         try:
             self._escreve(proc, b"\x00" * _bytes_ms(_PRIME_MS))
-        except (BrokenPipeError, OSError) as exc:
+        except _ERRO_PIPE as exc:
             self._falhou_abrir(proc, extra=str(exc))
             return False
         if not self._garantir_reserva():
@@ -167,7 +185,16 @@ class RnnoiseAoVivo:
         if proc.poll() is not None:
             self._falhou_abrir(proc)
             return False
-        self._ok = True
+        # a MESMA janela no aquecimento (prime + reserva): o `fechar()` pode ter
+        # caído aqui dentro. Sem esta rechecagem o `abrir` terminava em
+        # `_ok = True` num objeto já fechado e `ativo` mentia.
+        with self._lock:
+            if self._fechado:
+                self._mata(proc)
+                self._proc = None
+                self._vivo = False
+                return False
+            self._ok = True
         return True
 
     def _escreve(self, proc: subprocess.Popen, pcm: bytes) -> None:
@@ -208,7 +235,7 @@ class RnnoiseAoVivo:
         if tem < self._reserva and proc is not None and proc.poll() is None:
             try:
                 self._escreve(proc, b"\x00" * (self._reserva - tem + self._reserva))
-            except (BrokenPipeError, OSError):
+            except _ERRO_PIPE:
                 return False
             self._drenar_ate_estancar()
         if proc is None or proc.poll() is not None:
@@ -222,9 +249,8 @@ class RnnoiseAoVivo:
                 del self._out[:sobra]
         return True
 
-    def _ler(self) -> None:
-        proc = self._proc
-        if proc is None or proc.stdout is None:
+    def _ler(self, proc: subprocess.Popen) -> None:
+        if proc.stdout is None:
             return
         try:
             while True:
@@ -240,9 +266,8 @@ class RnnoiseAoVivo:
         with self._cv:
             self._cv.notify_all()
 
-    def _ler_err(self) -> None:
-        proc = self._proc
-        if proc is None or proc.stderr is None:
+    def _ler_err(self, proc: subprocess.Popen) -> None:
+        if proc.stderr is None:
             return
         try:
             while True:
@@ -264,13 +289,15 @@ class RnnoiseAoVivo:
         if not self._ok or len(cru) < 2 or len(cru) % 2:
             return cru
         with self._lock:
+            if self._fechado:
+                return cru
             proc = self._proc
             if proc is None or proc.poll() is not None or proc.stdin is None:
                 self._caiu()
                 return cru
             try:
                 self._escreve(proc, cru)
-            except (BrokenPipeError, OSError):
+            except _ERRO_PIPE:
                 self._caiu()
                 return cru
             return self._tira(len(cru))
@@ -302,7 +329,9 @@ class RnnoiseAoVivo:
         self._ok = False
 
     def fechar(self) -> None:
+        """Idempotente e seguro contra um `abrir()` em andamento (ver `_abrir`)."""
         with self._lock:
+            self._fechado = True
             proc = self._proc
             self._proc = None
             self._ok = False

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from types import SimpleNamespace
 
@@ -235,3 +236,233 @@ def test_tamanho_errado_cai_para_o_cru(monkeypatch):
     finally:
         with app._live_lock:
             app._live_sessions.clear()
+
+
+# ---------------------------------------------------------------------------
+# #374 — regressões do gate #281
+# ---------------------------------------------------------------------------
+
+class _PopenEspiao(live_rnnoise.subprocess.Popen):
+    """Popen que segura o `__init__` até o teste liberar.
+
+    Existe para deixar o teste DENTRO da janela do #374/F1: o processo já
+    nasceu e a linha `self._proc = proc` ainda não rodou. No código antigo a
+    atribuição era fora do `_lock`, então o `fechar()` desta janela lia
+    `_proc` como None, não matava nada, e o ffmpeg ficava vivo para sempre com
+    o objeto fechado.
+    """
+
+    instancias: list = []
+    criado = threading.Event()
+    libera = threading.Event()
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        _PopenEspiao.instancias.append(self)
+        _PopenEspiao.criado.set()
+        _PopenEspiao.libera.wait(10)
+
+    def poll(self, *a, **kw):
+        # stdin já fechado com o processo ainda não recolhido é EXATAMENTE o que o
+        # `_mata` cria entre o `close()` e o `wait()`: mentir `None` aqui deixa o
+        # `_abrir` tentar escrever no pipe morto de forma determinística.
+        if self.stdin is not None and self.stdin.closed:
+            return None
+        return super().poll(*a, **kw)
+
+
+def test_fechar_durante_abrir_nao_vaza_ffmpeg(monkeypatch):
+    """`fechar()` no meio do `abrir()`: nenhum processo sobrevive e `ativo` é False."""
+    assert live_rnnoise.MODELO_PADRAO.is_file(), "sh.rnnn tem de estar no repo"
+    _PopenEspiao.instancias.clear()
+    _PopenEspiao.criado.clear()
+    _PopenEspiao.libera.clear()
+    monkeypatch.setattr(live_rnnoise.subprocess, "Popen", _PopenEspiao)
+    live_rnnoise._avisou.clear()
+
+    ns = RnnoiseAoVivo()
+    resultado: list = []
+    erro: list = []
+
+    def _alvo():
+        # exceção em thread não derruba o teste: coleta para reprovar aqui.
+        # Fechar no meio da abertura é caminho NORMAL (o cliente manda `Parar`),
+        # então o `abrir` não pode terminar em traceback.
+        try:
+            resultado.append(ns.abrir())
+        except BaseException as exc:      # noqa: BLE001
+            erro.append(exc)
+
+    t = threading.Thread(target=_alvo, daemon=True)
+    try:
+        t.start()
+        assert _PopenEspiao.criado.wait(10), "o ffmpeg nem chegou a nascer"
+        # janela exata do bug: processo vivo, `_proc` ainda None
+        assert ns._proc is None, "o teste perdeu a janela (Popen já atribuiu)"
+        ns.fechar()
+    finally:
+        _PopenEspiao.libera.set()
+        t.join(15)
+
+    assert erro == [], f"`abrir` estourou depois do `fechar`: {erro!r}"
+    assert resultado == [False], "o `abrir` não pode se declarar bem-sucedido depois do `fechar`"
+    assert len(_PopenEspiao.instancias) == 1
+    proc = _PopenEspiao.instancias[0]
+    try:
+        proc.wait(timeout=5)
+    except Exception:                    # noqa: BLE001 — morre abaixo com mensagem
+        pass
+    # `returncode` (não `poll`): o espião mente `None` depois que o stdin fecha
+    assert proc.returncode is not None, "ffmpeg vazado: sobreviveu ao `fechar()`"
+    assert ns.ativo is False
+    assert ns._proc is None
+    # o `abrir` não pode montar o filtro depois de fechado: com a rechecagem ele
+    # mata e sai ANTES de criar as threads leitoras (é o que o gate mediu como
+    # "2 threads daemon segurando o objeto")
+    assert ns._leitor is None and ns._erros is None, "montou o filtro já fechado"
+    # já fechado, o filtro não escreve em pipe morto: devolve o cru
+    cru = b"\x01\x00" * 160
+    assert ns.processa(cru) == cru
+
+
+class _EspiaoFiltro:
+    """Filtro falso que registra o encaixe: quantos frames e quantos `fechar()`."""
+
+    def __init__(self):
+        self.frames = 0
+        self.fechou = 0
+
+    def processa(self, pcm):
+        self.frames += 1
+        return b"\x22\x11" * (len(pcm) // 2)
+
+    def fechar(self):
+        self.fechou += 1
+
+
+def _motor_falso(fed: list):
+    class _Eng:
+        def __init__(self, config=None):
+            pass
+
+        def feed(self, pcm):
+            fed.append(bytes(pcm))
+            return []
+
+        def flush(self):
+            return []
+
+        def cancel(self):
+            return {}
+
+        def set_speaking(self, ligado, nivel_dbfs=None, duracao_ms=None):
+            return None
+
+    return SimpleNamespace(TurnEngine=_Eng, Config=lambda **k: k)
+
+
+def test_handler_abre_o_filtro_e_fecha_no_finally(monkeypatch):
+    """O encaixe do handler: o frame passa pelo filtro E o `fechar` roda ao cair.
+
+    Os testes acima injetam `sess["rnnoise"]` na mão e nunca passam por
+    `_live_rnnoise_novo` (app.py:7167) nem pelo `finally` (app.py:7185): apagar
+    a chamada, ou tirar o `fechar` do `finally`, mantinha a suíte verde (#374/F2).
+    """
+    import app
+    from fastapi.testclient import TestClient
+
+    fed: list[bytes] = []
+    criados: list[_EspiaoFiltro] = []
+
+    def _fabrica():
+        f = _EspiaoFiltro()
+        criados.append(f)
+        return f
+
+    monkeypatch.setattr(app, "_live_rnnoise_novo", _fabrica)
+    monkeypatch.setattr(app, "_live_mod", None)
+    monkeypatch.setattr(app, "_live_turns_mod", _motor_falso(fed))
+    monkeypatch.setattr(app, "_LIVE_STATS_MS", 0)
+    with app._live_lock:
+        app._live_sessions.clear()
+    cru = b"\x00\x01" * 1600
+    limpo = b"\x22\x11" * 1600
+    try:
+        cliente = TestClient(app.app, raise_server_exceptions=False,
+                             client=("127.0.0.1", 50000))
+        with cliente.websocket_connect("/api/live/ws") as ws:
+            ws.send_json({"type": "setup"})
+            assert ws.receive_json()["type"] == "ready"
+            sess = list(app._live_sessions.values())[0]
+            assert isinstance(sess.get("rnnoise"), _EspiaoFiltro), \
+                "o handler não passou por `_live_rnnoise_novo`"
+            ws.send_bytes(cru)
+            for _ in range(40):
+                if fed:
+                    break
+                time.sleep(0.05)
+            assert fed == [limpo], "o frame que o motor viu não passou pelo filtro"
+            assert bytes(sess["buffer"]) == limpo
+        # sair do `with` fecha o ws: o `finally` do handler tem de soltar o filtro
+        for _ in range(40):
+            if criados[0].fechou:
+                break
+            time.sleep(0.05)
+    finally:
+        with app._live_lock:
+            app._live_sessions.clear()
+
+    assert criados[0].frames >= 1
+    assert criados[0].fechou == 1, "o `finally` do handler não chamou `fechar()`"
+
+
+def test_desligado_nao_cria_filtro(monkeypatch):
+    """`TTS_LIVE_RNNOISE=0` desliga de verdade: nada é criado para a sessão."""
+    import app
+
+    assert app._live_rnnoise_mod is not None, "sem o módulo o teste não prova nada"
+    monkeypatch.setenv("TTS_LIVE_RNNOISE", "0")
+    assert app._live_rnnoise_novo() is None
+
+
+def test_fechar_no_aquecimento_nao_estoura_a_escrita(monkeypatch):
+    """`fechar()` depois da atribuição, com o processo ainda não recolhido.
+
+    É a segunda janela do #374/F1: a 1ª rechecagem já passou, `_proc` está posto e
+    o `_mata` já fechou o stdin — o `poll()` ainda devolve None, então o `abrir`
+    tenta escrever o prime num pipe morto. O fechamento devolve `ValueError`
+    ("I/O operation on closed file") e não `OSError`; sem tratá-lo, uma sessão que
+    cai logo após o `ready` deixava traceback em thread.
+    """
+    _PopenEspiao.instancias.clear()
+    _PopenEspiao.criado.clear()
+    _PopenEspiao.libera.set()
+    monkeypatch.setattr(live_rnnoise.subprocess, "Popen", _PopenEspiao)
+    live_rnnoise._avisou.clear()
+
+    ns = RnnoiseAoVivo()
+    resultado: list = []
+    erro: list = []
+
+    def _alvo():
+        try:
+            resultado.append(ns.abrir())
+        except BaseException as exc:      # noqa: BLE001
+            erro.append(exc)
+
+    t = threading.Thread(target=_alvo, daemon=True)
+    try:
+        t.start()
+        for _ in range(200):              # `_proc` posto = 1ª rechecagem passada
+            if ns._proc is not None or not t.is_alive():
+                break
+            time.sleep(0.005)
+        assert ns._proc is not None, "o `abrir` não chegou a atribuir o processo"
+        ns.fechar()
+    finally:
+        t.join(15)
+
+    assert erro == [], f"escrita no pipe morto estourou: {erro!r}"
+    assert resultado == [False]
+    assert ns.ativo is False
+    assert ns._proc is None
