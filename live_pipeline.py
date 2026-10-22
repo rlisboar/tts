@@ -989,27 +989,41 @@ def _janela_ate(alvo: list[str], dito: list[str], divergencias: int) -> bool:
     return False
 
 
+# Tolerância do casamento contíguo (#301). `minimo` de acerto vira `1 - minimo` de
+# divergência por palavra, com TETO fixo: acima de 2 trocas a "janela" já não é um
+# trecho literal do que está tocando e passaria a aceitar frase humana.
+_ECO_DIVERGENCIA = 1.0 - 0.6          # 40 % de palavras diferentes, no máximo
+_ECO_DIVERGENCIA_TETO = 2             # 2 palavras, sempre
+_ECO_MIN_PALAVRAS = 2                 # 1 palavra nunca é eco
+
+
 def _parece_eco(transcript: str, ultimo_assistente: str, minimo: float = 0.6) -> bool:
     """True se o transcript é a fala do PRÓPRIO assistente voltando pelo mic.
 
     O eco é um trecho LITERAL do que está tocando: mesma ordem, quase sem troca.
-    `_normaliza` + janela contígua com `minimo` de acerto (`minimo=0.6` → até 40 %
-    de divergência, com teto de 2 palavras para janela curta não virar borrão).
-    Antes disso, três descartes: transcript de 1 palavra (o eco nunca é de 1 —
-    "Sim." é humano), transcript MAIOR que a referência (o eco não fala mais do que
-    o assistente) e marcador de humano (`_marcador_de_humano`).
+    `_normaliza` + janela contígua com `minimo` de acerto (`minimo=0.6` → até
+    `_ECO_DIVERGENCIA` = 40 % de divergência, com teto de `_ECO_DIVERGENCIA_TETO`).
+    Antes disso, três descartes: transcript de `_ECO_MIN_PALAVRAS` (o eco nunca é de
+    1 — "Sim." é humano), transcript MAIOR que a referência (o eco não fala mais do
+    que o assistente) e marcador de humano (`_marcador_de_humano`, que só vale
+    contra referência sem o mesmo marcador).
 
     Medido em `smoke_eco_regra.py`: 0 falso-descarte nas falas humanas e eco puro
-    preservado. Sem AEC não dá para separar por energia."""
+    preservado. **Limite conhecido:** eco que o Whisper fecha com um `?` que o
+    assistente não falou é lido como humano (ex.: "o prazo de entrega é sexta-feira?"
+    virando resposta à própria voz) — exigir palavra interrogativa junto do `?`
+    devolveria metade dos falsos-descartes, então o custo fica. Sem AEC não dá para
+    separar por energia."""
     alvo, dito = _normaliza(ultimo_assistente), _normaliza(transcript)
-    if len(dito) < 2 or len(alvo) < 2:
+    if len(dito) < _ECO_MIN_PALAVRAS or len(alvo) < _ECO_MIN_PALAVRAS:
         return False
     if len(dito) > len(alvo) + 1:          # o humano falou mais: não é eco
         return False
     if _marcador_de_humano(transcript, dito, ultimo_assistente, alvo):
         return False
-    divergencias = min(2, int(round(len(dito) * (1.0 - minimo))))
-    return _janela_ate(alvo, dito, divergencias)
+    fracao = (1.0 - minimo) if minimo else _ECO_DIVERGENCIA
+    return _janela_ate(alvo, dito,
+                       min(_ECO_DIVERGENCIA_TETO, int(round(len(dito) * fracao))))
 
 
 def _ms(t0: float) -> int:

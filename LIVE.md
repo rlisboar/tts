@@ -583,18 +583,22 @@ outro" viravam eco e o turno morria calado). Hoje, nesta ordem:
    ou palavra de pergunta/negação/contraste que a referência **não** disse
    (`não`, `mas`, `cadê`, `quando`, `onde`, `outro`…). Marcador que o próprio
    assistente já falou não conta — senão "então"/"e" virariam passe livre;
-4. fora disso, exige janela **contígua** com até 40 % de divergência
-   (`minimo`), com teto de 2 palavras: é onde cabe o erro do Whisper, e é o que
-   impede o casamento solto.
+4. fora disso, exige janela **contígua** com até `_ECO_DIVERGENCIA` (40 %) de
+   divergência, com teto de `_ECO_DIVERGENCIA_TETO` (2 palavras): é onde cabe o
+   erro do Whisper, e é o que impede o casamento solto.
 
 **Tunáveis**: `_parece_eco(texto, referencia, minimo=0.6)` (o `minimo` é o acerto
-mínimo da janela contígua). O bench é `smoke_eco_regra.py` — 29 falas humanas que
-reusam o vocabulário e 31 ecos literais, com veredito: **0 falso-descarte** e eco
-puro ≥ 92 %. Medido na regra atual: 0/29 e 96,8 % (30/31), contra a matriz velha
-de 92/96. Limites conhecidos, os dois honestos: repetição de 2 palavras que
-existam no texto ("dia está") continua virando eco; e eco que o Whisper fecha com
-um `?` que o assistente não falou é lido como humano (custa uma resposta a mais,
-não uma fala perdida).
+mínimo da janela contígua). O bench é `smoke_eco_regra.py` — **versionado**, é o
+instrumento do gate — com 29 falas humanas que reusam o vocabulário e 31 ecos
+literais, e veredito: **0 falso-descarte** e eco puro **≥ 95 %** (o piso do gate;
+o script reprova abaixo de 92 % e o piso de aceite é 95). Medido na regra atual: 0/29 e 96,8 % (30/31), contra a matriz velha
+de 92/96. Limites conhecidos, os dois honestos: repetição de `_ECO_MIN_PALAVRAS`
+palavras que existam no texto ("dia está") continua virando eco; e eco que o
+Whisper fecha com um `?` que o assistente não falou é lido como humano — o caso
+medido da matriz é **"o prazo de entrega é sexta-feira?"**, que vira resposta à
+própria voz. Custa uma resposta a mais, nunca uma fala perdida; exigir palavra
+interrogativa junto do `?` devolveria metade dos falsos-descartes, por isso o custo
+fica.
 
 ### TTS do turno: in-process — exceto família isolada, que usa worker PERSISTENTE
 

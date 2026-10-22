@@ -15,7 +15,8 @@ Corpora:
     parecida no lugar da exata, trecho com o "?" que o assistente fez).
 
 Critério de saída (do aceite do gate): **0 falso-descarte** nas falas humanas e
-**≥92 %** do eco puro ainda descartado.
+**≥95 %** do eco puro ainda descartado. Este arquivo é VERSIONADO: é o instrumento
+do gate (#290e2c8d) — sem ele a matriz não é reproduzível.
 
 Uso:
     ./.venv-mlx/bin/python smoke_eco_regra.py            # tabela + veredito
@@ -33,7 +34,7 @@ sys.path.insert(0, str(RAIZ))
 import live_pipeline as lp  # noqa: E402  (depois do sys.path)
 
 MINIMO = 0.6                     # default de `_parece_eco`
-ECO_MINIMO_OK = 0.92             # aceite do gate: eco puro segue descartado
+ECO_MINIMO_OK = 0.95             # piso do gate (era 92): 96,8 % hoje, 0 falso-descarte
 
 # Três referências: resposta curta, média e longa (o dsh entrega parágrafo).
 REFS = {
@@ -144,7 +145,7 @@ def main() -> int:
     taxa = acertos_eco / len(ECO) if ECO else 0.0
     print(f"\nfalso-descarte: {len(fp)}/{len(HUMANO)}  (aceite: 0)")
     print(f"eco descartado: {acertos_eco}/{len(ECO)} = {taxa:.1%}  "
-          f"(aceite: >= {ECO_MINIMO_OK:.0%})")
+          f"(piso do gate: >= {ECO_MINIMO_OK:.0%})")
     if fp:
         print("\nfalsos-descartes:")
         for t in fp:
