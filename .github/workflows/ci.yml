@@ -111,8 +111,8 @@ jobs:
           rm -rf /tmp/yvenv; /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 -m venv --without-pip /tmp/yvenv && echo "VENV /tmp (3.12) OK" || echo "VENV /tmp (3.12) FALHOU"
       - name: venv do CI (fora de Documents)
         run: |
-          V="$HOME/ci-venv"
-          PY=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
+          V="/tmp/ci-venv"      # /tmp: fora de Documents (TCC) e fora do HOME (que também travou)
+          PY=/usr/bin/python3
           [ -x "$V/bin/python" ] || "$PY" -m venv "$V"
           echo "$V/bin" >> "$GITHUB_PATH"
           "$V/bin/python" -V
