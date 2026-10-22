@@ -27,10 +27,13 @@ set -uo pipefail
 
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RAIZ="$(dirname "$AQUI")"
-TETO="${TETO_S:-240}"          # segundos por suíte
+# 90 s: o hook HERDA este teto, e 240 s por suíte pendurada prendiam o commit por
+# minutos. Suíte que passa de 90 s de verdade (as de Live ficam perto de 40 s) usa
+# `TETO_S=…` para si; pendurada agora falha rápido em vez de segurar o gate.
+TETO="${TETO_S:-90}"           # segundos por suíte
 J=3
 
-RAPIDO=(limpa_bytecode serial_lock live_lock_freeze)
+RAPIDO=(limpa_bytecode pendurada_probe serial_lock live_lock_freeze)
 # Estágio é por DEPENDÊNCIA, não por "tem navegador": quem sobe o PRÓPRIO servidor
 # é auto-contido e fica em `navegador` — mandá-lo para `instancia` o tiraria de
 # quem não tem app no ar. `admin_ui_flow` e `cfg_sujo_e_erros` passaram a subir o
@@ -103,7 +106,16 @@ for nome in "${ALVOS[@]}"; do
         # chamador estava.
         cd "$RAIZ" || exit 1
         inicio=$(date +%s)
-        BASE="${BASE:-http://127.0.0.1:7860}" _com_teto bash "$AQUI/$nome.sh" >"$DIR/$nome.log" 2>&1
+        # O estágio pressupõe app DE PÉ; mas duas suítes recusam o `:7860` (para
+        # não escrever no app/arquivo do dono) e ficavam vermelhas por contrato
+        # aqui. Quando o alvo É o 7860, o runner liga o escape delas — a escolha é
+        # do PM: o estágio assume a escrita em troca de medir o app real.
+        # `VAR=x $lista cmd` NÃO funciona: o shell decide o que é atribuição ANTES
+        # de expandir, então `ADMIN_UI_NO_DONO=1` virava nome de comando (rc=127).
+        # Exportar dentro do subshell resolve e não vaza para as outras suítes.
+        export BASE="${BASE:-http://127.0.0.1:7860}"
+        case "$BASE" in *:7860*) export ADMIN_UI_NO_DONO=1 NO_DONO=1 ;; esac
+        _com_teto bash "$AQUI/$nome.sh" >"$DIR/$nome.log" 2>&1
         rc=$?
         echo "$rc $nome $(( $(date +%s) - inicio ))"
     ) >>"$DIR/resultado" &
