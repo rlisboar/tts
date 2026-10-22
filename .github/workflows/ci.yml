@@ -1,0 +1,154 @@
+# GATE do TTS-STUDIO no push/PR — o mesmo gate do hook, agora fora da máquina do
+# autor (o hook local é burlável com `--no-verify` e não existe em máquina limpa).
+#
+# Ordens e porquês:
+#   • `estatica` PRIMEIRO e sozinha: é o estágio que o hook roda antes de tudo e o
+#     que pega o defeito mais barato (F401/F811). Roda em segundos e é ela que
+#     precisa ficar vermelha em <2 min (#293).
+#   • `testes` só começa com a estática verde (`needs:`): suíte vermelha por import
+#     morto é desperdício de runner.
+#   • A lista do `pyflakes` NÃO é copiada aqui: `tests/_pyflakes_gate.py` a deriva
+#     do próprio `.githooks/pre-commit`, e `tests/test_hook_pyflakes.py` (no job
+#     `testes`) tem a contraprova de que a derivação não virou no-op. Lista
+#     duplicada em YAML envelhece em silêncio; derivada, não.
+#   • Hermético de propósito: sem `secrets`, sem rede para fora além do PyPI, sem
+#     modelo. O caminho com modelo (`worker_real`) continua fora, como no default
+#     do `pytest` — o resumo do run avisa que ele não correu.
+#
+# Custo/limite medidos e o porquê de cada escolha estão na #293 e no README
+# (Desenvolvimento). Repo é público, então runner hospedado é gratuito e sem teto
+# de minutos — o limite real é TEMPO e AMBIENTE:
+#   • `estatica` e `suites-sh` são hospedados (`ubuntu-latest`): python + shell,
+#     curso puro, nenhum import do app;
+#   • `testes` é self-hosted porque o hospedado foi medido e não aguenta (36
+#     falhas em 642 passes, ambiente e não código). `torch` sai do índice CPU: no
+#     Linux o wheel padrão é o CUDA (~2,4 GB) e aqui não há GPU. Rodar a bateria
+#     fora do macOS já rendeu um defeito de portabilidade real: `_serial_mtime`
+#     (`tests/serial.sh`) usava `stat -f || stat -c` e no GNU o `stat -f` não falha
+#     (imprime stats de filesystem) — o fallback nunca rodava e nenhum lock órfão
+#     era roubado; corrigido na #293 (é o que deixa `suites-sh` rodar no Linux).
+name: gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  estatica:
+    name: pyflakes (lista do hook)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Só o ruff: o estágio não importa nada do app (nem `pytest`, cujo
+      # `conftest.py` puxaria fastapi/torch/MLX e mataria os "segundos" dele). A
+      # config (conjunto `F` + `E9`, excludes) mora no `pyproject.toml` (#378).
+      - name: instalar ruff
+        run: python -m pip install --quiet --disable-pip-version-check ruff
+      # `tests/_pyflakes_gate.py` deriva o comando do hook (mesma lista, mesmo
+      # intérprete) e roda a contraprova de que ele não virou no-op está no
+      # `tests/test_hook_pyflakes.py`, que o job `testes` cobre.
+      - name: pyflakes na lista do hook
+        run: python tests/_pyflakes_gate.py
+      # O workflow é dado que ninguém executa antes do push: um `on:` que sumiu ou
+      # um label errado só aparecem depois. As labels próprias (`tts-mini`) estão
+      # em `.github/actionlint.yaml`, lido pelo tool.
+      - name: actionlint (o próprio workflow)
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/w" -w /w rhysd/actionlint:latest .github/workflows/ci.yml
+
+  testes:
+    name: pytest hermético (sem modelo)
+    # SELF-HOSTED porque o hospedado foi MEDIDO e não aguenta a suíte (#293): no
+    # `ubuntu-latest` amd64 o venv instala (com `mlx[cpu]`) e o `app` importa, mas a
+    # suíte dá **36 falhas / 642 passes** — MLX/onnx sem Metal, `ps`/pid do
+    # `dsh_client`/`live_worker`, ffmpeg do webm e convenções de `/tmp` do macOS.
+    # Vermelho de ambiente em todo PR não é gate, é ruído.
+    #
+    # O runner é o do mini (`./remote/ci_runner.sh install`), com `ProcessType=
+    # Background` + `Nice` para não disputar o `:7860` — ver `remote/DEPLOY.md` §7.
+    # ENQUANTO o runner não estiver instalado este job fica ENFILEIRADO (não
+    # vermelho); instale-o antes de tornar o check obrigatório.
+    runs-on: [self-hosted, tts-mini]
+    timeout-minutes: 30
+    needs: estatica
+    env:
+      TTS_TEST_WORKER: '0'      # '0' continua RODANDO (só string vazia skippa)
+      # sem rede no Hub: o HEAD-check do whisper não pode virar espera de rede
+      # em PR (nem depender do hub estar de pé) — #166 documenta o efeito
+      HF_HUB_OFFLINE: '1'
+      # #388: base do diff de `test_worker_real_exigido`. Se o PR toca
+      # tts_worker.py/live_pipeline.py, o caminho real passa a ser EXIGIDO —
+      # antes era só um aviso no resumo. Por isso o checkout abaixo usa
+      # fetch-depth 0 (a base precisa de histórico).
+      TTS_REAL_BASE: origin/${{ github.base_ref || 'main' }}...HEAD
+      PYTHONDONTWRITEBYTECODE: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements.lock
+      - name: venv
+        # torch do índice CPU primeiro: com o wheel CUDA o job paga ~2,4 GB e
+        # minutos por algo que a suíte não usa.
+        run: |
+          python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install --quiet -r requirements.txt pytest-timeout pytest-rerunfailures
+      - name: MLX no Linux
+        # O wheel manylinux do `mlx` NÃO traz a `libmlx.so` — só o extra `[cpu]`
+        # traz. Medido: sem ele `import mlx.core` morre com "libmlx.so: cannot
+        # open shared object file" e qualquer teste que importe o app cai junto.
+        # No macOS (runner self-hosted) o extra é inócuo; fica aqui para o job
+        # continuar válido se um dia voltar para linux.
+        run: python -m pip install --quiet "mlx[cpu]"
+      - name: pytest
+        # `--timeout`: um teste pendurado falha em 3 min em vez de comer o job.
+        # Método DEFAULT (SIGALRM), não `--timeout-method=thread`: o `thread` só
+        # reporta o stack e deixa a thread pendurada viva — medido aqui, o teste
+        # reexecutado pelo `--reruns` travava junto com a thread velha e o run
+        # ficava parado. `--reruns 1`: a suíte tem asserção por RELÓGIO (ex.:
+        # cancel no meio de deltas) que já falhou 1x sob carga de 6 agentes nesta
+        # máquina e passou 3/3 isolada — 1 retry absorve isso sem mascarar erro
+        # determinístico.
+        run: python -m pytest tests/ -q --timeout=180 --reruns 1 --reruns-delay 2
+
+  suites-sh:
+    name: suítes .sh sem navegador nem modelo
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: estatica
+    steps:
+      - uses: actions/checkout@v4
+      # Um comando só: o runner das .sh sabe a CLASSIFICAÇÃO por estágio, roda em
+      # paralelo (-j 3, 19-22 s), tem teto portátil (o `timeout` do coreutils não
+      # existe no macOS) e falha UMA vez se faltar dependência — em vez de cada
+      # job repetir a lista e o teto à mão. `instancia` exige app de pé e fica
+      # fora do CI; `navegador` pode virar job próprio depois.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: dependências (a suíte importa o app)
+        run: python -m pip install --quiet -r requirements.txt
+      - name: suítes .sh do estágio rápido
+        run: bash tests/run_sh.sh rapido
