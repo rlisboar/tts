@@ -585,6 +585,19 @@ def test_set_hold_abre_e_fecha_o_turno():
     assert fechar[0].curto is False and fechar[0].fala_ms == 20 * lt.FRAME_MS
 
 
+def test_set_hold_sem_nenhum_frame_nao_derruba_o_turno():
+    """`hold:true` numa sessão SEM frame nenhum (mic negado/lento, botão apertado
+    antes do 1º frame). O fallback de `_abrir_turno` indexava `_historico[-1]`
+    num deque vazio: `IndexError` subia pelo `_live_loop` e o WS fechava."""
+    motor, _rel = _motor()                       # NENHUM frame alimentado
+    abrir = motor.set_hold(True)
+    assert [e.tipo for e in abrir] == ["speech_start"] and abrir[0].detalhe == "hold"
+    fechar = motor.set_hold(False)
+    assert [e.tipo for e in fechar] == ["speech_end"]
+    assert fechar[0].audio == b""                # não havia o que enviar
+    assert motor._estado is lt.Estado.OCIOSO     # e a sessão segue utilizável
+
+
 def test_hold_durante_playback_vira_barge_in():
     motor, rel = _motor()
     _tocar(motor, rel, _tom(0.001), 20)

@@ -915,9 +915,17 @@ class TurnEngine:
                   + self.config._frames_envelope)
         inicio = max(0, fim - faltam * FRAME_SAMPLES)
         pre = [q.pcm for q in self._historico if q.amostra >= inicio]
-        if not pre:                       # não deve ocorrer: o frame atual já entrou
-            pre = [self._historico[-1].pcm]
-            inicio = self._historico[-1].amostra
+        if not pre:
+            # fora do `feed` normal o frame atual pode não ter entrado — e no
+            # `set_hold` (botão, #314) pode não haver frame NENHUM (mic negado ou
+            # lento): aí `_historico[-1]` estourava `IndexError` em deque vazio e o
+            # erro subia pelo `_live_loop`, fechando o WS. Turno sem áudio é
+            # legítimo neste caminho; o evento sai com `audio` vazio.
+            if self._historico:
+                pre = [self._historico[-1].pcm]
+                inicio = self._historico[-1].amostra
+            else:
+                inicio = fim
         audio = b"".join(_pcm16(f) for f in pre)
 
         self._estado = Estado.FALANDO

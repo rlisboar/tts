@@ -13,15 +13,22 @@
 #     cai quando o `stats` confirma;
 #   · ligado sem sugestão a faixa CONTINUA (é o único jeito de sair do modo).
 #
-# E um bloco de SESSÃO REAL (fim do roteiro): abre o WS de verdade no app, espera
-# o `stats` e, se o servidor já publicar `motor.hold_to_*`, cobra a faixa e o
-# efeito de `{"type":"hold","on":true}` no próprio `stats`. Enquanto o backend
-# não tiver o campo (task_5fdeb23c) esse bloco imprime SKIP em vez de reprovar —
-# quando ele entrar, o bloco acende sozinho. Não precisa de microfone: a captura
-# pode falhar e o `stats` chega do mesmo jeito.
+# E dois blocos de SESSÃO REAL contra o servidor (fim do roteiro):
+#   1. com MIC FALSO do Chromium (o mesmo `--use-fake-device-for-media-stream`
+#      do live_ui.sh), o ciclo inteiro: `hold:true` abre turno, o `stats` acende
+#      `hold_to_talk` e `hold:false` devolve. É este bloco que prova o contrato.
+#   2. num browser SEM mic nenhum, o `hold` logo no início da sessão — caso do
+#      mic negado/lento. HOJE ESTE BLOCO FICA VERMELHO de propósito: é o bug da
+#      task_5d5f5153 (`live_turns.py:919`, deque de histórico vazio derruba o WS).
+#      Fechada a ficha, ele fica verde sem tocar no teste.
+# Ambos imprimem SKIP quando o servidor não publica os campos (instância velha),
+# em vez de reprovar: assim a suíte serve nas duas.
 #
 #   ./tests/live_hold_ui.sh          # app precisa estar de pé em :7860
 #   BASE=http://127.0.0.1:7860 ./tests/live_hold_ui.sh
+#
+# Contra uma instância com a árvore de hoje, para exercitar os blocos reais:
+#   ./run.sh & PORTA=...; BASE=http://127.0.0.1:$PORTA ./tests/live_hold_ui.sh
 set -euo pipefail
 
 BASE="${BASE:-http://127.0.0.1:7860}"
@@ -42,7 +49,10 @@ def cobrar(c, m):
     if not c: falhas.append(m)
 
 with sync_playwright() as p:
-    b = p.chromium.launch()
+    # mic FALSO de verdade (padrão do live_ui.sh): sem ele nenhum frame chega e o
+    # caminho do `hold` cai sempre no caso "sem histórico" do motor.
+    b = p.chromium.launch(args=["--use-fake-device-for-media-stream",
+                                "--use-fake-ui-for-media-stream"])
     ctx = b.new_context()
     pg = ctx.new_page()
     pg.goto(BASE, wait_until="domcontentloaded")
@@ -73,7 +83,33 @@ with sync_playwright() as p:
     cobrar("usar segurar para falar" in e["botao"], f"botão errado na sugestão ({e['botao']!r})")
     cobrar(e["chip"] == "automático", f"o OBS não mostra o modo automático ({e['chip']!r})")
 
+    # ── matriz aviso × controle (condição do PM) ──────────────────────────
+    # "Aviso" = a faixa em ALERTA (⚠). Sem sugestão e com o modo desligado não
+    # pode haver aviso nenhum; com o modo LIGADO a faixa é o CONTROLE de saída,
+    # então fica (sem o ⚠) — senão o modo não teria como ser desligado.
+    matriz = pg.evaluate("""() => {
+        const v = (sug, on) => { LX.obs.holdPedido = undefined;
+            LX.obs.stats = { motor: { hold_to_talk: on, hold_to_talk_sugerido: sug } };
+            lxHoldRender();
+            const a = document.getElementById('lxHoldAviso');
+            return { mostra: !a.hidden,
+                     alerta: document.getElementById('lxHoldTexto').textContent.trim().startsWith('⚠') }; };
+        const r = { desligadoSemSugestao: v(false, false), ligadoSemSugestao: v(false, true),
+                    desligadoComSugestao: v(true, false), ligadoComSugestao: v(true, true) };
+        LX.obs.stats = null; lxHoldRender();
+        return r; }""")
+    cobrar(not matriz["desligadoSemSugestao"]["mostra"],
+           "apareceu aviso sem sugestão e com o modo desligado")
+    cobrar(not matriz["ligadoSemSugestao"]["alerta"],
+           "o modo ligado mostrou o AVISO de sugestão mesmo sem sugestão")
+    cobrar(matriz["desligadoComSugestao"]["alerta"], "a sugestão não gerou aviso")
+    cobrar(matriz["ligadoComSugestao"]["mostra"] and not matriz["ligadoComSugestao"]["alerta"],
+           "com o modo ligado a faixa de controle não apareceu (ou veio com alerta)")
+
     # ── clicar manda o JSON e pinta na hora ────────────────────────────────
+    # a matriz acima zerou o stats: repõe o estado de sugestão que este bloco usa
+    pg.evaluate("""() => { LX.obs.stats = { motor: { hold_to_talk: false, hold_to_talk_sugerido: true } };
+        LX.obs.holdPedido = undefined; lxHoldRender(); }""")
     pg.evaluate("""() => { window.__enviados = [];
         LX.ws = { readyState: WebSocket.OPEN, send: m => window.__enviados.push(m) }; }""")
     pg.evaluate("document.getElementById('lxHoldBtn').click()")
@@ -163,6 +199,53 @@ with sync_playwright() as p:
             cobrar(virou, "o stats do servidor não passou a hold_to_talk depois do clique")
             pg.evaluate("document.getElementById('lxHoldBtn').click()")   # devolve o modo
         pg.evaluate("() => { if (LX.ws) lxDesligar(); }")
+
+    # ── hold numa sessão SEM frame nenhum de mic ──────────────────────────
+    # Caso do mic que ainda não abriu/foi negado: o deque do motor está vazio.
+    # Hoje derruba o WS (task_5d5f5153). Browser SEM mic falso de propósito.
+    b2 = p.chromium.launch()
+    c2 = b2.new_context()
+    pg2 = c2.new_page()
+    pg2.goto(BASE, wait_until="domcontentloaded")
+    pg2.wait_for_timeout(2200)
+    pg2.evaluate("showView('live'); document.getElementById('lxLigar').click()")
+    for _ in range(40):
+        pg2.wait_for_timeout(250)
+        if pg2.evaluate("!!LX.obs.stats"): break
+    antes_vazio = pg2.evaluate("((LX.obs.stats||{}).motor||{}).hold_to_talk")
+    if antes_vazio is None:
+        print("· SKIP do 'hold' sem frames: servidor sem os campos")
+    else:
+        pg2.evaluate("""() => { LX.obs.stats.motor.hold_to_talk = false;
+            lxEnviaJSON({ type: 'hold', on: true }); }""")
+        sobreviveu = False
+        for _ in range(20):
+            pg2.wait_for_timeout(250)
+            if pg2.evaluate("!!(LX.ws && LX.ws.readyState === WebSocket.OPEN)"):
+                sobreviveu = True
+                break
+        cobrar(sobreviveu,
+               "hold em sessão SEM frames derrubou o WS (task_5d5f5153, live_turns.py:919)")
+        # o gate cobra mais que "não caiu": o modo tem de VIGORAR (é o fallback da
+        # própria feature) e o botão de soltar tem de fechar o turno normalmente
+        ligou = False
+        for _ in range(20):
+            pg2.wait_for_timeout(250)
+            if pg2.evaluate("((LX.obs.stats||{}).motor||{}).hold_to_talk"):
+                ligou = True
+                break
+        cobrar(ligou, "hold sem frames não pôs hold_to_talk=true no stats do servidor")
+        pg2.evaluate("lxEnviaJSON({ type: 'hold', on: false })")
+        voltou = False
+        for _ in range(20):
+            pg2.wait_for_timeout(250)
+            if pg2.evaluate("((LX.obs.stats||{}).motor||{}).hold_to_talk") is False:
+                voltou = True
+                break
+        cobrar(voltou, "hold:false não devolveu hold_to_talk=false")
+        cobrar(pg2.evaluate("!!(LX.ws && LX.ws.readyState === WebSocket.OPEN)"),
+               "a sessão fechou no caminho de desligar o hold")
+    b2.close()
     b.close()
 
 if falhas:
