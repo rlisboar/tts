@@ -36,17 +36,23 @@ _dep() { # dependência dura, com mensagem que diz o que fazer
   command -v "$1" >/dev/null || { print -r -- "falta '$1' — $2" >&2; exit 1; }
 }
 
+# O `gh` é o caminho normal, mas ele só é preciso NESTES dois dados (o runner em si
+# não usa). Com `TTS_RUNNER_TOKEN` e `TTS_RUNNER_VERSAO` no ambiente, a máquina
+# alvo não precisa de `gh` nem de login — o token é gerado onde o `gh` já está
+# autenticado e vale ~1 h, só para o registro.
 _registration_token() {
-  gh api --method POST "$API/registration-token" --jq .token
+  if [ -n "${TTS_RUNNER_TOKEN:-}" ]; then print -r -- "$TTS_RUNNER_TOKEN"; return; fi
+  gh api --method POST "/repos/$REPO/actions/runners/registration-token" --jq .token
 }
 
 _versao() { # última versão do runner no release oficial (só o número)
-  gh api repos/actions/runner/releases/latest --jq .tag_name | sed 's/^v//'
+  if [ -n "${TTS_RUNNER_VERSAO:-}" ]; then print -r -- "$TTS_RUNNER_VERSAO"; return; fi
+  gh api /repos/actions/runner/releases/latest --jq .tag_name | sed 's/^v//'
 }
 
 case "${1:-}" in
   install)
-    _dep gh "instale com: brew install gh && gh auth login"
+    [ -n "${TTS_RUNNER_TOKEN:-}" ] || _dep gh "instale com: brew install gh && gh auth login"
     _dep tar "vem com o macOS"
     [ "$(uname -m)" = "arm64" ] || { print -r -- "runner aqui é arm64 (uname -m = $(uname -m))" >&2; exit 1; }
     # O serviço de produção tem de estar de pé ANTES: se o installment derrubar
@@ -68,7 +74,7 @@ case "${1:-}" in
       --url "https://github.com/$REPO" --token "$TOKEN" \
       --labels "self-hosted,macOS,ARM64,tts-mini" --work "$DIR/_work" \
       || { print -r -- "config.sh falhou (token expirado? repo errado?)" >&2; exit 1; }
-    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs" "$HOME/.cache/runner-toolcache"
     cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -78,6 +84,15 @@ case "${1:-}" in
     <string>$DIR/run.sh</string>
   </array>
   <key>WorkingDirectory</key><string>$DIR</string>
+  <!-- O `setup-python` procura o tool cache em `RUNNER_TOOL_CACHE`/
+       `AGENT_TOOLSDIRECTORY` e, SEM elas, cai em `/Users/runner/hostedtoolcache` —
+       caminho do runner hospedado que não existe num Mac de usuário (e `/Users`
+       é root:admin, sem escrita). O `.env` do runner NÃO basta: quem aplica
+       ambiente é o launchd, aqui. -->
+  <key>EnvironmentVariables</key><dict>
+    <key>RUNNER_TOOL_CACHE</key><string>$HOME/.cache/runner-toolcache</string>
+    <key>AGENT_TOOLSDIRECTORY</key><string>$HOME/.cache/runner-toolcache</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
@@ -92,6 +107,10 @@ EOF
     chmod 600 "$PLIST"   # o plist cita caminho de working dir; nada de segredo, mas o padrão do repo é 0600
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
     launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null || launchctl load -w "$PLIST" 2>/dev/null || true
+    # o toolcache entra no plist, não no `.env` do runner: `launchctl print` tem de
+    # mostrar as duas variáveis, senão o `setup-python` volta para `/Users/runner`
+    launchctl print "gui/$UID/$LABEL" 2>/dev/null | grep -q RUNNER_TOOL_CACHE \
+      || print -r -- "AVISO: o agente subiu sem RUNNER_TOOL_CACHE — confira o plist" >&2
     if launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; then
       print -r -- "Runner instalado (label $LABEL, work em $DIR). Log: $LOG"
       print -r -- "Confira: ./remote/ci_runner.sh status · gh api /repos/$REPO/actions/runners --jq '.runners[].name'"
@@ -103,6 +122,10 @@ EOF
     exit 0 ;;
 
   status)
+    # o toolcache entra no plist, não no `.env` do runner: `launchctl print` tem de
+    # mostrar as duas variáveis, senão o `setup-python` volta para `/Users/runner`
+    launchctl print "gui/$UID/$LABEL" 2>/dev/null | grep -q RUNNER_TOOL_CACHE \
+      || print -r -- "AVISO: o agente subiu sem RUNNER_TOOL_CACHE — confira o plist" >&2
     if launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; then
       launchctl print "gui/$UID/$LABEL" 2>/dev/null | grep -E "state =|pid =|last exit"
       tail -3 "$LOG" 2>/dev/null
