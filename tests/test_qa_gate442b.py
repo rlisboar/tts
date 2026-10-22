@@ -23,7 +23,7 @@ def _pipeline(fala, texto, *, language="pt"):
         usou["llm"] += 1
         yield "certo."
 
-    p = lp.LivePipeline(fala.json, fala.audio, llm=llm, tts=lambda c, o: np.zeros(240, np.float32),
+    p = lp.LivePipeline(fala.json, fala.audio, llm=llm, tts=lambda c, o, **k: np.zeros(240, np.float32),
                         prewarm=lambda: None)
     p.push_pcm(b"\x00\x00" * 1600)
     p._transcricao = (texto, language)
@@ -70,10 +70,10 @@ def test_compressao_alta_tambem_descarta(monkeypatch):
 
     original = app._stt_ok
 
-    def _ok(r, texto):
+    def _ok(r, texto, *a, **k):          # repassa o `forcar` (novo no #4xx)
         segs = [{"no_speech_prob": 0.05, "avg_logprob": -0.2,
                  "compression_ratio": 9.9}]
-        return original({**r, "segments": segs}, texto)
+        return original({**r, "segments": segs}, texto, *a, **k)
 
     monkeypatch.setattr(app, "_stt_ok", _ok)
     fala = Fala()

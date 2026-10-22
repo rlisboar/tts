@@ -466,3 +466,179 @@ def test_fechar_no_aquecimento_nao_estoura_a_escrita(monkeypatch):
     assert resultado == [False]
     assert ns.ativo is False
     assert ns._proc is None
+
+
+# ---------------------------------------------------------------------------
+# #375: follow-ups do gate — filtro morto tem de RECOLHER, e o desmonte não pode
+# travar o event loop
+# ---------------------------------------------------------------------------
+def test_caiu_recolhe_o_processo_e_marca_morto():
+    """`_caiu` matava nada: `_proc` ficava preenchido e o app seguia pagando
+    thread + lock + `poll()` a cada frame só para devolver o cru (#375/F3)."""
+    ns = RnnoiseAoVivo()
+    assert ns.abrir() is True
+    try:
+        proc = ns._proc                       # noqa: SLF001 — o processo é o alvo
+        proc.kill()
+        assert proc.wait(2) is not None
+        cru = _pcm(np.zeros(FRAME // 2, dtype=np.float32))
+        assert ns.processa(cru) == cru        # devolve cru, como antes
+        assert ns.morto is True               # mas agora AVISA que caiu
+        assert ns._proc is None               # e não deixa processo pendurado
+        assert ns.ativo is False
+    finally:
+        ns.fechar()
+    assert ns.processa(cru) == cru            # fechar depois de morto não estoura
+
+
+def test_filtro_morto_sai_da_sessao_no_proximo_frame():
+    """O app para de chamar o filtro caído em vez de pagar o hop para sempre."""
+    import app
+
+    class NsMorto:
+        morto = True
+        fechados = 0
+
+        def processa(self, pcm):
+            raise AssertionError("não pode ser chamado: já caiu")
+
+        def fechar(self):
+            NsMorto.fechados += 1
+
+    sess = {"id": "s-rn", "rnnoise": NsMorto()}
+    pcm = b"\x00\x01" * 100
+    assert app._live_pcm_limpo(sess, pcm) == pcm
+    assert "rnnoise" not in sess              # saiu da sessão
+    assert NsMorto.fechados == 1
+    assert app._live_pcm_limpo(sess, pcm) == pcm   # e não quebra na sequência
+
+
+def test_fechar_nao_bloqueia_o_event_loop():
+    """`fechar` espera o processo; no loop isso atrasava as OUTRAS sessões (#375/F4)."""
+    import asyncio
+
+    ns = RnnoiseAoVivo()
+    assert ns.abrir() is True
+    try:
+        assert ns.processa(_pcm(np.zeros(FRAME // 2, dtype=np.float32)))  # exercita
+
+        async def fluxo() -> int:
+            tiques = 0
+
+            async def tique() -> None:
+                nonlocal tiques
+                while True:
+                    tiques += 1
+                    await asyncio.sleep(0.01)
+
+            tarefa = asyncio.create_task(tique())
+            await asyncio.sleep(0.02)
+            antes = tiques
+            await asyncio.to_thread(ns.fechar)     # o padrão do app
+            durante = tiques - antes
+            tarefa.cancel()
+            try:
+                await tarefa
+            except asyncio.CancelledError:
+                pass
+            return durante
+
+        durante = asyncio.run(fluxo())
+        # bloquear o loop daria 0 (o sleep só roda depois); off-loop ele continua
+        assert durante >= 1, f"o fechamento travou o loop ({durante} tiques)"
+        assert ns.ativo is False
+        ns.fechar()                                # idempotente
+    finally:
+        ns.fechar()
+
+
+def test_queda_derruba_a_sessao_no_MESMO_frame():
+    """A morte detectada pelo `processa` sai da sessão JÁ naquele frame.
+
+    Antes o filtro era tirado no frame SEGUINTE e o frame da própria queda ainda
+    pagava o hop de thread; a mudança (revisor do gate #441) não toca `morto`
+    ×`ativo` nem o comportamento do filtro saudável."""
+    import app
+
+    ns = RnnoiseAoVivo()
+    assert ns.abrir() is True
+    try:
+        cru = _pcm(np.zeros(FRAME // 2, dtype=np.float32))
+        assert ns.processa(cru) == cru            # saudável: devolve filtrado/cru do pipe
+        ns._proc.kill()                           # noqa: SLF001
+        ns._proc.wait(2)                          # noqa: SLF001
+        sess = {"id": "s-rn", "rnnoise": ns}
+        assert app._live_pcm_limpo(sess, cru) == cru
+        assert "rnnoise" not in sess              # saiu NESTE frame, não no próximo
+        assert ns.morto is True
+    finally:
+        ns.fechar()
+
+
+def test_handshake_falho_nao_derruba_a_sessao(caplog, tmp_path):
+    """Filtro que nem abriu (sem modelo/ffmpeg) NÃO é queda: fica na sessão,
+    devolve o cru e avisa uma vez. Sem isso o `morto` novo derrubaria por engano."""
+    import app
+    import logging
+
+    live_rnnoise._avisou.clear()
+    ns = RnnoiseAoVivo(modelo=tmp_path / "ausente.rnnn")
+    with caplog.at_level(logging.WARNING, logger="live"):
+        assert ns.abrir() is False
+        sess = {"id": "s-rn", "rnnoise": ns}
+        for _ in range(3):                        # três frames seguidos
+            cru = _pcm(np.zeros(FRAME // 2, dtype=np.float32))
+            assert app._live_pcm_limpo(sess, cru) == cru
+            assert sess.get("rnnoise") is ns      # a sessão NÃO cai
+        assert ns.morto is False
+    assert sum("sem modelo" in r.message for r in caplog.records) == 1
+    ns.fechar()
+
+
+def test_nao_subiu_avisa(caplog, monkeypatch):
+    """`Popen` falhando (ffmpeg existe, mas não executa) tem de AVISAR."""
+    import subprocess
+
+    live_rnnoise._avisou.clear()
+
+    def _explode(*a, **k):
+        raise OSError("exec format error")
+
+    monkeypatch.setattr(subprocess, "Popen", _explode)
+    ns = RnnoiseAoVivo()
+    with caplog.at_level(logging.WARNING, logger="live"):
+        assert ns.abrir() is False
+    assert any("não subiu" in r.message and "Live segue sem o filtro" in r.message
+               for r in caplog.records), [r.message for r in caplog.records]
+    ns.fechar()
+
+
+def test_nao_abriu_avisa(caplog, tmp_path):
+    """Filho que sobe e morre na hora: `não abriu`, com o stderr no detalhe."""
+    live_rnnoise._avisou.clear()
+    falso = tmp_path / "ffmpeg-falso"
+    falso.write_text("#!/bin/sh\necho 'arnndn: modelo invalido' >&2\nexit 1\n")
+    falso.chmod(0o755)
+    ns = RnnoiseAoVivo(ffmpeg=str(falso))
+    with caplog.at_level(logging.WARNING, logger="live"):
+        assert ns.abrir() is False
+    linhas = [r.message for r in caplog.records]
+    assert any("não abriu" in m and "Live segue sem o filtro" in m for m in linhas), linhas
+    assert any("modelo invalido" in m for m in linhas), linhas
+    ns.fechar()
+
+
+def test_caiu_avisa_e_recolhe(caplog):
+    """`_caiu` avisa com o stderr e recolhe o processo (estado e aviso juntos)."""
+    live_rnnoise._avisou.clear()
+    ns = RnnoiseAoVivo()
+    assert ns.abrir() is True
+    proc = ns._proc
+    proc.kill()
+    time.sleep(0.1)
+    with caplog.at_level(logging.WARNING, logger="live"):
+        ns.processa(b"\x02\x00" * 160)
+    assert ns.morto is True and ns._proc is None
+    assert any("rnnoise caiu" in r.message and "Live segue sem o filtro" in r.message
+               for r in caplog.records), [r.message for r in caplog.records]
+    ns.fechar()
