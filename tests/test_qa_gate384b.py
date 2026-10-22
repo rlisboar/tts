@@ -119,3 +119,55 @@ def test_cadeia_nao_abre_arquivo_e_e_barata(monkeypatch):
     decorrido = (time.perf_counter() - t) * 1000
     assert abertos == [], f"a cadeia abriu arquivo por chunk: {abertos}"
     assert decorrido < 50.0, f"pós caro: {decorrido:.1f} ms para 100 ms de áudio"
+
+
+class _WorkerZerosMentindo(lp._LiveWorker):
+    """Filho que devolve zeros e MIQUE no `rms`: o piso do `gerar` não acusa."""
+
+    def __init__(self, audio, mentira):
+        self._ativo = True
+        self._n = 0
+        self._audio = audio
+        self._mentira = mentira
+        self._timeout = 5.0
+        self._proc = None           # `fecha()` do pai tolera None
+
+    def _envia(self, msg):
+        return None
+
+    def fecha(self):
+        self._ativo = False
+
+    def _espera(self, tipos, timeout):
+        import base64
+
+        r = {"type": "ok", "id": self._n,
+             "audio_b64": base64.b64encode(self._audio.tobytes()).decode()}
+        if self._mentira is not None:
+            r["rms"] = self._mentira
+        return r
+
+
+def _com_zeros(monkeypatch, mentira):
+    import app
+
+    monkeypatch.setattr(app, "_use_remote_tts", lambda: False)
+    p = _pipe(monkeypatch)
+    p._worker = _WorkerZerosMentindo(np.zeros(2400, dtype=np.float32), mentira)
+    p._tts_app = lambda texto, omni, voice_id=None, espera=None: _cru(2400)
+    return p
+
+
+def test_worker_que_mente_o_rms_nao_atravessa_mudo(monkeypatch):
+    """O piso do filho passou (rms 0,5 declarado), mas o áudio é zeros."""
+    p = _com_zeros(monkeypatch, mentira=0.5)
+    a = p._tts_live("turno", {})
+    assert p._worker_indisponivel is True
+    assert _rms(a) > 0.05, "aceitou o mudo porque o filho mentiu o rms"
+
+
+def test_worker_sem_o_campo_rms_tambem_e_conferido(monkeypatch):
+    """Sem `rms` no protocolo, quem decide é o áudio de verdade."""
+    p = _com_zeros(monkeypatch, mentira=None)
+    a = p._tts_live("turno", {})
+    assert p._worker_indisponivel is True and _rms(a) > 0.05
