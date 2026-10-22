@@ -91,7 +91,7 @@ uvicorn.run(app.app, host='0.0.0.0', port=int(sys.argv[3]), log_level='warning')
     [ -n "$SERVIDOR_PID" ] && kill "$SERVIDOR_PID" 2>/dev/null || true
     rm -f "$APK" "$SET"
   }
-  trap 'limpa_servidor' EXIT INT TERM
+  # o trap ÚNICO entra mais abaixo (`trap encerra`): dois traps se sobrescrevem
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     curl -sf -m 2 -o /dev/null "$BASE/" && break
     sleep 0.5
@@ -181,20 +181,34 @@ cria_chave() {  # $1 = nome, $2 = role -> "id:secret"
 # segundos de idade, então não é tocada
 for id in $(ids_de_teste velhos); do curl -sf ${CABECALHO_CHAVE[@]+"${CABECALHO_CHAVE[@]}"} -X DELETE "$BASE/api/apikeys/$id" >/dev/null 2>&1 || true; done
 USE="$(cria_chave "teste-ui-use-$SUF" use)"
+USE_ID="${USE%%:*}"; USE_KEY="${USE#*:}"; CRIADAS+=("$USE_ID")
 ADM="$(cria_chave "teste-ui-admin-$SUF" admin)"
-USE_ID="${USE%%:*}"; USE_KEY="${USE#*:}"
-ADM_ID="${ADM%%:*}"; ADM_KEY="${ADM#*:}"
+ADM_ID="${ADM%%:*}"; ADM_KEY="${ADM#*:}"; CRIADAS+=("$ADM_ID")
 limpar() {
-  curl -sf ${CABECALHO_CHAVE[@]+"${CABECALHO_CHAVE[@]}"} -X DELETE "$BASE/api/apikeys/$USE_ID" >/dev/null 2>&1 || true
-  curl -sf ${CABECALHO_CHAVE[@]+"${CABECALHO_CHAVE[@]}"} -X DELETE "$BASE/api/apikeys/$ADM_ID" >/dev/null 2>&1 || true
+  local id
+  for id in ${CRIADAS[@]+"${CRIADAS[@]}"}; do
+    curl -sf ${CABECALHO_CHAVE[@]+"${CABECALHO_CHAVE[@]}"} -X DELETE "$BASE/api/apikeys/$id" >/dev/null 2>&1 || true
+  done
   for id in $(ids_de_teste); do curl -sf ${CABECALHO_CHAVE[@]+"${CABECALHO_CHAVE[@]}"} -X DELETE "$BASE/api/apikeys/$id" >/dev/null 2>&1 || true; done
+  return 0
+}
+# Ids criados por ESTA rodada, em lista: a limpeza não depende de as variáveis
+# USE_ID/ADM_ID já estarem atribuídas, e apaga só o que é nosso.
+CRIADAS=()
+
+# ORDEM do encerramento: chaves ANTES do servidor — depois de matá-lo não há API e
+# nada mais é apagado. Tudo com `|| true`: sob `set -e` um comando de trap que
+# falha aborta o resto do trap (mesma classe do kill do cfg_sujo).
+encerra() {
+  limpar
+  [ -n "${SERVIDOR_PID:-}" ] && { kill "$SERVIDOR_PID" 2>/dev/null || true; }
+  [ -n "${APK:-}" ] && rm -f "$APK" "$SET"
+  return 0
 }
 # EXIT cobre saída normal E falha (`set -e`); INT/TERM cobrem Ctrl-C e o harness
-# matando a rodada. `limpar` é idempotente, então rodar duas vezes (INT + EXIT)
-# não incomoda. SIGKILL não roda trap nenhum: para esse caso existe a varredura de
-# "velhos" lá em cima (nome de outro sufixo E com mais de 2 min) — foi ela que
-# limpou as sobras da rodada 29093, criadas por uma execução morta à força.
-trap limpar EXIT INT TERM
+# matando a rodada. `encerra` é idempotente. SIGKILL não roda trap nenhum: para
+# esse caso existe a varredura de "velhos" lá em cima (outro sufixo E >2 min).
+trap encerra EXIT INT TERM
 echo "chaves de teste: use=${USE_KEY:0:8}… admin=${ADM_KEY:0:8}…"
 
 # ── 1. contrato no servidor ───────────────────────────────────────────────
@@ -604,6 +618,10 @@ with sync_playwright() as p:
         pass
     selo_blip = pg.inner_text("#cfgAdminBadge")
     print(f"  blip de 400 ms no load -> tela montou: {bool(selo_blip)}")
+    if os.environ.get("FORCA_FALHA"):
+        # fixture do #474: falha de ASSERÇÃO (não sinal) no fim, para exercitar a
+        # limpeza de chaves no trap de um caminho vermelho real
+        cobrar(False, "falha forçada (FORCA_FALHA=1)")
     cobrar("admin" in selo_blip.lower(),
            f"com blip no load a tela devia montar sozinha (retentativa), veio {selo_blip!r}")
     ctx.close()
