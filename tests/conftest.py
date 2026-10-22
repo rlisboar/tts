@@ -4,6 +4,11 @@
 # `tests/test_chaves_isoladas.py`.)
 
 
+# Espião de teardown (`tests/_espiao.py`): imprime o que ficou vivo em
+# `_live_sessions`/`_chat_dsh_livres`/`_jobs` ao fim de cada teste. Sem este
+# registro ele seria arquivo inerte — nenhum runner carrega `_*.py` sozinho.
+pytest_plugins = ("_espiao",)
+
 import pathlib
 import shutil
 import sys
