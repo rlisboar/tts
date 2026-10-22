@@ -490,11 +490,11 @@ OMNI_PRESET_SEED = ("Olá, esta é a minha voz. Vou narrar o seu texto com clare
                     "ritmo natural e boa dicção, do começo ao fim.")
 OMNI_PRESETS = {
     # instruct usa SÓ o vocabulário fechado do OmniVoice (gender/age/pitch/accent/whisper)
-    "vd-narrador": {"name": "Narrador (masc., grave)",     "instruct": "male, middle-aged, low pitch"},
+    "vd-narrador": {"name": "Narrador (masc., grave)",     "instruct": "male, adult, low pitch"},
     "vd-locutora": {"name": "Locutora (fem., suave)",      "instruct": "female, moderate pitch"},
     "vd-jovem-m":  {"name": "Jovem (masc., animado)",      "instruct": "male, young adult, high pitch"},
     "vd-jovem-f":  {"name": "Jovem (fem., animada)",       "instruct": "female, young adult, high pitch"},
-    "vd-formal":   {"name": "Formal (masc., autoritário)", "instruct": "male, middle-aged, low pitch"},
+    "vd-formal":   {"name": "Formal (masc., autoritário)", "instruct": "male, middle-aged, moderate pitch"},
     "vd-podcast":  {"name": "Podcast (fem., conversa)",    "instruct": "female, young adult, moderate pitch"},
 }
 
@@ -3947,6 +3947,9 @@ def voice_peaks(voice_id: str, n: int = 160):
 def delete_voice(request: Request, voice_id: str):
     _exige_admin(request)
     voice_id = _safe_id(voice_id)
+    # a entrada do cache remoto é por `voice_id`: recriar a voz com o MESMO id
+    # (import) reusaria o envio antigo se o mtime coincidisse — some junto
+    _remote_voice_cache.pop(voice_id, None)
     removed = False
     for ext in ("wav", "json"):
         path = VOICES_DIR / f"{voice_id}.{ext}"
@@ -4369,20 +4372,38 @@ def _materialize_preset(model, sr: int, pid: str):
     import soundfile as sf
 
     p = OMNI_PRESETS[pid]
-    audio = np.concatenate([
-        np.array(r.audio, dtype=np.float32)
-        for r in model.generate(
-            text=OMNI_PRESET_SEED, instruct=p["instruct"], language="None",
-            num_steps=OMNI_STEPS_HQ, guidance_scale=2.0, class_temperature=0.0,
-        )
-    ])
-    audio = _normalize(_trim_tail_silence(audio, sr))
+    # A semente é gerada UMA vez e vira o .wav de referência (os ref_tokens saem
+    # dela): uma geração ruim ancorava a voz para sempre. Valida RMS e duração e
+    # re-sorteia até 2× — o seed entra explícito para a nova tentativa ser OUTRA
+    # (#329). Devolve o número de re-sorteios em `meta["tentativas"]`.
+    semente_base = int(hashlib.sha256(pid.encode()).hexdigest()[:8], 16)
+    audio, tentativas = None, 0
+    for tentativa in range(3):
+        import mlx.core as mx
+
+        mx.random.seed((semente_base + tentativa) % (2 ** 31))
+        audio = np.concatenate([
+            np.array(r.audio, dtype=np.float32)
+            for r in model.generate(
+                text=OMNI_PRESET_SEED, instruct=p["instruct"], language="None",
+                num_steps=OMNI_STEPS_HQ, guidance_scale=2.0, class_temperature=0.0,
+            )
+        ])
+        audio = _normalize(_trim_tail_silence(audio, sr))
+        rms = float(np.sqrt(np.mean(audio ** 2))) if audio.size else 0.0
+        dur = (len(audio) / sr) if audio.size else 0.0
+        tentativas = tentativa
+        if rms >= 0.05 and dur >= 3.0:
+            break
+        print(f"[preset] {pid}: semente ruim (rms {rms:.3f}, {dur:.1f}s) — "
+              f"re-sorteando ({tentativa + 1}/2)", flush=True)
     sf.write(VOICES_DIR / f"{pid}.wav", audio, sr, subtype="PCM_16")
     meta = {
         "id": pid, "name": p["name"], "preset": True, "materialized": True,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "duration": round(len(audio) / sr, 1),
         "ref_text": OMNI_PRESET_SEED, "instruct": p["instruct"],
+        "seed": (semente_base + tentativas) % (2 ** 31), "tentativas": tentativas,
     }
     write_json_atomic(VOICES_DIR / f"{pid}.json", meta)
 
@@ -5508,7 +5529,17 @@ def _remote_origin() -> str:
     return f"{u.scheme}://{u.netloc}" if u.scheme and u.netloc else ""
 
 
-_remote_voice_cache: dict = {}   # (origin, voice_id, mtime) -> nome remoto
+#: `voice_id` -> (origin, nome, mtime_ns) do envio remoto já feito. Dict SEM teto
+#: crescia com o uso e a entrada não saía na deleção da voz (#282): teto com
+#: evicção do mais ANTIGO (ordem de inserção) + `pop` explícito na deleção.
+_REMOTE_VOICE_CACHE_MAX = 64
+_remote_voice_cache: dict = {}
+
+
+def _remote_voice_cache_guarda(voice_id: str, key: tuple) -> None:
+    _remote_voice_cache[voice_id] = key
+    while len(_remote_voice_cache) > _REMOTE_VOICE_CACHE_MAX:
+        _remote_voice_cache.pop(next(iter(_remote_voice_cache)), None)
 
 
 def _ensure_remote_voice(voice_id: str, voice_path: Path):
@@ -5535,7 +5566,7 @@ def _ensure_remote_voice(voice_id: str, voice_path: Path):
                               data={"name": name, "ref_text": _voice_ref_text(voice_id) or ""},
                               timeout=120)
         if r.ok:
-            _remote_voice_cache[voice_id] = key
+            _remote_voice_cache_guarda(voice_id, key)
             return r.json().get("voice", name)
     except Exception:  # noqa: BLE001
         pass
@@ -5826,6 +5857,56 @@ def _vad_estado() -> tuple[str, str]:
     return _vad_backend, _vad_erro
 
 
+#: teto de duração do áudio do STT: acima disto o upload é recusado com 413 em vez
+#: de decodificar 1 h de áudio em float32 (~230 MB) e rodar o Whisper sobre tudo
+TETO_STT_S = 300.0
+JANELA_STT_S = 30.0
+SOBREPOSICAO_STT_S = 1.0
+
+
+def _duracao_audio(path) -> float:
+    """Duração em segundos pelo cabeçalho (barato, sem decodificar). -1 = não deu."""
+    import soundfile as sf
+
+    try:
+        info = sf.info(str(path))
+    except Exception:  # noqa: BLE001 — formato que o libsndfile não lê
+        return -1.0
+    return float(info.frames) / float(info.samplerate or 1)
+
+
+def _transcreve_em_janelas(audio, lang, sr: int = 16000):
+    """Transcreve em janelas de `JANELA_STT_S` e junta texto + segmentos."""
+    import mlx_whisper
+
+    passo = int((JANELA_STT_S - SOBREPOSICAO_STT_S) * sr)
+    janela = int(JANELA_STT_S * sr)
+    textos, segmentos = [], []
+    for ini in range(0, max(1, len(audio)), passo):
+        pedaco = audio[ini:ini + janela]
+        if not len(pedaco):
+            continue
+        r = mlx_whisper.transcribe(
+            pedaco, path_or_hf_repo=_whisper_repo(), language=lang,
+            temperature=0.0, condition_on_previous_text=False,
+            # Limiares do PRÓPRIO whisper fazem ele descartar o trecho inteiro: o
+            # texto volta vazio e o motivo se perde (medido com "Sim."). Quem julga
+            # é o _stt_ok, que devolve a razão — então aqui se pede ao whisper para
+            # não deitar nada fora por conta própria.
+            no_speech_threshold=0.99, logprob_threshold=-3.0,
+            compression_ratio_threshold=9.9,
+        )
+        t = (r.get("text") or "").strip()
+        if t:
+            textos.append(t)
+        for seg in (r.get("segments") or []):
+            segmentos.append({**seg,
+                              "start": float(seg.get("start", 0.0)) + ini / sr,
+                              "end": float(seg.get("end", 0.0)) + ini / sr})
+    return {"text": " ".join(textos).strip(), "language": lang or "",
+            "segments": segmentos}
+
+
 def _whisper_repo() -> str:
     """Repo HF do Whisper local: setting (ex. large-v3 completo p/ máxima
     precisão) com fallback p/ o default do env."""
@@ -5852,25 +5933,15 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
     if (_settings.get("stt_local_engine") or "whisper").lower() == "parakeet":
         return _com_aviso_remoto(_transcribe_parakeet(audio_path), caiu_remoto, erro_remoto)
 
-    import mlx_whisper
-
     # language fixo (ex.: "pt") melhora muito a precisão em trechos curtos: o
     # whisper deixa de adivinhar o idioma a cada frase. None = auto-detecta.
     lang = language if language and language not in ("auto",) else None
     audio = _wav_to_mono16k(audio_path)
     with _stt_lock:
-        # opções que reduzem alucinação: greedy (beam ainda não existe no
-        # mlx-whisper) e sem condicionar no texto anterior
-        r = mlx_whisper.transcribe(
-            audio, path_or_hf_repo=_whisper_repo(), language=lang,
-            temperature=0.0, condition_on_previous_text=False,
-            # Limiares do PRÓPRIO whisper fazem ele descartar o trecho inteiro: o
-            # texto volta vazio e o motivo se perde (medido com "Sim."). Quem julga
-            # é o _stt_ok, que devolve a razão — então aqui se pede ao whisper para
-            # não deitar nada fora por conta própria.
-            no_speech_threshold=0.99, logprob_threshold=-3.0,
-            compression_ratio_threshold=9.9,
-        )
+        # janelas de 30 s (com 1 s de sobreposição): o Whisper roda nativamente em
+        # janelas desse tamanho, e passar a gravação inteira de uma vez fazia a
+        # memória e o tempo crescerem com o arquivo (#329)
+        r = _transcreve_em_janelas(audio, lang)
     del audio
     _touch_use("stt")
     _release_mlx_memory()
@@ -6176,6 +6247,14 @@ def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
         wav.unlink(missing_ok=True)
         raise HTTPException(400, f"Formato de áudio não suportado ({ctype or 'desconhecido'}): {e}") from e
     raw.unlink(missing_ok=True)
+    # teto de DURAÇÃO (não só de bytes): 1 h decodificada em float32 passa de
+    # 230 MB e o Whisper roda sobre tudo — recusa com explicação (#329)
+    dur = _duracao_audio(wav)
+    if dur > TETO_STT_S:
+        wav.unlink(missing_ok=True)
+        raise HTTPException(
+            413, f"Áudio longo demais ({dur:.0f}s). O STT aceita até "
+                 f"{TETO_STT_S:.0f}s por vez — corte o trecho e envie de novo.")
     return wav
 
 

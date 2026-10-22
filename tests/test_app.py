@@ -1356,3 +1356,104 @@ def test_render_baixo_marca_aviso_e_rms_baixo(monkeypatch, tmp_path):
     assert meta["rms"] < 0.02, meta["rms"]
     assert "nível final baixo" in meta["warning"]
     assert "nível final baixo" in (job.get("warning") or "")
+
+
+# ---------------------------------------------------------------------------
+# #329 — higiene de áudio (7 itens P3)
+# ---------------------------------------------------------------------------
+
+def test_stt_recusa_audio_acima_do_teto(tmp_path, monkeypatch):
+    """1 h decodificada em float32 passa de 230 MB: recusa com 413 antes do Whisper."""
+    import io as _io
+
+    import soundfile as sf
+
+    caminho = tmp_path / "longo.wav"
+    t = np.arange(8000 * 320) / 8000.0
+    # tom (não silêncio): o filtro do upload tem `silenceremove` nas pontas
+    sf.write(str(caminho), (0.1 * np.sin(2 * np.pi * 200 * t)).astype(np.float32),
+             8000, subtype="PCM_16")
+    assert app._duracao_audio(caminho) > app.TETO_STT_S
+
+    class _Up:
+        filename = "longo.wav"
+        content_type = "audio/wav"
+        file = _io.BytesIO(caminho.read_bytes())
+
+    monkeypatch.setattr(app, "_write_upload_limited",
+                        lambda up, destino: destino.write_bytes(caminho.read_bytes()))
+    with pytest.raises(Exception) as exc:
+        app._save_audio_upload(_Up())
+    assert getattr(exc.value, "status_code", None) == 413
+    assert "longo demais" in str(exc.value.detail)
+
+
+def test_stt_fatia_em_janelas_com_sobreposicao(monkeypatch):
+    """O Whisper recebe janelas de ~30 s, com 1 s de sobreposição e offset nos segmentos."""
+    import sys
+    import types
+
+    vistos = []
+
+    def _transcreve(audio, **kw):
+        vistos.append(len(audio))
+        return {"text": "pedaço", "language": "pt",
+                "segments": [{"start": 0.0, "end": 1.0, "text": "pedaço"}]}
+
+    falso = types.SimpleNamespace(transcribe=_transcreve)
+    monkeypatch.setitem(sys.modules, "mlx_whisper", falso)
+
+    audio = np.zeros(16000 * 65, dtype=np.float32)      # 65 s → 3 janelas
+    r = app._transcreve_em_janelas(audio, None)
+    assert len(vistos) == 3, vistos
+    assert vistos[0] == 16000 * 30
+    assert all(v <= 16000 * 30 for v in vistos)
+    assert r["text"].count("pedaço") == 3
+    # o segundo segmento começa depois do primeiro (offset da janela aplicado)
+    assert r["segments"][1]["start"] > r["segments"][0]["start"] + 20
+
+
+def test_cache_de_voz_remota_tem_teto(monkeypatch):
+    monkeypatch.setattr(app, "_REMOTE_VOICE_CACHE_MAX", 3)
+    app._remote_voice_cache.clear()
+    try:
+        for i in range(10):
+            app._remote_voice_cache_guarda(f"v{i}", ("origem", f"v{i}", i))
+        assert len(app._remote_voice_cache) == 3
+    finally:
+        app._remote_voice_cache.clear()
+
+
+def test_preset_materializado_reesorteia_semente_ruim(tmp_path, monkeypatch, capsys):
+    """Semente muda/curta não pode ancorar a voz para sempre."""
+    import soundfile as sf
+
+    monkeypatch.setattr(app, "VOICES_DIR", tmp_path)
+    monkeypatch.setattr(app, "_trim_tail_silence", lambda a, sr, **k: a)
+    tentativas = {"n": 0}
+
+    class _R:
+        def __init__(self, audio):
+            self.audio = audio
+
+    class _M:
+        def generate(self, **kw):
+            tentativas["n"] += 1
+            if tentativas["n"] == 1:                     # 1ª: muda e curta
+                return [_R(np.zeros(16000, dtype=np.float32))]
+            t = np.arange(24000 * 4) / 24000.0
+            return [_R((0.2 * np.sin(2 * np.pi * 180 * t)).astype(np.float32))]
+
+    app._materialize_preset(_M(), 24000, "vd-narrador")
+    meta = json.loads((tmp_path / "vd-narrador.json").read_text())
+    assert tentativas["n"] == 2, "não re-sorteou a semente"
+    assert meta["tentativas"] == 1 and "seed" in meta
+    assert "re-sorteando" in capsys.readouterr().out
+    wav, _ = sf.read(str(tmp_path / "vd-narrador.wav"), dtype="float32")
+    assert float(np.sqrt(np.mean(wav ** 2))) > 0.05
+
+
+def test_presets_tem_instruct_distinto():
+    """Dois presets com o mesmo instruct colapsam no mesmo timbre."""
+    instructs = [p["instruct"] for p in app.OMNI_PRESETS.values()]
+    assert len(set(instructs)) == len(instructs), instructs

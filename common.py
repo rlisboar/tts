@@ -222,6 +222,10 @@ def sanitize_text(text: str) -> str:
     """
     # acentos digitados em forma decomposta (NFD, comum no macOS) viram o composto
     text = unicodedata.normalize("NFC", text)
+    # "S/N" tem leitura própria e não é "ou" genérico
+    text = re.sub(r"\bS\s*/\s*N\b", "sim ou não", text)
+    # barra entre DÍGITOS é "por" ("24/7", "3/4"), não "ou" (#329)
+    text = re.sub(r"(\d)\s*/\s*(\d)", r"\1 por \2", text)
     # símbolos com leitura natural em pt
     text = (text.replace("%", " por cento").replace("&", " e ")
                 .replace("+", " mais ").replace("°", " graus ")

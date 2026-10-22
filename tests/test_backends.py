@@ -72,3 +72,19 @@ def test_design_mode_por_familia():
     assert backends.design_mode_for_family("omnivoice") == "omni_tags"
     assert backends.design_mode_for_family("qwen3_design") == "free_text_required"
     assert backends.design_mode_for_family("inexistente") == "free_text"
+
+
+def test_fallback_do_qwen3_custom_repassa_speed():
+    """Sem `generate_custom_voice` a velocidade virava no-op silencioso (#329)."""
+    vistos = {}
+
+    class _Modelo:
+        def generate(self, **kw):
+            vistos.update(kw)
+            import numpy as np
+            return [np.zeros(64, dtype=np.float32)]
+
+    from backends import generate_with_backend
+
+    generate_with_backend(_Modelo(), "qwen3_custom", "oi", language="pt", omni={"speed": 1.4})
+    assert vistos.get("speed") == 1.4

@@ -748,8 +748,12 @@ def generate_with_backend(
             audio = _collect_audio(model.generate_custom_voice(
                 **_filter_kwargs(model.generate_custom_voice, kwargs)))
         else:
+            # `speed` REPASSADO no fallback: a família está em NATIVE_SPEED_FAMILIES,
+            # então sem isto a velocidade virava no-op silencioso em modelo que não
+            # tem `generate_custom_voice` (#329)
             kwargs2 = {"text": text, "voice": speaker, "verbose": False,
-                       "temperature": temperature, "instruct": instruct}
+                       "temperature": temperature, "instruct": instruct,
+                       "speed": speed}
             audio = _collect_audio(model.generate(
                 **_filter_kwargs(model.generate, {k: v for k, v in kwargs2.items() if v is not None})))
 

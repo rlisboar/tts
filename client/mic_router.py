@@ -175,18 +175,30 @@ class Router:
         self.gain = 1.0
         self.level = 0.0            # RMS do último bloco (0..1), lido pela GUI
         self._err = None
+        self._gate = 1.0            # ganho do gate, rampeado a cada bloco
+        self._rampa = 0.25          # 25% por bloco: abre/fecha em ~4 blocos
 
     def _callback(self, indata, outdata, frames, time, status):  # noqa: ARG002
         # nível de entrada (sempre, mesmo mutado, pra dar feedback visual)
         self.level = float(np.sqrt(np.mean(indata[:, 0] ** 2)) + 1e-9)
-        if self.passthrough:
-            mono = indata[:, 0] * self.gain
-            np.clip(mono, -1.0, 1.0, out=mono)
-            outdata[:, 0] = mono
-            if outdata.shape[1] > 1:
-                outdata[:, 1] = mono
-        else:
+        # o gate (app x mic real) trocava de estado em degrau: enfraquece em rampa
+        # curta para não estalar no começo da fala do app (#329)
+        alvo = 1.0 if self.passthrough else 0.0
+        self._gate += (alvo - self._gate) * self._rampa
+        if self._gate < 1e-4 and not self.passthrough:
             outdata.fill(0.0)       # app (navegador) alimenta o BlackHole
+            return
+        mono = indata[:, 0] * self.gain * self._gate
+        # soft-limit (joelho em 0,7) no lugar do clip duro: ganho >1 distorcia
+        mag = np.abs(mono)
+        over = mag > 0.7
+        if over.any():
+            mono = np.where(over,
+                            np.sign(mono) * (0.7 + 0.3 * np.tanh((mag - 0.7) / 0.3)),
+                            mono)
+        outdata[:, 0] = mono
+        if outdata.shape[1] > 1:
+            outdata[:, 1] = mono
 
     def start(self, in_idx, out_idx):
         self.stop()

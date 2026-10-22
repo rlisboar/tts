@@ -533,3 +533,12 @@ def test_truncado_a_40_por_cento_dispara_e_a_90_nao():
     quase = np.zeros(int(natural * 0.90 * sr), dtype=np.float32) + 0.1
     assert "truncado" in motivo_anomalia(curto, sr, texto)
     assert motivo_anomalia(quase, sr, texto) == ""
+
+
+def test_sanitize_text_barra_entre_digitos_e_sn():
+    """`/` é "por" entre dígitos e "S/N" tem leitura própria (#329)."""
+    assert sanitize_text("aberto 24/7") == "aberto 24 por 7."
+    assert sanitize_text("3/4 da turma") == "3 por 4 da turma."
+    assert "sim ou não" in sanitize_text("S/N")
+    # barra entre NÃO-dígitos continua "ou"
+    assert "autor ou leitor" in sanitize_text("autor/leitor")
