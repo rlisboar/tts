@@ -58,6 +58,9 @@ for linha in sys.stdin:
             time.sleep(float(os.environ["STUB_DORME"]))
         if os.environ.get("STUB_ERR"):
             envia({"type": "err", "id": m.get("id"), "error": "boom no filho"})
+        elif os.environ.get("STUB_MUDO"):
+            envia({"type": "ok", "id": m.get("id"), "sr": 24000, "n": 4800, "rms": 0.0,
+                   "audio_b64": base64.b64encode(b"\x00\x00\x00\x00" * 4800).decode()})
         else:
             envia({"type": "ok", "id": m.get("id"), "sr": 24000, "n": 4800, "rms": 1.0,
                    "audio_b64": base64.b64encode(b"\x00\x00\x80\x3f" * 4800).decode()})
@@ -92,7 +95,7 @@ def pipeline(monkeypatch):
     """LivePipeline com `_tts_live` e sem prewarm real; `_tts_app` dublado."""
     chamadas = []
 
-    def _tts_app_fake(texto, omni, voice_id=None):
+    def _tts_app_fake(texto, omni, voice_id=None, espera=None):
         chamadas.append((texto, voice_id))
         return np.ones(2400, dtype=np.float32) * 0.5
 
@@ -291,3 +294,83 @@ def test_log_do_filho_tem_nome_unico(filho):
     finally:
         a.fecha()
         b.fecha()
+
+# ---------------------------------------------------------------------------
+# #305 — o pós do Live: mesma cadeia do job, mudo do worker reprovado
+# ---------------------------------------------------------------------------
+
+def _baixo(n: int = 9600, rms: float = 0.05) -> np.ndarray:
+    """Áudio no nível CRU do modelo (~0,05), como o worker entrega."""
+    rng = np.random.default_rng(3)
+    a = rng.standard_normal(n).astype(np.float32)
+    return a * (rms / float(np.sqrt(np.mean(a ** 2))))
+
+
+class _WorkerFalso:
+    ativo = True
+
+    def __init__(self, audio):
+        self._audio = audio
+
+    def gerar(self, texto, omni, espera=None):
+        return self._audio.copy()
+
+    def fecha(self):
+        return None
+
+
+def _rms(a) -> float:
+    return float(np.sqrt(np.mean(np.asarray(a, dtype=np.float64) ** 2)))
+
+
+def test_pos_do_live_iguala_worker_e_in_process(pipeline, monkeypatch):
+    """Os dois caminhos passam pelo MESMO pós: mesmo nível, não 2-3 dB de diferença."""
+    pipeline._worker = _WorkerFalso(_baixo())
+    r_worker = _rms(pipeline._tts_live("mesmo texto", {}))
+
+    monkeypatch.setattr(lp, "_worker_habilitado", lambda: False)
+    pipeline._tts_app = lambda texto, omni, voice_id=None, espera=None: _baixo()
+    r_app = _rms(pipeline._tts_live("mesmo texto", {}))
+
+    assert abs(20 * np.log10(r_worker / r_app)) <= 1.0, (r_worker, r_app)
+    # e ambos no nível do job (alvo 0,15) — sem o pós ficariam nos 0,05 crus
+    for r in (r_worker, r_app):
+        assert 0.10 < r < 0.22, r
+
+
+def test_pos_do_live_rampeia_as_bordas(pipeline):
+    """Primeiros e últimos 8 ms saem rampeados (sem clique na emenda)."""
+    pipeline._worker = _WorkerFalso(np.ones(9600, dtype=np.float32) * 0.5)
+    audio = pipeline._tts_live("x", {})
+    assert audio[0] == pytest.approx(0.0, abs=1e-6)
+    assert audio[-1] == pytest.approx(0.0, abs=1e-6)
+    # o miolo continua cheio (o fade não achata o trecho)
+    assert float(np.abs(audio[len(audio) // 2])) > 0.1
+
+
+def test_gerar_reprova_audio_mudo_do_filho(monkeypatch):
+    """`rms` abaixo do piso vira `_WorkerMorto` (o turno é regerado in-process)."""
+    import base64
+
+    w = lp._LiveWorker()
+    w._ativo = True
+    monkeypatch.setattr(w, "_envia", lambda obj: None)
+    zeros = np.zeros(4800, dtype=np.float32)
+    monkeypatch.setattr(w, "_espera", lambda tipos, timeout: {
+        "type": "ok", "id": 1, "sr": 24000, "n": zeros.size, "rms": 0.0,
+        "audio_b64": base64.b64encode(zeros.tobytes()).decode()})
+    with pytest.raises(lp._WorkerMorto) as exc:
+        w.gerar("x", {})
+    assert "mudo" in str(exc.value)
+
+
+def test_worker_mudo_derruba_para_o_in_process_no_turno(pipeline, filho, monkeypatch):
+    """Filho devolvendo zeros: o turno sai audível e a sessão passa a in-process."""
+    monkeypatch.setenv("STUB_MUDO", "1")
+    pipeline._worker = filho(voice_id="v")
+    pipeline._worker.start()
+    pipeline._tts_app = lambda texto, omni, voice_id=None, espera=None: np.ones(
+        2400, dtype=np.float32) * 0.5
+    audio = pipeline._tts_live("turno", {})
+    assert pipeline._worker_indisponivel is True
+    assert _rms(audio) > 0.1, "aceitou mudo"

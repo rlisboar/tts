@@ -698,7 +698,11 @@ if not real:
     probs = [lt.scorer_silero(voz[i:i + 512]) for i in range(0, 16000 - 511, 512)]
     limiar = max(0.05, min(0.5, float(np.percentile(probs, 50)) * 0.9))
 
-prob = float(np.median([lt.scorer_silero(voz[i:i + 512]) for i in range(0, 8192, 512)]))
+# janela de 1 s inteira, não 0,5 s: o 1º wav em ordem alfabética pode abrir
+# com silêncio (medido: 290 ms em `voices/1e8e1479ae.wav`) e a mediana dos
+# primeiros 0,5 s dava 0,03 — o teste dependia de qual voz está no disco.
+prob = float(np.median([lt.scorer_silero(voz[i:i + 512])
+                        for i in range(0, 16000 - 511, 512)]))
 assert prob > limiar, "voz de referencia sem resposta do modelo"
 
 motor = lt.TurnEngine(lt.Config(fala_threshold=limiar), scorer=scorer)

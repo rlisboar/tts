@@ -20,11 +20,10 @@ import pytest
 
 import app
 import live_pipeline as lp
-from test_api import dsh_fake_bin, dsh_limpo  # fixtures de test_api (fora do conftest)
-
-# os imports de fixture são usados só como PARÂMETRO de teste, uso que o pyflakes
-# não enxerga (ele ignora `noqa`): `__all__` marca como usados e mata F401/F811.
-__all__ = ["dsh_fake_bin", "dsh_limpo"]
+# fixtures de test_api (fora do conftest): usadas só como PARÂMETRO de teste. O F811
+# é ignorado no `pyproject.toml` (#378), então o `noqa` aqui é marcador de intenção;
+# o `__all__` que o pyflakes exigia foi removido.
+from test_api import dsh_fake_bin, dsh_limpo  # noqa: F401  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -694,7 +693,8 @@ def test_tts_live_com_close_entre_as_duas_leituras_nao_estoura(dsh_limpo, monkey
     de guardar o valor — é exatamente a ordem "atribuiu → close() → leu"."""
     monkeypatch.setenv("TTS_CHAT_BACKEND", "openai")   # isola do dsh
     monkeypatch.setattr(lp, "_worker_habilitado", lambda: True)
-    monkeypatch.setattr(lp, "_tts_app", lambda texto, omni, voice_id=None: "in-process")
+    monkeypatch.setattr(lp, "_tts_app",
+                        lambda texto, omni, voice_id=None, espera=None: "in-process")
     criados = []
 
     class WorkerFalso:
@@ -711,7 +711,7 @@ def test_tts_live_com_close_entre_as_duas_leituras_nao_estoura(dsh_limpo, monkey
             self.fechado = True
             self._ativo = False
 
-        def gerar(self, texto, omni):
+        def gerar(self, texto, omni, espera=None):
             return "pelo-worker"
 
     monkeypatch.setattr(lp, "_LiveWorker", WorkerFalso)

@@ -17,10 +17,10 @@ import app
 from test_api import (  # noqa: F401 — fixtures, não estão no conftest
     _setup_ok, dsh_fake_bin, dsh_limpo, engine_fake, hist_limpo, live_limpo,
     pipeline_fake, ws_client)
-from test_api import _isolamento_disco  # noqa: F401
+from test_api import _isolamento_disco  # noqa: F401  # noqa: F401
 
-__all__ = ["_isolamento_disco", "dsh_fake_bin", "dsh_limpo", "engine_fake",
-           "hist_limpo", "live_limpo", "pipeline_fake", "ws_client"]
+# Fixtures de outros módulos de teste: uso só como PARÂMETRO. F811 ignorado no
+# `pyproject.toml` (#378) — `noqa` como marcador de intenção.
 
 
 @pytest.fixture(autouse=True)

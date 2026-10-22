@@ -947,3 +947,53 @@ def test_tts_do_turno_segura_o_gen_lock_como_o_job_normal(monkeypatch):
     sobrepostas.update(agora=0, max=0, chamadas=0)
     dispara()
     assert sobrepostas["max"] > 1, "sem trava, a contraprova TEM de se sobrepor"
+
+
+# ---------------------------------------------------------------------------
+# #301: a regra de eco não pode engolir FALA HUMANA (medido na matriz
+# `smoke_eco_regra.py`, que roda a mesma coisa sobre corpus e é o bench do gate)
+# ---------------------------------------------------------------------------
+ECO_TEXTO_301 = ("Então o dia tá bonito hoje e a gente pode aproveitar a tarde no "
+                 "parque.")
+
+
+def test_301_pergunta_que_reusa_o_vocabulario_do_assistente_e_humano():
+    """Falso-descarte medido (auditoria #283): pergunta curta de acompanhamento.
+
+    O motor vira eco porque "a tarde" está no texto do assistente; o "?" é o sinal
+    de que quem escolheu as palavras foi o humano (o eco copia a prosódia)."""
+    assert not lp._parece_eco("e a tarde?", ECO_TEXTO_301)
+
+
+def test_301_negacao_que_reusa_palavras_e_humano():
+    """Falso-descarte medido: negação + trecho do assistente com OUTRO conteúdo."""
+    assistente = "É o seguinte: o relatório ficou pronto e o prazo é sexta."
+    assert not lp._parece_eco("Não, o prazo é outro", assistente)
+    # eco literal do mesmo trecho continua sendo eco
+    assert lp._parece_eco("o prazo é sexta", assistente)
+
+
+def test_301_eco_literal_do_trecho_continua_descartado():
+    """A contraprova do caso acima: mesmo vocabulário, ordem do assistente."""
+    assert lp._parece_eco("tá bonito hoje e a gente pode", ECO_TEXTO_301)
+    assert lp._parece_eco("a gente pode aproveitar a tarde", ECO_TEXTO_301)
+
+
+def test_301_marcador_so_vale_quando_a_referencia_nao_tem():
+    """"então"/"e" aparecem em qualquer frase: não podem virar passe livre.
+
+    Se o marcador já está na referência, a decisão volta para a janela."""
+    assert lp._parece_eco("então o dia tá bonito", ECO_TEXTO_301)
+    assert not lp._parece_eco("então", ECO_TEXTO_301)      # 1 palavra: humano
+
+
+def test_301_humano_mais_longo_que_a_referencia_nao_e_eco():
+    assert not lp._parece_eco("não, hoje eu prefiro o parque de manhã", "Sim, claro.")
+
+
+def test_301_eco_com_palavra_parecida_do_whisper_ainda_e_eco():
+    """Tolerância que sobra para o ruído do Whisper (teto de 2 divergências)."""
+    assistente = ("Olha, o relatório ficou pronto ontem à noite e o prazo de entrega "
+                  "é sexta-feira.")
+    assert lp._parece_eco("o relatório ficou pronto ontem a noite", assistente)
+    assert lp._parece_eco("o prazo de entrega e sexta-feira", assistente)

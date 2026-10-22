@@ -71,7 +71,9 @@ def _sessao(pipe):
             "cancelado": threading.Event(),
             "turno_pendente": None, "turno_pendente_barge": False,
             "pend_thread": None, "pendentes_descartados": 0,
-            "buffer_consumido": 0}
+            # #315: sem `prewarm_ok` o gate do aquecimento seguraria o 1º turno e
+            # estes casos medem o caminho do pendente, não o do prewarm
+            "prewarm_ok": True, "buffer_consumido": 0}
 
 
 def _eventos(sess):

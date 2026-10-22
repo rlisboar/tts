@@ -9,9 +9,10 @@ import numpy as np
 import pytest
 
 import common
-from common import (assemble_omnivoice_path, fade_edges, normalize,
-                    sanitize_text, split_text, time_stretch,
-                    trim_tail_silence, write_json_atomic, write_wav_concat)
+from common import (PAD_CAUDA_S, PAUSA_PADRAO_S, assemble_omnivoice_path, fade_edges,
+                    normalize, pausa_apos, pontua_corte, sanitize_text, split_text,
+                    time_stretch, trim_tail_silence, write_json_atomic,
+                    write_wav_concat)
 
 
 # ---------------------------------------------------------------------------
@@ -361,3 +362,148 @@ def test_write_json_atomic_preserva_modo_do_destino(tmp_path):
 
     assert (dst.stat().st_mode & 0o777) == 0o640
     assert json.loads(dst.read_text()) == {"k": 1}
+
+
+# ---------------------------------------------------------------------------
+# #303 — não-finito não pode atravessar o DSP
+# ---------------------------------------------------------------------------
+
+def test_normalize_vetor_todo_nan_sai_finito():
+    x = np.full(4800, np.nan, dtype=np.float32)
+    y = normalize(x)
+    assert np.isfinite(y).all(), "normalize propagou NaN"
+    assert float(np.abs(y).max()) == 0.0
+
+
+def test_normalize_nan_no_meio_preserva_o_resto():
+    x = _sinal() * 0.05
+    x[2000] = np.nan
+    x[3000] = np.inf
+    x[3500] = -np.inf
+    y = normalize(x)
+    assert np.isfinite(y).all()
+    assert float(np.abs(y).max()) <= 0.95 + 1e-6
+    # o miolo sem defeito continua sendo sinal, não zeros
+    miolo = y[500:1500]
+    assert float(np.sqrt(np.mean(miolo ** 2))) == pytest.approx(0.15, rel=0.1)
+
+
+# ---------------------------------------------------------------------------
+# #302 — o teto de pico é limiter, não ganho
+# ---------------------------------------------------------------------------
+
+def _com_crista(pico_rel: float) -> np.ndarray:
+    """Sinal de RMS ~0,05 com um transiente `pico_rel`× o próprio RMS."""
+    x = (_sinal() * 0.05).astype(np.float32)
+    rms = float(np.sqrt(np.mean(x ** 2)))
+    x[:50] *= (pico_rel * rms) / max(1e-9, float(np.abs(x[:50]).max()))
+    return x
+
+
+def test_normalize_crista_alta_NAO_derruba_o_nivel():
+    """Antes o trecho de crista alta era normalizado pelo PICO e saía mais baixo."""
+    alvo = 0.15
+    limpo = normalize(_sinal() * 0.05, target_rms=alvo)
+    com_crista = normalize(_com_crista(8.0), target_rms=alvo)   # crista ~18 dB
+    r_limpo = float(np.sqrt(np.mean(limpo ** 2)))
+    r_crista = float(np.sqrt(np.mean(com_crista ** 2)))
+    assert r_crista == pytest.approx(r_limpo, rel=0.10), (
+        f"crista alta mudou o nível: {r_limpo:.4f} -> {r_crista:.4f}")
+    assert float(np.abs(com_crista).max()) <= 0.95 + 1e-6
+
+
+def test_normalize_igualha_niveis_do_paragrafo_da_auditoria():
+    """Os 4 níveis crus medidos na auditoria saem com espalhamento ≤2 dB.
+
+    Nível cru do parágrafo real (item 1 do #284): 0,0532 / 0,1267 / 0,1059 /
+    0,0970 (7,5 dB de espalhamento). Antes o trecho de crista alta saía ainda
+    mais baixo que isso; depois do conserto o espalhamento tem de fechar.
+    """
+    import math
+
+    niveis = (0.0532, 0.1267, 0.1059, 0.0970)
+    # transiente de amplitude ABSOLUTA igual nos quatro: assim a crista de cada
+    # trecho muda com o nível dele — é o que a normalização pelo pico castigava
+    # de forma desigual (o trecho baixo virava o mais alto)
+    saida = []
+    for n in niveis:
+        x = (_sinal() * n).astype(np.float32)
+        x[:50] *= 0.5 / max(1e-9, float(np.abs(x[:50]).max()))
+        saida.append(normalize(x))
+    rms = [float(np.sqrt(np.mean(y ** 2))) for y in saida]
+    espalhamento = 20 * math.log10(max(rms) / min(rms))
+    assert espalhamento <= 2.0, f"espalhamento {espalhamento:.1f} dB (rms {rms})"
+    for r in rms:
+        assert abs(20 * math.log10(r / 0.15)) <= 1.0, f"trecho fora de ±1 dB do alvo: {r:.4f}"
+
+
+def test_normaliza_loudness_leva_ao_alvo_e_respeita_tolerancia(tmp_path):
+    import soundfile as sf
+
+    from common import LUFS_ALVO, loudness_lufs, normaliza_loudness
+
+    sr = 24000
+    t = np.arange(3 * sr) / sr
+    # fala sintética modulada: o normalize deixa em ~ -16 LUFS, fora da tolerância
+    x = (0.05 * np.sin(2 * np.pi * 180 * t)
+         * np.repeat(np.hanning(2400), 30)[:3 * sr]).astype(np.float32)
+    p = tmp_path / "a.wav"
+    sf.write(str(p), normalize(x), sr, subtype="PCM_16")
+    antes = loudness_lufs(p)
+    assert antes is not None and antes > LUFS_ALVO + 1.0, antes
+
+    delta = normaliza_loudness(p)
+    assert delta is not None and delta < 0
+    assert abs(loudness_lufs(p) - LUFS_ALVO) <= 1.0
+    # já no alvo: não reescreve, devolve 0.0
+    assert normaliza_loudness(p) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# #319 — prosódia do corte: pontuação preservada e pausa por pontuação
+# ---------------------------------------------------------------------------
+
+def test_pontua_corte_preserva_virgula_e_dois_pontos():
+    """Corte por vírgula/dois-pontos/ponto-e-vírgula NÃO recebe ponto final."""
+    for marca in (",", ":", ";"):
+        assert pontua_corte(f"primeiro o cronograma{marca}", ultimo=False).endswith(marca)
+        assert pontua_corte(f"primeiro o cronograma{marca}", ultimo=True).endswith(marca)
+    # nada de `:.` nem `,.`
+    assert ":. " not in " ".join([pontua_corte("na ordem:", True)])
+    assert pontua_corte("na ordem:", True) == "na ordem:"
+
+
+def test_pontua_corte_corte_seco_vira_virgula_so_o_ultimo_e_ponto():
+    assert pontua_corte("um trecho cortado no meio", ultimo=False).endswith(",")
+    assert pontua_corte("um trecho cortado no meio", ultimo=True).endswith(".")
+    # pontuação terminal já presente é respeitada, não duplicada
+    assert pontua_corte("Bom dia a todos.", ultimo=False) == "Bom dia a todos."
+    assert pontua_corte("Sério?!", ultimo=True) == "Sério?!"
+
+
+def test_paragrafo_da_auditoria_nao_gera_dois_pontos_nem_virgula_ponto():
+    """O parágrafo real da auditoria: nenhum trecho pode fechar em `:.` ou `,.`."""
+    texto = ("Bom dia a todos. Hoje a gente vai falar de três coisas, na ordem: "
+             "primeiro o cronograma, depois os custos, e por último as dúvidas de vocês.")
+    chunks = split_text(sanitize_text(texto), max_chars=60)
+    finais = [pontua_corte(c, ultimo=(i == len(chunks) - 1))
+              for i, c in enumerate(chunks)]
+    assert len(finais) == 4
+    for f in finais:
+        assert not f.endswith(":."), f
+        assert not f.endswith(",."), f
+    assert finais[1].endswith(":")     # "…na ordem:"
+    assert finais[2].endswith(",")      # "…os custos,"
+    assert finais[3].endswith(".")      # último fecha
+
+
+def test_pausa_por_pontuacao():
+    assert pausa_apos(",") < pausa_apos(".")
+    assert pausa_apos(";") <= 0.25 and pausa_apos(":") <= 0.25
+    for fim in (".", "!", "?", "…"):
+        assert 0.35 <= pausa_apos(fim) <= 0.50
+    assert pausa_apos("palavra") == PAUSA_PADRAO_S      # corte seco = pausa de vírgula
+    # vão total (pad da cauda + pausa) dentro do aceite
+    assert PAD_CAUDA_S + pausa_apos(",") <= 0.25
+    assert PAD_CAUDA_S + max(pausa_apos(c) for c in ".!?…") <= 0.50
+    assert PAD_CAUDA_S <= 0.10

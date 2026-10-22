@@ -38,8 +38,10 @@ if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
 from backends import generate_with_backend, resolve_backend  # noqa: E402
-from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,  # noqa: E402
+from common import (NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,  # noqa: E402
+                    pausa_apos, pontua_corte,  # noqa: E402
                     apply_audio_fx, fade_edges, normalize,  # noqa: E402
+                    normaliza_loudness,  # noqa: E402
                     resolve_omni_source, sanitize_text, split_text,  # noqa: E402
                     time_stretch, trim_tail_silence, write_wav_concat,  # noqa: E402
                     write_json_atomic,  # noqa: E402
@@ -90,7 +92,6 @@ def _carrega(cfg: dict) -> dict:
     exatamente essa diferença que troca os ~7,5 s do turno isolado por ~0,2 s
     quentes.
     """
-    import numpy as np
     from mlx_audio.tts.utils import load_model
 
     settings = cfg.get("settings") or {}
@@ -144,7 +145,6 @@ def _carrega(cfg: dict) -> dict:
         "be_meta": be.get("meta") or {}, "settings": settings, "omni": omni,
         "language": cfg.get("language") or "auto", "voice_id": voice_id,
         "conds": conds, "ref_text": ref_text, "ref_audio": ref_audio,
-        "silence": np.zeros(int(CHUNK_SILENCE_S * sr), dtype=np.float32),
     }
 
 
@@ -172,7 +172,8 @@ def _sintetiza(est: dict, texto: str, omni: dict | None = None, fx: bool = False
     if fx:
         s = est["settings"]
         audio = fade_edges(apply_audio_fx(
-            normalize(trim_tail_silence(audio, est["sr"])), est["sr"],
+            normalize(trim_tail_silence(audio, est["sr"], pad_s=PAD_CAUDA_S)),
+            est["sr"],
             g_low=float(s.get("audio_eq_low_db", 0.0)),
             g_mid=float(s.get("audio_eq_mid_db", 0.0)),
             g_high=float(s.get("audio_eq_high_db", 0.0)),
@@ -225,11 +226,11 @@ def main() -> int:
                 "progress": {"current": i + 1, "total": len(chunks),
                              "backend": be.get("id"), "family": est["family"]},
             })
-            if chunk[-1] not in ".!?…":
-                chunk = chunk.rstrip(" ,;:") + "."
+            # pontuação do corte preservada (vírgula não vira ponto — #319)
+            chunk = pontua_corte(chunk, ultimo=(i == len(chunks) - 1))
             audio = _sintetiza(est, chunk, fx=True)
             if i < len(chunks) - 1:
-                audio = _concat(est, audio)
+                audio = _concat(est, audio, pausa_apos(chunk[-1]))
             sf.write(piece_dir / f"{i}.wav", audio, sr, subtype="PCM_16")
             del audio
             _release_mlx_memory()  # sem isto o pool Metal cresce a cada trecho
@@ -243,6 +244,14 @@ def main() -> int:
         out_id = uuid.uuid4().hex[:10]
         duration = write_wav_concat(piece_dir, len(chunks),
                                     outputs_dir / f"{out_id}.wav", sr)
+        # mesmo ganho ÚNICO de loudness do caminho in-process (#302)
+        saida = outputs_dir / f"{out_id}.wav"
+        lufs_db = normaliza_loudness(saida)
+        if lufs_db is None:
+            print("[worker] nível final não medido (ffmpeg?) — sem ajuste de loudness",
+                  flush=True)
+        elif abs(lufs_db) > 0.05:
+            print(f"[worker] nível final ajustado {lufs_db:+.2f} dB", flush=True)
         omni = est["omni"]
         meta = {
             "id": out_id,
@@ -260,6 +269,7 @@ def main() -> int:
             "duration": duration,
             "elapsed": elapsed,
             "isolated": True,
+            "lufs_ganho_db": lufs_db,
         }
         write_json_atomic(outputs_dir / f"{out_id}.json", meta)
         # solta modelo + pool antes de sair (o SO recupera o processo, mas
@@ -290,10 +300,11 @@ def main() -> int:
         return 1
 
 
-def _concat(est: dict, audio):
-    """Acrescenta o silêncio entre trechos (mesma ordem do lote)."""
+def _concat(est: dict, audio, pausa_s: float):
+    """Acrescenta a pausa do trecho pela pontuação dele (#319)."""
     import numpy as np
-    return np.concatenate([audio, est["silence"]])
+    n = int(pausa_s * est["sr"])
+    return np.concatenate([audio, np.zeros(n, dtype=np.float32)])
 
 
 # ---------------------------------------------------------------------------

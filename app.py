@@ -32,7 +32,7 @@ import wave
 from collections import OrderedDict
 from collections import defaultdict, deque
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit
 from fastapi import (FastAPI, File, Form, HTTPException, Request, UploadFile,
                      WebSocket)
 from fastapi import WebSocketDisconnect
@@ -124,19 +124,23 @@ _instala_guarda_nofile()
 
 import dsh_client
 from backends import generate_with_backend, list_backends, resolve_backend
-from common import (CHUNK_SILENCE_S, NATIVE_SPEED_FAMILIES, OMNI_ALIASES,
+from common import (LUFS_ALVO, NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,
                     resolve_omni_source, write_json_atomic,
                     apply_audio_fx,
                     atempo_chain as _atempo_chain,
                     biquad as _biquad,
                     fade_edges as _fade_edges,
                     normalize as _normalize,
+                    pausa_apos as _pausa_apos,
+                    pontua_corte as _pontua_corte,
+                    normaliza_loudness as _normaliza_loudness,
                     release_mlx_memory as _release_mlx_memory,
                     sanitize_text as _sanitize_text,
                     split_text as _split_text,
                     time_stretch as _time_stretch,
                     trim_tail_silence as _trim_tail_silence,
                     write_wav_concat as _write_wav_concat)
+import metrics_hist as _metrics
 
 BASE = Path(__file__).resolve().parent
 VOICES_DIR = BASE / "voices"
@@ -286,6 +290,9 @@ _SETTINGS_DEFAULTS = {
     "auto_cleanup_minutes": 15,
     # OmniVoice — controles de geração (defaults = os da lib)
     "omni_num_steps": 16,             # passos de unmasking (4–64); 16 rápido, 32 qualidade
+    # #315: passos do 2º chunk do LIVE (o 1º tem teto próprio, 12). Do 3º em diante
+    # vale o `omni_num_steps`. Menor = menos engasgo no começo da resposta.
+    "live_num_steps": 16,
     "omni_guidance_scale": 2.0,       # força do CFG (0–10): + = mais aderente ao texto/voz
     "omni_class_temperature": 0.0,    # temp. de amostragem de token (0 = greedy/estável)
     "omni_position_temperature": 5.0, # temp. da escolha de posição a revelar (0–20)
@@ -333,6 +340,11 @@ _SETTINGS_DEFAULTS = {
     "stt_local_engine": "whisper",    # STT local no Mac: whisper | parakeet
     "stt_whisper_repo": "",           # repo HF do Whisper local; vazio = large-v3-turbo
     "stt_beam": 5,                    # beam do STT remoto: 1=rápido, 5=padrão, 8=qualidade
+    # Histórico de operação (#376): TTL em dias do JSONL do /api/metrics e teto de
+    # tamanho por arquivo. Política de RECURSO (não é admin): quem gera fala pode
+    # ajustar sem repontar conexão. Ver `metrics_hist.py`.
+    "metrics_ttl_dias": 14,
+    "metrics_teto_mb": 8,
     # Modelos remotos (API OpenAI-compatível). base_url deve terminar em /v1
     # (ex.: http://rtx-host:8000/v1). api_key opcional. Tudo local por padrão.
     # base_url + api_key ficam locais (settings.json é gitignored). Vazio = local.
@@ -551,7 +563,32 @@ def _sync_legacy_apikey_file():
         pass
 
 
+def _role_do_disco(v) -> str | None:
+    """`role` lido do arquivo: tolerante, e o legado é `None` de propósito.
+
+    Ausente/vazio → None; inválido → None com aviso, e NÃO 400: um arquivo editado
+    à mão não pode derrubar o boot (o import de `app` faz a leitura). O default da
+    linha sem campo é a política ANTIGA (`_admin_is_allowed` trata None como "não é
+    chave gerenciada com papel" e cai na regra legada, que administra quando não há
+    `TTS_ROD_ADMIN_KEY`) — é o que uma chave criada antes de o campo existir esperava,
+    e migração nenhuma muda o papel de chave existente por conta própria. Quem quer a
+    separação põe `role` explícito (POST/PATCH gravam)."""
+    if v is None:
+        return None
+    s = str(v).strip().lower()
+    if not s:
+        return None
+    if s in ("admin", "use"):
+        return s
+    print(f"[apikeys] role {s!r} desconhecido no arquivo — tratando como legado (None), "
+          f"a chave segue a política antiga", file=sys.stderr, flush=True)
+    return None
+
+
 def _save_apikeys():
+    """Persiste .apikeys.json — inclusive o `role` (a separação admin/use só é
+    real se sobreviver ao restart; sem o campo, `_load_apikeys` relia tudo como
+    legado e a próxima subida devolvia admin a todas as chaves `use`)."""
     payload = {
         "enabled": bool(_apikeys.get("enabled", True)),
         "keys": [
@@ -560,6 +597,9 @@ def _save_apikeys():
                 "name": k.get("name") or "sem nome",
                 "secret": k["secret"],
                 "created_at": k.get("created_at") or "",
+                # None (legado) é gravado como null EXPLÍCITO: distingue "papel
+                # nunca definido" de "campo sumido por causa de uma build velha".
+                "role": k.get("role") or None,
             }
             for k in (_apikeys.get("keys") or [])
             if k.get("secret")
@@ -591,6 +631,9 @@ def _load_apikeys():
                     "name": str(raw.get("name") or "chave")[:64],
                     "secret": sec,
                     "created_at": str(raw.get("created_at") or ""),
+                    # o papel é LIDO (antes era descartado e a chave `use` voltava
+                    # admin no restart): normalize aqui, com o legado em None.
+                    "role": _role_do_disco(raw.get("role")),
                 })
         except Exception as exc:  # noqa: BLE001
             keys = []
@@ -736,6 +779,91 @@ def _is_local(request) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Guarda de `Origin` no LOOPBACK (CSRF / DNS-rebinding) — auditoria #282
+#
+# O loopback é isento de auth E de rate limit, e o CORS default é `*`: qualquer
+# página aberta no navegador do dono pode chamar `http://127.0.0.1:7860/...`
+# (um `fetch` simples atravessa sem preflight) e — pior — LER a resposta, o que
+# entrega `GET /api/apikeys?reveal=1` (todos os segredos), `GET /api/settings`
+# (chaves de terceiros), o zip do mic-router (a chave primária) e permite
+# `POST /api/shutdown` / `DELETE /api/outputs` às cegas. DNS-rebinding é o mesmo
+# buraco com um hostname do atacante resolvido para 127.0.0.1.
+#
+# A regra NÃO afrouxa a LAN: só age quando o socket é loopback. Origem ausente
+# (curl, SDK, scripts do repo) e origem da própria máquina seguem como antes.
+# ---------------------------------------------------------------------------
+_ORIGENS_EXTENSAO = ("chrome-extension://", "moz-extension://",
+                     "safari-web-extension://")
+_HOSTS_DA_MAQUINA = ("127.0.0.1", "localhost", "::1")
+#: rotas que REVELAM segredo para quem está no próprio Mac (a vista de admin):
+#: com origem estrangeira elas passam a exigir chave em vez de 200 mudo.
+_ROTAS_REVELAM_SEGREDO = ("/api/apikeys", "/api/settings", "/api/client/mic-router")
+_origens_barradas: dict = {}
+_origens_barradas_lock = threading.Lock()
+
+
+def _mesma_origem(request) -> str:
+    """Origem da própria requisição (`esquema://host`), para reconhecer a UI."""
+    esquema = (request.headers.get("x-forwarded-proto") or request.url.scheme
+               or "http").split(",")[0].strip()
+    return f"{esquema}://{request.headers.get('host') or ''}"
+
+
+def _origem_confiavel(origem: str, request) -> bool:
+    """A origem é da própria máquina / da UI / de uma extensão / do `TTS_CORS_ORIGINS`?"""
+    if not origem:
+        return True                      # sem `Origin`: cliente não-browser
+    if origem.lower().startswith(_ORIGENS_EXTENSAO):
+        return True                      # extensão do dono (não há como forjar esquema)
+    if origem == _mesma_origem(request):
+        return True                      # a própria UI, mesma porta
+    if "*" in _CORS_ORIGINS or origem in _CORS_ORIGINS:
+        return True                      # o dono liberou explicitamente
+    partes = urlsplit(origem)
+    return partes.scheme in ("http", "https") and (partes.hostname or "") in _HOSTS_DA_MAQUINA
+
+
+def _origem_estrangeira(request) -> bool:
+    """Página de TERCEIRO chamando pelo loopback? (só importa quando é loopback)"""
+    return not _origem_confiavel((request.headers.get("origin") or "").strip(), request)
+
+
+def _rota_revela_segredo(path: str) -> bool:
+    p = path.rstrip("/") or "/"
+    return any(p == r or p.startswith(r + "/") for r in _ROTAS_REVELAM_SEGREDO)
+
+
+def _marca_origem_barrada(request) -> None:
+    """Conta/loga a origem barrada (uma linha por origem+path) — o dono precisa
+    SABER que a tentativa houve; `/api/status` publica o acumulado."""
+    origem = (request.headers.get("origin") or "").strip()[:120]
+    chave = (origem, request.url.path)
+    agora = time.time()
+    with _origens_barradas_lock:
+        reg = _origens_barradas.setdefault(chave, {"n": 0, "em": agora})
+        reg["n"] += 1
+        reg["em"] = agora
+        if len(_origens_barradas) > 64:              # teto: poda os mais antigos
+            for velha in sorted(_origens_barradas, key=lambda k: _origens_barradas[k]["em"])[:16]:
+                _origens_barradas.pop(velha, None)
+        primeira = reg["n"] == 1
+    if primeira:
+        print(f"[origin] barrada {origem!r} em {request.method} {request.url.path}",
+              file=sys.stderr, flush=True)
+
+
+def _resumo_origens_barradas() -> dict:
+    agora = time.time()
+    with _origens_barradas_lock:
+        # só a janela recente: tentativa de ontem não interessa ao painel
+        recentes = {f"{o} {p}": {"n": r["n"], "segundos_atras": round(agora - r["em"], 1)}
+                    for (o, p), r in _origens_barradas.items() if agora - r["em"] < 3600}
+        total = sum(r["n"] for r in _origens_barradas.values())
+    return {"total": total, "recentes": dict(list(recentes.items())[:12])}
+
+
+
 def _key_is_valid(provided: str) -> bool:
     """A chave autentica em /api/* e /v1/*.
 
@@ -774,8 +902,13 @@ def _admin_is_allowed(request) -> bool:
 
     O papel por chave (`role`) é a separação explícita "chave de uso x chave de
     administração" sem depender de variável de ambiente; linha sem `role`
-    (arquivo anterior ao campo) preserva a política antiga."""
-    if _is_local(request):
+    (arquivo anterior ao campo) preserva a política antiga.
+
+    Loopback com `Origin` de TERCEIRO não conta como local (#282): senão qualquer
+    página aberta no navegador do dono administrava a instalação — um `use` da
+    LAN até, mas a página de fora não traz chave nenhuma e o privilégio vinha do
+    socket. Com origem estrangeira quem decide é a credencial apresentada."""
+    if _is_local(request) and not _origem_estrangeira(request):
         return True
     provided = _extract_request_key(request)
     if _ADMIN_API_KEY and _secrets_iguais(provided, _ADMIN_API_KEY):
@@ -788,6 +921,18 @@ def _admin_is_allowed(request) -> bool:
     # Compatibilidade: chave sem papel e sem chave administrativa configurada
     # continua administrando a instalação, como nas versões anteriores.
     return not _ADMIN_API_KEY and _key_is_valid(provided)
+
+
+def _exige_admin(request) -> None:
+    """403 se a credencial não administra. Porta ÚNICA das rotas elevadas (#282).
+
+    A régua é o DANO, não a conveniência: apagar/desligar/trocar o que é global
+    é admin; CONSUMIR (gerar, editar, transcrever, ticket do Live, mic-route) é
+    `use`. Antes, qualquer chave válida derrubava o servidor e apagava as vozes
+    do dono. Com `role: use` a chave gera fala e não mexe na instalação; a chave
+    legada (sem papel) segue administrando quando não existe `TTS_ROD_ADMIN_KEY`."""
+    if not _admin_is_allowed(request):
+        raise HTTPException(403, "Chave administrativa necessária (papel admin)")
 
 
 def _normaliza_role(v) -> str | None:
@@ -935,6 +1080,60 @@ def _rate_poda(now: float) -> None:
         _rate_hits.pop(chave, None)
 
 
+# Estágio do histórico a partir da rota (#376). Serve para ler "quanto custa o
+# STT" sem abrir o código; rota fora do mapa entra sem estágio.
+_ESTAGIO_POR_ROTA = (
+    ("/api/tts", "tts"), ("/v1/audio/speech", "tts"),
+    ("/api/live", "live"), ("/api/chat", "llm"), ("/v1/chat", "llm"),
+    ("/api/translate", "llm"), ("/v1/audio/transcriptions", "stt"),
+    ("/api/transcribe", "stt"),
+)
+
+
+def _estagio_da_rota(rota: str) -> str:
+    for prefixo, estagio in _ESTAGIO_POR_ROTA:
+        if rota.startswith(prefixo):
+            return estagio
+    return ""
+
+
+def _backend_para_historico() -> str:
+    """Id do backend efetivo, curto. Nunca a chave nem a URL."""
+    try:
+        return str((_model_state.get("backend_id") or ""))[:24]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+@app.middleware("http")
+async def _historico_operacao(request, call_next):
+    """Grava uma linha por requisição de API no histórico (#376).
+
+    Registrado por último na pilha => roda por FORA: vê o status FINAL, inclusive
+    o 401 da auth e o 429 do limitador (é o que responde "quantos 429 de
+    admissão"). O preço é medir também o trabalho deles — para `/api/status` isso
+    é ruído desprezível. Fora de `/api/` e `/v1/` não grava: asset não é operação.
+
+    Falha do histórico nunca vira falha do request: o `registrar` já engole, e aqui
+    só há aritmética de tempo.
+    """
+    caminho = request.url.path
+    if not caminho.startswith(("/api/", "/v1/")):
+        return await call_next(request)
+    t0 = time.monotonic()
+    resposta = await call_next(request)
+    try:
+        _metrics.registrar(_rate_path_normalizado(caminho),
+                           (time.monotonic() - t0) * 1000.0,
+                           int(getattr(resposta, "status_code", 0) or 0),
+                           _estagio_da_rota(caminho), _backend_para_historico(),
+                           ttl_dias=int(_settings.get("metrics_ttl_dias", 14)),
+                           teto_mb=int(_settings.get("metrics_teto_mb", 8)))
+    except Exception:  # noqa: BLE001
+        pass
+    return resposta
+
+
 @app.middleware("http")
 async def _rate_limit(request, call_next):
     if request.method == "OPTIONS" or not request.url.path.startswith(("/api/", "/v1/")):
@@ -974,16 +1173,38 @@ async def _rate_limit(request, call_next):
 async def _exige_chave(request, call_next):
     # somente loopback dispensa chave; qualquer acesso pela LAN exige autenticação
     local = _is_local(request)
+    # página de TERCEIRO chamando pelo loopback (#282): o socket é local, a origem
+    # não. `local` deixa de valer como credencial, mas só nos casos que importam —
+    # GET que não revela segredo continua livre, para não quebrar bookmark/SDK.
+    estrangeira = local and _origem_estrangeira(request)
     protegido = request.url.path.startswith(("/api/", "/v1/"))
     # docs/openapi revelam o mapa completo da API: abertos no Mac por conveniência,
     # mas exigem chave quando o acesso vem pela internet (proxy)
     if not local and request.url.path in ("/openapi.json", "/docs", "/redoc",
                                           "/docs/oauth2-redirect"):
         protegido = True
+    if estrangeira and protegido and request.method in ("GET", "HEAD") \
+            and not _rota_revela_segredo(request.url.path):
+        return await call_next(request)     # simples e sem segredo: segue sem chave
     if protegido and request.method != "OPTIONS" and _auth_enabled():
-        ok = local or _key_is_valid(_extract_request_key(request))
+        from fastapi.responses import JSONResponse
+        chave = _extract_request_key(request)
+        if estrangeira and _rota_revela_segredo(request.url.path) \
+                and not _key_is_valid(chave):
+            # 403 e não 401: a credencial do app não é o ponto — quem chamou foi
+            # uma página de fora. O motivo vai no corpo para o dono entender.
+            _marca_origem_barrada(request)
+            return JSONResponse(
+                {"detail": "Origem desconhecida pedindo rota que revela segredo",
+                 "origin": (request.headers.get("origin") or "")[:120],
+                 "hint": "A página que chamou não é a UI. Mande a chave "
+                         "(Authorization: Bearer ou X-API-Key), ou sirva a UI por "
+                         "esta mesma origem/porta."},
+                status_code=403, headers={"X-TTS-Origin-Bloqueada": "1"})
+        ok = (local and not estrangeira) or _key_is_valid(chave)
         if not ok:
-            from fastapi.responses import JSONResponse
+            if estrangeira:
+                _marca_origem_barrada(request)
             return JSONResponse(
                 {"detail": "Não autorizado",
                  "hint": "Cole a chave da API. No Mac do servidor: "
@@ -1015,9 +1236,15 @@ _CSP_POLICY = (
 # /docs e /redoc montam a própria página (CSS do CDN, que a policy da UI não
 # cobre) — ficam como sempre foram, sem CSP.
 _CSP_SEM_HEADER = ("/docs", "/redoc", "/docs/oauth2-redirect", "/openapi.json")
-# Paths do SPA: servidos por `index_com_nonce`, que devolve o MESMO index.html com
-# `nonce` no `<script>` inline (sem ele, sem 'unsafe-inline', o app não roda).
-_SPA_PATHS = ("/", "/index.html")
+# O `<script>` inline precisa do nonce DESTA resposta (sem ele, sem
+# 'unsafe-inline', o app não roda). A marcação no fonte é `<script>` cru: quem
+# atribui o nonce é `_NONCE_RE`, não o texto do arquivo. Assim a injeção não
+# depende da forma da tag — atributo (`type="module"`, `id`), código na mesma
+# linha ou reflow não desligam a página inteira em silêncio, que era o risco da
+# versão anterior (casava só a linha que fosse exatamente `<script>`).
+# `src=` fica de fora: os dois bundles de CDN são cobertos pelo source do CDN e
+# já carregam SRI (nonce neles não acrescentaria nada).
+_NONCE_RE = re.compile(r"<script(?![^>]*\bnonce=)(?![^>]*\bsrc=)", re.I)
 
 
 def _csp_com_nonce(nonce: str | None) -> str:
@@ -1029,10 +1256,9 @@ def _csp_com_nonce(nonce: str | None) -> str:
 
 
 def _index_com_nonce(nonce: str) -> str:
-    """index.html com `nonce` nos `<script>` inline (a tag sozinha na linha; as
-    duas de CDN ficam como estão — elas são cobertas pelo source do CDN e têm SRI)."""
+    """index.html com `nonce` em TODO `<script>` inline (ver `_NONCE_RE`)."""
     html = (BASE / "static" / "index.html").read_text(encoding="utf-8")
-    return re.sub(r"(?m)^<script>$", f'<script nonce="{nonce}">', html)
+    return _NONCE_RE.sub(f'<script nonce="{nonce}"', html)
 
 
 @app.middleware("http")
@@ -1301,6 +1527,23 @@ def _denoise_audio(audio, sr: int, strength: float = 0.7):
     Z2 = gain * mag * np.exp(1j * phase)
     _, y = istft(Z2, fs=sr, nperseg=nperseg, noverlap=nover)
     y = np.asarray(y, dtype=np.float32)
+    # o `istft` (center=True) devolve ~nperseg-noverlap amostras A MAIS: o vetor
+    # crescia a cada chamada e o mesmo arquivo "crescia" sendo limpo de novo
+    # (#324). Corta de volta no tamanho de entrada.
+    if y.size > x.size:
+        y = y[:x.size]
+    elif y.size < x.size:
+        y = np.pad(y, (0, x.size - y.size))
+
+    # gating espectral tira NÍVEL junto com o ruído; devolve o RMS de entrada
+    # (dentro de ±3 dB), senão strength alto entrega uma referência muda e o
+    # clone herda o volume (#324).
+    rms_in = float(np.sqrt(np.mean(x ** 2)))
+    rms_out = float(np.sqrt(np.mean(y ** 2)))
+    if rms_in > 1e-6 and rms_out > 1e-6:
+        ganho = rms_in / rms_out
+        ganho = min(ganho, 10.0 ** (12.0 / 20.0))    # teto de segurança (12 dB)
+        y *= ganho
 
     peak = float(np.abs(y).max() or 0.0)
     if peak > 0.99:                             # evita clip pós-processo
@@ -1308,20 +1551,63 @@ def _denoise_audio(audio, sr: int, strength: float = 0.7):
     return y
 
 
-def _anomalo(audio, sr: int, chunk: str, speed: float = 1.0) -> bool:
-    """Geração descarrilada = inaudível ou curta demais para o texto.
+def _denoise_para_referencia(audio, sr: int, strength: float):
+    """Denoise com guarda de integridade para AMOSTRA DE VOZ.
+
+    Devolve `(audio, recusado)`. `recusado=True` quando a limpeza derrubou o RMS
+    mais de 20 dB abaixo do original — nesse caso vale a amostra sem limpeza em
+    vez de uma referência muda que o clone vai copiar (#324).
+    """
+    import numpy as np
+
+    antes = np.asarray(audio, dtype=np.float32)
+    limpo = _denoise_audio(antes, sr, strength)
+    rms_antes = float(np.sqrt(np.mean(antes ** 2)))
+    rms_depois = float(np.sqrt(np.mean(limpo ** 2)))
+    if rms_antes > 1e-6 and (rms_depois <= 1e-6 or rms_depois < rms_antes / 10.0):
+        print(f"[voice] denoise derrubou o nível (rms {rms_antes:.4f} -> "
+              f"{rms_depois:.4f}) — mantendo a amostra sem limpeza", flush=True)
+        return antes, True
+    return limpo, False
+
+
+def _referencia_pronta(audio, sr: int):
+    """Nível e bordas da amostra de referência antes de gravar (clone melhor)."""
+    return _fade_edges(_normalize(audio), sr)
+
+
+def _motivo_anomalia(audio, sr: int, chunk: str, speed: float = 1.0) -> str:
+    """Por que a geração descarrilou ("" = aprovado).
 
     OmniVoice é masked-diffusion não-AR (sem teto de tokens nem EOS frágil): a
     duração é estimada internamente e varia mais legitimamente, então só
     truncamento grosseiro e áudio inaudível pedem nova tentativa. Com speed>1
     o time-stretch encurta o áudio — o limiar acompanha, senão velocidade alta
     falsifica 'truncamento' e dispara retry (com jitter de seed) à toa.
+
+    Não-finito tem motivo PRÓPRIO de propósito: `nan < 0.01` é **False**, então
+    NaN/Inf passava como áudio bom, o `normalize` propagava, o PCM16 gravava
+    ZEROS e o job terminava `done` com arquivo mudo e sem retry (#303). O motivo
+    sai no log e no meta — degradação não pode ser silenciosa.
     """
     import numpy as np
 
-    if float(np.sqrt(np.mean(audio**2))) < 0.01:  # inaudível
-        return True
-    return len(audio) / sr < len(chunk) / 45 / max(1.0, float(speed or 1.0))
+    a = np.asarray(audio)
+    if a.size == 0:
+        return "vazio"
+    if not np.isfinite(a).all():
+        return "não-finito (NaN/Inf)"
+    rms = float(np.sqrt(np.mean(a.astype(np.float64) ** 2)))
+    if not np.isfinite(rms) or rms < 0.01:
+        return f"inaudível (rms {rms:.4f})"
+    if len(a) / sr < len(chunk) / 45 / max(1.0, float(speed or 1.0)):
+        return f"truncado ({len(a) / sr:.2f}s p/ {len(chunk)} chars)"
+    return ""
+
+
+def _anomalo(audio, sr: int, chunk: str, speed: float = 1.0) -> bool:
+    """Geração inaceitável (o motivo fica em `_motivo_anomalia`)."""
+    return bool(_motivo_anomalia(audio, sr, chunk, speed))
 
 
 def _apply_audio_fx(audio, sr: int):
@@ -1334,6 +1620,22 @@ def _apply_audio_fx(audio, sr: int):
         g_high=float(_settings.get("audio_eq_high_db", 0.0)),
         gain_db=float(_settings.get("audio_gain_db", 0.0)),
     )
+
+
+def _pos_processa(audio, sr: int, pad_s: float = PAD_CAUDA_S):
+    """Pós de UM trecho, num lugar só: trim → normalize → EQ/ganho → fade.
+
+    Serve o job (lote e remoto) E o Live. Antes cada caminho tinha a sua — o Live,
+    nenhuma: o mesmo texto saía 2-3 dB mais baixo lá, com clique nas bordas e
+    áudio mudo aceito como bom (#305).
+
+    `pad_s` é a cauda que o trim deixa para o fade não comer a fala (padrão de
+    80 ms desde o #319: a pausa de verdade agora vem da pontuação, inserida pelo
+    chamador). O Live passa 0,15 s, que é a pausa dele — lá não há inserção.
+    """
+    return _fade_edges(
+        _apply_audio_fx(_normalize(_trim_tail_silence(audio, sr, pad_s=pad_s)), sr), sr)
+
 
 
 def _wav_duration(path: Path) -> float:
@@ -1351,8 +1653,14 @@ def _wav_duration(path: Path) -> float:
 
 @app.get("/health")
 def health():
-    """Liveness p/ monitoramento externo — sem auth, sem detalhe interno."""
-    return {"ok": True}
+    """Liveness p/ monitoramento externo — sem auth, sem detalhe interno.
+
+    `boot_ts` e `rev` existem porque um 200 genérico não distingue "de pé" de "de
+    pé no código de ontem": o probe guarda o `boot_ts` que viu (reinício aparece
+    como mudança, instância travada não) e `rev` diz em qual commit. O
+    fingerprint `codigo` continua só no `/api/build` (autenticado).
+    """
+    return {"ok": True, "boot_ts": int(_BUILD_TS), "rev": _VERSION}
 
 
 # ---------------------------------------------------------------------------
@@ -1460,6 +1768,9 @@ def status():
     st["live_historicos_max"] = _LIVE_MAX_HISTORICOS
     st["rate_limit_buckets"] = len(_rate_hits)
     st["rate_limit_buckets_max"] = _RATE_MAX_BUCKETS
+    # tentativas de origem ESTRANGEIRA barradas (#282): a CSRF vira visível no
+    # painel em vez de só um 403 mudo na aba alheia.
+    st["origens_barradas"] = _resumo_origens_barradas()
     with _apikeys_lock:
         st["api_keys_count"] = len(_apikeys.get("keys") or [])
     st["lan_urls"] = _lan_urls()
@@ -1473,8 +1784,12 @@ def status():
 @app.get("/api/apikeys")
 def list_apikeys(request: Request, reveal: bool = False):
     """Lista chaves. `reveal=1` devolve o secret se for o Mac ou se a
-    requisição já autenticou com uma chave válida."""
-    local = _is_local(request)
+    requisição já autenticou com uma chave válida.
+
+    Loopback com `Origin` de terceiro não conta como "no Mac" (#282): o middleware
+    já barra o `reveal` sem chave, e aqui a vista deixa de ser a de admin para a
+    página de fora não receber nada em claro por acidente."""
+    local = _is_local(request) and not _origem_estrangeira(request)
     tem_chave = _key_is_valid(_extract_request_key(request))
     can_reveal = bool(local) or (_admin_is_allowed(request) and tem_chave)
     do_reveal = bool(reveal) and can_reveal
@@ -1577,7 +1892,20 @@ def rotate_apikey(request: Request, key_id: str):
 
 
 @app.delete("/api/apikeys/{key_id}")
-def delete_apikey(request: Request, key_id: str):
+def delete_apikey(request: Request, key_id: str, forcar: bool = False):
+    """Apaga a chave. A ÚLTIMA pede confirmação (409) — sem chave e sem env a
+    instalação fica sem autenticação nenhuma (achado P1 da auditoria #282).
+
+    `_auth_enabled()` vira falso quando não sobra chave nem `TTS_ROD_API_KEY`/
+    `TTS_ROD_ADMIN_KEY`, e aí `_exige_chave` é no-op: a LAN INTEIRA passa a
+    acessar sem credencial. A resposta só dizia `auth_active:false` DEPOIS de
+    apagar, então o dono descobria pelo vizinho. Agora a última remoção devolve
+    409 com `forcar: true` e NÃO apaga; `?forcar=1` confirma e assume a LAN
+    aberta (aí sim o corpo traz o aviso e `auth_active:false`).
+
+    Com `TTS_ROD_ADMIN_KEY`/`TTS_ROD_API_KEY` no ambiente a auth não cai e a
+    última chave gerenciada sai sem cerimônia. Com a exigência já DESLIGADA por
+    `POST /api/apikeys/enabled` também: a postura aberta já era a escolhida."""
     if not _admin_is_allowed(request):
         raise HTTPException(403, "Chave administrativa necessária")
     if key_id == "__env__":
@@ -1587,16 +1915,43 @@ def delete_apikey(request: Request, key_id: str):
         kept = [k for k in keys if k["id"] != key_id]
         if len(kept) == len(keys):
             raise HTTPException(404, "Chave não encontrada")
+        # a remoção DERRUBA a exigência de chave? (só a última, e só se nada mais
+        # sustenta a auth)
+        derruba = (not kept
+                   and bool(_apikeys.get("enabled", True))
+                   and not (_ENV_API_KEY or _ADMIN_API_KEY))
+        if derruba and not forcar:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                {"detail": "Esta é a última chave: apagá-la desliga a exigência de "
+                           "chave e a LAN inteira passa a acessar sem credencial",
+                 "forcar": True,
+                 "consequencia": "auth desligada para qualquer máquina da rede",
+                 "hint": "Confirme com `?forcar=1`, ou defina TTS_ROD_ADMIN_KEY "
+                         "para manter a exigência.",
+                 "remaining": len(kept), "auth_active": True,
+                 "auth_active_se_forcar": False},
+                status_code=409)
         _apikeys["keys"] = kept
         _save_apikeys()
     global API_KEY
     API_KEY = _primary_api_key() or _ENV_API_KEY or None
-    return {"ok": True, "remaining": len(kept), "auth_active": _auth_enabled()}
+    corpo = {"ok": True, "remaining": len(kept), "auth_active": _auth_enabled()}
+    if derruba:
+        corpo["avisos"] = ["Autenticação DESLIGADA (nenhuma chave e nenhum "
+                           "TTS_ROD_*_KEY): a LAN inteira acessa sem credencial"]
+        # sinal DURÁVEL: o `avisos` morre com a resposta; o log fica no journal
+        print("[apikeys] ÚLTIMA chave apagada — autenticação DESLIGADA "
+              "(a LAN inteira acessa sem credencial)", file=sys.stderr, flush=True)
+    return corpo
 
 
 @app.post("/api/apikeys/enabled")
 def set_apikeys_enabled(request: Request, payload: dict):
-    """Liga/desliga a exigência de chave na rede."""
+    """Liga/desliga a exigência de chave na rede.
+
+    Desligar é intencional (não pede 409), mas o corpo AVISA em `avisos` que a
+    LAN ficou aberta — mesmo motivo do 409 da última chave (#282)."""
     if not _admin_is_allowed(request):
         raise HTTPException(403, "Chave administrativa necessária")
     payload = payload or {}
@@ -1606,7 +1961,13 @@ def set_apikeys_enabled(request: Request, payload: dict):
         _apikeys["enabled"] = bool(payload["enabled"])
         _save_apikeys()
         enabled = bool(_apikeys["enabled"])
-    return {"ok": True, "enabled": enabled, "auth_active": _auth_enabled()}
+    corpo = {"ok": True, "enabled": enabled, "auth_active": _auth_enabled()}
+    if not enabled:
+        corpo["avisos"] = ["Exigência de chave DESLIGADA: qualquer máquina da rede "
+                           "acessa sem credencial"]
+        print("[apikeys] exigência de chave DESLIGADA pela UI — a LAN inteira "
+              "acessa sem credencial", file=sys.stderr, flush=True)
+    return corpo
 
 
 @app.get("/api/backends")
@@ -2224,31 +2585,90 @@ def chat_debug(payload: dict):
 # gerenciado remotamente no dashboard). O app só reporta e liga/desliga os
 # agentes instalados — nenhum dos dois é obrigatório.
 TUNNEL_LABEL = "studio.tts.tunnel"
-CF_LABEL = "com.local.cloudflared-tts"
+# A label do conector é configurável no `cloudflare.sh` (`CLOUDFLARE_LABEL`):
+# fixá-la aqui fazia uma instalação com outra label aparecer como "não instalado"
+# e o `/api/tunnel/*` recusar com 400 (#346). Mesma variável dos dois lados.
+CF_LABEL = (os.environ.get("CLOUDFLARE_LABEL") or "").strip() or "com.local.cloudflared-tts"
 
 
-def _tunnel_proc_running() -> bool:
-    """Há um processo ssh do túnel (-R 127.0.0.1:7860) vivo nesta máquina?"""
+def _ps_comandos() -> list[str]:
+    """Linhas (pid, comando) da máquina — base do que o status reporta.
+
+    `ps` e não `pgrep`: o que importa não é "casou", é **o que** está na linha de
+    comando (o destino do `-R`, o token do conector)."""
     try:
-        r = subprocess.run(
-            ["pgrep", "-f", r"ssh .*-R 127\.0\.0\.1:7860"],
-            capture_output=True, timeout=5,
-        )
-        return r.returncode == 0
+        r = subprocess.run(["ps", "-Ao", "pid=,command="],
+                           capture_output=True, timeout=5, text=True)
+        return [l.strip() for l in (r.stdout or "").splitlines() if l.strip()]
     except Exception:
-        return False
+        return []
 
 
-def _cf_proc_running() -> bool:
-    """Há um conector cloudflared vivo nesta máquina?"""
+def _destino_do_tunel() -> dict:
+    """Destino do túnel SSH reverso que ESTE app serve, lido do processo.
+
+    `-R 127.0.0.1:<porta>:<destino>:<porta>`: o `127.0.0.1` é o lado da VPS, o
+    destino é o que decide a auth (por loopback a API entra sem chave). Antes da
+    #346 o status casava o literal `ssh .*-R 127.0.0.1:7860` — não via o destino e
+    quebrava com porta diferente da padrão.
+    """
+    for linha in _ps_comandos():
+        partes_ps = linha.split()
+        # executável é `partes_ps[1]` (o `ps -Ao pid=,command=` põe o pid antes):
+        # casar por " ssh " perdia o caminho absoluto (`/usr/bin/ssh`).
+        if len(partes_ps) < 3 or partes_ps[1].rsplit("/", 1)[-1] != "ssh":
+            continue
+        if "-R" not in partes_ps:
+            continue
+        for pedaco in partes_ps:
+            if not pedaco.startswith("127.0.0.1:"):
+                continue
+            partes = pedaco.split(":")
+            if len(partes) < 4:
+                continue
+            destino = partes[2]
+            e_lan = False
+            try:
+                ip = __import__("ipaddress").ip_address(destino)
+                e_lan = ip.is_private and not ip.is_loopback
+            except ValueError:
+                e_lan = False
+            return {"rodando": True, "destino": destino, "destino_e_lan": bool(e_lan),
+                    "porta_vps": partes[1]}
+    return {"rodando": False, "destino": "", "destino_e_lan": False, "porta_vps": ""}
+
+
+def _token_do_plist(caminho: Path) -> str:
+    """Valor de `--token-file` no plist (é o que individualiza o conector)."""
     try:
-        r = subprocess.run(
-            ["pgrep", "-f", "cloudflared tunnel"],
-            capture_output=True, timeout=5,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
+        texto = caminho.read_text(errors="replace")
+    except OSError:
+        return ""
+    m = re.search(r"<string>--token-file</string>\s*<string>([^<]+)</string>", texto)
+    return (m.group(1) if m else "").strip()
+
+
+def _cf_estado() -> dict:
+    """O conector do TTS está rodando? Casado pelo TOKEN do próprio plist.
+
+    `pgrep -f "cloudflared tunnel"` casava qualquer conector da máquina — o do
+    openwebui fazia o status do TTS dizer "rodando" com o do TTS parado (#346).
+    """
+    plist = _cf_plist()
+    if not plist.exists():
+        return {"rodando": False, "motivo": f"sem agente instalado na label {CF_LABEL}",
+                "token_file": ""}
+    token = _token_do_plist(plist)
+    if not token:
+        return {"rodando": False, "motivo": "plist sem --token-file (reinstale com cloudflare.sh)",
+                "token_file": ""}
+    for linha in _ps_comandos():
+        partes_ps = linha.split()
+        if len(partes_ps) < 3 or partes_ps[1].rsplit("/", 1)[-1] != "cloudflared":
+            continue
+        if token in partes_ps:
+            return {"rodando": True, "motivo": "", "token_file": token}
+    return {"rodando": False, "motivo": "conector do TTS parado", "token_file": token}
 
 
 def _launchd_loaded(label: str) -> bool | None:
@@ -2306,13 +2726,25 @@ def _public_proxy_check(url: str, timeout: float = 6.0) -> dict:
 @app.get("/api/tunnel/status")
 def tunnel_status(url: str = ""):
     """Status do acesso pela internet: agentes instalados/carregados (SSH e
-    Cloudflare) e checagem fim a fim da URL pública (passada pela UI)."""
+    Cloudflare) e checagem fim a fim da URL pública (passada pela UI).
+
+    `destino`/`destino_e_lan` são o que o status ANTES escondia: o túnel pode
+    estar de pé apontando para loopback, e aí a auth pública é no-op. O campo
+    `conector` diz por que o cloudflared está "parado" (sem agente, plist sem
+    token, conector parado) em vez de só um booleano.
+    """
     pub = _public_proxy_check(url) if url.strip() else None
+    tunel = _destino_do_tunel()
+    conector = _cf_estado()
     return {
-        "tunnel_running": _tunnel_proc_running(),
+        "tunnel_running": tunel["rodando"],
+        "tunnel_destino": tunel["destino"],
+        "destino_e_lan": tunel["destino_e_lan"],
         "launchd_loaded": _tunnel_launchd_loaded(),
+        "cloudflared_label": CF_LABEL,
         "cloudflared_installed": _cf_plist().exists(),
-        "cloudflared_running": _cf_proc_running(),
+        "cloudflared_running": conector["rodando"],
+        "cloudflared_motivo": conector["motivo"],
         "cloudflared_loaded": _cf_launchd_loaded(),
         "public_check": pub,
     }
@@ -2375,7 +2807,8 @@ def _tunnel_exige_macos() -> None:
 
 
 @app.post("/api/tunnel/restart")
-def tunnel_restart():
+def tunnel_restart(request: Request):
+    _exige_admin(request)
     """Reinicia os agentes do acesso pela internet (kickstart). Exige macOS."""
     _tunnel_exige_macos()
     agentes = _agentes_publicos()
@@ -2387,7 +2820,8 @@ def tunnel_restart():
 
 
 @app.post("/api/tunnel/stop")
-def tunnel_stop():
+def tunnel_stop(request: Request):
+    _exige_admin(request)
     """Desliga o acesso pela internet: bootout dos agentes (o KeepAlive não
     reergue). A rede local continua valendo."""
     _tunnel_exige_macos()
@@ -2401,7 +2835,8 @@ def tunnel_stop():
 
 
 @app.post("/api/tunnel/start")
-def tunnel_start():
+def tunnel_start(request: Request):
+    _exige_admin(request)
     """Religa o acesso pela internet: bootstrap dos agentes instalados; agente
     já carregado vai de kickstart (bootstrap em carregado dá erro)."""
     _tunnel_exige_macos()
@@ -2411,13 +2846,14 @@ def tunnel_start():
     for label, plist in agentes:
         if not _launchd_loaded(label):
             _launchctl(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)])
-        elif not (_cf_proc_running() if label == CF_LABEL else _tunnel_proc_running()):
+        elif not (_cf_estado()["rodando"] if label == CF_LABEL else _destino_do_tunel()["rodando"]):
             _launchctl_adiado(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"])
     return {"ok": True, "msg": "Túnel ligado — aguarde ~5s e teste a URL pública"}
 
 
 @app.post("/api/shutdown")
-def shutdown():
+def shutdown(request: Request):
+    _exige_admin(request)
     """Desliga o servidor (botão na UI). Reiniciar: dois cliques em TTS-STUDIO.command."""
     def _stop():
         time.sleep(0.4)  # deixa a resposta HTTP voltar antes de sair
@@ -2703,6 +3139,8 @@ def _apply_settings(payload: dict):
         _settings["auto_cleanup_minutes"] = int(_clamp(payload["auto_cleanup_minutes"], 1, 1440, 15))
     if "omni_num_steps" in payload:
         _settings["omni_num_steps"] = int(_clamp(payload["omni_num_steps"], 4, 64, 16))
+    if "live_num_steps" in payload:
+        _settings["live_num_steps"] = int(_clamp(payload["live_num_steps"], 4, 64, 16))
     if "omni_guidance_scale" in payload:
         _settings["omni_guidance_scale"] = _clamp(payload["omni_guidance_scale"], 0.0, 10.0, 2.0)
     if "omni_class_temperature" in payload:
@@ -2792,6 +3230,12 @@ def _apply_settings(payload: dict):
         _settings["stt_whisper_repo"] = repo
     if "stt_beam" in payload:
         _settings["stt_beam"] = int(_clamp(payload["stt_beam"], 1, 10, 5))
+    # Histórico de operação (#376): 1..365 dias (0 apaga tudo na próxima poda) e
+    # 1..64 MB por arquivo antes de abrir sufixo `-2`, `-3`…
+    if "metrics_ttl_dias" in payload:
+        _settings["metrics_ttl_dias"] = int(_clamp(payload["metrics_ttl_dias"], 0, 365, 14))
+    if "metrics_teto_mb" in payload:
+        _settings["metrics_teto_mb"] = int(_clamp(payload["metrics_teto_mb"], 1, 64, 8))
     for chave in ("stt_anti_ruido", "stt_denoise"):
         if chave in payload:
             _settings[chave] = bool(payload[chave])
@@ -2992,8 +3436,10 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
     except (TypeError, ValueError):
         strg = float(_settings.get("voice_denoise_strength", 0.7))
     strg = _clamp(strg, 0.0, 1.0, 0.7)
+    recusado = False
     if do_denoise:
-        data = _denoise_audio(data, sr, strg)
+        data, recusado = _denoise_para_referencia(data, sr, strg)
+    data = _referencia_pronta(data, sr)      # nível + fade: o clone copia isso
     sf.write(str(wav_path), data, sr, subtype="PCM_16")
 
     duration = _wav_duration(wav_path)
@@ -3006,7 +3452,8 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
         "name": name.strip() or voice_id,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "duration": duration,
-        "denoised": bool(do_denoise),
+        "denoised": bool(do_denoise and not recusado),
+        "denoise_recusado": bool(recusado),
     }
     # transcrição opcional da amostra: clonagem do OmniVoice fica mais estável
     if ref_text.strip():
@@ -3028,7 +3475,12 @@ def denoise_voice(voice_id: str, payload: dict = None):
     strg = _clamp((payload or {}).get("strength"), 0.0, 1.0,
                   float(_settings.get("voice_denoise_strength", 0.7)))
     data, sr = sf.read(str(path), dtype="float32")
-    data = _denoise_audio(data, sr, strg)
+    data, recusado = _denoise_para_referencia(data, sr, strg)
+    if recusado:
+        # não sobrescreve com algo pior do que já estava
+        raise HTTPException(400, "A limpeza derrubou o nível demais (RMS caiu mais de "
+                                 "20 dB) — a amostra original foi mantida")
+    data = _referencia_pronta(data, sr)
     sf.write(str(path), data, sr, subtype="PCM_16")
     _conds_cache.clear()
     duration = _wav_duration(path)
@@ -3053,7 +3505,8 @@ def voice_audio(voice_id: str):
 
 
 @app.get("/api/voices/export")
-def export_voices():
+def export_voices(request: Request):
+    _exige_admin(request)
     """Backup: zip com todas as vozes (.wav + .json). Botão '⬇ Backup' na UI.
 
     voices/ é gitignored e é o dado mais valioso do app (gravações + presets
@@ -3096,7 +3549,8 @@ _IMPORT_MAX_TOTAL = 512 * 1024 * 1024
 
 
 @app.post("/api/voices/import")
-async def import_voices(zip_file: UploadFile = File(...)):
+async def import_voices(request: Request, zip_file: UploadFile = File(...)):
+    _exige_admin(request)
     """Restaura um backup gerado por /api/voices/export (zip com .wav + .json).
 
     Sobrescreve vozes com o mesmo id (é um restore). Só extrai .wav/.json com
@@ -3380,7 +3834,8 @@ def voice_peaks(voice_id: str, n: int = 160):
 
 
 @app.delete("/api/voices/{voice_id}")
-def delete_voice(voice_id: str):
+def delete_voice(request: Request, voice_id: str):
+    _exige_admin(request)
     voice_id = _safe_id(voice_id)
     removed = False
     for ext in ("wav", "json"):
@@ -3998,6 +4453,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
 
     job = _jobs[job_id]
     remote = False
+    local_carregou = False     # modelo local carregado no fallback? (libera no fim)
     sq = _speech_queue_begin(job_id) if use_queue else None
     hold_pieces = sq is not None  # com fila: grava trechos mas só libera na entrega
     # `model_override` = modelo DESTE pedido. Vale sem trocar o global: quem não é
@@ -4038,7 +4494,6 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                 _model_state["progress"] = job["progress"]["stage"]
             model = None if remote else _get_model(model_override)
             sr = 24000 if remote else int(getattr(model, "sample_rate", 24000) or 24000)
-            silence = np.zeros(int(CHUNK_SILENCE_S * sr), dtype=np.float32)
             # voz de VOICE DESIGN salva: REGENERA do instruct+seed (determinístico) em
             # vez de clonar a amostra -> é EXATAMENTE a voz projetada, sem drift de clone.
             is_design = voice_id == DESIGN_VOICE_ID
@@ -4094,53 +4549,164 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                 else:
                     # backend exige clone mas não há sample: tenta mesmo assim (preset)
                     pass
+            # anomalias ficam no job e no meta: um trecho que saiu mudo/truncado
+            # depois das 2 tentativas não pode passar sem sinal (#303)
+            anomalias: list[str] = []
+            nao_resolvidas: list[str] = []
+            soma_quad, n_amostras = 0.0, 0
+
+            # CAMINHO efetivo do job. Começa remoto quando pedido e vira LOCAL de
+            # vez se o remoto falhar ou insistir em devolver áudio anômalo: trecho
+            # perdido nunca, o pior caso é local lento (#304).
+            alvo_remoto = remote
+            if remote:
+                local = {"model": None, "sr": sr, "conds": None,
+                         "ref_text": None, "ref_audio": None}
+            else:
+                local = {"model": model, "sr": sr, "conds": conds,
+                         "ref_text": ref_text, "ref_audio": ref_audio}
+
+            def _prepara_local() -> bool:
+                """Carrega o modelo local UMA vez, só no fallback. False = não deu."""
+                if local["model"] is not None:
+                    return True
+                nonlocal local_carregou
+                try:
+                    with _gen_lock:          # Metal exclusivo, como o job local
+                        m = _get_model(model_override)
+                except Exception as exc:     # noqa: BLE001
+                    print(f"[tts] fallback local não carregou "
+                          f"({type(exc).__name__}: {exc})", flush=True)
+                    return False
+                local_carregou = True
+                local["model"] = m
+                local["sr"] = int(getattr(m, "sample_rate", sr) or sr)
+                if is_design:
+                    pass
+                elif family == "omnivoice":
+                    if voice_id in OMNI_PRESETS and not voice_path.exists():
+                        try:
+                            _materialize_preset(m, local["sr"], voice_id)
+                        except Exception:    # noqa: BLE001 — preset que falha não impede
+                            pass
+                    local["ref_text"] = _voice_ref_text(voice_id)
+                    if voice_path.exists():
+                        local["conds"] = _cond_for(m, voice_id, voice_path)
+                elif voice_path.exists():
+                    local["ref_audio"] = str(voice_path)
+                    local["ref_text"] = _voice_ref_text(voice_id)
+                return True
+
+            def _gera_local(chunk: str, i: int):
+                """Trecho pelo modelo LOCAL — caminho normal E fallback do remoto."""
+                if not _prepara_local():
+                    raise RuntimeError("sem modelo local para o trecho")
+                motivo = ""
+                for tentativa in (1, 2):
+                    o_try = omni
+                    if tentativa > 1:
+                        o_try = dict(omni)
+                        # 2ª tentativa: com seed fixa + temp 0 (greedy) a
+                        # regeneração reproduz o MESMO áudio anômalo. Jitter só em
+                        # voz de CLONE (timbre vem da ref, não do seed); em voice
+                        # design o seed ancora o timbre e não pode mudar.
+                        if not is_design:
+                            seed = o_try.get("seed")
+                            if seed is not None and int(seed) >= 0:
+                                o_try["seed"] = int(seed) + tentativa
+                            if not float(o_try.get("class_temperature") or 0):
+                                o_try["class_temperature"] = 0.4
+                            if float(o_try.get("temperature") or 0) < 0.5:
+                                o_try["temperature"] = 0.7
+                    audio = _generate_chunk(
+                        local["model"], chunk, language, local["conds"],
+                        local["ref_text"], o_try, ref_audio=local["ref_audio"],
+                        family=family, meta=be_meta, sr=local["sr"],
+                    )
+                    audio = _reamostra(audio, local["sr"], sr)
+                    motivo = _motivo_anomalia(
+                        audio, sr, chunk, speed=float(omni.get("speed") or 1.0))
+                    if not motivo:
+                        break
+                    job["retries"] = job.get("retries", 0) + 1
+                    anomalias.append(f"trecho {i + 1} (tentativa {tentativa}): {motivo}")
+                    print(f"[tts] trecho {i + 1}/{len(chunks)} anômalo "
+                          f"[{motivo}] — tentativa {tentativa}/2", flush=True)
+                    if tentativa == 2:
+                        # a 2ª também saiu ruim: o trecho entra assim mesmo, mas
+                        # com sinal no job E no meta (nunca mudo silencioso)
+                        nao_resolvidas.append(f"trecho {i + 1}: {motivo}")
+                        job["warning"] = (f"{len(nao_resolvidas)} trecho(s) saíram "
+                                          f"anômalos mesmo após nova tentativa")
+                        print(f"[tts] trecho {i + 1}/{len(chunks)} ENTROU anômalo "
+                              f"[{motivo}] após 2 tentativas", flush=True)
+                    # retry: limpa tensores intermediários do generate falho
+                    _release_mlx_memory()
+                return audio
             for i, chunk in enumerate(chunks):
                 job["progress"] = {
                     "current": i + 1, "total": len(chunks),
                     "backend": be.get("id"), "family": family,
                 }
-                # trecho sem pontuação terminal (quebra por vírgula) ganha ponto
-                if chunk[-1] not in ".!?…":
-                    chunk = chunk.rstrip(" ,;:") + "."
-                if remote:
-                    # servidor remoto gera; sem retry local
-                    audio = _tts_remote_chunk(chunk, language, omni, sr, rvoice)
-                else:
+                # pontuação do corte preservada: vírgula/dois-pontos NÃO viram
+                # ponto (fim de frase no meio da frase — #319)
+                chunk = _pontua_corte(chunk, ultimo=(i == len(chunks) - 1))
+                audio = None
+                if alvo_remoto:
+                    motivo = ""
                     for tentativa in (1, 2):
-                        o_try = omni
-                        if tentativa > 1:
-                            o_try = dict(omni)
-                            # 2ª tentativa: com seed fixa + temp 0 (greedy) a
-                            # regeneração reproduz o MESMO áudio anômalo. Jitter
-                            # só em voz de CLONE (timbre vem da ref, não do
-                            # seed); em voice design o seed ancora o timbre e
-                            # não pode mudar entre trechos.
-                            if not is_design:
-                                seed = o_try.get("seed")
-                                if seed is not None and int(seed) >= 0:
-                                    o_try["seed"] = int(seed) + tentativa
-                                if not float(o_try.get("class_temperature") or 0):
-                                    o_try["class_temperature"] = 0.4
-                                if float(o_try.get("temperature") or 0) < 0.5:
-                                    o_try["temperature"] = 0.7
-                        audio = _generate_chunk(
-                            model, chunk, language, conds, ref_text, o_try,
-                            ref_audio=ref_audio, family=family, meta=be_meta, sr=sr,
-                        )
-                        if not _anomalo(audio, sr, chunk, speed=float(omni.get("speed") or 1.0)):
+                        try:
+                            audio = _tts_remote_chunk(chunk, language, omni, sr, rvoice)
+                        except Exception as exc:      # noqa: BLE001
+                            audio = None
+                            motivo = f"{type(exc).__name__}: {exc}"
+                            print(f"[tts] remoto falhou no trecho {i + 1} "
+                                  f"(tentativa {tentativa}/2): {motivo[:160]}", flush=True)
+                            continue
+                        motivo = _motivo_anomalia(
+                            audio, sr, chunk, speed=float(omni.get("speed") or 1.0))
+                        if not motivo:
                             break
                         job["retries"] = job.get("retries", 0) + 1
-                        # retry: limpa tensores intermediários do generate falho
-                        _release_mlx_memory()
-                audio = _fade_edges(_apply_audio_fx(_normalize(_trim_tail_silence(audio, sr)), sr), sr)
+                        anomalias.append(f"trecho {i + 1} remoto (tentativa {tentativa}): {motivo}")
+                        print(f"[tts] trecho {i + 1}/{len(chunks)} REMOTO anômalo "
+                              f"[{motivo}] — tentativa {tentativa}/2", flush=True)
+                    if audio is None or motivo:
+                        if not _fallback_ligado():
+                            # desligado: comportamento antigo (erro ou trecho ruim entra)
+                            if audio is None:
+                                raise RuntimeError(f"TTS remoto falhou: {motivo}")
+                            print(f"[tts] remoto anômalo e fallback desligado — trecho "
+                                  f"{i + 1} entra assim", flush=True)
+                        else:
+                            # remoto fora (2 erros) ou 2 tentativas anômalas: o job
+                            # passa a LOCAL e ESTE trecho é regerado local (nunca error)
+                            alvo_remoto = False
+                            job["remote_fallback"] = True
+                            aviso = (f"TTS remoto falhou no trecho {i + 1} ({motivo}) — "
+                                     f"job segue LOCAL")
+                            print(f"[tts] {aviso}", flush=True)
+                            job["warning"] = (f"{job['warning']} | {aviso}"
+                                              if job.get("warning") else aviso)
+                            audio = None
+                if audio is None:
+                    audio = _gera_local(chunk, i)
+                audio = _pos_processa(audio, sr)
+                soma_quad += float(np.sum(np.asarray(audio, dtype=np.float64) ** 2))
+                n_amostras += int(np.asarray(audio).size)
                 if i < len(chunks) - 1:
-                    audio = np.concatenate([audio, silence])
+                    # pausa pela pontuação do trecho: vírgula respira, ponto respira
+                    # fundo (#319). O último trecho não leva pausa nenhuma.
+                    pausa = int(_pausa_apos(chunk[-1]) * sr)
+                    audio = np.concatenate(
+                        [audio, np.zeros(pausa, dtype=np.float32)])
+                print(f"[dbg] write i={i} n={len(audio)} sr={sr}", flush=True)
                 sf.write(pdir / f"{i}.wav", audio, sr, subtype="PCM_16")
                 del audio
                 if not hold_pieces:
                     job["pieces"] = i + 1  # publica só depois do arquivo no disco
                 # MLX acumula blocos no pool Metal; sem clear a RAM sobe a cada trecho
-                if not remote:
+                if not alvo_remoto:
                     _release_mlx_memory()
                     _touch_use("tts")
         elapsed = round(time.time() - started, 1)
@@ -4148,6 +4714,18 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         # arquivo final do histórico = exatamente o que foi tocado (stream, sem concat total)
         out_id = uuid.uuid4().hex[:10]
         duration = _write_wav_concat(pdir, len(chunks), OUTPUTS_DIR / f"{out_id}.wav", sr)
+        # UM ganho no job inteiro até a loudness alvo (EBU R128): o `normalize`
+        # igualou os TRECHOS entre si; aqui o arquivo montado é ancorado num nível
+        # de verdade, com ganho constante (não mexe no envelope). Não medir é
+        # degradação: fica no log E no aviso do job (#302).
+        lufs_db = _normaliza_loudness(OUTPUTS_DIR / f"{out_id}.wav")
+        if lufs_db is None:
+            _av = "nível final não medido (ffmpeg indisponível) — arquivo sem ajuste de loudness"
+            print(f"[tts] {_av}", flush=True)
+            job["warning"] = f"{job['warning']} | {_av}" if job.get("warning") else _av
+        elif abs(lufs_db) > 0.05:
+            print(f"[tts] nível final ajustado {lufs_db:+.2f} dB (alvo {LUFS_ALVO:g} LUFS)",
+                  flush=True)
         meta = {
             "id": out_id,
             "text": text,
@@ -4163,6 +4741,15 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "duration": duration,
             "elapsed": elapsed,
+            # sinal auditável de degradação (#303): quantos retries, quais trechos
+            # entraram mesmo anômalos e o nível final (rms 0 = arquivo mudo)
+            "retries": int(job.get("retries", 0)),
+            "anomalias": len(anomalias),
+            "anomalias_motivos": anomalias[:20],
+            "warning": job.get("warning") or "",
+            "rms": round(float(np.sqrt(soma_quad / n_amostras)) if n_amostras else 0.0, 4),
+            "lufs_ganho_db": lufs_db,
+            "remote_fallback": bool(job.get("remote_fallback")),
         }
         write_json_atomic(OUTPUTS_DIR / f"{out_id}.json", meta)
         # fila: espera o fim da fala anterior (duração real do último WAV) antes de entregar
@@ -4181,7 +4768,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         job["progress"] = None
         if _model_state.get("status") != "error":
             _model_state["progress"] = None
-        if not remote:
+        if not remote or local_carregou:
             _release_mlx_memory(aggressive=True)
 
 
@@ -4334,7 +4921,8 @@ def output_audio(out_id: str):
 
 
 @app.delete("/api/outputs")
-def delete_all_outputs():
+def delete_all_outputs(request: Request):
+    _exige_admin(request)
     removidos = 0
     for meta in OUTPUTS_DIR.glob("*.json"):
         meta.with_suffix(".wav").unlink(missing_ok=True)
@@ -4403,7 +4991,8 @@ threading.Thread(target=_auto_cleanup_loop, daemon=True).start()
 
 
 @app.delete("/api/outputs/{out_id}")
-def delete_output(out_id: str):
+def delete_output(request: Request, out_id: str):
+    _exige_admin(request)
     out_id = _safe_id(out_id)
     removed = False
     for ext in ("wav", "json"):
@@ -4625,14 +5214,27 @@ def _use_remote_stt() -> bool:
             _settings.get("remote_stt_base_url") or _settings.get("remote_base_url")))
 
 
+def _fallback_ligado() -> bool:
+    """Remoto que falha pode cair para LOCAL? Ligado por padrão (#304).
+
+    `TTS_REMOTE_TTS_FALLBACK=0` (ou `remote_tts_fallback: false` nas settings)
+    volta ao comportamento antigo: falha persistente do remoto derruba o job.
+    """
+    env = (os.environ.get("TTS_REMOTE_TTS_FALLBACK") or "").strip()
+    if env:
+        return env != "0"
+    return bool(_settings.get("remote_tts_fallback", True))
+
+
 def _use_remote_tts() -> bool:
     return bool(_settings.get("remote_tts")) and bool(_settings.get("remote_tts_url"))
 
 
 def _remote_origin() -> str:
-    """scheme://host:port da URL do TTS remoto (p/ os endpoints /voices)."""
-    from urllib.parse import urlsplit
+    """scheme://host:port da URL do TTS remoto (p/ os endpoints /voices).
 
+    `urlsplit` vem do import do topo (desde a guarda de `Origin`, #290) — o
+    import local daqui ficou redundante e saiu."""
     u = urlsplit((_settings.get("remote_tts_url") or "").strip())
     return f"{u.scheme}://{u.netloc}" if u.scheme and u.netloc else ""
 
@@ -4676,6 +5278,26 @@ def _voice_display_name(voice_id: str) -> str:
         return json.loads((VOICES_DIR / f"{voice_id}.json").read_text()).get("name") or voice_id
     except Exception:  # noqa: BLE001
         return voice_id
+
+
+def _reamostra(audio, de: int, para: int):
+    """Reamostra para o sample-rate do job (o modelo local pode não ser 24 kHz).
+
+    O job remoto fixa `sr` em 24000; se o fallback local carregar um modelo de
+    outra taxa, misturar as duas no mesmo WAV tocaria na velocidade errada.
+    """
+    import numpy as np
+
+    audio = np.asarray(audio, dtype=np.float32)
+    if not de or not para or int(de) == int(para):
+        return audio
+    from math import gcd
+
+    from scipy.signal import resample_poly
+
+    g = gcd(int(de), int(para))
+    return np.asarray(resample_poly(audio, int(para) // g, int(de) // g),
+                      dtype=np.float32)
 
 
 def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voice: str = None):
@@ -5203,7 +5825,8 @@ def translate_warmup():
 
 
 @app.post("/api/models/unload")
-def unload_models(payload: dict = None):
+def unload_models(request: Request, payload: dict = None):
+    _exige_admin(request)
     """Descarrega modelos LOCAIS (MLX) p/ liberar RAM. Sem corpo = todos os locais.
     {"only_remote": true} = só os que têm remoto ativo."""
     p = payload or {}
@@ -5548,6 +6171,7 @@ def youtube_audio(payload: dict):
 
 SPEAKER_MAX_SAMPLES = 5      # embeddings por perfil (média robuza o timbre)
 _speaker_lock = threading.Lock()
+_speaker_enc_lock = threading.Lock()   # só a criação do encoder
 _speaker_encoder = None      # VoiceEncoder carregado sob demanda
 
 
@@ -5557,7 +6181,10 @@ def _speaker_embed(wav_path: Path) -> list[float] | None:
         from resemblyzer import VoiceEncoder, preprocess_wav
         global _speaker_encoder
         if _speaker_encoder is None:
-            _speaker_encoder = VoiceEncoder()
+            # dois enroll/check simultâneos carregavam dois encoders (RAM em dobro)
+            with _speaker_enc_lock:
+                if _speaker_encoder is None:
+                    _speaker_encoder = VoiceEncoder()
         f32 = preprocess_wav(wav_path)  # carrega 16k mono + trim VAD próprio
         if len(f32) < 16000 * 0.6:      # < 0.6s não gera embedding confiável
             return None
@@ -5575,16 +6202,30 @@ def _cos_sim(a, b) -> float:
     return num / (da * db) if da and db else 0.0
 
 
-def _speaker_load() -> dict:
+def _speaker_load_estado() -> tuple[dict, str]:
+    """(perfis, erro). `erro` só quando o arquivo EXISTE e não deu para ler.
+
+    Antes corrompido virava `{}` e o gate em `enforce`, sem perfil nenhum, ficava
+    INERTE sem avisar (#324) — ilegível é diferente de "ninguém cadastrado".
+    """
+    if not SPEAKER_PATH.exists():
+        return {}, ""
     try:
         d = json.loads(SPEAKER_PATH.read_text())
-        return d if isinstance(d, dict) else {}
-    except Exception:  # noqa: BLE001 — arquivo ausente/corrompido = vazio
-        return {}
+    except Exception as exc:  # noqa: BLE001
+        return {}, f"{type(exc).__name__}: {exc}"
+    if not isinstance(d, dict):
+        return {}, "formato inesperado (não é objeto)"
+    return d, ""
+
+
+def _speaker_load() -> dict:
+    return _speaker_load_estado()[0]
 
 
 def _speaker_save(perfis: dict) -> None:
-    SPEAKER_PATH.write_text(json.dumps(perfis))
+    # tmp único + os.replace: crash no meio não deixa JSON truncado (#324)
+    write_json_atomic(SPEAKER_PATH, perfis)
     try:
         SPEAKER_PATH.chmod(0o600)
     except OSError:
@@ -5611,9 +6252,18 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
     gate = (_settings.get("speaker_gate") or "off").lower()
     if gate == "off":
         return {}
-    perfis = _speaker_load()
+    with _speaker_lock:              # leitura sob o mesmo lock da escrita
+        perfis, erro = _speaker_load_estado()
+    if erro:
+        # arquivo ilegível com o gate ligado: em `enforce` FALHA FECHADO (antes o
+        # `{}` deixava o gate inerte sem ninguém saber) e avisa nos dois modos
+        print(f"[speaker] perfis ilegíveis ({erro}) — gate {gate}", flush=True)
+        if gate == "enforce":
+            return {"rejected": True,
+                    "reason": f"perfis de voz ilegíveis ({erro[:80]})"}
+        return {"speaker_aviso": f"perfis de voz ilegíveis ({erro[:80]})"}
     if not perfis:
-        return {}  # sem perfis cadastrados: gate inerte
+        return {}  # sem perfis cadastrados: gate inerte (não é erro)
     emb = _speaker_embed(wav_path)
     if not emb:
         # sem embedding (áudio curto/erro): enforce rejeita, label segue
@@ -5676,7 +6326,8 @@ def speaker_profiles():
 
 
 @app.delete("/api/speaker/{name}")
-def speaker_delete(name: str):
+def speaker_delete(request: Request, name: str):
+    _exige_admin(request)
     with _speaker_lock:
         perfis = _speaker_load()
         if perfis.pop(name, None) is None:
@@ -5977,11 +6628,52 @@ def _live_observa(sess: dict, obj) -> None:
         _live_stage(sess, "llm")
     elif tipo == "turn_complete":
         if obj.get("descartado"):
-            _live_log_kv("turno_descartado", sess=sess["id"], motivo="eco/curto")
+            # `motivo` do pipeline (#314): "eco" (era o próprio TTS), "vad"/"stt"
+            # (fala julgada e recusada). Sem ele todo descarte era registrado como
+            # "eco/curto" e uma alucinação do Whisper ficava invisível no log.
+            _live_log_kv("turno_descartado", sess=sess["id"],
+                         motivo=obj.get("motivo") or "eco/curto",
+                         detalhe=obj.get("detalhe") or None)
+            sess["descartados_motivo"] = obj.get("motivo") or "eco/curto"
         _live_stage(sess, "idle")
     elif tipo == "interrupted":
-        _live_log_kv("interrupted", sess=sess["id"], turno=obj.get("turno"))
+        # a chave do evento é `turn` (vem do pipeline e do `_live_cancela`); o
+        # `turno` do lado de cá é o do log/`stats`. #313: ler as duas — ler só
+        # `turno` fazia todo `interrupted` sair `turno=None` (achado #4 do
+        # RELATORIO-app.py.md e #8 do relatório de auditoria).
+        _live_log_kv("interrupted", sess=sess["id"],
+                     turno=obj.get("turn", obj.get("turno")))
         _live_stage(sess, "idle")
+    elif tipo == "speech_start":
+        # FONTE ÚNICA do número do turno (#313): quem numera é o pipeline, que é
+        # quem emite `speech_start`; a sessão só adota. Antes cada lado contava
+        # por conta própria e `speech_start.turn` e `interrupted.turn` vinham de
+        # sequências diferentes — o cliente não conseguia correlacionar.
+        try:
+            n = int(obj.get("turn"))
+        except (TypeError, ValueError):
+            n = None
+        if n is not None:
+            sess["turno"] = n
+    elif tipo == "latency":
+        # espera pelo `_gen_lock` medida no pipeline (#313); o TTS pode estar
+        # atrás de um job de lote, e sem este campo o tempo some dentro do
+        # `first_chunk_ms`, indistinguível de TTS lento.
+        espera = obj.get("lock_espera_ms")
+        if espera is not None:
+            sess["st_lock_espera_ms"] = int(espera)
+        # #315: fecha a conta do "fim-de-fala → 1º áudio". O `latency` do pipeline
+        # conta de outro zero (o início da thread), então o trecho entre a DECISÃO
+        # do VAD e o turno abrir entra por aqui: `decisao_ms` é a latência do
+        # detector e `decisao_para_audio_ms` soma essa espera ao 1º áudio. Sem os
+        # dois, o alvo do épico (1,5 s) não é auditável com o dado de produção.
+        decisao, abre = sess.get("t_decisao"), sess.get("t_abre_turno")
+        if decisao is not None:
+            obj["decisao_ms"] = int(sess.get("t_decisao_ms") or 0)
+        if decisao is not None and abre is not None and obj.get("first_audio_ms") is not None:
+            obj["decisao_para_audio_ms"] = int(obj["first_audio_ms"]) + max(
+                0, int(round((abre - decisao) * 1000)))
+        sess["t_decisao"] = sess["t_abre_turno"] = None
 
 
 def _live_marca_prov(sess: dict, prob: float) -> None:
@@ -6027,6 +6719,34 @@ def _live_stats_ia(sess: dict) -> dict:
             "fallback": caiu, "motivo": str(getattr(pipe, "_dsh_motivo", "") or "")[:200]}
 
 
+def _live_fila_itens(sess: dict) -> int:
+    """Itens na fila de envio — tolerante ao dublê de teste (só tem `put`)."""
+    fila = sess.get("fila")
+    qsize = getattr(fila, "qsize", None)
+    try:
+        return int(qsize()) if qsize is not None else 0
+    except Exception:                     # noqa: BLE001 — telemetria não derruba
+        return 0
+
+
+def _live_stats_rnnoise(sess: dict) -> dict:
+    """Estado do filtro RNNoise — a degradação dele é INVISÍVEL sem isto (#313).
+
+    `faltas` são BYTES que o filtro não entregou a tempo e que foram completados
+    com zero: é buraco de áudio dentro do que o VAD lê. O contador é guardado na
+    sessão porque o filtro é REMOVIDO quando cai ou atrasa (`_live_rnnoise_derruba`)
+    e o número não pode sumir junto — `ativo: false` + `faltas` > 0 é o retrato da
+    queda. `faltas_pct` é a fração do áudio do mic que virou silêncio."""
+    ns = sess.get("rnnoise")
+    if ns is not None:
+        sess["rnnoise_faltas"] = int(getattr(ns, "faltas", 0) or 0)
+    faltas = int(sess.get("rnnoise_faltas", 0) or 0)
+    bytes_in = int(sess.get("st_bytes", 0) or 0)
+    return {"ativo": ns is not None and bool(getattr(ns, "ativo", False)),
+            "faltas": faltas,
+            "faltas_pct": (round(100.0 * faltas / bytes_in, 2) if bytes_in else 0.0)}
+
+
 def _live_stats(sess: dict) -> dict:
     """Payload do evento `stats` (ver contrato na task #118 / LIVE.md)."""
     agora = time.monotonic()
@@ -6046,6 +6766,20 @@ def _live_stats(sess: dict) -> dict:
             limiares.update({"barge_ativos": st.get("barge_in", 0)
                              + st.get("barge_in_com_turno_aberto", 0),
                              "barge_falsos": st.get("barge_in_falso", 0)})
+            # #313: o estado que EXPLICA um barge falso sai do motor (já calculado,
+            # custo zero). Sem estes quatro o painel só mostra o sintoma.
+            limiares.update({
+                "eco_ausente": st.get("eco_ausente"),
+                "tocando": st.get("tocando"),
+                "turno_assistente_aberto": st.get("turno_assistente_aberto"),
+                "taxa_falso_barge_in": st.get("taxa_falso_barge_in"),
+                "eco_dbfs": st.get("eco_dbfs"), "noise_dbfs": st.get("noise_dbfs"),
+                # #314: o fallback "segurar pra falar" era calculado e morria aqui —
+                # `hold_to_talk_sugerido` é o aviso que a UI precisa receber e
+                # `hold_to_talk` diz se o modo já está ligado (comando `hold`).
+                "hold_to_talk": st.get("hold_to_talk"),
+                "hold_to_talk_sugerido": st.get("hold_to_talk_sugerido"),
+            })
         except Exception:                     # noqa: BLE001 — telemetria não derruba
             limiares = {}
     erro = sess.get("st_erro")
@@ -6056,16 +6790,26 @@ def _live_stats(sess: dict) -> dict:
                 "desde_ultimo_ms": (int((agora - ultimo) * 1000) if ultimo else None),
                 "dbfs": sess.get("st_dbfs"), "prob": sess.get("st_prob")},
         "motor": {"estado": _live_estado_motor(sess), **limiares},
+        "rnnoise": _live_stats_rnnoise(sess),
         "turno": {"stage": sess.get("st_stage", "idle"),
                   "ms": (int((agora - ini) * 1000) if ini else 0),
                   "n": sess.get("turno", 0), "buffer_bytes": sess.get("buffer_bytes_turno", 0),
                   "t_decisao_ms": sess.get("t_decisao_ms", 0),
+                  # #313: tempo esperando o `_gen_lock` (job de lote na frente).
+                  # `None` = nenhuma geração medida ainda nesta sessão.
+                  "lock_espera_ms": sess.get("st_lock_espera_ms"),
                   "pendente": bool(sess.get("turno_pendente")),
                   "pendentes_trechos": sess.get("pendentes_trechos", 0),
                   "pendentes_descartados_ms": sess.get("pendentes_descartados_ms", 0),
                   "pendentes_descartados": sess.get("pendentes_descartados", 0)},
+        # `fila_*` é o BACKLOG real do envio (teto em `_LIVE_FILA_MAX_BYTES`): é o
+        # número que mostra cliente lento e, em 0, o playback em dia. Sessões de
+        # dublê podem não ter fila — daí o `getattr`, e `qsize` só com fila.
         "playback": {"speaking": bool(sess.get("falando")),
-                     "chunks": sess.get("st_chunks", 0), "bytes": sess.get("st_audio_bytes", 0)},
+                     "chunks": sess.get("st_chunks", 0), "bytes": sess.get("st_audio_bytes", 0),
+                     "fila_bytes": getattr(sess.get("fila"), "bytes", 0),
+                     "fila_itens": _live_fila_itens(sess),
+                     "fila_descartados": getattr(sess.get("fila"), "descartados", 0)},
         "sessao": {"idade_s": int(time.time() - sess["criada"]),
                    "ocioso_ms": int((agora - sess["visto"]) * 1000),
                    "ttl_s": _LIVE_TTL_S, "criadas": len(_live_sessions),
@@ -6094,6 +6838,19 @@ _LIVE_MAX_BUFFER = 2 * 1024 * 1024      # PCM16 16k do turno em curso (~1 min de
 _LIVE_PENDENTE_MAX_S = max(1, int(os.environ.get("TTS_LIVE_PENDENTE_MAX_S", "30")))
 _LIVE_PENDENTE_MAX_BYTES = _LIVE_PENDENTE_MAX_S * 32000
 _LIVE_MAX_HISTORY = 200
+# #313: teto de CHARS do histórico recebido no `setup` (ver `_live_valida_setup`).
+_LIVE_SETUP_HIST_MAX_CHARS = max(1000, int(os.environ.get(
+    "TTS_LIVE_SETUP_HIST_MAX_CHARS", "12000")))
+# #313: janela de confirmação do barge (`vad.barge_ms`), no MESMO porte da medição
+# do motor (`live_turns.Config.barge_in_ms`, default 300): abaixo de 150 a energia
+# sustentada não existe e o eco volta a disparar; acima de 600 a interrupção late.
+_LIVE_BARGE_MS_MIN = 150
+_LIVE_BARGE_MS_MAX = 600
+_LIVE_BARGE_MS_PADRAO = 300
+# #315: quanto a PRIMEIRA fala espera o prewarm antes de o turno abrir mesmo frio.
+# 2 s cobre a cauda de um prewarm em curso sem transformar a espera em espera longa
+# (a frio o 1º áudio passa de 7 s); `0` restaura o comportamento antigo.
+_LIVE_ESPERA_PREWARM_S = max(0.0, float(os.environ.get("TTS_LIVE_ESPERA_PREWARM_S", "2")))
 _LIVE_AUDIO_SR = 24000                  # o que o servidor ENVIA (o cliente manda 16k)
 _LIVE_TICK_S = 0.2                      # acorda a task de envio p/ checar TTL/fechamento
 _live_lock = threading.Lock()
@@ -6216,14 +6973,33 @@ def _live_valida_setup(msg: dict) -> dict:
         texto = str(h.get("text") or "").strip()[:4000]
         if texto:
             history.append({"role": papel, "text": texto})
+    # Teto de CHARS do histórico do `setup` (#313 / auditoria #283 item 10): 200
+    # mensagens de 4000 chars são ~800 kB e iam INTEIRAS ao prompt de TODO turno no
+    # caminho openai — o teto de 12 kB só existia na compressão, que roda depois e
+    # corta pela metade. Estourou, saem as mensagens mais ANTIGAS (o contexto
+    # recente é o que importa) e o quanto saiu vai no `ready`.
+    mantido, chars, cortados = [], 0, 0
+    for h in reversed(history):
+        if chars + len(h["text"]) > _LIVE_SETUP_HIST_MAX_CHARS and mantido:
+            cortados += 1
+            continue
+        mantido.append(h)
+        chars += len(h["text"])
+    history = list(reversed(mantido))
     return {
         "voice_id": voz,
         "voice_id_pedido": voz_pedida,
         "session_id": sid,
         "system": system,
         "vad": {"silence_ms": _live_clamp_ms(vad.get("silence_ms"), "silence_ms", 100, 5000, 600),
-                "prefix_ms": _live_clamp_ms(vad.get("prefix_ms"), "prefix_ms", 0, 2000, 100)},
+                "prefix_ms": _live_clamp_ms(vad.get("prefix_ms"), "prefix_ms", 0, 2000, 100),
+                # #313: o custo de confirmação do barge é fixo (~barge_ms + rampa do
+                # envelope) e o cliente não tinha como pedir outro valor.
+                "barge_ms": _live_clamp_ms(vad.get("barge_ms"), "barge_ms",
+                                           _LIVE_BARGE_MS_MIN, _LIVE_BARGE_MS_MAX,
+                                           _LIVE_BARGE_MS_PADRAO)},
         "history": history,
+        "history_descartados": cortados,
     }
 
 
@@ -6298,6 +7074,107 @@ def _live_janela_turno(sess: dict, aberto: bool) -> None:
         pass
 
 
+# Teto da FILA de envio, em BYTES de payload (0 = sem teto, como antes). O áudio do
+# TTS sai a 48 kB/s (24 kHz PCM16): 2 MiB ~ 43 s de backlog, o mesmo porte do teto
+# do buffer do mic (`_LIVE_MAX_BUFFER`). Passou disso o cliente já não alcança o
+# playback ao vivo; e sem teto a fila cresce SEM VOLTA quando ninguém drena — que é
+# exatamente o que acontece quando a task de envio morre (ver `_live_sender`).
+_LIVE_FILA_MAX_BYTES = max(0, int(os.environ.get("TTS_LIVE_FILA_MAX_BYTES",
+                                                str(2 * 1024 * 1024))))
+
+
+class _LiveFila:
+    """Fila da sessão com teto em BYTES — sai sempre o áudio mais ANTIGO.
+
+    `queue.Queue(maxsize=n)` conta ITENS, e quem estoura a memória é o BYTE: 4
+    chunks de 2 s valem 400 kB e 400 chunks de 20 ms valem os mesmos 400 kB. Daí o
+    contador e o descarte por BYTE. Só o ÁUDIO é derrubado — é o único tipo cuja
+    perda vira uma emenda no alto-falante e playback atrasado é justamente o caso;
+    JSON (`stats`, `turn_complete`, `error`, `transcript_user`) nunca sai, porque
+    tirá-lo desalinharia o cliente e ele custa pouco. Restou só JSON acima do teto,
+    a fila passa do teto em alguns kB, sem laço.
+
+    `put` devolve quantos itens de áudio antigos o teto derrubou (o chamador ajusta
+    o `audio_pendente`); `queue.Queue` puro devolve `None`, então o mesmo call site
+    serve os dublês de teste.
+    """
+
+    def __init__(self, teto_bytes: int = 0):
+        self.teto = max(0, int(teto_bytes))
+        self.descartados = 0
+        self._q: queue.Queue = queue.Queue()
+        self._trava = threading.Lock()   # só o contador: o `get` BLOQUEIA fora dela
+        self._bytes = 0
+
+    # -- leitura (o `stats` e os testes leem) --------------------------------
+    @property
+    def bytes(self) -> int:
+        return self._bytes
+
+    def qsize(self) -> int:
+        return self._q.qsize()
+
+    def empty(self) -> bool:
+        return self._q.empty()
+
+    @staticmethod
+    def _peso(item) -> int:
+        """Bytes que o item ocupa na fila (só áudio conta)."""
+        try:
+            return len(item[1]) if item is not None and item[0] == "audio" else 0
+        except (TypeError, IndexError):
+            return 0
+
+    # -- escrita / consumo ---------------------------------------------------
+    def put(self, item) -> int:
+        """Enfileira e, se o teto estourou, derruba o áudio mais ANTIGO.
+
+        A ordem é enfileirar-e-depois-medir: o item já está na fila quando conta,
+        então contador e fila nunca divergem (e um único item maior que o teto
+        permanece, em vez de a fila ficar com ele num limbo fora da conta).
+        """
+        self._q.put(item)
+        peso = self._peso(item)
+        if not peso:
+            return 0
+        derrubados = 0
+        with self._trava:
+            self._bytes += peso
+            if self.teto and self._bytes > self.teto:
+                derrubados = self._descartar_ate_caber(item)
+        return derrubados
+
+    def get(self, block: bool = True, timeout: float | None = None):
+        item = self._q.get(block, timeout)
+        peso = self._peso(item)
+        if peso:                          # fora da trava: o item já saiu da fila
+            with self._trava:
+                self._bytes -= peso
+        return item
+
+    def _descartar_ate_caber(self, protegido=None) -> int:
+        """Derruba o áudio mais antigo até caber. `_trava` já tomada."""
+        n = 0
+        while self.teto and self._bytes > self.teto:
+            alvo = self._audio_mais_antigo(protegido)
+            if alvo is None:
+                break                     # só restou JSON/ele mesmo: não vale derrubar
+            self._bytes -= self._peso(alvo)
+            self.descartados += 1
+            n += 1
+        return n
+
+    def _audio_mais_antigo(self, protegido=None):
+        """Primeiro item de áudio na ordem de saída (a `deque` do Queue).
+
+        `protegido` é o que acabou de entrar: se ele é o único, não sai."""
+        for item in self._q.queue:
+            if item is not None and item[0] == "audio" and item is not protegido:
+                self._q.queue.remove(item)
+                return item
+        return None
+
+
 def _live_envia_json(sess: dict, obj: dict) -> None:
     """Ponto de acoplamento do pipeline (#93): pode ser chamado de QUALQUER thread."""
     terminal = obj.get("type") in ("turn_complete", "interrupted") or (
@@ -6317,7 +7194,13 @@ def _live_envia_audio(sess: dict, pcm: bytes) -> None:
     if pcm:
         _live_janela_turno(sess, True)   # #167: turno do assistente com áudio em voo
         sess["audio_pendente"] = sess.get("audio_pendente", 0) + 1
-        sess["fila"].put(("audio", pcm))
+        derrubados = sess["fila"].put(("audio", pcm))
+        if derrubados:
+            # teto da fila: o áudio derrubado não vai mais ao ar, então sai da
+            # conta de "em voo" — senão `falando`/`stats.playback.chunks` mentem
+            # sobre um playback que já foi cortado.
+            sess["audio_pendente"] = max(0, sess["audio_pendente"] - derrubados)
+            sess["audio_descartados"] = sess.get("audio_descartados", 0) + derrubados
 
 
 def _live_buffer(sess: dict) -> bytes:
@@ -6387,14 +7270,19 @@ def _live_pcm_limpo(sess: dict, pcm: bytes) -> bytes:
 def _live_engine_novo(sess: dict):
     """FSM de turnos da sessão (None = sem o módulo: comportamento antigo).
 
-    `prefix_ms`/`silence_ms` vêm do `setup` do cliente (validados lá). A fala do
-    TTS entra por `set_speaking()` — é dela que sai o limiar adaptativo do eco."""
+    `prefix_ms`/`silence_ms`/`barge_ms` vêm do `setup` do cliente (validados lá). A
+    fala do TTS entra por `set_speaking()` — é dela que sai o limiar adaptativo do
+    eco."""
     if _live_turns_mod is None:
         return None
     try:
         cfg = _live_turns_mod.Config(
             prefix_ms=sess["vad"]["prefix_ms"],
             silence_ms=sess["vad"]["silence_ms"],
+            # #313: janela de confirmação do barge pedida pelo cliente (o custo de
+            # ~barge_ms + rampa do envelope era fixo e não dava para encurtar). O
+            # `get`: dublês de teste montam `vad` só com `prefix_ms`/`silence_ms`.
+            barge_in_ms=sess["vad"].get("barge_ms") or _LIVE_BARGE_MS_PADRAO,
             # #167: janela de barge colada ao turno. LIGADA por default desde o
             # #216 (medição da COMBINAÇÃO; ver Config.barge_janela_turno):
             # desligável com `TTS_LIVE_BARGE_JANELA_TURNO=0` para A/B.
@@ -6415,14 +7303,44 @@ def _live_engine_novo(sess: dict):
     return _live_turns_mod.TurnEngine(config=cfg)
 
 
-def _live_cancela(sess: dict, do_cliente: bool = False) -> None:
+def _live_turno_em_curso(sess: dict) -> bool:
+    """Há turno (ou áudio dele) para interromper? (#313)
+
+    Serve ao `cancel`: cancelar com a sessão OCIOSA não pode emitir `interrupted`
+    — o cliente piscava "interrompido" sem nada ter sido interrompido."""
+    pipe = sess.get("pipe")
+    if pipe is not None and pipe.ocupado:
+        return True
+    eng = sess.get("engine")
+    if eng is not None and getattr(eng, "turno_aberto", False):
+        return True
+    return bool(sess.get("audio_pendente"))
+
+
+def _live_cancela(sess: dict, do_cliente: bool = False, *,
+                  forcar: bool = False) -> None:
     """Derruba o turno em curso (barge-in ou `cancel` do cliente).
 
     `do_cliente` (comando `cancel`) limpa TAMBÉM o pendente: o usuário abortou
     tudo. No barge-in o pendente SEGUE — a fala que interrompeu abre turno
-    próprio (ou já está nele) e é respondida depois."""
+    próprio (ou já está nele) e é respondida depois.
+
+    `forcar` (#313) desliga a checagem de ociosidade: o `barge_in` do motor é PROVA
+    de interrupção, mesmo quando a sessão ainda não tem turno registrado (é o 1º
+    evento do lote e pode chegar antes de qualquer áudio no fio).
+
+    A ociosidade que conta é a da sessão SEM TURNO ALGUM: depois de um turno já
+    havido, o `cancel` também serve para parar o que o cliente ainda tiver na fila
+    dele, então segue emitindo `interrupted` (comportamento antigo preservado). O
+    que sai é o disparo inventado numa sessão recém-aberta, em que nada foi falado.
+
+    NÃO incrementa mais o `turno` (#313): quem numera é o pipeline, no
+    `speech_start`, e a sessão adota (`_live_observa`). Antes cada lado contava por
+    conta própria e os eventos carregavam números de sequências diferentes — o
+    `interrupted` desta função anunciava um turno que nunca existiu. Com a fonte
+    única ele aponta o turno que está sendo de fato interrompido."""
+    em_curso = forcar or _live_turno_em_curso(sess) or bool(sess.get("turno"))
     sess["cancelado"].set()
-    sess["turno"] += 1
     if do_cliente:
         # pop + zero na MESMA seção crítica do guarda (#221): sem isso o guarda
         # pode acumular entre o `pop` e o zero e o pendente NOVO nasce com o
@@ -6433,14 +7351,18 @@ def _live_cancela(sess: dict, do_cliente: bool = False) -> None:
                 sess["pendentes_descartados"] = sess.get("pendentes_descartados", 0) + 1
                 _live_pendente_zera_contadores(sess)
                 _live_log_kv("pend_cancelado", sess=sess["id"])
-    _live_log_kv("cancel", sess=sess["id"], turno=sess["turno"])
+    _live_log_kv("cancel", sess=sess["id"], turno=sess["turno"], em_curso=em_curso)
     pipe = sess.get("pipe")
     if pipe is not None:
         pipe.cancel()
-        if not pipe.ocupado:             # com turno rodando, quem avisa é o pipeline
-            _live_envia_json(sess, {"type": "interrupted", "turn": sess["turno"]})
-    else:
-        _live_envia_json(sess, {"type": "interrupted", "turn": sess["turno"]})
+        if pipe.ocupado:                 # com turno rodando, quem avisa é o pipeline
+            return
+    if not em_curso:
+        # ocioso: nada a interromper. O stub lê esta flag para não abrir turno e
+        # ela não pode ficar setada depois de um cancel que não cancelou nada.
+        sess["cancelado"].clear()
+        return
+    _live_envia_json(sess, {"type": "interrupted", "turn": sess["turno"]})
 
 
 _DEBUG_LIVE = os.environ.get("LIVE_DEBUG_TTS") == "1"
@@ -6492,12 +7414,25 @@ def _live_abre_turno(sess: dict, pcm: bytes = b"", barge_in: bool = False) -> No
         else:
             _live_envia_json(sess, _live_erro("turno_em_curso", "espere o turn_complete"))
         return
+    # #315: gate do PREWARM. Falar antes de os modelos estarem quentes custa o
+    # primeiro áudio inteiro (medido: 7,3 s a frio contra 0,78–0,87 s quente) e
+    # nada segurava o turno. A fala vai para o pendente e o observador espera o
+    # `prewarm.ok` até `TTS_LIVE_ESPERA_PREWARM_S`; estourou, ele avisa
+    # (`prewarm_em_curso`) e abre o turno assim mesmo. `0` desliga.
+    if (pcm and _LIVE_ESPERA_PREWARM_S > 0 and not sess.get("prewarm_ok")
+            and not sess.get("prewarm_esperou")):
+        if sess.get("prewarm_ate") is None:
+            sess["prewarm_ate"] = time.monotonic() + _LIVE_ESPERA_PREWARM_S
+        if _live_prewarm_pendente(sess):
+            _live_guarda_pendente(sess, pcm, barge_in)
+            return
     # FALHA ALTO e a sessão sobrevive (padrão do `prewarm`): se o pipeline mudar de
     # assinatura, o cliente VÊ o erro em vez de ficar com turno mudo — o modo
     # fantasma que a muleta antiga (`except TypeError` seguindo sem o flag) escondia.
     try:
         if pcm:
             pipe.push_pcm(pcm, substituir=True)   # é o turno INTEIRO, não um pedaço
+        sess["t_abre_turno"] = time.monotonic()   # #315: origem do `decisao_para_audio_ms`
         if not pipe.end_of_speech(barge=bool(barge_in)):
             # perdeu a corrida (outro turno abriu entre a checagem e aqui):
             # a fala vira pendente em vez de sumir (mesma política do ocupado)
@@ -6542,6 +7477,16 @@ def _live_pend_lock(sess: dict) -> threading.Lock:
             if lock is None:
                 lock = sess["pend_lock"] = threading.Lock()
     return lock
+
+
+def _live_prewarm_pendente(sess: dict) -> bool:
+    """O turno ainda precisa esperar o prewarm? (#315)
+
+    Só enquanto o prewarm NÃO terminou e o prazo de espera não estourou. Sem prazo
+    armado nada espera — quem arma é o `_live_abre_turno`, no 1º turno que chega
+    antes do `prewarm.ok`."""
+    ate = sess.get("prewarm_ate")
+    return ate is not None and not sess.get("prewarm_ok") and time.monotonic() < ate
 
 
 def _live_guarda_pendente(sess: dict, pcm: bytes, barge_in: bool) -> None:
@@ -6640,8 +7585,19 @@ def _live_descarrega_pendente(sess: dict) -> None:
     if pipe is None:
         return
     try:
-        while not sess.get("fechar") and pipe.ocupado:
+        while not sess.get("fechar") and (pipe.ocupado or _live_prewarm_pendente(sess)):
             time.sleep(0.1)
+        if sess.get("prewarm_ate") is not None and not sess.get("prewarm_ok"):
+            # o prazo estourou com o pipeline ainda frio: o turno SEGUE (não
+            # descarta), mas o cliente VÊ por que o primeiro áudio vai demorar.
+            _live_envia_json(sess, _live_erro(
+                "prewarm_em_curso",
+                "pipeline ainda aquecendo; o turno segue com os modelos frios"))
+        sess["prewarm_ate"] = None
+        # já se esperou o que dava: o próximo `_live_abre_turno` abre direto em vez
+        # de armar outro prazo e prender a fala de novo (senão o pendente entra em
+        # laço: abre, o gate re-arma, guarda, estoura, abre…)
+        sess["prewarm_esperou"] = True
         # #221: `pop` e contadores na MESMA seção crítica, e só quem LEVOU o
         # pendente os toca. Antes o zero ficava fora do lock e o observador
         # PERDEDOR (pop = None, caso NORMAL quando dois acordam no mesmo
@@ -6698,7 +7654,9 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
         _live_marca_prov(sess, getattr(ev, "prob", 0.0))
         if ev.tipo == "barge_in":
             _live_log_kv("barge_in", sess=sess["id"], t_ms=ev.t_ms)
-            _live_cancela(sess)
+            # `forcar`: o barge do motor é prova de interrupção (o evento chega
+            # antes de qualquer áudio no fio; ver `_live_cancela`)
+            _live_cancela(sess, forcar=True)
         elif ev.tipo == "speech_start":
             _live_log_kv("speech_start", sess=sess["id"], t_ms=ev.t_ms,
                          prob=getattr(ev, "prob", None))
@@ -6710,6 +7668,11 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
                          detalhe=getattr(ev, "detalhe", None))
             _live_stage(sess, "stt")
             sess["t_decisao_ms"] = int(getattr(ev, "t_decisao_ms", 0) or 0)
+            # #315: relógio da DECISÃO. O alvo do épico é "fim-de-fala → 1º áudio",
+            # e o `latency` do pipeline conta de outro zero (o início da thread) —
+            # sem este carimbo o trecho entre a decisão do VAD e o turno abrir fica
+            # fora de qualquer medida. `_live_observa` fecha a conta no `latency`.
+            sess["t_decisao"] = time.monotonic()
             sess["turno_curto"] = bool(getattr(ev, "curto", False))
             sess["turno_barge_falso"] = bool(getattr(ev, "barge_falso", False))
             _live_abre_turno(sess, bytes(getattr(ev, "audio", b"") or b""),
@@ -6793,6 +7756,13 @@ def _live_pipe_start(sess: dict) -> None:
         _live_envia_json(sess, {"type": "prewarm", "ok": False,
                                 "message": f"{type(exc).__name__}: {exc}"})
         _live_envia_json(sess, _live_erro("prewarm", f"{type(exc).__name__}: {exc}"))
+    finally:
+        # #315: solta o turno que está esperando o aquecimento (deu certo ou não,
+        # não há mais o que esperar) — sem isto ele só sairia no estouro do prazo.
+        sess["prewarm_ok"] = True
+        sess["prewarm_esperou"] = True        # não há mais o que esperar
+        if sess.get("turno_pendente"):
+            _live_acorda_pendente(sess)
 
 
 def _live_engine(sess: dict) -> None:
@@ -6823,21 +7793,75 @@ def _live_motivo_fechamento(sess: dict) -> tuple[str, str] | None:
     return None
 
 
+def _live_solta_slot(sess: dict, motivo: str) -> None:
+    """Tira a sessão do registry AGORA e fecha a porta do lado de cá (#300).
+
+    Chamado quando a task de ENVIO morre: a única escritora do WS se foi, mas o
+    `_live_loop` pode continuar bloqueado no `receive()` (socket meio-aberto) e a
+    limpeza do endpoint só corre quando ele volta. Sem sair do registry o `visto`
+    (renovado a cada frame) impede o TTL de vencer e a sessão fica ZUMBÁ: muda,
+    segurando 1 de `_LIVE_MAX_SESSIONS` (quem chega leva `busy`) e coletando tudo o
+    que a IA gerar. Idempotente com o pop do `finally` (mesma checagem de dono)."""
+    sess["fechar"] = True
+    sess["cancelado"].set()
+    pipe = sess.get("pipe")
+    if pipe is not None:
+        # ninguém mais vai ouvir: para a geração no próximo estágio, em vez de
+        # deixá-la produzir para uma fila que já ninguém lê (o `close()` do
+        # `finally` também cancela — a chamada é idempotente de propósito)
+        try:
+            pipe.cancel()
+        except Exception:                 # noqa: BLE001 — cancelar é best-effort
+            pass
+    with _live_lock:
+        if _live_sessions.get(sess["id"]) is sess:
+            _live_sessions.pop(sess["id"], None)
+            _live_log_kv("solta_slot", sess=sess["id"], motivo=motivo,
+                         fila_bytes=getattr(sess["fila"], "bytes", 0),
+                         descartados=getattr(sess["fila"], "descartados", 0))
+
+
+async def _live_manda_stats(sess: dict, ws) -> bool:
+    """Manda um `stats` AGORA, direto no socket (fora da fila). False = socket morto.
+
+    #313: o `stats` era gerado só quando a fila estava VAZIA e ENFILEIRADO junto do
+    áudio. Num turno com áudio contínuo a fila nunca esvazia — então o painel
+    congelava exatamente quando é útil — e, mesmo quando saía, o payload esperava
+    atrás de todo o áudio pendente. Aqui ele é montado e enviado na hora: só esta
+    task escreve no WS, logo não há corrida de `send`.
+    """
+    sess["st_proximo"] = time.monotonic() + _LIVE_STATS_MS / 1000.0
+    try:
+        await ws.send_json(_live_stats(sess))
+    except Exception:                     # noqa: BLE001 — quem trata a morte é o laço
+        return False
+    return True
+
+
 async def _live_sender(sess: dict, ws) -> None:
     """Única task que escreve no WS (evita corrida de send entre turno e eventos)."""
     fila = sess["fila"]
     while True:
+        # `stats` por RELÓGIO (#313): a espera do `get` é encurtada até o próximo
+        # tique para não depender de a fila drenar.
+        espera = _LIVE_TICK_S
+        if _LIVE_STATS_MS and sess["visto"]:
+            espera = max(0.0, min(espera, sess.get("st_proximo", 0.0) - time.monotonic()))
         try:
-            item = await asyncio.to_thread(fila.get, True, _LIVE_TICK_S)
+            item = await asyncio.to_thread(fila.get, True, espera)
         except queue.Empty:
             item = None
         except asyncio.CancelledError:
             raise
-        if item is None and _LIVE_STATS_MS and sess["visto"]:
-            agora = time.monotonic()
-            if agora >= sess.get("st_proximo", 0.0):
-                sess["st_proximo"] = agora + _LIVE_STATS_MS / 1000.0
-                _live_envia_json(sess, _live_stats(sess))
+        if _LIVE_STATS_MS and sess["visto"] and \
+                time.monotonic() >= sess.get("st_proximo", 0.0):
+            if not await _live_manda_stats(sess, ws):
+                _live_solta_slot(sess, "sender_morto")
+                try:
+                    await ws.close(code=1011)
+                except Exception:          # noqa: BLE001
+                    pass
+                return
         if item is not None:
             tipo, payload = item
             try:
@@ -6845,7 +7869,16 @@ async def _live_sender(sess: dict, ws) -> None:
                     await ws.send_json(payload)
                 else:
                     await ws.send_bytes(payload)
-            except Exception:  # noqa: BLE001 — cliente caiu: a limpeza é do endpoint
+            except Exception:  # noqa: BLE001 — o socket morreu (a limpeza de recursos
+                # é do endpoint, quando o `_live_loop` voltar). O SLOT, porém, é
+                # liberado aqui e já: sem consumidora a fila só cresce, e o loop
+                # segue renovando `visto` — o TTL nunca venceria (#300). O
+                # `ws.close` é o que faz o `receive()` pendente do loop voltar.
+                _live_solta_slot(sess, "sender_morto")
+                try:
+                    await ws.close(code=1011)
+                except Exception:      # noqa: BLE001
+                    pass
                 return
             if tipo == "audio":
                 sess["st_chunks"] += 1
@@ -6904,7 +7937,13 @@ _live_resume_fn = None              # callable(msgs) -> str; default = _chat_llm
 
 
 def _live_hist_tam(reg: dict) -> int:
-    return sum(len(m.get("content") or m.get("text") or "") for m in reg.get("msgs") or [])
+    """Chars do registro retomável — `msgs` MAIS o `system` e o `resumo` (#313).
+
+    Contar só as mensagens deixava os dois campos de fora e o teto de
+    `_LIVE_RESUME_MAX_BYTES` (4 MB) subcontava: o `system` são até 4000 chars por
+    sessão que ficavam invisíveis para a evicção."""
+    total = sum(len(m.get("content") or m.get("text") or "") for m in reg.get("msgs") or [])
+    return total + len(reg.get("system") or "") + len(reg.get("resumo") or "")
 
 
 def _live_hist_varre(agora: float | None = None) -> list:
@@ -7094,13 +8133,19 @@ async def live_ws(ws: WebSocket):
         "voice_id": cfg["voice_id"], "system": cfg["system"], "vad": cfg["vad"],
         "history": list(cfg["history"]), "buffer": bytearray(),
         "resumo": (retomado or {}).get("resumo") or "",
-        "truncado": False, "fila": queue.Queue(), "turno": 0,
+        # #300: fila com teto em BYTES — derruba o áudio mais antigo e nunca JSON
+        "truncado": False, "fila": _LiveFila(_LIVE_FILA_MAX_BYTES), "turno": 0,
         "cancelado": threading.Event(), "vencida": False, "substituida": False,
         "fechar": False,
         "turno_thread": None, "pipe": None, "engine": None,
         "dsh": None,                      # DSH-2: DshClient PRÓPRIO da sessão Live
         "falando": False, "audio_pendente": 0, "buffer_bytes_turno": 0,
         "t_decisao_ms": 0, "descartados": 0, "turno_barge_in": False,
+        # #315: relógios do turno (decisão do VAD e abertura) — a diferença entre
+        # eles entra no `latency` como `decisao_para_audio_ms`; `prewarm_ok` /
+        # `prewarm_ate` são o gate do aquecimento.
+        "t_decisao": None, "t_abre_turno": None,
+        "prewarm_ok": False, "prewarm_ate": None, "prewarm_esperou": False,
         "turno_curto": False, "turno_barge_falso": False,
         # #126: 1 turno de fala pendente (pipeline ocupado) + o observador dele
         "turno_pendente": None, "turno_pendente_barge": False, "pend_thread": None,
@@ -7158,6 +8203,10 @@ async def live_ws(ws: WebSocket):
                         "voice_id": sess["voice_id"],
                         "audio": {"format": "pcm16", "sr": _LIVE_AUDIO_SR, "channels": 1},
                         "in_audio": {"format": "pcm16", "sr": 16000, "channels": 1},
+                        # #313: quantas mensagens do `setup` caíram no teto de chars
+                        # (o cliente enxerga o que foi encurtado) e a `vad` APLICADA,
+                        # com `barge_ms` junto — o efetivo, não o pedido.
+                        "history_descartados": cfg.get("history_descartados", 0),
                         "vad": sess["vad"]})
     sender = None
     try:
@@ -7229,6 +8278,11 @@ async def _live_loop(sess: dict, ws) -> None:
         msg = await ws.receive()
         if msg.get("type") == "websocket.disconnect":
             return
+        if sess.get("fechar"):
+            # #300: a task de envio morreu e soltou o slot. O socket pode demorar
+            # a devolver o `disconnect` (cliente meio-aberto); sem esta saída o
+            # loop fica renovando `visto` e a sessão fica zumbá no registry.
+            return
         sess["visto"] = time.monotonic()
         if msg.get("bytes"):
             cru = bytes(msg["bytes"])
@@ -7273,6 +8327,17 @@ async def _live_loop(sess: dict, ws) -> None:
             if eng is not None:
                 eng.cancel()
             _live_cancela(sess, do_cliente=True)   # abortou tudo: pendente sai junto
+        elif tipo == "hold":
+            # #314: fallback "segurar pra falar" — o motor abre/fecha o turno no
+            # BOTÃO, sem heurístico de VAD. O aviso chega pelo
+            # `stats.motor.hold_to_talk_sugerido`; sem ele o recurso era morto.
+            eng = sess.get("engine")
+            fn = getattr(eng, "set_hold", None)
+            if fn is None:
+                _live_envia_json(sess, _live_erro(
+                    "comando", "hold sem motor de turnos nesta sessão"))
+                continue
+            _live_trata_eventos(sess, fn(bool((dados or {}).get("on"))))
         elif tipo == "end_of_speech":
             eng = sess.get("engine")
             if eng is not None:          # comando é do cliente: força o fim do turno

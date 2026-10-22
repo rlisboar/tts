@@ -214,6 +214,10 @@ class LivePipeline:
         self._worker = None
         self._worker_indisponivel = False
         self._worker_motivo = ""
+        # #313: a espera pelo `_gen_lock` (job de lote na frente) medida no chunk.
+        # O dict é do TURNO e vai para o `latency`; com `tts` injetado pelos testes
+        # ele simplesmente fica vazio (nenhuma assinatura muda).
+        self._espera: dict = {}
         self._tts = tts or self._tts_live
         self._prewarm = prewarm or _prewarm_app
         self.first_max_chars = first_max_chars
@@ -361,14 +365,16 @@ class LivePipeline:
                 w = self._worker = _LiveWorker(voice_id=self.voice_id)
             if w.ativo:
                 try:
-                    return w.gerar(texto, omni)
+                    return _pos_live(w.gerar(texto, omni, espera=self._espera))
                 except Exception as exc:    # noqa: BLE001
                     self._worker_indisponivel = True
                     self._worker_motivo = f"{type(exc).__name__}: {exc}"
                     print(f"[live] worker TTS caiu no turno ({self._worker_motivo})"
                           f" — in-process daqui em diante", flush=True)
                     w.fecha()
-        return _tts_app(texto, omni, voice_id=self.voice_id)
+        # o pós roda nos DOIS caminhos (e é ele que faz o Live soar como o job)
+        return _pos_live(_tts_app(texto, omni, voice_id=self.voice_id,
+                                  espera=self._espera))
 
     # -- entrada ------------------------------------------------------------
     def push_pcm(self, frames: bytes, substituir: bool = False) -> None:
@@ -749,12 +755,32 @@ class LivePipeline:
         try:
             self.emit_json({"type": "speech_start", "turn": turno,
                             "buffer_bytes": bytes_entrada})
-            texto = self._stt(pcm, self.language)
+            # #314: veredito do STT do turno (`motivo`: "vad" ou "stt"). Só o
+            # caminho REAL de produção o preenche; com `stt` injetado o dict fica
+            # vazio e nada muda.
+            julga: dict = {}
+            if self._stt is _stt_app:
+                texto = _stt_app(pcm, self.language, julga)
+            else:
+                texto = self._stt(pcm, self.language)
             lat["stt_ms"] = _ms(t0)
             if self.cancelado:
                 return self._interrompido(lat, t0, turno, estado)
+            motivo = str(julga.get("motivo") or "")
+            if motivo:
+                # fala julgada e RECUSADA (VAD do STT ou anti-alucinação): fecha
+                # com o motivo, em vez de silêncio indistinguível de "não ouvi".
+                # Não gasta LLM nem TTS e não entra no history.
+                self.emit_json({"type": "turn_complete", "turn": turno,
+                                "ms": _ms(t0), "audio_bytes": 0, "descartado": True,
+                                "motivo": motivo,
+                                "detalhe": str(julga.get("detalhe") or "")[:120],
+                                "buffer_bytes": bytes_entrada, "transcript": texto,
+                                "truncated": truncado})
+                self._truncado = False
+                return
             if not texto.strip():
-                # nada transcrito: não inventa `transcript_user` vazio
+                # nada transcrito e nenhum motivo declarado (stt injetado)
                 self.emit_json({"type": "turn_complete", "turn": turno,
                                 "ms": _ms(t0), "audio_bytes": 0,
                                 "buffer_bytes": bytes_entrada, "transcript": "",
@@ -837,16 +863,38 @@ class LivePipeline:
                      estado: dict) -> None:
         """Sintetiza na ordem e manda o áudio; o 1º chunk usa perfil rápido."""
         primeiro = True
+        # #313: dict do turno onde o TTS registra a espera pelo `_gen_lock` (o
+        # `_tts_live`/`_tts_app` escrevem nele). Vai para o `latency` do 1º chunk:
+        # com um job de lote segurando o lock, o tempo deixa de ficar embutido no
+        # `first_chunk_ms` sem nome. Com `tts` injetado nada escreve e o campo sai
+        # ausente, que é honesto (não houve lock nosso para medir).
+        espera: dict = {}
+        self._espera = espera
         omni_rapido = _perfil_live(primeiro_chunk=True,
                                    max_steps=self.first_chunk_max_steps)
+        # #315: 2º chunk também sai no perfil do Live (teto `live_num_steps`). Com
+        # um chunk por vez e a geração serializada, o 1º só cobre o playback até o
+        # 2º ficar pronto — mandar o 2º com o `num_steps` do setting (37, ~1,1 s)
+        # abria buraco no alto-falante logo na virada. Do 3º em diante vale o
+        # setting: aí a fila já tem folga e a qualidade volta a ser a do dono.
+        omni_live = _perfil_live(primeiro_chunk=True,
+                                 max_steps=_num_steps_live())
         omni_normal = _perfil_live(primeiro_chunk=False, max_steps=self.first_chunk_max_steps)
+        n_chunk = 0
         try:
             while True:
                 pedaco = fila.get()
                 if pedaco is None or self.cancelado:
                     break
+                if n_chunk == 0:
+                    perfil = omni_rapido
+                elif n_chunk == 1:
+                    perfil = omni_live
+                else:
+                    perfil = omni_normal
+                n_chunk += 1
                 t_tts = time.perf_counter()
-                audio = self._tts(pedaco, omni_rapido if primeiro else omni_normal)
+                audio = self._tts(pedaco, perfil)
                 if primeiro:
                     lat["first_tts_ms"] = _ms(t_tts)
                 if self.cancelado:              # caiu durante a síntese: não manda
@@ -858,6 +906,8 @@ class LivePipeline:
                 if primeiro:
                     lat["first_chunk_ms"] = _ms(t0)
                     lat["first_audio_ms"] = _ms(t0)
+                    if espera.get("lock_espera_ms") is not None:
+                        lat["lock_espera_ms"] = int(espera["lock_espera_ms"])
                     self.ultima_latencia = dict(lat)
                     primeiro = False
                 # libera VRAM FORA do caminho crítico: o áudio acima já foi emitido
@@ -886,22 +936,74 @@ def _normaliza(t: str) -> list[str]:
     return _PONTUACAO.sub(" ", t).split()
 
 
+# Palavras que o HUMANO usa e o eco (que repete o texto do assistente) não
+# acrescenta: negação, contraste, pergunta e comando. Só derrubam a classificação
+# quando a REFERÊNCIA não as tem — senão "então"/"e", que aparecem em qualquer
+# frase, anulariam a janela. Ver `_parece_eco` (#301).
+_MARCADORES_HUMANO = frozenset({
+    "nao", "nem", "mas", "porem", "so", "cade", "quando", "onde", "quanto", "quanta",
+    "quem", "como", "qual", "porque", "sim", "espera", "calma", "deixa", "repete",
+    "outro", "outra", "contrario", "diferente", "errado", "corrige",
+})
+
+
+def _marcador_de_humano(transcript: str, dito: list[str], ultimo: str,
+                        alvo: list[str]) -> bool:
+    """O transcript traz algo que o ECO não traria?
+
+    Duas portas, ambas medidas na matriz de `smoke_eco_regra.py`:
+
+    · pontuação de PERGUNTA no transcript quando a referência não tem — o eco copia
+      a prosódia do alto-falante, então "?" no eco de uma frase declarativa é raro;
+    · palavra de `_MARCADORES_HUMANO` que a referência NÃO disse (o humano
+      pergunta, nega ou manda repetir com vocabulário que ele mesmo escolheu).
+
+    A regra é conservadora de propósito: descartar fala é pior que rodar um STT.
+    """
+    if "?" in (transcript or "") and "?" not in (ultimo or ""):
+        return True
+    return bool((set(dito) - set(alvo)) & _MARCADORES_HUMANO)
+
+
+def _janela_ate(alvo: list[str], dito: list[str], divergencias: int) -> bool:
+    """O transcript aparece CONTÍGUO na referência com até N palavras diferentes.
+
+    Janela contígua e não "60 % das palavras em qualquer lugar": o eco é um trecho
+    LITERAL da fala em curso, então o que o distingue é a ordem ser a da referência
+    com quase nenhuma troca — a contagem solta aceitava frase humana que só
+    reusasse o vocabulário.
+    """
+    n = len(dito)
+    if not n or n > len(alvo):
+        return False
+    for i in range(len(alvo) - n + 1):
+        erros = sum(1 for a, b in zip(alvo[i:i + n], dito) if a != b)
+        if erros <= divergencias:
+            return True
+    return False
+
+
 def _parece_eco(transcript: str, ultimo_assistente: str, minimo: float = 0.6) -> bool:
     """True se o transcript é a fala do PRÓPRIO assistente voltando pelo mic.
 
-    Compara em janela deslizante de palavras (a captura pega um pedaço da fala em
-    curso): se `minimo` das palavras do transcript aparecem em sequência no que o
-    assistente acabou de dizer, é eco. Sem AEC não dá para separar por energia."""
+    O eco é um trecho LITERAL do que está tocando: mesma ordem, quase sem troca.
+    `_normaliza` + janela contígua com `minimo` de acerto (`minimo=0.6` → até 40 %
+    de divergência, com teto de 2 palavras para janela curta não virar borrão).
+    Antes disso, três descartes: transcript de 1 palavra (o eco nunca é de 1 —
+    "Sim." é humano), transcript MAIOR que a referência (o eco não fala mais do que
+    o assistente) e marcador de humano (`_marcador_de_humano`).
+
+    Medido em `smoke_eco_regra.py`: 0 falso-descarte nas falas humanas e eco puro
+    preservado. Sem AEC não dá para separar por energia."""
     alvo, dito = _normaliza(ultimo_assistente), _normaliza(transcript)
     if len(dito) < 2 or len(alvo) < 2:
         return False
-    if len(dito) > len(alvo) * 2:          # o humano falou bem mais: não é eco
+    if len(dito) > len(alvo) + 1:          # o humano falou mais: não é eco
         return False
-    for i in range(len(alvo) - len(dito) + 1):
-        igual = sum(1 for a, b in zip(alvo[i:i + len(dito)], dito) if a == b)
-        if igual / len(dito) >= minimo:
-            return True
-    return False
+    if _marcador_de_humano(transcript, dito, ultimo_assistente, alvo):
+        return False
+    divergencias = min(2, int(round(len(dito) * (1.0 - minimo))))
+    return _janela_ate(alvo, dito, divergencias)
 
 
 def _ms(t0: float) -> int:
@@ -919,10 +1021,23 @@ def _pcm16(audio) -> bytes:
 # ---------------------------------------------------------------------------
 
 _LIVE_MAX_STEPS = 12          # teto de passos do 1º chunk: 16 p=0,45 s, 12 p=0,35 s
+# #315: teto do 2º chunk — o perfil do Live, configurável. Do 3º em diante volta o
+# `num_steps` do dono (a fila já tem folga e a voz volta ao ajuste dele).
+_LIVE_NUM_STEPS_PADRAO = 16
 _DEBUG_TTS = __import__("os").environ.get("LIVE_DEBUG_TTS") == "1"
 
 _prewarm_trava = threading.Lock()
 _PREWARM_FEITO = False
+
+
+def _num_steps_live() -> int:
+    """Passos do perfil do Live (setting `live_num_steps`, teto próprio da máquina)."""
+    import app
+    try:
+        passos = int(app._settings.get("live_num_steps") or _LIVE_NUM_STEPS_PADRAO)
+    except (TypeError, ValueError):
+        passos = _LIVE_NUM_STEPS_PADRAO
+    return max(4, passos)
 
 
 def _perfil_live(primeiro_chunk: bool, max_steps: int) -> dict:
@@ -1062,8 +1177,20 @@ def _prewarm_chat() -> None:
         print(f"[live] pre-warm do chat falhou ({type(exc).__name__}) — segue", flush=True)
 
 
-def _stt_app(pcm16_le_16k: bytes, language: str | None) -> str:
-    """STT do turno pelo caminho do app (VAD + anti-alucinação inclusos)."""
+def _stt_app(pcm16_le_16k: bytes, language: str | None,
+             julga: dict | None = None) -> str:
+    """STT do turno pelo caminho do app (VAD + anti-alucinação inclusos).
+
+    Vem o `_stt_ok` junto (#314): o Live chamava `_transcribe` direto e o filtro
+    anti-alucinação do projeto — blacklist, `no_speech_prob`, `avg_logprob`,
+    `compression_ratio`, mínimos — só valia na Conversa; alucinação do Whisper ia
+    reta ao LLM. Rejeitado, o texto NÃO entra no turno e `julga["motivo"]` diz por
+    quê (`"stt"`), para o cliente e o `stats` verem o descarte.
+
+    Turno que o VAD do próprio `_transcribe` recusa chega aqui como texto vazio
+    com `language` vazio (é o formato daquele ramo) e vira motivo `"vad"` — é
+    diferente de ruído qualquer e não pode sair indistinguível de "não ouvi".
+    """
     import app
     destino = app.OUTPUTS_DIR / f".live-{threading.get_ident()}-{time.time_ns()}.wav"
     try:
@@ -1073,7 +1200,18 @@ def _stt_app(pcm16_le_16k: bytes, language: str | None) -> str:
             w.setframerate(16000)
             w.writeframes(pcm16_le_16k)
         r = app._transcribe(destino, language=language)
-        return (r.get("text") or "").strip()
+        texto = (r.get("text") or "").strip()
+        if not texto:
+            if julga is not None:
+                julga["motivo"] = "stt" if r.get("language") else "vad"
+            return ""
+        ok, motivo = app._stt_ok(r, texto)
+        if not ok:
+            if julga is not None:
+                julga["motivo"] = "stt"
+                julga["detalhe"] = motivo
+            return texto            # o texto fica no `transcript`; quem descarta é o turno
+        return texto
     finally:
         destino.unlink(missing_ok=True)
 
@@ -1131,7 +1269,8 @@ def _llm_stream_app(messages: list):
         yield app._chat_llm(messages)
 
 
-def _tts_app(texto: str, omni: dict, voice_id: str | None = None):
+def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
+             espera: dict | None = None):
     """Gera UM chunk in-process (mesmo modelo/conds do app) e devolve float32 24 kHz.
 
     `voice_id` vem do `setup` da sessão; sem ele cai no default do app.
@@ -1139,7 +1278,11 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None):
     Segura o `_gen_lock`, como o job normal faz: sem isso um turno do Live e uma
     geração da UI rodam MLX ao mesmo tempo e o Metal estoura — medido no smoke, o
     servidor MORREU com "Command buffer execution failed: GPU Timeout Error".
-    Remoto não usa o lock (o servidor de lá paraleliza por conta dele)."""
+    Remoto não usa o lock (o servidor de lá paraleliza por conta dele).
+
+    `espera` (#313) é o dict do turno que recebe `lock_espera_ms`: o lock é GLOBAL
+    e um job de lote o segura pelo job inteiro, então esse tempo some dentro do
+    `first_chunk_ms` e fica indistinguível de TTS lento. Só mede, não arbitra."""
     import time as _t
     import app
     _m = [_t.perf_counter()]
@@ -1165,12 +1308,34 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None):
         ref_audio = str(path)
     trava = app._NO_LOCK if app._use_remote_tts() else app._gen_lock
     _marco("prep")
+    t_trava = _t.perf_counter()
     with trava:
+        if espera is not None:
+            espera["lock_espera_ms"] = _ms(t_trava)
+        _marco("trava")
         r = app._generate_chunk(model, texto, _idioma_tts(),
                                 conds, ref_text, omni, ref_audio=ref_audio,
                                 family=be["family"], meta=be.get("meta"), sr=sr)
     _marco("generate")
     return r
+
+
+def _pos_live(audio):
+    """Pós do trecho do Live — a MESMA cadeia do job (app._pos_processa).
+
+    Sem isto o Live saía ~2-3 dB mais baixo que o mesmo texto no job, com clique
+    a cada borda (sem rampa) e aceitava áudio mudo. Cauda de 0,15 s: aqui não há
+    silêncio inserido entre trechos, e o trim+pad é o que dá o respiro.
+    """
+    import app
+
+    try:
+        return app._pos_processa(audio, app._LIVE_AUDIO_SR, pad_s=0.15)
+    except Exception as exc:             # noqa: BLE001 — nunca sem áudio por causa do pós
+        # alguns dublês de teste devolvem sentinela em vez de PCM; degrada avisando
+        print(f"[live] pós do trecho falhou ({type(exc).__name__}: {exc}) — áudio cru",
+              flush=True)
+        return audio
 
 
 def _idioma_tts() -> str:
@@ -1343,8 +1508,11 @@ class _LiveWorker:
             if msg.get("type") in tipos:
                 return msg
 
-    def gerar(self, texto: str, omni: dict):
-        """Um chunk pelo filho. Levanta `_WorkerMorto` em qualquer falha."""
+    def gerar(self, texto: str, omni: dict, espera: dict | None = None):
+        """Um chunk pelo filho. Levanta `_WorkerMorto` em qualquer falha.
+
+        `espera` (#313) recebe `lock_espera_ms`: o mesmo lock global do caminho
+        in-process, medido ANTES de adquirir (só mede, não arbitra)."""
         import base64
 
         import app
@@ -1352,7 +1520,10 @@ class _LiveWorker:
             raise _WorkerMorto("worker inativo")
         self._n += 1
         trava = app._NO_LOCK if app._use_remote_tts() else app._gen_lock
+        t_trava = time.perf_counter()
         with trava:                      # Metal: uma geração por vez (ver topo)
+            if espera is not None:
+                espera["lock_espera_ms"] = _ms(t_trava)
             if not self._ativo:
                 raise _WorkerMorto("worker inativo")
             self._envia({"type": "synth", "id": self._n, "text": texto,
@@ -1366,6 +1537,14 @@ class _LiveWorker:
                               dtype=np.float32)
         if audio.size == 0:
             raise _WorkerMorto("áudio vazio")
+        # mudo do filho vira FALHA (não áudio aceito): o turno é regerado
+        # in-process pelo chamador. Antes só `size == 0` reprovava e um trecho
+        # silencioso atravessava o turno inteiro (#305, item 9 da auditoria).
+        rms = r.get("rms")
+        if rms is None:
+            rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+        if float(rms) < 0.01:
+            raise _WorkerMorto(f"áudio mudo do worker (rms {float(rms):.4f})")
         return audio
 
     def fecha(self) -> None:

@@ -14,13 +14,12 @@ import pytest
 import app
 # fixtures de `test_api.py` (não estão no conftest): o `_isolamento_disco` é
 # autouse e isola settings/chaves num tmp — sem ele o POST grava no repo.
-from test_api import _isolamento_disco, auth, chave_de_uso, client  # noqa: F401
+from test_api import _isolamento_disco, auth, chave_de_uso, client  # noqa: F401  # noqa: F401
 from test_live_dsh import DshClienteFalso
 
-# Idem para as fixtures de `test_api`: chegam por `import` e são usadas só como
-# parâmetro de teste, uso que o pyflakes do hook não enxerga (ele ignora `noqa`).
-# `__all__` marca os imports como usados e mata o F401/F811.
-__all__ = ["_isolamento_disco", "auth", "chave_de_uso", "client"]
+# Fixtures de `test_api`: chegam por `import` e são usadas só como parâmetro de
+# teste. Com o F811 ignorado (#378) o import não precisa de silêncio; o `noqa`
+# fica como marcador de intenção (o uso é por parâmetro, não neste módulo).
 
 
 @pytest.fixture()

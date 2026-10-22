@@ -29,11 +29,24 @@ OMNI_ASSEMBLED_NAME = ".omnivoice-bf16"
 # atalhos que significam "o OmniVoice montado/default" (settings['model'])
 OMNI_ALIASES = {"", "omnivoice", "omni", "omnivoice-bf16"}
 
-# trechos parciais de jobs interrompidos; silêncio entre trechos
+# pausa entre trechos, POR PONTUAÇÃO (segundos). Antes era um vão fixo de 0,25 s
+# mais 0,3 s de pad no trim (550 ms) mesmo onde havia vírgula: pausa de fim de
+# frase no meio da frase (#319).
+PAUSA_SEG = {",": 0.15, ";": 0.17, ":": 0.17, ".": 0.40, "!": 0.42, "?": 0.42, "…": 0.42}
+PAUSA_PADRAO_S = 0.15          # corte seco (sem pontuação) = pausa de vírgula
+# cauda que o trim deixa no FIM de cada trecho, só para o fade não comer a fala
+PAD_CAUDA_S = 0.08
+# legado: quem ainda monta um silêncio fixo usa este
 CHUNK_SILENCE_S = 0.25
 # modelo sai com volume baixo (RMS ~0,10); normaliza para nível de fala
 TARGET_RMS = 0.15
 PEAK_LIMIT = 0.95
+# loudness integrada do ARQUIVO FINAL (EBU R128). O RMS por trecho iguala os
+# trechos entre si; este alvo ancora o job inteiro numa referência de verdade e é
+# aplicado como UM ganho sobre o WAV montado (#302).
+LUFS_ALVO = -18.0
+LUFS_TOLERANCIA = 1.0
+LUFS_GANHO_MAX_DB = 12.0
 
 # backends que aplicam `speed` nativamente no generate() — NÃO reaplicar
 # time-stretch (senão fish/chatterbox/qwen ficavam com velocidade²)
@@ -133,6 +146,28 @@ def apply_audio_fx(audio, sr: int, g_low: float = 0.0, g_mid: float = 0.0,
     return y.astype(np.float32)
 
 
+def pontua_corte(chunk: str, ultimo: bool = False) -> str:
+    """Fecha o trecho SEM apagar a pontuação que o texto já trazia.
+
+    Corte por vírgula/dois-pontos/ponto-e-vírgula mantém a marca (o modelo
+    entrega contorno de CONTINUAÇÃO); corte seco no meio da frase ganha vírgula e
+    só o último trecho fecha com ponto. Antes todo corte recebia um `.` e saía
+    `…na ordem:.` / `…os custos,.` — contorno de fim de frase no meio da frase,
+    medido em 2 dos 4 trechos (#319).
+    """
+    c = (chunk or "").rstrip()
+    if not c:
+        return chunk
+    if c[-1] in ".!?…,;:":
+        return c
+    return c.rstrip(",") + ("." if ultimo else ",")
+
+
+def pausa_apos(fim: str) -> float:
+    """Silêncio (s) a inserir depois de um trecho, pela pontuação dele."""
+    return PAUSA_SEG.get((fim or " ")[-1], PAUSA_PADRAO_S)
+
+
 def sanitize_text(text: str) -> str:
     """Limpeza leve para o tokenizer multilíngue (Qwen3) do OmniVoice.
 
@@ -208,23 +243,71 @@ def trim_tail_silence(audio, sr: int, limiar: float = 0.006, pad_s: float = 0.3)
     return audio[:min(len(audio), fim + int(pad_s * sr))]
 
 
+def _limiter(y, teto: float):
+    """Comprime só a ponta acima do joelho, saturando em `teto`.
+
+    Abaixo do joelho (70% do teto) o sinal passa intacto; acima, a curva tem
+    derivada 1 no joelho e vai assintoticamente até o teto — o transiente é
+    dobrado e o nível do trecho não muda. Satura em `teto` (não em 1.0), para o
+    teto ser de verdade.
+    """
+    import numpy as np
+
+    joelho = 0.7 * teto
+    over = np.abs(y) > joelho
+    if not over.any():
+        return y
+    largura = max(1e-6, teto - joelho)
+    mag = np.abs(y)
+    mag = np.where(over, joelho + largura * np.tanh((mag - joelho) / largura), mag)
+    return (np.sign(y) * np.minimum(mag, teto)).astype(np.float32)
+
+
 def normalize(audio, target_rms: float = TARGET_RMS, peak_limit: float = PEAK_LIMIT):
-    """Ganho LINEAR p/ o RMS alvo, mas limitado para o pico não passar de
-    peak_limit. 100% transparente (sem soft-clip) — não esmaga transientes nem
-    distorce. Áudio com muito transiente fica só um pouco mais baixo."""
+    """Ganho LINEAR para o RMS alvo. O teto de pico é LIMITER, não ganho.
+
+    Dois defeitos medidos na auditoria #284:
+
+    1. `nan < 1e-6` é **False**: um trecho com NaN mantinha o RMS NaN, o ganho
+       virava NaN e o PCM16 gravava ZEROS — arquivo mudo com job `done` (#303).
+       Sanea o não-finito antes de medir.
+    2. O ganho era REDUZIDO quando o pico estourava o teto
+       (`gain *= peak_limit / peak`), ou seja, trecho de crista alta era
+       normalizado pelo PICO e não pelo nível: saía mais baixo que os vizinhos e
+       o envelope invertia (medido: 7,5 dB de espalhamento entre trechos virando
+       1,9 dB, com a saudação curta ficando a MAIS BAIXA do parágrafo). Agora o
+       ganho depende só do RMS e quem segura o transiente é o `_limiter` (#302).
+    """
     import numpy as np
 
     audio = np.asarray(audio, dtype=np.float32)
     if audio.size == 0:
         return audio
+    fin = np.isfinite(audio)
+    if not fin.all():
+        pico = float(np.abs(audio[fin]).max()) if fin.any() else 0.0
+        pico = pico or target_rms
+        audio = np.nan_to_num(audio, nan=0.0, posinf=pico,
+                              neginf=-pico).astype(np.float32)
     rms = float(np.sqrt(np.mean(audio ** 2)))
-    if rms <= 1e-6:
+    if not np.isfinite(rms) or rms <= 1e-6:
         return audio
-    gain = target_rms / rms
-    peak = float(np.abs(audio).max()) * gain
-    if peak > peak_limit:
-        gain *= peak_limit / peak     # teto de pico (linear, sem distorção)
-    return (audio * gain).astype(np.float32)
+    y = (audio * (target_rms / rms)).astype(np.float32)
+    teto = min(peak_limit, 0.99)
+    y = _limiter(y, teto)
+    # O limiter tira nível justamente dos trechos de crista alta — sem compensar,
+    # eles continuariam mais baixos que os outros (só que agora por 1-2 dB, em vez
+    # da inversão inteira). Recomposição de ganho em 2 passadas: devolve o que o
+    # limiter comeu, com o teto fixo.
+    for _ in range(2):
+        r_atual = float(np.sqrt(np.mean(y ** 2)))
+        if r_atual <= 1e-6:
+            break
+        razao = target_rms / r_atual
+        if abs(20.0 * float(np.log10(razao))) < 0.1:
+            break
+        y = _limiter((y * razao).astype(np.float32), teto)
+    return y.astype(np.float32)
 
 
 def fade_edges(audio, sr: int, ms: float = 8.0):
@@ -465,3 +548,79 @@ def resolve_omni_source(settings: dict, base: Path, progress=None) -> str:
     if str((settings or {}).get("omni_precision", "bf16")).lower() == "fp32":
         return OMNI_FP32_REPO
     return assemble_omnivoice_path(base, progress)
+
+
+# ---------------------------------------------------------------------------
+# Loudness do arquivo final (EBU R128) — UM ganho por job (#302)
+# ---------------------------------------------------------------------------
+
+def _ffmpeg_cmd() -> str:
+    """Binário do ffmpeg: PATH primeiro, senão o do imageio-ffmpeg."""
+    import shutil
+
+    ff = shutil.which("ffmpeg")
+    if ff:
+        return ff
+    import imageio_ffmpeg
+
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def loudness_lufs(caminho) -> float | None:
+    """Loudness integrada (LUFS) do arquivo. None = não deu para medir.
+
+    Silêncio puro sai como `-inf`: o parser devolve None e o chamador não mexe.
+    """
+    import subprocess
+
+    try:
+        p = subprocess.run(
+            [_ffmpeg_cmd(), "-hide_banner", "-nostats", "-i", str(caminho),
+             "-af", "ebur128=peak=true", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=300)
+    except Exception:  # noqa: BLE001 — sem ffmpeg, sem medida
+        return None
+    import re as _re
+    achados = _re.findall(r"I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", p.stderr or "")
+    return float(achados[-1]) if achados else None
+
+
+def normaliza_loudness(caminho, alvo: float = LUFS_ALVO,
+                       tolerancia: float = LUFS_TOLERANCIA,
+                       limite_db: float = LUFS_GANHO_MAX_DB) -> float | None:
+    """Aplica UM ganho constante no arquivo inteiro até a loudness bater no alvo.
+
+    Ganho constante (não compressor) preserva o envelope que o modelo produziu no
+    job: é o par do `normalize` por trecho, que só iguala os trechos entre si.
+    Devolve o ganho aplicado em dB; `None` = não mediu, arquivo intocado.
+
+    `alvo` já dentro da tolerância → 0.0 (registrado, sem reescrever o arquivo).
+    """
+    import subprocess
+    from pathlib import Path
+
+    caminho = Path(caminho)
+    atual = loudness_lufs(caminho)
+    if atual is None:
+        return None
+    delta = alvo - atual
+    if abs(delta) <= tolerancia:
+        return 0.0
+    delta = max(-limite_db, min(limite_db, delta))
+
+    fd, tmp_nome = tempfile.mkstemp(dir=str(caminho.parent),
+                                    prefix=caminho.name + ".", suffix=".lufs")
+    os.close(fd)
+    tmp = Path(tmp_nome)
+    try:
+        p = subprocess.run(
+            [_ffmpeg_cmd(), "-y", "-hide_banner", "-loglevel", "error",
+             "-i", str(caminho), "-af", f"volume={delta:.2f}dB",
+             "-c:a", "pcm_s16le", "-f", "wav", str(tmp)],
+            capture_output=True, timeout=300)
+        if p.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+            return None
+        os.replace(tmp, caminho)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return round(delta, 2)

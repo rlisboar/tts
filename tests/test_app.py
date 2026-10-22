@@ -1,5 +1,6 @@
 """Testes das funções puras do app.py (import leve — sem carregar modelos)."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -703,3 +704,473 @@ def test_vad_em_webm_nao_cai_no_fail_open(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "_vad_backend", "")
 
     assert app._vad_tem_fala(webm) is False
+
+
+# ---------------------------------------------------------------------------
+# #303 — NaN não pode virar WAV mudo com status done
+# ---------------------------------------------------------------------------
+
+class _ModeloFalso:
+    sample_rate = 24000
+
+
+def _job_de_render(monkeypatch, tmp_path, gerador, texto="x", remoto=False):
+    """Monta o mínimo para rodar `_run_tts_job` sem modelo nem Metal."""
+    monkeypatch.setattr(app, "OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(app, "_use_remote_tts", lambda: remoto)
+    monkeypatch.setattr(app, "_current_backend", lambda *a, **k: {
+        "id": "omnivoice", "family": "omnivoice", "is_shortcut": True,
+        "path": "omnivoice", "meta": {"label": "Omni"}})
+    monkeypatch.setattr(app, "_get_model", lambda *a, **k: _ModeloFalso())
+    monkeypatch.setattr(app, "_cond_for", lambda *a, **k: {})
+    monkeypatch.setattr(app, "_voice_ref_text", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_generate_chunk", gerador)
+    monkeypatch.setattr(app, "_release_mlx_memory", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_schedule_job_cleanup", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_touch_use", lambda *a, **k: None)
+    app._jobs.clear()
+    return app._jobs_admit({"text": texto})
+
+
+_TEXTO_1_TRECHO = ("Hoje a gente vai falar de tres coisas na ordem primeiro o cronograma "
+                   "depois os custos e por ultimo as duvidas de voces")
+
+
+def _bom(segundos: float = 3.0) -> np.ndarray:
+    """Fala sintética audível, longa o bastante para não ser 'truncada'."""
+    n = int(segundos * 24000)
+    t = np.arange(n) / 24000.0
+    return (0.15 * np.sin(2 * np.pi * 180 * t)
+            + 0.08 * np.sin(2 * np.pi * 700 * t)).astype(np.float32)
+
+
+def test_anomalo_reprova_nao_finito():
+    bom = _bom()
+    assert app._anomalo(np.full(24000, np.nan, dtype=np.float32), 24000, "x" * 100)
+    assert app._anomalo(np.full(24000, np.inf, dtype=np.float32), 24000, "x" * 100)
+    misto = bom.copy()
+    misto[100] = np.nan
+    assert app._anomalo(misto, 24000, "x" * 100)
+    assert "finito" in app._motivo_anomalia(misto, 24000, "x" * 100)
+    assert not app._anomalo(bom, 24000, _TEXTO_1_TRECHO)
+
+
+def test_render_com_nan_regera_e_nao_grava_mudo(monkeypatch, tmp_path, capsys):
+    """1ª tentativa NaN: retry, áudio audível, sinal no log E no meta."""
+    chamadas = []
+
+    def _gerador(model, texto, *a, **k):
+        chamadas.append(texto)
+        if len(chamadas) == 1:
+            return np.full(24000, np.nan, dtype=np.float32)
+        return _bom()
+
+    job_id = _job_de_render(monkeypatch, tmp_path, _gerador)
+    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    job = app._jobs[job_id]
+    saida = capsys.readouterr().out
+    try:
+        assert job["status"] == "done", job
+        assert len(chamadas) == 2, "o trecho NaN não foi regerado"
+        assert job.get("retries") == 1
+        meta = job["output"]
+        assert meta["anomalias"] == 1
+        assert "finito" in meta["anomalias_motivos"][0]
+        assert meta["rms"] > 0.05, "gravou mudo"
+        assert "[tts]" in saida and "NaN" in saida, "sem sinal no log"
+        import soundfile as sf
+        wav, _ = sf.read(str(tmp_path / f"{meta['id']}.wav"), dtype="float32")
+        assert float(np.sqrt(np.mean(wav ** 2))) > 0.05
+    finally:
+        app._jobs.pop(job_id, None)
+
+
+def test_render_anomalo_nas_duas_tentativas_avisa(monkeypatch, tmp_path):
+    """2ª tentativa também NaN: o trecho entra, mas o job fica AVISADO."""
+    def _gerador(model, texto, *a, **k):
+        return np.full(24000, np.nan, dtype=np.float32)
+
+    job_id = _job_de_render(monkeypatch, tmp_path, _gerador)
+    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    job = app._jobs[job_id]
+    try:
+        assert job["status"] == "done"
+        assert job.get("retries") == 2
+        assert "anômalos" in (job.get("warning") or "")
+        # `anomalias` conta EVENTOS (as duas tentativas); o aviso é do não resolvido
+        assert job["output"]["anomalias"] == 2
+        assert job["warning"] in job["output"]["warning"]
+        assert job["output"]["rms"] == 0.0
+    finally:
+        app._jobs.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# #302 — um ganho só: trechos no mesmo nível e arquivo final no alvo de loudness
+# ---------------------------------------------------------------------------
+
+_PARAGRAFO = ("Bom dia a todos. Hoje a gente vai falar de três coisas, na ordem: "
+              "primeiro o cronograma, depois os custos, e por último as dúvidas de vocês.")
+# níveis crus medidos na auditoria (#284, item 1) para os 4 trechos do parágrafo
+_NIVEIS = (0.0532, 0.1267, 0.1059, 0.0970)
+
+
+def test_render_iguala_trechos_e_fecha_no_alvo_de_loudness(monkeypatch, tmp_path):
+    import soundfile as sf
+
+    from common import LUFS_ALVO, loudness_lufs
+
+    monkeypatch.setitem(app._settings, "chunk_max_chars", 60)
+    n = {"i": 0}
+    niveis_vistos = []
+
+    def _gerador(model, texto, *a, **k):
+        nivel = _NIVEIS[n["i"] % len(_NIVEIS)]
+        n["i"] += 1
+        niveis_vistos.append(nivel)
+        t = np.arange(int(2.5 * 24000)) / 24000.0
+        # modulado como sílabas (mede ~ -16 LUFS, fora do alvo) + transiente de
+        # crista alta em todo trecho (o caso que invertia o envelope)
+        env = np.repeat(np.hanning(2400), 25)[:t.size]
+        env = np.pad(env, (0, t.size - env.size), mode="edge")
+        x = (nivel * env * np.sin(2 * np.pi * 180 * t)).astype(np.float32)
+        x[:60] *= 6.0
+        return x
+
+    job_id = _job_de_render(monkeypatch, tmp_path, _gerador, texto=_PARAGRAFO)
+    app._run_tts_job(job_id, _PARAGRAFO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    job = app._jobs[job_id]
+    try:
+        assert job["status"] == "done", job
+        assert len(niveis_vistos) == 4, "o parágrafo não virou 4 trechos"
+        # 1) os trechos saem no MESMO nível (o envelope não inverte mais)
+        import math
+        rms = []
+        for i in range(4):
+            y, _ = sf.read(str(app._piece_dir(job_id) / f"{i}.wav"), dtype="float32")
+            rms.append(float(np.sqrt(np.mean(y ** 2))))
+        espalhamento = 20 * math.log10(max(rms) / min(rms))
+        assert espalhamento <= 2.0, f"níveis desiguais: {rms} ({espalhamento:.1f} dB)"
+        # 2) o arquivo final é ancorado no alvo de loudness, com UM ganho registrado
+        final = tmp_path / f"{job['output']['id']}.wav"
+        assert abs(loudness_lufs(final) - LUFS_ALVO) <= 1.0
+        assert isinstance(job["output"]["lufs_ganho_db"], float)
+        assert job["output"]["lufs_ganho_db"] != 0.0
+    finally:
+        app._jobs.pop(job_id, None)
+
+
+def test_render_avisa_quando_nao_da_para_medir_loudness(monkeypatch, tmp_path):
+    monkeypatch.setattr(app, "_normaliza_loudness", lambda *a, **k: None)
+    job_id = _job_de_render(
+        monkeypatch, tmp_path, lambda *a, **k: _bom(), texto=_TEXTO_1_TRECHO)
+    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    job = app._jobs[job_id]
+    try:
+        assert "loudness" in (job.get("warning") or "")
+        assert "loudness" in job["output"]["warning"]
+        assert job["output"]["lufs_ganho_db"] is None
+    finally:
+        app._jobs.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# #304 — remoto: anomalia detectada e fallback local (nunca job error)
+# ---------------------------------------------------------------------------
+
+def _so_local(monkeypatch):
+    """Caminho local mínimo para o fallback: modelo falso, sem voz em disco."""
+    monkeypatch.setattr(app, "_ensure_remote_voice", lambda *a, **k: None)
+    monkeypatch.setitem(app._settings, "remote_tts_voice", "")
+
+
+def test_remoto_com_silencio_regera_local(monkeypatch, tmp_path):
+    """200 com silêncio não passa como bom: 2 tentativas remotas e vira LOCAL."""
+    import soundfile as sf
+
+    _so_local(monkeypatch)
+    remotos = {"n": 0}
+
+    def _remoto(*a, **k):
+        remotos["n"] += 1
+        return np.zeros(24000, dtype=np.float32)          # 200 com mudo
+
+    locais = {"n": 0}
+
+    def _local(*a, **k):
+        locais["n"] += 1
+        return _bom()
+
+    monkeypatch.setattr(app, "_tts_remote_chunk", _remoto)
+    job_id = _job_de_render(monkeypatch, tmp_path, _local,
+                            texto=_TEXTO_1_TRECHO, remoto=True)
+    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    job = app._jobs[job_id]
+    try:
+        assert job["status"] == "done", job
+        assert remotos["n"] == 2, "o silêncio remoto não foi tentado 2x"
+        assert locais["n"] >= 1, "o trecho não foi regerado local"
+        assert job.get("remote_fallback") is True
+        assert job["output"]["remote_fallback"] is True
+        assert "LOCAL" in (job.get("warning") or "")
+        assert job["output"]["rms"] > 0.05, "gravássemos mudo"
+        wav, _ = sf.read(str(tmp_path / f"{job['output']['id']}.wav"), dtype="float32")
+        assert float(np.sqrt(np.mean(wav ** 2))) > 0.05
+    finally:
+        app._jobs.pop(job_id, None)
+
+
+def test_remoto_que_estoura_cai_para_local_sem_error(monkeypatch, tmp_path):
+    """500 persistente: job termina `done` marcado, não `error`."""
+    _so_local(monkeypatch)
+    chamadas = {"n": 0}
+
+    def _remoto(*a, **k):
+        chamadas["n"] += 1
+        raise RuntimeError("TTS remoto falhou (500)")
+
+    def _local(*a, **k):
+        return _bom()
+
+    monkeypatch.setattr(app, "_tts_remote_chunk", _remoto)
+    job_id = _job_de_render(monkeypatch, tmp_path, _local,
+                            texto=_TEXTO_1_TRECHO, remoto=True)
+    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    job = app._jobs[job_id]
+    try:
+        assert job["status"] == "done", job
+        assert chamadas["n"] == 2, "não insistiu 2x antes de desistir"
+        assert job["output"]["remote_fallback"] is True
+        assert job["output"]["rms"] > 0.05
+    finally:
+        app._jobs.pop(job_id, None)
+
+
+def test_remoto_saudavel_nao_marca_fallback(monkeypatch, tmp_path):
+    """Remoto bom: nenhum aviso, nenhum fallback, e o local não é tocado."""
+    _so_local(monkeypatch)
+    locais = {"n": 0}
+
+    def _local(*a, **k):
+        locais["n"] += 1
+        return _bom()
+
+    monkeypatch.setattr(app, "_tts_remote_chunk", lambda *a, **k: _bom())
+    job_id = _job_de_render(monkeypatch, tmp_path, _local,
+                            texto=_TEXTO_1_TRECHO, remoto=True)
+    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    job = app._jobs[job_id]
+    try:
+        assert job["status"] == "done"
+        assert locais["n"] == 0, "gerou local com o remoto saudável"
+        assert job["output"]["remote_fallback"] is False
+        assert not job.get("warning")
+    finally:
+        app._jobs.pop(job_id, None)
+
+
+def test_fallback_desligado_volta_a_dar_error(monkeypatch, tmp_path):
+    """`TTS_REMOTE_TTS_FALLBACK=0`: falha do remoto derruba o job (comportamento antigo)."""
+    _so_local(monkeypatch)
+    monkeypatch.setenv("TTS_REMOTE_TTS_FALLBACK", "0")
+
+    def _remoto(*a, **k):
+        raise RuntimeError("TTS remoto falhou (500)")
+
+    monkeypatch.setattr(app, "_tts_remote_chunk", _remoto)
+    job_id = _job_de_render(monkeypatch, tmp_path, lambda *a, **k: _bom(),
+                            texto=_TEXTO_1_TRECHO, remoto=True)
+    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    job = app._jobs[job_id]
+    try:
+        assert job["status"] == "error"
+        assert "remoto" in (job.get("error") or "").lower()
+    finally:
+        app._jobs.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# #319 — pausas medidas no WAV final (vírgula curta, fim de frase longa)
+# ---------------------------------------------------------------------------
+
+def _maior_vale(wav: np.ndarray, sr: int, limiar: float = 1e-4) -> int:
+    """Maior sequência de amostras em silêncio, em amostras."""
+    quieto = np.abs(wav) <= limiar
+    maior = atual = 0
+    for q in quieto:
+        atual = atual + 1 if q else 0
+        maior = max(maior, atual)
+    return maior
+
+
+def _cauda(wav: np.ndarray, limiar: float = 1e-4) -> int:
+    """Só a sequência de silêncio que FECHA o arquivo (do fim para o começo)."""
+    n = 0
+    for v in wav[::-1]:
+        if abs(float(v)) > limiar:
+            break
+        n += 1
+    return n
+
+
+def test_pausas_do_render_seguem_a_pontuacao(monkeypatch, tmp_path):
+    """Vírgula respira curto e ponto respira fundo; a cauda final é curta.
+
+    Antes era um vão FIXO de 550 ms (300 de pad + 250 fixos) mesmo onde havia
+    vírgula, e 300 ms de cauda no último trecho (#319).
+    """
+    import soundfile as sf
+
+    monkeypatch.setitem(app._settings, "chunk_max_chars", 60)
+
+    def _gerador(model, texto, *a, **k):
+        # 1 s de fala + 0,3 s de silêncio no fim: é a sobra que o trim tem de
+        # cortar (sem isso a cauda medida seria a do próprio gerador)
+        fala = np.arange(int(1.0 * 24000)) / 24000.0
+        env = np.hanning(fala.size)
+        x = (0.2 * env * np.sin(2 * np.pi * 180 * fala)).astype(np.float32)
+        return np.concatenate([x, np.zeros(7200, dtype=np.float32)])
+
+    job_id = _job_de_render(monkeypatch, tmp_path, _gerador, texto=_PARAGRAFO)
+    app._run_tts_job(job_id, _PARAGRAFO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    job = app._jobs[job_id]
+    sr = 24000
+    try:
+        assert job["status"] == "done", job
+        wav, _ = sf.read(str(tmp_path / f"{job['output']['id']}.wav"), dtype="float32")
+        # cauda final: só o pad do fresco, sem pausa inserida
+        final = _cauda(wav)
+        assert final <= int(0.10 * sr) + 5, f"cauda final {final / sr * 1000:.0f} ms"
+        # vãos internos: cada um respeita o limite da SUA pontuação
+        maiores = []
+        quieto = np.abs(wav) <= 1e-4
+        i = 0
+        while i < quieto.size:
+            if quieto[i]:
+                j = i
+                while j < quieto.size and quieto[j]:
+                    j += 1
+                # só vãos de verdade (>= 50 ms): as passagens pelo zero do
+                # próprio sinal também contam como silêncio e poluiriam o mínimo
+                if i > 0 and j < quieto.size and (j - i) >= int(0.05 * sr):
+                    maiores.append(j - i)
+                i = j
+            else:
+                i += 1
+        assert maiores, "não achou vão nenhum"
+        gaps = [round(m / sr * 1000) for m in maiores]
+        # limites ABSOLUTOS do aceite (uma pausa única em todos não passa)
+        assert max(maiores) <= int(0.50 * sr) + 5, f"vão longo demais: {gaps} ms"
+        assert min(maiores) <= int(0.25 * sr) + 5, f"nenhum vão curto de vírgula: {gaps} ms"
+    finally:
+        app._jobs.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# #324 — integridade da referência e dos perfis de locutor
+# ---------------------------------------------------------------------------
+
+def _fala_suja(segundos: float = 2.0, sr: int = 24000) -> np.ndarray:
+    t = np.arange(int(segundos * sr)) / sr
+    rng = np.random.default_rng(11)
+    fala = 0.15 * np.sin(2 * np.pi * 200 * t) * np.hanning(t.size)
+    return (fala + 0.05 * rng.standard_normal(t.size)).astype(np.float32)
+
+
+def test_denoise_preserva_comprimento_e_nivel():
+    """`istft` devolvia amostras a mais e o gating tirava nível (referência muda)."""
+    x = _fala_suja()
+    for forca in (0.3, 0.7, 1.0):
+        y = app._denoise_audio(x, 24000, forca)
+        assert y.size == x.size, f"comprimento mudou com strength {forca}"
+        r_in = float(np.sqrt(np.mean(x ** 2)))
+        r_out = float(np.sqrt(np.mean(y ** 2)))
+        assert abs(20 * np.log10(r_out / r_in)) <= 3.0, (forca, r_in, r_out)
+
+
+def test_denoise_estavel_em_chamadas_repetidas():
+    """Limpar de novo não pode fazer o vetor crescer (era +64 amostras por vez)."""
+    x = _fala_suja(0.5)
+    y = x
+    for _ in range(3):
+        y = app._denoise_audio(y, 24000, 0.7)
+    assert y.size == x.size
+
+
+def test_denoise_para_referencia_recusa_quando_o_nivel_desaba(monkeypatch):
+    x = _fala_suja(1.0)
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: np.asarray(a, dtype=np.float32) * 0.01)
+    y, recusado = app._denoise_para_referencia(x, 24000, 1.0)
+    assert recusado is True
+    assert np.allclose(y, x), "recusado tem de devolver a amostra ORIGINAL"
+
+
+def test_referencia_pronta_normaliza_e_rampeia():
+    x = _fala_suja(1.0) * 0.05          # bem baixa, como gravação ruim
+    y = app._referencia_pronta(x, 24000)
+    assert float(np.sqrt(np.mean(y ** 2))) == pytest.approx(0.15, rel=0.06)
+    assert y[0] == pytest.approx(0.0, abs=1e-6) and y[-1] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_perfis_de_locutor_gravados_atomicos_e_com_modo(tmp_path, monkeypatch):
+    alvo = tmp_path / ".speaker-profiles.json"
+    monkeypatch.setattr(app, "SPEAKER_PATH", alvo)
+    app._speaker_save({"ana": {"vecs": [[0.1, 0.2]], "updated": 0}})
+    assert alvo.exists()
+    assert json.loads(alvo.read_text())["ana"]["vecs"] == [[0.1, 0.2]]
+    assert (alvo.stat().st_mode & 0o777) == 0o600
+    # escrita atômica não deixa tmp para trás
+    assert [p.name for p in tmp_path.iterdir()] == [alvo.name]
+
+
+def test_perfis_corrompidos_nao_viram_gate_inerte(tmp_path, monkeypatch):
+    """Arquivo ilegível: `enforce` FALHA FECHADO e avisa; ausente continua inerte."""
+    alvo = tmp_path / ".speaker-profiles.json"
+    monkeypatch.setattr(app, "SPEAKER_PATH", alvo)
+    monkeypatch.setattr(app, "_speaker_embed", lambda p: [1.0, 0.0])
+    app._settings["speaker_gate"] = "enforce"
+    try:
+        # ausente = "ninguém cadastrado": inerte, sem aviso
+        assert app._speaker_gate_ok(Path("x.wav")) == {}
+        # corrompido = ilegível: rejeita e diz o motivo
+        alvo.write_text('{"ana": {"vecs": [[0.1,')
+        out = app._speaker_gate_ok(Path("x.wav"))
+        assert out.get("rejected") is True and "ilegíveis" in out.get("reason", "")
+        # modo etiqueta: não bloqueia, mas avisa
+        app._settings["speaker_gate"] = "label"
+        out = app._speaker_gate_ok(Path("x.wav"))
+        assert "speaker_aviso" in out and "rejected" not in out
+    finally:
+        app._settings["speaker_gate"] = "off"
+
+
+def test_enrolls_concorrentes_nao_perdem_vetor(tmp_path, monkeypatch):
+    alvo = tmp_path / ".speaker-profiles.json"
+    monkeypatch.setattr(app, "SPEAKER_PATH", alvo)
+
+    def enroll(vec):
+        # mesma seção crítica do endpoint /api/speaker/enroll
+        with app._speaker_lock:
+            perfis = app._speaker_load()
+            p = perfis.get("ana", {"vecs": [], "updated": 0})
+            p["vecs"] = (p.get("vecs") or []) + [vec]
+            p["updated"] = 1
+            perfis["ana"] = p
+            app._speaker_save(perfis)
+
+    ts = [threading.Thread(target=enroll, args=([float(i), 0.0],)) for i in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len(json.loads(alvo.read_text())["ana"]["vecs"]) == 8

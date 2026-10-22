@@ -190,7 +190,14 @@ def _isolamento_disco(monkeypatch, tmp_path):
 def test_health_sem_auth(client):
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    # `boot_ts`/`rev` são para o probe (#344): 200 sozinho não distingue "de pé" de
+    # "de pé no código de ontem". O resto continua fora daqui (detalhe interno fica
+    # no /api/build, que exige chave).
+    corpo = r.json()
+    assert corpo["ok"] is True
+    assert isinstance(corpo["boot_ts"], int) and corpo["boot_ts"] > 0
+    assert isinstance(corpo["rev"], str) and corpo["rev"]
+    assert set(corpo) == {"ok", "boot_ts", "rev"}
 
 
 def test_auth_exige_chave_da_rede(client):
@@ -637,6 +644,37 @@ def test_csp_vai_no_header_e_com_nonce_no_script_inline(client):
     assert "style-src 'self' 'unsafe-inline'" in csp, "style-src NÃO era para mudar"
     assert "'wasm-unsafe-eval'" in csp and "cdn.jsdelivr.net" in csp
     assert r.text.count("integrity=") == 2, "SRI dos bundles de CDN intacto"
+
+
+def test_csp_nonce_nao_depende_da_forma_da_tag(tmp_path, monkeypatch):
+    """A injeção do nonce não pode depender de a tag ser a linha exata `<script>`.
+
+    Era o modo de falha da #76: `script-src` está SEM 'unsafe-inline', então uma
+    tag que o `re.sub` não casasse derrubava a página INTEIRA em runtime, sem sinal
+    (bastava um atributo, um `type="module"` ou o código na mesma linha — o
+    backend inteiro documentava a fragilidade). Agora o critério é "script inline
+    sem nonce", independente da forma.
+    """
+    alvo = tmp_path / "static"
+    alvo.mkdir()
+    (alvo / "index.html").write_text(
+        '<script type="module">import x from "./x.js";</script>\n'
+        '<script>const a = 1;</script>\n'
+        '<script src="https://cdn.example/b.js" integrity="sha384-AAA"></script>\n'
+        '<script id="ja-tem" nonce="antigo">const b = 2;</script>\n'
+        '<script   defer  >const c = 3;</script>\n',
+        encoding="utf-8")
+    monkeypatch.setattr(app, "BASE", tmp_path)
+    fora = app._index_com_nonce("NOVO")
+
+    # 3 das 4 inline (a que já tinha nonce fica como está), de QUALQUER forma
+    assert fora.count('nonce="NOVO"') == 3, fora
+    assert '<script nonce="NOVO" type="module">' in fora
+    assert '<script nonce="NOVO">const a = 1;' in fora
+    assert '<script nonce="NOVO"   defer  >' in fora
+    # com nonce próprio e o de CDN ficam como estão
+    assert 'nonce="antigo"' in fora and 'nonce="NOVO" nonce=' not in fora
+    assert '<script src="https://cdn.example/b.js"' in fora
 
 
 def test_csp_nonce_muda_a_cada_resposta(client):
@@ -1183,6 +1221,19 @@ def _agentes_fake(tmp_path, monkeypatch, *, ssh=True, cloudflare=True):
     monkeypatch.setattr(app, "_LAUNCHCTL_ATRASO", 0)  # sem esperar o atraso real
 
 
+def _tunel_fake(monkeypatch, *, rodando=True, destino="192.168.15.48"):
+    """Substitui a leitura do processo do túnel (#346: o status reporta o destino)."""
+    monkeypatch.setattr(app, "_destino_do_tunel", lambda: {
+        "rodando": rodando, "destino": destino if rodando else "",
+        "destino_e_lan": bool(rodando and destino), "porta_vps": "7860"})
+
+
+def _conector_fake(monkeypatch, *, rodando=True):
+    monkeypatch.setattr(app, "_cf_estado", lambda: {
+        "rodando": rodando, "motivo": "" if rodando else "conector do TTS parado",
+        "token_file": "x.token"})
+
+
 def _aguarda_launchctl():
     """Espera as chamadas adiadas (thread) disparadas por stop/restart."""
     for t in list(app._launchctl_threads):
@@ -1201,8 +1252,8 @@ def test_tunnel_start_stop_chamam_launchctl(client, auth, monkeypatch, tmp_path)
     monkeypatch.setattr(app.subprocess, "run", fake_run)
     _agentes_fake(tmp_path, monkeypatch)
     monkeypatch.setattr(app, "_launchd_loaded", lambda label: False)   # nada carregado
-    monkeypatch.setattr(app, "_tunnel_proc_running", lambda: False)
-    monkeypatch.setattr(app, "_cf_proc_running", lambda: False)
+    _tunel_fake(monkeypatch, rodando=False)
+    _conector_fake(monkeypatch, rodando=False)
     r = client.post("/api/tunnel/stop", headers=auth)
     assert r.status_code == 200 and r.json()["ok"] is True
     r = client.post("/api/tunnel/start", headers=auth)
@@ -1225,8 +1276,8 @@ def test_tunnel_start_agente_carregado_e_parado_usa_kickstart(client, auth, monk
     monkeypatch.setattr(app.subprocess, "run", fake_run)
     _agentes_fake(tmp_path, monkeypatch)
     monkeypatch.setattr(app, "_launchd_loaded", lambda label: True)    # carregado, sem processo
-    monkeypatch.setattr(app, "_tunnel_proc_running", lambda: False)
-    monkeypatch.setattr(app, "_cf_proc_running", lambda: False)
+    _tunel_fake(monkeypatch, rodando=False)
+    _conector_fake(monkeypatch, rodando=False)
     r = client.post("/api/tunnel/start", headers=auth)
     assert r.status_code == 200
     _aguarda_launchctl()
@@ -1246,8 +1297,8 @@ def test_tunnel_start_ja_rodando_nao_reinicia(client, auth, monkeypatch, tmp_pat
     monkeypatch.setattr(app.subprocess, "run", fake_run)
     _agentes_fake(tmp_path, monkeypatch)
     monkeypatch.setattr(app, "_launchd_loaded", lambda label: True)
-    monkeypatch.setattr(app, "_tunnel_proc_running", lambda: True)
-    monkeypatch.setattr(app, "_cf_proc_running", lambda: True)
+    _tunel_fake(monkeypatch, rodando=True)
+    _conector_fake(monkeypatch, rodando=True)
     assert client.post("/api/tunnel/start", headers=auth).status_code == 200
     _aguarda_launchctl()
     # kickstart -k no que já está no ar derrubaria a resposta desta requisição
@@ -1259,6 +1310,89 @@ def test_tunnel_sem_agente_instalado(client, auth, monkeypatch, tmp_path):
     for rota in ("/api/tunnel/start", "/api/tunnel/stop", "/api/tunnel/restart"):
         r = client.post(rota, headers=auth)
         assert r.status_code == 400, rota
+
+
+# --- #346: o status tem de ler o DESTINO (não o literal do bind) e casar o
+# conector pelo token do próprio plist. Antes, `pgrep -f "ssh .*-R 127.0.0.1:7860"`
+# não via o destino e mudar a porta quebrava a detecção; e qualquer conector da
+# máquina (o do openwebui) fazia o do TTS parecer no ar.
+def _ps_fake(monkeypatch, linhas):
+    monkeypatch.setattr(app, "_ps_comandos", lambda: list(linhas))
+
+
+def test_status_le_o_destino_do_tunel_e_denuncia_loopback(client, auth, monkeypatch, tmp_path):
+    _agentes_fake(tmp_path, monkeypatch)
+    monkeypatch.setattr(app, "_cf_launchd_loaded", lambda: False)
+    _conector_fake(monkeypatch, rodando=False)
+    _ps_fake(monkeypatch, [
+        "  123 /usr/bin/ssh -N -R 127.0.0.1:7860:127.0.0.1:7860 eu@vps",
+    ])
+    d = client.get("/api/tunnel/status", headers=auth).json()
+    assert d["tunnel_running"] is True
+    assert d["tunnel_destino"] == "127.0.0.1"
+    assert d["destino_e_lan"] is False, "loopback tem de aparecer como destino NÃO-LAN"
+
+
+def test_status_aceita_lan_em_porta_diferente_da_padrao(client, auth, monkeypatch, tmp_path):
+    """O literal `127.0.0.1:7860` na detecção antiga quebrava com outra porta."""
+    _agentes_fake(tmp_path, monkeypatch)
+    monkeypatch.setattr(app, "_cf_launchd_loaded", lambda: False)
+    _conector_fake(monkeypatch, rodando=False)
+    _ps_fake(monkeypatch, [
+        "  999 /usr/bin/ssh -N -R 127.0.0.1:9876:192.168.15.48:7860 eu@vps",
+    ])
+    d = client.get("/api/tunnel/status", headers=auth).json()
+    assert d["tunnel_running"] is True and d["destino_e_lan"] is True
+    assert d["tunnel_destino"] == "192.168.15.48"
+
+
+def test_conector_nao_confunde_com_outro_cloudflared_da_maquina(client, auth, monkeypatch, tmp_path):
+    """Conector do openwebui no ar NÃO pode fazer o do TTS parecer rodando."""
+    _agentes_fake(tmp_path, monkeypatch)
+    plist = app._cf_plist()
+    plist.write_text("<plist><string>--token-file</string><string>/h/.cloudflared/tts.token</string></plist>")
+    monkeypatch.setattr(app, "_tunnel_launchd_loaded", lambda: None)
+    monkeypatch.setattr(app, "_cf_launchd_loaded", lambda: True)
+    _tunel_fake(monkeypatch, rodando=False)
+    _ps_fake(monkeypatch, [
+        "  50 /opt/homebrew/bin/cloudflared tunnel --token-file /h/.cloudflared/openwebui.token run",
+    ])
+    d = client.get("/api/tunnel/status", headers=auth).json()
+    assert d["cloudflared_running"] is False
+    assert "parado" in d["cloudflared_motivo"]
+    # com o token do TTS na linha de comando, sim
+    _ps_fake(monkeypatch, [
+        "  50 /opt/homebrew/bin/cloudflared tunnel --token-file /h/.cloudflared/openwebui.token run",
+        "  51 /opt/homebrew/bin/cloudflared tunnel --token-file /h/.cloudflared/tts.token run",
+    ])
+    assert client.get("/api/tunnel/status", headers=auth).json()["cloudflared_running"] is True
+
+
+def test_status_explica_plist_sem_token(client, auth, monkeypatch, tmp_path):
+    _agentes_fake(tmp_path, monkeypatch)
+    app._cf_plist().write_text("<plist/>")          # sem --token-file
+    monkeypatch.setattr(app, "_cf_launchd_loaded", lambda: False)
+    _tunel_fake(monkeypatch, rodando=False)
+    _ps_fake(monkeypatch, ["  1 /opt/homebrew/bin/cloudflared tunnel run"])
+    d = client.get("/api/tunnel/status", headers=auth).json()
+    assert d["cloudflared_running"] is False and "token-file" in d["cloudflared_motivo"]
+
+
+def test_label_do_conector_vem_do_ambiente(client, auth, monkeypatch, tmp_path):
+    """`CLOUDFLARE_LABEL` é o mesmo knob do `cloudflare.sh`: o status tem de usar
+    a label configurada em vez da fixa — senão a instalação com outra label
+    aparece como "não instalado"."""
+    _agentes_fake(tmp_path, monkeypatch, cloudflare=False)
+    monkeypatch.setattr(app, "CF_LABEL", "com.exemplo.tts-custom")
+    outro = tmp_path / "com.exemplo.tts-custom.plist"
+    outro.write_text("<plist><string>--token-file</string><string>/h/x.token</string></plist>")
+    monkeypatch.setattr(app, "_cf_plist", lambda: outro)
+    monkeypatch.setattr(app, "_cf_launchd_loaded", lambda: False)
+    _tunel_fake(monkeypatch, rodando=False)
+    _ps_fake(monkeypatch, [])
+    d = client.get("/api/tunnel/status", headers=auth).json()
+    assert d["cloudflared_label"] == "com.exemplo.tts-custom"
+    assert d["cloudflared_installed"] is True
 
 
 def test_cors_expoe_retry_after_no_429(client, monkeypatch, voices_tmp, tmp_path):
@@ -1309,9 +1443,9 @@ def test_cors_nas_respostas_de_erro(client):
 
 
 def test_tunnel_status_estrutura(client, auth, monkeypatch):
-    monkeypatch.setattr(app, "_tunnel_proc_running", lambda: True)
+    _tunel_fake(monkeypatch)
     monkeypatch.setattr(app, "_tunnel_launchd_loaded", lambda: True)
-    monkeypatch.setattr(app, "_cf_proc_running", lambda: True)
+    _conector_fake(monkeypatch)
     monkeypatch.setattr(app, "_cf_launchd_loaded", lambda: False)
     monkeypatch.setattr(app, "_public_proxy_check", lambda url, timeout=6.0: {"ok": True, "latency_ms": 10})
     d = client.get("/api/tunnel/status?url=https://x/ttsproxy", headers=auth).json()
@@ -1776,6 +1910,8 @@ def test_chat_sessao_inexistente_404(client, auth):
 
 @pytest.fixture()
 def perfis_vazios(monkeypatch):
+    # `_speaker_gate_ok` lê o estado (perfis + erro de leitura), não só o dict
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: ({}, ""))
     monkeypatch.setattr(app, "_speaker_load", lambda: {})
     monkeypatch.setattr(app, "_speaker_save", lambda p: None)
 
@@ -1789,6 +1925,7 @@ def test_speaker_enforce_rejeita_e_aceita(client, auth, monkeypatch):
     VEC_A, VEC_B = [1.0, 0.0], [0.0, 1.0]
     perfis = {"eu": {"vecs": [VEC_A], "updated": 0}}
     monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
     monkeypatch.setattr(app, "_speaker_embed", lambda p: list(VEC_A))
     app._settings["speaker_gate"] = "enforce"
     app._settings["speaker_threshold"] = 0.75
@@ -1806,6 +1943,7 @@ def test_speaker_enforce_rejeita_e_aceita(client, auth, monkeypatch):
     # sem perfis cadastrados: gate inerte
     app._settings["speaker_gate"] = "enforce"
     monkeypatch.setattr(app, "_speaker_load", lambda: {})
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: ({}, ""))
     assert app._speaker_gate_ok(Path("x.wav")) == {}
     app._settings["speaker_gate"] = "off"
     app._settings["speaker_threshold"] = 0.75
@@ -2304,6 +2442,401 @@ def test_apikeys_sem_role_mantem_politica_antiga(client, auth):
 
 
 # ---------------------------------------------------------------------------
+# O RESTART é o que prova o `role` (achado P1 da auditoria #282): o arquivo é a
+# memória do processo novo. Estes testes releem o disco de verdade, em vez de só
+# olhar a RAM como a fixture `chave_de_uso` fazia — era por isso que o gate antigo
+# não via o papel sumir na gravação.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def apikeys_isolados(monkeypatch, tmp_path):
+    """Arquivo de chaves próprio (o `_isolamento_disco` já usa tmp; aqui é
+    explícito para o round-trip ser provável) e regra LEGADA pinada: com
+    `TTS_ROD_ADMIN_KEY` no ambiente do dono o veredito de admin mudaria (#206)."""
+    monkeypatch.setattr(app, "APIKEYS_PATH", tmp_path / ".apikeys.json")
+    monkeypatch.setattr(app, "LEGACY_APIKEY_PATH", tmp_path / ".apikey")
+    monkeypatch.setattr(app, "_ADMIN_API_KEY", "")
+    monkeypatch.setattr(app, "_apikeys",
+                        {"enabled": True,
+                         "keys": [dict(k) for k in (app._apikeys.get("keys") or [])]})
+    app._save_apikeys()          # o arquivo nasce com as chaves vivas, em tmp
+    return tmp_path
+
+
+def _rele_apikeys() -> None:
+    """Relê o arquivo — literalmente o que um restart faz (sem reiniciar nada)."""
+    app._load_apikeys()
+    app.API_KEY = app._primary_api_key() or app._ENV_API_KEY or None
+
+
+def test_apikeys_role_sobrevive_a_releitura_do_arquivo(client, auth, apikeys_isolados):
+    """`role` tem de ir ao disco E voltar dele.
+
+    Antes: `_save_apikeys` gravava só id/name/secret/created_at e `_load_apikeys`
+    relia o mesmo conjunto, então a chave `use` voltava legada (admin) na primeira
+    subida. A mordida é o round-trip inteiro — tirar o `role` da gravação deixa a
+    asserção do DISCO vermelha, e a do papel (`403`) vermelha junto."""
+    r = client.post("/api/apikeys", headers=auth, json={"name": "de uso", "role": "use"})
+    assert r.status_code == 200, r.text
+    kid, secret = r.json()["key"]["id"], r.json()["key"]["secret"]
+
+    disco = _json.loads((apikeys_isolados / ".apikeys.json").read_text())
+    gravada = next(k for k in disco["keys"] if k["id"] == kid)
+    assert gravada["role"] == "use", "o papel tem de estar no ARQUIVO, não só na RAM"
+
+    _rele_apikeys()
+    assert app._key_role(secret) == "use"
+    assert app._key_is_valid(secret) is True
+    # e o papel RELIDO manda: a chave de uso continua sem administrar
+    assert client.post("/api/apikeys", headers={"X-API-Key": secret},
+                       json={"name": "x"}).status_code == 403
+    assert app._key_role(app._primary_api_key()) is None   # a legada não foi tocada
+
+
+def test_apikeys_role_legado_do_arquivo_nao_muda_de_papel(client, auth, apikeys_isolados):
+    """Linha SEM `role` (arquivo anterior ao campo) atravessa a migração como
+    legado: `None` vai ao disco como `null` explícito, volta como `None` e segue
+    administrando pela política antiga. Nada de virar `"None"`/`"null"` na ida e
+    volta — string ali cairia na regra de papel ausente."""
+    caminho = apikeys_isolados / ".apikeys.json"
+    disco = _json.loads(caminho.read_text())
+    disco["keys"].append({"id": "legada01", "name": "de antes", "secret": "sk-legada-123",
+                          "created_at": "2025-01-01 00:00:00"})        # SEM role
+    caminho.write_text(_json.dumps(disco))
+
+    _rele_apikeys()
+    assert app._key_role("sk-legada-123") is None
+    assert client.post("/api/apikeys", headers={"X-API-Key": "sk-legada-123"},
+                       json={"name": "x"}).status_code == 200
+
+    app._save_apikeys()
+    disco = _json.loads(caminho.read_text())
+    regravada = next(k for k in disco["keys"] if k["id"] == "legada01")
+    assert regravada["role"] is None, "legado vai ao disco como null explícito"
+    _rele_apikeys()
+    assert app._key_role("sk-legada-123") is None
+
+
+def test_apikeys_role_invalido_no_arquivo_nao_derruba_o_boot(
+        client, auth, apikeys_isolados, capsys):
+    """Arquivo editado à mão com papel inventado: a leitura é tolerante — ela roda
+    no IMPORT do app, então um 400 aqui derrubaria o servidor inteiro. O aviso vai
+    para o STDERR (o stdout do processo é lido como DADO por quem faz `import app`,
+    mesmo motivo do log do dsh — task_6db0e2cc)."""
+    caminho = apikeys_isolados / ".apikeys.json"
+    disco = _json.loads(caminho.read_text())
+    disco["keys"][0]["role"] = "chefe"
+    caminho.write_text(_json.dumps(disco))
+
+    capsys.readouterr()                      # descarta o que já saiu
+    _rele_apikeys()
+    assert app._key_role(app._primary_api_key()) is None
+    assert client.get("/api/apikeys", headers=auth).status_code == 200
+    saida = capsys.readouterr()
+    assert "role 'chefe' desconhecido" in saida.err
+    assert "role" not in saida.out            # stdout limpo
+
+
+# ---------------------------------------------------------------------------
+# Apagar a ÚLTIMA chave abre a LAN sem credencial (achado P1 da auditoria #282):
+# a remoção passa a pedir confirmação (409) e só o `forcar=1` assume a postura
+# aberta. Com admin/env sustentando a auth a última chave sai direto.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def chave_unica(monkeypatch, tmp_path):
+    """Uma chave só, nenhum env sustentando a auth (o estado em que a remoção
+    realmente derruba a exigência de chave)."""
+    monkeypatch.setattr(app, "APIKEYS_PATH", tmp_path / ".apikeys.json")
+    monkeypatch.setattr(app, "LEGACY_APIKEY_PATH", tmp_path / ".apikey")
+    monkeypatch.setattr(app, "_ENV_API_KEY", "")
+    monkeypatch.setattr(app, "_ADMIN_API_KEY", "")
+    monkeypatch.setattr(app, "_apikeys",
+                        {"enabled": True,
+                         "keys": [{"id": "unica01", "name": "só esta",
+                                   "secret": "sk-unica-123", "created_at": "x",
+                                   "role": None}]})
+    app._save_apikeys()
+    return {"X-API-Key": "sk-unica-123"}
+
+
+def test_apikeys_ultima_chave_pede_confirmacao(client, chave_unica):
+    """409 ANTES de apagar, com o motivo legível e o caminho de confirmação."""
+    r = client.delete("/api/apikeys/unica01", headers=chave_unica)
+    assert r.status_code == 409, r.text
+    corpo = r.json()
+    assert corpo["forcar"] is True
+    assert "desliga a exigência de chave" in corpo["detail"]
+    assert "LAN" in corpo["detail"] and "forcar=1" in corpo["hint"]
+    assert corpo["remaining"] == 0 and corpo["auth_active"] is True
+    assert len(app._apikeys["keys"]) == 1, "o 409 NÃO pode ter apagado"
+    assert client.get("/api/apikeys", headers=chave_unica).status_code == 200
+
+
+def test_apikeys_ultima_chave_forcada_desliga_a_auth(client, chave_unica, capsys):
+    """`?forcar=1` apaga, avisa no corpo, deixa sinal no LOG (a resposta voa, o
+    journal fica) e a postura aberta aparece no `/api/status` — de fora, sem chave."""
+    capsys.readouterr()
+    r = client.delete("/api/apikeys/unica01?forcar=1", headers=chave_unica)
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert corpo["remaining"] == 0 and corpo["auth_active"] is False
+    assert corpo["avisos"] and "LAN" in corpo["avisos"][0]
+    assert app._apikeys["keys"] == []
+    assert "ÚLTIMA chave apagada" in capsys.readouterr().err
+
+    lan = TestClient(app.app, raise_server_exceptions=False, client=("203.0.113.9", 50000))
+    st = lan.get("/api/status")
+    assert st.status_code == 200, "auth desligada: a LAN entra sem chave"
+    assert st.json()["api_auth_enabled"] is False
+
+
+def test_apikeys_ultima_chave_com_admin_key_sai_sem_409(client, chave_unica, monkeypatch):
+    """Com `TTS_ROD_ADMIN_KEY` a auth não cai, então não há o que confirmar."""
+    monkeypatch.setattr(app, "_ADMIN_API_KEY", "adm-do-operador")
+    r = client.delete("/api/apikeys/unica01", headers={"X-API-Key": "adm-do-operador"})
+    assert r.status_code == 200, r.text
+    assert r.json()["remaining"] == 0 and r.json()["auth_active"] is True
+    assert not r.json().get("avisos")
+
+
+def test_apikeys_nao_ultima_chave_sai_direto(client, chave_unica):
+    """Remover chave que não é a última não muda a postura: sem 409, sem aviso."""
+    client.post("/api/apikeys", headers=chave_unica, json={"name": "segunda"})
+    assert len(app._apikeys["keys"]) == 2
+    r = client.delete("/api/apikeys/unica01", headers=chave_unica)
+    assert r.status_code == 200, r.text
+    assert r.json()["remaining"] == 1 and r.json()["auth_active"] is True
+    assert not r.json().get("avisos")
+
+
+def test_apikeys_ultima_chave_com_exigencia_desligada_sai_direto(client, chave_unica):
+    """Postura aberta já escolhida: apagar a última não a muda, não pede 409."""
+    assert client.post("/api/apikeys/enabled", headers=chave_unica,
+                       json={"enabled": False}).status_code == 200
+    r = client.delete("/api/apikeys/unica01", headers=chave_unica)
+    assert r.status_code == 200, r.text
+    assert r.json()["remaining"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Régua de autorização por DANO (#282, item 4): apagar/desligar/global = admin;
+# consumir = `use`. Antes, chave de uso derrubava o servidor e apagava as vozes.
+# ---------------------------------------------------------------------------
+
+#: (método, caminho) elevadas — `use` tem de tomar 403
+_ROTAS_ELEVADAS = [
+    ("post", "/api/tunnel/restart"),
+    ("post", "/api/tunnel/stop"),
+    ("post", "/api/tunnel/start"),
+    ("delete", "/api/outputs"),
+    ("delete", "/api/outputs/naoexiste01"),
+    ("post", "/api/models/unload"),
+    ("delete", "/api/voices/naoexiste01"),
+    ("get", "/api/voices/export"),
+    ("delete", "/api/speaker/naoexiste01"),
+]
+
+#: consumir — `use` tem de passar (nunca 403)
+_ROTAS_CONSUMO = [
+    ("post", "/api/live/ticket"),
+    ("get", "/api/voices"),
+    ("get", "/api/outputs"),
+    ("post", "/api/mic-route"),
+    ("post", "/api/tts"),          # corpo vazio → 400, não 403
+]
+
+
+@pytest.fixture()
+def sem_admin_key(monkeypatch):
+    """Sem `TTS_ROD_ADMIN_KEY` a chave legada administra: é o cenário da régua."""
+    monkeypatch.setattr(app, "_ADMIN_API_KEY", "")
+
+
+def _chama(client, metodo, rota, headers, **kw):
+    return getattr(client, metodo)(rota, headers=headers, **kw)
+
+
+def test_rotas_elevadas_403_para_chave_de_uso_e_passam_com_admin(
+        client, auth, chave_de_uso, sem_admin_key):
+    for metodo, rota in _ROTAS_ELEVADAS:
+        r = _chama(client, metodo, rota, chave_de_uso)
+        assert r.status_code == 403, f"{metodo.upper()} {rota} devia ser admin, veio {r.status_code}"
+        assert "admin" in r.json()["detail"]
+        r = _chama(client, metodo, rota, auth)
+        assert r.status_code != 403, f"{metodo.upper()} {rota} com admin tomou 403"
+
+
+def test_rotas_de_consumo_passam_com_chave_de_uso(client, auth, chave_de_uso, sem_admin_key):
+    for metodo, rota in _ROTAS_CONSUMO:
+        kw = {"json": {}} if rota == "/api/tts" else {}
+        r = _chama(client, metodo, rota, chave_de_uso, **kw)
+        assert r.status_code != 403, f"{metodo.upper()} {rota} é de consumo e barrou o `use`"
+
+
+def test_chave_legada_continua_administrando(client, auth, sem_admin_key):
+    """Nada muda para quem já usava: chave sem papel (legada) administra."""
+    assert app._key_role(auth["X-API-Key"]) is None
+    assert client.delete("/api/outputs", headers=auth).status_code == 200
+
+
+def test_import_de_vozes_e_admin_mas_denoise_e_replace_sao_de_uso(
+        client, auth, chave_de_uso, sem_admin_key):
+    """Import (restaura backup) é elevado; denoise/replace editam a voz e ficam
+    com o `use` — a régua é o dano, não a conveniência."""
+    assert client.post("/api/voices/import", headers=chave_de_uso,
+                       files={"zip_file": ("v.zip", b"PK\x05\x06" + b"\x00" * 18,
+                                           "application/zip")}).status_code == 403
+    wav = _wav_bytes(0.3)
+    r = client.post("/api/voices/naoexiste01/denoise", headers=chave_de_uso,
+                    files={"audio": ("a.wav", wav, "audio/wav")})
+    assert r.status_code != 403, r.text
+
+
+def test_shutdown_exige_admin(client, auth, chave_de_uso, sem_admin_key, monkeypatch):
+    """O caso que dói: qualquer chave de uso derrubava o servidor."""
+    saida = []
+    monkeypatch.setattr(os, "_exit", lambda codigo=0: saida.append(codigo))
+    assert client.post("/api/shutdown", headers=chave_de_uso).status_code == 403
+    assert saida == []
+    assert client.post("/api/shutdown", headers=auth).status_code == 200
+    assert _espera(lambda: saida, 2.0) and saida == [0]
+
+
+def test_status_nao_regride_para_chave_de_uso(client, auth, chave_de_uso, sem_admin_key):
+    """`/api/status` é consumo: segue 200 para `use` e diz que ela não é admin."""
+    r = client.get("/api/status", headers=chave_de_uso)
+    assert r.status_code == 200
+    assert client.get("/api/settings", headers=chave_de_uso).json()["is_admin"] is False
+    assert client.get("/api/settings", headers=auth).json()["is_admin"] is True
+
+
+def test_apikeys_enabled_desligar_avisa_sem_409(client, chave_unica):
+    """Desligar pela rota de `enabled` é intencional: 200 + aviso, nunca 409."""
+    r = client.post("/api/apikeys/enabled", headers=chave_unica, json={"enabled": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["auth_active"] is False
+    assert r.json()["avisos"] and "sem credencial" in r.json()["avisos"][0]
+    r = client.post("/api/apikeys/enabled", headers=chave_unica, json={"enabled": True})
+    assert r.status_code == 200 and not r.json().get("avisos")
+    assert r.json()["auth_active"] is True
+
+
+# ---------------------------------------------------------------------------
+# `Origin` no loopback (CSRF / DNS-rebinding) — achado P1 da auditoria #282.
+# O loopback dispensa auth E rate limit e o CORS é `*`: sem esta guarda, qualquer
+# página aberta no navegador do dono LÊ os segredos e derruba o servidor.
+# Três pontas obrigatórias aqui: origem boa (não pode regredir), origem ruim
+# (tem de barrar) e origem AUSENTE (curl/SDK: comportamento de sempre).
+# ---------------------------------------------------------------------------
+
+_ORIGEM_MAQUINA = "http://127.0.0.1:7860"
+_ORIGEM_ESTRANGEIRA = "http://evil.tld"
+
+
+def _cliente_local():
+    """TestClient cujo socket é loopback (o caso em que a guarda de Origin age)."""
+    return TestClient(app.app, raise_server_exceptions=False, client=("127.0.0.1", 50000))
+
+
+def test_origin_boa_nao_regride_o_fluxo_do_mac(client, auth):
+    """A UI da própria máquina abre a porta e o `Host` da requisição é o mesmo:
+    origem igual à da requisição, loopback explícito e extensão do dono seguem
+    recebendo segredo como antes."""
+    c = _cliente_local()
+    for origem in ("http://testserver", _ORIGEM_MAQUINA, "http://localhost:7860",
+                   "http://[::1]:7860", "chrome-extension://abc123"):
+        r = c.get("/api/apikeys?reveal=1", headers={"Origin": origem})
+        assert r.status_code == 200, origem
+        assert any(k.get("secret") for k in r.json()["keys"]), origem
+    # `TTS_CORS_ORIGINS` é liberação explícita do dono: a mesma origem que sem
+    # liberação tomaria 403 passa a ler
+    c2 = _cliente_local()
+    app._CORS_ORIGINS.append(_ORIGEM_ESTRANGEIRA)
+    try:
+        r = c2.get("/api/apikeys?reveal=1", headers={"Origin": _ORIGEM_ESTRANGEIRA})
+        assert r.status_code == 200
+        assert any(k.get("secret") for k in r.json()["keys"])
+    finally:
+        app._CORS_ORIGINS.remove(_ORIGEM_ESTRANGEIRA)
+
+
+def test_origin_ausente_continua_valendo_como_o_mac(client, auth):
+    """Sem `Origin` (curl, SDK, scripts) o loopback segue dispensando a chave —
+    é o comportamento de sempre e não pode ter regredido."""
+    c = _cliente_local()
+    r = c.get("/api/apikeys?reveal=1")
+    assert r.status_code == 200
+    assert any(k.get("secret") for k in r.json()["keys"])
+
+
+def test_origin_estrangeira_nao_le_segredo_sem_chave(client, auth):
+    """Origem de terceiro (CSRF): rota que revela segredo passa a exigir chave."""
+    c = _cliente_local()
+    h = {"Origin": _ORIGEM_ESTRANGEIRA}
+    for rota in ("/api/apikeys?reveal=1", "/api/settings", "/api/client/mic-router"):
+        r = c.get(rota, headers=h)
+        assert r.status_code == 403, rota
+        assert r.headers.get("X-TTS-Origin-Bloqueada") == "1", rota
+        assert _ORIGEM_ESTRANGEIRA in r.json()["origin"]
+    # sem segredo no corpo (o 403 não vaza nada) e o GET simples não é revelador
+    corpo = c.get("/api/apikeys?reveal=1", headers=h).json()
+    assert corpo["detail"] and "keys" not in corpo
+    assert c.get("/api/status", headers=h).status_code == 200
+    assert c.get("/api/voices", headers=h).status_code == 200
+
+    # COM a chave, a mesma origem lê normalmente
+    r = c.get("/api/apikeys?reveal=1", headers={**h, **auth})
+    assert r.status_code == 200
+    assert any(k.get("secret") for k in r.json()["keys"])
+
+
+def test_origin_estrangeira_exige_chave_no_metodo_mutante(client, auth, monkeypatch):
+    """Mutação por origem de terceiro sem chave: 401. Com a chave, passa."""
+    c = _cliente_local()
+    h = {"Origin": _ORIGEM_ESTRANGEIRA}
+    assert c.delete("/api/outputs", headers=h).status_code == 401
+    assert c.delete("/api/outputs", headers={**h, **auth}).status_code == 200
+    # `shutdown` responde e chama `os._exit(0)` numa thread: sem interceptar, o
+    # processo do pytest morre no MEIO da suíte (log truncado, rc 0, sem resumo).
+    saida = []
+    monkeypatch.setattr(os, "_exit", lambda codigo=0: saida.append(codigo))
+    assert c.post("/api/shutdown", headers=h).status_code == 401
+    assert c.post("/api/shutdown", headers={**h, **auth}).status_code == 200
+    assert _espera(lambda: saida, 2.0), "o handler tem de pedir o exit após responder"
+    assert saida == [0]
+
+
+def test_origin_estrangeira_nao_herda_o_admin_do_loopback(client, auth, chave_de_uso):
+    """Privilégio não vem mais do socket: a página de fora vale pela CREDENCIAL,
+    então uma chave `use` continua sem administrar."""
+    c = _cliente_local()
+    h = {"Origin": _ORIGEM_ESTRANGEIRA, **chave_de_uso}
+    assert c.post("/api/apikeys", headers=h, json={"name": "x"}).status_code == 403
+    assert c.get("/api/settings", headers=h).json()["is_admin"] is False
+    assert c.get("/api/settings", headers={**h, **auth}).json()["is_admin"] is True
+
+
+def test_origin_barrada_aparece_no_status(client, auth, monkeypatch):
+    """/api/status publica a tentativa barrada — CSRF deixa de ser um 403 mudo."""
+    monkeypatch.setattr(app, "_origens_barradas", {})
+    c = _cliente_local()
+    assert c.get("/api/apikeys?reveal=1", headers={"Origin": _ORIGEM_ESTRANGEIRA}).status_code == 403
+    painel = c.get("/api/status", headers={"Origin": _ORIGEM_ESTRANGEIRA}).json()["origens_barradas"]
+    assert painel["total"] == 1
+    assert any(_ORIGEM_ESTRANGEIRA in k for k in painel["recentes"])
+
+
+def test_origin_da_lan_continua_exigindo_chave(client, auth):
+    """A regra da LAN não afrouxou: socket não-loopback exige chave mesmo com
+    origem ausente e mesmo com origem da própria máquina."""
+    lan = TestClient(app.app, raise_server_exceptions=False, client=("203.0.113.9", 50000))
+    for cabecalho in ({}, {"Origin": "http://203.0.113.9:7860"}):
+        assert lan.get("/api/apikeys", headers=cabecalho).status_code == 401
+        assert lan.get("/api/apikeys", headers={**cabecalho, **auth}).status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # Live (LIVE-1) — WS /api/live/ws: sessão, protocolo, auth e tetos.
 # ---------------------------------------------------------------------------
 
@@ -2517,7 +3050,8 @@ def test_live_ws_voz_desconhecida_cai_no_padrao_e_vad_clampa(ws_client, live_lim
     with ws_client.websocket_connect("/api/live/ws") as ws:
         pronto = _setup_ok(ws, voice_id="../fora", vad={"silence_ms": 99999, "prefix_ms": -5})
         assert pronto["type"] == "ready"
-        assert pronto["vad"] == {"silence_ms": 5000, "prefix_ms": 0}
+        # #313: `barge_ms` entrou no contrato da `vad` (clamp 150–600, default 300)
+        assert pronto["vad"] == {"silence_ms": 5000, "prefix_ms": 0, "barge_ms": 300}
         assert pronto["voice_id"] == _resolve_voice_efetiva()
 
 
@@ -2814,7 +3348,10 @@ def pipeline_fake(monkeypatch):
     monkeypatch.setitem(app._settings, "chat_backend_live", "")
     monkeypatch.setattr(app, "_live_mod", live_pipeline)   # (o `live_limpo` zera)
     monkeypatch.setattr(live_pipeline, "_prewarm_app", lambda: None)
-    monkeypatch.setattr(live_pipeline, "_stt_app", lambda pcm, lang: "que horas são")
+    # o #314 passou a passar `julga` como 3º argumento POSICIONAL ao `_stt_app`;
+    # sem o parâmetro o dublê estoura e o turno morre no stage=stt
+    monkeypatch.setattr(live_pipeline, "_stt_app",
+                        lambda pcm, lang, julga=None: "que horas são")
     monkeypatch.setattr(live_pipeline, "_llm_stream_app",
                         lambda msgs: iter(["São ", "dez ", "horas."]))
     # `**kw`: o pipeline pode passar contexto extra (ex.: voice_id) para o TTS
