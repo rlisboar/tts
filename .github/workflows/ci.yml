@@ -83,7 +83,6 @@ jobs:
     # vermelho); instale-o antes de tornar o check obrigatório.
     runs-on: [self-hosted, tts-mini]
     timeout-minutes: 30
-    needs: estatica
     env:
       TTS_TEST_WORKER: '0'      # '0' continua RODANDO (só string vazia skippa)
       # sem rede no Hub: o HEAD-check do whisper não pode virar espera de rede
@@ -100,6 +99,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # macOS não tem /Users/runner (default do hospedado): sem isto o
+      # `setup-python` morre em `mkdir: /Users/runner: Permission denied`.
+      # `env:` de job não aceita o contexto `runner`, então vai por GITHUB_ENV.
+      - name: toolcache num diretório gravável
+        run: |
+          echo "RUNNER_TOOL_CACHE=$HOME/.cache/runner-toolcache" >> "$GITHUB_ENV"
+          echo "AGENT_TOOLSDIRECTORY=$HOME/.cache/runner-toolcache" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
