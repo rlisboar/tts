@@ -71,6 +71,10 @@ _PREWARM_CANCEL_ESPERA_S = 5.0
 #: Esperas crescentes: uma tentativa por espera (#172).
 _TRANSIENTE_ESPERAS = (0.25, 0.75, 2.0)
 _TRANSIENTE_TENTATIVAS = 1 + len(_TRANSIENTE_ESPERAS)
+#: espera pelo `_turno_lock` (um `stream` por cliente). Sem prazo, um turno
+#: abandonado sem `close()` do gerador deixava o próximo pendurado para sempre.
+_TURNO_LOCK_ESPERA_S = 30.0
+
 #: teto do delta falável extraído de um turno que só veio em reasoning.
 #: O TTS não pode ler os ~95k do thought; a resposta medida cabe no último parágrafo.
 _FALA_THOUGHT_TETO = 400
@@ -255,7 +259,8 @@ def estado_bridge(bin=None) -> dict:
 
     `unknown` é o caminho de degradação (binário/node/pacote ausente, arquivo
     ilegível, marcador não encontrado): o chamador segue com o resto da descoberta."""
-    info = {"estado": "unknown", "arquivo": None, "versao": None, "motivo": ""}
+    info = {"estado": "unknown", "arquivo": None, "arquivo_bin": None,
+            "versao": None, "motivo": ""}
     try:
         exe = resolver_bin(bin, checa_node=False)
     except DshError as exc:
@@ -487,7 +492,8 @@ class DshClient:
                  effort="off", cwd=None, on_log=None, extra_args=(), env_extra=None,
                  prompt_timeout=_PROMPT_TIMEOUT_S, prewarm=True, restart_delay=_RESTART_DELAY_S,
                  cancel_espera=_CANCEL_ESPERA_S, prewarm_timeout=_PREWARM_ESPERA_S,
-                 prewarm_cancel_espera=_PREWARM_CANCEL_ESPERA_S):
+                 prewarm_cancel_espera=_PREWARM_CANCEL_ESPERA_S,
+                 primeiro_delta_timeout=None, checa_node=True):
         self._bin_req = bin
         self._bin: str | None = None
         self._profile = str(profile or "").strip() or DSH_DEFAULT_PROFILE
@@ -497,6 +503,9 @@ class DshClient:
         self._cwd_tmp: Path | None = None
         self._on_log = on_log
         self._extra_args = tuple(extra_args)
+        #: o `_garantir` checa a versão do node antes de spawnar; quem JÁ checou
+        #: (a descoberta precisa do número) desliga para não pagar dois subprocessos
+        self._checa_node = bool(checa_node)
         self._env_extra = dict(env_extra or {})
         self._prompt_timeout = prompt_timeout
         self._prewarm_timeout = float(prewarm_timeout)
@@ -530,6 +539,10 @@ class DshClient:
         self._ultimo_rid_prompt: int | None = None   # rid do último prompt enviado
         self._toma_slot_lock = threading.Lock()      # wait+clear atômicos
         self._prewarm_cancel_espera = float(prewarm_cancel_espera)
+        # None = sem teto (é o default do Live, que tem o SEU teto; a Conversa passa
+        # um valor — ver `_CHAT_DSH_PRIMEIRO_DELTA_S`)
+        self._primeiro_delta = (float(primeiro_delta_timeout)
+                                if primeiro_delta_timeout else None)
         self._boot_lock = threading.Lock()
         self._handshake_fails = 0
         self._ultimo_erro = ""
@@ -544,6 +557,7 @@ class DshClient:
         self._thought = ""                 # reasoning acumulado do turno atual
         self.chunks_emitidos = 0        # deltas efetivamente entregues (métrica)
         self.chunks_duplicados = 0      # chunks absorvidos pela anti-duplicação
+        self.permissoes_negadas = 0     # pedidos de permissão (perfil com tool?)
 
     # ------------------------------------------------------------- properties
     @property
@@ -553,6 +567,16 @@ class DshClient:
     @property
     def session_id(self) -> str | None:
         return self._session_id
+
+    @property
+    def prompt_em_voo(self) -> bool:
+        """True enquanto houver prompt aceito e não settledo (o slot está tomado).
+
+        Quem devolve este cliente a um pool precisa saber: reusar um cliente com
+        prompt em voo faz o próximo turno esperar o settle (até 300 s) e arriscar
+        `-32602` — é o "pool envenenado" da auditoria #287."""
+        with self._voo_lock:
+            return bool(self._prompts_em_voo)
 
     @property
     def modelo(self) -> str:
@@ -611,7 +635,7 @@ class DshClient:
             if self.alive and self._session_id:
                 return
             if self._bin is None:
-                self._bin = resolver_bin(self._bin_req)
+                self._bin = resolver_bin(self._bin_req, checa_node=self._checa_node)
             tentativa = 0
             while True:
                 try:
@@ -1034,7 +1058,14 @@ class DshClient:
             if method == "session/request_permission":
                 self._responder_permissao(msg)
             else:
-                self._responder(msg["id"], {})
+                # requisição DESCONHECIDA: responder `{}` some com o método e o
+                # harness segue achando que foi atendido (degrada calado). O ACP
+                # tem código próprio para isso (#287).
+                self._log(f"[dsh] método ACP desconhecido do cliente: {method!r} "
+                          f"(id={msg['id']}) — respondendo -32601")
+                self._escrever({"jsonrpc": "2.0", "id": msg["id"],
+                                "error": {"code": -32601,
+                                          "message": f"method not found: {method}"}})
 
     def _rota_update(self, update: dict, sessao: str = "") -> None:
         # Guarda de identidade no nível da SESSÃO (espelho do `self.dsh !== client`):
@@ -1068,7 +1099,15 @@ class DshClient:
         self._escrever({"jsonrpc": "2.0", "id": rid, "result": result})
 
     def _responder_permissao(self, msg: dict) -> None:
-        """Sempre NEGA (reject_once): aqui o dsh não executa tool nenhuma."""
+        """Sempre NEGA (reject_once): aqui o dsh não executa tool nenhuma.
+
+        Negar é a política, mas o PEDIDO é sinal de que o perfil em uso tem tool
+        (o default `tts-studio` não tem): fica no log e em `permissoes_negadas`,
+        porque a degradação é invisível e o modelo pode insistir (#287)."""
+        self.permissoes_negadas += 1
+        self._log("[dsh] perfil pediu permissão de tool — negada "
+                  f"({self.permissoes_negadas}x nesta sessão; o perfil "
+                  f"{self._profile!r} não é tool-free?)")
         opcoes = (msg.get("params") or {}).get("options") or []
         rejeitar = next((o for o in opcoes
                          if o.get("kind") == "reject_once"
@@ -1141,7 +1180,9 @@ class DshClient:
         texto, efemero = self._render(msgs)
         if not texto:
             return
-        self._turno_lock.acquire()
+        if not self._turno_lock.acquire(timeout=_TURNO_LOCK_ESPERA_S):
+            raise DshError(f"outro turno deste cliente não liberou em "
+                           f"{_TURNO_LOCK_ESPERA_S:.0f}s (gerador abandonado?)")
         try:
             yield from self._stream_com_lock(texto, turno_id, efemero)
         finally:
@@ -1214,6 +1255,21 @@ class DshClient:
                 # turno trocou (cancel + fala nova) → encerra aqui mesmo.
                 if self._turno_atual != turno_id:
                     break
+                # teto do PRIMEIRO delta (#287): provedor que só pensa não segura o
+                # chamador para sempre. Estourou → cancela, fecha a sessão (a próxima
+                # nasce limpa, sem prompt em voo) e vira erro comum.
+                if (self._primeiro_delta and not emitido
+                        and time.perf_counter() - t0 > self._primeiro_delta):
+                    self._log(f"[dsh] sem delta falável em {self._primeiro_delta:.0f}s "
+                              f"— cancelando e fechando a sessão")
+                    try:
+                        self.cancel(turno_id)
+                        self.fechar_sessao(timeout=5.0)
+                    except Exception:  # noqa: BLE001 — fechar é best-effort
+                        pass
+                    raise DshError(
+                        f"dsh não emitiu delta falável em "
+                        f"{self._primeiro_delta:.0f}s (sessão reaberta)")
                 if item is not None:
                     # nome próprio: `texto` é o prompt lido pela thread `_prompt`
                     pedaco, parcial = item
@@ -1319,13 +1375,17 @@ def parse_config_options(config_options: list) -> list[dict]:
 
 def descobrir_modelos(*, bin=None, profile=DSH_DEFAULT_PROFILE) -> dict:
     """Sobe um dsh, lê as configOptions e devolve {models, node, bin, profile}."""
-    exe = resolver_bin(bin)
-    cliente = DshClient(bin=exe, profile=profile, prewarm=False)
+    # A descoberta precisa do NÚMERO do node (campo `node`); tira ele UMA vez e
+    # manda o cliente não repetir (`checa_node=False`). Antes: um `--version` aqui
+    # e outro no `_garantir`, dois subprocessos por descoberta (#287).
+    exe = resolver_bin(bin, checa_node=False)
+    versao_node = ".".join(str(x) for x in node_versao())
+    cliente = DshClient(bin=exe, profile=profile, prewarm=False, checa_node=False)
     try:
         cliente.prewarm()
         return {"bin": exe,
                 "profile": profile,
-                "node": ".".join(str(x) for x in node_versao()),
+                "node": versao_node,
                 "models": parse_config_options(cliente.config_options)}
     finally:
         cliente.close()

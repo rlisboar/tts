@@ -55,6 +55,10 @@ CFG = {
     # sem depender de timing: é o que o retry do cliente tem de cobrir)
     "recusa_primeira": int(os.environ.get("FAKE_ACP_RECUSA_PRIMEIRA", "0")),
     "sem_config": os.environ.get("FAKE_ACP_SEM_CONFIG") == "1",
+    # método que o fake NÃO conhece: sem resposta dele, o cliente precisa cobrir
+    "sem_resposta_desconhecida": os.environ.get("FAKE_ACP_SEM_RESPOSTA_DESCONHECIDA") == "1",
+    # manda um REQUEST de método que o cliente não conhece (cobra o -32601)
+    "metodo_desconhecido": os.environ.get("FAKE_ACP_METODO_DESCONHECIDO") == "1",
 }
 
 # sessões com um prompt em voo (o harness libera o slot só no settle)
@@ -132,6 +136,21 @@ def pede_permissao() -> None:
     log("PERMISSAO", _permission_wait.get(rid))
 
 
+def pede_metodo_desconhecido() -> None:
+    """Request server→client de um método que o cliente não conhece: ele tem de
+    responder `-32601` (não `{}`) — `{}` faz o harness achar que foi atendido."""
+    global _id
+    _id += 1
+    rid = _id
+    enviar({"jsonrpc": "2.0", "id": rid, "method": "fs/read_text_file",
+            "params": {"path": "/x"}})
+    _permission_wait[rid] = None
+    limite = time.time() + 5
+    while _permission_wait.get(rid) is None and time.time() < limite:
+        time.sleep(0.01)
+    log("DESCONHECIDO_RESPOSTA", str(_permission_wait.get(rid)))
+
+
 _permission_wait: dict = {}
 
 
@@ -177,6 +196,8 @@ def turno(session_id: str, rid: int, texto: str) -> None:
         err = CFG["prompt_error"]
         erro(rid, err.get("code", -32603), err.get("message", "erro"))
         return
+    if CFG["metodo_desconhecido"]:
+        threading.Thread(target=pede_metodo_desconhecido, daemon=True).start()
     if CFG["permission"]:
         pede_permissao()
     if not CFG["thought_mid"]:
@@ -256,8 +277,9 @@ def tratar(msg: dict) -> None:
     if rid is not None and method is None:          # resposta nossa a um request
         if rid in _permission_wait:
             resultado = msg.get("result") or {}
+            resp_erro = msg.get("error") or {}
             escolha = ((resultado.get("outcome") or {}).get("optionId")
-                       or ("ERRO" if msg.get("error") else "VAZIO"))
+                       or (f"ERRO {resp_erro.get('code')}" if msg.get("error") else "VAZIO"))
             _permission_wait[rid] = escolha
         return
     if method == "initialize":
@@ -311,8 +333,10 @@ def tratar(msg: dict) -> None:
         _cancel.set()
     elif method == "session/close":
         responder(rid, {})
-    elif rid is not None:
+    elif rid is not None and not CFG["sem_resposta_desconhecida"]:
         responder(rid, {})
+    elif rid is not None:
+        log("DESCONHECIDO", method)          # o cliente tem de responder sozinho
 
 
 def main() -> None:

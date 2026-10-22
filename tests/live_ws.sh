@@ -157,6 +157,18 @@ def fala_de_teste(segundos=2.4):
         return w.stem, (np.clip(a16, -1, 1) * 32767).astype("<i2").tobytes()
     raise SystemExit("nenhuma voices/*.wav serviu como fala de teste")
 
+def limpa_sobras():
+    """Apaga os temporários DESTA rodada (verde ou vermelha): log, chaves e launcher."""
+    if LOG is None:
+        return
+    nome = str(LOG)
+    for sobra in (LOG,
+                  pathlib.Path(nome.replace("live_ws_servidor_", "live_ws_apikeys_")).with_suffix(".json"),
+                  pathlib.Path(nome.replace("live_ws_servidor_", "live_ws_launcher_")).with_suffix(".py")):
+        try: sobra.unlink()
+        except Exception: pass
+
+
 def porta_livre():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -187,10 +199,26 @@ def sobe_servidor(porta, stub_porta):
            "TTS_CHAT_MODEL": "stub-live"}
     global LOG
     log = LOG = pathlib.Path("/tmp") / f"live_ws_servidor_{porta}.log"
+    # ARQUIVO DE CHAVES PRÓPRIO (#435, padrão do `ultima_chave_ui.sh`): a suíte cria
+    # chave para conectar e, sem isto, a gravação caía no `.apikeys.json` do dono
+    # (o conftest não alcança script de shell). O launcher troca o caminho ANTES de
+    # servir, então nada do arquivo real é escrito — e a sobra é apagada no fim.
+    chaves = pathlib.Path("/tmp") / f"live_ws_apikeys_{porta}.json"
+    chaves.write_text("{}")
+    launcher = pathlib.Path("/tmp") / f"live_ws_launcher_{porta}.py"
+    launcher.write_text(
+        "import pathlib, app\n"
+        f"app.APIKEYS_PATH = pathlib.Path({str(chaves)!r})\n"
+        "app._load_apikeys()\n"
+        + (f"app._ENV_API_KEY = app._ADMIN_API_KEY = ''\n" if False else "")
+        + "alvo = app.app\n")
     proc = subprocess.Popen(
-        [str(RAIZ / ".venv-mlx" / "bin" / "uvicorn"), "app:app",
-         "--host", "127.0.0.1", "--port", str(porta)],
-        cwd=str(RAIZ), env=env, stdout=log.open("w"), stderr=subprocess.STDOUT,
+        [str(RAIZ / ".venv-mlx" / "bin" / "uvicorn"), f"{launcher.stem}:alvo",
+         "--host", "127.0.0.1", "--port", str(porta),
+         "--app-dir", str(launcher.parent)],
+        cwd=str(RAIZ), env={**env, "PYTHONPATH": os.pathsep.join(
+            [str(launcher.parent), str(RAIZ), os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)},
+        stdout=log.open("w"), stderr=subprocess.STDOUT,
         start_new_session=True)
     for _ in range(300):                      # até 60 s
         if proc.poll() is not None:
@@ -414,6 +442,7 @@ async def principal():
             mata_servidor(servidor)
             ok("servidor do smoke encerrado (e o stub com ele)")
 
+    limpa_sobras()
     print()
     if falhas:
         print(f"✘ {len(falhas)} falha(s) (log do servidor: {LOG}):")
@@ -424,8 +453,7 @@ async def principal():
       + ("" if ALVO_VALE else f" (alvo de {ALVO_MS} ms é do cenário stub; Live em {BACKEND_LIVE!r})"))
     if avisos:
         print(f"({len(avisos)} aviso(s))")
-    try: LOG.unlink()                   # rodada verde não deixa lixo em /tmp
-    except Exception: pass
+
 
 asyncio.run(principal())
 PY

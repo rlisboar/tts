@@ -21,7 +21,17 @@ import metrics_hist
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # `client`/`auth`/`chave_de_uso`/`voices_tmp` moram no `test_api.py` (não no
 # conftest): importar é o padrão do repo para quem precisa da API de verdade.
-from test_api import auth, chave_de_uso, client, voices_tmp  # noqa: E402,F401
+from test_api import auth, chave_de_uso, client, voices_tmp  # noqa: E402, F401
+
+# Declarados como usados: são FIXTURES consumidas pelos testes do arquivo.
+# O `ruff` já cobre isso com o `noqa` (política pós-#378); o `__all__` mantém
+# o `pyflakes` (que ignora o `noqa`) também verde — inerte em runtime.
+__all__ = [
+    "auth",
+    "chave_de_uso",
+    "client",
+    "voices_tmp",
+]
 
 
 @pytest.fixture(autouse=True)

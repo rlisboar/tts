@@ -246,6 +246,17 @@ def test_o_readme_do_scripts_documenta_as_flags():
     assert "/tmp/dsh4a-trace.on" in texto
 
 
+def test_trace_por_processo_com_rodizio_e_limpeza_do_mapa():
+    """#370: o trace era um arquivo FIXO (todo dsh do host escrevia nele) sem teto e
+    o mapa de streams nunca era limpo."""
+    texto = PATCH.read_text()
+    assert "/tmp/dsh4a-trace.${process.pid}.jsonl" in texto      # por processo
+    assert "DSH4A_TRACE_MAX" in texto and "renameSync" in texto  # rodízio
+    assert "dsh4aEncerrar(sessionId)" in texto                   # mapa zerado no commit
+    # e o desligamento continua documentado (arquivo-gatilho)
+    assert "dsh4a-trace.on" in texto
+
+
 def test_o_patch_textual_tem_as_duas_secoes():
     texto = PATCH.read_text()
     assert texto.count("//===@MODULE===") == 1

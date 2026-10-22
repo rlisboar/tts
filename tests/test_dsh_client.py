@@ -135,6 +135,27 @@ def test_env_do_filho_e_minimo_sem_as_nossas_chaves(monkeypatch):
     assert any("ENV_HOME sim" in l for l in logs)
 
 
+def test_metodo_acp_desconhecido_responde_32601(monkeypatch):
+    """Request de método que o cliente não conhece: ele responde `-32601` (não
+    `{}`, que faria o harness achar que foi atendido) e loga (#287)."""
+    logs, enviados = [], []
+    c = cliente(monkeypatch, on_log=logs.append,
+                env={"FAKE_ACP_METODO_DESCONHECIDO": "1"})
+    try:
+        c._garantir()
+        escrever = c._escrever
+        c._escrever = lambda obj: (enviados.append(obj), escrever(obj))[1]
+        assert "".join(c.stream("oi", "t1")) == "Olá, mundo!"
+    finally:
+        c._escrever = escrever if "escrever" in dir() else c._escrever
+        c.close()
+    erros = [e for e in enviados if e.get("id") and e.get("error")]
+    assert erros, f"nenhum -32601 foi escrito: {enviados}"
+    assert erros[-1]["error"]["code"] == -32601
+    assert "read_text_file" in erros[-1]["error"]["message"]
+    assert any("desconhecido" in l and "read_text_file" in l for l in logs)
+
+
 def test_permissao_sempre_negada(monkeypatch):
     logs = []
     c = cliente(monkeypatch, on_log=logs.append, env={"FAKE_ACP_PERMISSION": "1"})
@@ -143,6 +164,37 @@ def test_permissao_sempre_negada(monkeypatch):
     finally:
         c.close()
     assert any("PERMISSAO reject_once" in l for l in logs)
+    # #287: negar é a política, mas o PEDIDO fica contado — sinal de perfil com tool
+    assert c.permissoes_negadas == 1
+    assert any("pediu permissão de tool" in l for l in logs)
+
+
+def test_primeiro_delta_estoura_fecha_a_sessao_e_erra(monkeypatch):
+    """#287: provedor que só pensa não segura o chamador. Estourou o teto do 1º
+    delta → erro claro e sessão FECHADA (a próxima nasce sem prompt em voo)."""
+    c = cliente(monkeypatch, env={"FAKE_ACP_CHUNK_DELAY_S": "5"},
+                primeiro_delta_timeout=0.3)
+    try:
+        with pytest.raises(DshError) as exc:
+            list(c.stream("oi", "t1"))
+        assert "delta falável" in str(exc.value)
+        assert c.session_id is None, "a sessão tem de ser fechada para o próximo turno"
+    finally:
+        c.close()
+
+
+def test_turno_lock_nao_espera_para_sempre(monkeypatch):
+    """Um gerador abandonado (sem `close`) prendia o `_turno_lock` para sempre."""
+    monkeypatch.setattr(dsh_client, "_TURNO_LOCK_ESPERA_S", 0.2)
+    c = cliente(monkeypatch)
+    try:
+        g = c.stream("primeiro", "t1")
+        next(g)                                  # abre o turno e segura o lock
+        with pytest.raises(DshError) as exc:
+            list(c.stream("segundo", "t2"))      # gerador novo, dono do lock alheio
+        assert "não liberou" in str(exc.value)
+    finally:
+        c.close()
 
 
 def test_cancel_descarta_chunk_tardio(monkeypatch):

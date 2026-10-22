@@ -17,6 +17,16 @@ import app
 from test_api import _isolamento_disco, auth, chave_de_uso, client  # noqa: F401  # noqa: F401
 from test_live_dsh import DshClienteFalso
 
+# Declarados como usados: são FIXTURES consumidas pelos testes do arquivo.
+# O `ruff` já cobre isso com o `noqa` (política pós-#378); o `__all__` mantém
+# o `pyflakes` (que ignora o `noqa`) também verde — inerte em runtime.
+__all__ = [
+    "_isolamento_disco",
+    "auth",
+    "chave_de_uso",
+    "client",
+]
+
 # Fixtures de `test_api`: chegam por `import` e são usadas só como parâmetro de
 # teste. Com o F811 ignorado (#378) o import não precisa de silêncio; o `noqa`
 # fica como marcador de intenção (o uso é por parâmetro, não neste módulo).

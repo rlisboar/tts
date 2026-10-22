@@ -41,9 +41,11 @@ const USO = `aplicador do patch DSH-4a no bridge ACP (@deepseek-ai/dsh-acp)
   --force     aceita versão fora da lista verificada
   --help      este texto
 
-Trace (opcional, ligado por ARQUIVO): se /tmp/dsh4a-trace.on existir, o bridge
-grava /tmp/dsh4a-trace.jsonl (um JSONL por evento cru recebido e por
-session/update emitido). Desligado, o custo é um existsSync na 1ª chamada.`;
+Trace (opcional, ligado por ARQUIVO): se /tmp/dsh4a-trace.on existir, cada
+processo do bridge grava o SEU /tmp/dsh4a-trace.<pid>.jsonl (até 2 MB, girando
+para .1 — um touch não mistura mais todo processo do host num arquivo só nem
+cresce sem teto). Desliga com: rm /tmp/dsh4a-trace.on (quem já abriu o fd segue
+no próprio arquivo até sair). Desligado, o custo é um existsSync na 1a chamada.`;
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
 const PATCH = join(AQUI, "dsh-acp-stream.patch.js");

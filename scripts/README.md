@@ -49,11 +49,16 @@ node scripts/dsh-acp-stream-patch.mjs --help
 
 ### Trace do bridge (diagnóstico, ligado por arquivo)
 
-Enquanto `/tmp/dsh4a-trace.on` existir, o bridge grava `/tmp/dsh4a-trace.jsonl` —
-um JSONL por evento cru recebido de `agent/assistant-stream` e por `session/update`
-emitido (`{t, pid, k: "frame"|"emit"|"commit", ...}`). **Desligado, o custo é um
-`existsSync` na primeira chamada do processo** — nada de env, nada de overhead por
-delta. É a ferramenta para correlacionar pontas:
+Enquanto `/tmp/dsh4a-trace.on` existir, cada processo do bridge grava o SEU
+`/tmp/dsh4a-trace.<pid>.jsonl` — um JSONL por evento cru recebido de
+`agent/assistant-stream` e por `session/update` emitido
+(`{t, pid, k: "frame"|"emit"|"commit", ...}`). O arquivo é POR PROCESSO (um `touch`
+não faz dois dsh dividirem o mesmo arquivo) e **gira em 2 MB** (`.1`), então não
+cresce sem teto nem precisa de limpeza manual. Desligado, o custo é um `existsSync`
+na primeira chamada do processo — nada de env, nada de overhead por delta.
+**Desligar** é `rm /tmp/dsh4a-trace.on` (quem já abriu o fd segue escrevendo no
+próprio arquivo até o processo sair; `pkill`/restart fecha). É a ferramenta para
+correlacionar pontas:
 
 ```sh
 touch /tmp/dsh4a-trace.on

@@ -117,6 +117,30 @@ def test_apikeys_do_processo_tambem_vive_no_basetemp(tmp_path):
 # secret). A sessão agora semeia chave SINTÉTICA; esta guarda cobra que nenhum
 # arquivo de chave sob o basetemp desta sessão traga secret que também exista no
 # arquivo do dono — inclusive numa rodada VERMELHA, em que o basetemp é retido.
+#: os QUATRO arquivos de estado do dono (o app grava nos quatro)
+ARQUIVOS_DO_DONO = (".apikeys.json", ".apikey", "settings.json",
+                    ".speaker-profiles.json")
+
+
+def test_os_quatro_arquivos_de_estado_apontam_para_tmp(request):
+    """Isolamento de SESSÃO dos quatro caminhos — nenhum pode ficar no repo.
+
+    Cobre o que a guarda de hash não vê: `settings.json` e os perfis de locutor
+    continuam indo por CÓPIA (são conteúdo, não credencial), mas o processo tem de
+    estar escrevendo em tmp, senão a próxima gravação cai no arquivo do dono.
+    """
+    import pathlib
+
+    import app
+
+    pares = (("APIKEYS_PATH", ".apikeys.json"), ("LEGACY_APIKEY_PATH", ".apikey"),
+             ("SETTINGS_PATH", "settings.json"), ("SPEAKER_PATH", ".speaker-profiles.json"))
+    for atributo, nome in pares:
+        atual = pathlib.Path(getattr(app, atributo))
+        assert atual != app.BASE / nome, f"{atributo} aponta para o arquivo do dono"
+        assert str(atual).startswith(("/tmp", "/private/tmp", "/var/folders")), atual
+
+
 def test_basetemp_nao_carrega_secret_do_dono(request):
     import json as _json
     import pathlib
