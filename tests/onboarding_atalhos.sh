@@ -15,7 +15,8 @@
 #   BASE=http://127.0.0.1:7860 ./tests/onboarding_atalhos.sh
 #
 # Chromium headless. Usa um contexto limpo (o `localStorage` do dono não manda),
-# mas a geração de verdade grava um output no histórico dele.
+# mas a geração de verdade grava um output no histórico dele — o trap apaga o
+# que a rodada criar.
 set -euo pipefail
 
 BASE="${BASE:-http://127.0.0.1:7860}"
@@ -25,6 +26,27 @@ PY="$RAIZ/.venv-mlx/bin/python"
 
 command -v curl >/dev/null || { echo "curl não encontrado"; exit 1; }
 curl -sf -m 5 -o /dev/null "$BASE/" || { echo "✖ app não respondeu em $BASE — rode ./run.sh primeiro" >&2; exit 1; }
+
+# ESTA é suíte de `instancia` que ESCREVE: a prova gera fala de verdade e o job
+# fica no histórico do app alvo. Ids vistos antes servem de linha de base; o trap
+# apaga só o que a rodada criou (idempotente, `|| true`, como manda o #446).
+OUT_ANTES="$(curl -sf "$BASE/api/outputs?limit=50" | "$PY" -c 'import json,sys
+try: print(" ".join(i["id"] for i in json.load(sys.stdin)["items"]))
+except Exception: print("")' 2>/dev/null || true)"
+limpa_outputs() {
+  local id
+  curl -sf "$BASE/api/outputs?limit=50" | "$PY" -c 'import json,sys
+antes = set(sys.argv[1].split())
+try: itens = json.load(sys.stdin)["items"]
+except Exception: sys.exit(0)
+for i in itens:
+    if i["id"] not in antes: print(i["id"])' "$OUT_ANTES" 2>/dev/null \
+  | while read -r id; do
+      [ -n "$id" ] && curl -sf -X DELETE "$BASE/api/outputs/$id" >/dev/null 2>&1 || true
+    done
+  return 0
+}
+trap 'limpa_outputs' EXIT INT TERM
 
 BASE="$BASE" "$PY" - <<'PYEOF'
 import os, re, sys

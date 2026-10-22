@@ -12,6 +12,13 @@
 #              (XSS, key-storage, barge, WS). ~4 min; rode no gate que mexe em tela.
 #   instancia  NÃO sobe servidor: precisa de app de pé (BASE=...). Está fora do hook
 #              de propósito — exige MLX carregado e ninguém deve subir app por commit.
+#              REGRA do estágio: LEITURA por padrão. Suíte daqui que ESCREVA no app
+#              alvo (arquivo, setting, chave, item de histórico) precisa de trap de
+#              restauração (`|| true` em cada comando — ver #446), senão suja o
+#              estado do dono quando a rodada falha. Hoje escreve: `xss_frontend_repro`
+#              (vozes) e `onboarding_atalhos` (output do histórico); as outras oito
+#              são somente leitura.
+#              Suíte que sobe o PRÓPRIO servidor não fica aqui: vai em `navegador`.
 #
 # Uso:
 #   ./tests/run_sh.sh rapido               # hook
