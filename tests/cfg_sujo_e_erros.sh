@@ -76,7 +76,9 @@ restaura_gate() {
   curl -s -m 5 -X POST "$BASE/api/settings" -H 'Content-Type: application/json' \
        -d "{\"speaker_gate\":\"$ORIG\"}" >/dev/null 2>&1 || true
 }
-trap 'kill "$FILHO" 2>/dev/null; restaura_gate; limpa_servidor 2>/dev/null || true' EXIT INT TERM
+# `|| true` no `kill`: sob `set -e`, matar um filho que já saiu aborta o TRAP e o
+# script termina com o status do `kill` (1) mesmo tendo passado — era falso vermelho.
+trap 'kill "$FILHO" 2>/dev/null || true; restaura_gate; limpa_servidor 2>/dev/null || true' EXIT INT TERM
 
 BASE="$BASE" "$PY" - <<'PYEOF' &
 import json, os, signal, sys, urllib.request
