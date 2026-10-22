@@ -5041,8 +5041,16 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                     local["ref_text"] = _voice_ref_text(voice_id)
                 return True
 
-            def _gera_local(chunk: str, i: int):
-                """Trecho pelo modelo LOCAL — caminho normal E fallback do remoto."""
+            def _gera_local(chunk: str, i: int, sob_lock: bool = False):
+                """Trecho pelo modelo LOCAL — caminho normal E fallback do remoto.
+
+                `sob_lock` só é verdadeiro no FALLBACK: lá o job segura `_NO_LOCK`
+                (entrou pelo remoto), então sem pegar o `_gen_lock` aqui a geração
+                local correria junto com outro job no mesmo Metal. No caminho local
+                o job já segura o lock, e o `_gen_lock` não é reentrante — daí a
+                trava ficar só em volta do `generate`, nunca em volta de
+                `_prepara_local` (que também a toma).
+                """
                 if not _prepara_local():
                     raise RuntimeError("sem modelo local para o trecho")
                 motivo = ""
@@ -5062,11 +5070,12 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                                 o_try["class_temperature"] = 0.4
                             if float(o_try.get("temperature") or 0) < 0.5:
                                 o_try["temperature"] = 0.7
-                    audio = _generate_chunk(
-                        local["model"], chunk, language, local["conds"],
-                        local["ref_text"], o_try, ref_audio=local["ref_audio"],
-                        family=family, meta=be_meta, sr=local["sr"],
-                    )
+                    with (_gen_lock if sob_lock else _NO_LOCK):
+                        audio = _generate_chunk(
+                            local["model"], chunk, language, local["conds"],
+                            local["ref_text"], o_try, ref_audio=local["ref_audio"],
+                            family=family, meta=be_meta, sr=local["sr"],
+                        )
                     audio = _reamostra(audio, local["sr"], sr)
                     motivo = _motivo_anomalia(
                         audio, sr, chunk, speed=float(omni.get("speed") or 1.0))
@@ -5096,6 +5105,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                 # ponto (fim de frase no meio da frase — #319)
                 chunk = _pontua_corte(chunk, ultimo=(i == len(chunks) - 1))
                 audio = None
+                caiu_agora = False     # este trecho veio do remoto? (só aí a trava é nossa)
                 if alvo_remoto:
                     motivo = ""
                     for tentativa in (1, 2):
@@ -5133,6 +5143,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                             job["warning"] = (f"{job['warning']} | {aviso}"
                                               if job.get("warning") else aviso)
                             audio = None
+                            caiu_agora = True
                 # cache (desligado por padrão): guarda o PCM já pós-processado, então
                 # o acerto PULA a geração e o pós dos dois caminhos (#325)
                 cache = _cache_audio()
@@ -5147,7 +5158,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                     job["cache_hits"] = job.get("cache_hits", 0) + 1
                 else:
                     if audio is None:
-                        audio = _gera_local(chunk, i)
+                        audio = _gera_local(chunk, i, sob_lock=caiu_agora)
                     audio = _pos_processa(audio, sr)
                     if chave_audio:
                         cache.guarda(chave_audio, audio, sr,
