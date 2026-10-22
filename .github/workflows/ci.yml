@@ -88,7 +88,7 @@ jobs:
       TTS_TEST_WORKER: '0'      # '0' continua RODANDO (só string vazia skippa)
       # sem rede no Hub: o HEAD-check do whisper não pode virar espera de rede
       # em PR (nem depender do hub estar de pé) — #166 documenta o efeito
-      HF_HUB_OFFLINE: '1'
+      HF_HUB_OFFLINE: '0'   # o cache do Hub do mini não cobre toda revisão que a suíte pede
       # #388: base do diff de `test_worker_real_exigido`. Se o PR toca
       # tts_worker.py/live_pipeline.py, o caminho real passa a ser EXIGIDO —
       # antes era só um aviso no resumo. Por isso o checkout abaixo usa
