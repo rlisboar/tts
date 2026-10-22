@@ -105,3 +105,23 @@ def test_perfil_gravado_e_lido_de_volta(tmp_path, monkeypatch):
     app._speaker_save({"ana": {"vecs": [[0.1, 0.2]], "updated": 0}})
     dados, erro = app._speaker_load_estado()
     assert erro == "" and dados["ana"]["vecs"] == [[0.1, 0.2]]
+
+
+def test_queda_no_meio_da_escrita_preserva_o_arquivo_anterior(tmp_path, monkeypatch):
+    """Crash na troca não pode deixar o perfil truncado no lugar do bom."""
+    import pytest
+
+    import common
+
+    alvo = tmp_path / ".speaker-profiles.json"
+    monkeypatch.setattr(app, "SPEAKER_PATH", alvo)
+    app._speaker_save({"ana": {"vecs": [[0.1, 0.2]], "updated": 0}})
+    bom = alvo.read_text()
+
+    monkeypatch.setattr(common.os, "replace",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("queda no replace")))
+    with pytest.raises(OSError):
+        app._speaker_save({"ana": {"vecs": [[9.0, 9.0]], "updated": 1}})
+
+    assert alvo.read_text() == bom, "o arquivo bom foi destruído pela escrita parcial"
+    assert [p.name for p in tmp_path.iterdir()] == [alvo.name], "sobrou temporário"
