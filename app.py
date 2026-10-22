@@ -3788,6 +3788,239 @@ async def import_voices(request: Request, zip_file: UploadFile = File(...)):
             "renomeados": renomeados[:10]}
 
 
+# ---------------------------------------------------------------------------
+# Backup/restore do ESTADO (#377): os quatro blocos de valor num pacote só.
+# Não leva áudio gerado — só configuração, chaves, perfis e vozes.
+# ---------------------------------------------------------------------------
+
+SCHEMA_BACKUP = 1
+_ESTADO_SIMPLES = ("settings.json", ".apikeys.json", ".speaker-profiles.json")
+
+
+def _sha256_arquivo(path: Path) -> str:
+    import hashlib as _h
+
+    h = _h.sha256()
+    with path.open("rb") as fh:
+        for bloco in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(bloco)
+    return h.hexdigest()
+
+
+@app.get("/api/backup")
+def backup_estado(request: Request):
+    """Pacote único e versionado do estado local (admin). Sem áudio de outputs/.
+
+    Manifest com schema, data, rev do build, contagem e sha256 por arquivo; o zip
+    é gravado em temporário e enviado por `FileResponse` com unlink no background,
+    o mesmo padrão do export de vozes (nunca o zip inteiro na RAM).
+    """
+    _exige_admin(request)
+    import zipfile
+    from starlette.background import BackgroundTask
+
+    tmp = tempfile.NamedTemporaryFile(prefix=".backup-", suffix=".zip",
+                                      dir=OUTPUTS_DIR, delete=False)
+    tmp.close()
+    path = Path(tmp.name)
+    try:
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            arquivos, contagens = {}, {"vozes": 0}
+            for nome in _ESTADO_SIMPLES:
+                origem = _caminho_estado(nome)
+                if not origem.exists():
+                    continue
+                z.write(origem, nome)
+                arquivos[nome] = _sha256_arquivo(origem)
+                contagens[nome] = 1
+            for p in sorted(VOICES_DIR.iterdir()) if VOICES_DIR.exists() else []:
+                if not (p.is_file() and p.suffix in (".wav", ".json")):
+                    continue
+                z.write(p, f"voices/{p.name}")
+                arquivos[f"voices/{p.name}"] = _sha256_arquivo(p)
+                if p.suffix == ".wav":
+                    contagens["vozes"] += 1
+            manifest = {
+                "schema": SCHEMA_BACKUP,
+                "criado_em": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "build": _BUILD_CODIGO,
+                "arquivos": arquivos,
+                "contagens": contagens,
+            }
+            z.writestr("manifest.json", json.dumps(manifest, indent=2))
+    except Exception:  # noqa: BLE001 — não deixar temporário pela metade
+        path.unlink(missing_ok=True)
+        raise
+    nome_saida = f"tts-studio-backup-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+    return FileResponse(path, media_type="application/zip", filename=nome_saida,
+                        background=BackgroundTask(path.unlink, missing_ok=True))
+
+
+@app.post("/api/restore")
+async def restore_estado(request: Request, arquivo: UploadFile = File(...)):
+    """Restaura um pacote do `GET /api/backup` — staging, validação e rollback.
+
+    Recusa schema desconhecido e sha256 divergente ANTES de tocar em qualquer
+    arquivo. O que já existe é copiado para um diretório de rollback e devolvido
+    se a publicação falhar no meio. Permissões finais 0600 nos quatro blocos.
+    """
+    _exige_admin(request)
+    import zipfile
+
+    with tempfile.NamedTemporaryFile(prefix=".restore-", suffix=".zip",
+                                     dir=OUTPUTS_DIR, delete=False) as incoming:
+        incoming_path = Path(incoming.name)
+        recebido = 0
+        try:
+            while True:
+                bloco = await arquivo.read(1024 * 1024)
+                if not bloco:
+                    break
+                recebido += len(bloco)
+                if recebido > _IMPORT_MAX_TOTAL:
+                    raise HTTPException(400, "Pacote grande demais (máx. 512 MB)")
+                incoming.write(bloco)
+        except Exception:
+            incoming_path.unlink(missing_ok=True)
+            raise
+
+    try:
+        try:
+            zf = zipfile.ZipFile(incoming_path)
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(400, "Arquivo não é um pacote .zip") from exc
+        with zf, tempfile.TemporaryDirectory(prefix=".restore-", dir=OUTPUTS_DIR) as staging:
+            stag = Path(staging)
+            try:
+                manifest = json.loads(zf.read("manifest.json"))
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(400, "Pacote sem manifest.json legível") from exc
+            if not isinstance(manifest, dict):
+                raise HTTPException(400, "manifest.json inválido")
+            schema = manifest.get("schema")
+            if schema != SCHEMA_BACKUP:
+                raise HTTPException(
+                    400, f"Versão de pacote desconhecida ({schema!r}); esta build "
+                         f"lê a {SCHEMA_BACKUP} — nada foi tocado")
+            esperados = manifest.get("arquivos")
+            if not isinstance(esperados, dict) or not esperados:
+                raise HTTPException(400, "manifest.json sem a lista de arquivos")
+
+            # staging + conferência de sha256 de TUDO antes de publicar
+            preparados = []
+            for nome, sha in esperados.items():
+                if nome in _ESTADO_SIMPLES:
+                    alvo = stag / nome
+                elif nome.startswith("voices/") and _safe_id(nome[7:].rsplit(".", 1)[0]):
+                    alvo = stag / "voices" / Path(nome).name
+                else:
+                    raise HTTPException(400, f"Arquivo inesperado no pacote: {nome}")
+                alvo.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    with zf.open(nome) as origem, alvo.open("wb") as saida:
+                        shutil.copyfileobj(origem, saida, length=1024 * 1024)
+                except KeyError as exc:
+                    raise HTTPException(400, f"Pacote não tem {nome}") from exc
+                if _sha256_arquivo(alvo) != sha:
+                    raise HTTPException(400, f"sha256 divergente em {nome} "
+                                             f"— pacote corrompido, nada foi tocado")
+                preparados.append((nome, alvo))
+
+            # rollback: cópia do estado atual antes de mexer
+            rollback = stag / ".rollback"
+            rollback.mkdir()
+            _snapshot_estado(rollback)
+            try:
+                _publica_estado(preparados, rollback)
+            except Exception:
+                _restaura_estado(rollback)
+                raise
+    finally:
+        incoming_path.unlink(missing_ok=True)
+
+    _recarrega_settings()
+    _conds_cache.clear()
+    _cache_limpa()
+    return {"ok": True, "schema": schema,
+            "restaurados": len(preparados),
+            "vozes": len([n for n in esperados if n.endswith(".wav")]),
+            "build_do_pacote": manifest.get("build")}
+
+
+def _caminho_estado(nome: str) -> Path:
+    """Caminho real de um bloco de estado (as constantes são patcháveis)."""
+    return {"settings.json": SETTINGS_PATH,
+            ".apikeys.json": APIKEYS_PATH,
+            ".speaker-profiles.json": SPEAKER_PATH}[nome]
+
+
+def _snapshot_estado(destino: Path) -> None:
+    """Copia o estado atual para o rollback (arquivos ausentes ficam ausentes)."""
+    for nome in _ESTADO_SIMPLES:
+        if _caminho_estado(nome).exists():
+            shutil.copy2(_caminho_estado(nome), destino / nome)
+    if VOICES_DIR.exists():
+        (destino / "voices").mkdir(exist_ok=True)
+        for p in VOICES_DIR.iterdir():
+            if p.is_file() and p.suffix in (".wav", ".json"):
+                shutil.copy2(p, destino / "voices" / p.name)
+
+
+def _publica_estado(preparados, rollback: Path) -> None:
+    """Troca o estado pelo do pacote; vozes fora do pacote saem (espelho exato)."""
+    for nome, origem in preparados:
+        destino = (_caminho_estado(nome) if nome in _ESTADO_SIMPLES
+                   else VOICES_DIR / Path(nome).name)
+        destino.parent.mkdir(exist_ok=True)
+        origem.replace(destino)
+        try:
+            destino.chmod(0o600)
+        except OSError:
+            pass
+    no_pacote = {Path(n).name for n, _o in preparados if n.startswith("voices/")}
+    if VOICES_DIR.exists():
+        for p in VOICES_DIR.iterdir():
+            if p.is_file() and p.suffix in (".wav", ".json") and p.name not in no_pacote:
+                p.unlink()
+
+
+def _restaura_estado(rollback: Path) -> None:
+    """Devolve o estado anterior (best-effort, chamado só em falha)."""
+    for nome in _ESTADO_SIMPLES:
+        origem, destino = rollback / nome, _caminho_estado(nome)
+        if origem.exists():
+            shutil.copy2(origem, destino)
+        else:
+            destino.unlink(missing_ok=True)
+    if VOICES_DIR.exists():
+        for p in VOICES_DIR.iterdir():
+            if p.is_file() and p.suffix in (".wav", ".json"):
+                p.unlink()
+    if (rollback / "voices").exists():
+        for p in (rollback / "voices").iterdir():
+            shutil.copy2(p, VOICES_DIR / p.name)
+
+
+def _recarrega_settings() -> None:
+    """Reler `settings.json` do disco depois de um restore (sem reiniciar)."""
+    salvo = {}
+    try:
+        if SETTINGS_PATH.exists():
+            salvo = json.loads(SETTINGS_PATH.read_text())
+    except Exception:  # noqa: BLE001 — restore com settings ilegível: fica o atual
+        return
+    novo = dict(_SETTINGS_DEFAULTS)
+    novo.update({k: salvo[k] for k in _SETTINGS_DEFAULTS if k in salvo})
+    _settings.clear()
+    _settings.update(novo)
+    # as chaves de API também são estado: reler, senão a instância restaurada
+    # segue aceitando as chaves velhas (e recusando as que vieram no pacote)
+    try:
+        _load_apikeys()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[restore] não recarregou as chaves: {exc}", flush=True)
+
+
 def _eq_custom(audio, sr, low_db, mid_db, high_db):
     import numpy as np
     from scipy.signal import sosfilt
