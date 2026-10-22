@@ -361,9 +361,17 @@ def test_barge_com_transcript_de_eco_descarta_sem_gastar_llm_ou_tts():
                           "content": "Então, o dia está bonito hoje."}]
 
 
-def test_eco_na_cauda_sem_barge_nao_entra_no_history_nem_chama_llm():
+def test_eco_na_cauda_sem_barge_nao_entra_no_history_nem_chama_llm(monkeypatch):
     """#266: turno que abre DEPOIS da janela de barge (barge=False) ainda é
-    eco se o transcript casa com a fala que acabou de sair no alto-falante."""
+    eco se o transcript casa com a fala que acabou de sair no alto-falante.
+
+    A cauda é de 900 ms e o teste a consumia por RELÓGIO: sob carga, entre o turno
+    1 e o 2 passava mais de 900 ms, a janela expirava e o eco era lido como humano
+    (vermelho só na suíte cheia, #476). Aqui a cauda é ALARGADA por monkeypatch: a
+    premissa é "turno que abre dentro da cauda", então ela não pode depender de a
+    máquina responder em menos de 900 ms. O tamanho real da cauda tem teste próprio
+    (`test_cauda_nao_reconta_pcm_que_ja_tocou`)."""
+    monkeypatch.setattr(lp, "_eco_cauda_s", lambda: 30.0)
     fala = Fala()
     frases = iter(["oi", "o dia está bonito"])
     chamadas = []
