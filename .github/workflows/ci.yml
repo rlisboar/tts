@@ -102,20 +102,18 @@ jobs:
       # macOS não tem /Users/runner (default do hospedado): sem isto o
       # `setup-python` morre em `mkdir: /Users/runner: Permission denied`.
       # `env:` de job não aceita o contexto `runner`, então vai por GITHUB_ENV.
-      - uses: actions/setup-python@v5
-        env:
-          # macOS não tem /Users/runner (default do hospedado): o setup-python
-          # morre em `mkdir: /Users/runner: Permission denied`. Contexto `runner`
-          # só vale em `env:` de STEP, não de job.
-          RUNNER_TOOL_CACHE: ${{ runner.temp }}/toolcache
-          AGENT_TOOLSDIRECTORY: ${{ runner.temp }}/toolcache
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements.lock
-      - name: venv
+      # SEM `setup-python` aqui: no macOS ele tem `/Users/runner` cravado
+      # ("Creating Python hostedtoolcache folder" → `mkdir: /Users/runner:
+      # Permission denied`) e o `/Users` do mini é root:admin sem escrita para o
+      # usuário. Correção definitiva é `sudo mkdir /Users/runner && sudo chown`;
+      # até lá o venv sai do 3.12 que já existe na máquina.
+      - name: intérprete 3.12 e venv
+        run: |
+          PY312=$(command -v python3.12 || echo "$HOME/Documents/tts-rod/.venv-mlx/bin/python")
+          echo "usando $PY312"; "$PY312" -V
+          "$PY312" -m venv .venv-ci
+          echo "$PWD/.venv-ci/bin" >> "$GITHUB_PATH"
+      - name: dependências
         # torch do índice CPU primeiro: com o wheel CUDA o job paga ~2,4 GB e
         # minutos por algo que a suíte não usa.
         run: |
