@@ -109,7 +109,11 @@ jobs:
       # até lá o venv sai do 3.12 que já existe na máquina.
       - name: intérprete 3.12 e venv
         run: |
-          PY312=$(command -v python3.12 || echo "$HOME/Documents/tts-rod/.venv-mlx/bin/python")
+          # o interpretador REAL do framework, não o python do venv de produção:
+          # partindo de um venv o startup trava em `open()` do pyvenv.cfg no
+          # runner (medido: 14 min a 0 % de CPU); do framework, 2 s.
+          PY312=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
+          [ -x "$PY312" ] || PY312=$(command -v python3.12)
           echo "usando $PY312"; "$PY312" -V
           "$PY312" -m venv .venv-ci
           echo "$PWD/.venv-ci/bin" >> "$GITHUB_PATH"
