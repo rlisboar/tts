@@ -628,7 +628,7 @@ e atende N turnos por NDJSON em stdin/stdout (`tts_worker.py --serve`), com
 | **worker persistente, 1º chunk** | **487–507 ms** |
 | worker persistente, 2º turno | 84–87 ms |
 
-Escopo: SÓ o caminho do Live. `/api/tts/jobs` continua UM processo por job (lá a
+Escopo: SÓ o caminho do Live. `/api/tts/jobs/{job_id}` continua UM processo por job (lá a
 isolação por job é desejada). `TTS_LIVE_WORKER=0` desliga o worker do Live; ele só
 liga para família de `_ISOLATED_FAMILIES` (omnivoice — o default — segue
 in-process).

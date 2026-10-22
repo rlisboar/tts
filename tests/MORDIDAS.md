@@ -56,3 +56,31 @@ janela exata, cobra `_proc is None` antes de fechar e usa `returncode` (não
 **e** `fechou == 1` no `finally`.
 
 Commit: `ea29b2d`. Gate: `task_2c6d833c` (veredito APROVADO).
+
+## #331 — OBS fora da viewport no mobile (`tests/mobile_layout.sh`)
+
+A mordida aqui é **composta**, e uma sabotagem de uma linha só passa: tirar
+`flex: 0 0 auto` (index.html:1965, mantendo o `nowrap`) ou voltar só o
+`flex-wrap: wrap` (l.1963, mantendo o `flex`) deixa a suíte **verde** — cada
+metade cobre a outra. A regressão só aparece na condição ORIGINAL inteira.
+
+Sabotagem completa (medida, 2 edições):
+
+- devolver `flex-wrap: wrap` no `.control-bar` (l.1963) **e** tirar o bloco
+  `#obsTts/#obsVozes/#obsStt/#obsVozes { flex: 0 0 auto }` (l.1965) — o
+  `flex-basis: 100%` global (l.2023) volta a valer como ALTURA em coluna;
+
+Resultado: **✖ vermelho** com `390px · [gerar] obsTts sai 162px da viewport` e
+`painel #obsTts (gerar) não está inteiro na viewport`.
+
+Atenção a dois detalhes de medição:
+
+- `#obsTts` vive em **`view-gerar`**, não na Configuração: medindo com
+  `showView('config')` ele fica dentro de `section.view[display=none]` e o
+  `getBoundingClientRect` dá 0×0 — um teste de "está dentro da viewport" passa
+  por vacuidade se não exigir tamanho > 0;
+- o alvo do teste é `#voiceList canvas.wave` (onda da lista) para o foco; a onda
+  do **editor** (`#edWave`, l.3106) não é coberta — tirar o `tabindex` dela
+  mantém a suíte verde.
+
+Gate: `task_b91d2003` (veredito APROVADO, com a ressalva da mordida composta).

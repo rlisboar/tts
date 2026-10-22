@@ -78,7 +78,7 @@ Modelo: **loopback é isento de tudo**; qualquer acesso pela LAN/internet exige 
 
 **Chat**: `POST /api/chat/start`, `POST/GET/DELETE /api/chat/{sid}`, `POST /api/chat-debug` (só com `TTS_CHAT_DEBUG=1`, grava `/tmp/tts-chat-debug.log`), `GET /api/chat/dsh/models` (descoberta de modelos do harness ACP, cache 300 s, inclui estado do patch de bridge — L2001-2031). Worker LLM com `gen` para descartar resposta invalidada por barge-in (L2074-2128); teto 150 s (L2122-2128).
 
-**Túnel/shutdown**: `GET /api/tunnel/status` (pgrep, launchctl, probe HTTP em `/health` — L2276-2318), `POST /api/tunnel/{restart,stop,start}` (launchctl adiado 1,5 s porque o processo que serve a requisição morre — L2351-2416), `POST /api/shutdown` (`os._exit(0)` após 0,4 s, L2419-2427).
+**Túnel/shutdown**: `GET /api/tunnel/status` (pgrep, launchctl, probe HTTP em `/health` — L3126-3220), `POST /api/tunnel/{restart,stop,start}` (launchctl adiado 1,5 s porque o processo que serve a requisição morre — L3239-3352), `POST /api/shutdown` (`os._exit(0)` após 0,4 s, L3396-3404).
 
 **Settings**: `GET/POST /api/settings` (L2487-2655), com validação/clamp campo a campo (L2681-2886) e rollback em RAM (L2632-2639).
 
