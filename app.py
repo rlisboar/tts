@@ -6367,8 +6367,12 @@ def _extra_remoto(bruto) -> dict:
         return {}
     for campo in ("text", "voice"):
         if campo in extra:
-            print(f"[tts-remoto] remote_tts_extra traz '{campo}' — não vale para "
-                  f"todos os trechos, ignorado", file=sys.stderr, flush=True)
+            # uma vez por (campo, valor): o helper roda por TRECHO, e um job de 30
+            # trechos repetiria a mesma linha 30x no stderr
+            if (campo, texto) not in _extra_remoto_avisados:
+                _extra_remoto_avisados.add((campo, texto))
+                print(f"[tts-remoto] remote_tts_extra traz '{campo}' — não vale "
+                      f"para todos os trechos, ignorado", file=sys.stderr, flush=True)
             extra = {k: v for k, v in extra.items() if k != campo}
     return extra
 
