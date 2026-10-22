@@ -50,6 +50,56 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Só o ruff: o estágio não importa nada do app (nem `pytest`, cujo
+      # `conftest.py` puxaria fastapi/torch/MLX e mataria os "segundos" dele). A
+      # config (conjunto `F` + `E9`, excludes) mora no `pyproject.toml` (#378).
+      - name: instalar ruff
+        run: python -m pip install --quiet --disable-pip-version-check ruff
+      # `tests/_pyflakes_gate.py` deriva o comando do hook (mesma lista, mesmo
+      # intérprete) e roda a contraprova de que ele não virou no-op está no
+      # `tests/test_hook_pyflakes.py`, que o job `testes` cobre.
+      - name: pyflakes na lista do hook
+        run: python tests/_pyflakes_gate.py
+      # O workflow é dado que ninguém executa antes do push: um `on:` que sumiu ou
+      # um label errado só aparecem depois. As labels próprias (`tts-mini`) estão
+      # em `.github/actionlint.yaml`, lido pelo tool.
+      - name: actionlint (o próprio workflow)
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/w" -w /w rhysd/actionlint:latest .github/workflows/ci.yml
+
+  testes:
+    name: pytest hermético (sem modelo)
+    # SELF-HOSTED porque o hospedado foi MEDIDO e não aguenta a suíte (#293): no
+    # `ubuntu-latest` amd64 o venv instala (com `mlx[cpu]`) e o `app` importa, mas a
+    # suíte dá **36 falhas / 642 passes** — MLX/onnx sem Metal, `ps`/pid do
+    # `dsh_client`/`live_worker`, ffmpeg do webm e convenções de `/tmp` do macOS.
+    # Vermelho de ambiente em todo PR não é gate, é ruído.
+    #
+    # O runner é o do mini (`./remote/ci_runner.sh install`), com `ProcessType=
+    # Background` + `Nice` para não disputar o `:7860` — ver `remote/DEPLOY.md` §7.
+    # ENQUANTO o runner não estiver instalado este job fica ENFILEIRADO (não
+    # vermelho); instale-o antes de tornar o check obrigatório.
+    runs-on: [self-hosted, tts-mini]
+    timeout-minutes: 30
+    needs: estatica
+    env:
+      TTS_TEST_WORKER: '0'      # '0' continua RODANDO (só string vazia skippa)
+      # sem rede no Hub: o HEAD-check do whisper não pode virar espera de rede
+      # em PR (nem depender do hub estar de pé) — #166 documenta o efeito
+      HF_HUB_OFFLINE: '1'
+      # #388: base do diff de `test_worker_real_exigido`. Se o PR toca
+      # tts_worker.py/live_pipeline.py, o caminho real passa a ser EXIGIDO —
+      # antes era só um aviso no resumo. Por isso o checkout abaixo usa
+      # fetch-depth 0 (a base precisa de histórico).
+      TTS_REAL_BASE: origin/${{ github.base_ref || 'main' }}...HEAD
+      PYTHONDONTWRITEBYTECODE: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # SEM `setup-python`: no macOS ele crava `/Users/runner` mesmo com
       # `RUNNER_TOOL_CACHE` no ambiente (medido). Venv por job em `$RUNNER_TEMP`
       # (fora de `~/Documents`, que o agente não lê por TCC, e descartável).
