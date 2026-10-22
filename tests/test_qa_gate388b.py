@@ -31,6 +31,7 @@ class _Up:
 def test_vinte_minutos_passam_e_acima_do_teto_da_413(tmp_path, monkeypatch):
     import soundfile as sf
 
+    monkeypatch.setattr(app, "OUTPUTS_DIR", tmp_path)   # não sujar o outputs/ do dono
     curto = tmp_path / "vinte.wav"
     sf.write(str(curto), _tom(20 * 60), 8000, subtype="PCM_16")
     # o espião tem de gravar o conteúdo do PRÓPRIO upload (dois arquivos no teste)
