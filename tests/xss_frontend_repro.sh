@@ -33,7 +33,13 @@
 #
 #   ./tests/xss_frontend_repro.sh            # app precisa estar de pé em :7860
 #   BASE=http://127.0.0.1:7860 ./tests/xss_frontend_repro.sh
-#   ./tests/xss_frontend_repro.sh --cleanup  # remove as vozes de teste no fim
+#   ./tests/xss_frontend_repro.sh --keep     # deixa as vozes de teste p/ inspeção
+#   ./tests/xss_frontend_repro.sh --cleanup  # compatibilidade (limpar é o PADRÃO)
+#
+# As vozes de teste saem SEMPRE no fim (trap EXIT), inclusive em rodada vermelha:
+# antes a limpeza era opt-in e só no caminho verde, então uma falha deixava meta
+# sem `.wav` no `voices/` do DONO — voz órfã que 404a, vira a primeira opção do
+# seletor e derruba a suíte seguinte com `Errno 2` (falso vermelho na casa toda).
 set -euo pipefail
 
 BASE="${BASE:-http://127.0.0.1:7860}"
@@ -54,8 +60,13 @@ STEM="xssprobe-$SUF"
 STEM_V="xssvirt-$SUF"
 STEM_M="xssmanual-$SUF"   # meta escrito À MÃO: id hostil que não passa pelo import
 NOME_M="probe meta html-$SUF"
-LIMPAR=0
-[ "${1:-}" = "--cleanup" ] && LIMPAR=1
+MANTER=0
+for a in "$@"; do
+  case "$a" in
+    --keep) MANTER=1 ;;
+    --cleanup) MANTER=0 ;;   # compat: o padrão já é limpar
+  esac
+done
 
 command -v curl >/dev/null || { echo "curl não encontrado"; exit 1; }
 if [ ! -x "$PY" ]; then PY="$(command -v python3)"; fi
@@ -72,7 +83,14 @@ if [ -z "$TMP" ] || [ ! -d "$TMP" ]; then
   TMP="$RAIZ/.xss-repro-$$"
   mkdir -p "$TMP"
 fi
-trap 'rm -rf "$TMP"' EXIT
+# só apaga o que é DESTA execução (`$STEM*`) — nunca varre o `voices/` do dono
+limpa_vozes() {
+  [ "$MANTER" = "1" ] && return 0
+  rm -f "$RAIZ/voices/$STEM.json" "$RAIZ/voices/$STEM.wav" \
+        "$RAIZ/voices/$STEM_V.json" "$RAIZ/voices/$STEM_V.wav" \
+        "$RAIZ/voices/$STEM_M.json" "$RAIZ/voices/$STEM_M.wav"
+}
+trap 'limpa_vozes; rm -rf "$TMP"' EXIT
 
 # ── 1. payload ────────────────────────────────────────────────────────────
 "$PY" - "$TMP" "$STEM" "$STEM_V" "$STEM_M" "$RAIZ" "$NOME_M" <<'PYEOF'
@@ -326,9 +344,9 @@ print("✔ OK — os três payloads saem como TEXTO (id importado, id de meta à
       f"o sink antigo produz ELEMENTO {_ramo} e EXECUTA fora da CSP (payload é XSS)")
 PYEOF
 
-if [ "$LIMPAR" = "1" ]; then
-  rm -f "$RAIZ/voices/$STEM.json" "$RAIZ/voices/$STEM.wav" "$RAIZ/voices/$STEM_V.json" "$RAIZ/voices/$STEM_M.json"
-  echo "· vozes de teste removidas de voices/"
+# a remoção em si é do trap (roda também quando o script sai por erro)
+if [ "$MANTER" = "1" ]; then
+  echo "· --keep: deixando voices/$STEM.{json,wav} e voices/${STEM}_V.json + ${STEM}_M.json p/ inspeção"
 else
-  echo "· deixando voices/$STEM.{json,wav}, voices/$STEM_V.json e voices/$STEM_M.json (remova com --cleanup)"
+  echo "· vozes de teste removidas de voices/ no fim (o trap também cobre rodada vermelha)"
 fi
