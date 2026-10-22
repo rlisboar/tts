@@ -138,7 +138,7 @@ def test_os_quatro_arquivos_de_estado_apontam_para_tmp(request):
     for atributo, nome in pares:
         atual = pathlib.Path(getattr(app, atributo))
         assert atual != app.BASE / nome, f"{atributo} aponta para o arquivo do dono"
-        assert str(atual).startswith(("/tmp", "/private/tmp", "/var/folders")), atual
+        assert str(atual).startswith(("/tmp", "/private/tmp", "/var/folders", "/private/var/folders")), atual
 
 
 def test_basetemp_nao_carrega_secret_do_dono(request):
