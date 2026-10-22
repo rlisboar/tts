@@ -113,7 +113,8 @@ jobs:
           PYTHONHOME: /Library/Frameworks/Python.framework/Versions/3.12
         run: |
           PY312="$HOME/Documents/tts-rod/.venv-mlx/bin"
-          "$PY312/python" -V
+          export PATH="$PY312:$PATH"      # vale neste passo; o GITHUB_PATH abaixo, nos seguintes
+          python -V
           echo "$PY312" >> "$GITHUB_PATH"
           # o venv de produção NÃO é mutado por `pip install -r`: só os dois
           # plugins do gate entram, `--no-deps` (puros, sem arrastar nada)
