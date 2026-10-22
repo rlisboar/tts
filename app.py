@@ -8536,6 +8536,10 @@ def _live_pcm_limpo(sess: dict, pcm: bytes) -> bytes:
     except Exception as exc:             # noqa: BLE001 — o turno não pode morrer aqui
         _live_rnnoise_derruba(sess, f"{type(exc).__name__}: {exc}")
         return pcm
+    if getattr(ns, "morto", False):
+        # caiu NESTE frame: sai já, sem pagar mais um hop de thread pelo filtro
+        _live_rnnoise_derruba(sess, "filtro caiu")
+        return pcm
     if not isinstance(sai, (bytes, bytearray)) or len(sai) != len(pcm):
         _live_rnnoise_derruba(sess, "tamanho diferente do frame")
         return pcm
