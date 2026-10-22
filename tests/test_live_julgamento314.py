@@ -278,6 +278,10 @@ def test_knob_de_processo_desliga_o_filtro_do_Live(monkeypatch):
     lp._stt_app(b"\x00\x01" * 400, "pt", julga)          # knob ligado (default)
     assert julga.get("motivo") == "stt"
     monkeypatch.setattr(lp, "_LIVE_ANTI_RUIDO", False)   # env desligado
+    # aqui o setting de ditado volta a mandar: fixado DESLIGADO para a prova não
+    # depender do settings.json do dono (máquina limpa/CI não tem o arquivo e o
+    # default do código é `true`, que faria o filtro agir pelo outro caminho)
+    monkeypatch.setitem(app._settings, "stt_anti_ruido", False)
     julga2: dict = {}
     assert lp._stt_app(b"\x00\x01" * 400, "pt", julga2) == "Obrigada."
     assert "motivo" not in julga2
