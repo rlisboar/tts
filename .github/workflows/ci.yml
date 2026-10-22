@@ -108,7 +108,7 @@ jobs:
       - name: teste cru — venv em /tmp com o python do sistema
         run: |
           rm -rf /tmp/xvenv; /usr/bin/python3 -m venv --without-pip /tmp/xvenv && echo "VENV EM /tmp OK" || echo "VENV EM /tmp FALHOU"
-          ls /tmp/xvenv/bin | head -2
+          find /tmp/xvenv/bin -maxdepth 1 -name "python*" | head -2
       - name: venv do CI (fora de Documents)
         run: |
           V="$HOME/ci-venv"
