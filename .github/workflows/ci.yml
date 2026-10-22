@@ -41,7 +41,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   estatica:
@@ -88,7 +88,7 @@ jobs:
       TTS_TEST_WORKER: '0'      # '0' continua RODANDO (só string vazia skippa)
       # sem rede no Hub: o HEAD-check do whisper não pode virar espera de rede
       # em PR (nem depender do hub estar de pé) — #166 documenta o efeito
-      HF_HUB_OFFLINE: '1'
+      HF_HUB_OFFLINE: '0'   # o cache do Hub do mini não cobre toda revisão que a suíte pede
       # #388: base do diff de `test_worker_real_exigido`. Se o PR toca
       # tts_worker.py/live_pipeline.py, o caminho real passa a ser EXIGIDO —
       # antes era só um aviso no resumo. Por isso o checkout abaixo usa
@@ -100,26 +100,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements.lock
-      - name: venv
-        # torch do índice CPU primeiro: com o wheel CUDA o job paga ~2,4 GB e
-        # minutos por algo que a suíte não usa.
+      # SEM `setup-python`: no macOS ele crava `/Users/runner` mesmo com
+      # `RUNNER_TOOL_CACHE` no ambiente (medido). Venv por job em `$RUNNER_TEMP`
+      # (fora de `~/Documents`, que o agente não lê por TCC, e descartável).
+      # `python -m venv` DENTRO do job trava (parado em `opendir`, 10+ min) com
+      # QUALQUER destino — `$RUNNER_TEMP`, `$HOME` e `/tmp` medidos; por ssh faz
+      # 1,2 s. Por isso o venv é preparado FORA do job, em `~/actions-runner/venv`
+      # (fora de Documents/TCC; nada do venv de produção).
+      - name: venv do CI (preparado fora do job)
         run: |
-          python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install --quiet -r requirements.txt pytest-timeout pytest-rerunfailures
-      - name: MLX no Linux
-        # O wheel manylinux do `mlx` NÃO traz a `libmlx.so` — só o extra `[cpu]`
-        # traz. Medido: sem ele `import mlx.core` morre com "libmlx.so: cannot
-        # open shared object file" e qualquer teste que importe o app cai junto.
-        # No macOS (runner self-hosted) o extra é inócuo; fica aqui para o job
-        # continuar válido se um dia voltar para linux.
-        run: python -m pip install --quiet "mlx[cpu]"
+          V="$HOME/actions-runner/venv"
+          if [ ! -x "$V/bin/python" ]; then
+            echo "✖ sem venv do CI em $V — prepare por ssh (fora do job):"
+            echo "  ssh lisboa@mini 'python3.12 -m venv ~/actions-runner/venv && ~/actions-runner/venv/bin/python -m pip install -r requirements.txt pytest-timeout pytest-rerunfailures'"
+            exit 1
+          fi
+          echo "$V/bin" >> "$GITHUB_PATH"
+          # `node` não está no PATH mínimo do runner, e a suíte o chama por nome
+          # (`node --check` nos arquivos do patch). Caminho fixo do host.
+          [ -x /opt/homebrew/bin/node ] && echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          "$V/bin/python" -V
+          "$V/bin/python" -c "import fastapi, soundfile, torch, pytest_timeout; print('deps ok')"
       - name: pytest
         # `--timeout`: um teste pendurado falha em 3 min em vez de comer o job.
         # Método DEFAULT (SIGALRM), não `--timeout-method=thread`: o `thread` só
@@ -143,5 +144,10 @@ jobs:
       # existe no macOS) e falha UMA vez se faltar dependência — em vez de cada
       # job repetir a lista e o teto à mão. `instancia` exige app de pé e fica
       # fora do CI; `navegador` pode virar job próprio depois.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: dependências (a suíte importa o app)
+        run: python -m pip install --quiet -r requirements.txt
       - name: suítes .sh do estágio rápido
         run: bash tests/run_sh.sh rapido
