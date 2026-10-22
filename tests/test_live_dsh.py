@@ -25,9 +25,9 @@ import live_pipeline as lp
 # o `__all__` que o pyflakes exigia foi removido.
 from test_api import dsh_fake_bin, dsh_limpo  # noqa: F401  # noqa: F401
 
-# Declarados como usados: são FIXTURES consumidas pelos testes do arquivo.
-# O `ruff` já cobre isso com o `noqa` (política pós-#378); o `__all__` mantém
-# o `pyflakes` (que ignora o `noqa`) também verde — inerte em runtime.
+# Fixtures consumidas pelos testes do arquivo: quem silencia o import é o `noqa`,
+# que o ruff respeita desde o #378. O `__all__` é INERTE em runtime — fica por
+# declarar o que o módulo reexporta, não porque algum linter atual exija.
 __all__ = [
     "dsh_fake_bin",
     "dsh_limpo",

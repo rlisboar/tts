@@ -17,9 +17,9 @@ import app
 from test_api import _isolamento_disco, auth, chave_de_uso, client  # noqa: F401  # noqa: F401
 from test_live_dsh import DshClienteFalso
 
-# Declarados como usados: são FIXTURES consumidas pelos testes do arquivo.
-# O `ruff` já cobre isso com o `noqa` (política pós-#378); o `__all__` mantém
-# o `pyflakes` (que ignora o `noqa`) também verde — inerte em runtime.
+# Fixtures consumidas pelos testes do arquivo: quem silencia o import é o `noqa`,
+# que o ruff respeita desde o #378. O `__all__` é INERTE em runtime — fica por
+# declarar o que o módulo reexporta, não porque algum linter atual exija.
 __all__ = [
     "_isolamento_disco",
     "auth",
