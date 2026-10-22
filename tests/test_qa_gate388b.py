@@ -152,3 +152,28 @@ def test_semente_ruim_e_trocada_e_registrada(tmp_path, monkeypatch):
     assert n["i"] == 2 and meta["tentativas"] == 1 and "seed" in meta
     wav, _ = sf.read(str(tmp_path / "vd-locutora.wav"), dtype="float32")
     assert float(np.sqrt(np.mean(wav ** 2))) > 0.05
+
+
+def test_bordas_numericas_do_sanitize():
+    """O padrão de barra numérica é 1–2 dígitos: de fora dele é "ou"."""
+    assert common.sanitize_text("2024/2025") == "2024 ou 2025."
+    assert common.sanitize_text("07/03/2026") == "sete por três ou 2026."
+    assert common.sanitize_text("R$ 1.299,90/2024") == "R$ 1.299,90 ou 2024."
+    assert common.sanitize_text("10/12") == "dez por doze."
+
+
+def test_costura_preserva_repeticao_legitima(monkeypatch):
+    """`que que` e `muito muito` na fronteira são fala, não eco do dedupe."""
+    import sys
+    import types
+
+    # a fronteira repete o áudio da sobreposição (1 s): aqui, a repetição real.
+    # 65 s de áudio = 3 janelas (passo 29 s), então três falas.
+    falas = iter(["ele disse que que", "que que ia chegar muito muito",
+                  "muito muito tarde"])
+    monkeypatch.setitem(sys.modules, "mlx_whisper",
+                        types.SimpleNamespace(transcribe=lambda a, **k: {
+                            "text": next(falas), "language": "pt", "segments": []}))
+    audio = np.zeros(16000 * 65, dtype=np.float32)
+    texto = app._transcreve_em_janelas(audio, None)["text"].lower()
+    assert texto == "ele disse que que ia chegar muito muito tarde", texto

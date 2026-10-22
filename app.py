@@ -7095,7 +7095,11 @@ def unload_models(request: Request, payload: dict = None):
 def _save_audio_upload(upload: UploadFile, prefix: str = ".stt") -> Path:
     """Grava um UploadFile de áudio e devolve um WAV 16k mono limpo pro STT:
     decodifica qualquer formato via ffmpeg + denoise espectral (afftdn) +
-    trim de silêncio nas pontas — o Whisper alucina em ruído puro."""
+    trim de silêncio nas pontas — o Whisper alucina em ruído puro.
+
+    Recusa com **413** acima de `TETO_STT_S` (1800 s = 30 min; ~77 MB de float32 no
+    pico) e com 400 em formato que o ffmpeg não lê — o teto é de DURAÇÃO, não só de
+    bytes: 1 h de áudio decodificada passa de 230 MB."""
     ctype = (upload.content_type or "").split(";")[0].strip().lower()
     por_ctype = {"audio/webm": ".webm", "audio/ogg": ".ogg", "audio/mpeg": ".mp3",
                  "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".aac",
@@ -7200,7 +7204,9 @@ def _write_upload_limited(upload: UploadFile, path: Path, default_mb: int = 64) 
 def stt_partial(audio: UploadFile = None, source_lang: str = Form("auto")):
     """Transcrição parcial e rápida (sem tradução/TTS) — usada para mostrar as
     palavras na tela enquanto o usuário ainda fala. Sem filtro anti-ruído: é só
-    prévia ao vivo, a versão final vem do /api/translate-speech."""
+    prévia ao vivo, a versão final vem do /api/translate-speech.
+
+    Mesmo teto do STT normal: 30 min (`TETO_STT_S`), acima disso 413."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
     tmp = _save_audio_upload(audio, ".pstt")
@@ -7754,7 +7760,9 @@ def _preparar_fala_para_voz(audio: UploadFile, voice_id: str, source_lang: str,
 def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
                      voice_id: str = Form(""), source_lang: str = Form("auto"),
                      emotion_mode: str = Form("off"), instruct: str = Form("")):
-    """fala (áudio) -> transcreve -> traduz -> dispara TTS na voz; devolve textos + job_id."""
+    """fala (áudio) -> transcreve -> traduz -> dispara TTS na voz; devolve textos + job_id.
+
+    O áudio passa pelo mesmo teto do STT: 30 min (`TETO_STT_S`), acima disso 413."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
     _jobs_capacity_check()      # antes do STT+tradução: recusa cedo, não em segundos
