@@ -1,5 +1,13 @@
+# (a poda por NOME que existia aqui saiu no #435: com `APIKEYS_PATH`,
+# `LEGACY_APIKEY_PATH` e `SPEAKER_PATH` isolados na SESSÃO, a suíte não escreve mais
+# no arquivo do dono — podar deixou de ser necessário. Quem cobra é
+# `tests/test_chaves_isoladas.py`.)
+
+
+import pathlib
 import shutil
 import sys
+import time
 import warnings
 from pathlib import Path
 
@@ -111,6 +119,41 @@ def pytest_configure(config):
         "markers",
         "worker_real: exercita o worker TTS persistente com MODELO real "
         "(precisa de TTS_TEST_WORKER=1; sem ele, skipped) — #152/#166")
+    # #6cd62cf4: dois `pytest tests/` simultâneos na mesma máquina dividiam o MESMO
+    # basetemp (`$TMPDIR/pytest-of-<user>`): cada rodada reescreve o symlink
+    # `pytest-current` e o teardown de uma apagava o que a outra ainda ia remover —
+    # `FileNotFoundError` no meio da rodada e falso vermelho (medido no gate #384).
+    # Raiz por PROCESSO resolve na origem. `--basetemp` explícito continua mandando
+    # (os controles do #224 dependem disso).
+    if not config.option.basetemp:
+        import getpass
+        import tempfile
+        raiz = (pathlib.Path(tempfile.gettempdir())
+                / f"pytest-suite-{getpass.getuser()}" / f"{config.rootpath.name}-{os.getpid()}")
+        raiz.mkdir(parents=True, exist_ok=True)
+        config.option.basetemp = str(raiz)
+        _limpa_raizes_velhas(raiz.parent)      # lixo de rodadas verdes antigas
+
+
+# #6cd62cf4: raiz por processo não pode virar lixo em TMPDIR. O que sobra de sessão
+# VERDE é raiz VAZIA (o pytest apaga a sessão, não a raiz) e o `sessionfinish` roda
+# cedo demais para checar vazio; a varredura abaixo roda no configure seguinte e
+# remove as vazias com mais de 1 h — raiz de rodada viva é recente ou tem arquivo,
+# então não é tocada. Vermelha tem arquivo e fica, que é o que o #224 quer.
+_VARRIDURA_S = 3600
+
+
+def _limpa_raizes_velhas(pai: Path) -> None:
+    try:
+        agora = time.time()
+        for velho in pai.iterdir():
+            if not velho.is_dir() or agora - velho.stat().st_mtime < _VARRIDURA_S:
+                continue
+            if any(velho.rglob("*")):
+                continue
+            shutil.rmtree(velho, ignore_errors=True)
+    except OSError:
+        pass
 
 
 def pytest_report_header(config):
@@ -189,6 +232,9 @@ def _estado_isolado(tmp_path_factory):
     o `tmp_path_retention_policy = failed` do `pytest.ini`. As duas são cobradas
     por `tests/test_tmpdir_sem_credencial.py`.
     """
+    import json
+    import secrets
+
     import app
 
     pasta = tmp_path_factory.mktemp("estado")
@@ -197,7 +243,40 @@ def _estado_isolado(tmp_path_factory):
         destino.write_bytes(app.SETTINGS_PATH.read_bytes())
     original = app.SETTINGS_PATH
     app.SETTINGS_PATH = destino
+    # CHAVES SINTÉTICAS, não cópia das do dono (#435): copiar o arquivo real
+    # espalhava o SECRET dele por todo basetemp retido (medido: 48 sobras com o
+    # segredo real). A sessão nasce com uma chave de teste — papel legado
+    # (`role: null`, que é o que a suíte exercita como "chave antiga administra") —
+    # e o arquivo do dono nem é lido para dentro da RAM.
+    apikeys_destino = pasta / ".apikeys.json"
+    chave_teste = "sk-teste-" + secrets.token_hex(12)
+    apikeys_destino.write_text(json.dumps({
+        "enabled": True,
+        "keys": [{"id": "teste" + secrets.token_hex(4), "name": "pytest-sessao",
+                  "secret": chave_teste, "created_at": "2026-01-01 00:00:00",
+                  "role": None}],
+    }, indent=2))
+    apikeys_original = app.APIKEYS_PATH
+    app.APIKEYS_PATH = apikeys_destino
+    # O `.apikey` (arquivo legado que o `run.sh` lê) TAMBÉM: `_save_apikeys` chama
+    # `_sync_legacy_apikey_file()`, então sem isto a suíte reescrevia o do dono a
+    # cada gravação de chave mesmo com o `.apikeys.json` isolado (#435).
+    legado_destino = pasta / ".apikey"
+    legado_destino.write_text(chave_teste + "\n")
+    legado_original = app.LEGACY_APIKEY_PATH
+    app.LEGACY_APIKEY_PATH = legado_destino
+    # perfis de locutor: mesmo critério (o app grava em `_speaker_salva`)
+    perfis_destino = pasta / ".speaker-profiles.json"
+    if app.SPEAKER_PATH.exists():
+        perfis_destino.write_bytes(app.SPEAKER_PATH.read_bytes())
+    perfis_original = app.SPEAKER_PATH
+    app.SPEAKER_PATH = perfis_destino
+    # RAM com a chave sintética: o `import app` já tinha carregado as do dono
+    app._load_apikeys()
     yield destino
+    app.APIKEYS_PATH = apikeys_original
+    app.LEGACY_APIKEY_PATH = legado_original
+    app.SPEAKER_PATH = perfis_original
     app.SETTINGS_PATH = original
     # `ignore_errors`: o pytest pode ter varrido o basetemp antes (sessão verde
     # com a política `failed`), e num run vermelho é justamente aqui que a cópia
@@ -205,3 +284,9 @@ def _estado_isolado(tmp_path_factory):
     # SIGKILL — aí sobra uma cópia por sessão interrompida, até o
     # `make_numbered_dir` do pytest varrer (é o resíduo aceito e documentado).
     shutil.rmtree(pasta, ignore_errors=True)
+
+
+# (a poda por NOME que existia aqui saiu no #435: com `APIKEYS_PATH`,
+# `LEGACY_APIKEY_PATH` e `SPEAKER_PATH` isolados na SESSÃO, a suíte não escreve mais
+# no arquivo do dono, então podar deixou de ser necessário. Quem cobra é
+# `tests/test_chaves_isoladas.py`.)
