@@ -83,7 +83,7 @@ jobs:
     # Background` + `Nice` para não disputar o `:7860` — ver `remote/DEPLOY.md` §7.
     # ENQUANTO o runner não estiver instalado este job fica ENFILEIRADO (não
     # vermelho); instale-o antes de tornar o check obrigatório.
-    runs-on: [self-hosted, tts-mini]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: estatica
     env:
