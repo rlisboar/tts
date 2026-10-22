@@ -365,7 +365,13 @@ class LivePipeline:
                 w = self._worker = _LiveWorker(voice_id=self.voice_id)
             if w.ativo:
                 try:
-                    return _pos_live(w.gerar(texto, omni, espera=self._espera))
+                    audio = w.gerar(texto, omni, espera=self._espera)
+                    # o filho real já reprova mudo, mas o PAI confere o que voltou:
+                    # vale para qualquer worker e não depende do contrato do filho
+                    if not np.asarray(audio).size or _rms_audio(audio) < RMS_MUDO:
+                        raise _WorkerMorto(
+                            f"áudio mudo do worker (rms {_rms_audio(audio):.4f})")
+                    return _pos_live(audio)
                 except Exception as exc:    # noqa: BLE001
                     self._worker_indisponivel = True
                     self._worker_motivo = f"{type(exc).__name__}: {exc}"
@@ -1365,6 +1371,15 @@ def _idioma_tts() -> str:
 # ---------------------------------------------------------------------------
 
 _LIVE_WORKER_LIGADO = os.environ.get("TTS_LIVE_WORKER", "1") != "0"
+
+
+#: abaixo disto o áudio do worker é mudo de fato e o turno é regerado in-process
+RMS_MUDO = 0.01
+
+
+def _rms_audio(audio) -> float:
+    a = np.asarray(audio, dtype=np.float64).reshape(-1)
+    return float(np.sqrt(np.mean(a ** 2))) if a.size else 0.0
 
 
 class _WorkerMorto(RuntimeError):
