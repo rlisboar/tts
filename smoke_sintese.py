@@ -237,4 +237,3 @@ if __name__ == "__main__":
         sys.exit(130)
 import json  # F401 de proposito (probe do gate #297)
 
-import csv  # F401 de proposito (probe do gate #297)
