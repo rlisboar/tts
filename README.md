@@ -320,6 +320,18 @@ passar de `metrics_teto_mb`, padrão 8) e poda por `metrics_ttl_dias` (padrão 1
 recurso, não de admin. Medido: **99 bytes por linha**, ~0,1 MB/dia a 1 req/min e
 ~8 MB/dia a 1 req/s (o teto de 8 MB por arquivo cobre ~1 dia nesse regime).
 
+## Encerrar e reiniciar (ciclo de vida)
+
+Encerrar é **limpo**: `/api/shutdown` e o SIGTERM/Ctrl+C do `run.sh` passam pelo
+mesmo teardown — fecha as sessões Live abertas, os processos dsh quentes, manda
+SIGTERM no grupo de cada worker de job e salva o histórico. Sem isso (o antigo
+`os._exit` cru) sobravam worker, dsh e peça temporária para trás.
+
+O histórico de jobs fica em `state/jobs-history.json` (metadado: id, estado,
+contagem, erro, saída): depois de um restart um job que estava em voo aparece
+**`error` com o motivo "reinício do servidor"** — nunca 404 — e o histórico
+recente continua listável. As peças já geradas seguem no `.job-*` em disco.
+
 ## Acesso pela internet (VPS como proxy)
 
 Dá para consumir a API de fora de casa mantendo o processamento no Mac: um

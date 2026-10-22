@@ -19,6 +19,20 @@ from test_api import (  # noqa: F401 — fixtures, não estão no conftest
     pipeline_fake, ws_client)
 from test_api import _isolamento_disco  # noqa: F401  # noqa: F401
 
+# Declarados como usados: são FIXTURES consumidas pelos testes do arquivo.
+# O `ruff` já cobre isso com o `noqa` (política pós-#378); o `__all__` mantém
+# o `pyflakes` (que ignora o `noqa`) também verde — inerte em runtime.
+__all__ = [
+    "_isolamento_disco",
+    "dsh_fake_bin",
+    "dsh_limpo",
+    "engine_fake",
+    "hist_limpo",
+    "live_limpo",
+    "pipeline_fake",
+    "ws_client",
+]
+
 # Fixtures de outros módulos de teste: uso só como PARÂMETRO. F811 ignorado no
 # `pyproject.toml` (#378) — `noqa` como marcador de intenção.
 
@@ -32,6 +46,21 @@ def backend_do_chat_pinado(monkeypatch):
     `receive()`. Aqui o caminho é o stub: nenhum processo é spawnado."""
     monkeypatch.setitem(app._settings, "chat_backend", "openai")
     monkeypatch.setitem(app._settings, "chat_backend_live", "")
+
+
+def _espera(cond, msg: str, limite: float = 10.0) -> None:
+    """Espera a CONDIÇÃO com prazo (#444).
+
+    A limpeza do endpoint roda na task do WS, fora desta thread: `ws1.close()` só
+    enfileira o `disconnect`. Um `time.sleep(0.5)` fixo aqui era o que false-vermelhava
+    sob carga — a asserção corria no meio da limpeza. Prazos generosos: o alvo mantém
+    a propriedade, só deixa de depender do relógio da máquina."""
+    fim = time.monotonic() + limite
+    while time.monotonic() < fim:
+        if cond():
+            return
+        time.sleep(0.02)
+    raise AssertionError(msg)
 
 
 # ---------------------------------------------------------------- #186 (P2)
@@ -63,12 +92,21 @@ def test_socket_ANTIGO_morrendo_nao_apaga_a_sessao_retomada(ws_client, live_limp
         assert [m["content"] for m in app._live_historico[sid]["msgs"]] == ["contexto NOVO"]
 
         ws1.close()                                  # o ANTIGO morre primeiro
-        time.sleep(0.5)
 
-        assert app._live_sessions.get(sid) is sess_nova, \
-            "o finally do socket antigo apagou a sessão retomada"
+        # Espera a limpeza do socket ANTIGO ACABAR em vez de dormir um tempo fixo:
+        # `fechar` é o começo do finally e o `None` na fila é o penúltimo passo (o
+        # resto — guarda do histórico e `pop` — já correu ou é o passo seguinte).
+        def _antigo_limpou() -> bool:
+            return bool(sess_velha.get("fechar")) and sess_velha["fila"].qsize() == 0
+
+        _espera(_antigo_limpou, "a limpeza do socket antigo não terminou (10 s)")
+        _espera(lambda: app._live_sessions.get(sid) is sess_nova,
+                "o finally do socket antigo apagou a sessão retomada")
 
         # o zumbi não pode regravar o contexto velho por cima do da retomada
+        _espera(lambda: [m["content"] for m in
+                         (app._live_historico.get(sid) or {}).get("msgs") or []] == ["contexto NOVO"],
+                "o registro da retomada ficou com o contexto do zumbi")
         reg = app._live_historico.get(sid) or {}
         assert [m["content"] for m in reg.get("msgs") or []] == ["contexto NOVO"], reg
 

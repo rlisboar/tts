@@ -17,6 +17,7 @@ módulo/arquivo é herdado do pyflakes de propósito: renomear mexeria no hook, 
 na documentação sem ganho.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,7 +25,9 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE / "tests"))
 
-from _pyflakes_gate import FERRAMENTA, comando_do_hook, modulos, rodar  # noqa: E402
+import pytest  # noqa: E402
+
+from _pyflakes_gate import FERRAMENTA, comando_do_hook, modulos, rodar, rodar_no_ref  # noqa: E402
 
 
 def test_hook_usa_o_ruff_com_a_lista_dele():
@@ -39,12 +42,31 @@ def test_hook_usa_o_ruff_com_a_lista_dele():
 
 
 def test_lint_do_hook_sai_limpo():
-    """O estágio estático do hook, byte a byte igual (mesma lista, mesmo intérprete)."""
+    """O estágio estático do hook sobre o CONTEÚDO DO HEAD (mesma lista, mesmo
+    intérprete, mesma config do commit).
+
+    Não é o working tree (#456): o gate é de terceiro, e o arquivo que outro agente
+    está editando agora (import ainda não usado, arquivo untracked de gate) virava
+    vermelho de quem não sujou nada. A árvore tem teste próprio, opt-in, abaixo.
+    """
+    r = rodar_no_ref(os.environ.get("TTS_LINT_REF") or "HEAD")
+    assert r.returncode == 0, f"lint vermelho no HEAD (o commit trava):\n{r.stdout}{r.stderr}"
+
+
+@pytest.mark.skipif(not os.environ.get("TTS_LINT_ARVORE"),
+                    reason="lint do working tree: rode com TTS_LINT_ARVORE=1 (sinal de árvore suja, não gate)")
+def test_lint_do_working_tree(monkeypatch):
+    """Opt-in: o que está NA ÁRVORE agora, inclusive o trabalho em voo dos outros.
+
+    Fora do default (e com skip claro) porque o vermelho dele costuma não ser de quem roda.
+    Arquivo plantado em `tests/` por outra rodada também aparece aqui — é o efeito
+    desejado deste teste, e não do gate.
+    """
     alvos = modulos()
     faltando = [a for a in alvos if not Path(a).exists()]
     assert not faltando, f"o hook aponta para módulo que não existe: {faltando}"
     r = rodar()
-    assert r.returncode == 0, f"lint vermelho (o commit de terceiro trava):\n{r.stdout}{r.stderr}"
+    assert r.returncode == 0, f"lint vermelho na ÁRVORE (trabalho em voo):\n{r.stdout}{r.stderr}"
 
 
 def test_guard_se_morde_com_violacao_plantada(tmp_path):
@@ -57,7 +79,7 @@ def test_guard_se_morde_com_violacao_plantada(tmp_path):
     """
     alvo = tmp_path / "plantado.py"
     alvo.write_text("import os\n\n\ndef test_z():\n    assert True\n")
-    r = rodar([str(alvo)])
+    r = rodar([str(alvo)], so_extras=True)
     assert r.returncode == 1, f"o lint engoliu a violação plantada:\n{r.stdout}{r.stderr}"
     assert str(alvo) in r.stdout and "F401" in r.stdout, \
         f"acusa, mas não cita o arquivo/código plantado:\n{r.stdout}"
@@ -69,7 +91,7 @@ def test_noqa_cala_o_f401(tmp_path):
     espalhados pelo repo viram ruído de novo."""
     alvo = tmp_path / "com_noqa.py"
     alvo.write_text("import os  # noqa: F401\n\n\ndef test_z():\n    assert True\n")
-    r = rodar([str(alvo)])
+    r = rodar([str(alvo)], so_extras=True)
     assert r.returncode == 0, f"o `# noqa` foi ignorado:\n{r.stdout}{r.stderr}"
 
 

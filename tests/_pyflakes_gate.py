@@ -63,10 +63,52 @@ def modulos() -> list[str]:
     return alvos
 
 
-def rodar(extras: list[str] | None = None) -> subprocess.CompletedProcess:
-    """Roda o `ruff check` na lista do hook (mesmo intérprete do hook: o do venv)."""
-    return subprocess.run([sys.executable, "-m", FERRAMENTA, "check", *modulos(), *(extras or [])],
+def rodar(extras: list[str] | None = None, *, so_extras: bool = False) -> subprocess.CompletedProcess:
+    """Roda o `ruff check` na lista do hook (mesmo intérprete do hook: o do venv).
+
+    `so_extras` lint só os arquivos passados — é o que os testes de violação
+    plantada usam, senão a árvore suja de terceiro contamina a contraprova.
+    """
+    alvos = list(extras or []) if so_extras else [*modulos(), *(extras or [])]
+    return subprocess.run([sys.executable, "-m", FERRAMENTA, "check", *alvos],
                           capture_output=True, text=True, cwd=BASE)
+
+
+def _conteudo_do_ref(ref: str, relativo: str) -> str | None:
+    """Conteúdo do arquivo no `ref` (None = não existe lá)."""
+    r = subprocess.run(["git", "show", f"{ref}:{relativo}"], capture_output=True, text=True, cwd=BASE)
+    return r.stdout if r.returncode == 0 else None
+
+
+def rodar_no_ref(ref: str) -> subprocess.CompletedProcess:
+    """Roda o lint no CONTEÚDO DO REF (default daqui), não no working tree (#456).
+
+    O gate é de terceiro: quem roda a suíte no meio do trabalho de outro agente não
+    pode pagar o vermelho de um arquivo que a outra pessoa ainda está editando. A
+    lista de alvos continua sendo a do hook, mas o TEXTO vem do `ref`; arquivo que
+    não existe no ref (novo, ainda untracked) fica de fora — o lugar dele é o teste
+    da árvore, que é opt-in.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="lint-ref-") as tmp:
+        raiz = Path(tmp)
+        # a config vem do próprio ref: o conjunto de regras tem de ser o do commit
+        pyproject = _conteudo_do_ref(ref, "pyproject.toml")
+        if pyproject is not None:
+            (raiz / "pyproject.toml").write_text(pyproject)
+        alvos: list[str] = []
+        for absoluto in modulos():
+            relativo = str(Path(absoluto).relative_to(BASE))
+            conteudo = _conteudo_do_ref(ref, relativo)
+            if conteudo is None:
+                continue
+            destino = raiz / relativo
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            destino.write_text(conteudo)
+            alvos.append(str(destino))
+        return subprocess.run([sys.executable, "-m", FERRAMENTA, "check", *alvos],
+                              capture_output=True, text=True, cwd=raiz)
 
 
 def main() -> int:

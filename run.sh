@@ -73,6 +73,11 @@ fi
 # 0.0.0.0 = acessível na rede local (outros dispositivos usam o IP/hostname do Mac)
 # loop: Metal/MLX às vezes segfaulta (exit 139) ao trocar modelos pesados —
 # sobe de novo sozinho, a menos que o usuário encerre (Ctrl+C = 130) ou kill (143/SIGTERM).
+#
+# Encerrar aqui é LIMPO (#358): SIGINT/SIGTERM chegam ao uvicorn, que roda o
+# `lifespan` do app — fecha sessões Live, workers de job e dsh quente e salva o
+# histórico de jobs. Por isso 130/143 saem do laço em vez de virar restart, e por
+# isso o `/api/shutdown` faz o mesmo teardown antes de sair.
 # Sweeper: sessões dsh do TTS >48h viram lixo (handshakes antigos) e o scandir
 # delas é o que estoura EMFILE — manter o diretório raso em cada boot.
 find "$DSH_HOME/sessions" -mindepth 2 -maxdepth 2 -type d -mtime +2 -exec rm -rf {} + 2>/dev/null &
