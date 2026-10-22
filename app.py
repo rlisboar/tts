@@ -5967,7 +5967,13 @@ def synthesize(request: Request, payload: dict):
     # - chave de USO: não — `model` é campo admin no /api/settings, então a chave de
     #   uso gera com o modelo pedido sem sequestrar a configuração da instalação.
     # `_save_settings` é melhor-esforço: falha de disco não derruba a geração.
-    persistido = bool(model_override) and _admin_is_allowed(request)
+    # `persistir: false` no corpo: o modelo vale SÓ neste job. A UI não manda o
+    # campo e segue com o contrato do seletor ("escolheu, ficou escolhido"); quem
+    # roda suíte/curl contra o app do dono manda `false` e não deixa config trocada
+    # atrás (#488). Ausente = persiste, como sempre foi.
+    quer_persistir = payload.get("persistir")
+    quer_persistir = True if quer_persistir is None else bool(quer_persistir)
+    persistido = bool(model_override) and quer_persistir and _admin_is_allowed(request)
     if persistido and _settings.get("model") != model_override:
         _settings["model"] = model_override
         try:
@@ -9893,6 +9899,11 @@ async def _live_loop(sess: dict, ws) -> None:
                 pipe = sess.get("pipe")
                 if (not eventos_do_flush and pipe is not None and not pipe.ocupado
                         and sess.get("buffer")):
+                    # não houve evento do motor: a DECISÃO foi o comando do cliente,
+                    # então a origem da conta do #315 é aqui (sem isto o turno by
+                    # flush com motor ocioso sai sem `decisao_para_audio_ms`)
+                    sess["t_decisao"] = time.monotonic()
+                    sess["t_decisao_ms"] = 0
                     _live_abre_turno(sess)
                 continue
             if sess.get("pipe") is not None:
