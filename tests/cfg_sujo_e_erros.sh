@@ -36,7 +36,7 @@ restaura_gate() {
 trap 'kill "$FILHO" 2>/dev/null; restaura_gate' EXIT INT TERM
 
 BASE="$BASE" "$PY" - <<'PYEOF' &
-import json, os, sys, urllib.request
+import json, os, signal, sys, urllib.request
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ["BASE"]
@@ -65,6 +65,11 @@ def devolve_speaker_gate(valor):
         print(f"· não consegui devolver speaker_gate={valor!r}: {exc}", file=sys.stderr)
 
 original_api = api_get("/api/settings").get("speaker_gate")     # antes de tudo
+
+# SIGTERM não roda `finally` (o default mata sem desenrolar a pilha): vira
+# SystemExit para o `finally` do restore rodar. O trap da shell já cobre o sinal
+# no processo dela; isto cobre o sinal chegando SÓ no Python.
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 try:
   with sync_playwright() as p:
     b = p.chromium.launch()
