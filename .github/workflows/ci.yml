@@ -110,7 +110,11 @@ jobs:
           export PATH="$PY312:$PATH"
           python -V
           echo "$PY312" >> "$GITHUB_PATH"
-          python -c "import fastapi, soundfile, torch, pytest_timeout, pytest_rerunfailures; print('deps e plugins ok')"
+          echo "== sistema (fora de Documents) =="
+          /usr/bin/python3 -c "import json, ssl; print('sistema ok')" || echo "sistema FALHOU"
+          echo "== venv em Documents =="
+          python -c "import json; print('venv json ok')" || echo "venv FALHOU"
+          python -c "import fastapi; print('fastapi ok')" || echo "fastapi FALHOU"
       - name: pytest
         # `--timeout`: um teste pendurado falha em 3 min em vez de comer o job.
         # Método DEFAULT (SIGALRM), não `--timeout-method=thread`: o `thread` só
