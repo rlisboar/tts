@@ -36,8 +36,8 @@ fi
 GRUPO="$(grep -c 'function micErroTexto' "$RAIZ/static/index.html" || true)"
 [ "$GRUPO" = "1" ] || { echo "✖ micErroTexto deveria ser única, achei $GRUPO" >&2; exit 1; }
 
-BASE="$BASE" "$PY" - <<'PYEOF'
-import os, sys
+RAIZ="$RAIZ" BASE="$BASE" "$PY" - <<'PYEOF'
+import os, pathlib, sys
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ["BASE"]
@@ -113,7 +113,7 @@ with sync_playwright() as p:
     b.close()
 
 # ── 3. guarda do Live (mesma frase, sem orchestrar o WS aqui) ──────────────
-fonte = open("static/index.html", encoding="utf-8").read()
+fonte = (pathlib.Path(os.environ["RAIZ"]) / "static" / "index.html").read_text(encoding="utf-8")
 i = fonte.find("async function lxCaptura()")
 cobrar(i > 0 and "micIndisponivel()" in fonte[i:i + 700], "lxCaptura perdeu a guarda de origem segura")
 

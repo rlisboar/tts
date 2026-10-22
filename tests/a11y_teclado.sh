@@ -151,12 +151,23 @@ with sync_playwright() as p:
             return { antes, depois: au.currentTime, tabIndex: c.tabIndex };
         }""", i)
         if onda: break
-    if onda is None:
-        cobrar(False, "não consegui preparar o áudio de 5 vozes (todas sem wav?)")
+    # O alvo aqui é o TECLADO, não o fixture de vozes. Estrutura (focável, rótulo)
+    # é cobrada SEMPRE que houver card; o comportamento com áudio só quando alguma
+    # voz carrega — voz quebrada/ausente no `voices/` do dono vira SKIP, não red.
+    estrutura = pg.evaluate("""() => {
+        const c = document.querySelector('#voiceList canvas.wave');
+        return c ? { tabIndex: c.tabIndex, rotulo: c.getAttribute('aria-label') || '' } : null; }""")
+    if estrutura is None:
+        print("· SKIP da onda: nenhuma voz na lista desta instância")
     else:
+        cobrar(estrutura["tabIndex"] == 0, "a onda não é focável por teclado")
+        cobrar(bool(estrutura["rotulo"]), "a onda não tem rótulo acessível")
+    if onda is None and estrutura is not None:
+        print("· SKIP do avanço pela seta: nenhuma das 5 vozes carregou áudio")
+    if onda is not None:
         pg.wait_for_timeout(150)
-        cobrar(onda["tabIndex"] == 0, "a onda não é focável por teclado")
         cobrar(onda["depois"] > onda["antes"], "seta → não avançou a onda")
+
     b.close()
 
 if falhas:
