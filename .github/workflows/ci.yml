@@ -107,28 +107,13 @@ jobs:
       # Permission denied`) e o `/Users` do mini é root:admin sem escrita para o
       # usuário. Correção definitiva é `sudo mkdir /Users/runner && sudo chown`;
       # até lá o venv sai do 3.12 que já existe na máquina.
-      - name: intérprete 3.12 e venv
-        env:
-          # o startup do interpretador trava no job (PATH mínimo do runner): o
-          # `PYTHONHOME` pula justamente a descoberta de path que trava
-          PYTHONHOME: /Library/Frameworks/Python.framework/Versions/3.12
+      - name: interpretador (venv de produção, sem criar venv novo)
         run: |
-          # o interpretador REAL do framework, não o python do venv de produção:
-          # partindo de um venv o startup trava em `open()` do pyvenv.cfg no
-          # runner (medido: 14 min a 0 % de CPU); do framework, 2 s.
-          PY312=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
-          [ -x "$PY312" ] || PY312=$(command -v python3.12)
-          echo "usando $PY312"; "$PY312" -V
-          echo "--- diagnóstico ---"; env | grep -iE "python|pip" | head -5
-          time "$PY312" -m venv --without-pip .venv-semdip || echo "semdip falhou"
-          "$PY312" -m venv .venv-ci
-          echo "$PWD/.venv-ci/bin" >> "$GITHUB_PATH"
-      - name: dependências
-        # torch do índice CPU primeiro: com o wheel CUDA o job paga ~2,4 GB e
-        # minutos por algo que a suíte não usa.
-        run: |
-          python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install --quiet -r requirements.txt pytest-timeout pytest-rerunfailures
+          PY312=$HOME/Documents/tts-rod/.venv-mlx/bin
+          echo "usando $PY312/python"; "$PY312/python" -V
+          echo "$PY312" >> "$GITHUB_PATH"
+      - name: dependências (o venv de produção já as tem)
+        run: python -c "import fastapi, soundfile; print('deps ok')"
       - name: MLX no Linux
         # O wheel manylinux do `mlx` NÃO traz a `libmlx.so` — só o extra `[cpu]`
         # traz. Medido: sem ele `import mlx.core` morre com "libmlx.so: cannot
