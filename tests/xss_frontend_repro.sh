@@ -94,9 +94,9 @@ CRIADOS=(
 limpa_vozes() {
   [ "$MANTER" = "1" ] && return 0
   local f
-  for f in "${CRIADOS[@]}"; do
-    [ -e "$f" ] && rm -f "$f"
-  done
+  # `rm -f` em arquivo ausente sai 0: sem o teste `-e`, o laço nunca devolve 1 e o
+  # trap não aborta antes do `rm -rf $TMP` (sob `set -e` o status MANDA no trap)
+  for f in "${CRIADOS[@]}"; do rm -f "$f"; done
 }
 trap 'limpa_vozes; rm -rf "$TMP"' EXIT
 
