@@ -13,17 +13,23 @@
 #      linha, troca o papel e apaga (POST/PATCH/DELETE reais)
 #   6. remove as chaves de teste
 #
-#   ./tests/admin_ui_flow.sh          # app precisa estar de pé (./run.sh)
+#   ./tests/admin_ui_flow.sh                    # SOBE instância própria (padrão)
+#   BASE=http://127.0.0.1:53203 ./tests/admin_ui_flow.sh   # usa instância existente
+#   ADMIN_UI_NO_DONO=1 ./tests/admin_ui_flow.sh # assume o :7860 do dono de propósito
 #
-# ⚠ A INSTÂNCIA DE TESTE PRECISA ESCUTAR EM 0.0.0.0 (não só 127.0.0.1): metade da
-# suíte passa pela URL de LAN DE PROPÓSITO — loopback é admin por definição, então
-# só por um IP não-loopback a UI enxerga uma chave de uso. Com bind só no loopback
-# o sintoma é `Connection refused` em `http://<LAN>:<porta>` (a porta já sai do
-# BASE desde a #140) e NÃO é regressão da suíte. O `run.sh` do dono já sobe em
-# 0.0.0.0; instância própria para rodar isto deve usar o mesmo bind.
+# POR QUE INSTÂNCIA PRÓPRIA POR PADRÃO (#437): a suíte cria chaves de teste, e no
+# :7860 elas caem no `.apikeys.json` do DONO — durante a rodada, e para sempre se
+# a rodada morrer por SIGKILL. Com instância própria o arquivo de chaves e o de
+# settings vão para /tmp (mesmo idioma do `ultima_chave_ui.sh`), e o do dono fica
+# byte a byte igual.
+#
+# ⚠ A INSTÂNCIA DEVE ESCUTAR EM 0.0.0.0 (não só 127.0.0.1): metade da suíte passa
+# pela URL de LAN DE PROPÓSITO — loopback é admin por definição, então só por um
+# IP não-loopback a UI enxerga uma chave de uso. Com bind só no loopback o
+# sintoma é `Connection refused` em `http://<LAN>:<porta>` e NÃO é regressão.
 set -euo pipefail
 
-BASE="${BASE:-http://127.0.0.1:7860}"
+BASE_ORIGINAL="${BASE:-}"
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$RAIZ/.venv-mlx/bin/python"
 [ -x "$PY" ] || PY="$(command -v python3)"
@@ -41,26 +47,69 @@ source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
 # http://<LAN>:<porta>. A porta tem de sair do PRÓPRIO BASE (#140): com :7860
 # fixo, uma instância própria (BASE=…:53203) criava as chaves nela e as usava
 # contra o app do DONO — 401 e, pior, validando build velho.
-PORTA="${BASE##*:}"; PORTA="${PORTA%%/*}"
+# sem BASE de fora, quem resolve a porta é o bloco da instância própria (abaixo)
+PORTA=""
+if [ -n "$BASE_ORIGINAL" ]; then
+  PORTA="${BASE_ORIGINAL##*:}"; PORTA="${PORTA%%/*}"
+fi
 case "$PORTA" in
   ''|*[!0-9]*)
     # BASE sem porta: se o host não é loopback, o default 7860 aponta para o app
     # do DONO — a suíte então mede o build errado e cria chaves lá. Exige a porta.
-    HOST_BASE="${BASE#*://}"; HOST_BASE="${HOST_BASE%%/*}"
+    HOST_BASE="${BASE_ORIGINAL#*://}"; HOST_BASE="${HOST_BASE%%/*}"
     case "$HOST_BASE" in
       ''|127.0.0.1|localhost|'[::1]') PORTA=7860 ;;
       *)
-        echo "✖ BASE sem porta ($BASE): informe a porta da instância de teste," >&2
+        echo "✖ BASE sem porta ($BASE_ORIGINAL): informe a porta da instância de teste," >&2
         echo "  ex.: BASE=http://$HOST_BASE:53203 $0" >&2
         exit 1 ;;
     esac ;;
 esac
-LANURL="http://$LAN:$PORTA"
+LANURL=""   # definido depois (no modo próprio a porta só existe mais adiante)
+
+# ── instância própria (padrão) ──────────────────────────────────────────────
+# Chaves e settings em /tmp: a rodada não deixa rastro no estado do dono.
+SERVIDOR_PID=""
+if [ -z "$BASE_ORIGINAL" ]; then
+  PORTA="$(command -v python3 >/dev/null && python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"
+  APK="$(mktemp -t apikeys-adminui.XXXXXX 2>/dev/null || echo "/tmp/apikeys-adminui.$$")"
+  SET="$(mktemp -t settings-adminui.XXXXXX 2>/dev/null || echo "/tmp/settings-adminui.$$")"
+  rm -f "$APK" "$SET"      # o mktemp cria vazio; o app gera a chave padrão sozinho
+  LOG="$(mktemp -t adminui-servidor.XXXXXX 2>/dev/null || echo "/tmp/adminui-servidor.$$")"
+  "$PY" -c "
+import pathlib, sys, uvicorn, app
+app.APIKEYS_PATH = pathlib.Path(sys.argv[1])
+# `_settings` já veio do arquivo do dono no import; o CAMINHO passa a apontar para
+# o tmp, então todo save da rodada grava lá (o arquivo dele não é tocado)
+app.SETTINGS_PATH = pathlib.Path(sys.argv[2])
+app._load_apikeys()
+uvicorn.run(app.app, host='0.0.0.0', port=int(sys.argv[3]), log_level='warning')
+" "$APK" "$SET" "$PORTA" > "$LOG" 2>&1 &
+  SERVIDOR_PID=$!
+  BASE="http://127.0.0.1:$PORTA"
+  limpa_servidor() {
+    [ -n "$SERVIDOR_PID" ] && kill "$SERVIDOR_PID" 2>/dev/null || true
+    rm -f "$APK" "$SET"
+  }
+  trap 'limpa_servidor' EXIT INT TERM
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    curl -sf -m 2 -o /dev/null "$BASE/" && break
+    sleep 0.5
+  done
+fi
+
+if [ "${BASE_ORIGINAL##*:}" = "7860" ] && [ "${ADMIN_UI_NO_DONO:-}" != "1" ]; then
+  echo "✖ BASE aponta para o :7860 (app do dono): a suíte cria chaves no .apikeys.json dele." >&2
+  echo "  Sem BASE ela sobe instância própria; para usar a do dono mesmo assim:" >&2
+  echo "  ADMIN_UI_NO_DONO=1 BASE=$BASE_ORIGINAL $0" >&2
+  exit 1
+fi
 
 if ! curl -sf -m 5 -o /dev/null "$BASE/"; then
   echo "✖ app não respondeu em $BASE — rode ./run.sh primeiro" >&2
   exit 1
 fi
+LANURL="http://$LAN:$PORTA"
 
 # ids de chaves de teste por prefixo de nome (pega sujeira de rodada que falhou)
 SUF="$$"                       # sufixo por execução (ver comentário no topo)
