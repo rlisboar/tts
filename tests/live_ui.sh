@@ -69,7 +69,11 @@ def porta_livre():
 stub_porta = porta_livre()
 porta = porta_livre()      # porta do SERVIDOR do teste (também nomeia o wav/log)
 srv = HTTPServer(("127.0.0.1", stub_porta), Stub)
+# `STUB_CAI=1` derruba o provedor de teste de propósito: é como se prova que o
+# veredito sabe distinguir AMBIENTE de REGRESSÃO (o vermelho tem de sair rotulado).
 threading.Thread(target=srv.serve_forever, daemon=True).start()
+if os.environ.get("STUB_CAI"):
+    srv.shutdown()          # porta fecha depois de já ter sido aberta
 
 # ─── fala de teste -> WAV 16k mono (alimenta o mic falso) ────────────────────
 import numpy as np, soundfile as sf
@@ -140,6 +144,30 @@ uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["LIVE_UI_PORT"]))
 proc = subprocess.Popen([str(RAIZ / ".venv-mlx" / "bin" / "python"), "-c", _launcher],
                         cwd=str(RAIZ), env=env, stdout=log.open("w"), stderr=subprocess.STDOUT, start_new_session=True)
 base = f"http://127.0.0.1:{porta}"
+SONDAGEM = None      # (provedor, instância) medidos com o servidor VIVO
+
+# Sondas de AMBIENTE: um provedor/instância caído produz o MESMO `stage=llm`
+# (~80 ms, conexão recusada) que uma regressão. Sem perguntar a eles, o vermelho
+# mente sobre a causa. Ficam no nível do módulo para o veredito alcançá-las.
+def _prova_provedor() -> tuple[bool, str]:
+    try:
+        corpo = json.dumps({"model": "stub-live", "stream": False,
+                            "messages": [{"role": "user", "content": "ping"}]}).encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{stub_porta}/v1/chat/completions",
+                                     data=corpo, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return (r.status == 200), f"HTTP {r.status}"
+    except Exception as exc:                                  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _prova_instancia() -> tuple[bool, str]:
+    try:
+        with urllib.request.urlopen(f"{base}/api/status", timeout=5) as r:
+            return (r.status == 200), f"HTTP {r.status}"
+    except Exception as exc:                                  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+
 try:
     for _ in range(300):
         if proc.poll() is not None: raise SystemExit(f"servidor morreu na subida (log {log})")
@@ -174,6 +202,12 @@ try:
         pg.on("websocket", lambda w: w.on("framereceived", _guarda))
         pg.goto(base, wait_until="networkidle")
         pg.locator('.nav-item[data-view="live"]').click()
+        # `LX` é `const` no script inline: ele só existe depois que o bundle roda.
+        # Sem esperar, o hook estourava `ReferenceError: LX is not defined` quando
+        # a página ainda não tinha executado (medido: `typeof LX` = undefined logo
+        # após o commit e `object` 1,5 s depois) — era o vermelho intermitente da
+        # suíte, não o produto.
+        pg.wait_for_function("() => typeof LX === 'object'", timeout=20000)
 
         # instrumenta: timestamp de eventos + medição do corte no `interrupted`
         pg.evaluate("""() => {
@@ -252,12 +286,35 @@ try:
         # Se o servidor ficar MUDO (visto em 1 de ~6 rodadas: `ready` e mais nada,
         # com quadros fluindo), o defeito é do turno, não da injeção — em vez de
         # seguir e falhar 3 asserções depois, avisa e injeta UMA vez de novo.
+        #
+        # Falhou DUAS vezes, o vermelho passa a dizer ONDE o servidor parou (#422):
+        # `stage`/`erro`/provedor na própria falha, e não só 3 asserções genéricas
+        # depois. Foi assim que o vermelho chegou como "stage=llm" sem diagnóstico.
+        def _diag_servidor() -> str:
+            pista = "-"
+            try:
+                linhas = [ln.strip() for ln in log.read_text(errors="replace").splitlines()
+                          if "stage_inicio" in ln or "[live] erro" in ln or "indispon" in ln]
+                if linhas:
+                    pista = linhas[-1][-140:]
+            except Exception:
+                pass
+            return f"última pista: {pista} · log: {log}"
+
         try:
             pg.wait_for_function("() => window.__ev.some(e => e.tipo === 'speech_start')", timeout=25000)
         except Exception:
             print("  ⚠ servidor mudo no 1º turno — re-injetando (diag abaixo)")
             print("  servidor (tail):", "".join(open(log).readlines()[-6:]) if os.path.exists(log) else "-")
             injeta()
+            try:
+                pg.wait_for_function("() => window.__ev.some(e => e.tipo === 'speech_start')",
+                                     timeout=25000)
+            except Exception:
+                ok_prov, det_prov = _prova_provedor()
+                falhas.append("o 1º turno não abriu nem na 2ª injeção — "
+                              + ("" if ok_prov else f"PROVEDOR DE TESTE FORA ({det_prov}); ")
+                              + _diag_servidor())
         # Barge: injeta fala com áudio do servidor tocando e fecha o turno.
         # Com a janela de playback colada ao TURNO a 1ª tentativa basta; a 2ª
         # continua aqui como rede do servidor mudo, não como desculpa para o barge
@@ -538,7 +595,8 @@ try:
         cobrar(starts >= 3, f"esperava >=3 turnos seguidos, vieram {starts} speech_start")
         cobrar(bool(user.strip()), "não veio transcrição do usuário")
         cobrar(bool(ia.strip()), "não veio texto do assistente")
-        cobrar(audio_evs > 0, "nenhum áudio do servidor")
+        cobrar(audio_evs > 0, "nenhum áudio do servidor" +
+               ("" if audio_evs > 0 else " — " + _diag_servidor()))
         # A janela de barge colada ao TURNO (com o eco valendo só como referência
         # enquanto há áudio tocando) faz o onset no vão voltar a ser interrupção:
         # o corte é exigência DURA por padrão, e `BARGE_ESTRITO=0` é o escape.
@@ -560,6 +618,9 @@ try:
             print("  ⚠ sem barge nesta rodada, tolerado por BARGE_ESTRITO=0"
                   " (o corte não foi medido)")
         cobrar(not erros, "erros de JS: " + "; ".join(erros[:3]))
+        # sonda AQUI: o `finally` mata o servidor antes do veredito, e sondar
+        # depois faz a instância parecer morta em toda rodada
+        SONDAGEM = (_prova_provedor(), _prova_instancia())
         janelas = [l for l in log.read_text().splitlines() if "DBG-eco" in l]
         for l in janelas: print("  " + l)
         for e in (pg.evaluate("() => window.__ev") or []):
@@ -585,7 +646,22 @@ finally:
 
 print()
 if falhas:
-    print("✖ FALHOU — log do servidor da rodada em", log)
+    # AMBIENTE x REGRESSÃO: sem isto, "provedor de teste caiu" e "código quebrou"
+    # produzem o MESMO `stage=llm` em ~80 ms e o vermelho mente sobre a causa.
+    _ok_prov, _det_prov = (SONDAGEM or (_prova_provedor(), _prova_instancia()))[0]
+    _ok_inst, _det_inst = (SONDAGEM or ((None, None), (None, None)))[1] \
+        if SONDAGEM else _prova_instancia()
+    if not _ok_prov or not _ok_inst:
+        causa = "AMBIENTE" if _ok_inst else "AMBIENTE (instância também fora)"
+        print(f"✖ FALHOU [{causa}] — provável queda de infra da rodada, não do código:")
+        if not _ok_prov:
+            print(f"  · provedor de teste (:{stub_porta}) não respondeu — {_det_prov}")
+        if not _ok_inst:
+            print(f"  · instância de teste ({base}) não respondeu — {_det_inst}")
+        print("  (rebata a rodada num ambiente vivo antes de tratar como regressão)")
+    else:
+        print("✖ FALHOU [REGRESSÃO] — provedor e instância respondem; a falha é do código/UI")
+    print("  log do servidor da rodada em", log)
     for f in falhas: print("  ·", f)
     sys.exit(1)
 for sobra in (log, wav_entrada):        # rodada verde não deixa lixo fixo em /tmp
