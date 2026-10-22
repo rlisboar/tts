@@ -1369,7 +1369,7 @@ def test_stt_recusa_audio_acima_do_teto(tmp_path, monkeypatch):
     import soundfile as sf
 
     caminho = tmp_path / "longo.wav"
-    t = np.arange(8000 * 320) / 8000.0
+    t = np.arange(8000 * 1860) / 8000.0        # 31 min: acima do teto de 30
     # tom (não silêncio): o filtro do upload tem `silenceremove` nas pontas
     sf.write(str(caminho), (0.1 * np.sin(2 * np.pi * 200 * t)).astype(np.float32),
              8000, subtype="PCM_16")

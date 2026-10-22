@@ -6654,8 +6654,10 @@ def _vad_estado() -> tuple[str, str]:
 
 
 #: teto de duração do áudio do STT: acima disto o upload é recusado com 413 em vez
-#: de decodificar 1 h de áudio em float32 (~230 MB) e rodar o Whisper sobre tudo
-TETO_STT_S = 300.0
+#: de decodificar 1 h de áudio em float32 (~230 MB) e rodar o Whisper sobre tudo.
+#: 30 min: uma reunião/entrevista de 20 min passa com folga (~77 MB no pico), e o
+#: que passa disso é recusado com explicação em vez de estourar a RAM.
+TETO_STT_S = 1800.0
 JANELA_STT_S = 30.0
 SOBREPOSICAO_STT_S = 1.0
 
