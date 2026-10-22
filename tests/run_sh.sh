@@ -31,11 +31,14 @@ TETO="${TETO_S:-240}"          # segundos por suíte
 J=3
 
 RAPIDO=(limpa_bytecode serial_lock live_lock_freeze)
+# Estágio é por DEPENDÊNCIA, não por "tem navegador": quem sobe o PRÓPRIO servidor
+# é auto-contido e fica em `navegador` — mandá-lo para `instancia` o tiraria de
+# quem não tem app no ar. `admin_ui_flow` e `cfg_sujo_e_erros` passaram a subir o
+# próprio servidor (#437/#466) e vieram para cá.
 NAVEGADOR=(dsh_ui hash_deep_link live_dsh_fallback live_barge_rep live_ui obs_ui live_ws
-            ultima_chave_ui)
-INSTANCIA=(a11y_teclado admin_ui_flow cfg_sujo_e_erros conversa_429 key_storage_repro
-           live_hold_ui mic_erro_ui mobile_layout onboarding_atalhos ui_repouso
-           xss_frontend_repro)
+            ultima_chave_ui admin_ui_flow cfg_sujo_e_erros)
+INSTANCIA=(a11y_teclado conversa_429 key_storage_repro live_hold_ui mic_erro_ui
+           mobile_layout onboarding_atalhos ui_repouso xss_frontend_repro)
 
 estagio="${1:-rapido}"
 shift || true
