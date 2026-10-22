@@ -626,8 +626,8 @@ def test_relatorio_tem_stats_e_linha_de_tempo():
 # --------------------------------------------------------------------------
 # integração com o Silero ONNX real (subprocesso: isolado e sem Metal)
 # --------------------------------------------------------------------------
-def _subproc(codigo: str) -> subprocess.CompletedProcess:
-    env = {**os.environ, "ORT_DISABLE_TELEMETRY": "1"}
+def _subproc(codigo: str, **env_extra) -> subprocess.CompletedProcess:
+    env = {**os.environ, "ORT_DISABLE_TELEMETRY": "1", **env_extra}
     return subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True,
                           cwd=str(RAIZ), env=env, timeout=600)
 
@@ -680,8 +680,13 @@ def sintetica(n):
 
 
 def voz_de_referencia(n):
+    """Voz real do dono se houver `voices/`; `VAD_SEM_VOZ=1` força a sintética.
+
+    O caminho sintético é o HERMÉTICO (máquina limpa, CI): `voices/` é dado local,
+    não versionado, e o teste não pode depender dele (#404)."""
+    import os
     from pathlib import Path
-    wavs = sorted(Path("voices").glob("*.wav"))
+    wavs = [] if os.environ.get("VAD_SEM_VOZ") == "1" else sorted(Path("voices").glob("*.wav"))
     if not wavs:
         return sintetica(n), False
     import soundfile as sf
@@ -693,17 +698,24 @@ def voz_de_referencia(n):
 
 
 voz, real = voz_de_referencia(16000)
+# janela de 1 s inteira, não 0,5 s: o 1º wav em ordem alfabética pode abrir com
+# silêncio (medido: 290 ms em `voices/1e8e1479ae.wav`) e a mediana dos primeiros
+# 0,5 s dava 0,03 — o teste dependia de qual voz estava no disco.
+#
+# UMA passada só: o Silero é RECURSIVO e o estado carrega entre chamadas — rodar
+# `probs` e depois `prob` em cima do mesmo modelo dá 0,31 na primeira e 0,06 na
+# segunda (fora de distribuição para o segundo sinal). Reaproveitar `probs` é o que
+# torna as duas leituras comparáveis.
+probs = [lt.scorer_silero(voz[i:i + 512]) for i in range(0, 16000 - 511, 512)]
+prob = float(np.median(probs))
 limiar = 0.5
 if not real:
-    probs = [lt.scorer_silero(voz[i:i + 512]) for i in range(0, 16000 - 511, 512)]
-    limiar = max(0.05, min(0.5, float(np.percentile(probs, 50)) * 0.9))
-
-# janela de 1 s inteira, não 0,5 s: o 1º wav em ordem alfabética pode abrir
-# com silêncio (medido: 290 ms em `voices/1e8e1479ae.wav`) e a mediana dos
-# primeiros 0,5 s dava 0,03 — o teste dependia de qual voz está no disco.
-prob = float(np.median([lt.scorer_silero(voz[i:i + 512])
-                        for i in range(0, 16000 - 511, 512)]))
+    # sinal sintético é só harmonicamente parecido com fala: metade da própria
+    # mediana (o teste quer "o modelo responde"; abaixo disso ele não responde a nada)
+    limiar = max(0.02, min(0.5, prob * 0.5))
 assert prob > limiar, "voz de referencia sem resposta do modelo"
+# a sonda acima deixou estado no modelo RECURSIVO; o turno simulado começa do zero
+lt.carregar_modelo().reset_states()
 
 motor = lt.TurnEngine(lt.Config(fala_threshold=limiar), scorer=scorer)
 silencio = np.zeros(16000, dtype=np.float32)
@@ -723,10 +735,23 @@ print("ok onnx prob=%.3f limiar=%.3f real=%s fala_ms=%d" % (prob, limiar, real, 
 
 
 def test_integracao_onnx_sem_metal_e_sem_rede():
+    """Caminho HERMÉTICO: sinal sintético, sem depender de `voices/` (#404)."""
+    r = _subproc(INTEGRACAO, VAD_SEM_VOZ="1")
+    assert r.returncode == 0, r.stderr
+    assert "ok onnx" in r.stdout and "real=False" in r.stdout, r.stdout
+    assert "vad" not in r.stderr.lower() or "torch jit" not in r.stderr
+
+
+def _tem_voz_gravada() -> bool:
+    return bool(list((RAIZ / "voices").glob("*.wav")))
+
+
+@pytest.mark.skipif(not _tem_voz_gravada(), reason="sem `voices/`: a voz real é dado do dono")
+def test_integracao_onnx_com_voz_REAL():
+    """Mesmo caminho, contra a voz do dono — skip quando `voices/` não existe."""
     r = _subproc(INTEGRACAO)
     assert r.returncode == 0, r.stderr
-    assert "ok onnx" in r.stdout, r.stdout
-    assert "vad" not in r.stderr.lower() or "torch jit" not in r.stderr
+    assert "ok onnx" in r.stdout and "real=True" in r.stdout, r.stdout
 
 
 def test_fallback_para_o_jit_e_logado_nao_silencioso():

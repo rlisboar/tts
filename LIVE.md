@@ -426,6 +426,21 @@ thread própria (os helpers de STT/TTS do app são sync e disputam
 | pre-warm (no `ready`) | 8–12 s, **1× por processo** | whisper + TTS com a voz da sessão + 1 request ao LLM |
 | turno completo (5,9 s de fala) | ~4 s | chunk a 160 chars, passos do setting |
 
+**COMO A CONTA É FECHADA (#315).** O evento `latency` publica, além dos estágios do
+pipeline, `decisao_ms` (quanto o VAD levou para decidir) e `decisao_para_audio_ms`
+(`first_audio_ms` + o trecho entre a decisão e o turno abrir) — é ESTE o número do alvo,
+porque o pipeline conta de outro zero. O `live_ws.sh` mede o `primeiro` do lado do
+cliente e **reprova** acima de 1500 em `decisao_para_audio_ms`; se o campo não vier, o
+gate também reprova (sem ele o alvo não é cobrável). `decisao_para_audio_ms` é sempre
+`>= first_audio_ms`.
+
+**Gate do prewarm (#315).** Falar antes de os modelos estarem quentes custava o
+primeiro áudio inteiro (a frio: 7,3 s). A primeira fala com o prewarm em voo vai para
+o pendente e espera o `prewarm.ok` até `TTS_LIVE_ESPERA_PREWARM_S` (2 s); estourou, o
+servidor manda `error{code:"prewarm_em_curso"}` e abre o turno com os modelos frios
+(nada é descartado). `0` desliga o gate e volta ao comportamento antigo.
+
+
 **DE QUAL CENÁRIO SÃO ESTES NÚMEROS (#173):** são do cenário LOCAL — o `live_ws.sh` sobe
 um stub de chat SSE na própria máquina e é contra ele que o alvo de 1,5 s é aferido. Com
 provedor de chat REMOTO o alvo NÃO vale: o `first_token` sozinho já custa segundos (medido
@@ -481,7 +496,11 @@ Três decisões fazem o alvo caber (no cenário local), todas por medição:
 1. **1º chunk curto e rápido** (`first_max=18`, `first_chunk_max_steps=12`): a
    geração custa ~0,45 s a 16 passos e ~0,35 s a 12; com 48 chars o 1º chunk
    gastava ~1,1 s e o total batia 1,55 s. Os chunks seguintes ficam com o
-   `omni_num_steps` do dono (37 hoje) — o alvo só olha o primeiro.
+   `omni_num_steps` do dono (37 hoje) — o alvo só olha o primeiro —, **menos o
+   2º** (#315): ele ainda sai no perfil do Live (`live_num_steps`, default 16),
+   porque com geração serializada o 1º chunk só cobre o playback até o 2º ficar
+   pronto e mandá-lo a 37 passos (~1,1 s) abria buraco no alto-falante na virada.
+   Do 3º em diante a fila já tem folga e a voz volta ao ajuste do dono.
 2. **Pre-warm com a voz da sessão**: o Metal compila **por forma**, e aquecer
    sem o clone prompt não aquece o caminho do turno. Medido: 1º áudio 1,47 s sem
    isso contra 0,79 s com. Ele roda no `setup` (cliente já conectado) e emite
@@ -879,7 +898,7 @@ e o exit **0**:
 ```bash
 ./.venv-mlx/bin/python tests/_pyflakes_gate.py
 ```
-O hook tem hoje **16 alvos explícitos** (o `tests/*.py` é glob e não conta). Rode o
+O hook tem hoje **18 alvos explícitos** (o `tests/*.py` é glob e não conta). Rode o
 comando, não copie a lista: ao acrescentar um módulo ao hook, atualize esse número
 aqui — `tests/test_doc_pyflakes_list.py` compara e fica vermelho.
 

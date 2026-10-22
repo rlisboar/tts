@@ -303,6 +303,23 @@ tocado há mais tempo. `GET /api/status` publica `rate_limit_buckets` e
 `rate_limit_buckets_max`. O teto de cada rota continua saindo do path cru, então
 `/api/voices/import` mantém o limite pesado.
 
+### Histórico de operação (`/api/metrics`)
+
+`/api/status` é o AGORA. Para responder "o Live ficou lento ontem" ou "quantos 429
+de admissão" existe um histórico append-only: cada requisição de `/api/` e `/v1/`
+grava **uma linha** com `ts`, rota normalizada (`/api/tts/jobs/*/pieces/*`), `ms`,
+código HTTP, estágio (`stt`/`llm`/`tts`/`live`) e id do backend — **nada de texto,
+áudio ou chave**. O middleware roda por fora da auth, então o 401 e o 429 também
+são contados.
+
+`GET /api/metrics?janela_min=60&rota=/api/tts` (chave **admin**) devolve p50/p95,
+contagem, taxa de erro por rota, o tamanho por arquivo e a média de bytes por
+linha. Arquivos em `state/metrics/AAAA-MM-DD.jsonl` (um por dia, com sufixo `-N` ao
+passar de `metrics_teto_mb`, padrão 8) e poda por `metrics_ttl_dias` (padrão 14;
+`0` apaga na próxima poda) — os dois são campo de Configurações e política de
+recurso, não de admin. Medido: **99 bytes por linha**, ~0,1 MB/dia a 1 req/min e
+~8 MB/dia a 1 req/s (o teto de 8 MB por arquivo cobre ~1 dia nesse regime).
+
 ## Acesso pela internet (VPS como proxy)
 
 Dá para consumir a API de fora de casa mantendo o processamento no Mac: um
@@ -707,7 +724,7 @@ navegador.
 # deriva (mesma fonte do estágio `estatica` do CI). Doc com cópia à mão já deixou
 # `live_rnnoise.py` fora do gate (#288/#389).
 ./.venv-mlx/bin/python tests/_pyflakes_gate.py
-# (16 alvos explícitos hoje; `tests/*.py` é glob e não conta —
+# (18 alvos explícitos hoje; `tests/*.py` é glob e não conta —
 #  ao acrescentar módulo ao hook, atualize aqui: um teste compara)
 # o linter é o ruff (conjunto `F` = o mesmo do pyflakes que ele substituiu), config
 # no `pyproject.toml`. `# noqa` VALE: import que só existe para virar fixture de

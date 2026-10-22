@@ -124,6 +124,11 @@ _instala_guarda_nofile()
 
 import dsh_client
 from backends import generate_with_backend, list_backends, resolve_backend
+
+try:                                     # cache de áudio por texto (#325)
+    import tts_cache as _tts_cache
+except Exception:                        # noqa: BLE001 — sem o módulo, sem cache
+    _tts_cache = None
 from common import (LUFS_ALVO, NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,
                     resolve_omni_source, write_json_atomic,
                     apply_audio_fx,
@@ -326,6 +331,10 @@ _SETTINGS_DEFAULTS = {
     "voice_denoise_strength": 0.7,    # agressividade do spectral gating (0–1)
     # Áudio de saída (pós-geração): ganho + EQ 3 bandas (dB)
     "audio_gain_db": 0.0,             # ganho geral (-15..+15)
+    # cache de áudio por texto/voz/parâmetros (#325): OFF por padrão
+    "tts_cache": False,
+    "tts_cache_ttl_s": 3600,
+    "tts_cache_max": 500,
     "audio_eq_low_db": 0.0,           # grave (shelf 150 Hz)
     "audio_eq_mid_db": 0.0,           # médio (peak 1.5 kHz)
     "audio_eq_high_db": 0.0,          # agudo (shelf 5 kHz)
@@ -1080,60 +1089,6 @@ def _rate_poda(now: float) -> None:
         _rate_hits.pop(chave, None)
 
 
-# Estágio do histórico a partir da rota (#376). Serve para ler "quanto custa o
-# STT" sem abrir o código; rota fora do mapa entra sem estágio.
-_ESTAGIO_POR_ROTA = (
-    ("/api/tts", "tts"), ("/v1/audio/speech", "tts"),
-    ("/api/live", "live"), ("/api/chat", "llm"), ("/v1/chat", "llm"),
-    ("/api/translate", "llm"), ("/v1/audio/transcriptions", "stt"),
-    ("/api/transcribe", "stt"),
-)
-
-
-def _estagio_da_rota(rota: str) -> str:
-    for prefixo, estagio in _ESTAGIO_POR_ROTA:
-        if rota.startswith(prefixo):
-            return estagio
-    return ""
-
-
-def _backend_para_historico() -> str:
-    """Id do backend efetivo, curto. Nunca a chave nem a URL."""
-    try:
-        return str((_model_state.get("backend_id") or ""))[:24]
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-@app.middleware("http")
-async def _historico_operacao(request, call_next):
-    """Grava uma linha por requisição de API no histórico (#376).
-
-    Registrado por último na pilha => roda por FORA: vê o status FINAL, inclusive
-    o 401 da auth e o 429 do limitador (é o que responde "quantos 429 de
-    admissão"). O preço é medir também o trabalho deles — para `/api/status` isso
-    é ruído desprezível. Fora de `/api/` e `/v1/` não grava: asset não é operação.
-
-    Falha do histórico nunca vira falha do request: o `registrar` já engole, e aqui
-    só há aritmética de tempo.
-    """
-    caminho = request.url.path
-    if not caminho.startswith(("/api/", "/v1/")):
-        return await call_next(request)
-    t0 = time.monotonic()
-    resposta = await call_next(request)
-    try:
-        _metrics.registrar(_rate_path_normalizado(caminho),
-                           (time.monotonic() - t0) * 1000.0,
-                           int(getattr(resposta, "status_code", 0) or 0),
-                           _estagio_da_rota(caminho), _backend_para_historico(),
-                           ttl_dias=int(_settings.get("metrics_ttl_dias", 14)),
-                           teto_mb=int(_settings.get("metrics_teto_mb", 8)))
-    except Exception:  # noqa: BLE001
-        pass
-    return resposta
-
-
 @app.middleware("http")
 async def _rate_limit(request, call_next):
     if request.method == "OPTIONS" or not request.url.path.startswith(("/api/", "/v1/")):
@@ -1385,6 +1340,7 @@ def _get_model(model: str | None = None):
         old = _model
         _model = None
         _conds_cache.clear()
+        _cache_limpa()          # modelo/precisão novos: áudio antigo não serve
         path = _resolve_model_path(modelo)
         label = be["meta"].get("label") or path
         _model_state.update(
@@ -1622,6 +1578,36 @@ def _apply_audio_fx(audio, sr: int):
     )
 
 
+def _cache_audio():
+    """Cache de áudio ligado? None = desligado (padrão) ou sem o módulo."""
+    if _tts_cache is None or not _tts_cache.ligado(_settings):
+        return None
+    return _tts_cache.Cache(OUTPUTS_DIR / ".cache-tts")
+
+
+def _cache_chave(chunk: str, *, voice_id: str, voice_path: Path, family: str,
+                 model: str, language: str, alvo_remoto: bool, omni: dict) -> str:
+    try:
+        mtime = voice_path.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+    # EQ/ganho entram depois da geração, mas mudam o áudio: vão na chave
+    params = {k: _settings.get(k) for k in (
+        "audio_eq_low_db", "audio_eq_mid_db", "audio_eq_high_db", "audio_gain_db")}
+    return _tts_cache.chave(
+        texto=chunk, voice_id=voice_id, voice_mtime=mtime, family=family,
+        model=str(_settings.get("model") or ""), precision=str(_settings.get("omni_precision") or ""),
+        language=language, motor="remoto" if alvo_remoto else "local",
+        omni={**omni, **params})
+
+
+def _cache_limpa() -> int:
+    """Invalida o cache inteiro nos mesmos pontos que limpam `_conds_cache`."""
+    if _tts_cache is None:
+        return 0
+    return _tts_cache.Cache(OUTPUTS_DIR / ".cache-tts").limpa()
+
+
 def _pos_processa(audio, sr: int, pad_s: float = PAD_CAUDA_S):
     """Pós de UM trecho, num lugar só: trim → normalize → EQ/ganho → fade.
 
@@ -1775,6 +1761,29 @@ def status():
         st["api_keys_count"] = len(_apikeys.get("keys") or [])
     st["lan_urls"] = _lan_urls()
     return st
+
+
+@app.get("/api/metrics")
+def metrics(request: Request, janela_min: int = 60, rota: str = ""):
+    """Histórico de operação agregado (#376) — admin, porque é diagnóstico.
+
+    `janela_min` é a janela para trás em minutos (1..10080 = 7 dias); `rota` filtra
+    uma rota normalizada. Devolve p50/p95, contagem e taxa de erro por rota, além
+    do tamanho dos arquivos por dia (é o número que dimensiona o TTL).
+
+    Sem texto e sem áudio: só metadados. O arquivo mora em `state/metrics/`, um
+    JSONL por dia, podado por `metrics_ttl_dias`.
+    """
+    if not _admin_is_allowed(request):
+        raise HTTPException(403, "Histórico é diagnóstico: exige chave administrativa")
+    janela = max(1, min(int(janela_min), 10080)) * 60
+    dados = _metrics.agregar(janela, (rota or "").strip() or None)
+    dados["backend"] = _backend_para_historico()
+    dados["retencao_dias"] = int(_settings.get("metrics_ttl_dias", 14))
+    dados["teto_mb"] = int(_settings.get("metrics_teto_mb", 8))
+    dados["arquivos"] = _metrics.tamanho_por_dia()
+    dados["bytes_por_linha"] = _metrics.media_por_linha()
+    return dados
 
 
 # ---------------------------------------------------------------------------
@@ -2851,12 +2860,114 @@ def tunnel_start(request: Request):
     return {"ok": True, "msg": "Túnel ligado — aguarde ~5s e teste a URL pública"}
 
 
+# ---------------------------------------------------------------------------
+# Encerramento limpo (#358)
+#
+# O `os._exit(0)` cru não fechava nada: pipeline Live, worker de job, dsh quente e
+# peça temporária ficavam para trás, e o boot seguinte só recolhia parte. Aqui o
+# teardown é o MESMO nos dois caminhos: `/api/shutdown` (botão/API) e SIGTERM do
+# `run.sh` (via `lifespan`). Sempre best-effort e com teto curto — encerrar não
+# pode pendurar o processo.
+# ---------------------------------------------------------------------------
+_ENCERRANDO = threading.Lock()
+
+
+def _live_encerra_todas(motivo: str = "shutdown") -> int:
+    """Fecha todas as sessões Live abertas (idempotente com o `finally` do WS)."""
+    with _live_lock:
+        sessoes = list(_live_sessions.values())
+    for sess in sessoes:
+        try:
+            _live_solta_slot(sess, motivo)
+        except Exception:  # noqa: BLE001
+            pass
+    return len(sessoes)
+
+
+def _chat_dsh_fecha_pool() -> int:
+    """Fecha os processos dsh quentes do pool (a Conversa os manteria vivos)."""
+    with _chat_dsh_lock:
+        quentes = list(_chat_dsh_livres)
+        _chat_dsh_livres.clear()
+    for _chave, cli in quentes:
+        try:
+            cli.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return len(quentes)
+
+
+def _jobs_mata_workers() -> int:
+    """SIGTERM no grupo de cada worker de job vivo (sessão própria => killpg).
+
+    Os `.job-*` FICAM: o histórico recarregado no próximo boot aponta para eles e
+    as peças já geradas continuam baixáveis (a limpeza de órfãos do boot só some
+    com o que não tem dono… e agora o dono é o histórico).
+    """
+    mortos = 0
+    for pid_file in OUTPUTS_DIR.glob(".job-*/worker.pid"):
+        try:
+            pid = int(pid_file.read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if not _pid_vivo(pid):
+            continue
+        try:
+            os.killpg(pid, signal.SIGTERM)
+            mortos += 1
+        except OSError:
+            pass
+    return mortos
+
+
+def _encerra_tudo(motivo: str = "shutdown") -> dict:
+    """Teardown único. Devolve o que fez (vai para o log e para o `/api/status`)."""
+    if not _ENCERRANDO.acquire(blocking=False):
+        return {"ja_encerrando": True}      # chamado duas vezes (API + lifespan)
+    feito = {"motivo": motivo, "live": 0, "dsh": 0, "workers": 0, "hist": False}
+    try:
+        feito["live"] = _live_encerra_todas(motivo)
+        feito["dsh"] = _chat_dsh_fecha_pool()
+        feito["workers"] = _jobs_mata_workers()
+        _jobs_hist_salva()
+        feito["hist"] = True
+        print(f"[shutdown] {motivo}: {feito['live']} sessão(ões) Live, "
+              f"{feito['dsh']} dsh, {feito['workers']} worker(s) — histórico salvo",
+              file=sys.stderr, flush=True)
+    except Exception as exc:  # noqa: BLE001 — encerrar nunca pode levantar
+        print(f"[shutdown] falha no teardown: {exc!r}", file=sys.stderr, flush=True)
+    return feito
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    """Recarrega o histórico no start e faz o teardown limpo no SIGTERM/stop.
+
+    É o que dá ao `run.sh` (que manda SIGTERM no uvicorn) o mesmo encerramento do
+    botão: sem isto, matar o app deixava worker, Live e dsh para trás.
+    """
+    _jobs_hist_carrega()
+    yield
+    await asyncio.get_running_loop().run_in_executor(None, _encerra_tudo, "lifespan")
+
+
+# O `lifespan` é definido DEPOIS do `FastAPI(...)` (as funções do teardown moram
+# aqui embaixo, junto do resto do ciclo de vida): plugar no router é o caminho.
+app.router.lifespan_context = _lifespan
+
+
 @app.post("/api/shutdown")
 def shutdown(request: Request):
+    """Desliga o servidor (botão na UI). Reiniciar: dois cliques em TTS-STUDIO.command.
+
+    Passa pelo MESMO teardown do SIGTERM antes do `os._exit`: `os._exit` não roda
+    lifespan, então sem esta chamada o encerramento limpo não aconteceria.
+    """
     _exige_admin(request)
-    """Desliga o servidor (botão na UI). Reiniciar: dois cliques em TTS-STUDIO.command."""
+
     def _stop():
         time.sleep(0.4)  # deixa a resposta HTTP voltar antes de sair
+        _encerra_tudo("api")
         os._exit(0)
 
     threading.Thread(target=_stop, daemon=True).start()
@@ -3205,6 +3316,13 @@ def _apply_settings(payload: dict):
         _settings["voice_denoise_strength"] = _clamp(payload["voice_denoise_strength"], 0.0, 1.0, 0.7)
     if "audio_gain_db" in payload:
         _settings["audio_gain_db"] = _clamp(payload["audio_gain_db"], -15.0, 15.0, 0.0)
+    # cache de áudio por texto (#325): desligado por padrão
+    if "tts_cache" in payload:
+        _settings["tts_cache"] = bool(payload["tts_cache"])
+    if "tts_cache_ttl_s" in payload:
+        _settings["tts_cache_ttl_s"] = int(_clamp(payload["tts_cache_ttl_s"], 0, 86400, 3600))
+    if "tts_cache_max" in payload:
+        _settings["tts_cache_max"] = int(_clamp(payload["tts_cache_max"], 1, 20000, 500))
     for chave, lim in (("audio_eq_low_db", 12.0), ("audio_eq_mid_db", 12.0), ("audio_eq_high_db", 12.0)):
         if chave in payload:
             _settings[chave] = _clamp(payload[chave], -lim, lim, 0.0)
@@ -3483,6 +3601,7 @@ def denoise_voice(voice_id: str, payload: dict = None):
     data = _referencia_pronta(data, sr)
     sf.write(str(path), data, sr, subtype="PCM_16")
     _conds_cache.clear()
+    _cache_limpa()           # a amostra mudou: todo áudio dela em cache caiu
     duration = _wav_duration(path)
     jp = VOICES_DIR / f"{voice_id}.json"
     if jp.exists():
@@ -3672,6 +3791,7 @@ async def import_voices(request: Request, zip_file: UploadFile = File(...)):
     orfaos = sorted((wav_stems - json_stems) | (json_stems - wav_stems))
     # restore pode ter sobrescrito amostras em uso -> invalida o cache de refs
     _conds_cache.clear()
+    _cache_limpa()
     return {"ok": True, "importados": len(importados),
             "vozes": len(wav_stems & json_stems),
             "orfaos": orfaos[:10], "ignorados": ignorados[:10],
@@ -3808,6 +3928,7 @@ def replace_voice_audio(voice_id: str, audio: UploadFile = File(...)):
         except Exception:  # noqa: BLE001
             pass
     _conds_cache.clear()                      # invalida o clone em cache p/ esta voz
+    _cache_limpa()
     return {"ok": True, "duration": dur}
 
 
@@ -4182,6 +4303,60 @@ def _evict_jobs():
             shutil.rmtree(_piece_dir(alvo), ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# Histórico de jobs em DISCO (#358)
+#
+# `_jobs` sozinho é volátil: um restart (ou o `/api/shutdown`) apagava o
+# histórico e quem estava pollando levava 404 no meio do stream. Aqui o estado
+# vai para um arquivo pequeno e atômico a cada transição TERMINAL, e é recarregado
+# no boot — job que não terminou vira `error` com o motivo, nunca 404.
+#
+# Só metadado: id, status, contagem, progresso, erro e o `output` (que é o meta
+# já público do job). Texto e áudio continuam fora.
+# ---------------------------------------------------------------------------
+# Em `state/`, NÃO em `outputs/`: a limpeza de boot varre `outputs/.job-*` e o
+# padrão casaria com `.jobs-history.json` — o histórico morreria antes de ser lido.
+_JOBS_HIST_PATH = BASE / "state" / "jobs-history.json"
+_JOBS_HIST_CAMPOS = ("status", "pieces", "total", "progress", "output", "error")
+_MOTIVO_REINICIO = "reinício do servidor — job em voo não sobrevive (as peças já geradas podem continuar no disco)"
+
+
+def _jobs_hist_salva() -> None:
+    """Grava os últimos `_JOBS_MAX` jobs. Nunca levanta (histórico é acessório)."""
+    try:
+        _JOBS_HIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _jobs_lock:
+            dados = []
+            for jid, j in list(_jobs.items())[-_JOBS_MAX:]:
+                registro = {"id": jid}
+                registro.update({k: j.get(k) for k in _JOBS_HIST_CAMPOS if k in j})
+                dados.append(registro)
+        write_json_atomic(_JOBS_HIST_PATH, {"ts": int(time.time()), "jobs": dados})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _jobs_hist_carrega() -> None:
+    """Recarrega o histórico no boot; job não-terminal vira `error` com motivo.
+
+    Roda no start do lifespan (depois do import, quando `_jobs` já existe).
+    `progress` de job interrompido é limpo: a etapa que estava rodando não volta.
+    """
+    try:
+        dados = json.loads(_JOBS_HIST_PATH.read_text())
+    except (OSError, ValueError):
+        return
+    with _jobs_lock:
+        for item in (dados.get("jobs") or [])[-_JOBS_MAX:]:
+            jid = item.get("id")
+            if not jid or jid in _jobs:
+                continue
+            registro = {**_JOB_BASE, **{k: item.get(k) for k in _JOBS_HIST_CAMPOS if k in item}}
+            if registro.get("status") not in ("done", "error"):
+                registro.update(status="error", error=_MOTIVO_REINICIO, progress=None)
+            _jobs[jid] = registro
+
+
 def _voice_ref_text(voice_id: str):
     """Transcrição opcional da amostra (campo 'ref_text' no JSON da voz).
 
@@ -4238,6 +4413,7 @@ def _unload_local_tts():
     with _model_lock:
         _model = None
         _conds_cache.clear()
+        _cache_limpa()
         _release_mlx_memory(aggressive=True)
         if _model_state.get("status") != "error":
             _model_state.update(status="idle", progress=None, model=_settings.get("model"),
@@ -4323,6 +4499,7 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
             job.update(status="error", error=f"falha ao iniciar worker: {exc}", progress=None)
             _model_state.update(status="idle", progress=None)
             return
+            _jobs_hist_salva()
 
         # poll status do filho enquanto gera (UI recebe pieces progressivos;
         # com fila de falas só publica trechos na entrega)
@@ -4338,6 +4515,7 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
                 _speech_queue_deliver(sq, out.get("duration"), output_meta=out)
             job["pieces"] = pieces
             job.update(status="done", output=out, progress=None, error=None)
+            _jobs_hist_salva()
             _model_state.update(status="ready", progress=None,
                                 device="mlx-worker",
                                 model=_settings.get("model"),
@@ -4348,6 +4526,7 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
         def _finish_err(msg: str) -> None:
             _speech_queue_abort(sq)
             job.update(status="error", error=msg, progress=None, pieces=last_pieces)
+            _jobs_hist_salva()
             _model_state.update(status="idle", progress=None, error=None)
 
         try:
@@ -4689,9 +4868,26 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                             job["warning"] = (f"{job['warning']} | {aviso}"
                                               if job.get("warning") else aviso)
                             audio = None
-                if audio is None:
-                    audio = _gera_local(chunk, i)
-                audio = _pos_processa(audio, sr)
+                # cache (desligado por padrão): guarda o PCM já pós-processado, então
+                # o acerto PULA a geração e o pós dos dois caminhos (#325)
+                cache = _cache_audio()
+                chave_audio = _cache_chave(
+                    chunk, voice_id=voice_id, voice_path=voice_path, family=family,
+                    model=str(_settings.get("model") or ""), language=language,
+                    alvo_remoto=alvo_remoto, omni=omni) if cache is not None else ""
+                guardado = (cache.pega(chave_audio, _tts_cache._ttl_s(_settings))
+                            if chave_audio else None)
+                if guardado is not None:
+                    audio = guardado
+                    job["cache_hits"] = job.get("cache_hits", 0) + 1
+                else:
+                    if audio is None:
+                        audio = _gera_local(chunk, i)
+                    audio = _pos_processa(audio, sr)
+                    if chave_audio:
+                        cache.guarda(chave_audio, audio, sr,
+                                     ttl_s=_tts_cache._ttl_s(_settings),
+                                     teto=_tts_cache._teto(_settings))
                 soma_quad += float(np.sum(np.asarray(audio, dtype=np.float64) ** 2))
                 n_amostras += int(np.asarray(audio).size)
                 if i < len(chunks) - 1:
@@ -4700,7 +4896,6 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                     pausa = int(_pausa_apos(chunk[-1]) * sr)
                     audio = np.concatenate(
                         [audio, np.zeros(pausa, dtype=np.float32)])
-                print(f"[dbg] write i={i} n={len(audio)} sr={sr}", flush=True)
                 sf.write(pdir / f"{i}.wav", audio, sr, subtype="PCM_16")
                 del audio
                 if not hold_pieces:
@@ -4750,6 +4945,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             "rms": round(float(np.sqrt(soma_quad / n_amostras)) if n_amostras else 0.0, 4),
             "lufs_ganho_db": lufs_db,
             "remote_fallback": bool(job.get("remote_fallback")),
+            "cache_hits": int(job.get("cache_hits", 0)),
         }
         write_json_atomic(OUTPUTS_DIR / f"{out_id}.json", meta)
         # fila: espera o fim da fala anterior (duração real do último WAV) antes de entregar
@@ -4758,11 +4954,13 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             _speech_queue_deliver(sq, duration, output_meta=meta)
             job["pieces"] = len(chunks)
         job.update(status="done", output=meta)
+        _jobs_hist_salva()
         # trechos já gravados no final: limpa após graça p/ o cliente terminar o stream
         _schedule_job_cleanup(job_id, delay_s=90)
     except Exception as exc:  # noqa: BLE001
         _speech_queue_abort(sq)
         job.update(status="error", error=str(exc))
+        _jobs_hist_salva()
         _schedule_job_cleanup(job_id, delay_s=30)
     finally:
         job["progress"] = None
@@ -4899,17 +5097,87 @@ def job_piece(job_id: str, index: int):
 
 
 @app.get("/api/outputs")
-def list_outputs():
-    outputs = []
+def list_outputs(request: Request, limit: int | None = None, offset: int = 0,
+                 q: str = "", since: str = ""):
+    """Histórico PAGINADO (`limit` 1–500, default 50; `offset`; `q` busca; `since`).
+
+    Antes era `json.loads` de TODO o diretório por chamada (2.870 metas / 24 MB
+    medidos) e a UI renderizava tudo: cada refresh relia o histórico inteiro.
+
+    Ordenação e corte NÃO precisam do meta: o `mtime` do `.json` é a hora de
+    criação (o arquivo nasce e nunca é reescrito) e ordena igual ao `created_at`,
+    então o caminho quente é `stat` de todos + `json.loads` só da PÁGINA. O `q`
+    casa por substring no texto CRU do arquivo (sem parse) e por isso é o único
+    caminho que lê conteúdo; `since` (ISO `YYYY-MM-DD`, ou epoch) corta por data
+    no `mtime`.
+
+    Resposta: `{"items", "total", "limit", "offset"}` — `total` é a contagem ANTES
+    do corte, para o cabeçalho e o "mostrar mais". `X-Total-Count` repete o número
+    no header para quem preferir. Meta corrompido continua sendo pulado."""
+    from fastapi.responses import JSONResponse
+    # default só quando o parâmetro AUSENTE; valor mandado é clampado em 1–500
+    limite = 50 if limit is None else max(1, min(int(limit), 500))
+    offset = max(0, int(offset or 0))
+    # candidatos por stat: barato e estável (mesmo relógio do created_at)
+    candidatos = []
     for f in OUTPUTS_DIR.glob("*.json"):
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        candidatos.append((st.st_mtime, f.name, f))
+    texto = (q or "").strip().lower()
+    if texto:
+        filtrados = []
+        for item in candidatos:
+            try:
+                if texto in item[2].read_text(errors="replace").lower():
+                    filtrados.append(item)
+            except OSError:
+                continue
+        candidatos = filtrados
+    corte = (since or "").strip()
+    if corte:
+        limite_ts = _ts_do_since(corte)
+        if limite_ts is not None:
+            candidatos = [c for c in candidatos if c[0] >= limite_ts]
+    # mais novo primeiro; nome desempata mtime igual (ordem determinística)
+    candidatos.sort(key=lambda c: (c[0], c[1]), reverse=True)
+    total = len(candidatos)
+    items = []
+    for _mtime, _nome, f in candidatos[offset:offset + limite]:
         try:
             o = json.loads(f.read_text())
         except Exception:  # noqa: BLE001 — meta corrompido não pode derrubar a API
             continue
         if isinstance(o, dict):
-            outputs.append(o)
-    outputs.sort(key=lambda o: o.get("created_at", ""), reverse=True)
-    return outputs
+            items.append(o)
+    return JSONResponse({"items": items, "total": total, "limit": limite, "offset": offset},
+                        headers={"X-Total-Count": str(total)})
+
+
+def _ts_do_since(valor: str) -> float | None:
+    """`since` em epoch (número) ou data/hora ISO → timestamp; None se ilegível.
+
+    Do MAIS específico para o menos: um valor com hora não pode cair no formato
+    de dia inteiro e virar meia-noite (perderia a hora que o cliente mandou)."""
+    v = (valor or "").strip()
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        pass
+    # aceita `T` ou espaço entre data e hora; só o prefixo reconhecido vale
+    tentativas = (("%Y-%m-%dT%H:%M:%S", 19), ("%Y-%m-%dT%H:%M", 16),
+                  ("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d %H:%M", 16),
+                  ("%Y-%m-%d", 10))
+    for formato, tamanho in tentativas:
+        if len(v) < tamanho:
+            continue
+        try:
+            return time.mktime(time.strptime(v[:tamanho], formato))
+        except ValueError:
+            continue
+    return None
 
 
 @app.get("/api/outputs/{out_id}/audio")
@@ -5030,6 +5298,7 @@ def _unload_local_models(tts=True, stt=True, mt=True, ser=True) -> dict:
                     _model = None
                     freed.append("tts")
                 _conds_cache.clear()
+                _cache_limpa()
                 if _model_state.get("status") != "error":
                     # precision/path junto com o status: sem isto /api/status segue
                     # afirmando "ready, precision X, path Y" de um modelo que já
@@ -8573,6 +8842,59 @@ app.add_middleware(
     # explícito — ele tem que chegar a quem vai repetir.
     expose_headers=["Retry-After"],
 )
+
+# Estágio do histórico a partir da rota (#376). Serve para ler "quanto custa o
+# STT" sem abrir o código; rota fora do mapa entra sem estágio.
+_ESTAGIO_POR_ROTA = (
+    ("/api/tts", "tts"), ("/v1/audio/speech", "tts"),
+    ("/api/live", "live"), ("/api/chat", "llm"), ("/v1/chat", "llm"),
+    ("/api/translate", "llm"), ("/v1/audio/transcriptions", "stt"),
+    ("/api/transcribe", "stt"),
+)
+
+
+def _estagio_da_rota(rota: str) -> str:
+    for prefixo, estagio in _ESTAGIO_POR_ROTA:
+        if rota.startswith(prefixo):
+            return estagio
+    return ""
+
+
+def _backend_para_historico() -> str:
+    """Id do backend efetivo, curto. Nunca a chave nem a URL."""
+    try:
+        return str((_model_state.get("backend_id") or ""))[:24]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+@app.middleware("http")
+async def _historico_operacao(request, call_next):
+    """Grava uma linha por requisição de API no histórico (#376).
+
+    Registrado por último na pilha => roda por FORA: vê o status FINAL, inclusive
+    o 401 da auth e o 429 do limitador (é o que responde "quantos 429 de
+    admissão"). O preço é medir também o trabalho deles — para `/api/status` isso
+    é ruído desprezível. Fora de `/api/` e `/v1/` não grava: asset não é operação.
+
+    Falha do histórico nunca vira falha do request: o `registrar` já engole, e aqui
+    só há aritmética de tempo.
+    """
+    caminho = request.url.path
+    if not caminho.startswith(("/api/", "/v1/")):
+        return await call_next(request)
+    t0 = time.monotonic()
+    resposta = await call_next(request)
+    try:
+        _metrics.registrar(_rate_path_normalizado(caminho),
+                           (time.monotonic() - t0) * 1000.0,
+                           int(getattr(resposta, "status_code", 0) or 0),
+                           _estagio_da_rota(caminho), _backend_para_historico(),
+                           ttl_dias=int(_settings.get("metrics_ttl_dias", 14)),
+                           teto_mb=int(_settings.get("metrics_teto_mb", 8)))
+    except Exception:  # noqa: BLE001
+        pass
+    return resposta
 
 # UI estática (registrada por último para não engolir /api/* e /v1/*)
 app.mount("/", StaticFiles(directory=BASE / "static", html=True), name="static")

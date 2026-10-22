@@ -1174,3 +1174,95 @@ def test_enrolls_concorrentes_nao_perdem_vetor(tmp_path, monkeypatch):
     for t in ts:
         t.join()
     assert len(json.loads(alvo.read_text())["ana"]["vecs"]) == 8
+
+
+# ---------------------------------------------------------------------------
+# #325 — cache de áudio por texto/voz/parâmetros
+# ---------------------------------------------------------------------------
+
+def _render_cache(monkeypatch, tmp_path, texto=_TEXTO_1_TRECHO, omni=None):
+    chamadas = {"n": 0}
+
+    def _gerador(model, txt, *a, **k):
+        chamadas["n"] += 1
+        return _bom()
+
+    job_id = _job_de_render(monkeypatch, tmp_path, _gerador, texto=texto)
+    app._run_tts_job(job_id, texto, "voz-x", tmp_path / "voz-x.wav", "pt",
+                     omni or {"num_steps": 4}, use_queue=False)
+    job = app._jobs.pop(job_id)
+    return job, chamadas["n"]
+
+
+def test_cache_desligado_por_padrao(monkeypatch, tmp_path):
+    monkeypatch.delenv("TTS_TTS_CACHE", raising=False)
+    monkeypatch.setitem(app._settings, "tts_cache", False)
+    monkeypatch.setattr(app, "OUTPUTS_DIR", tmp_path)
+    assert app._cache_audio() is None
+    monkeypatch.setenv("TTS_TTS_CACHE", "1")
+    assert app._cache_audio() is not None
+    monkeypatch.setenv("TTS_TTS_CACHE", "0")
+    assert app._cache_audio() is None
+
+
+def test_cache_hit_nao_regera_e_devolve_wav_identico(monkeypatch, tmp_path):
+    monkeypatch.setenv("TTS_TTS_CACHE", "1")
+    a, n_a = _render_cache(monkeypatch, tmp_path)
+    b, n_b = _render_cache(monkeypatch, tmp_path)
+    assert n_a == 1 and n_b == 0, "a 2ª rodada chamou o gerador"
+    assert a.get("cache_hits", 0) == 0 and b.get("cache_hits") == 1
+    assert b["output"]["cache_hits"] == 1
+    wa = (tmp_path / f"{a['output']['id']}.wav").read_bytes()
+    wb = (tmp_path / f"{b['output']['id']}.wav").read_bytes()
+    assert wa == wb, "o cache devolveu áudio diferente"
+
+
+def test_cache_invalida_por_texto_parametro_e_voz(monkeypatch, tmp_path):
+    monkeypatch.setenv("TTS_TTS_CACHE", "1")
+    _render_cache(monkeypatch, tmp_path)
+    # texto diferente
+    _, n_texto = _render_cache(monkeypatch, tmp_path, texto=_TEXTO_1_TRECHO + " E mais.")
+    assert n_texto == 1
+    # parâmetro diferente (num_steps)
+    _, n_param = _render_cache(monkeypatch, tmp_path, omni={"num_steps": 8})
+    assert n_param == 1
+    # voz regravada (mtime novo) invalida mesmo com texto e parâmetros iguais
+    caminho = tmp_path / "voz-x.wav"
+    caminho.write_bytes(b"regravada")
+    os.utime(caminho, (1, 1))
+    _, n_voz = _render_cache(monkeypatch, tmp_path)
+    assert n_voz == 1
+
+
+def test_cache_expira_pelo_ttl(monkeypatch, tmp_path):
+    monkeypatch.setenv("TTS_TTS_CACHE", "1")
+    monkeypatch.setitem(app._settings, "tts_cache_ttl_s", 60)
+    _render_cache(monkeypatch, tmp_path)
+    cache_dir = tmp_path / ".cache-tts"
+    assert list(cache_dir.glob("*.wav"))
+    for p in cache_dir.glob("*.wav"):
+        os.utime(p, (1, 1))            # bem velho
+    _, n = _render_cache(monkeypatch, tmp_path)
+    assert n == 1, "entrada expirada foi usada"
+
+
+def test_cache_limpo_nos_pontos_de_invalidacao(monkeypatch, tmp_path):
+    import tts_cache
+
+    monkeypatch.setattr(app, "OUTPUTS_DIR", tmp_path)
+    (tmp_path / ".cache-tts").mkdir()
+    (tmp_path / ".cache-tts" / "x.wav").write_bytes(b"z")
+    chamou = {"n": 0}
+    original = tts_cache.Cache.limpa
+
+    def espia(self):
+        chamou["n"] += 1
+        return original(self)
+
+    monkeypatch.setattr(tts_cache.Cache, "limpa", espia)
+    app._cache_limpa()
+    assert chamou["n"] == 1 and not list((tmp_path / ".cache-tts").glob("*.wav"))
+    # despejo do modelo (caminho de troca de backend) também invalida
+    monkeypatch.setattr(app, "_release_mlx_memory", lambda *a, **k: None)
+    app._unload_local_tts()
+    assert chamou["n"] == 2
