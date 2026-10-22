@@ -287,6 +287,7 @@ def _estado_isolado(tmp_path_factory):
              "created_at": "2026-01-01 00:00:00", "role": "use"},
         ],
     }, indent=2))
+    apikeys_destino.chmod(0o600)     # mesmo modo do arquivo real
     apikeys_original = app.APIKEYS_PATH
     app.APIKEYS_PATH = apikeys_destino
     # O `.apikey` (arquivo legado que o `run.sh` lê) TAMBÉM: `_save_apikeys` chama
@@ -294,6 +295,7 @@ def _estado_isolado(tmp_path_factory):
     # cada gravação de chave mesmo com o `.apikeys.json` isolado (#435).
     legado_destino = pasta / ".apikey"
     legado_destino.write_text(chave_teste + "\n")
+    legado_destino.chmod(0o600)
     legado_original = app.LEGACY_APIKEY_PATH
     app.LEGACY_APIKEY_PATH = legado_destino
     # perfis de locutor: mesmo critério (o app grava em `_speaker_salva`)
@@ -302,6 +304,14 @@ def _estado_isolado(tmp_path_factory):
         perfis_destino.write_bytes(app.SPEAKER_PATH.read_bytes())
     perfis_original = app.SPEAKER_PATH
     app.SPEAKER_PATH = perfis_destino
+    # `outputs/` em tmp (#458): a suíte grava wav de verdade e o diretório do dono
+    # acumulava milhares deles (medido: 3.509, 34 MB) sem poda possível — o teto é
+    # do #430. O job herda o caminho da requisição, então isto vale também para os
+    # testes de job.
+    saida_destino = pasta / "outputs"
+    saida_destino.mkdir()
+    saida_original = app.OUTPUTS_DIR
+    app.OUTPUTS_DIR = saida_destino
     # env do dono fora da RAM: `TTS_ROD_API_KEY`/`TTS_ROD_ADMIN_KEY` exportados
     # decidiriam papel (e poriam secret real na memória). Restaurados no teardown.
     env_api_original, admin_api_original = app._ENV_API_KEY, app._ADMIN_API_KEY
@@ -313,6 +323,7 @@ def _estado_isolado(tmp_path_factory):
     app.LEGACY_APIKEY_PATH = legado_original
     app.SPEAKER_PATH = perfis_original
     app.SETTINGS_PATH = original
+    app.OUTPUTS_DIR = saida_original
     app._ENV_API_KEY, app._ADMIN_API_KEY = env_api_original, admin_api_original
     # `ignore_errors`: o pytest pode ter varrido o basetemp antes (sessão verde
     # com a política `failed`), e num run vermelho é justamente aqui que a cópia
