@@ -361,6 +361,20 @@ def _motor_falso(fed: list):
     return SimpleNamespace(TurnEngine=_Eng, Config=lambda **k: k)
 
 
+def _espera_ate(cond, teto: float = 10.0) -> bool:
+    """Espera `cond` virar verdadeira, com teto generoso.
+
+    Antes eram 40 × 0,05 s = 2 s em cada espera: com a suíte inteira rodando (e
+    a máquina carregada) o encaixe do handler — que envolve abrir o WebSocket —
+    estourava a janela e o teste ficava intermitente (#449)."""
+    limite = time.monotonic() + teto
+    while time.monotonic() < limite:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return bool(cond())
+
+
 def test_handler_abre_o_filtro_e_fecha_no_finally(monkeypatch):
     """O encaixe do handler: o frame passa pelo filtro E o `fechar` roda ao cair.
 
@@ -397,17 +411,11 @@ def test_handler_abre_o_filtro_e_fecha_no_finally(monkeypatch):
             assert isinstance(sess.get("rnnoise"), _EspiaoFiltro), \
                 "o handler não passou por `_live_rnnoise_novo`"
             ws.send_bytes(cru)
-            for _ in range(40):
-                if fed:
-                    break
-                time.sleep(0.05)
+            assert _espera_ate(lambda: fed), "o motor nunca viu o frame"
             assert fed == [limpo], "o frame que o motor viu não passou pelo filtro"
             assert bytes(sess["buffer"]) == limpo
         # sair do `with` fecha o ws: o `finally` do handler tem de soltar o filtro
-        for _ in range(40):
-            if criados[0].fechou:
-                break
-            time.sleep(0.05)
+        _espera_ate(lambda: criados[0].fechou)
     finally:
         with app._live_lock:
             app._live_sessions.clear()
