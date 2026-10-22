@@ -1,0 +1,7 @@
+== ANTES da máscara (vazava) ==
+[sinal] SIGTERM — pai=74922 (bash /tmp/g440/pai375.sh 65404 --token TOP-SECRET-9999) · eu=/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python /tmp/g440/srv375.py --port 65404 --token TOP-SECRET-9999
+
+== DEPOIS (mascarado, shutdown continua) ==
+[sinal] SIGTERM — pai=33068 (bash /tmp/g440/pai375.sh 65420 --token ***9999) · eu=/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python /tmp/g440/srv375.py --port 65420 --token ***9999
+[shutdown] lifespan: 0 sessão(ões) Live, 0 dsh, 0 worker(s) — histórico salvo
+INFO:     Application shutdown complete.
