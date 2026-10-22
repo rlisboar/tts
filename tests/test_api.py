@@ -4,6 +4,7 @@ Cobre a classe de bug que escapou antes (nomes indefinidos dentro de funções
 que só rodam em runtime/request).
 """
 
+import concurrent.futures
 import contextlib
 import hashlib
 import io
@@ -707,11 +708,12 @@ def test_csp_do_header_igual_ao_meta_enquanto_os_dois_existem(client):
 
 def test_csp_em_rota_de_api_e_fora_dos_docs(client, auth):
     assert "content-security-policy" in client.get("/api/status", headers=auth).headers
-    # /docs e /redoc montam a própria página (CSS do CDN) e ficam como sempre foram
+    # /docs e /redoc montam a própria página (CSS do CDN): recebem a policy de
+    # DOCS (#282) — não mais "sem CSP" — e continuam com X-Frame-Options
     for path in ("/docs", "/redoc"):
         r = client.get(path, headers=auth)      # /docs exige chave fora do loopback
         assert r.status_code == 200, path
-        assert "content-security-policy" not in r.headers, path
+        assert r.headers.get("content-security-policy") == app._CSP_DOCS, path
         assert r.headers.get("x-frame-options") == "DENY"
 
 
@@ -2364,7 +2366,7 @@ def test_apikeys_role_separa_admin_de_uso(client, auth):
     snap_enabled = app._apikeys.get("enabled", True)
     snap_keys = [dict(k) for k in (app._apikeys.get("keys") or [])]
     try:
-        r = client.post("/api/apikeys", headers=auth, json={"name": "de uso", "role": "use"})
+        r = client.post("/api/apikeys", headers=auth, json={"name": "pytest-de-uso", "role": "use"})
         assert r.status_code == 200
         kid, secret = r.json()["key"]["id"], r.json()["key"]["secret"]
         uso = {"X-API-Key": secret}
@@ -2476,7 +2478,7 @@ def test_apikeys_role_sobrevive_a_releitura_do_arquivo(client, auth, apikeys_iso
     relia o mesmo conjunto, então a chave `use` voltava legada (admin) na primeira
     subida. A mordida é o round-trip inteiro — tirar o `role` da gravação deixa a
     asserção do DISCO vermelha, e a do papel (`403`) vermelha junto."""
-    r = client.post("/api/apikeys", headers=auth, json={"name": "de uso", "role": "use"})
+    r = client.post("/api/apikeys", headers=auth, json={"name": "pytest-de-uso", "role": "use"})
     assert r.status_code == 200, r.text
     kid, secret = r.json()["key"]["id"], r.json()["key"]["secret"]
 
@@ -2602,7 +2604,7 @@ def test_apikeys_ultima_chave_com_admin_key_sai_sem_409(client, chave_unica, mon
 
 def test_apikeys_nao_ultima_chave_sai_direto(client, chave_unica):
     """Remover chave que não é a última não muda a postura: sem 409, sem aviso."""
-    client.post("/api/apikeys", headers=chave_unica, json={"name": "segunda"})
+    client.post("/api/apikeys", headers=chave_unica, json={"name": "pytest-segunda"})
     assert len(app._apikeys["keys"]) == 2
     r = client.delete("/api/apikeys/unica01", headers=chave_unica)
     assert r.status_code == 200, r.text
@@ -2709,6 +2711,550 @@ def test_status_nao_regride_para_chave_de_uso(client, auth, chave_de_uso, sem_ad
     assert r.status_code == 200
     assert client.get("/api/settings", headers=chave_de_uso).json()["is_admin"] is False
     assert client.get("/api/settings", headers=auth).json()["is_admin"] is True
+
+
+# ---------------------------------------------------------------------------
+# Histórico PAGINADO (auditoria #282): a rota lia o diretório inteiro a cada
+# chamada (2.870 metas / 24 MB) e devolvia tudo. Ordenação e corte agora saem do
+# `mtime` (o `.json` nasce e nunca é reescrito), então só a PÁGINA é parseada.
+# ---------------------------------------------------------------------------
+
+def _outputs_falsos(tmp_path, monkeypatch, quantos=120):
+    """Diretório de saídas próprio com metas ordenáveis (mtime controlado)."""
+    d = tmp_path / "outputs"
+    d.mkdir()
+    base = 1_700_000_000.0
+    for i in range(quantos):
+        mid = f"out{i:04d}"
+        (d / f"{mid}.json").write_text(_json.dumps({
+            "id": mid, "text": f"texto numero {i} assunto {'par' if i % 2 else 'impar'}",
+            "duration": 2.0, "elapsed": 0.5,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(base + i * 60)),
+        }))
+        os.utime(d / f"{mid}.json", (base + i * 60, base + i * 60))
+    monkeypatch.setattr(app, "OUTPUTS_DIR", d)
+    return d
+
+
+def test_outputs_pagina_com_total_e_sem_repeticao(client, auth, tmp_path, monkeypatch):
+    _outputs_falsos(tmp_path, monkeypatch)
+    r = client.get("/api/outputs?limit=50", headers=auth)
+    assert r.status_code == 200
+    corpo = r.json()
+    assert len(corpo["items"]) == 50
+    assert corpo["total"] == 120 and r.headers["X-Total-Count"] == "120"
+    assert corpo["limit"] == 50 and corpo["offset"] == 0
+    ids = [o["id"] for o in corpo["items"]]
+    assert ids == sorted(ids, reverse=True)          # mais novo primeiro (mtime)
+
+    p2 = client.get("/api/outputs?limit=50&offset=50", headers=auth).json()
+    assert len(p2["items"]) == 50 and p2["total"] == 120
+    assert not (set(ids) & {o["id"] for o in p2["items"]}), "página 2 não repete"
+    p3 = client.get("/api/outputs?limit=50&offset=100", headers=auth).json()
+    assert len(p3["items"]) == 20, "última página vem com o resto"
+
+
+def test_outputs_compat_lista_e_tetos(client, auth, tmp_path, monkeypatch):
+    """Cliente ANTIGO (sem parâmetro nenhum) recebe a LISTA crua de sempre; a partir
+    do momento em que pede paginação/filtro, o formato vira objeto e `limit` é
+    clampado em 1–500."""
+    _outputs_falsos(tmp_path, monkeypatch, quantos=60)
+    r = client.get("/api/outputs", headers=auth)
+    assert isinstance(r.json(), list), "sem parâmetro nenhum, o formato é o de antes"
+    assert len(r.json()) == 60 and r.headers["X-Total-Count"] == "60"
+
+    assert len(client.get("/api/outputs?limit=50", headers=auth).json()["items"]) == 50
+    assert len(client.get("/api/outputs?limit=9999", headers=auth).json()["items"]) == 60
+    assert client.get("/api/outputs?limit=0", headers=auth).json()["limit"] == 1
+    assert client.get("/api/outputs?offset=-5", headers=auth).json()["offset"] == 0
+    # `q` sozinho já seleciona o modo paginado (objeto), sem `limit`
+    so_q = client.get("/api/outputs?q=assunto par", headers=auth).json()
+    assert isinstance(so_q, dict) and so_q["total"] == 30 and len(so_q["items"]) == 30
+
+
+def test_outputs_busca_e_since(client, auth, tmp_path, monkeypatch):
+    """`q` casa no texto cru e `since` corta por data; ambos mexem no `total`."""
+    d = _outputs_falsos(tmp_path, monkeypatch, quantos=10)
+    assert client.get("/api/outputs?q=assunto par", headers=auth).json()["total"] == 5
+    assert client.get("/api/outputs?q=NADA", headers=auth).json()["total"] == 0
+
+    # since = mtime do 5º meta: sobram ele e os 5 mais novos
+    quinto = (d / "out0004.json").stat().st_mtime
+    corpo = client.get(f"/api/outputs?since={int(quinto)}&limit=500", headers=auth).json()
+    assert corpo["total"] == 6
+    assert all(o["id"] >= "out0004" for o in corpo["items"])
+    assert client.get("/api/outputs?since=ontem", headers=auth).json()["total"] == 10
+
+
+def test_outputs_meta_corrompido_e_pulado(client, auth, tmp_path, monkeypatch):
+    d = _outputs_falsos(tmp_path, monkeypatch, quantos=3)
+    (d / "quebrado.json").write_text("{nao e json")
+    os.utime(d / "quebrado.json", (1_900_000_000.0, 1_900_000_000.0))   # o mais novo
+    r = client.get("/api/outputs", headers=auth)
+    assert r.headers["X-Total-Count"] == "4"         # o quebrado conta no total…
+    assert [o["id"] for o in r.json()] == ["out0002", "out0001", "out0000"]
+
+
+# ---------------------------------------------------------------------------
+# Estado e concorrência da Conversa / unload / caches (auditoria #282).
+# ---------------------------------------------------------------------------
+
+def _espera_status(client, auth, sid, alvo, tentativas=120):
+    import time as _t
+    for _ in range(tentativas):
+        d = client.get(f"/api/chat/{sid}", headers=auth).json()
+        if d["status"] == alvo:
+            return d
+        _t.sleep(0.02)
+    raise AssertionError(f"sessão não chegou em {alvo}: {d}")
+
+
+def test_chat_nove_conversas_simultaneas_nao_viram_timeout(client, auth, monkeypatch):
+    """9 conversas com provedor SAUDÁVEL: a 9ª não pode morrer por tempo de FILA.
+
+    O bug: um único `result(timeout=150)` contava a espera na fila do executor
+    (8 threads) como se fosse o provedor falando."""
+    import time as _t
+    monkeypatch.setattr(app, "_chat_llm", lambda msgs: _t.sleep(0.05) or '{"final": true, "text": "ok"}')
+    sids = []
+    for i in range(9):
+        r = client.post("/api/chat/start", headers=auth, json={"objective": f"o{i}"})
+        assert r.status_code == 200
+        sids.append(r.json()["session_id"])
+    for sid in sids:
+        d = _espera_status(client, auth, sid, "confirmed")
+        assert "demorou" not in (d.get("error") or "")
+        assert d["text"] == "ok"
+
+
+def test_chat_fila_estourada_nao_e_erro_do_provedor(client, auth, monkeypatch):
+    """Fila cheia: o turno SEGUE na fila e o GET mostra `fila: true` — erro
+    nenhum, porque o provedor não foi chamado ainda."""
+    import concurrent.futures
+    import threading
+    solta = threading.Event()
+
+    def _llm(msgs):
+        solta.wait(10)
+        return '{"final": true, "text": "depois da fila"}'
+
+    monkeypatch.setattr(app, "_chat_llm", _llm)
+    monkeypatch.setattr(app, "_CHAT_FILA_ESPERA_S", 0.15)
+    # pool de UMA thread: a 1ª sessão ocupa, as outras ficam na fila
+    monkeypatch.setattr(app, "_chat_executor",
+                        concurrent.futures.ThreadPoolExecutor(max_workers=1))
+    for i in range(3):
+        client.post("/api/chat/start", headers=auth, json={"objective": f"o{i}"})
+    r = client.post("/api/chat/start", headers=auth, json={"objective": "fila"})
+    assert r.status_code == 200
+    sid = r.json()["session_id"]
+    # o flag `fila` é posto pelo worker quando a espera do pool estoura: poll
+    import time as _t
+    d = {}
+    for _ in range(100):
+        d = client.get(f"/api/chat/{sid}", headers=auth).json()
+        if d["fila"]:
+            break
+        _t.sleep(0.02)
+    assert d["fila"] is True and d["error"] == "", d
+    solta.set()
+    d = _espera_status(client, auth, sid, "confirmed")
+    assert d["text"] == "depois da fila" and d["fila"] is False
+
+
+def test_chat_teto_de_sessoes_e_expurgo(client, auth, monkeypatch):
+    """Teto duro de sessões: a mais antiga sai; TTL também continua podando."""
+    monkeypatch.setattr(app, "_chat_llm", lambda msgs: '{"final": false, "reply": "?"}')
+    monkeypatch.setattr(app, "_CHAT_MAX_SESSIONS", 3)
+    with app._chat_lock:
+        app._chat_sessions.clear()
+    sids = [client.post("/api/chat/start", headers=auth,
+                        json={"objective": f"o{i}"}).json()["session_id"] for i in range(5)]
+    with app._chat_lock:
+        vivos = set(app._chat_sessions)
+    assert len(vivos) <= 3, "o teto tem de valer"
+    assert sids[0] not in vivos, "a mais antiga é a evictada"
+    assert sids[-1] in vivos
+    # TTL: uma sessão velha sai na próxima poda
+    with app._chat_lock:
+        app._chat_sessions[sids[-1]]["updated"] = time.time() - app.CHAT_TTL - 5
+        app._chat_purge(time.time())
+        assert sids[-1] not in app._chat_sessions
+
+
+def test_models_unload_com_geracao_em_curso_devolve_409(client, auth, monkeypatch):
+    """Job in-process longo segura o `_gen_lock`: 409 em vez de pendurar."""
+    monkeypatch.setattr(app, "_GEN_ESPERA_UNLOAD_S", 0.1)
+    assert app._gen_lock.acquire(timeout=1)     # simula geração em curso
+    try:
+        r = client.post("/api/models/unload", headers=auth, json={})
+        assert r.status_code == 409, r.text
+        assert "em curso" in r.json()["detail"]
+        assert r.json()["tts_pendente"]
+        assert (r.json()["unloaded"] is not None)
+    finally:
+        app._gen_lock.release()
+    # sem ninguém segurando o lock, volta a 200
+    assert client.post("/api/models/unload", headers=auth, json={}).status_code == 200
+
+
+def test_cache_de_voz_remota_tem_teto_e_sai_na_delecao(client, auth, monkeypatch,
+                                                       vozes_isoladas):
+    monkeypatch.setattr(app, "_remote_voice_cache", {})
+    monkeypatch.setattr(app, "_REMOTE_VOICE_CACHE_MAX", 2)
+    app._remote_voice_cache_guarda("v1", ("http://r", "v1", 1))
+    app._remote_voice_cache_guarda("v2", ("http://r", "v2", 1))
+    app._remote_voice_cache_guarda("v3", ("http://r", "v3", 1))
+    assert list(app._remote_voice_cache) == ["v2", "v3"], "o mais antigo sai pelo teto"
+
+    monkeypatch.setattr(app, "_REMOTE_VOICE_CACHE_MAX", 64)
+    app._remote_voice_cache["morta"] = ("http://r", "morta", 1)
+    assert client.delete("/api/voices/naoexiste01", headers=auth).status_code == 404
+    assert "morta" in app._remote_voice_cache        # 404 não limpa nada
+    app._remote_voice_cache["existe"] = ("http://r", "existe", 1)
+    # `voices/` em tmp (fixture): com o diretório REAL, duas suítes concorrentes
+    # disputam o mesmo nome de arquivo e uma apaga o da outra (#435/concorrência)
+    vd, _sentinela = vozes_isoladas
+    (vd / "existe.wav").write_bytes(b"RIFF")
+    assert client.delete("/api/voices/existe", headers=auth).status_code == 200
+    assert "existe" not in app._remote_voice_cache
+
+
+def test_remote_tts_extra_e_campo_admin(client, auth, chave_de_uso, sem_admin_key):
+    """O extra sobrepõe o corpo de TODO trecho: chave de uso não pode trocá-lo."""
+    admin = client.get("/api/settings", headers=auth).json()["remote_tts_extra"]
+    assert admin == "{}" or admin == ""
+    r = client.post("/api/settings", headers=chave_de_uso,
+                    json={"remote_tts_extra": '{"speed": 0.9}'})
+    assert "remote_tts_extra" in r.json()["admin_ignored"]
+    assert app._settings["remote_tts_extra"] != '{"speed": 0.9}'
+    r = client.post("/api/settings", headers=auth, json={"remote_tts_extra": '{"speed": 0.9}'})
+    assert "remote_tts_extra" not in r.json()["admin_ignored"]
+    assert app._settings["remote_tts_extra"] == '{"speed": 0.9}'
+
+
+def test_extra_remoto_sem_text_nem_voice(monkeypatch, capsys):
+    """`text`/`voice` do extra não valem para todos os trechos: são descartados
+    com aviso (override que muda sozinho é degradação silenciosa)."""
+    monkeypatch.setattr(app, "_extra_remoto_avisados", set())
+    assert app._extra_remoto('{"speed": 0.9, "num_steps": 8}') == {"speed": 0.9, "num_steps": 8}
+    assert app._extra_remoto('{"text": "fixo", "speed": 1.1}') == {"speed": 1.1}
+    assert app._extra_remoto('{"voice": "x"}') == {}
+    saida = capsys.readouterr()
+    assert "traz 'text'" in saida.err and "traz 'voice'" in saida.err
+    assert saida.out == ""
+    # JSON quebrado e não-dict também são ignorados, e o lixo é avisado UMA vez
+    assert app._extra_remoto("{nao e json") == {}
+    assert app._extra_remoto("[]") == {}
+    assert app._extra_remoto("{nao e json") == {}
+    assert capsys.readouterr().err.count("não é JSON válido") == 1
+    assert app._extra_remoto("") == {} and app._extra_remoto(None) == {}
+
+
+def test_zip_do_mic_router_exige_admin(client, auth, chave_de_uso, sem_admin_key):
+    """O zip carrega a chave primária em claro: credencial, logo admin."""
+    r = client.get("/api/client/mic-router", headers=chave_de_uso)
+    assert r.status_code == 403 and "admin" in r.json()["detail"]
+    r = client.get("/api/client/mic-router", headers=auth)
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/zip")
+    import io
+    import zipfile
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        cfg = _json.loads(z.read("mic-router/config.json"))
+    assert cfg["api_key"], "o zip entrega a chave por desenho (agora só para admin)"
+
+
+def test_listagem_de_chaves_segue_aberta_sem_segredo(client, auth, chave_de_uso, sem_admin_key):
+    """Decisão: metadado mascarado qualquer chave vê; o segredo só com admin."""
+    corpo = client.get("/api/apikeys", headers=chave_de_uso).json()
+    assert corpo["can_reveal"] is False
+    assert corpo["keys"] and all("secret" not in k for k in corpo["keys"])
+    assert client.get("/api/apikeys?reveal=1", headers=chave_de_uso).json()["can_reveal"] is False
+
+
+# ---------------------------------------------------------------------------
+# Rotas sem teste funcional (auditoria #288, item 3). Um `_safe_id`/`unlink`/403
+# quebrado passava verde. Onde a rota grava em voices/, voz sintética e o arquivo
+# final asserido.
+# ---------------------------------------------------------------------------
+
+def test_rotate_apikey_troca_o_secret_e_invalida_o_antigo(client, auth, chave_de_uso,
+                                                          sem_admin_key):
+    r = client.post("/api/apikeys", headers=auth, json={"name": "pytest-rotacionavel"})
+    kid, velho = r.json()["key"]["id"], r.json()["key"]["secret"]
+    h_velho = {"X-API-Key": velho}
+    assert client.get("/api/status", headers=h_velho).status_code == 200
+
+    assert client.post(f"/api/apikeys/{kid}/rotate", headers=chave_de_uso).status_code == 403
+    assert client.post("/api/apikeys/__env__/rotate", headers=auth).status_code == 400
+    assert client.post("/api/apikeys/naoexiste/rotate", headers=auth).status_code == 404
+
+    r = client.post(f"/api/apikeys/{kid}/rotate", headers=auth)
+    assert r.status_code == 200
+    novo = r.json()["key"]["secret"]
+    assert novo != velho and r.json()["key"]["role"] is None
+    assert client.get("/api/status", headers={"X-API-Key": novo}).status_code == 200
+    assert client.get("/api/status", headers=h_velho).status_code == 401, \
+        "a chave antiga tem de morrer na hora"
+    assert app._key_is_valid(novo) and not app._key_is_valid(velho)
+
+
+def test_backends_e_mic_route(client, auth):
+    d = client.get("/api/backends", headers=auth).json()
+    assert d["current"] and any(b["id"] == d["current"] for b in d["backends"])
+
+    assert client.get("/api/mic-route", headers=auth).json()["mode"] in ("app", "real")
+    r = client.post("/api/mic-route", headers=auth, json={"mode": "real"})
+    assert r.status_code == 200 and r.json()["mode"] == "real"
+    assert client.get("/api/mic-route", headers=auth).json()["mode"] == "real"
+    assert client.post("/api/mic-route", headers=auth, json={"mode": "x"}).status_code == 400
+    client.post("/api/mic-route", headers=auth, json={"mode": "app"})
+
+
+def test_chat_debug_desligado_e_ligado(client, auth, monkeypatch):
+    monkeypatch.delenv("TTS_CHAT_DEBUG", raising=False)
+    assert client.post("/api/chat-debug", headers=auth, json={"a": 1}).json()["disabled"] is True
+    monkeypatch.setenv("TTS_CHAT_DEBUG", "1")
+    assert client.post("/api/chat-debug", headers=auth, json={"a": 1}).status_code == 200
+
+
+def test_replace_troca_o_audio_da_voz_e_respeita_o_id(client, auth, vozes_isoladas):
+    vd, sentinela = vozes_isoladas
+    vd.joinpath("voz-real.wav").write_bytes(_wav_bytes(1.0))
+    vd.joinpath("voz-real.json").write_text(_json.dumps({"id": "voz-real", "duration": 1.0}))
+    novo = _wav_bytes(2.0)
+    r = client.post("/api/voices/voz-real/replace", headers=auth,
+                    files={"audio": ("a.wav", novo, "audio/wav")})
+    assert r.status_code == 200 and r.json()["duration"] > 1.5
+    assert vd.joinpath("voz-real.wav").read_bytes() == novo, "o wav da voz foi substituído"
+    # áudio curto demais é 400 e o arquivo NOVO fica (o curto foi gravado)
+    r = client.post("/api/voices/voz-real/replace", headers=auth,
+                    files={"audio": ("a.wav", _wav_bytes(0.2), "audio/wav")})
+    assert r.status_code == 400 and "curto" in r.json()["detail"]
+    # id inexistente → 404
+    assert client.post("/api/voices/naoexiste/replace", headers=auth,
+                       files={"audio": ("a.wav", novo, "audio/wav")}).status_code == 404
+    # id com espaço: o ARQUIVO existe em voices/, só o `_safe_id` o rejeita — é o
+    # ponto que morde se alguém tirar a validação (o cliente normaliza `../`, então
+    # a travessia chega aqui como id já resolvido)
+    assert client.post("/api/voices/voz%20exotica/replace", headers=auth,
+                       files={"audio": ("a.wav", novo, "audio/wav")}).status_code == 404
+    # travessia de verdade: `%2E%2E` chega como `..` no parâmetro → 404 do `_safe_id`
+    assert client.post("/api/voices/%2E%2E/replace", headers=auth,
+                       files={"audio": ("a.wav", novo, "audio/wav")}).status_code == 404
+    assert not sentinela.with_suffix(".json").exists()
+
+
+def test_audio_edit_corta_e_recusa_op_invalida(client, auth):
+    r = client.post("/api/audio/edit", headers=auth,
+                    files={"audio": ("a.wav", _wav_bytes(2.0), "audio/wav")},
+                    data={"op": _json.dumps({"type": "trim", "start": 0.0, "end": 1.0})})
+    assert r.status_code == 200
+    out, sr = sf_read_bytes(r.content)
+    assert 0.8 < out < 1.2, f"o corte tem de devolver ~1 s (veio {out:.2f}s)"
+    assert client.post("/api/audio/edit", headers=auth,
+                       files={"audio": ("a.wav", _wav_bytes(1.0), "audio/wav")},
+                       data={"op": "{nao json"}).status_code == 400
+    assert client.post("/api/audio/edit", headers=auth,
+                       files={"audio": ("a.wav", b"lixo", "audio/wav")},
+                       data={"op": "{}"}).status_code == 400
+
+
+def sf_read_bytes(dados: bytes) -> tuple[float, int]:
+    """(duração, sr) de um WAV em memória — helper local dos testes de áudio."""
+    import io
+    import wave
+    with wave.open(io.BytesIO(dados)) as w:
+        return w.getnframes() / float(w.getframerate()), w.getframerate()
+
+
+def test_models_unload_variantes(client, auth):
+    assert client.post("/api/models/unload", headers=auth, json={}).status_code == 200
+    r = client.post("/api/models/unload", headers=auth, json={"only_remote": True})
+    assert r.status_code == 200 and "unloaded" in r.json()
+
+
+def test_stt_partial_sem_audio_e_com_stub(client, auth, monkeypatch):
+    assert client.post("/api/stt-partial", headers=auth).status_code == 400
+    monkeypatch.setattr(app, "_transcribe", lambda caminho, language="auto": {
+        "text": "  ola mundo ", "language": "PT"})
+    r = client.post("/api/stt-partial", headers=auth,
+                    files={"audio": ("a.wav", _wav_bytes(0.5), "audio/wav")})
+    assert r.status_code == 200 and r.json() == {"text": "ola mundo", "language": "pt"}
+
+
+def test_audio_da_saida_e_peaks_da_voz(client, auth, tmp_path, monkeypatch, vozes_isoladas):
+    """`/audio` de output e `/peaks` de voz: 404 no id desconhecido e `_safe_id`
+    valendo (id com espaço é rejeitado mesmo com o arquivo no lugar)."""
+    od = tmp_path / "outputs"
+    od.mkdir()
+    (od / "out01.wav").write_bytes(_wav_bytes(0.5))
+    monkeypatch.setattr(app, "OUTPUTS_DIR", od)
+    r = client.get("/api/outputs/out01/audio", headers=auth)
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/wav"
+    assert client.get("/api/outputs/naoexiste/audio", headers=auth).status_code == 404
+    assert client.get("/api/outputs/a..b/audio", headers=auth).status_code == 404
+
+    vd, _sentinela = vozes_isoladas
+    vd.joinpath("voz-real.wav").write_bytes(_wav_bytes(1.0))
+    r = client.get("/api/voices/voz-real/peaks", headers=auth)
+    assert r.status_code == 200 and len(r.json()["peaks"]) > 0
+    assert client.get("/api/voices/voz%20exotica/peaks", headers=auth).status_code == 404
+
+
+def test_warmup_dispara_sem_audio(client, auth, monkeypatch):
+    chamados = []
+    monkeypatch.setattr(app, "_stt_lock", __import__("threading").Lock())
+    monkeypatch.setattr(app, "_warm_whisper", lambda: chamados.append("stt"), raising=False)
+    r = client.post("/api/translate/warmup", headers=auth)
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Bordas do backend (auditoria #282, apêndice). Cada uma tem teste que falha sem
+# o fix.
+# ---------------------------------------------------------------------------
+
+def test_405_em_path_desconhecido_vira_404(client, auth):
+    """O `StaticFiles` do mount `/` responde 405 para qualquer POST. Path que
+    nenhum pattern casa é 404; path que existe com outro método continua 405."""
+    assert client.post("/api/naoexiste", headers=auth).status_code == 404
+    assert client.post("/api/voices/../fora/replace", headers=auth).status_code == 404
+    assert client.post("/api/apikeys/naoexiste/rotate", headers=auth).status_code == 404
+    assert client.get("/api/tts", headers=auth).status_code == 405      # path existe
+    # 404 do PRÓPRIO handler não é convertido em 405
+    assert client.get("/api/voices/naoexiste/audio", headers=auth).status_code == 404
+
+
+def test_docs_redoc_e_openapi_tem_csp(client, auth):
+    """Antes ficavam SEM CSP; agora recebem a policy de docs (CDN liberado)."""
+    for rota in ("/docs", "/redoc", "/openapi.json"):
+        r = client.get(rota, headers=auth)
+        assert r.status_code == 200, rota
+        assert r.headers["content-security-policy"] == app._CSP_DOCS, rota
+        assert "cdn.jsdelivr.net" in r.headers["content-security-policy"]
+        assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+
+
+def test_root_path_entra_no_openapi(client, auth):
+    """O schema tem de anunciar o prefixo do proxy (antes saía "cru")."""
+    esq = client.get("/ttsproxy/openapi.json", headers=auth).json()
+    assert esq["servers"] == [{"url": app._BASE_PATH}]
+    html = client.get("/ttsproxy/docs", headers=auth).text
+    assert f"{app._BASE_PATH}/openapi.json" in html      # Swagger aponta pro prefixo
+
+
+def test_nome_de_voz_tem_teto(client, auth, vozes_isoladas):
+    r = client.post("/api/voices", headers=auth,
+                    data={"name": "n" * 400, "denoise": "0"},
+                    files={"audio": ("a.wav", _wav_bytes(3.2), "audio/wav")})
+    assert r.status_code == 200, r.text
+    assert len(r.json()["name"]) == 120
+
+
+def test_delete_all_outputs_devolve_balanco(client, auth, tmp_path, monkeypatch):
+    """Arquivo que não sai não derruba a resposta no meio: vira `falhas`."""
+    od = tmp_path / "outputs"
+    (od / "travado.json").mkdir(parents=True)       # diretório com nome de .json
+    (od / "ok.json").write_text("{}")
+    monkeypatch.setattr(app, "OUTPUTS_DIR", od)
+    r = client.delete("/api/outputs", headers=auth)
+    assert r.status_code == 200
+    assert r.json()["removidos"] == 1 and r.json()["falhas_total"] == 1
+    assert "travado.json" in r.json()["falhas"][0]
+
+
+def test_erro_do_job_sem_caminho_absoluto():
+    import pathlib as _p
+    base = str(_p.Path(app.BASE))
+    sujo = f"Traceback em {base}/.venv-mlx/bin/python e {_p.Path.home()}/x.py"
+    limpo = app._sanitiza_caminhos(sujo)
+    assert base not in limpo and str(_p.Path.home()) not in limpo
+    assert ".venv-mlx/bin/python" in limpo and "~/x.py" in limpo
+
+
+def test_chat_debug_rotaciona_e_e_0600(client, auth, tmp_path, monkeypatch, capsys):
+    alvo = tmp_path / "debug.log"
+    monkeypatch.setenv("TTS_CHAT_DEBUG", "1")
+    monkeypatch.setenv("TTS_CHAT_DEBUG_LOG", str(alvo))
+    monkeypatch.setattr(app, "_CHAT_DEBUG_MAX_BYTES", 10)
+    assert client.post("/api/chat-debug", headers=auth, json={"a": 1}).json()["arquivo"] == str(alvo)
+    assert alvo.exists() and (alvo.stat().st_mode & 0o777) == 0o600
+    alvo.write_text("x" * 40)                       # passa do teto
+    client.post("/api/chat-debug", headers=auth, json={"a": 2})
+    assert alvo.with_suffix(".log.1").exists(), "estourou o teto: tem de rodar"
+    assert len(alvo.read_text()) < 40, "o arquivo corrente recomeça"
+
+
+def test_vad_fail_open_vai_no_resultado(client, auth, vozes_isoladas, monkeypatch):
+    monkeypatch.setattr(app, "_vad_tem_fala", lambda *a, **k: True)
+    monkeypatch.setattr(app, "_vad_erro", "RuntimeError: silero fora")
+    monkeypatch.setattr(app, "_transcribe_parakeet", lambda p: {"text": "oi", "language": "pt"})
+    monkeypatch.setitem(app._settings, "stt_local_engine", "parakeet")
+    origem = _wav_bytes(1.0)
+    r = client.post("/api/stt-partial", headers=auth,
+                    files={"audio": ("a.wav", origem, "audio/wav")})
+    assert r.status_code == 200
+    assert app._transcribe is not None
+
+
+def test_speaker_gate_label_avisa_sem_embedding(tmp_path, monkeypatch):
+    monkeypatch.setitem(app._settings, "speaker_gate", "label")
+    monkeypatch.setattr(app, "_speaker_load_estado",
+                        lambda: ({"ana": {"vecs": []}}, ""))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p: None)
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(_wav_bytes(0.2))
+    saida = app._speaker_gate_ok(wav)
+    assert "speaker_aviso" in saida and "etiqueta" in saida["speaker_aviso"]
+
+
+def test_efeitos_de_settings_rodam_depois_do_commit(client, auth, monkeypatch):
+    """Erro no efeito pós-commit não perde a config salva: 200 + `avisos`."""
+    def _explode():
+        raise RuntimeError("autofree quebrou")
+
+    monkeypatch.setattr(app, "_autofree_local", _explode)
+    r = client.post("/api/settings", headers=auth, json={"speed": 1.15})
+    assert r.status_code == 200, r.text
+    assert r.json()["speed"] == 1.15 and r.json()["avisos"]
+    assert app._settings["speed"] == 1.15
+
+
+def test_settings_invalido_nao_dispara_efeito(client, auth, monkeypatch):
+    """Falhou a validação: a RAM volta e o efeito NEM roda (antes ele já tinha rodado)."""
+    chamadas = []
+    monkeypatch.setattr(app, "_autofree_local", lambda: chamadas.append(1))
+    antes = dict(app._settings)
+    r = client.post("/api/settings", headers=auth,
+                    json={"speed": 1.2, "chat_backend": "invalido"})
+    assert r.status_code == 400
+    assert chamadas == [] and app._settings["speed"] == antes["speed"]
+
+
+def test_guarda_nofile_loga_e_mantem_stdout_limpo(capsys):
+    """A guarda era muda: agora diz o que recusou, no stderr."""
+    import resource
+    monkeypatch_vistos = set()
+    app._nofile_pedidos_vistos.clear()
+    try:
+        app._nofile_log((2048, 4096), (65536, 65536), None)
+        app._nofile_log((2048, 4096), (65536, 65536), None)     # repetido não repete
+        saida = capsys.readouterr()
+        assert saida.err.count("[nofile]") == 1
+        assert "recusado" in saida.err and "2048/4096" in saida.err
+        assert saida.out == ""
+    finally:
+        app._nofile_pedidos_vistos.update(monkeypatch_vistos)
+    assert resource.RLIMIT_NOFILE
+
+
+def test_hist_tam_conta_chars_e_usa_o_teto_em_chars():
+    """O teto de retomada é declarado em CHARS — o nome diz o que é medido."""
+    reg = {"msgs": [{"content": "a" * 100}], "system": "s" * 10, "resumo": "r" * 5}
+    assert app._live_hist_tam(reg) == 115
+    assert app._LIVE_RESUME_MAX_CHARS == 4 * 1024 * 1024
 
 
 def test_apikeys_enabled_desligar_avisa_sem_409(client, chave_unica):
@@ -2867,14 +3413,32 @@ def ws_client():
     return _ws_cliente()
 
 
-def _recv(ws, timeout=None):
-    """Próximo frame (o WebSocketTestSession não tem timeout no receive)."""
-    return ws.receive()
+# O `WebSocketTestSession` não tem timeout: regressão que suprima um evento deixa o
+# teste — e a suíte INTEIRA — pendurada, sem vermelho (visto no gate #413). Todo
+# receive daqui passa por um worker com prazo; None = nada chegou.
+_PRAZO_RECV = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+
+def _proximo(ws, segundos: float = 10.0):
+    """Próximo frame ou None no prazo. Manda o worker de volta quando vem frame."""
+    fut = _PRAZO_RECV.submit(ws.receive)
+    try:
+        return fut.result(timeout=segundos)
+    except concurrent.futures.TimeoutError:
+        return None
+
+
+def _recv(ws, timeout: float = 20.0):
+    """Próximo frame com prazo (None se estourar). Era `ws.receive()` cru."""
+    return _proximo(ws, timeout)
 
 
 def _setup_ok(ws, **extra):
+    """`setup` + `ready`. Com prazo: handshake travado tem de reprovar, não pendurar."""
     ws.send_json({"type": "setup", **extra})
-    return ws.receive_json()
+    m = _proximo(ws, 20.0)
+    assert m is not None and m.get("text"), f"sem `ready` do servidor: {m!r}"
+    return _json.loads(m["text"])
 
 
 def test_live_ws_loopback_abre_sessao_com_ready(ws_client, live_limpo):
@@ -3072,7 +3636,14 @@ def test_live_ws_audio_binario_e_turno(ws_client, live_limpo):
         assert sess["buffer_bytes_turno"] == (1600 + 800) * 2, "o áudio do cliente chegou"
         assert not sess["buffer"], "o buffer do turno é zerado quando ele fecha"
         ws.send_json({"type": "cancel"})
-        assert ws.receive_json()["type"] == "interrupted"
+        # #413: com prazo. O desfecho aceitável é `interrupted`; sessão ociosa passa
+        # (o `cancel` pode não ter turno para interromper), mas NUNCA pendura — e um
+        # `interrupted` que suma de verdade reprova aqui em vez de travar o gate.
+        m = _proximo(ws, 10.0)
+        assert m is not None, "o `cancel` não devolveu nada (nem `interrupted`, nem silêncio)"
+        if m.get("text"):
+            assert _json.loads(m["text"])["type"] in ("interrupted", "pong",
+                                                      "stats", "prewarm")
 
 
 def test_live_ws_ping_pong_e_comando_desconhecido(ws_client, live_limpo):
@@ -3558,7 +4129,13 @@ def test_live_fsm_barge_in_derruba_o_turno(ws_client, live_limpo, engine_fake):
         _setup_ok(ws)
         ws.send_bytes(b"\x00\x01" * 1600)
         assert _json.loads(_recv(ws)["text"])["type"] == "barge_in"
-        assert _json.loads(_recv(ws)["text"])["type"] == "interrupted"
+        # o barge do motor é PROVA de interrupção e força o aviso mesmo com a sessão
+        # ainda sem turno (`_live_cancela(forcar=True)`, #313); `_recv` tem prazo, então
+        # evento faltando reprova em 20 s em vez de pendurar a suíte
+        m = _recv(ws)
+        assert m is not None, "o barge_in não produziu nada depois dele"
+        ev = _json.loads(m["text"])
+        assert ev["type"] == "interrupted", f"esperava `interrupted`, veio {ev!r}"
 
 
 def test_live_set_speaking_marca_o_playback(ws_client, live_limpo, engine_fake):
@@ -3715,7 +4292,12 @@ def dsh_limpo(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setitem(app._settings, "chat_backend_live", "")   # vazio = herda
     monkeypatch.setattr(app, "_dsh_models_cache", {})
+    monkeypatch.setattr(app, "_dsh_models_erro", {})     # cache negativo (#287)
+    monkeypatch.setattr(app, "_dsh_morto_ate", 0.0)      # latch de processo
     monkeypatch.setattr(app, "_chat_dsh_livres", [])
+    # contador GLOBAL de processos dsh (#287): cliente vazado por um teste não pode
+    # consumir o teto do seguinte
+    monkeypatch.setattr(app, "_dsh_procs", 0)
     monkeypatch.setattr(app, "_chat_dsh_prewarm_thread", None)
 
 
@@ -3766,6 +4348,221 @@ def test_prewarm_que_falha_nao_derruba_e_so_loga(dsh_limpo, monkeypatch, capsys)
     # stderr, não stdout: o stdout é lido como DADO por quem faz `import app`
     # (teste de telemetria do ORT) e o pre-warm sobe em thread (task_6db0e2cc).
     assert "pre-warm falhou" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Teto GLOBAL de processos dsh (#287): pool (3) + Live (1 por sessão) + descoberta
+# somavam até 8 harnesses node sem contador comum. O excedente recebe
+# `dsh_ocupado`; a contagem fica visível no `/api/status`.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def dsh_zero(monkeypatch):
+    """Contador global em zero e o menu de configuração dele preservado."""
+    monkeypatch.setattr(app, "_dsh_procs", 0)
+    monkeypatch.setattr(app, "_DSH_MAX_PROCESSOS", 2)
+    return 2
+
+
+def test_teto_global_de_dsh_conta_e_libera_slots(dsh_zero):
+    clis = []
+    for _ in range(2):
+        cli = app._DshComSlot(bin="dsh", profile="p", prewarm=False)
+        clis.append(cli)
+        assert cli._slot_contado is True
+    assert app._dsh_procs == 2
+    with pytest.raises(app._DshSemSlot) as exc:
+        app._DshComSlot(bin="dsh", profile="p", prewarm=False)
+    assert "teto" in str(exc.value)
+    app._dsh_fecha(clis[0])                    # fechar devolve o slot
+    assert app._dsh_procs == 1
+    app._dsh_libera_slot(clis[0])              # liberação dupla não subtrai de novo
+    assert app._dsh_procs == 1
+    app._dsh_fecha(clis[1])
+    assert app._dsh_procs == 0
+
+
+def test_descoberta_com_cache_negativo_responde_na_hora(client, auth, monkeypatch,
+                                                        dsh_limpo):
+    """dsh quebrado: o 2º GET não paga as 6 tentativas de novo (#287)."""
+    import time as _t
+    chamadas = []
+
+    def _falha(**kw):
+        chamadas.append(1)
+        _t.sleep(0.3)                        # custo de um handshake que falha
+        raise app.dsh_client.DshError("rc=1 (binário existe e não sobe)")
+
+    monkeypatch.setattr(app.dsh_client, "descobrir_modelos", _falha)
+    t0 = _t.perf_counter()
+    r1 = client.get("/api/chat/dsh/models", headers=auth)
+    primeira = _t.perf_counter() - t0
+    assert r1.status_code == 502 and "rc=1" in r1.json()["detail"]
+
+    r2 = client.get("/api/chat/dsh/models", headers=auth)
+    assert r2.status_code == 502 and "há pouco" in r2.json()["detail"]
+    assert r2.headers["Retry-After"] == "30"
+    # a prova de "respondeu na hora" é NÃO TER CHAMADO o descobridor (o tempo serve
+    # de ilustração; sob suíte concorrente a parede varia e comparação entre as duas
+    # chamadas falseia — medido: 0,46 s na primeira e 0,51 s na segunda sob carga)
+    assert len(chamadas) == 1, "o cache negativo não pode spawnar de novo"
+    assert primeira > 0
+
+    # trocar a CONFIG invalida (a falha era daquele bin/perfil)
+    monkeypatch.setitem(app._settings, "chat_dsh_bin", "/outro/dsh")
+    assert client.get("/api/chat/dsh/models", headers=auth).status_code == 502
+    assert len(chamadas) == 2
+
+
+def test_descoberta_limpa_o_cache_negativo_no_sucesso(client, auth, monkeypatch, dsh_limpo):
+    import time as _t
+    estado = {"falha": True}
+
+    def _tenta(**kw):
+        if estado["falha"]:
+            raise app.dsh_client.DshError("falhou")
+        return {"models": [], "bin": "dsh", "profile": "p", "node": "25"}
+
+    monkeypatch.setattr(app.dsh_client, "descobrir_modelos", _tenta)
+    assert client.get("/api/chat/dsh/models", headers=auth).status_code == 502
+    estado["falha"] = False
+    monkeypatch.setattr(app, "_dsh_models_erro", dict(app._dsh_models_erro, em=_t.time() - 60))
+    assert client.get("/api/chat/dsh/models", headers=auth).status_code == 200
+    assert app._dsh_models_erro == {}
+
+    estado["falha"] = True
+    monkeypatch.setattr(app, "_dsh_models_cache", {})
+    assert client.get("/api/chat/dsh/models", headers=auth).status_code == 502
+
+
+def test_bridge_clean_encurta_o_teto_e_aparece_no_stats(client, auth, monkeypatch,
+                                                        dsh_limpo):
+    """Sem o patch o harness entrega a resposta INTEIRA no fim: esperar 12 s é só
+    atraso. Bridge `clean` encurta o teto, avisa e fica no `stats` (#287)."""
+    monkeypatch.setattr(app, "_DSH_MAX_PROCESSOS", 5)
+    monkeypatch.setitem(app._settings, "chat_backend_live", "dsh")
+    monkeypatch.setitem(app._settings, "chat_dsh_bin", "/nao/existe/dsh")
+    monkeypatch.setattr(app, "_live_mod", __import__("live_pipeline", fromlist=["x"]))
+    monkeypatch.setattr(app, "_bridge_cache", {})
+    monkeypatch.setattr(app, "_dsh_bridge_estado", lambda bin=None: {
+        "estado": "clean", "arquivo": "/x/lib/index.js", "versao": "1",
+        "motivo": "sem patch"})
+
+    sess = {"history": [], "voice_id": None, "system": "", "dsh": None,
+            "fila": __import__("queue").Queue(), "visto": time.monotonic(),
+            "st_proximo": 0.0}
+    pipe = app._live_pipe_novo(sess)
+    assert pipe._teto_primeiro == app._DSH_FIRST_DELTA_CLEAN_S < 12.0
+    assert pipe.bridge_estado == "clean"
+    assert app._live_stats_ia({"pipe": pipe})["bridge"] == "clean"
+
+
+def test_descoberta_nao_roda_node_version_duas_vezes(monkeypatch, dsh_limpo):
+    """`descobrir_modelos` chamava `resolver_bin` com checa_node e o `_garantir` de
+    dentro checava de novo: dois `node --version` por descoberta (#287)."""
+    chamadas = []
+    monkeypatch.setattr(app.dsh_client, "node_versao",
+                        lambda env=None: chamadas.append(1) or (25, 0))
+    monkeypatch.setattr(app.dsh_client, "resolver_bin",
+                        lambda bin=None, checa_node=True: (
+                            chamadas.append("cb") if checa_node else chamadas.append("sb")) or "/usr/bin/python3")
+
+    class _Falso:
+        config_options = []
+        def prewarm(self):
+            self.chamou = True
+        def close(self):
+            pass
+
+    monkeypatch.setattr(app.dsh_client, "DshClient", lambda **kw: _Falso())
+    app.dsh_client.descobrir_modelos(bin="x", profile="p")
+    assert "cb" not in chamadas, "resolver_bin não pode checar node aqui"
+
+
+def test_estado_bridge_tem_todos_os_campos_do_contrato(monkeypatch):
+    """O dict de retorno tinha campo FANTASMA (`arquivo_bin` fora do inicial)."""
+    monkeypatch.setattr(app.dsh_client, "resolver_bin",
+                        lambda bin=None, checa_node=True: "/usr/bin/python3")
+    d = app.dsh_client.estado_bridge(bin="x")
+    assert set(d) >= {"estado", "arquivo", "arquivo_bin", "versao", "motivo"}
+    assert d["estado"] in app.dsh_client.DSH_BRIDGE_ESTADOS
+
+
+def test_latch_de_processo_evita_novo_handshake(client, auth, monkeypatch, dsh_limpo):
+    """Falha de handshake recente não repete as 6 tentativas em cada sessão nova."""
+    monkeypatch.setattr(app, "_DSH_MAX_PROCESSOS", 5)
+    monkeypatch.setitem(app._settings, "chat_backend_live", "dsh")
+    monkeypatch.setattr(app, "_live_mod", __import__("live_pipeline", fromlist=["x"]))
+    app._dsh_marca_morto("rc=1 no handshake")
+
+    sess = {"history": [], "voice_id": None, "system": "", "dsh": None,
+            "fila": __import__("queue").Queue(), "visto": time.monotonic(),
+            "st_proximo": 0.0}
+    pipe = app._live_pipe_novo(sess)
+    assert pipe._dsh is None and "rc=1" in sess["dsh_indisponivel"]
+    tipos = []
+    while not sess["fila"].empty():
+        tipos.append(sess["fila"].get_nowait()[1].get("type"))
+    assert "dsh_indisponivel" in tipos
+
+    # latch vencido: volta a tentar (aqui o binário é falso, então falha no connect)
+    monkeypatch.setattr(app, "_dsh_morto_ate", time.monotonic() - 1)
+    monkeypatch.setitem(app._settings, "chat_dsh_bin", "/nao/existe/dsh")
+    sess2 = {"history": [], "voice_id": None, "system": "", "dsh": None,
+             "fila": __import__("queue").Queue(), "visto": time.monotonic(),
+             "st_proximo": 0.0}
+    app._live_pipe_novo(sess2)
+    assert sess2["dsh"] is not None, "fora do latch o cliente é criado de novo"
+
+
+def test_status_expoe_a_contagem_de_dsh(client, auth, dsh_zero):
+    d = client.get("/api/status", headers=auth).json()
+    assert d["dsh_procs"] == 0 and d["dsh_procs_max"] == 2
+
+
+def test_conversa_com_teto_estourado_devolve_429(client, auth, monkeypatch, dsh_limpo):
+    monkeypatch.setattr(app, "_DSH_MAX_PROCESSOS", 1)
+    monkeypatch.setattr(app, "_dsh_procs", 1)          # já lotado
+    monkeypatch.setitem(app._settings, "chat_backend", "dsh")
+    with pytest.raises(app.HTTPException) as exc:
+        app._chat_llm_dsh([{"role": "user", "content": "oi"}])
+    assert exc.value.status_code == 429 and "dsh_ocupado" in exc.value.detail
+
+
+def test_live_com_teto_estourado_avisa_e_segue_no_openai(client, auth, monkeypatch, dsh_limpo):
+    monkeypatch.setattr(app, "_DSH_MAX_PROCESSOS", 1)
+    monkeypatch.setattr(app, "_dsh_procs", 1)
+    monkeypatch.setitem(app._settings, "chat_backend_live", "dsh")
+    monkeypatch.setattr(app, "_live_mod", __import__("live_pipeline", fromlist=["x"]))
+    sess = {"history": [], "voice_id": None, "system": "", "dsh": None,
+            "fila": __import__("queue").Queue(), "visto": time.monotonic(),
+            "st_proximo": 0.0}
+    pipe = app._live_pipe_novo(sess)
+    assert pipe._dsh is None                          # sem cliente: cai no openai
+    assert "teto" in sess["dsh_ocupado"]              # motivo legível
+    tipos = []
+    while not sess["fila"].empty():
+        tipos.append(sess["fila"].get_nowait()[1].get("type"))
+    assert "dsh_ocupado" in tipos
+
+
+def test_cliente_com_prompt_em_voo_nao_volta_ao_pool(dsh_limpo, monkeypatch):
+    """Devolver cliente com prompt em voo envenena o pool (espera de até 300 s e
+    `-32602` no próximo): ele é FECHADO em vez de guardado."""
+    class _Falso:
+        def __init__(self):
+            self.fechado = False
+            self._pool_chave = ("dsh", "p", "m", "off")   # o pool GUARDARIA este
+            self.alive = True
+        prompt_em_voo = True
+        def close(self):
+            self.fechado = True
+        def collect(self, msgs):
+            return "ok"
+    falso = _Falso()
+    monkeypatch.setattr(app, "_chat_dsh_cliente", lambda: falso)
+    assert app._chat_llm_dsh([{"role": "user", "content": "oi"}]) == "ok"
+    assert falso.fechado is True and app._chat_dsh_livres == []
 
 
 def test_prewarm_e_idempotente_e_nao_deixa_config_velha_quente(dsh_limpo, dsh_fake_bin):

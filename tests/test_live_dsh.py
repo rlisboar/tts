@@ -25,6 +25,14 @@ import live_pipeline as lp
 # o `__all__` que o pyflakes exigia foi removido.
 from test_api import dsh_fake_bin, dsh_limpo  # noqa: F401  # noqa: F401
 
+# Declarados como usados: são FIXTURES consumidas pelos testes do arquivo.
+# O `ruff` já cobre isso com o `noqa` (política pós-#378); o `__all__` mantém
+# o `pyflakes` (que ignora o `noqa`) também verde — inerte em runtime.
+__all__ = [
+    "dsh_fake_bin",
+    "dsh_limpo",
+]
+
 
 # ---------------------------------------------------------------------------
 # Dublês
@@ -327,19 +335,28 @@ def test_primeiro_delta_alem_do_teto_cai_no_openai_uma_vez(monkeypatch):
     assert fala.texto() == "pelo openai"
     assert len(fala.audios) > 0
     assert "error" not in fala.tipos()
-    avisos = [e for e in fala.eventos if e["type"] == "dsh_indisponivel"]
-    assert len(avisos) == 1
-    assert "sem delta falável" in avisos[0]["message"]
-    assert avisos[0]["fallback"] == "openai"
-    assert p._dsh_indisponivel is True
+    # #287: estouro de RELÓGIO não mata o dsh — avisa `dsh_lento`, mantém o processo
+    # e o próximo turno volta a tentar. `dsh_indisponivel` só depois do teto de
+    # estouros seguidos (2 por default).
+    lentos = [e for e in fala.eventos if e["type"] == "dsh_lento"]
+    assert len(lentos) == 1
+    assert "sem delta falável" in lentos[0]["message"]
+    assert lentos[0]["fallback"] == "openai" and lentos[0]["tentativas"] == 1
+    assert [e for e in fala.eventos if e["type"] == "dsh_indisponivel"] == []
+    assert p._dsh_indisponivel is False and p._dsh_estouros == 1
     assert dsh.cancelados == [dsh.chamadas[0][1]]
-    assert _espera(lambda: dsh.fechado, 2.0)
+    assert dsh.fechado is False, "o PROCESSO segue vivo; a sessão ACP é que fecha"
     completos = [e for e in fala.eventos if e["type"] == "turn_complete"]
     assert completos and completos[0].get("audio_bytes", 0) > 0
 
+    # segundo turno estoura de novo → aí sim desiste do dsh nesta sessão
+    dsh.cancelados.clear()
     p.push_pcm(_fala_nova())
     p.end_of_speech(inicia_thread=False)
-    assert len(dsh.chamadas) == 1, "segundo turno não tenta o dsh morto"
+    assert len(dsh.chamadas) == 2, "o dsh VIVO tem de ser tentado de novo"
+    assert p._dsh_indisponivel is True and p._dsh_estouros == 2
+    assert [e for e in fala.eventos if e["type"] == "dsh_indisponivel"]
+    assert _espera(lambda: dsh.fechado, 2.0)
     assert falados == [1, 1]
     assert fala.tipos().count("turn_complete") == 2
 
@@ -468,7 +485,7 @@ def test_stats_ia_reflete_o_fallback(monkeypatch, dsh_limpo):
     monkeypatch.setenv("TTS_CHAT_BACKEND", "dsh")
     caiu = app._live_stats_ia({"pipe": PipeFalso()})
     assert caiu == {"pedido": "dsh", "backend": "openai", "fallback": True,
-                    "motivo": "DshError: rc=1"}
+                    "motivo": "DshError: rc=1", "teto_estouro": 0, "bridge": None}
 
     class PipeOk:
         _dsh_indisponivel = False
@@ -509,7 +526,9 @@ def test_app_cria_cliente_por_sessao_e_fecha_com_ela(sessao_min):
 
     assert len(DshClienteFalso.criados) == 1, "um cliente por sessão Live"
     cli = DshClienteFalso.criados[0]
-    assert sess["dsh"] is cli and pipe._dsh is cli
+    # o app entrega um ENVELOPE (`_DshComSlot`) que conta o processo no teto global
+    # (#287) e delega o contrato — a identidade se confere no cliente de dentro
+    assert sess["dsh"]._cli is cli and pipe._dsh._cli is cli
     # O Live SEGUE o campo do dono — `off` é o DEFAULT, não um valor forçado (a UI
     # diz o mesmo: "o Live usa a MESMA config do dsh da Conversa", e `effort ≠ off`
     # pode estourar o orçamento de latência, com aviso). Cravar "off" aqui deixava
@@ -694,7 +713,7 @@ def test_tts_live_com_close_entre_as_duas_leituras_nao_estoura(dsh_limpo, monkey
     monkeypatch.setenv("TTS_CHAT_BACKEND", "openai")   # isola do dsh
     monkeypatch.setattr(lp, "_worker_habilitado", lambda: True)
     monkeypatch.setattr(lp, "_tts_app",
-                        lambda texto, omni, voice_id=None, espera=None: "in-process")
+                        lambda texto, omni, **kw: "in-process")   # `**kw`: contexto/medição futuros
     criados = []
 
     class WorkerFalso:
@@ -746,7 +765,7 @@ def test_backend_do_live_e_do_live_a_conversa_segue_no_global(monkeypatch):
     pipe = app._live_pipe_novo(sess)
     try:
         assert len(DshClienteFalso.criados) == 1, "o Live tinha de usar o dsh"
-        assert sess["dsh"] is pipe._dsh is DshClienteFalso.criados[0]
+        assert sess["dsh"]._cli is pipe._dsh._cli is DshClienteFalso.criados[0]
     finally:
         pipe.close()
     # a CONVERSA não foi arrastada junto
