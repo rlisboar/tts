@@ -23,8 +23,20 @@ PY="$RAIZ/.venv-mlx/bin/python"
 command -v curl >/dev/null || { echo "curl não encontrado"; exit 1; }
 curl -sf -m 5 -o /dev/null "$BASE/" || { echo "✖ app não respondeu em $BASE — rode ./run.sh primeiro" >&2; exit 1; }
 
-BASE="$BASE" "$PY" - <<'PYEOF'
-import os, sys
+# O `try/finally` do Python NAO roda em SIGTERM (o sinal mata a shell e o filho):
+# o restore precisa de trap de shell. Valor lido aqui, restaurado por curl, e o
+# filho derrubado junto para nao reescrever por cima do restore.
+ORIG="$(curl -s -m 5 "$BASE/api/settings" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("speaker_gate") or "")' 2>/dev/null || true)"
+FILHO=""
+restaura_gate() {
+  [ -n "${ORIG:-}" ] || return 0
+  curl -s -m 5 -X POST "$BASE/api/settings" -H 'Content-Type: application/json' \
+       -d "{\"speaker_gate\":\"$ORIG\"}" >/dev/null 2>&1 || true
+}
+trap 'kill "$FILHO" 2>/dev/null; restaura_gate' EXIT INT TERM
+
+BASE="$BASE" "$PY" - <<'PYEOF' &
+import json, os, sys, urllib.request
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ["BASE"]
@@ -35,7 +47,26 @@ def cobrar(c, m):
 def clica(pg, sel):
     pg.evaluate("s => document.querySelector(s).click()", sel)
 
-with sync_playwright() as p:
+def api_get(caminho):
+    return json.loads(urllib.request.urlopen(BASE + caminho, timeout=10).read())
+
+def api_post(caminho, corpo):
+    req = urllib.request.Request(BASE + caminho, method="POST",
+                                 data=json.dumps(corpo).encode(),
+                                 headers={"Content-Type": "application/json"})
+    return json.loads(urllib.request.urlopen(req, timeout=10).read())
+
+def devolve_speaker_gate(valor):
+    """Restauração por HTTP, fora do DOM: se a página morrer no meio (o caso que
+    MOTIVA isto), ainda há como devolver o setting do dono."""
+    try:
+        api_post("/api/settings", {"speaker_gate": valor})
+    except Exception as exc:                              # noqa: BLE001
+        print(f"· não consegui devolver speaker_gate={valor!r}: {exc}", file=sys.stderr)
+
+original_api = api_get("/api/settings").get("speaker_gate")     # antes de tudo
+try:
+  with sync_playwright() as p:
     b = p.chromium.launch()
     ctx = b.new_context()
     pg = ctx.new_page()
@@ -116,6 +147,14 @@ with sync_playwright() as p:
     cobrar("recusado (teste)" in falhou["toast"], f"o erro do apagar não foi mostrado ({falhou['toast']!r})")
     cobrar(falhou["reabilitado"], "o botão 'Apagar todos' ficou travado depois da falha")
     b.close()
+finally:
+    # SEMPRE devolve — é o `trap EXIT` do caso. Falha antes do restore do meio do
+    # roteiro deixava o `speaker_gate` do dono no valor de teste; com `enforce` e
+    # perfil fraco, a Conversa e o Live dele passam a recusar fala.
+    devolve_speaker_gate(original_api)
+    atual = api_get("/api/settings").get("speaker_gate")
+    if atual != original_api:
+        falhas.append(f"speaker_gate do dono ficou {atual!r} (era {original_api!r})")
 
 if falhas:
     print("✖ falhas:")
@@ -123,3 +162,6 @@ if falhas:
     sys.exit(1)
 print("✔ estado: sujo avisa/barra/desarma, 5001 chars bloqueia com motivo, falha do apagar é visível")
 PYEOF
+FILHO=$!
+wait "$FILHO" || RC=$?
+exit "${RC:-0}"
