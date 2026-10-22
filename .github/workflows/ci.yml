@@ -103,16 +103,21 @@ jobs:
       # SEM `setup-python`: no macOS ele crava `/Users/runner` mesmo com
       # `RUNNER_TOOL_CACHE` no ambiente (medido). Venv por job em `$RUNNER_TEMP`
       # (fora de `~/Documents`, que o agente não lê por TCC, e descartável).
-      - name: venv do CI
+      # `python -m venv` DENTRO do job trava (parado em `opendir`, 10+ min) com
+      # QUALQUER destino — `$RUNNER_TEMP`, `$HOME` e `/tmp` medidos; por ssh faz
+      # 1,2 s. Por isso o venv é preparado FORA do job, em `~/actions-runner/venv`
+      # (fora de Documents/TCC; nada do venv de produção).
+      - name: venv do CI (preparado fora do job)
         run: |
-          V="$RUNNER_TEMP/venv"
-          /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 -m venv "$V"
+          V="$HOME/actions-runner/venv"
+          if [ ! -x "$V/bin/python" ]; then
+            echo "✖ sem venv do CI em $V — prepare por ssh (fora do job):"
+            echo "  ssh lisboa@mini 'python3.12 -m venv ~/actions-runner/venv && ~/actions-runner/venv/bin/python -m pip install -r requirements.txt pytest-timeout pytest-rerunfailures'"
+            exit 1
+          fi
           echo "$V/bin" >> "$GITHUB_PATH"
           "$V/bin/python" -V
-          "$V/bin/python" -m pip install --quiet --disable-pip-version-check \
-            --index-url https://download.pytorch.org/whl/cpu torch
-          "$V/bin/python" -m pip install --quiet --disable-pip-version-check \
-            -r requirements.txt pytest-timeout pytest-rerunfailures
+          "$V/bin/python" -c "import fastapi, soundfile, torch, pytest_timeout; print('deps ok')"
       - name: pytest
         # `--timeout`: um teste pendurado falha em 3 min em vez de comer o job.
         # Método DEFAULT (SIGALRM), não `--timeout-method=thread`: o `thread` só
