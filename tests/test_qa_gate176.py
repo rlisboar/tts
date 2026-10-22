@@ -34,8 +34,19 @@ __all__ = [
 
 @pytest.fixture()
 def sem_env_backend(monkeypatch):
-    for var in ("TTS_CHAT_BACKEND", "TTS_CHAT_BACKEND_LIVE"):
+    """Sem env E sem estado global herdado: pool, contador de processos e caches.
+
+    Só o `delenv` isola o BACKEND; os testes daqui criam cliente `dsh` e um teste
+    anterior pode deixar cliente no pool ou o contador do teto alto — daí o
+    `criados == 0` na rodada cheia (#470)."""
+    for var in ("TTS_CHAT_BACKEND", "TTS_CHAT_BACKEND_LIVE", "TTS_CHAT_DSH_BIN",
+                "TTS_CHAT_DSH_PROFILE", "TTS_CHAT_DSH_MODEL", "TTS_CHAT_DSH_EFFORT"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(app, "_chat_dsh_livres", [])
+    monkeypatch.setattr(app, "_dsh_procs", 0)
+    monkeypatch.setattr(app, "_dsh_models_cache", {})
+    monkeypatch.setattr(app, "_dsh_models_erro", {})
+    monkeypatch.setattr(app, "_dsh_morto_ate", 0.0)
 
 
 def _sessao(nome="sx"):

@@ -23,7 +23,7 @@ import live_pipeline as lp
 # fixtures de test_api (fora do conftest): usadas só como PARÂMETRO de teste. O F811
 # é ignorado no `pyproject.toml` (#378), então o `noqa` aqui é marcador de intenção;
 # o `__all__` que o pyflakes exigia foi removido.
-from test_api import dsh_fake_bin, dsh_limpo  # noqa: F401  # noqa: F401
+from test_api import dsh_fake_bin, dsh_limpo, fake_acp_estavel  # noqa: F401
 
 # Fixtures consumidas pelos testes do arquivo: quem silencia o import é o `noqa`,
 # que o ruff respeita desde o #378. O `__all__` é INERTE em runtime — fica por
@@ -31,6 +31,7 @@ from test_api import dsh_fake_bin, dsh_limpo  # noqa: F401  # noqa: F401
 __all__ = [
     "dsh_fake_bin",
     "dsh_limpo",
+    "fake_acp_estavel",     # dependência do `dsh_fake_bin`: precisa existir aqui
 ]
 
 
@@ -72,6 +73,11 @@ class DshFalso:
         self.erros = list(erros) if erros else []
         self.pipe = None              # gancho p/ o teste disparar barge-in
         self._trava = threading.Lock()
+        # contrato lido pelo `_chat_dsh_prewarm` no log (#470): sem estes, o
+        # prewarm do dublê sai com `no attribute 'ultimo_boot_ms'` e o caminho
+        # testado deixa de ser o de produção
+        self.ultimo_boot_ms = 0
+        self.session_id = "fake-acp"
 
     # contrato consumido pelo pipeline
     def prewarm(self):
@@ -753,7 +759,7 @@ def test_tts_live_com_close_entre_as_duas_leituras_nao_estoura(dsh_limpo, monkey
     assert pipe._worker is None
 
 
-def test_backend_do_live_e_do_live_a_conversa_segue_no_global(monkeypatch):
+def test_backend_do_live_e_do_live_a_conversa_segue_no_global(monkeypatch, dsh_limpo):
     """#176: `chat_backend_live=dsh` + `chat_backend=openai` — o Live usa o harness e
     a Conversa continua no endpoint do dono (era o que faltava para a recomendação do
     #175 ser acionável)."""
@@ -774,7 +780,7 @@ def test_backend_do_live_e_do_live_a_conversa_segue_no_global(monkeypatch):
     assert app._chat_llm([]) == "via-openai"
 
 
-def test_conversa_no_dsh_e_live_no_global(monkeypatch):
+def test_conversa_no_dsh_e_live_no_global(monkeypatch, dsh_limpo):
     """O inverso: quem quer o dsh na Conversa e o provedor no Live."""
     monkeypatch.setenv("TTS_CHAT_BACKEND", "dsh")
     monkeypatch.setenv("TTS_CHAT_BACKEND_LIVE", "openai")
@@ -887,3 +893,15 @@ def _espera(cond, timeout=5.0):
             return True
         time.sleep(0.01)
     return False
+
+def test_duble_do_dsh_cobre_o_contrato_lido_pelo_prewarm():
+    """#470: o dublê tem de expor o que o `_chat_dsh_prewarm` LÊ no log.
+
+    Faltando `ultimo_boot_ms`/`session_id`, o prewarm do dublê saía com
+    `'DshClienteFalso' object has no attribute 'ultimo_boot_ms'` e o aviso é
+    indistinguível de defeito — o teste passava exercitando outro caminho."""
+    d = DshFalso()
+    for campo in ("ultimo_boot_ms", "session_id"):
+        assert hasattr(d, campo), f"dublê fora do contrato: falta `{campo}`"
+    # e o log do prewarm monta a linha sem estourar
+    assert f"{d.ultimo_boot_ms} ms" and d.session_id
