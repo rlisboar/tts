@@ -79,8 +79,11 @@ Descarte de turno sempre vem com o PORQUÊ: `turn_complete{descartado:true, moti
 áudio que o motor aceitou) ou `stt` (o filtro anti-alucinação rejeitou — blacklist,
 `no_speech_prob`, `avg_logprob`, `compression_ratio`, mínimos; o `detalhe` diz qual).
 Antes do #314 esses casos saíam como `transcript:""`, indistinguíveis de "não ouvi". O
-filtro é o MESMO da Conversa e obedece a `stt_anti_ruido`: desligado, `vad` continua
-marcando e só o `stt` deixa de agir.
+filtro é o MESMO da Conversa, mas aqui ele é FORÇADO: vale com `stt_anti_ruido`
+desligado. Assimetria de propósito — no Live a alucinação vira RESPOSTA (não há texto
+digitado para corrigir); na Conversa o setting continua mandando. A única saída do
+filtro no Live é o env de processo `TTS_LIVE_ANTI_RUIDO=0`; o setting de ditado não o
+desliga justamente porque lá ele está desligado por escolha do dono.
 
 `hold{on:bool}` liga o fallback "segurar pra falar": o motor abre e fecha o turno no
 BOTÃO, sem heurístico de VAD; `stats.motor.hold_to_talk_sugerido` é o aviso de que vale

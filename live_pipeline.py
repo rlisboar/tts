@@ -23,6 +23,7 @@ alvo "fim-de-fala → 1º áudio ≤ 1,5 s" é só o primeiro.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import pathlib
@@ -371,6 +372,32 @@ class LivePipeline:
             return False
         return True
 
+    @staticmethod
+    def _kw_do_tts(fn, **candidatos) -> dict:
+        """Só os kwargs OPCIONAIS que o chamável aceita (dublê antigo, nenhum).
+
+        `voice_id`/`espera` são contexto e medição (#313): dublê de teste de 2
+        argumentos não os tem e estourava `TypeError` no meio do TTS, derrubando o
+        turno. A decisão é por assinatura, cacheada por IDENTIDADE do objeto (id
+        sozinho é reciclado pelo `gc`; guardar a referência impede isso) — e não
+        por tentativa-e-erro, que sintetizaria o chunk duas vezes quando o
+        `TypeError` viesse de dentro da geração.
+        """
+        chave = id(fn)
+        guardado = _KW_DO_TTS.get(chave)
+        if guardado is not None and guardado[0] is fn:
+            aceitos = guardado[1]
+        else:
+            try:
+                params = inspect.signature(fn).parameters
+                tudo = any(p.kind is inspect.Parameter.VAR_KEYWORD
+                           for p in params.values())
+                aceitos = set(candidatos) if tudo else set(candidatos) & set(params)
+            except (TypeError, ValueError):
+                aceitos = set()
+            _KW_DO_TTS[chave] = (fn, aceitos)
+        return {k: v for k, v in candidatos.items() if k in aceitos}
+
     def _tts_live(self, texto: str, omni: dict):
         """TTS do turno: worker persistente; in-process quando ele não serve.
 
@@ -387,7 +414,10 @@ class LivePipeline:
                 w = self._worker = _LiveWorker(voice_id=self.voice_id)
             if w.ativo:
                 try:
-                    audio = w.gerar(texto, omni, espera=self._espera)
+                    # `_kw_do_tts`: dublê antigo de 2 args não aceita o kwarg — e um
+                    # `TypeError` aqui marcaria o worker como morto sem motivo
+                    audio = w.gerar(texto, omni,
+                                    **self._kw_do_tts(w.gerar, espera=self._espera))
                     # o filho real já reprova mudo, mas o PAI confere o que voltou:
                     # vale para qualquer worker e não depende do contrato do filho
                     if not np.asarray(audio).size or _rms_audio(audio) < RMS_MUDO:
@@ -401,8 +431,8 @@ class LivePipeline:
                           f" — in-process daqui em diante", flush=True)
                     w.fecha()
         # o pós roda nos DOIS caminhos (e é ele que faz o Live soar como o job)
-        return _pos_live(_tts_app(texto, omni, voice_id=self.voice_id,
-                                  espera=self._espera))
+        return _pos_live(_tts_app(texto, omni, **self._kw_do_tts(
+            _tts_app, voice_id=self.voice_id, espera=self._espera)))
 
     # -- entrada ------------------------------------------------------------
     def push_pcm(self, frames: bytes, substituir: bool = False) -> None:
@@ -1036,6 +1066,11 @@ def _janela_ate(alvo: list[str], dito: list[str], divergencias: int) -> bool:
     return False
 
 
+# O filtro anti-alucinação do Live (#465): LIGADO por padrão e independente do
+# `stt_anti_ruido` do app (que governa o ditado da Conversa e está desligado no
+# settings do dono). Desligar exige este env, de propósito.
+_LIVE_ANTI_RUIDO = os.environ.get("TTS_LIVE_ANTI_RUIDO", "1") != "0"
+
 # Tolerância do casamento contíguo (#301). `minimo` de acerto vira `1 - minimo` de
 # divergência por palavra, com TETO fixo: acima de 2 trocas a "janela" já não é um
 # trecho literal do que está tocando e passaria a aceitar frase humana.
@@ -1092,6 +1127,9 @@ _LIVE_MAX_STEPS = 12          # teto de passos do 1º chunk: 16 p=0,45 s, 12 p=0
 # `num_steps` do dono (a fila já tem folga e a voz volta ao ajuste dele).
 _LIVE_NUM_STEPS_PADRAO = 16
 _DEBUG_TTS = __import__("os").environ.get("LIVE_DEBUG_TTS") == "1"
+
+# cache do `_kw_do_tts` (#313): id -> (própria função, kwargs aceitos)
+_KW_DO_TTS: dict[int, tuple[object, set]] = {}
 
 _prewarm_trava = threading.Lock()
 _PREWARM_FEITO = False
@@ -1272,7 +1310,12 @@ def _stt_app(pcm16_le_16k: bytes, language: str | None,
             if julga is not None:
                 julga["motivo"] = "stt" if r.get("language") else "vad"
             return ""
-        ok, motivo = app._stt_ok(r, texto)
+        # `forcar`: no Live o filtro vale INDEPENDENTE de `stt_anti_ruido`
+        # (decisão do dono, #465). Aqui não há texto digitado para corrigir:
+        # alucinação do Whisper vira RESPOSTA falada. Na Conversa o setting segue
+        # mandando. `TTS_LIVE_ANTI_RUIDO=0` é a única saída, e é de processo: o
+        # setting de ditado do dono está desligado e não pode desligar isto junto.
+        ok, motivo = app._stt_ok(r, texto, forcar=_LIVE_ANTI_RUIDO)
         if not ok:
             if julga is not None:
                 julga["motivo"] = "stt"

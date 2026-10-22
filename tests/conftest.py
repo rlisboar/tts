@@ -248,13 +248,24 @@ def _estado_isolado(tmp_path_factory):
     # segredo real). A sessão nasce com uma chave de teste — papel legado
     # (`role: null`, que é o que a suíte exercita como "chave antiga administra") —
     # e o arquivo do dono nem é lido para dentro da RAM.
+    # Três chaves SINTÉTICAS, ids FIXOS (a suíte não depende de `via-zip`/`padrão`):
+    # a 1ª é LEGADA de propósito (`role: null`) — é ela que o fixture `auth` usa e o
+    # que os testes de "chave antiga administra" exercitam; as outras duas existem
+    # para quem precisa de admin ou de `use` sem criá-las.
     apikeys_destino = pasta / ".apikeys.json"
     chave_teste = "sk-teste-" + secrets.token_hex(12)
     apikeys_destino.write_text(json.dumps({
         "enabled": True,
-        "keys": [{"id": "teste" + secrets.token_hex(4), "name": "pytest-sessao",
-                  "secret": chave_teste, "created_at": "2026-01-01 00:00:00",
-                  "role": None}],
+        "keys": [
+            {"id": "sessao-legado", "name": "pytest-legado", "secret": chave_teste,
+             "created_at": "2026-01-01 00:00:00", "role": None},
+            {"id": "sessao-admin", "name": "pytest-admin",
+             "secret": "sk-teste-" + secrets.token_hex(12),
+             "created_at": "2026-01-01 00:00:00", "role": "admin"},
+            {"id": "sessao-uso", "name": "pytest-uso",
+             "secret": "sk-teste-" + secrets.token_hex(12),
+             "created_at": "2026-01-01 00:00:00", "role": "use"},
+        ],
     }, indent=2))
     apikeys_original = app.APIKEYS_PATH
     app.APIKEYS_PATH = apikeys_destino
@@ -271,13 +282,18 @@ def _estado_isolado(tmp_path_factory):
         perfis_destino.write_bytes(app.SPEAKER_PATH.read_bytes())
     perfis_original = app.SPEAKER_PATH
     app.SPEAKER_PATH = perfis_destino
-    # RAM com a chave sintética: o `import app` já tinha carregado as do dono
+    # env do dono fora da RAM: `TTS_ROD_API_KEY`/`TTS_ROD_ADMIN_KEY` exportados
+    # decidiriam papel (e poriam secret real na memória). Restaurados no teardown.
+    env_api_original, admin_api_original = app._ENV_API_KEY, app._ADMIN_API_KEY
+    app._ENV_API_KEY = app._ADMIN_API_KEY = ""
+    # RAM com as chaves sintéticas: o `import app` já tinha carregado as do dono
     app._load_apikeys()
     yield destino
     app.APIKEYS_PATH = apikeys_original
     app.LEGACY_APIKEY_PATH = legado_original
     app.SPEAKER_PATH = perfis_original
     app.SETTINGS_PATH = original
+    app._ENV_API_KEY, app._ADMIN_API_KEY = env_api_original, admin_api_original
     # `ignore_errors`: o pytest pode ter varrido o basetemp antes (sessão verde
     # com a política `failed`), e num run vermelho é justamente aqui que a cópia
     # sai do diretório que o pytest vai RETER. Não roda se o processo levar

@@ -207,6 +207,26 @@ def test_hold_abre_turno_sem_vad():
     assert [e.tipo for e in eng.set_hold(False)] == ["speech_end"]
 
 
+def test_hold_ligado_fica_visivel_no_stats_mesmo_sem_sugestao():
+    """`hold_to_talk` NÃO pode sumir nem zerar com o modo ligado (desenho do PM).
+
+    A faixa da UI continua na tela enquanto o modo está LIGADO, mesmo que a
+    sugestão já tenha caído — senão ligar seria sem volta. Quem carrega o estado é
+    `hold_to_talk`; `hold_to_talk_sugerido` pode ir a false à vontade.
+    """
+    eng = live_turns.TurnEngine()
+    eng.feed(np.zeros(3200, dtype=np.float32))
+    sess = {"id": "s-h", "t0": 1.0, "criada": 0.0, "visto": 1.0, "turno": 1,
+            "engine": eng, "falando": False, "fila": app._LiveFila(), "st_stage": "idle"}
+    eng.set_hold(True)
+    m = app._live_stats(sess)["motor"]
+    assert m["hold_to_talk"] is True            # ligado: a tela sabe
+    assert "hold_to_talk" in m                  # e a chave existe (não é omitida)
+    assert m["hold_to_talk_sugerido"] is False  # a sugestão pode cair
+    eng.set_hold(False)
+    assert app._live_stats(sess)["motor"]["hold_to_talk"] is False
+
+
 def test_comando_hold_chega_ao_motor():
     """O despacho do handler manda o `on` ao motor (sem isso o recurso é morto)."""
     eng = _EngHold()
@@ -226,3 +246,38 @@ def test_hold_sem_motor_avisa_em_vez_de_sumir():
 
 if __name__ == "__main__":                   # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_anti_ruido_desligado_o_LIVE_ainda_filtra(monkeypatch):
+    """Assimetria decidida pelo PM (#314): o Live FORÇA o `_stt_ok`.
+
+    No Live a alucinação vira turno — não há texto digitado para corrigir. Na
+    Conversa o setting continua mandando e o mesmo texto passa."""
+    monkeypatch.setitem(app._settings, "stt_anti_ruido", False)
+    r = {"text": "Obrigada.", "language": "pt", "segments": []}
+    assert app._stt_ok(r, "Obrigada.") == (True, "")          # Conversa: passa
+    _transcreve(monkeypatch, r)
+    julga: dict = {}
+    lp._stt_app(b"\x00\x01" * 400, "pt", julga)               # Live: recusa
+    assert julga.get("motivo") == "stt"
+
+
+def test_anti_ruido_ligado_os_dois_filtram(anti_ruido):
+    """Ligado, `forcar` é redundante: os dois lados recusam igual."""
+    assert app._stt_ok({"segments": []}, "Obrigada.")[0] is False
+    assert app._stt_ok({"segments": []}, "Obrigada.", forcar=True)[0] is False
+
+
+def test_knob_de_processo_desliga_o_filtro_do_Live(monkeypatch):
+    """`TTS_LIVE_ANTI_RUIDO=0` é a única saída e é de PROCESSO.
+
+    O setting de ditado do dono está desligado; se o Live herdasse dele, o filtro
+    nunca agiria (era o no-op do #465)."""
+    _transcreve(monkeypatch, {"text": "Obrigada.", "language": "pt", "segments": []})
+    julga: dict = {}
+    lp._stt_app(b"\x00\x01" * 400, "pt", julga)          # knob ligado (default)
+    assert julga.get("motivo") == "stt"
+    monkeypatch.setattr(lp, "_LIVE_ANTI_RUIDO", False)   # env desligado
+    julga2: dict = {}
+    assert lp._stt_app(b"\x00\x01" * 400, "pt", julga2) == "Obrigada."
+    assert "motivo" not in julga2
