@@ -491,9 +491,17 @@ def ws_limpo(monkeypatch):
 
 
 def _ate(ws, tipos, maximo=20):
-    """Lê até um dos tipos (ignora `stats`/`prewarm` e frames de áudio)."""
+    """Lê até um dos tipos (ignora `stats`/`prewarm` e frames de áudio).
+
+    `receive()` vai por um worker com PRAZO (#479): sem ele uma regressão pendura
+    a rodada inteira em vez de reprovar."""
+    import concurrent.futures
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     for _ in range(maximo):
-        m = ws.receive()
+        try:
+            m = pool.submit(ws.receive).result(timeout=20)
+        except concurrent.futures.TimeoutError:
+            break
         if m.get("bytes"):
             continue
         ev = __import__("json").loads(m["text"])

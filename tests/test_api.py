@@ -3307,6 +3307,64 @@ def test_origin_boa_nao_regride_o_fluxo_do_mac(client, auth):
         app._CORS_ORIGINS.remove(_ORIGEM_ESTRANGEIRA)
 
 
+def test_tts_cors_origins_listada_libera_e_fora_da_lista_barra():
+    """`TTS_CORS_ORIGINS` é liberação EXPLÍCITA do dono: o que está na lista passa
+    e a guarda só volta a barrar quem ficou de fora (#290, cobertura do #438)."""
+    originais = list(app._CORS_ORIGINS)
+    app._CORS_ORIGINS[:] = ["https://app.exemplo"]
+    try:
+        c = _cliente_local()
+        for rota in ("/api/apikeys?reveal=1", "/api/settings"):
+            r = c.get(rota, headers={"Origin": "https://app.exemplo"})
+            assert r.status_code == 200, rota
+        r = c.get("/api/apikeys?reveal=1", headers={"Origin": "http://outro.exemplo"})
+        assert r.status_code == 403
+        assert r.headers.get("X-TTS-Origin-Bloqueada") == "1"
+    finally:
+        app._CORS_ORIGINS[:] = originais
+
+
+def test_curinga_desliga_a_guarda_de_origem_escolha_consciente():
+    """`*` na lista desliga a guarda inteira: é escolha do dono (quem confia em
+    qualquer origem já aceita CSRF de qualquer origem) — aqui fica documentado como
+    COMPORTAMENTO, não como acidente."""
+    originais = list(app._CORS_ORIGINS)
+    app._CORS_ORIGINS[:] = ["*"]
+    try:
+        c = _cliente_local()
+        r = c.get("/api/apikeys?reveal=1", headers={"Origin": _ORIGEM_ESTRANGEIRA})
+        assert r.status_code == 200
+        assert any(k.get("secret") for k in r.json()["keys"])
+        # a mutante também passa sem chave (o que o CSRF exploraria)
+        assert c.post("/api/models/unload",
+                      headers={"Origin": _ORIGEM_ESTRANGEIRA}).status_code in (200, 409)
+    finally:
+        app._CORS_ORIGINS[:] = originais
+
+
+def test_proxy_coerente_reconhece_a_mesma_origem():
+    """Atrás do `/ttsproxy` (Cloudflare), `x-forwarded-proto` + `host` coerentes
+    descrevem a mesma origem e a UI não é barrada por acidente."""
+    c = _cliente_local()
+    r = c.get("/api/apikeys?reveal=1", headers={
+        "Origin": "https://tts.exemplo", "x-forwarded-proto": "https",
+        "host": "tts.exemplo"})
+    assert r.status_code == 200
+    assert any(k.get("secret") for k in r.json()["keys"])
+
+
+def test_x_forwarded_host_forjado_sozinho_nao_vira_mesma_origem():
+    """A `_mesma_origem` lê o `Host`, NÃO o `x-forwarded-host`. Página de terceiro
+    que só forja `x-forwarded-host` continua barrada — se um dia virar "mesma
+    origem", o #438 sobe de P3 (o `Host` é o que o proxy reescreve e o browser não
+    controla; o `x-forwarded-*` viaja junto do atacante se o proxy os repassa)."""
+    c = _cliente_local()
+    r = c.get("/api/apikeys?reveal=1", headers={
+        "Origin": _ORIGEM_ESTRANGEIRA, "x-forwarded-host": _ORIGEM_ESTRANGEIRA[7:]})
+    assert r.status_code == 403
+    assert r.headers.get("X-TTS-Origin-Bloqueada") == "1"
+
+
 def test_origin_ausente_continua_valendo_como_o_mac(client, auth):
     """Sem `Origin` (curl, SDK, scripts) o loopback segue dispensando a chave —
     é o comportamento de sempre e não pode ter regredido."""
@@ -3964,7 +4022,9 @@ def _le_turno(ws, maximo=12):
     ficava estourado antes do fim do turno (task_6db0e2cc)."""
     eventos, audio, controles = [], 0, 0
     while controles < maximo:
-        m = ws.receive()
+        m = _recv(ws)                    # com prazo (#479): regressão reprova, não pendura
+        if m is None:
+            break
         if m.get("bytes"):
             audio += len(m["bytes"])
             continue
@@ -4302,20 +4362,29 @@ def dsh_limpo(monkeypatch):
     monkeypatch.setattr(app, "_chat_dsh_prewarm_thread", None)
 
 
-@pytest.fixture()
-def dsh_fake_bin(tmp_path, monkeypatch):
-    """`chat_dsh_bin` apontando para um wrapper que roda o servidor ACP falso.
+@pytest.fixture(scope="session")
+def fake_acp_estavel(tmp_path_factory):
+    """Wrapper do servidor ACP falso num diretório ESTÁVEL da sessão (#464).
 
-    Assim o pre-warm exercita o caminho REAL do app (resolve o binário, spawna,
-    handshake, prewarm) sem depender do dsh instalado nem do Node. O nome não
-    começa com `dsh`, de propósito: pula o check de Node e fica hermético."""
+    Era `tmp_path` do próprio teste, e o diretório é apagado no teardown dele. Um
+    cliente `dsh` que SOBREVIVE ao teste (prewarm recém-subido, pool) continuava com
+    o caminho antigo e o handshake seguinte morria com `No such file or directory`,
+    caindo no retry de 4 s e logando o que parece defeito do harness. Diretório de
+    sessão: o binário vale enquanto a rodada existir. O nome não começa com `dsh`,
+    de propósito (pula o check de Node, hermético)."""
     fake = Path(__file__).resolve().parent / "fake_acp.py"
-    alvo = tmp_path / "fake-acp"
+    alvo = Path(tmp_path_factory.mktemp("fake-acp")) / "fake-acp"
     alvo.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n')
     alvo.chmod(0o755)
-    monkeypatch.setitem(app._settings, "chat_backend", "dsh")
-    monkeypatch.setitem(app._settings, "chat_dsh_bin", str(alvo))
     return str(alvo)
+
+
+@pytest.fixture()
+def dsh_fake_bin(fake_acp_estavel, monkeypatch):
+    """`chat_dsh_bin` apontando para o wrapper ESTÁVEL (ver `fake_acp_estavel`)."""
+    monkeypatch.setitem(app._settings, "chat_backend", "dsh")
+    monkeypatch.setitem(app._settings, "chat_dsh_bin", fake_acp_estavel)
+    return fake_acp_estavel
 
 
 def test_prewarm_sobe_o_dsh_sem_abrir_a_conversa(dsh_limpo, dsh_fake_bin):
@@ -5204,7 +5273,9 @@ def test_live_ws_stats_esquema_e_cadencia(ws_client, live_limpo, monkeypatch):
         ws.send_bytes(pcm)
         stats, prazo = [], time.monotonic() + 2.0
         while len(stats) < 3 and time.monotonic() < prazo:
-            m = ws.receive()
+            m = _recv(ws, max(0.5, prazo - time.monotonic()))
+            if m is None:                       # prazo estourado (#479): sai e assere
+                break
             if m.get("bytes"):
                 continue
             ev = _json.loads(m["text"])
@@ -5380,12 +5451,15 @@ def test_live_ws_stats_para_ao_fechar_a_sessao(ws_client, live_limpo, monkeypatc
     caplog.set_level(logging.INFO, logger="live")
     with ws_client.websocket_connect("/api/live/ws") as ws:
         sid = _setup_ok(ws)["session_id"]
+        vista = False
         for _ in range(50):                                 # 1ª stats tem de chegar
-            m = ws.receive()
-            if not m.get("bytes") and _json.loads(m["text"])["type"] == "stats":
+            m = _recv(ws)                                   # com prazo (#479)
+            if m is None:
                 break
-        else:
-            pytest.fail("nenhuma stats antes do fechar")
+            if not m.get("bytes") and _json.loads(m["text"])["type"] == "stats":
+                vista = True
+                break
+        assert vista, "nenhuma stats antes do fechar"
     for _ in range(100):                                    # fechou → limpeza rodou
         with app._live_lock:
             if sid not in app._live_sessions:
@@ -5522,3 +5596,23 @@ def test_openai_transcriptions_avisa_no_header_ate_em_texto(client, remoto_morto
                     files={"file": ("a.wav", buf.getvalue(), "audio/wav")},
                     data={"response_format": "text"})
     assert r.status_code == 200 and r.headers.get("x-tts-remote-fallback") == "1"
+
+
+def test_binario_do_fake_acp_sobrevive_ao_teardown_do_teste(dsh_fake_bin, dsh_limpo):
+    """#464: o wrapper não pode morar no `tmp_path` do próprio teste.
+
+    Um cliente `dsh` que sobrevive ao teste (prewarm recém-subido, pool) seguia com
+    o caminho de um diretório JÁ APAGADO e o handshake seguinte morria com
+    `No such file or directory` — caía no retry de 4 s e logava o que parece
+    defeito do harness. Aqui: o arquivo existe, executa, e o diretório do teste
+    pode ser removido sem levá-lo junto."""
+    import shutil
+    import subprocess as sp
+
+    caminho = Path(dsh_fake_bin)
+    assert caminho.is_file() and os.access(caminho, os.X_OK)
+    assert shutil.which(str(caminho)), "o binário do prewarm tem de ser executável"
+    r = sp.run([str(caminho), "--version"], capture_output=True, text=True, timeout=20)
+    assert r.returncode == 0, r.stderr[-200:]
+    # o diretório de sessão do pytest NÃO é o `tmp_path` deste teste
+    assert "/test_binario_do_fake_acp" not in str(caminho), str(caminho)
