@@ -708,6 +708,21 @@
   .api-key-row .ak-role { font-size: 11px; font-weight: 600; }
   .api-key-row .ak-role:empty { display: none; }
   .api-key-row .ak-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  /* aviso de LAN aberta: fica no topo do painel, não some sozinho */
+  .alerta-lan {
+    margin: 8px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--warn);
+    background: var(--warn-soft); border: 1px solid var(--warn-border);
+    border-left: 3px solid var(--warn); border-radius: 8px; padding: 8px 10px;
+  }
+  .alerta-lan[hidden] { display: none; }
+  /* confirmação inline da última chave (o 409 não é erro: é pergunta) */
+  .ak-confirma {
+    flex: 1 1 100%; display: flex; flex-direction: column; gap: 8px;
+    background: var(--warn-soft); border: 1px solid var(--warn-border);
+    border-left: 3px solid var(--warn); border-radius: 8px;
+    padding: 10px 12px; font-size: 12.5px; line-height: 1.5; color: var(--text);
+  }
+  .ak-confirma .ak-confirma-b { display: flex; gap: 8px; flex-wrap: wrap; }
   .api-key-reveal {
     margin-top: 12px; padding: 12px; border: 1px solid var(--accent-border);
     border-radius: 8px; background: var(--accent-bg);
@@ -2827,6 +2842,7 @@
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">Chaves da API (servidor)</h3>
         <label class="check"><input type="checkbox" id="apiAuthEnabled"> Exigir chave na rede local</label>
+        <p class="alerta-lan" id="apiLanAberta" hidden role="status"></p>
         <p class="hint" id="apiAuthHint">Neste Mac a UI não precisa de chave. Outros
           dispositivos usam uma das chaves abaixo via <code>Authorization: Bearer</code>,
           <code>X-API-Key</code> ou <code>Authorization: Bearer</code>. Use <b>Revelar</b> / <b>Copiar</b>
@@ -2907,7 +2923,7 @@
         <label class="cfg-label">API key (opcional)
           <input data-admin-setting="remote_api_key" type="password" id="remoteApiKey" placeholder="vazio se não exigir" autocomplete="off"></label>
         <label class="cfg-label">Parâmetros extra (JSON)
-          <textarea id="remoteTtsExtra" style="min-height:42px; font-family:var(--mono); font-size:12px" placeholder='{"voice":"alloy"}'></textarea></label>
+          <textarea data-admin-setting="remote_tts_extra" id="remoteTtsExtra" style="min-height:42px; font-family:var(--mono); font-size:12px" placeholder='{"voice":"alloy"}'></textarea></label>
       </section>
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">Tradução / STT · memória</h3>
@@ -2935,6 +2951,9 @@
         <label class="cfg-label">Beam do STT (Whisper) <output id="sttBeamOut">5</output>
           <input type="range" id="sttBeam" min="1" max="8" step="1" value="5"></label>
         <p class="hint" style="margin-top:0">Beam p/ Whisper remoto (API/RTX); o local no Mac roda greedy — p/ mais precisão, use o large-v3 completo.</p>
+        <label class="cfg-label">Histórico de operação: guardar por <output id="metricsTtlOut">14</output> dia(s)
+          <input type="range" id="metricsTtl" min="0" max="90" step="1" value="14"></label>
+        <p class="hint" style="margin-top:0">Metadado por requisição (rota, ms, código, estágio) em <code>state/metrics/</code>; nenhum texto ou áudio. 0 apaga na próxima poda. Ver <code>GET /api/metrics</code> (admin).</p>
 
         <div id="sttAdvanced">
           <label class="check"><input data-admin-setting="remote_stt" type="checkbox" id="remoteStt"> Transcrição via API</label>
@@ -3190,6 +3209,7 @@ function aplicarPoliticaAdmin() {
       : el.dataset.tituloOriginal;
     (el.closest("label") || el).classList.toggle("cfg-travado", travado);
   });
+  travarAcoesElevadas();
   const b = $("cfgAdminBadge");
   if (b) {
     b.hidden = false;
@@ -3228,6 +3248,27 @@ function aplicarPoliticaAdmin() {
     $("apiKeyCreate").disabled = !ADMIN.is;
     if ($("apiKeyNewName")) $("apiKeyNewName").disabled = !ADMIN.is;
     if ($("apiAuthEnabled")) $("apiAuthEnabled").disabled = !ADMIN.is;
+  }
+}
+
+/* AÇÕES elevadas: apagar voz/output, importar/exportar vozes, descarregar modelo,
+   túnel e desligar o servidor. O servidor recusa com 403 ("Chave administrativa
+   necessária (papel admin)") — sem isto a pessoa com chave de uso só descobria
+   DEPOIS do clique, e no desligar a tela ainda parecia ter funcionado. Travar e
+   dizer o motivo no `title` é a mesma regra já usada nos campos administrativos.
+   Só ids fixos aqui; os botões criados por render (apagar voz/output) se travam
+   na própria criação, onde o `ADMIN.is` está à mão. */
+const ACOES_ADMIN = ["shutdownBtn", "proxyTunnelOn", "proxyTunnelRestart",
+                     "unloadModelsBtn", "importVoicesBtn", "exportVoicesBtn", "clearAll"];
+function travarAcoesElevadas() {
+  for (const id of ACOES_ADMIN) {
+    const el = $(id);
+    if (!el) continue;
+    const travado = !ADMIN.is;
+    el.disabled = travado;
+    if (el.dataset.tituloOriginal === undefined) el.dataset.tituloOriginal = el.title || "";
+    el.title = travado ? "Precisa de chave administrativa (Configurações → Acesso)"
+                       : el.dataset.tituloOriginal;
   }
 }
 
@@ -3508,9 +3549,11 @@ async function api(path, opts = {}) {
       { status: 403 });
   }
   if (!r.ok) {
-    let detail = r.statusText;
-    try { detail = (await r.json()).detail || detail; } catch {}
-    throw Object.assign(new Error(detail), { status: r.status });
+    let detail = r.statusText, corpo = null;
+    try { corpo = await r.json(); detail = corpo.detail || detail; } catch {}
+    // o corpo vai junto: o 409 da última chave manda `consequencia`/`hint` e a
+    // tela precisa do TEXTO DO SERVIDOR, não de uma cópia que envelhece aqui
+    throw Object.assign(new Error(detail), { status: r.status, body: corpo });
   }
   const dados = await r.json();
   // Um POST de /api/settings pode voltar com campo administrativo IGNORADO pelo
@@ -4573,7 +4616,12 @@ async function refreshVoices() {
           refreshVoices();
         } catch (e) { toast("Erro: " + e.message); cb.disabled = false; cb.textContent = "limpar"; }
       };
-      div.querySelector(".danger").onclick = async (ev) => {
+      const btnApagar = div.querySelector(".danger");
+      if (!ADMIN.is) {                       // ação elevada: nem chega a clicar
+        btnApagar.disabled = true;
+        btnApagar.title = "Precisa de chave administrativa (Configurações → Acesso)";
+      }
+      btnApagar.onclick = async (ev) => {
         const verbo = v.preset ? "Resetar" : "Apagar";
         if (!confirm(`${verbo} a voz "${v.name}"?`)) return;
         // destrutivo e sem catch antes: se o servidor recusasse, a lista seguia
@@ -4655,6 +4703,14 @@ async function refreshVoices() {
 
 /* ───────── Síntese / STT beam ───────── */
 // Beam do STT (Whisper). Voxtral ignora (é LLM greedy). Salva na hora.
+if ($("metricsTtl")) {
+  $("metricsTtl").oninput = () => { $("metricsTtlOut").textContent = $("metricsTtl").value; };
+  $("metricsTtl").onchange = () => api("/api/settings", {
+    method: "POST",
+    body: JSON.stringify({ metrics_ttl_dias: parseInt($("metricsTtl").value, 10) }) })
+    .then(() => toast("Retenção do histórico: " + $("metricsTtl").value + " dia(s)"))
+    .catch((e) => toast("Falha ao salvar retenção: " + e.message));
+}
 if ($("sttBeam")) {
   $("sttBeam").oninput = () => { $("sttBeamOut").textContent = $("sttBeam").value; };
   $("sttBeam").onchange = () => {
@@ -5269,7 +5325,12 @@ function micAudioConstraints(base) {
 function micIndisponivel() {
   return !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
 }
+// erro NOSSO (já com a frase pronta) — marcado para não ser reescrito quando o
+// catch de fora chamar `micErroTexto` de novo: sem a marca saía
+// "não consegui abrir o microfone: não consegui abrir o microfone".
+function micErroDe(msg) { return Object.assign(new Error(msg), { name: "MicErro" }); }
 function micErroTexto(e) {
+  if (e && e.name === "MicErro") return e.message;
   if (micIndisponivel() || window.isSecureContext === false) {
     return "mic exige origem segura — abra por http://127.0.0.1:7860 "
          + "(IP da LAN em http não serve; https serve)";
@@ -5290,7 +5351,7 @@ function micErroTexto(e) {
    AudioContext NÃO libera o dispositivo). */
 let ctxObsMed = null;   // ctx do tap de monitoramento (OBS-3), criado sob demanda
 async function micFilteredStream(base, obs) {
-  if (micIndisponivel()) throw new Error(micErroTexto());   // origem não segura
+  if (micIndisponivel()) throw micErroDe(micErroTexto());   // origem não segura
   let raw;
   try {
     raw = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints(base) });
@@ -5875,12 +5936,17 @@ async function pumpPipeline(st) {
 let outTeto = 30;
 const OUT_PASSO = 30;
 async function refreshOutputs() {
-  let outs;
-  try { outs = await api("/api/outputs"); }
+  // histórico PAGINADO no servidor (#282): `outTeto` vira o `limit` e o total vem
+  // à parte. Aceita as duas formas de resposta (objeto paginado ou lista crua do
+  // caminho de compatibilidade), então nunca quebra se o servidor for velho.
+  let resp;
+  try { resp = await api(`/api/outputs?limit=${outTeto}`); }
   catch { return; }
+  const outs = resp.items || resp || [];
+  const totalOuts = resp.total || outs.length;
   const list = $("outputList");
   list.innerHTML = outs.length ? "" : '<div class="empty">Nada gerado ainda.</div>';
-  for (const o of outs.slice(0, outTeto)) {
+  for (const o of outs) {
     const div = document.createElement("div");
     div.className = "item";
     const short = o.text.length > 90 ? o.text.slice(0, 90) + "…" : o.text;
@@ -5892,7 +5958,12 @@ async function refreshOutputs() {
       <button class="ghost small download-output">Baixar</button>
       <button class="danger small">Apagar</button>
       </div>`;
-    div.querySelector(".danger").onclick = async (ev) => {
+    const btnApagarOut = div.querySelector(".danger");
+    if (!ADMIN.is) {
+      btnApagarOut.disabled = true;
+      btnApagarOut.title = "Precisa de chave administrativa (Configurações → Acesso)";
+    }
+    btnApagarOut.onclick = async (ev) => {
       const btn = ev.currentTarget;
       btn.disabled = true;
       try {
@@ -5919,10 +5990,11 @@ async function refreshOutputs() {
       protectedDownload(`/api/outputs/${o.id}/audio`, `tts-${o.id}.wav`)
         .catch(e => toast("Erro no download: " + e.message, 6000));
   }
-  if (outs.length > outTeto) {
+  if (totalOuts > outs.length) {
+    const restantes = totalOuts - outs.length;
     const mais = document.createElement("button");
     mais.className = "ghost small";
-    mais.textContent = `mostrar mais ${Math.min(OUT_PASSO, outs.length - outTeto)} de ${outs.length - outTeto} restante(s)`;
+    mais.textContent = `mostrar mais ${Math.min(OUT_PASSO, restantes)} de ${restantes} restante(s)`;
     mais.onclick = () => { outTeto += OUT_PASSO; refreshOutputs(); };
     list.appendChild(mais);
   }
@@ -5989,6 +6061,14 @@ async function loadApiKeys() {
         hint.innerHTML = "Auth <b>ativa</b> na rede. Este dispositivo já autenticou. "
           + "Revelar/criar chaves vale para os outros sistemas (Home Assistant, scripts, etc.).";
       }
+    }
+    // LAN aberta = auth sem efeito. O 409 da última chave é o mesmo fenômeno
+    // visto ANTES; aqui é o retrato de agora (não dá para descobrir pelo vizinho).
+    const lanAberta = $("apiLanAberta");
+    if (lanAberta) {
+      lanAberta.hidden = !!data.auth_active;
+      lanAberta.textContent = "⚠ A LAN inteira acessa a API SEM chave agora — qualquer máquina "
+        + "da rede alcança a instância. Crie uma chave ou defina TTS_ROD_ADMIN_KEY para fechar.";
     }
     const rows = [...(data.keys || [])];
     if (data.env_key) rows.push(data.env_key);
@@ -6100,6 +6180,9 @@ async function loadApiKeys() {
           } catch (e) { toast("Erro: " + e.message, 5000); }
         };
         btn("Apagar", "danger", "Revoga a chave").onclick = async () => {
+          // Um passo só no caso comum. O 409 da ÚLTIMA chave é pergunta, não erro:
+          // a tela repete com `?forcar=1` só depois de o dono aceitar o preço
+          // (a LAN inteira entra sem chave) — ver `confirmaUltima` abaixo.
           if (!confirm(`Apagar a chave "${kr.name}"?`)) return;
           try {
             const r = await api(`/api/apikeys/${kr.id}`, { method: "DELETE" });
@@ -6108,7 +6191,10 @@ async function loadApiKeys() {
               : "Chave apagada ✔");
             showApiKeyReveal("");
             loadApiKeys();
-          } catch (e) { toast("Erro: " + e.message, 5000); }
+          } catch (e) {
+            if (e.status === 409) return confirmaUltima(div, kr, e.body);
+            toast("Erro: " + e.message, 5000);
+          }
         };
       } else if (data.can_reveal) {
         btn("Revelar env", "ghost").onclick = async () => {
@@ -6126,6 +6212,53 @@ async function loadApiKeys() {
   } catch (e) {
     list.innerHTML = `<div class="empty" style="padding:16px">Não foi possível carregar as chaves: ${esc(e.message)}</div>`;
   }
+}
+
+/* Última chave: o servidor devolve 409 e NÃO apaga. A pergunta tem de dizer o
+   que muda — "apagar" e "abrir a LAN" são coisas diferentes, e o aviso some do
+   caminho se o dono não for forçado a ler. Dois botões, nada de `confirm` aqui:
+   confirmar duas vezes em diálogo nativo o mesmo clique é ruído. */
+function confirmaUltima(row, kr, corpo) {
+  if (row.querySelector(".ak-confirma")) return;      // já perguntando nesta linha
+  const box = document.createElement("div");
+  box.className = "ak-confirma";
+  const txt = document.createElement("span");
+  // texto do SERVIDOR (detail + consequencia + hint): se a regra mudar, a tela
+  // acompanha sem ninguém reescrever a frase aqui. O fallback só cobre servidor
+  // que ainda não manda esses campos.
+  const partes = [
+    corpo && corpo.detail ? corpo.detail : `Esta é a ÚLTIMA chave ("${kr.name}"): apagá-la`
+      + " desliga a exigência de chave.",
+    corpo && corpo.consequencia ? "Consequência: " + corpo.consequencia + "." : null,
+    corpo && corpo.hint ? corpo.hint : null,
+  ].filter(Boolean);
+  txt.textContent = "⚠ " + partes.join(" ");
+  const bs = document.createElement("div");
+  bs.className = "ak-confirma-b";
+  const forcar = document.createElement("button");
+  forcar.type = "button"; forcar.className = "danger small";
+  forcar.textContent = "Apagar e abrir a LAN";
+  const cancelar = document.createElement("button");
+  cancelar.type = "button"; cancelar.className = "ghost small";
+  cancelar.textContent = "Cancelar";
+  cancelar.onclick = () => box.remove();
+  forcar.onclick = async () => {
+    forcar.disabled = true; cancelar.disabled = true;
+    try {
+      const r = await api(`/api/apikeys/${kr.id}?forcar=1`, { method: "DELETE" });
+      const avisos = (r && r.avisos) || [];
+      toast(`Chave "${kr.name}" apagada. ` + (avisos[0] || "A LAN ficou aberta (sem chave)."), 8000);
+      showApiKeyReveal("");
+      loadApiKeys();
+    } catch (e) {
+      forcar.disabled = false; cancelar.disabled = false;
+      toast("Erro ao apagar: " + e.message, 6000);
+    }
+  };
+  bs.appendChild(forcar); bs.appendChild(cancelar);
+  box.appendChild(txt); box.appendChild(bs);
+  row.appendChild(box);
+  forcar.focus();
 }
 
 if ($("apiKeyCreate")) $("apiKeyCreate").onclick = async () => {
@@ -6155,7 +6288,9 @@ if ($("apiAuthEnabled")) $("apiAuthEnabled").onchange = async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: $("apiAuthEnabled").checked }),
     });
-    toast(r.auth_active ? "Auth na rede: ligada" : "Auth na rede: desligada");
+    const avisos = (r && r.avisos) || [];
+    toast(avisos[0] || (r.auth_active ? "Auth na rede: ligada" : "Auth na rede: desligada"),
+          avisos.length ? 8000 : 3500);
     loadApiKeys();
   } catch (e) {
     toast("Erro: " + e.message, 5000);
@@ -6267,9 +6402,12 @@ async function syncTunnelToggle() {
   if (!el) return;
   try {
     const d = await api("/api/tunnel/status");
-    el.disabled = false;
+    // /api/tunnel/status é leitura, mas ALTERAR o túnel é admin: não destravar
+    // com chave de uso (era o que o `disabled = false` fixo fazia depois da
+    // política já aplicada)
+    el.disabled = !ADMIN.is;
     el.checked = !!(d.launchd_loaded || d.tunnel_running || d.cloudflared_loaded || d.cloudflared_running);
-  } catch (e) { el.disabled = true; el.checked = false; }
+  } catch (e) { el.disabled = !ADMIN.is; el.checked = false; }
 }
 if ($("proxyTunnelOn")) {
   syncTunnelToggle();
@@ -6504,6 +6642,7 @@ async function loadSettings() {
     $("langSelect").value = s.language;
     $("cfgPrecision").value = s.omni_precision || "bf16";
     if ($("sttBeam")) { $("sttBeam").value = s.stt_beam ?? 5; $("sttBeamOut").textContent = s.stt_beam ?? 5; }
+    if ($("metricsTtl")) { $("metricsTtl").value = s.metrics_ttl_dias ?? 14; $("metricsTtlOut").textContent = s.metrics_ttl_dias ?? 14; }
     for (const [sl, out, key] of [["audGain", "audGainOut", "audio_gain_db"], ["audLow", "audLowOut", "audio_eq_low_db"],
         ["audMid", "audMidOut", "audio_eq_mid_db"], ["audHigh", "audHighOut", "audio_eq_high_db"]]) {
       $(sl).value = s[key] ?? 0;
@@ -7221,7 +7360,7 @@ $("cvMic").onclick = async () => {
   try {
     // o VAD abre o mic por conta própria: a guarda de origem segura tem de vir
     // ANTES, senão o que chega é o erro cru do getUserMedia dele
-    if (micIndisponivel()) throw new Error(micErroTexto());
+    if (micIndisponivel()) throw micErroDe(micErroTexto());
     if (!cvVad) {
       cvVad = await vad.MicVAD.new({
         baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/",
@@ -7661,7 +7800,7 @@ async function lxCaptura() {
   // Origem NÃO segura (ex.: IP da LAN em http) não tem `navigator.mediaDevices`:
   // o erro saía como "Not supported" e não dizia o que fazer. Medido: 127.0.0.1 é
   // contexto seguro; 192.168.x.x NÃO é.
-  if (micIndisponivel()) throw new Error(micErroTexto());
+  if (micIndisponivel()) throw micErroDe(micErroTexto());
   // NS SEMPRE ligado, independente de micFx.ns. As outras telas seguem o
   // checkbox (default off) porque o afftdn do servidor já denoisa o upload —
   // duas supressões comem consoante. Este PCM não passa por afftdn.
