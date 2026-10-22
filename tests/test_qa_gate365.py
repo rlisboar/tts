@@ -127,7 +127,15 @@ def test_fila_estourada_marca_a_sessao_sem_erro(client, chat_saudavel, monkeypat
     # da marca (o turno tem de ficar parado para `fila` ser escrito)
     ocupados = [app._chat_executor.submit(_travado, [])
                 for _ in range(2 * app._chat_executor._max_workers)]
-    r = client.post(f"/api/chat/{sid}", headers=auth, json={"message": "oi"})
+    # 409 = "IA ainda processando a fala anterior" (#491): sob carga do runner o
+    # turno de abertura pode ser remarcado ENTRE a espera acima e o POST, então
+    # o POST é laço com prazo — tiro único reprovava no CI e não aqui.
+    limite_post = time.time() + 8
+    while True:
+        r = client.post(f"/api/chat/{sid}", headers=auth, json={"message": "oi"})
+        if r.status_code != 409 or time.time() > limite_post:
+            break
+        time.sleep(0.1)
     assert r.status_code == 200
     # o POST responde antes de a thread do turno começar: a marca aparece logo
     # depois, então polla em vez de ler uma vez
