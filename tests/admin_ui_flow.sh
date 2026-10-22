@@ -272,7 +272,9 @@ with sync_playwright() as p:
         ctx.add_init_script(f"localStorage.setItem('ttsStudioKey', {chave!r})")
         pg = ctx.new_page()
         erros = []
-        pg.on("pageerror", lambda e: erros.append(str(e)))
+        # stack junto: o sintoma "Cannot set properties of null" não diz ONDE
+        pg.on("pageerror", lambda e: erros.append(
+            str(e) + ("\n" + e.stack.splitlines()[1] if getattr(e, "stack", None) else "")))
 
         def decide(d):
             # "Usar esta chave neste navegador?" decide se a SESSÃO passa a ser a
@@ -289,11 +291,17 @@ with sync_playwright() as p:
         # reiniciando): aí loadSettings() aborta, o selo fica vazio, nenhum campo
         # trava e nenhuma linha de chave aparece — sintoma que parece regressão e
         # não é. Espera o ESTADO e recarrega uma vez em vez de seguir vazio.
+        # O `Cannot set properties of null (setting 'onclick')` de 1 em 4 rodadas
+        # na LAN só faz sentido com o documento INCOMPLETO (o script roda no fim do
+        # body; se a resposta chega truncada, um `$("id")` posterior é null e o
+        # boot inteiro morre). Exige o parse FECHADO antes de qualquer fase.
         for tentativa in (1, 2):
             ir(pg, base, wait_until="networkidle")
             try:
                 pg.wait_for_function(
-                    "() => (document.getElementById('cfgAdminBadge')?.textContent || '').length > 0",
+                    "() => document.readyState === 'complete'"
+                    " && !!document.getElementById('shutdownBtn')"
+                    " && (document.getElementById('cfgAdminBadge')?.textContent || '').length > 0",
                     timeout=9000)
                 break
             except Exception:
