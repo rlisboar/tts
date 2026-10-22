@@ -69,6 +69,8 @@ falhas, avisos = [], []
 #: porque a mensagem de falha e a limpeza acontecem em OUTRO escopo, onde `log`
 #: local não existe (`NameError: name 'log' is not defined`).
 LOG = None
+CHAVES = None
+LEGADO = None
 
 
 def ok(msg):
@@ -157,14 +159,12 @@ def fala_de_teste(segundos=2.4):
         return w.stem, (np.clip(a16, -1, 1) * 32767).astype("<i2").tobytes()
     raise SystemExit("nenhuma voices/*.wav serviu como fala de teste")
 
-def limpa_sobras():
-    """Apaga os temporários DESTA rodada (verde ou vermelha): log, chaves e launcher."""
-    if LOG is None:
-        return
-    nome = str(LOG)
-    for sobra in (LOG,
-                  pathlib.Path(nome.replace("live_ws_servidor_", "live_ws_apikeys_")).with_suffix(".json"),
-                  pathlib.Path(nome.replace("live_ws_servidor_", "live_ws_launcher_")).with_suffix(".py")):
+def limpa_sobras(manter_log=False):
+    """Apaga os temporários DESTA rodada — log, arquivo de chaves e `.apikey`.
+
+    Rodada VERMELHA mantém o log (é o que se lê para diagnosticar); as chaves saem
+    sempre, que é o motivo do isolamento."""
+    for sobra in ((() if manter_log else (LOG,)) + (CHAVES, LEGADO)):
         try: sobra.unlink()
         except Exception: pass
 
@@ -199,26 +199,31 @@ def sobe_servidor(porta, stub_porta):
            "TTS_CHAT_MODEL": "stub-live"}
     global LOG
     log = LOG = pathlib.Path("/tmp") / f"live_ws_servidor_{porta}.log"
-    # ARQUIVO DE CHAVES PRÓPRIO (#435, padrão do `ultima_chave_ui.sh`): a suíte cria
-    # chave para conectar e, sem isto, a gravação caía no `.apikeys.json` do dono
-    # (o conftest não alcança script de shell). O launcher troca o caminho ANTES de
-    # servir, então nada do arquivo real é escrito — e a sobra é apagada no fim.
+    # ARQUIVO DE CHAVES PRÓPRIO (#435): a suíte cria chave para conectar e, sem isto,
+    # a gravação caía no `.apikeys.json` do dono (o conftest não alcança shell). O
+    # launcher troca os DOIS caminhos ANTES de servir — o `.apikey` legado inclusive,
+    # porque `_save_apikeys` espelha nele — e o arquivo nasce com uma chave, não
+    # vazio (vazio faria `_load_apikeys` gerar uma e gravar por conta própria).
     chaves = pathlib.Path("/tmp") / f"live_ws_apikeys_{porta}.json"
-    chaves.write_text("{}")
-    launcher = pathlib.Path("/tmp") / f"live_ws_launcher_{porta}.py"
-    launcher.write_text(
-        "import pathlib, app\n"
+    legado = chaves.with_suffix(".apikey")
+    semente = "sk-teste-" + os.urandom(8).hex()
+    chaves.write_text(json.dumps({"enabled": True, "keys": [
+        {"id": "sessao-legado", "name": "smoke", "secret": semente,
+         "created_at": "2026-01-01 00:00:00", "role": None}]}))
+    legado.write_text(semente + "\n")
+    global CHAVES, LEGADO
+    CHAVES, LEGADO = chaves, legado
+    launcher = (
+        "import pathlib\n"
+        "import app\n"
         f"app.APIKEYS_PATH = pathlib.Path({str(chaves)!r})\n"
+        f"app.LEGACY_APIKEY_PATH = pathlib.Path({str(legado)!r})\n"
         "app._load_apikeys()\n"
-        + (f"app._ENV_API_KEY = app._ADMIN_API_KEY = ''\n" if False else "")
-        + "alvo = app.app\n")
+        "import uvicorn\n"
+        f"uvicorn.run(app.app, host='127.0.0.1', port={porta}, log_level='warning')\n")
     proc = subprocess.Popen(
-        [str(RAIZ / ".venv-mlx" / "bin" / "uvicorn"), f"{launcher.stem}:alvo",
-         "--host", "127.0.0.1", "--port", str(porta),
-         "--app-dir", str(launcher.parent)],
-        cwd=str(RAIZ), env={**env, "PYTHONPATH": os.pathsep.join(
-            [str(launcher.parent), str(RAIZ), os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)},
-        stdout=log.open("w"), stderr=subprocess.STDOUT,
+        [str(RAIZ / ".venv-mlx" / "bin" / "python"), "-c", launcher],
+        cwd=str(RAIZ), env=env, stdout=log.open("w"), stderr=subprocess.STDOUT,
         start_new_session=True)
     for _ in range(300):                      # até 60 s
         if proc.poll() is not None:
@@ -442,7 +447,7 @@ async def principal():
             mata_servidor(servidor)
             ok("servidor do smoke encerrado (e o stub com ele)")
 
-    limpa_sobras()
+    limpa_sobras(manter_log=bool(falhas))
     print()
     if falhas:
         print(f"✘ {len(falhas)} falha(s) (log do servidor: {LOG}):")
