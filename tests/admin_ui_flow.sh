@@ -309,6 +309,23 @@ with sync_playwright() as p:
         cobrar(a.get("desab") is True, f"#{a['id']} devia estar desabilitado com chave de uso")
         cobrar("administrativa" in a.get("titulo", "").lower(),
                f"#{a['id']} desabilitado sem dizer o motivo (title: {a.get('titulo')!r})")
+    # o 🗑 do perfil de locutor é ação elevada (DELETE leva _exige_admin): com
+    # chave de uso tem de estar travado. A instância de teste nasce sem perfis,
+    # então a lista é servida por rota stubada — o alvo é a régua do botão.
+    pg.route("**/api/speaker/profiles",
+             lambda r: r.fulfill(status=200, content_type="application/json",
+                                 body='[{"name":"probe","samples":2}]'))
+    pg.evaluate("refreshSpProfiles()")
+    pg.wait_for_timeout(500)
+    perfil_del = pg.evaluate("""() => { const b = document.querySelector('#spProfiles [data-del]');
+        return b ? { desab: b.disabled, titulo: b.title || '' } : null; }""")
+    cobrar(perfil_del is not None, "a lista de perfis não renderizou o botão de apagar")
+    if perfil_del:
+        cobrar(perfil_del["desab"], "o 🗑 do perfil devia estar desabilitado com chave de uso")
+        cobrar("administrativa" in perfil_del["titulo"].lower(), "o 🗑 do perfil não diz o motivo")
+    pg.unroute("**/api/speaker/profiles")
+
+
     # e o 403 do servidor continua explicado no cliente quando ele chega.
     # Alvo: "Apagar todos" — responde 403 e não apaga nada; o Desligar derrubaria
     # a instância no meio da rodada. `confirm` stubado para não parar o fluxo.
@@ -377,6 +394,38 @@ with sync_playwright() as p:
     cobrar("admin" in selo.lower(), f"selo de admin errado: {selo!r}")
     cobrar(travados == 0, f"admin não devia ter campo travado ({travados})")
     cobrar(not segredo.startswith("••••"), "admin deveria ver o segredo, não a máscara")
+
+    # trocar a chave na mão: o papel NOVO tem de chegar antes das listas
+    # dinâmicas. Sem isso os botões são renderizados com o papel velho (admin) e
+    # o clique vai a 403. O atraso no /api/settings abre a janela de propósito.
+    # marca os itens que JÁ estão na tela: o que interessa é o RE-RENDER
+    pg.evaluate("() => document.querySelectorAll('#voiceList .item').forEach(e => e.dataset.velho = '1')")
+    pg.evaluate("""async (chave) => {
+        const orig = window.api;
+        window.api = (caminho, opts) => caminho.includes('/api/settings')
+            ? new Promise(res => setTimeout(res, 600)).then(() => orig(caminho, opts))
+            : orig(caminho, opts);
+        window.__restauraApi = () => { window.api = orig; };
+        window.__prontoTroca = trocarChave(chave);
+    }""", use)
+    # espera o botão APARECER e lê na hora: é a PRIMEIRA renderização que vale.
+    # Renderizado antes do /api/settings (atrasado de propósito), ele nasce com o
+    # papel velho; depois do conserto ele só nasce quando o papel novo já chegou.
+    try:
+        pg.wait_for_function("() => !!document.querySelector('#voiceList .item:not([data-velho])')",
+                             timeout=6000)
+        apagar_voz = pg.evaluate(
+            "document.querySelector('#voiceList .item:not([data-velho]) .danger').disabled")
+        cobrar(apagar_voz is True,
+               "o apagar voz nasceu com o papel VELHO depois da troca de chave (render antes do is_admin)")
+    except Exception:
+        cobrar(False, "as listas nem renderizaram depois da troca de chave")
+    pg.evaluate("window.__restauraApi && window.__restauraApi()")
+    # a fase seguinte cria chaves, e com a chave de USO isso não dá: volta ao admin
+    pg.evaluate("async (chave) => { await trocarChave(chave); }", adm)
+    pg.wait_for_timeout(1200)
+    cobrar(pg.evaluate("document.querySelector('#apiKeyCreate')?.disabled") is False,
+           "a sessão não voltou a ser admin depois do ensaio de troca")
 
     # papel: cria pelo form (default "uso"), confere o selo da linha, troca e apaga
     pg.eval_on_selector(".nav-item[data-view='config']", "el => el.click()")

@@ -6019,8 +6019,13 @@ function trocarChave(nova) {
   if ($("keyBar")) $("keyBar").style.display = "none";
   updateClientKeyStatus();
   onbDecidido = false; decideOnboarding();   // ganhou chave: o cartão de 1º uso sai
-  refreshStatus(); refreshVoices(); refreshOutputs();
-  loadSettings();          // reconsulta is_admin/admin_fields desta chave
+  refreshStatus();
+  // O `is_admin` desta chave vem do loadSettings. Renderizar as listas ANTES
+  // dele deixava os botões dinâmicos (apagar voz/output, 🗑 do perfil) com o
+  // papel VELHO — e o clique ia a 403. Por isso: settings primeiro, listas
+  // depois; se o settings falhar, `aplicarPoliticaAdmin` não roda e cai no
+  // estado anterior, que é o menos pior.
+  loadSettings().finally(() => { refreshVoices(); refreshOutputs(); refreshSpProfiles(); });
 }
 
 function updateClientKeyStatus() {
@@ -6766,12 +6771,20 @@ async function refreshSpProfiles() {
           `data-del="${esc(p.name)}" title="remover perfil">🗑</button></span>`
         ).join(" · ")
       : "Nenhuma voz cadastrada ainda.";
-    el.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    // apagar perfil é admin (o DELETE leva `_exige_admin`): mesma régua dos
+    // campos e das outras ações elevadas
+    el.querySelectorAll("[data-del]").forEach(b => {
+      if (!ADMIN.is) {
+        b.disabled = true;
+        b.title = "Precisa de chave administrativa (Configurações → Acesso)";
+      }
+      b.onclick = async () => {
       try {
         await api("/api/speaker/" + encodeURIComponent(b.dataset.del), { method: "DELETE" });
         toast("Perfil removido");
         refreshSpProfiles();
       } catch (e) { toast("✖ " + e.message, 4000); }
+      };
     });
   } catch {}
 }
