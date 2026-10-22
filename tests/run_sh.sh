@@ -31,7 +31,8 @@ TETO="${TETO_S:-240}"          # segundos por suíte
 J=3
 
 RAPIDO=(limpa_bytecode serial_lock live_lock_freeze)
-NAVEGADOR=(dsh_ui hash_deep_link live_dsh_fallback live_barge_rep live_ui obs_ui live_ws)
+NAVEGADOR=(dsh_ui hash_deep_link live_dsh_fallback live_barge_rep live_ui obs_ui live_ws
+            ultima_chave_ui)
 INSTANCIA=(a11y_teclado admin_ui_flow cfg_sujo_e_erros conversa_429 key_storage_repro
            live_hold_ui mic_erro_ui mobile_layout onboarding_atalhos ui_repouso
            xss_frontend_repro)
@@ -127,7 +128,10 @@ if [ "${#FALHAS[@]}" -gt 0 ]; then
     destino="${TMPDIR:-/tmp}/suites-sh-falhas.$$"
     mkdir -p "$destino"
     for nome in "${FALHAS[@]}"; do cp "$DIR/$nome.log" "$destino/" 2>/dev/null; done
+    # Poda: um teste por rodada, e rodada vermelha acumulava um diretório por vez
+    # (18 no /tmp quando isso foi medido — #428). Fica o dos últimos 3 vermelhos.
+    ls -1dt "${TMPDIR:-/tmp}"/suites-sh-falhas.* 2>/dev/null | tail -n +4 | xargs rm -rf 2>/dev/null || true
     echo
-    echo "logs preservados em $destino"
+    echo "logs preservados em $destino (mantidos os 3 últimos vermelhos)"
     exit 1
 fi

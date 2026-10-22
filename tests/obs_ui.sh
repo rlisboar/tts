@@ -312,8 +312,14 @@ finally:
     except Exception: proc.terminate()
 
 if falhas:
-    print("\n✖ FALHAS:")
+    print(f"\n✖ FALHAS (log do servidor: {log}):")
     for f in falhas: print("  -", f)
     sys.exit(1)
 print("\n✔ OK — painéis OBS-3 renderizam nas 4 telas e respondem a dados vivos (mic real, Conversa, job).")
+for _s in (log,):
+    try: _s.unlink()
+    except Exception: pass
+for _s in (wav_entrada,):
+    try: _s.unlink()
+    except Exception: pass
 PYEOF

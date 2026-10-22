@@ -409,7 +409,7 @@ async def principal():
 
     print()
     if falhas:
-        print(f"✘ {len(falhas)} falha(s):")
+        print(f"✘ {len(falhas)} falha(s) (log do servidor: {log}):")
         for f in falhas:
             print(f"   - {f}")
         sys.exit(1)
@@ -417,6 +417,8 @@ async def principal():
       + ("" if ALVO_VALE else f" (alvo de {ALVO_MS} ms é do cenário stub; Live em {BACKEND_LIVE!r})"))
     if avisos:
         print(f"({len(avisos)} aviso(s))")
+    try: log.unlink()                   # rodada verde não deixa lixo em /tmp
+    except Exception: pass
 
 asyncio.run(principal())
 PY

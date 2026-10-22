@@ -343,10 +343,13 @@ try:
     print(f"\n=== MOTOR (cumulativo da rodada): {json.dumps(motor_final, sort_keys=True)}")
     print(f"=== CONTAGEM (cumulativa): {json.dumps(contagem_final, sort_keys=True)}")
     if ok_n == 0:
-        print("✖ NENHUM barge — não é cauda, é quebrado")
+        print(f"✖ NENHUM barge — não é cauda, é quebrado (log: {log})")
         sys.exit(1)
     print("✔ investigação concluída (não falha por cauda)")
 finally:
     try: os.killpg(os.getpgid(proc.pid), 15)
     except Exception: proc.terminate()
+for _sobra in (log, wav_path):          # verde não deixa lixo em /tmp
+    try: _sobra.unlink()
+    except Exception: pass
 PYEOF

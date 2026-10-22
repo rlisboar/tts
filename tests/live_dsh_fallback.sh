@@ -187,8 +187,11 @@ finally:
     except Exception: proc.terminate()
 
 if falhas:
-    print("\n✖ FALHAS:")
+    print(f"\n✖ FALHAS (log do servidor: {log}):")
     for f in falhas: print("  -", f)
     sys.exit(1)
 print("\n✔ OK — dsh morto: sessão segue no openai, aviso persistente na tela, selo corrigido e áudio voltando.")
+for _s in (log,):
+    try: _s.unlink()
+    except Exception: pass
 PYEOF
