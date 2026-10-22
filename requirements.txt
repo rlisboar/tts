@@ -1,5 +1,10 @@
 # Pinos = versões instaladas e verificadas no M3 (síntese OK). mlx-* quebram
 # com frequência em upgrade — não subir sem testar síntese + transcrição.
+#
+# A POLÍTICA É COBRADA por `tests/test_requirements_pinos.py` (#392): dependência
+# sem `==` só passa se estiver pinada no `requirements.lock` (o teto versionado,
+# usado pelo `-c requirements.lock` do deploy e pelo CI) ou se estiver na allowlist
+# do teste, com motivo. Dep nova: pine, ou rode `pip freeze` no venv verificado.
 mlx-audio==0.4.4
 mlx-whisper==0.4.3
 mlx-lm==0.31.3
@@ -28,10 +33,11 @@ misaki[en]
 espeakng-loader
 phonemizer-fork
 # dev: testes + análise estática (nomes indefinidos em funções só explodem em
-# runtime — pyflakes pegou 4 desses; rodar após refactors:
-#   ./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py tests/*.py client/mic_router.py
+# runtime; o lint pegou 4 desses). Linter = ruff com o conjunto `F` (o mesmo do
+# pyflakes que ele substituiu na #378), config no `pyproject.toml`:
+#   ./.venv-mlx/bin/python tests/_pyflakes_gate.py    # mesma lista do hook
 pytest
-pyflakes
+ruff
 # CI (#293): o run não tem humano olhando. `--timeout` (pytest-timeout) derruba
 # teste pendurado em vez de gastar o job; `--reruns` (pytest-rerunfailures)
 # absorve asserção por RELÓGIO — `test_guarda_de_identidade_reavaliada_a_cada_delta`

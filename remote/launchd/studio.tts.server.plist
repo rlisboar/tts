@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Agente do SERVIDOR de produção no Mac mini (tts.the-dudes.com) — cópia literal
+  do que roda no mini (#348). Sem segredo: a chave da API mora em
+  `~/Documents/tts-rod/.apikey` (0600) e o token do conector em
+  `~/.cloudflared/<nome>.token`.
+
+  O agente roda `ssh lisboa@127.0.0.1 start-server.sh` em vez de chamar o
+  `run.sh` direto: assim o launchd reergue o MESMO contrato do login e o script
+  limpa restos (um `run.sh` órfão segurando a 7860 faz o novo morrer com
+  "address already in use"). `KeepAlive` + `ThrottleInterval` evitam laço quente.
+
+  Instalar (no mini): cp remote/launchd/studio.tts.server.plist
+  ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) $_
+  (o script fica em ~/.tts-studio/start-server.sh, ver remote/launchd/).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>studio.tts.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/ssh</string>
+    <string>-n</string>
+    <string>-o</string>
+    <string>BatchMode=yes</string>
+    <string>-o</string>
+    <string>StrictHostKeyChecking=accept-new</string>
+    <string>-i</string>
+    <string>/Users/lisboa/.ssh/id_ed25519</string>
+    <string>-o</string>
+    <string>ServerAliveInterval=30</string>
+    <string>-o</string>
+    <string>ServerAliveCountMax=3</string>
+    <string>lisboa@127.0.0.1</string>
+    <string>/Users/lisboa/.tts-studio/start-server.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/tts-studio.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/tts-studio.log</string>
+</dict>
+</plist>

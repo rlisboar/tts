@@ -44,6 +44,8 @@ VAD cai no mesmo jit de hoje, com aviso no log.
 | Como conferir qual VAD subiu | `GET /health` devolve `"vad": "onnx"` \| `"torch-jit"` | idem |
 | Autenticação | `OMNI_API_KEY` e `VOXTRAL_API_KEY` **obrigatórias** (fail closed: sem elas o processo não sobe; escape hatch `<PREFIXO>_ALLOW_NO_AUTH=1`) | `remote/auth_policy.py`, README §"servidores `remote/`" |
 | Arquivo de política no servidor | `auth_policy.py` ao lado do `server.py` (`/root/omnivoice/`, `/root/voxtral/`) — **copiar junto no deploy** | `remote/auth_policy.py` |
+| **Unit versionado** (reconstruído) | `remote/systemd/omnivoice-tts.service` + drop-in `cuda-visible-devices.conf` + `secrets.conf.example`; o `recon` compara com o `FragmentPath` do host (`[IGUAL]`/`[DIFERENTE]` com diff) | `remote/systemd/`, `remote/deploy.sh` (§4) |
+| **Agente do mini versionado** | `remote/launchd/studio.tts.server.plist` + `start-server.sh` (cópia literal do que roda; sem segredo — a chave fica em `.apikey`) | `remote/launchd/` |
 
 ### Não confirmado (❓)
 | peça | o que falta |
@@ -51,7 +53,8 @@ VAD cai no mesmo jit de hoje, com aviso no log.
 | ❓ host/IP do servidor RTX | **não está em lugar nenhum do repo** (o commit `a14c596` anonimizou os exemplos: `rtx-host`, `seu-dominio`). Pedir ao dono. |
 | ❓ usuário de SSH | os deploys citam caminhos `/root/...`, então provavelmente `root` — confirmar |
 | ❓ serviço/porta do Voxtral | o código não declara porta (`uvicorn` fica no unit do lado do servidor); o app aponta via `remote_stt_base_url` em `settings.json`. Confirmar nome do unit e porta |
-| ❓ `omnivoice-tts.service` na máquina | o nome vem da docstring e casa com a ficha do time, mas nunca foi lido na máquina |
+| ❓ `omnivoice-tts.service` na máquina | o arquivo versionado é RECONSTRUÍDO dos fatos documentados, não lido do host: rode `recon` e copie o `[DIFERENTE]` |
+| ❓ unit/porta do Voxtral no repo | `voxtral.service` ainda não tem arquivo versionado (só o nome por chute) — o `recon` diz `(nenhum em …)` |
 | ❓ RAM/VRAM e pressão de memória | nunca medida; a máquina estava inalcançável |
 
 ### Variáveis de ambiente esperadas nos servidores
@@ -61,6 +64,16 @@ VAD cai no mesmo jit de hoje, com aviso no log.
 `VOXTRAL_API_KEY`, `VOXTRAL_REPO`, `VOXTRAL_MAX_NEW`, `VOXTRAL_MIN_SPEECH`,
 `VOXTRAL_MAX_UPLOAD_MB` (voxtral). Escapes (opcionais, uma por servidor):
 `OMNI_ALLOW_NO_AUTH`, `VOXTRAL_ALLOW_NO_AUTH`.
+
+`GIT_REV` (#347) é opcional: o `/health` publica o rev e, sem ele, o servidor lê
+um `.rev` gravado ao lado do `server.py`. O deploy grava esse arquivo (com sufixo
+`-dirty` quando o arquivo que subiu tinha WIP) — é assim que se confere o que
+roda no ar sem ssh.
+
+Com `OMNI_LOAD_WHISPER=0` (STT externo) os endpoints de transcrição respondem
+**503** com motivo, e o `/health` publica `asr: null` em vez de anunciar um Whisper
+que não está carregado. O tradutor 7B tem fila própria (`MT_FAST_POOL`): o
+"rápido" não espera o 14B.
 
 ### Autenticação: política e migração (task #26)
 O servidor sobe em `0.0.0.0` (LAN inteira): sem chave, o middleware liberava
@@ -195,8 +208,18 @@ O script faz o ciclo inteiro offline-quando-possível e só muda o servidor com
 
 - **sem diff, sem restart**: igual ao repo → não reinicia (restart recarrega os
   modelos na VRAM, não é de graça);
-- **backup antes de subir** (`server.py.bak-<data>`) e `ast.parse` no servidor
-  antes do restart;
+- **backup antes de subir** (`server.py.bak-<data>`) e `ast.parse` nos **dois**
+  arquivos que sobem (`server.py` e `auth_policy.py`) — sintaxe reprovada **para
+  antes do restart** (`[PARA] sintaxe reprovada`, nada é reiniciado) e o rev vai
+  para `.rev` (`-dirty` se o arquivo tinha WIP), que o `/health` publica;
+- **árvore suja avisa**: o que sobe é o arquivo da árvore, não o commit — o aviso
+  mostra o que está sujo para ninguém achar que subiu o commit do `rev`;
+- **smoke vermelho desfaz sozinho** (#345): o rev novo já está no disco e rodando,
+  então sair e deixar assim é servidor quebrado esperando alguém digitar outro
+  comando. O script volta **aquele** backup, reinicia e repete o smoke; se o smoke
+  do rollback também falhar, diz em destaque (`✖ REVERTIDO PARA …, MAS O SMOKE DO
+  ROLLBACK TAMBÉM FALHOU`) em vez de mascarar com o erro original. As dependências
+  do venv não voltam sozinhas — é do dono, se o rev novo mexeu nelas;
 - **nada de segredo na saída**: `Environment=` sai com o valor redigido
   (`OMNI_API_KEY=<len 32>`) — presença dá para conferir, chave não vaza para o chat;
 - `deploy` copia **dois** arquivos (`server.py` + `auth_policy.py`, importado por
@@ -269,7 +292,10 @@ Pendente de confirmação (item 1). Quando o dono responder, `recon` preenche:
   `<PREFIXO>_ALLOW_NO_AUTH=1` ele sobe aberto — aí sim, só atrás de firewall/VPN.
   `/health` fica fora da chave e publica o modo em `auth`.
 - Túnel do app (não confundir): o destino é **sempre o IP de LAN da máquina do TTS**,
-  nunca `127.0.0.1` (loopback na VPS dispensa chave).
+  nunca `127.0.0.1` (loopback na VPS dispensa chave). O `tunnel.sh` **valida** isso
+  (só 10/8, 172.16/12, 192.168/16) e recusa o resto com o motivo; para provar o
+  lado público sem apply, `curl` sem chave em `/api/voices` tem de dar **401**
+  (200 = o destino é loopback e a auth virou no-op).
 
 ## 6. Produção no Mac mini (tts.the-dudes.com)
 
@@ -308,6 +334,14 @@ O que ele garante:
   fetch, ainda é o antigo — foi assim que um preview mentiu "nada a instalar" enquanto
   faltava o `websockets`, sem o qual o `/api/live/ws` responde 500 no navegador). O
   preview vai para o **/tmp do mini**, não para a árvore: dry-run não suja produção;
+- a instalação leva **`-c requirements.lock`**, e o lock também vem **do rev alvo**
+  (#343): as entradas sem pino da lista curada (`torch`, `fastapi`, `uvicorn`,
+  `websockets`, `onnxruntime`) não podem mover-se num deploy sem diff de código. Se o
+  pip estourar o teto, o deploy **para antes do restart** (`[PARA] pip install
+  falhou`) — a produção continua no processo antigo. Rev sem lock (corte antigo)
+  avisa e segue sem teto. O venv do ANTES e o do DEPOIS viram `.deploy-mini-freeze-*`
+  e o delta é gravado em `.deploy-mini-deps-delta-*` (`venv IDÊNTICO` é dito quando
+  nada mudou). O caminho de rollback **não** reresolve: deps não voltam sozinhas;
 - `smoke` confere `GET /api/voices` **com a chave do mini** (LAN e público), o `codigo`
   do `/api/build` contra o hash dos módulos do rev alvo — pega "código novo no disco,
   processo velho" (a feature inerte do #190) —, `boot_ms` do restart e um
@@ -323,6 +357,12 @@ O que ele garante:
   antes de mexer — é o que o `rollback` usa. Re-deploy do MESMO rev **preserva** o
   estado (senão o rollback viraria no-op); deps **não** voltam sozinhas no rollback
   (o freeze fica lá para um `pip install -r` manual, se precisar).
+- **smoke vermelho depois do restart reverte sozinho** (#345) para o sha do
+  `.deploy-mini-estado`, reinicia e repete o smoke; sai ≠0 dizendo que reverteu. Sem
+  estado (ou com o estado apontando para o próprio rev que falhou) ele não inventa
+  alvo: diz `[PARA]` e manda reverter à mão. Se o smoke do rollback também falhar,
+  grita `✖ REVERTIDO PARA …, MAS O SMOKE DO ROLLBACK TAMBÉM FALHOU` — o operador
+  precisa saber que a produção está de pé num rev e vermelha, não que "deu erro".
 
 ### Atenção em produção (chave legada)
 
@@ -356,7 +396,93 @@ Medido em 2026-09-30 (dry-run, nada aplicado): produção em `cb36edb`; o corte 
 publicar 18 commits, o HEAD exige 64; delta de deps do HEAD = `httpcore2 httpx2
 importlib_resources silero-vad-6.2.1 truststore websockets`.
 
-## 7. Arquivos relacionados
+## 7. CI e runner self-hosted (#293)
 
-`remote/deploy.sh` · `remote/deploy_mini.sh` · `remote/auth_policy.py` · `remote/omni_server.py` · `remote/voxtral_server.py` · `README.md` §"servidores `remote/`"
+O gate do repo roda no GitHub Actions (`.github/workflows/ci.yml`) em push/PR para
+`main`: `pyflakes` na lista do hook, suíte hermética com `--timeout`, e as duas
+suítes `.sh` que não pedem navegador nem modelo. Regra e limites no
+`README.md` §Desenvolvimento.
+
+**A medição decidiu, e ela está no lugar de opinião.** O `pyflakes` e as suítes
+`.sh` ficam no runner HOSPEDADO (`ubuntu-latest`): não importam o app, rodam em
+segundos e são gratuitos (repo público). A SUÍTE não passa lá — em linux/amd64 o
+venv instala (com `mlx[cpu]`) e o `app` importa, mas o resultado é **36 falhas em
+642 passes**: MLX/onnx sem Metal, `ps`/pid dos testes de `dsh_client`/`live_worker`,
+ffmpeg do webm e convenções de `/tmp` do macOS. Vermelho de ambiente em todo PR não
+é gate, é ruído — então `testes` vai para o runner do mini, por label:
+
+```yaml
+runs-on: [self-hosted, tts-mini]   # .github/workflows/ci.yml, job `testes`
+```
+
+O label `tts-mini` está declarado em `.github/actionlint.yaml` (o `actionlint` do
+job `estatica` acusaria label desconhecida sem ele) e é o que impede um runner
+self-hosted futuro de roubar o job.
+
+Instalação, uma vez, **dentro do mini** (não por ssh):
+
+```
+./remote/ci_runner.sh install      # baixa, registra e instala o agente launchd
+./remote/ci_runner.sh status
+./remote/ci_runner.sh uninstall
+```
+
+Enquanto o runner não estiver instalado, o job `testes` fica enfileirado — não
+vermelho. Instale-o antes de tornar o check obrigatório no branch protection.
+
+O que o script garante, e por quê:
+
+- **não disputa o `:7860`**: o agente é `ProcessType=Background` com `Nice 10` e
+  `LowPriorityIO` (produção mantém prioridade). Aceite da mudança: com a suíte
+  rodando, `curl -m 5 http://192.168.15.34:7860/health` continua 200;
+- **não toca o checkout de produção**: o `actions/checkout` escreve em
+  `~/actions-runner/_work`, nunca em `~/Documents/tts-rod` (um CI verde não pode
+  deixar a produção no meio de um `git switch`);
+- **token de registro nunca versionado**: é gerado por `gh api` na hora (vale
+  ~1 h) e não vai para arquivo do repo;
+- **labels fixas** (`self-hosted,macOS,ARM64,tts-mini`): o workflow só pega este
+  runner pelo label `tts-mini`, então um runner futuro não rouba o job.
+
+Pré-requisitos no mini: `gh` autenticado como dono do repo. Ao remover,
+`./remote/ci_runner.sh uninstall` desregistra e tira o agente; `~/actions-runner`
+fica para apagar à mão.
+
+## 8. Monitoração da produção (#344)
+
+Produção caída era descoberta **pelo uso**: nada vigiava, `/health` era um `{"ok":true}`
+e o log em `/tmp` crescia sem rotação. O que existe agora:
+
+`/health` publica `boot_ts` e `rev` (commit curto) além do `ok` — sem detalhe interno,
+o fingerprint `codigo` continua só no `/api/build`. Com isso o histórico distingue
+**reinício** (boot_ts novo) de **instância travada** (valor repetido) e diz em que
+commit, sem chave.
+
+`remote/health_probe.sh` roda **no mini** (LaunchAgent `StartInterval 120`, ver
+`install`) e, a cada rodada: `/health` na LAN e no público (200 + `"ok"`), e
+`/api/voices` **sem chave** no público, que tem de dar **401** — 200 ali é o
+invariante do túnel furado (destino loopback ⇒ auth no-op). Depois de
+`TTS_PROBE_FALHAS` falhas consecutivas (padrão 3, ~6 min) ele grava
+`~/Library/Logs/tts-health-ALERTA.txt` (0600) e tenta uma notificação do macOS; a
+primeira rodada boa zera o contador e apaga a flag.
+
+```
+./remote/health_probe.sh install      # instala o agente e faz uma rodada
+./remote/health_probe.sh status       # alerta aberto + últimas linhas + contador
+./remote/health_probe.sh uninstall
+```
+
+**Rotação** (precisa de root, não é feita pelo `install`):
+`sudo cp remote/newsyslog.d/tts-studio.conf /etc/newsyslog.d/` e
+`sudo newsyslog -v -f /etc/newsyslog.d/tts-studio.conf` para conferir (roda uma
+rotação forçada). 1 MB × 3 gerações, modo 0600 já na rotação.
+
+**Canal de alerta — decisão do dono, em aberto.** O arquivo-flag é o mínimo que
+existe hoje (visível, sem terceiro, sem segredo). Quando o dono escolher o canal
+(Slack/WhatsApp/…), o ponto de chamada é `_dispara_alerta` e **nada mais**;
+até lá, quem tem acesso ao mini descobre por `status`/flag.
+
+## 9. Arquivos relacionados
+
+`remote/deploy.sh` · `remote/deploy_mini.sh` · `remote/auth_policy.py` · `remote/omni_server.py` · `remote/voxtral_server.py` · `remote/ci_runner.sh` · `remote/health_probe.sh` · `.github/workflows/ci.yml` · `README.md` §"servidores `remote/`"
 · `tunnel.sh` (Mac↔VPS) · `cloudflare.sh` (conector no Mac mini).
+

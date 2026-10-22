@@ -1,5 +1,10 @@
 """Alvos do estágio ESTÁTICO do hook — fonte única do teste e do CI (#293).
 
+O nome é herdado do `pyflakes`, que era o linter até a #378: hoje quem roda é o
+**ruff** (`check`, conjunto `F`, config no `pyproject.toml`). A lista continua sendo
+derivada do hook, e a derivação é o que importa — o binário mudou, a fonte é a
+mesma.
+
 A lista NÃO é copiada em lugar nenhum: `.githooks/pre-commit` é a única fonte e
 este módulo a deriva (junta as continuações `\\`, expande os globs, aponta tudo
 para a raiz do repo). O teste `tests/test_hook_pyflakes.py` usa a derivação com
@@ -8,10 +13,10 @@ asserções e contraprova; o job `estatica` do CI chama o `__main__` daqui.
 POR QUE UM MÓDULO E NÃO SÓ O TESTE: o CI não pode depender de `pytest` para o
 estágio mais barato do gate, e rodar `pytest tests/test_hook_pyflakes.py` puxa o
 `conftest.py`, que importa o `app` (fastapi, torch, MLX) só para isso — o job
-deixava de ser "segundos". Aqui a dependência é o `pyflakes` e a stdlib.
+deixava de ser "segundos". Aqui a dependência é o `ruff` e a stdlib.
 
 Uso:
-    python3 tests/_pyflakes_gate.py      # roda o estágio; exit code do pyflakes
+    python3 tests/_pyflakes_gate.py      # roda o estágio; exit code do ruff
 """
 
 import glob
@@ -24,18 +29,21 @@ BASE = Path(__file__).resolve().parent.parent
 HOOK = BASE / ".githooks" / "pre-commit"
 
 
+FERRAMENTA = "ruff"
+
+
 def comando_do_hook() -> list[str]:
-    """A linha `$PY -m pyflakes <módulos...>` do hook, com as continuações `\\` juntas."""
+    """A linha `$PY -m <ferramenta> check <módulos...>` do hook, continuações juntas."""
     linhas = HOOK.read_text().splitlines()
     for i, linha in enumerate(linhas):
-        if "-m pyflakes" not in linha or linha.lstrip().startswith("#"):
+        if f"-m {FERRAMENTA}" not in linha or linha.lstrip().startswith("#"):
             continue
         pedaco = linha
         while pedaco.rstrip().endswith("\\"):
             i += 1
             pedaco = pedaco.rstrip()[:-1] + " " + linhas[i]
         return shlex.split(pedaco)
-    raise AssertionError(f"não achei o comando do pyflakes em {HOOK}")
+    raise AssertionError(f"não achei o comando do {FERRAMENTA} em {HOOK}")
 
 
 def modulos() -> list[str]:
@@ -43,7 +51,9 @@ def modulos() -> list[str]:
     partes = comando_do_hook()
     if "||" in partes:                       # `... client/mic_router.py || exit 1`
         partes = partes[:partes.index("||")]
-    corte = partes.index("pyflakes") + 1
+    corte = partes.index(FERRAMENTA) + 1
+    while corte < len(partes) and partes[corte] in ("check", "--select", "F"):
+        corte += 1
     alvos: list[str] = []
     for padrao in partes[corte:]:
         if any(c in padrao for c in "*?["):
@@ -54,8 +64,8 @@ def modulos() -> list[str]:
 
 
 def rodar(extras: list[str] | None = None) -> subprocess.CompletedProcess:
-    """Roda o pyflakes na lista do hook (mesmo intérprete do hook: o do venv)."""
-    return subprocess.run([sys.executable, "-m", "pyflakes", *modulos(), *(extras or [])],
+    """Roda o `ruff check` na lista do hook (mesmo intérprete do hook: o do venv)."""
+    return subprocess.run([sys.executable, "-m", FERRAMENTA, "check", *modulos(), *(extras or [])],
                           capture_output=True, text=True, cwd=BASE)
 
 

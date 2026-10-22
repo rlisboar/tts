@@ -25,11 +25,13 @@ sobe, a não ser que VOXTRAL_ALLOW_NO_AUTH=1 diga "aqui é atrás de firewall/VP
 `/health` fica fora da chave (e publica o modo em `auth`); a política mora em
 remote/auth_policy.py, copiada ao lado deste arquivo no deploy.
 """
+import asyncio
 import os
 import sys
 import tempfile
 import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 
 import librosa
 import numpy as np
@@ -44,6 +46,27 @@ REPO = os.environ.get("VOXTRAL_REPO", "mistralai/Voxtral-Small-24B-2507")
 DEV = "cuda:0"   # CUDA_VISIBLE_DEVICES=1 + PCI_BUS_ID => 4090
 MAX_NEW = int(os.environ.get("VOXTRAL_MAX_NEW", "512"))
 MIN_SPEECH = float(os.environ.get("VOXTRAL_MIN_SPEECH", "0.2"))   # seg de fala p/ transcrever
+# Rev que roda, para o `/health` (#347): o deploy grava `.rev` ao lado deste
+# arquivo (ou exporta GIT_REV no unit). Sem isso, "qual código está no ar?" só se
+# respondia por ssh.
+def _rev() -> str:
+    rev = (os.environ.get("GIT_REV") or "").strip()
+    if rev:
+        return rev
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".rev")) as f:
+            return f.read().strip() or "?"
+    except OSError:
+        return "?"
+# Decodificação/VAD (CPU) e inferência (GPU) saem do event loop: enquanto o
+# handler era 100% síncrono, UMA transcrição segurava o servidor inteiro —
+# inclusive o `/health`, que o smoke e o app usam como liveness (#347). A GPU
+# segue serializada (1 worker, como o `TTS_POOL` do OmniVoice).
+IO_POOL = ThreadPoolExecutor(max_workers=int(os.environ.get("VOXTRAL_IO_WORKERS", "4")),
+                             thread_name_prefix="io")
+GPU_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu")
+async def offload(pool, fn, *a):
+    return await asyncio.get_running_loop().run_in_executor(pool, fn, *a)
 try:  # auth_policy.py é copiado ao lado deste arquivo no deploy (ver DEPLOY.md §5)
     from auth_policy import autorizado, load_key, precisa_chave
 except ModuleNotFoundError:  # cwd diferente do diretório do arquivo (unit sem WorkingDirectory)
@@ -169,7 +192,7 @@ def _run(wav16, language):
 def health():
     free, total = (torch.cuda.mem_get_info() if torch.cuda.is_available() else (0, 0))
     return {"status": "ok", "engine": "voxtral", "auth": AUTH_MODE, "repo": REPO, "min_speech_s": MIN_SPEECH,
-            "vad": VAD_BACKEND,
+            "vad": VAD_BACKEND, "rev": _rev(),
             "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
             "vram_free_mb": round(free / 1e6, 1), "vram_total_mb": round(total / 1e6, 1)}
 
@@ -182,10 +205,10 @@ async def transcriptions(file: UploadFile = File(...), model: str = Form(None),
     raw = await read_upload_limited(file)
     if not raw:
         raise HTTPException(400, "áudio vazio")
-    path = _save_tmp(raw)
+    path = await offload(IO_POOL, _save_tmp, raw)
     try:
-        wav16 = _load16(path)                       # decode robusto (qualquer formato)
-        speech_s, ratio, dur = _speech_stats(wav16)
+        wav16 = await offload(IO_POOL, _load16, path)   # decode robusto (qualquer formato)
+        speech_s, ratio, dur = await offload(IO_POOL, _speech_stats, wav16)
         nsp = round(1.0 - ratio, 3)
         if speech_s < MIN_SPEECH:
             # sem fala suficiente -> NÃO transcreve (Voxtral deliraria). no_speech alto
@@ -194,7 +217,7 @@ async def transcriptions(file: UploadFile = File(...), model: str = Form(None),
             dt = 0.0
         else:
             t = time.time()
-            text, alp = _run(wav16, language)
+            text, alp = await offload(GPU_POOL, _run, wav16, language)
             dt = time.time() - t
             seg = {"no_speech_prob": nsp, "avg_logprob": round(alp, 3),
                    "compression_ratio": round(_compression_ratio(text), 3)}
@@ -219,9 +242,10 @@ async def translations(file: UploadFile = File(...), model: str = Form(None),
                        prompt: str = Form(None)):
     # tradução STT->EN não é usada pelo pipeline ao vivo; transcreve e devolve.
     raw = await read_upload_limited(file)
-    path = _save_tmp(raw)
+    path = await offload(IO_POOL, _save_tmp, raw)
     try:
-        text, _ = _run(_load16(path), "en")
+        wav16 = await offload(IO_POOL, _load16, path)
+        text, _ = await offload(GPU_POOL, _run, wav16, "en")
     finally:
         try:
             os.unlink(path)

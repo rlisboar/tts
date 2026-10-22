@@ -352,7 +352,25 @@ async def principal():
                     print("     orçamento por estágio (ms): "
                           + " · ".join(f"{k}={lat.get(k)}" for k in
                                        ("stt_ms", "first_token_ms", "first_chunk_ms",
-                                        "first_audio_ms", "total_ms")))
+                                        "first_audio_ms", "decisao_para_audio_ms",
+                                        "lock_espera_ms", "total_ms")))
+                # #315: o número AUDITÁVEL é o do SERVIDOR, com a decisão do VAD
+                # incluída (o `primeiro` acima é medido pelo cliente a partir do
+                # `end_of_speech`, que não paga a decisão). Sem o campo o alvo do
+                # épico não é cobrável, e daí o gate tem de saber.
+                if lat and lat.get("decisao_para_audio_ms") is not None:
+                    d = int(lat["decisao_para_audio_ms"])
+                    if d <= ALVO_MS:
+                        ok(f"fim-de-fala → 1º áudio pelo SERVIDOR, decisão incluída: "
+                           f"{d} ms (alvo ≤ {ALVO_MS} ms) — OK")
+                    elif ALVO_VALE:
+                        falha(f"fim-de-fala → 1º áudio pelo SERVIDOR, decisão incluída: "
+                              f"{d} ms (alvo ≤ {ALVO_MS} ms) — ACIMA DO ALVO")
+                    else:
+                        print(f"     ⚠ servidor (decisão incluída): {d} ms — acima do alvo,"
+                              " mas o backend não é o stub (AVISO, ver #173).")
+                elif ALVO_VALE:
+                    falha("o evento `latency` não trouxe `decisao_para_audio_ms` (#315)")
             else:
                 falha("nenhum áudio chegou para medir latência")
 

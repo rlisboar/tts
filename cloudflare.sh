@@ -10,7 +10,9 @@
 # nada de config.yml nem de credenciais locais no host de produção.
 #
 # O destino é o IP DA LAN, nunca 127.0.0.1: a API dispensa chave no loopback —
-# por 127.0.0.1 a internet entraria sem chave (a auth viraria no-op).
+# por 127.0.0.1 a internet entraria sem chave (a auth viraria no-op). O `provision`
+# VALIDA a origem (IPv4 privada) e recusa loopback; `status`/`ingress` mostram o
+# `service` configurado no Cloudflare e `uninstall` lista o que fica lá.
 #
 # O TOKEN não vai para o stdout: o `provision` grava ele em
 # `~/.cloudflared/<nome>.token` (0600, criado com umask 077) e imprime um
@@ -83,11 +85,62 @@ print("ok" if d.get("success") else "erro: " + json.dumps(d.get("errors")))
 sys.exit(0 if d.get("success") else 1)' >&2
 }
 
+# A origem tem de ser IP de LAN. `127.0.0.1` parece funcionar (o conector alcança
+# e o `/health` responde 200), mas a auth vira no-op: a API dispensa chave no
+# loopback e o host público passa a responder sem ela. O `provision` recusa ANTES
+# de tocar no Cloudflare — trocar o service depois não conserta sozinho.
+_valida_origem() { # $1 = IP; 0 = ok
+  case "$1" in
+    127.*|localhost|::1)
+      print -r -- "  [RECUSA] $1 é loopback: por loopback a API entra SEM chave e o host público fica aberto." >&2
+      print -r -- "           use o IP de LAN da máquina do TTS (ex.: 192.168.15.34)." >&2
+      return 1 ;;
+    10.*|192.168.*) return 0 ;;
+    172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
+    *)
+      print -r -- "  [RECUSA] $1 não é IPv4 privada (10/8, 172.16/12 ou 192.168/16)." >&2
+      return 1 ;;
+  esac
+}
+
+# Ingress atual do tunnel, lido da API (hostname → service). Precisa do cert.pem:
+# é o único artefato com apiToken/accountID e ele fica na máquina que fez o
+# `tunnel login` — na máquina do conector só existe o token do tunnel, que não
+# serve para a API. Sem cert.pem quem chama degrada e diz por quê.
+_ingress_atual() { # $1 = nome do tunnel
+  local tid
+  [ -f "$CERT" ] || return 1
+  CF_TOKEN="$(_cert_field apiToken)"; CF_ACCT="$(_cert_field accountID)"
+  [ -n "$CF_TOKEN" ] && [ -n "$CF_ACCT" ] || return 1
+  tid="$("$BIN" tunnel list --output json 2>/dev/null \
+        | python3 -c "import sys,json;print(next((t['id'] for t in json.load(sys.stdin) if t['name']=='$1'),''))")"
+  if [ -z "$tid" ]; then
+    print -r -- "  tunnel $1 não existe no Cloudflare"
+    return 0
+  fi
+  print -r -- "  tunnel: $1 ($tid)"
+  local cfg
+  cfg="$(_api GET "/accounts/$CF_ACCT/cfd_tunnel/$tid/configurations" 2>/dev/null)"
+  print -r -- "$cfg" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("  [aviso] configuração do ingress ilegível"); raise SystemExit
+regras = ((d.get("result") or {}).get("config") or {}).get("ingress") or []
+if not regras:
+    print("  (ingress vazio)")
+for r in regras:
+    print("  service:", r.get("service"), " hostname:", r.get("hostname") or "-")
+'
+}
+
 case "${1:-}" in
   provision)
     NAME="${2:-tts-mac-mini}"; HOST="${3:-tts.the-dudes.com}"; ORIG="${4:-}"
     [ -f "$CERT" ] || { echo "sem $CERT — rode: cloudflared tunnel login"; exit 1; }
     [ -n "$ORIG" ] || { echo "informe o IP LAN da máquina do TTS (ex.: 192.168.15.34)"; exit 1; }
+    _valida_origem "$ORIG" || exit 1
     CF_TOKEN="$(_cert_field apiToken)"
     CF_ACCT="$(_cert_field accountID)"
     [ -n "$CF_TOKEN" ] && [ -n "$CF_ACCT" ] || { echo "cert.pem sem apiToken/accountID — rode: cloudflared tunnel login"; exit 1; }
@@ -199,14 +252,27 @@ EOF
   status)
     # `launchctl print` traz os argumentos (inclusive o token); o grep fica
     # só no estado para não despejar segredo no terminal.
+    local carregado=0
     if launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; then
       launchctl print "gui/$UID/$LABEL" 2>/dev/null | grep -E "state =|pid =|last exit"
-      tail -3 "$LOG" 2>/dev/null
-      exit 0
+      carregado=1
+    else
+      echo "LaunchAgent não carregado ($LABEL)"
     fi
-    echo "LaunchAgent não carregado ($LABEL)"
+    # O ingress é o que mais importa conferir: um `service` em 127.0.0.1 deixa o
+    # host público sem auth, e o agente pode estar lindamente "carregado".
+    echo "ingress atual:"
+    if ! _ingress_atual "${2:-tts-mac-mini}"; then
+      echo "  [aviso] sem $CERT nesta máquina — ingress não verificável aqui"
+      echo "          (rode 'status <nome>' na máquina que fez 'cloudflared tunnel login')"
+    fi
     tail -3 "$LOG" 2>/dev/null
-    exit 1 ;;
+    [ "$carregado" = 1 ] && exit 0 || exit 1 ;;
+
+  ingress)
+    [ -f "$CERT" ] || { echo "sem $CERT — o ingress só é legível na máquina com o 'tunnel login'"; exit 1; }
+    _ingress_atual "${2:-tts-mac-mini}"
+    exit 0 ;;
 
   token)
     # Único ponto que imprime o token — quando você precisa copiá-lo na mão.
@@ -227,11 +293,20 @@ EOF
   uninstall)
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
     rm -f "$PLIST"
-    echo "Conector removido ($LABEL). O tunnel e o DNS seguem no Cloudflare."
+    echo "Conector removido ($LABEL)."
+    # Sair dizendo só "o tunnel e o DNS seguem" escondia o que continua PUBLICADO:
+    # um ingress apontando para o IP errado (ou vivo com o conector parado) dá 502
+    # no host público e parece problema novo. Lista o que fica.
+    echo "FICA no Cloudflare (limpe à mão se quiser encerrar):"
+    if ! _ingress_atual "${2:-tts-mac-mini}"; then
+      echo "  [aviso] sem $CERT aqui — não consegui listar; confira no dashboard:"
+      echo "          Zero Trust → Networks → Tunnels, e o registro DNS do hostname"
+    fi
+    echo "  registros DNS do hostname e o próprio tunnel com o token em ${TOKEN_DIR/#$HOME/~}"
     exit 0 ;;
 esac
 
 echo "uso: $0 provision [nome] [hostname] [ip-destino]"
 echo "     $0 install --token-file <arquivo> [label] | install <token> | install -"
-echo "     $0 status | uninstall | token [arquivo]"
+echo "     $0 status [nome] | ingress [nome] | uninstall | token [arquivo]"
 exit 1

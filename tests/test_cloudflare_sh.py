@@ -58,10 +58,18 @@ esac
 exit 0
 """,
     )
-    _shim(bin_dir / "curl",
-          'print -rl -- "$@" >> "$T_CURL_LOG"\n'
-          '[ "${T_CURL_SUCCESS:-true}" = "false" ] && print -r -- \'{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}\' && exit 0\n'
-          'print -r -- \'{"success":true}\'\n')
+    _shim(bin_dir / "curl", """print -rl -- "$@" >> "$T_CURL_LOG"
+[ "${T_CURL_SUCCESS:-true}" = "false" ] && print -r -- '{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}' && exit 0
+# GET das configurations devolve um ingress (é o que o `status`/`ingress` lê):
+# o service sai de T_INGRESS_SERVICE, com o 404 final que o Cloudflare exige.
+case " $* " in
+  *" GET "*configurations*)
+    svc="${T_INGRESS_SERVICE:-http://192.168.15.34:7860}"
+    print -r -- '{"success":true,"result":{"config":{"ingress":[{"hostname":"tts.exemplo.test","service":"'"$svc"'"},{"service":"http_status:404"}]}}}'
+    exit 0 ;;
+esac
+print -r -- '{"success":true}'
+""")
     _shim(
         bin_dir / "launchctl",
         """[ "${T_LAUNCHCTL_FALHA:-0}" = "1" ] && exit 1   # simula launchd recusando
@@ -125,6 +133,62 @@ def _run(env: dict[str, str], *args: str, stdin: str | None = None,
 
 def _provision(env: dict[str, str]) -> subprocess.CompletedProcess:
     return _run(env, "provision", NAME, "tts.exemplo.test", "192.168.15.34")
+
+
+# --- #346: a origem tem de ser IP de LAN (loopback desliga a auth pública) e o
+# status tem de mostrar o `service` configurado, não só o estado do agente.
+def test_provision_recusa_loopback_antes_de_tocar_no_cloudflare(amb):
+    r = _run(amb, "provision", NAME, "tts.exemplo.test", "127.0.0.1")
+    assert r.returncode == 1
+    assert "[RECUSA] 127.0.0.1 é loopback" in _saida(r)
+    assert "SEM chave" in _saida(r), "a recusa tem de citar o invariante"
+    assert _escritos(Path(amb["T_CURL_LOG"])) == [], "chamou a API sem validar"
+    assert not _token_file(amb).exists()
+
+
+@pytest.mark.parametrize("ip", ["8.8.8.8", "172.15.0.1", "172.32.0.1", "100.89.3.11"])
+def test_provision_recusa_endereco_fora_do_rfc1918(amb, ip):
+    r = _run(amb, "provision", NAME, "tts.exemplo.test", ip)
+    assert r.returncode == 1
+    assert "não é IPv4 privada" in _saida(r)
+    assert _escritos(Path(amb["T_CURL_LOG"])) == []
+
+
+@pytest.mark.parametrize("ip", ["192.168.15.34", "10.1.2.3", "172.16.0.9", "172.31.255.254"])
+def test_provision_aceita_as_tres_faixas_privadas(amb, ip):
+    assert _run(amb, "provision", NAME, "tts.exemplo.test", ip).returncode == 0
+    urls = [l for l in _escritos(Path(amb["T_CURL_LOG"])) if l.startswith("https://")]
+    assert urls, "deveria ter chamado a API"
+
+
+def test_status_mostra_o_service_do_ingress(amb):
+    """`service` em 127.0.0.1 é o furo silencioso: o agente pode estar "rodando"
+    com o host público sem auth. O status tem de mostrar o destino."""
+    out = _saida(_run(amb, "status", NAME))
+    assert "service: http://192.168.15.34:7860" in out
+    assert "hostname: tts.exemplo.test" in out
+
+
+def test_status_sem_cert_degrada_avisando(amb):
+    (Path(amb["HOME"]) / ".cloudflared" / "cert.pem").unlink()
+    out = _saida(_run(amb, "status", NAME))
+    assert "ingress não verificável aqui" in out          # não inventa "ok"
+    assert "tunnel login" in out
+
+
+def test_uninstall_lista_o_que_fica_publicado(amb):
+    """Tirar o agente deixava o ingress (e o DNS) publicados sem dizer — o host
+    público vira 502 e parece problema novo."""
+    out = _saida(_run(amb, "uninstall", NAME))
+    assert "FICA no Cloudflare" in out
+    assert "service: http://192.168.15.34:7860" in out
+    assert not (Path(amb["HOME"]) / "Library" / "LaunchAgents" / f"{LABEL}.plist").exists()
+
+
+def test_uninstall_sem_cert_manda_ao_dashboard(amb):
+    (Path(amb["HOME"]) / ".cloudflared" / "cert.pem").unlink()
+    out = _saida(_run(amb, "uninstall", NAME))
+    assert "FICA no Cloudflare" in out and "Tunnels" in out and "DNS" in out
 
 
 def _saida(r: subprocess.CompletedProcess) -> str:

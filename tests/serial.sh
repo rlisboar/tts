@@ -16,10 +16,16 @@
 # pode ser roubado — além do TTL, um lock cujo PID já morreu é roubado na hora.
 _TRAVA_DIR="${TTS_SERIAL_LOCK:-/tmp/tts-rod-modelo.lock}"
 
-# mtime portátil (BSD/macOS e GNU/Linux)
-_serial_mtime() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
-}
+# mtime portátil (BSD/macOS e GNU/Linux). A ORDEM importa e não dá para usar
+# `||` entre as duas formas: no GNU o `stat -f` NÃO falha — ele imprime stats do
+# FILESYSTEM, então o fallback `stat -c %Y` nunca rodava, a idade saía lixo e
+# nenhum lock velho/órfão era roubado no Linux (medido no CI da #293: 7 asserções
+# de `serial_lock.sh` vermelhas só por isso).
+if stat --version >/dev/null 2>&1; then          # GNU coreutils
+  _serial_mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; }
+else                                             # BSD/macOS
+  _serial_mtime() { stat -f %m "$1" 2>/dev/null || echo 0; }
+fi
 
 serial_pega() {
   [ "${TTS_SERIAL:-1}" = "0" ] && return 0

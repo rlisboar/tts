@@ -1,0 +1,43 @@
+# Serviço do OmniVoice na máquina CUDA — CÓPIA VERSIONADA, adaptada do que roda
+# em produção (#348, achado da auditoria #286).
+#
+# ATENÇÃO: este arquivo foi RECONSTRUÍDO a partir dos fatos documentados (docstring
+# do `remote/omni_server.py`, `remote/DEPLOY.md` §1 e o drop-in de CUDA) — o
+# conteúdo literal do `/etc/systemd/system/omnivoice-tts.service` do host nunca foi
+# lido daqui. Rode `./remote/deploy.sh recon <host>`: ele compara este arquivo com o
+# `FragmentPath` do host e acusa `[DIFERENTE]` com o diff. O `recon` é a fonte da
+# verdade; este arquivo é o piso para o rebuild não ser adivinhação.
+#
+# Instalação num host (com `sudo`):
+#   sudo cp remote/systemd/omnivoice-tts.service /etc/systemd/system/
+#   sudo mkdir -p /etc/systemd/system/omnivoice-tts.service.d
+#   sudo cp remote/systemd/omnivoice-tts.service.d/*.conf /etc/systemd/system/omnivoice-tts.service.d/
+#   sudo systemctl daemon-reload && sudo systemctl restart omnivoice-tts
+#
+# A chave NÃO fica neste arquivo (ver o drop-in `secrets.conf.example`): use
+# `EnvironmentFile=` apontando um arquivo 0600 do root, ou um drop-in com
+# `Environment=OMNI_API_KEY=...`, que é onde ela mora hoje.
+[Unit]
+Description=OmniVoice TTS + Whisper ASR + MT (servidor remoto do TTS-STUDIO)
+Documentation=file:///root/omnivoice/DEPLOY.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# A carga do modelo na VRAM leva dezenas de segundos: sem teto alto o systemd
+# desiste antes de o `/health` existir.
+TimeoutStartSec=600
+Restart=always
+RestartSec=10
+# Sem `WorkingDirectory` o `import auth_policy` cai no fallback de sys.path; o
+# diretório é o contrato do deploy (`remote/deploy.sh`).
+WorkingDirectory=/root/omnivoice
+Environment=HF_HUB_OFFLINE=0
+# Ordem das GPUs: cuda:0 = 4090 (OmniVoice + Whisper), cuda:1 = 4070 (LLM). O
+# drop-in `cuda-visible-devices.conf` é quem manda nisto.
+Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
+ExecStart=/usr/bin/python3 -m uvicorn server:app --host 0.0.0.0 --port 8800
+
+[Install]
+WantedBy=multi-user.target

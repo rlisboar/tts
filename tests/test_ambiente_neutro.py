@@ -3,8 +3,10 @@
 São os DOIS vetores da família "teste refém do estado do dono":
 
 - ENV: o `conftest` neutraliza, no import, os knobs `TTS_CHAT_*`/`TTS_LIVE_*`/
-  `TTS_TEST_*` (as duas exceções são interruptores do dono: `TTS_TEST_WORKER` e
-  `TTS_LIVE_WORKER`).
+  `TTS_TEST_*`/`TTS_ROD_*` (as duas exceções são interruptores do dono:
+  `TTS_TEST_WORKER` e `TTS_LIVE_WORKER`). O `TTS_ROD_*` entrou no #384: dois deles
+  decidem o modelo de papel e são lidos no import (app.py:521-522) — com
+  `TTS_ROD_ADMIN_KEY` exportada a suíte verde virava 11 failed + 6 errors.
 - ARQUIVO: o `conftest` COPIA o `settings.json` do dono — o caminho é isolado, o
   CONTEÚDO não: um campo escolhido na tela (ex.: `chat_backend_live`) atravessa.
   O que o barra é a fixture `dsh_limpo` (`tests/test_api.py`), usada pelos testes
@@ -34,6 +36,12 @@ HOSTIL = {
     "TTS_CHAT_BACKEND_LIVE": "openai",
     "TTS_CHAT_DSH_BIN": "/nao/existe/dsh",
     "TTS_LIVE_TTL_S": "1",
+    # #384: a família que decidia o veredito pelo modelo de papel. Os dois
+    # primeiros são credencial lida no import: com a chave admin exportada toda
+    # chave deixa de ser admin e o `is_admin` que os testes cobram desaparece.
+    "TTS_ROD_ADMIN_KEY": "admin-hostil-do-dono",
+    "TTS_ROD_API_KEY": "chave-hostil-do-dono",
+    "TTS_ROD_MODEL": "modelo-hostil/do-dono",
 }
 INTERRUPTORES = ("TTS_TEST_WORKER", "TTS_LIVE_WORKER")
 

@@ -60,6 +60,8 @@ BOOT_MARKER=".deploy-mini-boot"                   # instantâneo (epoch) do rest
 # E o nome leva $$: com caminho FIXO, dois deploys/suítes ao mesmo tempo reescrevem e
 # apagam o MESMO arquivo e um lê o do outro (falso vermelho intermitente — #240).
 REQ_PREVIEW="${TTS_MINI_PREVIEW:-/tmp/deploy-mini-requirements-preview-$$}"
+# O lock (teto de versão, #343) viaja junto do preview e pelas mesmas razões.
+REQ_LOCK_PREVIEW="${TTS_MINI_LOCK_PREVIEW:-/tmp/deploy-mini-requirements-lock-$$}"
 MODULOS=(app.py common.py backends.py tts_worker.py live_pipeline.py live_turns.py dsh_client.py)
 ARQ_PARIDADE=(app.py static/index.html)
 
@@ -90,6 +92,7 @@ distante() { "${SSH[@]}" "$USUARIO@$HOST" "$1"; }         # $1 = comando (string
 # O diretório é expandido NO MINI ($HOME de lá), não aqui.
 cd_remoto() { case "$DIR" in /*) print -r -- "$DIR" ;; *) print -r -- "\$HOME/$DIR" ;; esac; }
 preview_caminho() { case "$REQ_PREVIEW" in /*) print -r -- "$REQ_PREVIEW" ;; *) print -r -- "$(cd_remoto)/$REQ_PREVIEW" ;; esac; }
+preview_lock_caminho() { case "$REQ_LOCK_PREVIEW" in /*) print -r -- "$REQ_LOCK_PREVIEW" ;; *) print -r -- "$(cd_remoto)/$REQ_LOCK_PREVIEW" ;; esac; }
 sha_blob() { git -C "$LOCAL_REPO" show "$1:$2" 2>/dev/null | shasum -a 256 | awk '{print $1}'; }
 conteudo_blob() { git -C "$LOCAL_REPO" show "$1:$2" 2>/dev/null; }
 sha_arq()  { distante "shasum -a 256 '$1' 2>/dev/null | awk '{print \$1}'" | head -1; }
@@ -276,6 +279,10 @@ smoke_tts() { # $1 = base, $2 = rótulo, $3 = chave
 }
 
 smoke() {
+  # `falhas` LOCAL: o global acumula o run inteiro, então um smoke vermelho
+  # deixava `falhas=1` e o smoke do ROLLBACK (todo [ok]) "falhava" de herança —
+  # era o que fazia o rollback automático se reportar quebrado (#345).
+  local falhas=0
   print -r -- "== smoke (rev alvo ${REV_ALVO[1,12]}…)"
   local chave; chave="$(chave_do_mini)"
   smoke_url "http://$HOST:$PORTA" "LAN" "$chave"
@@ -283,6 +290,10 @@ smoke() {
   if [ -z "$chave" ]; then
     print -r -- "  [aviso] chave do mini vazia: conferir $(cd_remoto)/.apikey"
   fi
+  # ATENÇÃO: sem este `return` o `smoke` devolvia SEMPRE 0 — o último comando era
+  # um `if` com condição falsa, que sai 0. O rollback automático (#345) e o
+  # `smoke && ...` do deploy dependem deste código.
+  return $falhas
 }
 
 # ---------------------------------------------------------------- recon
@@ -365,13 +376,40 @@ push_necessario() { # 0 = sim (o rev alvo ainda não está no origin)
 # Delta de deps contra o requirements DO REV ALVO — e não o do mini, que antes do
 # pull ainda é o antigo (era o erro do primeiro dry-run: sem `websockets` na lista
 # velha, o preview dizia "nada a instalar" enquanto a produção ia quebrar no WS).
+#
+# `-c requirements.lock` (#343): o lock é o teto VERSIONADO (retrato do venv
+# verificado). Sem ele, `fastapi`/`uvicorn`/`torch`/`onnxruntime` — que estão na
+# lista curada sem pino — podiam mover no deploy sem diff de código e o smoke não
+# percebia. O lock viaja do REV ALVO (e vai para o /tmp do mini, fora da árvore),
+# então o teto é o do próprio rev, não o do mini que ainda está no rev antigo.
+# Teto de versão do rev (#343): escreve o `requirements.lock` DO REV no /tmp do
+# mini e imprime `-c <arquivo>`; rev sem lock (corte antigo) imprime vazio e o
+# chamador avisa que está instalando sem teto. Testa o CONTEÚDO (não o `cat`):
+# o `cat >` remoto cria arquivo vazio mesmo quando o `git show` não acha o path.
+_teto_do_rev() { # $1 = rev
+  local trava texto
+  trava="$(preview_lock_caminho)"
+  texto="$(git -C "$LOCAL_REPO" show "${1}:requirements.lock" 2>/dev/null)"
+  [ -n "$texto" ] || return 0
+  print -rn -- "$texto" | "${SSH[@]}" "$USUARIO@$HOST" "cat > '$trava'" || return 0
+  print -r -- "-c $trava"
+}
+
 deps_preview() { # $1 = rev alvo; escreve o requirements no mini e devolve o "Would install"
   # ${1} com chaves: `"$1:requirements.txt"` o zsh lê como modificador `:r` e vira
   # "...equirements.txt" (o sha não é ambíguo, o `git show` só não acha o arquivo).
-  local prev; prev="$(preview_caminho)"
+  local prev teto
+  prev="$(preview_caminho)"
   git -C "$LOCAL_REPO" show "${1}:requirements.txt" 2>/dev/null \
     | "${SSH[@]}" "$USUARIO@$HOST" "cat > '$prev'" || return 0
-  distante "cd $(cd_remoto) && ./.venv-mlx/bin/pip install --dry-run -r '$prev' 2>&1 | grep -E 'Would install|^ERROR' | tail -3"
+  teto="$(_teto_do_rev "$1")"
+  [ -n "$teto" ] || print -r -- "    [aviso] este rev não tem requirements.lock — instalando SEM teto de versão"
+  # O comando é montado numa variável ANTES de ir para o `distante`: expandir
+  # `${=teto}` direto dentro da string de argumento deixa "-c" e o caminho como
+  # palavras separadas — `distante` recebe só a 1ª e o teto sumia em silêncio.
+  local cmd
+  cmd="cd $(cd_remoto) && ./.venv-mlx/bin/pip install --dry-run -r '$prev' ${=teto} 2>&1 | grep -E 'Would install|^ERROR' | tail -3"
+  distante "$cmd"
 }
 
 deploy() {
@@ -405,7 +443,7 @@ deploy() {
   local deps=""
   if [ "$DEPS" = 1 ]; then
     deps="$(deps_preview "$ALVO_SHA")"
-    print -r -- "  deps: pip install -r requirements.txt (do rev alvo)"
+    print -r -- "  deps: pip install -r requirements.txt -c requirements.lock (ambos do rev alvo)"
     print -r -- "    preview: $(preview_caminho)  (fora da árvore do mini)"
     if [ -n "$deps" ]; then print -r -- "$deps" | sed 's/^/    /'
     else print -r -- "    nada a instalar (o venv já satisfaz o requirements)"; fi
@@ -454,13 +492,43 @@ deploy() {
   distante "cd $(cd_remoto) && git switch --quiet -C 'prod-${ALVO_SHA[1,12]}' '$ALVO_SHA' && git log -1 --format='    agora: %h %s'" \
     || { print -r -- "  [PARA] switch para o rev alvo falhou — nada foi reiniciado"; return 1; }
   if [ "$DEPS" = 1 ]; then
-    distante "cd $(cd_remoto) && ./.venv-mlx/bin/pip install -r requirements.txt 2>&1 | tail -3" | sed 's/^/    /'
-    # Registro do DEPOIS (o ANTES é o .deploy-mini-freeze-* gravado no backup): o
-    # rollback precisa saber o que entrou — no passo 2 o venv SAI do "intocado"
-    # (websockets é obrigatório para o /api/live/ws).
+    # Mesmo teto do preview (#343): o `-c` vem do lock do REV ALVO (o preview já
+    # o escreveu; reescrever é barato e mantém instalação e preview idênticos).
+    local teto saida_pip rc_pip
+    teto="$(_teto_do_rev "$ALVO_SHA")"
+    [ -n "$teto" ] || print -r -- "  [aviso] rev sem requirements.lock — instalando SEM teto de versão"
+    local cmd_pip
+    cmd_pip="cd $(cd_remoto) && ./.venv-mlx/bin/pip install -r requirements.txt ${=teto} 2>&1"
+    saida_pip="$(distante "$cmd_pip")"
+    rc_pip=$?
+    print -r -- "$saida_pip" | tail -3 | sed 's/^/    /'
+    if [ "$rc_pip" != 0 ]; then
+      # Conflito com o teto do lock = o rev pede versão que o lock não permite.
+      # Parar AQUI (antes do restart) deixa a produção no processo antigo; o
+      # `.deploy-mini-estado` já aponta para o rev anterior.
+      print -r -- "  [PARA] pip install falhou (rc=$rc_pip) — provável conflito com requirements.lock; NÃO reiniciei"
+      print -r -- "    desfaça o switch/volte com: ./remote/deploy_mini.sh rollback --apply"
+      return 1
+    fi
+    # Registro do DEPOIS (o ANTES é o .deploy-mini-freeze-* gravado no backup) e o
+    # DELTA: o rollback precisa saber o que entrou, e "nada mudou" tem de ser
+    # verificável, não fé no resolver.
     distante "cd $(cd_remoto) && ./.venv-mlx/bin/pip freeze > .deploy-mini-freeze-depois-\$(date +%F-%H%M%S) && (./.venv-mlx/bin/python -c 'import websockets; print(\"    websockets\", websockets.__version__)' 2>/dev/null || echo '    websockets ausente')" | sed 's/^/  /'
+    local antes depois delta
+    antes="$(distante "cd $(cd_remoto) && ls -1t .deploy-mini-freeze-* 2>/dev/null | grep -v depois | head -1")"
+    depois="$(distante "cd $(cd_remoto) && ls -1t .deploy-mini-freeze-depois-* 2>/dev/null | head -1")"
+    if [ -n "$antes" ] && [ -n "$depois" ]; then
+      delta="$(distante "cd $(cd_remoto) && diff -u '$antes' '$depois' | grep -E '^[+-][A-Za-z0-9]' || true")"
+      distante "cd $(cd_remoto) && diff -u '$antes' '$depois' > .deploy-mini-deps-delta-\$(date +%F-%H%M%S) || true"
+      if [ -z "$delta" ]; then
+        print -r -- "  deps: venv IDÊNTICO ao freeze anterior (nada se moveu)"
+      else
+        print -r -- "  deps: $(print -r -- "$delta" | wc -l | tr -d ' ') linha(s) de delta no venv:"
+        print -r -- "$delta" | sed 's/^/    /'
+      fi
+    fi
   fi
-  distante "cd $(cd_remoto) && rm -f '$(preview_caminho)'"
+  distante "cd $(cd_remoto) && rm -f '$(preview_caminho)' '$(preview_lock_caminho)'"
   print -r -- "  reiniciando $LABEL…"
   # O marcador vai ANTES do kickstart: todo processo que subir depois dele é o
   # novo (boot ≥ marcador); escrito depois, o próprio atraso do ssh acusava
@@ -469,10 +537,57 @@ deploy() {
   distante "launchctl kickstart -k gui/\$(id -u)/$LABEL && echo kickstart-ok" | sed 's/^/    /'
   print -r -- "  esperando ${ESPERA}s o run.sh subir a porta…"
   sleep "$ESPERA"
-  POS_DEPLOY=1 REV_ALVO="$ALVO_SHA" smoke
+  POS_DEPLOY=1 REV_ALVO="$ALVO_SHA" smoke && return 0
+  # Smoke vermelho com o rev JÁ no ar: deixar assim é produção quebrada esperando
+  # alguém digitar outro comando. Volta sozinho para o rev do estado (o anterior
+  # a este deploy) e diz em destaque o que aconteceu (#345).
+  _reverte_e_reporta "$ALVO_SHA"
+  return 1
 }
 
 # ---------------------------------------------------------------- rollback
+
+# Passo único de volta para um rev: switch, marcador, kickstart e smoke. Devolve
+# 0/1 do smoke. Compartilhado pelo `rollback` e pelo rollback AUTOMÁTICO do
+# deploy (mesmo caminho, mesmo probe — um rollback que não é o que o deploy faz
+# não prova nada).
+_volta_para() { # $1 = sha alvo da volta
+  local sha="$1"
+  distante "cd $(cd_remoto) && git switch --quiet -C 'prod-${sha[1,12]}' '$sha' && git log -1 --format='  agora: %h %s'" | sed 's/^/  /' \
+    || return 1
+  print -r -- "  reiniciando $LABEL…"
+  distante "cd $(cd_remoto) && date +%s > $BOOT_MARKER"   # âncora do smoke pós-deploy (#252)
+  distante "launchctl kickstart -k gui/\$(id -u)/$LABEL && echo kickstart-ok" | sed 's/^/  /'
+  print -r -- "  [nota] deps NÃO voltam sozinhas: o freeze do deploy está em .deploy-mini-freeze-* no mini"
+  sleep "$ESPERA"
+  POS_DEPLOY=1 REV_ALVO="$sha" smoke
+}
+
+_reverte_e_reporta() { # $1 = rev que falhou; volta ao sha do estado
+  local falhou="$1" sha
+  sha="$(_sha_do_estado)"
+  print -r -- ""
+  print -r -- "== SMOKE VERMELHO em ${falhou[1,12]}… — revertendo sozinho (#345)"
+  if [ -z "$sha" ]; then
+    print -r -- "  [PARA] sem $ESTADO no mini: NÃO há para onde voltar — reverta à mão (o freeze do venv está em .deploy-mini-freeze-*)"
+    return 1
+  fi
+  if [ "$sha" = "$falhou" ]; then
+    print -r -- "  [PARA] o estado aponta para o PRÓPRIO rev que falhou ($sha) — volta sem sair do lugar; reverta à mão para um rev anterior"
+    return 1
+  fi
+  print -r -- "  voltando para ${sha[1,12]}…"
+  if _volta_para "$sha"; then
+    print -r -- "  ✔ REVERTIDO para ${sha[1,12]}… (smoke do rollback passou) — produção de volta no rev anterior"
+    return 0
+  fi
+  print -r -- "  ✖ REVERTIDO PARA ${sha[1,12]}…, MAS O SMOKE DO ROLLBACK TAMBÉM FALHOU — produção precisa de mão agora"
+  return 1
+}
+
+_sha_do_estado() {
+  distante "cd $(cd_remoto) && sed -n 's/^sha=//p' $ESTADO 2>/dev/null | head -1" | tr -d '[:space:]'
+}
 
 rollback() {
   local estado sha
@@ -487,13 +602,7 @@ rollback() {
     print -r -- "  (dry-run: rode com --apply para switch + restart + smoke)"
     return 0
   fi
-  distante "cd $(cd_remoto) && git switch --quiet -C 'prod-${sha[1,12]}' '$sha' && git log -1 --format='  agora: %h %s'" | sed 's/^/  /'
-  print -r -- "  reiniciando $LABEL…"
-  distante "cd $(cd_remoto) && date +%s > $BOOT_MARKER"   # âncora do smoke pós-deploy (#252)
-  distante "launchctl kickstart -k gui/\$(id -u)/$LABEL && echo kickstart-ok" | sed 's/^/  /'
-  print -r -- "  [nota] deps NÃO voltam sozinhas: o freeze do deploy está em .deploy-mini-freeze-* no mini"
-  sleep "$ESPERA"
-  POS_DEPLOY=1 REV_ALVO="$sha" smoke
+  _volta_para "$sha"
 }
 
 ALVO_REV="${TTS_MINI_REV:-HEAD}"
@@ -507,7 +616,7 @@ POS_DEPLOY="${TTS_MINI_POS_DEPLOY:-0}"
 case "$ACAO" in
   recon)    recon ;;
   compare)  compare ;;
-  smoke)    smoke ;;
+  smoke)    smoke || falhas=1 ;;
   deploy)   deploy || falhas=1 ;;
   rollback) rollback || falhas=1 ;;
 esac

@@ -118,6 +118,14 @@ case "$url" in
       if [ $http1 = 1 ]; then codigo="${T_CURL_WS_CODE:-101}"; else codigo="${T_CURL_WS_CODE_H2:-401}"; fi ;;
   */) arquivo="$T_MINI_DIR/static/index.html"; nonce=1 ;;
 esac
+# `T_CURL_CODE_PRIMEIRO`: o código sai quebrado enquanto o serviço só foi
+# reiniciado uma vez (o restart do próprio deploy) e normal depois do segundo —
+# é como o teste distingue "o rev novo quebrou" de "o rollback salvou" sem
+# depender do conteúdo dos módulos.
+if [ $so_codigo = 1 ] && [ -n "${T_CURL_CODE_PRIMEIRO:-}" ]; then
+  n=$(wc -l < "$T_LAUNCH_LOG" 2>/dev/null | tr -d ' ')
+  [ "${n:-0}" -le 1 ] && codigo="$T_CURL_CODE_PRIMEIRO"
+fi
 if [ $so_codigo = 1 ]; then print -rn -- "$codigo"
 elif [ -n "$arquivo" ]; then
   # o app real injeta nonce="…" POR REQUEST no HTML servido (CSP): o shim imita
@@ -150,6 +158,7 @@ def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
         T_LAUNCH_LOG=str(tmp_path / "launch.log"),
         T_CURL_LOG=str(tmp_path / "curl.log"),
         T_PIP_LOG=str(tmp_path / "pip.log"),
+        T_PIP_FREEZE_N=str(tmp_path / "freeze.n"),
         T_MINI_DIR=str(tmp_path / "mini"),
         T_MODULOS=" ".join(MODULOS),
         TTS_MINI_HOST="mini-fake",
@@ -161,6 +170,7 @@ def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
         # preview isolado por teste (#240): o /tmp GLOBAL do script é estado
         # compartilhado entre processos concorrentes — só UM teste o exercita
         TTS_MINI_PREVIEW=str(tmp_path / "preview-requirements"),
+        TTS_MINI_LOCK_PREVIEW=str(tmp_path / "preview-lock"),
     )
     (tmp_path / "gitconfig").write_text("[init]\n\tdefaultBranch = main\n")
 
@@ -191,11 +201,21 @@ exit 0
 """)
     _shim(semente / ".venv-mlx" / "bin" / "pip", """
 case "$1" in
-  freeze) print -r -- "fastapi==1.0" ;;
+  freeze)
+    # 1ª chamada do run = freeze do ANTES (backup); seguintes = DEPOIS (#343).
+    n=$(( $(cat "$T_PIP_FREEZE_N" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$T_PIP_FREEZE_N"
+    if [ "$n" -gt 1 ] && [ -n "${T_PIP_FREEZE_DEPOIS:-}" ]; then
+      print -r -- "${T_PIP_FREEZE_DEPOIS}"
+    else
+      print -r -- "${T_PIP_FREEZE:-fastapi==1.0}"
+    fi ;;
   install)
     print -r -- "$*" >> "$T_PIP_LOG"
     if [[ " $* " == *" --dry-run "* ]]; then
       print -r -- "${T_PIP_DRY:-Requirement already satisfied: fastapi in ./.venv-mlx}"
+    elif [ -n "${T_PIP_FALHA:-}" ]; then
+      print -r -- "ERROR: ResolutionImpossible: conflito com requirements.lock"
+      exit 1
     else
       print -r -- "Successfully installed websockets-17.1"
     fi ;;
@@ -215,6 +235,9 @@ exit 0
     _git("clone", "-q", str(origem), str(dev), cwd=tmp_path, env=env)
     (dev / "app.py").write_text(APP_COM_ROTAS)
     (dev / "requirements.txt").write_text("fastapi\nwebsockets\n")
+    # v2 introduz o LOCK (#343): a v1 (base) não tem, e é isso que exercita o
+    # aviso "rev sem teto de versão".
+    (dev / "requirements.lock").write_text("fastapi==1.0\n")
     (dev / "static" / "index.html").write_text("<html>v2</html>\n")
     _git("add", "-A", cwd=dev, env=env)
     _git("commit", "-qm", "v2", cwd=dev, env=env)
@@ -558,6 +581,74 @@ def test_deploy_mostra_o_delta_de_deps_do_rev_alvo_e_instala(amb):
     assert any("install -r requirements.txt" in l for l in _log(amb, "pip"))
 
 
+# ------------------------------------------------- teto de versão (`requirements.lock`, #343)
+
+def test_dry_run_usa_o_lock_DO_REV_ALVO_como_teto(amb):
+    """O deploy instala com `-c <lock do rev alvo>` — sem teto, torch/fastapi/uvicorn
+    (sem pino na lista curada) podiam mover no deploy sem diff de código."""
+    r = _run(amb, "deploy")
+    assert r.returncode == 0, _saida(r)
+    assert "-c requirements.lock" in r.stdout          # a linha de deps diz o comando
+    # o teto passado ao pip é o arquivo escrito, e ele é o lock DO REV ALVO
+    # (a v1, parada no mini, não tem lock).
+    instalacoes = [l for l in _log(amb, "pip") if "--dry-run" in l]
+    assert instalacoes, _log(amb, "pip")
+    assert all(f"-c {amb['TTS_MINI_LOCK_PREVIEW']}" in l for l in instalacoes), instalacoes
+    assert Path(amb["TTS_MINI_LOCK_PREVIEW"]).read_text().strip() == "fastapi==1.0"
+
+
+def test_install_que_estoura_o_lock_para_antes_do_restart(amb):
+    """Conflito com o teto = pip vermelho: parar sem reiniciar deixa a produção no
+    processo antigo em vez de subir código cujo venv não foi satisfeito."""
+    antes = _head(amb, "mini")
+    amb["T_PIP_DRY"] = "Would install websockets-17.1"
+    amb["T_PIP_FALHA"] = "1"
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 1, _saida(r)
+    assert "[PARA] pip install falhou" in r.stdout
+    assert "NÃO reiniciei" in r.stdout
+    assert _log(amb, "launch") == [], "reiniciou com o venv possivelmente inconsistente"
+    assert "ResolutionImpossible" in r.stdout
+    # a INSTALAÇÃO (não só o preview) foi com o teto: sem o `-c` o conflito nem
+    # existiria, então este assert é o que prende o comportamento de verdade
+    reais = [l for l in _log(amb, "pip") if "install -r requirements.txt" in l]
+    assert reais and all("-c " in l for l in reais), _log(amb, "pip")
+    assert antes  # o rev anterior é o alvo do `rollback --apply` (estado já gravado)
+
+
+def test_delta_de_deps_fica_em_arquivo_e_no_log(amb):
+    """O que mudou no venv tem de ser verificável: delta em arquivo no mini e
+    resumo no output (o rollback não desfaz deps, #345)."""
+    amb["T_PIP_DRY"] = "Would install websockets-17.1"
+    amb["T_PIP_FREEZE_DEPOIS"] = "fastapi==1.0\nwebsockets==17.1"
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 0, _saida(r)
+    assert "delta no venv" in r.stdout and "websockets==17.1" in r.stdout
+    assert list(Path(amb["TTS_MINI_DIR"]).glob(".deploy-mini-deps-delta-*")), \
+        "o delta não foi registrado em arquivo"
+
+
+def test_venv_identico_e_dito_com_todas_as_letras(amb):
+    """Nada mudou = dizer isso, não silêncio: é a prova de que o deploy não moveu
+    versão nenhuma (o aceite do #343)."""
+    amb["T_PIP_DRY"] = "Would install websockets-17.1"
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 0, _saida(r)
+    assert "venv IDÊNTICO ao freeze anterior" in r.stdout
+
+
+def test_rev_sem_lock_avisa_e_instala_sem_teto(amb):
+    """Corte antigo (sem `requirements.lock`) não pode quebrar o deploy: avisa e
+    segue sem teto."""
+    base = _sha(amb, "HEAD~2")                      # v1: sem lock
+    assert _run(amb, "deploy", "--apply").returncode == 0      # sai do base
+    r = _run(amb, "deploy")                          # dry-run para o rev antigo
+    amb["TTS_MINI_REV"] = base
+    r = _run(amb, "deploy")
+    assert r.returncode == 0, _saida(r)
+    assert "SEM teto de versão" in r.stdout
+
+
 def test_deploy_nao_reinicia_quando_ja_esta_no_ar(amb):
     assert _run(amb, "deploy", "--apply").returncode == 0
     Path(amb["T_LAUNCH_LOG"]).unlink()
@@ -569,14 +660,17 @@ def test_deploy_nao_reinicia_quando_ja_esta_no_ar(amb):
 
 def test_deploy_reinicia_quando_o_processo_esta_velho(amb):
     """Código no alvo no disco mas instância viva antiga: não é 'nada a fazer' —
-    reinicia (o smoke então acusa o codigo forjado, que é o do processo velho)."""
+    reinicia (o smoke então acusa o codigo forjado, que é o do processo velho) e,
+    como o smoke fica vermelho, o rollback automático roda em seguida (#345)."""
     assert _run(amb, "deploy", "--apply").returncode == 0
     Path(amb["T_LAUNCH_LOG"]).unlink()
     amb["T_CURL_BUILD_CODIGO"] = "deadbeef"
     r = _run(amb, "deploy", "--apply")
     assert "nada a fazer" not in r.stdout
-    assert _log(amb, "launch") == [f"kickstart -k gui/{os.getuid()}/{LABEL}"]
+    # um kickstart do deploy + um do rollback automático
+    assert _log(amb, "launch") == [f"kickstart -k gui/{os.getuid()}/{LABEL}"] * 2
     assert r.returncode == 1 and "instância não é o rev alvo" in r.stdout
+    assert "SMOKE VERMELHO" in r.stdout and "REVERTIDO" in r.stdout
 
 
 def test_alvo_por_rev_sobe_o_corte_e_nao_o_head(amb):
@@ -670,6 +764,63 @@ def test_rollback_sem_estado_avisa(amb):
     assert r.returncode == 0
     assert "[aviso] nenhum .deploy-mini-estado" in r.stdout
     assert _log(amb, "launch") == []
+
+
+# ------------------------------------------ rollback AUTOMÁTICO em smoke vermelho (#345)
+
+
+def test_smoke_devolve_o_veredito(amb):
+    """O `smoke` devolvia 0 SEMPRE (o último comando era um `if` de condição falsa).
+    Sem este contrato, o `smoke && ...` do deploy nunca dispara rollback."""
+    assert _run(amb, "smoke").returncode == 1, "smoke verde/vermelho tem de sair no rc"
+    assert "FALHA" in _run(amb, "smoke").stdout
+
+
+def test_deploy_com_smoke_vermelho_reverte_para_o_rev_anterior(amb):
+    """Produção em v2 e deploy de v3 que sobe quebrado (health vermelho no
+    processo novo): o deploy volta sozinho para v2, reinicia, o smoke do rollback
+    passa e sai ≠0 dizendo que reverteu."""
+    anterior = _sha(amb, "HEAD~1")                 # v2
+    amb["TTS_MINI_REV"] = anterior
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    Path(amb["T_LAUNCH_LOG"]).unlink()
+    assert (Path(amb["TTS_MINI_DIR"]) / ".deploy-mini-estado").read_text().startswith("sha=")
+
+    amb.pop("TTS_MINI_REV", None)                  # alvo de volta ao HEAD (v3)
+    amb["T_CURL_CODE_PRIMEIRO"] = "502"            # rev novo no ar e quebrado
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode == 1, _saida(r)
+    assert "SMOKE VERMELHO" in r.stdout
+    assert "REVERTIDO" in r.stdout and "smoke do rollback passou" in r.stdout
+    assert _head(amb, "mini") == anterior, "a produção NÃO voltou para o rev anterior"
+    assert _log(amb, "launch") == [f"kickstart -k gui/{os.getuid()}/{LABEL}"] * 2
+    # e a árvore viva volta a ser a do rev anterior (paridade do index.html)
+    assert (Path(amb["TTS_MINI_DIR"]) / "static" / "index.html").read_text() == "<html>v2</html>\n"
+
+
+def test_rollback_automatico_sem_estado_diz_que_e_manual(amb):
+    """Sem `.deploy-mini-estado` não há para onde voltar: o deploy não pode fingir
+    que reverteu — sai ≠0 mandando reverter à mão."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    (Path(amb["TTS_MINI_DIR"]) / ".deploy-mini-estado").unlink()
+    Path(amb["T_LAUNCH_LOG"]).unlink()
+
+    amb["T_CURL_BUILD_CODIGO"] = "deadbeef"
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode == 1, _saida(r)
+    assert "SMOKE VERMELHO" in r.stdout
+    assert "sem .deploy-mini-estado no mini" in r.stdout and "reverta à mão" in r.stdout
+    assert len(_log(amb, "launch")) == 1, "não pode haver kickstart de rollback sem alvo"
+
+
+def test_caminho_feliz_nao_faz_rollback(amb):
+    """Controle negativo: verde não pode disparar segunda reinicialização."""
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 0, _saida(r)
+    assert "SMOKE VERMELHO" not in r.stdout and "REVERTIDO" not in r.stdout
+    assert len(_log(amb, "launch")) == 1
 
 
 # --- #252: a novidade do boot é ancorada no marcador do restart (.deploy-mini-boot),

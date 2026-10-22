@@ -1,0 +1,37 @@
+# Configuração do LINT (#378).
+#
+# O repo usava `pyflakes` no hook, que NÃO lê `# noqa` (o marcador era inerte) e
+# não tinha config versionada — quem precisava calar um import de fixture tinha de
+# declarar `__all__ = [...]` no módulo. Agora o lint é `ruff` (`check`), com o
+# conjunto `F` — o MESMO do pyflakes — e `# noqa` de verdade.
+#
+# `E9` (erro de sintaxe) entra junto: é de graça e é o que o `ast.parse` do hook
+# cobria de forma dispersa. `E4`/`E7` (import fora do topo, `;` e `:` na mesma
+# linha) ficam para depois: são ~160 ocorrências, estilo puro, e mexem em arquivo
+# de todo mundo no mesmo commit.
+#
+# Rodar nos MESMOS arquivos que o hook lista (o `tests/_pyflakes_gate.py` deriva a
+# lista de `.githooks/pre-commit`; o nome do arquivo é herdado do pyflakes):
+#   ./.venv-mlx/bin/python tests/_pyflakes_gate.py
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+# O que não é código nosso: venvs, modelo, artefatos de execução, evidência,
+# caches de ferramentas. Sem isto um `ruff check` da raiz acusaria wheel alheio.
+extend-exclude = [
+    ".venv", ".venv-mlx", ".venv-locktest", ".venv-omni", ".omnivoice-bf16",
+    ".tmp-lock", ".playwright-mcp", ".grok", "graphify-out", "models",
+    "outputs", "voices", "evidence", "tmp", "static/vendor",
+]
+
+[tool.ruff.lint]
+select = ["F", "E9"]
+
+# F811 fica FORA de propósito. Num arquivo de teste, `from test_api import fixture`
+# e o `def test_x(fixture)` são o MESMO nome em linhas diferentes: o ruff cobra isso
+# em 48 sítios de puro parâmetro, e o `# noqa` teria de ir na linha do `def`, não na
+# do import. O F401 continua ligado — import realmente sem uso segue vermelho — e é
+# ele que cobre o caso que importa aqui. Um import duplicado de verdade também é
+# F811, então essa classe perde cobertura: reavaliar se doer.
+ignore = ["F811"]

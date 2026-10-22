@@ -67,10 +67,24 @@ um 2º socket mirando o id da aba).
 
 Protocolo (o contrato completo está no comentário da seção no `app.py`):
 cliente → `setup` (1º frame; `session_id` opcional retoma), PCM16 16 kHz, `end_of_speech`,
-`cancel`, `ping`; servidor → `ready{resumed}`, `speech_start`/`speech_end`, áudio PCM16
+`cancel`, `ping`, `hold{on}`; servidor → `ready{resumed, vad, history_descartados}`,
+`speech_start`/`speech_end`, áudio PCM16
 24 kHz, `transcript_user`, `assistant_text`, `turn_complete`, `interrupted`, `error`,
 `prewarm{ok}`, `pong` e `stats` (telemetria, abaixo). Turno marcado `curto`/`barge_falso`
-**abre igual** — quem descarta por eco é o pipeline (por texto, não por tempo).
+**abre igual** — quem descarta por eco ou por julgamento do STT é o pipeline (por
+TEXTO, não por tempo).
+
+Descarte de turno sempre vem com o PORQUÊ: `turn_complete{descartado:true, motivo}`,
+`motivo` em `eco` (era a própria voz voltando), `vad` (o VAD do STT não achou fala no
+áudio que o motor aceitou) ou `stt` (o filtro anti-alucinação rejeitou — blacklist,
+`no_speech_prob`, `avg_logprob`, `compression_ratio`, mínimos; o `detalhe` diz qual).
+Antes do #314 esses casos saíam como `transcript:""`, indistinguíveis de "não ouvi". O
+filtro é o MESMO da Conversa e obedece a `stt_anti_ruido`: desligado, `vad` continua
+marcando e só o `stt` deixa de agir.
+
+`hold{on:bool}` liga o fallback "segurar pra falar": o motor abre e fecha o turno no
+BOTÃO, sem heurístico de VAD; `stats.motor.hold_to_talk_sugerido` é o aviso de que vale
+ligá-lo (sobe quando `taxa_falso_barge_in` passa do limite).
 
 Corte do playback no ONSET (#225): o cliente corta o áudio do assistente ao receber
 `speech_start` **se ainda tiver fila** (`LX.ativos`), e não só no `interrupted`. A
@@ -94,20 +108,35 @@ O `cancel` do cliente limpa o pendente; barge-in mantém (a fala que interrompeu
 turno próprio). O `stats.turno` ganha `pendente`, `pendentes_trechos`,
 `pendentes_descartados_ms` e `pendentes_descartados`.
 
+`cancel` numa sessão que ainda não teve turno nenhum **não** emite `interrupted`
+(#313): o cliente piscava "interrompido" sem nada ter sido interrompido. Depois de
+um turno já havido ele segue emitindo — aí o `cancel` também serve para parar o que
+o cliente ainda tem na fila dele. O número do turno tem **fonte única**: quem
+numera é o pipeline, no `speech_start`, e a sessão adota; `interrupted.turn` aponta
+o turno realmente interrompido (antes cada lado contava por conta própria e os
+eventos carregavam sequências diferentes).
+
 ### Telemetria da sessão (`stats` + log de metadados)
 
 Enquanto a sessão está aberta, o servidor emite um JSON `stats` a cada
-`TTS_LIVE_STATS_MS` (250 ms; 0 desliga) pela MESMA fila do resto do fio — o evento
-é **aditivo**: nenhum evento existente mudou. O painel da UI (#119) se alimenta
-dele; contrato completo no comentário da task #118. Formato:
+`TTS_LIVE_STATS_MS` (250 ms; 0 desliga) por RELÓGIO — e não mais esperando a fila
+esvaziar: num turno com áudio contínuo o `stats` saía ZERO vez (#313). Ele é
+enviado direto no fio, fora da fila de áudio, e o evento é **aditivo**: nenhum
+evento existente mudou. O painel da UI (#119) se alimenta dele; contrato completo
+no comentário da task #118. Formato:
 
 ```json
 {"type": "stats", "t_ms": 41200,
  "mic":      {"frames": 431, "bytes": 1379200, "desde_ultimo_ms": 42, "dbfs": -31.4, "prob": 0.87},
  "motor":    {"estado": "ouvindo", "limiar_dbfs": -45.2, "limiar_turno_dbfs": -48.1,
-              "barge_ativos": 0, "barge_falsos": 0},
- "turno":    {"stage": "llm", "ms": 812, "n": 7, "buffer_bytes": 95232, "t_decisao_ms": 486},
- "playback": {"speaking": true, "chunks": 12, "bytes": 284160},
+              "barge_ativos": 0, "barge_falsos": 0, "eco_ausente": false, "tocando": false,
+              "turno_assistente_aberto": false, "taxa_falso_barge_in": 0.0,
+              "eco_dbfs": -34.1, "noise_dbfs": -58.2},
+ "rnnoise":  {"ativo": true, "faltas": 0, "faltas_pct": 0.0},
+ "turno":    {"stage": "llm", "ms": 812, "n": 7, "buffer_bytes": 95232, "t_decisao_ms": 486,
+              "lock_espera_ms": 12},
+ "playback": {"speaking": true, "chunks": 12, "bytes": 284160,
+              "fila_bytes": 96000, "fila_itens": 2, "fila_descartados": 0},
  "sessao":   {"idade_s": 41, "ocioso_ms": 130, "ttl_s": 300, "criadas": 2, "historicos": 1},
  "erro":     {"code": "pipeline", "stage": "tts", "idade_ms": 2100},
  "provedor": {"estado": "ok", "http": 200, "idade_ms": 3400}}
@@ -118,10 +147,20 @@ dele; contrato completo no comentário da task #118. Formato:
   parou de mandar" (bug #117) de "o servidor parou de processar";
 - `motor.estado` deriva `ouvindo`/`fechando` além dos estados da FSM; os
   `limiar_*` são os VIGENTES (com eco do playback eles sobem — é o número que
-  explica um barge-in não disparar);
+  explica um barge-in não disparar). `eco_ausente`, `tocando`,
+  `turno_assistente_aberto`, `taxa_falso_barge_in`, `eco_dbfs` e `noise_dbfs` vêm
+  do motor **já calculados** e separam "o barge era falso porque a referência de
+  eco estava errada" de "o limiar estava alto" (#313);
+- `rnnoise.ativo`/`faltas`/`faltas_pct`: degradação do filtro não pode ser muda —
+  `faltas` são bytes entregues com ZERO (buraco no áudio que o VAD lê), o número
+  SOBREVIVE à queda do filtro e `ativo: false` com `faltas > 0` é o retrato dela;
 - `turno.stage` (`idle|stt|llm|tts`) com `ms` no estágio e `t_decisao_ms` do
-  orçamento de latência; `playback.speaking` é a MESMA janela que alimenta o
-  limiar de eco (`set_speaking`). `error{code:"pipeline"}` é TERMINAL para o
+  orçamento de latência; `lock_espera_ms` é a espera pelo `_gen_lock` (um job de
+  lote o segura inteiro; sem o campo, esse tempo ficava embutido no
+  `first_chunk_ms`); `playback.speaking` é a MESMA janela que alimenta o
+  limiar de eco (`set_speaking`) e `playback.fila_*` é o backlog do envio, com o
+  teto `TTS_LIVE_FILA_MAX_BYTES` (`fila_descartados` conta o áudio velho que caiu).
+  `error{code:"pipeline"}` é TERMINAL para o
   turno (#250): o estágio volta a `idle` (o `ms` para de crescer) e a janela de
   barge do turno fecha — o estágio ONDE o turno morreu fica em
   `erro.stage`; os erros que não fecham turno (`turno_em_curso`, `sem_audio`,
@@ -204,6 +243,20 @@ não fecha. O módulo avisa no stdout se alguém configurar < 500.
 O silêncio que sobra no áudio do turno é cortado, guardando `cauda_ms` (200 ms)
 de cauda para o STT não receber uma frase decapitada.
 
+### Janela de confirmação do barge: `vad.barge_ms`
+
+`vad.barge_ms` (clamp **150–600**, default **300**, o pedido JÁ APLICADO ecoado no
+`ready.vad`) é quanto de energia sustentada o candidato precisa para interromper.
+O custo de interrupção é esse valor **mais** a rampa do envelope (~100 ms): o
+teto de 600 encosta no orçamento de 1,5 s do primeiro áudio e o piso de 150 deixa
+o eco de fundo voltar a disparar.
+
+Medido com `smoke_live_turns.py --barge-ms N` (99 rodadas por valor, 4 níveis de
+eco): disparo antes da fala continua **0** nas três; o que muda é o par
+detecção × eco puro limpo — 300 dá **39/44 e 32/44**, 400 dá 38/44 e 40/44,
+500 dá **35/44 e 40/44**. Ou seja, subir a janela limpa o eco puro mas custa
+detecção: 400 está dentro da tolerância de 5 p.p., 500 já não está (perde 9 p.p.).
+
 ### Barge-in (falar por cima do TTS)
 
 O mic continua sendo consumido durante o playback. O eco do alto-falante é
@@ -277,6 +330,11 @@ além da janela de confirmação, ou que é cancelado). Com ≥ 5 amostras e tax
 acima de 30 %, `estatisticas()["hold_to_talk_sugerido"]` vira `True` e a UI
 oferece o modo "segurar pra falar" (`set_hold`): o turno abre e fecha no botão,
 ignorando os heurísticos. `Config(hold_to_talk=True)` já nasce nesse modo.
+
+O caminho do fio é `stats.motor.hold_to_talk_sugerido` (o aviso) e
+`stats.motor.hold_to_talk` (o estado); o cliente liga e desliga com
+`{"type":"hold","on":true|false}` (#314). Antes disso o motor calculava o aviso e
+ele morria dentro do processo — nunca chegava a uma tela.
 
 ### API (consumida pelo handler do WS)
 
@@ -455,9 +513,9 @@ Ou seja: o flag de tempo separa mal os dois lados. Quem decide é o **texto**:
 assistente **em reprodução** — `_fala_em_curso`, atualizado a cada delta do LLM,
 então vale também para o chunk EM SÍNTESE (barge-in no começo do turno, com o
 `history` ainda vazio); o `history[-1]` é só fallback. Casou → é eco e o
-turno fecha com `turn_complete{descartado:true, eco:true}` sem gastar LLM nem TTS;
-diferiu → é o humano e o turno segue. `curto` fica como dica (o STT custa ~0,3 s e
-o `_stt_ok` já barra lixo a jusante).
+turno fecha com `turn_complete{descartado:true, eco:true, motivo:"eco"}` sem gastar
+LLM nem TTS; diferiu → é o humano e o turno segue. `curto` fica como dica, e a fala
+que o STT entregar ainda passa pelo `_stt_ok` (#314) antes de chegar ao LLM.
 
 Matriz de aceite (em `tests/test_live_pipeline.py`, com os transcripts REAIS
 medidos com a FSM + TTS do app):
@@ -473,12 +531,32 @@ No cancelamento, o que já foi dito fica no histórico (semântica do Live) e a
 referência do eco acompanha o texto em voo — coberto por
 `test_barge_durante_a_sintese_usa_o_texto_em_voo_como_referencia`.
 
-**Tunáveis** (e limites): `_parece_eco(texto, referencia, minimo=0.6)` — `minimo` é
-a fração de palavras que precisam casar em janela; transcript com menos de 2
-palavras nunca é eco (conservador: descartar fala é pior que rodar um STT). Limite
-conhecido: repetição de **2** palavras que existam no texto do assistente ("dia
-está") casa a janela e é classificada como eco — ajustável baixando `minimo` ou
-subindo o mínimo de palavras.
+**Como a regra decide (#301).** O eco é um trecho LITERAL do que está tocando,
+logo a assinatura dele é a ORDEM do assistente com quase nenhuma troca. A regra
+antiga contava 60 % das palavras casando em qualquer posição e por isso comia
+fala humana que só reusava o vocabulário (medido: "e a tarde?" e "Não, o prazo é
+outro" viravam eco e o turno morria calado). Hoje, nesta ordem:
+
+1. transcript com menos de 2 palavras nunca é eco (descartar fala é pior que
+   rodar um STT);
+2. transcript MAIOR que a referência não é eco (o eco não fala mais que o
+   assistente);
+3. **marcador de humano** derruba a classificação: `?` que a referência não tem,
+   ou palavra de pergunta/negação/contraste que a referência **não** disse
+   (`não`, `mas`, `cadê`, `quando`, `onde`, `outro`…). Marcador que o próprio
+   assistente já falou não conta — senão "então"/"e" virariam passe livre;
+4. fora disso, exige janela **contígua** com até 40 % de divergência
+   (`minimo`), com teto de 2 palavras: é onde cabe o erro do Whisper, e é o que
+   impede o casamento solto.
+
+**Tunáveis**: `_parece_eco(texto, referencia, minimo=0.6)` (o `minimo` é o acerto
+mínimo da janela contígua). O bench é `smoke_eco_regra.py` — 29 falas humanas que
+reusam o vocabulário e 31 ecos literais, com veredito: **0 falso-descarte** e eco
+puro ≥ 92 %. Medido na regra atual: 0/29 e 96,8 % (30/31), contra a matriz velha
+de 92/96. Limites conhecidos, os dois honestos: repetição de 2 palavras que
+existam no texto ("dia está") continua virando eco; e eco que o Whisper fecha com
+um `?` que o assistente não falou é lido como humano (custa uma resposta a mais,
+não uma fala perdida).
 
 ### TTS do turno: in-process — exceto família isolada, que usa worker PERSISTENTE
 
@@ -791,14 +869,22 @@ O bench sai 2 se não houver wav em `voices/` (grave uma voz na UI).
 
 ### Gate estático do épico (para o QA reusar)
 
-Mesma lista do `.githooks/pre-commit` (ele roda isto + `pytest tests/` antes de
-cada commit). Saída tem de ser **vazia** e o exit **0**:
+A lista **não é copiada aqui** — ela mora no `.githooks/pre-commit` (que roda isso
++ `pytest tests/` antes de cada commit) e é derivada por
+`tests/_pyflakes_gate.py`, chamado também pelo job `estatica` do CI. Corrigir a
+lista no doc e esquecer o hook foi como `live_rnnoise.py` ficou de fora do gate
+estático que este parágrafo ensina a rodar (#288/#389). Saída tem de ser **vazia**
+e o exit **0**:
 
 ```bash
-./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py \
-    smoke_sintese.py remote/*.py live_turns.py smoke_live_turns.py \
-    live_pipeline.py smoke_worker_persist.py tests/*.py client/mic_router.py
+./.venv-mlx/bin/python tests/_pyflakes_gate.py
 ```
+O hook tem hoje **16 alvos explícitos** (o `tests/*.py` é glob e não conta). Rode o
+comando, não copie a lista: ao acrescentar um módulo ao hook, atualize esse número
+aqui — `tests/test_doc_pyflakes_list.py` compara e fica vermelho.
+
+Se precisar ver os alvos (para conferir um módulo novo), `python3 -c 'import
+sys; sys.path.insert(0,"tests"); import _pyflakes_gate as g; print("\n".join(g.modulos()))'`.
 
 ### Suítes de modelo: rodar em paralelo agora é seguro (#134)
 

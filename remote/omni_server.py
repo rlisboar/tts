@@ -66,7 +66,9 @@ IO_WORKERS  = int(os.getenv("OMNI_IO_WORKERS",  "16"))  # CPU: ffmpeg transcode 
 TTS_POOL = ThreadPoolExecutor(max_workers=TTS_WORKERS, thread_name_prefix="tts")
 ASR_POOL = ThreadPoolExecutor(max_workers=ASR_WORKERS, thread_name_prefix="asr")
 IO_POOL  = ThreadPoolExecutor(max_workers=IO_WORKERS,  thread_name_prefix="io")
-MT_POOL  = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mt")  # 1 generate por vez no LLM
+MT_POOL  = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mt")       # 1 generate por vez no 14B
+MT_FAST_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mt7b")  # fila PRÓPRIA do 7B (#347):
+# com um pool só, o "rápido" esperava o 14B terminar e o nome deixava de valer.
 async def offload(pool, fn, *a):
     return await asyncio.get_event_loop().run_in_executor(pool, fn, *a)
 
@@ -199,6 +201,8 @@ def to_vtt(segs):
     return "WEBVTT\n\n"+"\n".join(f"{_ts(s['start'])} --> {_ts(s['end'])}\n{s['text'].strip()}\n" for s in segs)
 def run_asr(path, task, language, beam=5, turbo=False):
     eng = asr_turbo if (turbo and asr_turbo is not None) else asr
+    if eng is None:   # OMNI_LOAD_WHISPER=0: STT é externo, este endpoint não serve
+        raise HTTPException(503, "Whisper desabilitado neste servidor (OMNI_LOAD_WHISPER=0)")
     segments, info = eng.transcribe(
         path, task=task, language=language, beam_size=beam,
         temperature=0.0, condition_on_previous_text=False,
@@ -319,9 +323,20 @@ class ChatReq(BaseModel):                       # OpenAI /v1/chat/completions (t
     temperature: float | None = 0.3
     max_tokens: int | None = 512
 
+def _rev():  # commit que roda, gravado pelo deploy em `.rev` ou vindo do unit (#347)
+    rev = (os.environ.get("GIT_REV") or "").strip()
+    if rev:
+        return rev
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".rev")) as f:
+            return f.read().strip() or "?"
+    except OSError:
+        return "?"
+
+
 @app.get("/health")
 def health():
-    return {"status":"ok","auth":AUTH_MODE,"gpu":torch.cuda.get_device_name(0),"tts_sr":SR,"asr_model":"large-v3",
+    return {"status":"ok","auth":AUTH_MODE,"rev":_rev(),"gpu":torch.cuda.get_device_name(0),"tts_sr":SR,"asr_model":"large-v3" if asr is not None else None, "asr": "large-v3" if asr is not None else None,
             "asr_turbo_ready": asr_turbo is not None,
             "mt":{"repo":MT_REPO,"dev":MT_DEV,"ready":mt["ready"],"err":mt["err"]},
             "mt_fast":{"repo":MT_FAST_REPO,"dev":MT_FAST_DEV,"ready":mt_fast["ready"],"err":mt_fast["err"]},
@@ -343,7 +358,7 @@ async def chat_completions(r: ChatReq):
     msgs=[{"role":str(m.get("role","user")),"content":str(m.get("content",""))} for m in (r.messages or [])]
     if not msgs: raise HTTPException(400, "messages is required")
     t=time.time()
-    text=await offload(MT_POOL, mt_chat, slot, msgs, float(r.temperature if r.temperature is not None else 0.3), int(r.max_tokens or 512))
+    text=await offload(MT_FAST_POOL if fast else MT_POOL, mt_chat, slot, msgs, float(r.temperature if r.temperature is not None else 0.3), int(r.max_tokens or 512))
     return {"id":"chatcmpl-local","object":"chat.completion","created":int(time.time()),
             "model": r.model or slot["repo"],
             "choices":[{"index":0,"message":{"role":"assistant","content":text},"finish_reason":"stop"}],

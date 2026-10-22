@@ -190,6 +190,25 @@ for s in "${SERVICOS[@]}"; do
       for alvo in "$ARQ_REMOTO" "$COMPARTILHADO"; do
         print -r -- "    $alvo $(sha_distante "$dir/$alvo" | head -1)"
       done
+      # O unit versionado × o que roda: sem esta comparação o arquivo do repo
+      # envelhece em silêncio e o rebuild volta a ser adivinhação (#348). O
+      # `FragmentPath` é o que o systemd REALMENTE lê.
+      frag="$(distante "systemctl show -p FragmentPath '$(servico_unit "$s")' 2>/dev/null | sed 's/^FragmentPath=//'" | head -1)"
+      local_unit="$RAIZ/systemd/$(servico_unit "$s")"
+      if [ ! -f "$local_unit" ]; then
+        print -r -- "  unit versionado: (nenhum em $local_unit)"
+      elif [ -z "$frag" ] || [ "$frag" = "$local_unit" ]; then
+        print -r -- "  unit versionado: [DIFERENTE] o host não devolveu FragmentPath — compare à mão ($local_unit)"
+      else
+        if distante "cat '$frag' 2>/dev/null" | diff -q - "$local_unit" >/dev/null 2>&1; then
+          print -r -- "  unit versionado: [IGUAL] $local_unit"
+        else
+          print -r -- "  unit versionado: [DIFERENTE] $local_unit × $frag — diff:"
+          # `-` = o que está no HOST (some se você copiar o repo por cima);
+          # `+` = o que o repo tem e o host não. O diff é o que se copia.
+          distante "cat '$frag' 2>/dev/null" | diff -u -L "host" -L "repo" - "$local_unit" | tail -n +3 | sed 's/^/    /' || true
+        fi
+      fi
       distante "python3 -V 2>&1" | sed 's/^/  python: /'
       distante "python3 -m pip freeze 2>/dev/null | wc -l" | sed 's/^/  pacotes no venv: /'
       # deps do VAD: ONNX (senão o servidor cai no jit do torch) e o backport do
@@ -222,6 +241,16 @@ for s in "${SERVICOS[@]}"; do
     deploy)
       print -r -- "== $s ($(servico_dir "$s"))"
       diff_do_servico "$s"
+      # Árvore suja: o que sobe é o ARQUIVO da árvore, não o commit — deploy com
+      # WIP põe código não commitado em produção e o `/health` (rev) diria o
+      # commit errado. Avisa e marca o rev como `-dirty` (#347).
+      local_rev="$(git -C "$RAIZ" rev-parse --short HEAD 2>/dev/null || print -r -- dev)"
+      sujo="$(git -C "$RAIZ" status --porcelain -- "$(servico_arquivo "$s")" "$RAIZ/$COMPARTILHADO" 2>/dev/null)"
+      if [ -n "$sujo" ]; then
+        print -r -- "  [aviso] árvore suja no que vai subir (vai o working tree, não o commit):"
+        print -r -- "$sujo" | sed 's/^/    /'
+        local_rev="$local_rev-dirty"
+      fi
       if [ "$APPLY" = 0 ]; then
         print -r -- "  (dry-run: rode com --apply para backup + scp + restart)"
         continue
@@ -230,16 +259,46 @@ for s in "${SERVICOS[@]}"; do
         print -r -- "  nada a fazer (sem diff) — restart recarrega modelo, então não reinicia"
         continue
       fi
-      distante "cd '$(servico_dir "$s")' && cp -a server.py \"server.py.bak-\$(date +%F-%H%M%S)\" && ls -1t server.py.bak-* | head -1" | sed 's/^/  backup: /'
+      bak="$(distante "cd '$(servico_dir "$s")' && cp -a server.py \"server.py.bak-\$(date +%F-%H%M%S)\" && ls -1t server.py.bak-* | head -1" | tr -d '[:space:]')"
+      print -r -- "  backup: $bak"
       "${SCP[@]}" "$(servico_arquivo "$s")" "$HOST:$(servico_dir "$s")/server.py"
       "${SCP[@]}" "$RAIZ/$COMPARTILHADO" "$HOST:$(servico_dir "$s")/$COMPARTILHADO"
       print -r -- "  copiado (server.py + $COMPARTILHADO)"
-      distante "cd '$(servico_dir "$s")' && python3 -c 'import ast,pathlib;ast.parse(pathlib.Path(\"server.py\").read_text())' && echo sintaxe-ok" | sed 's/^/  /'
+      if ! saida_ast="$(distante "cd '$(servico_dir "$s")' && python3 -c 'import ast,pathlib,sys;[ast.parse(pathlib.Path(p).read_text()) for p in sys.argv[1:]]' server.py '$COMPARTILHADO' && echo sintaxe-ok" 2>&1)"; then
+        # arquivo que não parseia não pode ir para o restart: o unit subiria e
+        # morreria com o processo velho já parado (#347). Antes o ast.parse
+        # imprimia o erro e o deploy seguia.
+        print -r -- "  [PARA] sintaxe reprovada no servidor — nada reiniciado:"
+        print -r -- "$saida_ast" | tail -6 | sed 's/^/    /'
+        falhas=1
+        continue
+      fi
+      print -r -- "  sintaxe-ok (server.py + $COMPARTILHADO)"
+      # Rev que roda, para o `/health` (#347). Gravado junto do código: um arquivo
+      # pequeno e sem segredo, lido no boot.
+      distante "cd '$(servico_dir "$s")' && printf '%s\n' '$local_rev' > .rev" | sed 's/^/  /'
       print -r -- "  reiniciando $(servico_unit "$s") (recarrega modelo na VRAM)…"
       distante "systemctl restart '$(servico_unit "$s")'"
       distante "sleep ${TTS_REMOTE_ESPERA:-5}; systemctl is-active '$(servico_unit "$s")'" | sed 's/^/  unit: /'
       print -r -- "  smoke:"
-      smoke_do_servico "$s" || falhas=1
+      smoke_do_servico "$s" && continue
+      # Smoke vermelho: o rev novo já está no disco e o processo já é ele. Sair
+      # deixando assim é servidor quebrado esperando alguém digitar outro
+      # comando — volta o backup DESTE deploy e reinicia (#345).
+      falhas=1
+      print -r -- ""
+      print -r -- "== SMOKE VERMELHO em $s — revertendo sozinho para o backup deste deploy"
+      if [ -z "$bak" ]; then
+        print -r -- "  [PARA] não capturei o nome do backup — reverta à mão em $(servico_dir "$s") (server.py.bak-*)"
+        continue
+      fi
+      distante "cd '$(servico_dir "$s")' && cp -a '$bak' server.py && systemctl restart '$(servico_unit "$s")'" | sed 's/^/  /'
+      print -r -- "  voltado para $bak — smoke do rollback:"
+      if smoke_do_servico "$s"; then
+        print -r -- "  ✔ REVERTIDO para $bak (smoke do rollback passou)"
+      else
+        print -r -- "  ✖ REVERTIDO PARA $bak, MAS O SMOKE DO ROLLBACK TAMBÉM FALHOU — máquina precisa de mão agora"
+      fi
       ;;
     rollback)
       print -r -- "== $s"

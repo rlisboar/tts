@@ -61,7 +61,7 @@ def test_estatica_e_o_primeiro_job_e_roda_a_lista_derivada():
     passos = _passos(estatica)
     assert "_pyflakes_gate.py" in passos, \
         "o job estático tem de rodar a lista DERIVADA do hook, não uma cópia"
-    assert "pyflakes" in passos
+    assert "ruff" in passos, "o estágio estático tem de instalar o ruff"
     assert "requirements.txt" not in passos, \
         "estática instalando o venv do app deixa de ficar vermelha em segundos"
 

@@ -92,6 +92,29 @@ Uma chave `role: "use"` gera fala normalmente, mas: não cria/apaga chaves
 (a resposta lista o que foi ignorado em `admin_ignored`). `PATCH
 /api/apikeys/{id}` troca o `role` depois.
 
+Além das chaves, o `role: "use"` também não alcança as rotas **destrutivas ou
+globais** — a régua é o dano, não a conveniência (`403` com "Chave
+administrativa necessária"):
+
+| só admin | a chave de uso alcança |
+|---|---|
+| `POST /api/shutdown` | `POST /api/tts`, `/v1/audio/*`, STT e tradução |
+| `POST /api/tunnel/{start,stop,restart}` | `POST /api/live/ticket` (e a sessão Live) |
+| `POST /api/models/unload` | `POST /api/voices`, `/api/voices/design`, `/{id}/denoise`, `/{id}/replace` |
+| `DELETE /api/outputs` e `/api/outputs/{id}` | `POST /api/audio/edit`, `/api/speaker/{enroll,check}` |
+| `DELETE /api/voices/{id}`, `POST /api/voices/import`, `GET /api/voices/export` | `POST /api/chat/*`, `GET /api/status`, `GET /api/outputs` |
+| `DELETE /api/speaker/{name}` | `GET/POST /api/mic-route` |
+
+Ou seja: a chave de uso gera, edita e transcreve; apagar ou desligar é do admin.
+
+**Apagar a última chave pede confirmação**: o `DELETE` devolve `409` com
+`forcar: true` e não apaga, porque sem chave (e sem `TTS_ROD_API_KEY`/
+`TTS_ROD_ADMIN_KEY`) a rede fica **aberta** — o `_auth_enabled` cai e qualquer
+máquina da LAN entra sem credencial. Confirme com `?forcar=1`. Na UI o aviso
+aparece e o botão vira "apagar mesmo assim"; o `/api/status` mostra
+`api_auth_enabled`. Desligar a exigência por `POST /api/apikeys/enabled`
+(`{"enabled": false}`) não pede `409`, mas devolve `avisos` no corpo.
+
 **Migração/compatibilidade**: chave em `role: null` (criada antes deste campo) e
 instalação **sem** `TTS_ROD_ADMIN_KEY` continuam exatamente como antes — toda
 chave válida administra, e `GET /api/settings` continua devolvendo os segredos
@@ -354,6 +377,14 @@ próprio (server block dedicado + `location /`) também funciona, sem o
 prefixo. `TTS_TUNNEL_IF=enX` sobrescreve a interface de rede detectada;
 `./tunnel.sh uninstall` remove o agente.
 
+O destino do `-R` é **validado** antes de abrir o ssh: só 10/8, 172.16/12 e
+192.168/16 passam. Se a interface escolhida não tiver endereço (ex.:
+`TTS_TUNNEL_IF=lo0`) ou se o endereço não for de LAN (VPN na rota default,
+`100.64/10`), o script falha dizendo o motivo em vez de deixar um túnel "de pé
+servindo nada" — e, no caso do loopback, aberto para a internet sem chave.
+Sem escolha manual (caso do LaunchAgent no boot) ele insiste por ~1 min antes de
+desistir; `TTS_TUNNEL_TENTATIVAS` ajusta.
+
 Os servidores opcionais em `remote/` exigem chave: `OMNI_API_KEY` no servidor
 OmniVoice e `VOXTRAL_API_KEY` no servidor Voxtral (o app envia por
 `remote_api_key` / `remote_stt_key`). Sem a variável o processo **não sobe** —
@@ -391,6 +422,14 @@ Provisionar (numa máquina com `cloudflared tunnel login` já feito):
 ./cloudflare.sh provision tts-mac-mini tts.seu-dominio 192.168.15.34
 ```
 
+O `provision` **valida a origem**: só IPv4 privada passa, e `127.0.0.1` é recusado
+com o motivo (por loopback a auth vira no-op, como no túnel SSH). O `status`
+mostra o `service` configurado no Cloudflare — é lá que se confere o destino sem
+abrir o dashboard (`./cloudflare.sh ingress <nome>` faz só isso; precisa do
+`cert.pem`, que fica na máquina do `tunnel login`). O `uninstall` remove o agente
+e **lista o que continua publicado** (ingress, DNS, tunnel): com o conector parado
+o host público responde 502 até você limpar.
+
 Na máquina que roda o TTS (o comando `install` sai impresso pelo `provision`):
 
 ```sh
@@ -407,10 +446,14 @@ o token em `~/.cloudflared/<label>.token` (0600) e o plist aponta para o arquivo
 então o segredo não aparece no `ps` nem dentro do plist. `./cloudflare.sh token`
 mostra o token quando você precisar copiá-lo na mão.
 
-Teste: `https://tts.seu-dominio/health` → `{"ok":true}`; o mesmo host sem chave
-em `/api/status` → `401` (chave exigida fora do loopback). Textos longos não
-batem no limite de 100 s de primeiro byte do Cloudflare porque a UI usa
+Teste: `https://tts.seu-dominio/health` → `{"ok":true,"boot_ts":…,"rev":…}`; o mesmo
+host sem chave em `/api/status` → `401` (chave exigida fora do loopback). Textos
+longos não batem no limite de 100 s de primeiro byte do Cloudflare porque a UI usa
 `/api/tts/jobs` (polling de trechos).
+
+`boot_ts`/`rev` no `/health` são para vigia: 200 sozinho não distingue "de pé" de
+"de pé no código de ontem". Monitoração e rotação de log: `remote/health_probe.sh`
+e `remote/DEPLOY.md` §8.
 
 ### Cliente de navegador (CORS e CSP)
 
@@ -642,16 +685,33 @@ navegador.
 # testes (funções puras + API via TestClient, sem carregar MLX)
 ./.venv-mlx/bin/python -m pytest tests/ -q
 
+# o run tem teto de 90 s POR TESTE (`pytest-timeout`, no `pytest.ini`): um
+# ffmpeg/vad travado falha e sai com o nome do teste, em vez de prender o gate.
+# `--timeout=0` desliga pontualmente; o CI usa 180.
+
+# COBERTURA — alvo SEPARADO do gate (é lento e não bloqueia commit). Rode antes
+# de fechar épico e compare com o piso abaixo: é queda de linha que interessa,
+# não a cor do número.
+./.venv-mlx/bin/python -m pytest tests/ -q \
+    --cov=app --cov=live_pipeline --cov=live_turns --cov=common --cov-report=term-missing
+# piso medido em 2026-10-21 (HEAD ff9ef65 + #384), `TOTAL`: 70 %. Por módulo:
+# app 64 %, common 81 %, live_pipeline 81 %, live_turns 93 %. Abaixo disso, o que
+# caiu tem de estar explicado na task do gate.
+
 # venv completo: sem imageio-ffmpeg o time-stretch cai no phase vocoder e a
 # fala sai ~15x mais baixa (o OmniVoice não tem speed nativa e passa por ele)
 ./.venv-mlx/bin/python -c "import imageio_ffmpeg, resemblyzer; print('deps ok')"
 
-# análise estática — nomes indefinidos em funções só explodem em runtime
-./.venv-mlx/bin/python -m pyflakes app.py common.py tts_worker.py backends.py \
-    smoke_sintese.py live_turns.py smoke_live_turns.py tests/*.py client/mic_router.py
-# esse pyflakes NÃO lê `# noqa` (noqa é do flake8): import que só existe para virar
-# fixture, ou nome reusado como parâmetro de teste, se declara em `__all__ = [...]`
-# no módulo — `# noqa` na linha não silencia nada aqui (ex.: tests/test_qa_gate176.py).
+# análise estática — nomes indefinidos em funções só explodem em runtime.
+# A LISTA NÃO É COPIADA AQUI: ela mora no `.githooks/pre-commit` e este comando a
+# deriva (mesma fonte do estágio `estatica` do CI). Doc com cópia à mão já deixou
+# `live_rnnoise.py` fora do gate (#288/#389).
+./.venv-mlx/bin/python tests/_pyflakes_gate.py
+# (16 alvos explícitos hoje; `tests/*.py` é glob e não conta —
+#  ao acrescentar módulo ao hook, atualize aqui: um teste compara)
+# o linter é o ruff (conjunto `F` = o mesmo do pyflakes que ele substituiu), config
+# no `pyproject.toml`. `# noqa` VALE: import que só existe para virar fixture de
+# teste se cala com `# noqa: F401` na linha do import (ex.: tests/test_qa_gate176.py).
 
 # ambiente reproduzível: `requirements.txt` é a lista CURADA (com o porquê de
 # cada pin); `requirements.lock` é o retrato do venv verificado — com os
@@ -666,17 +726,21 @@ python3.12 -m venv .venv-locktest
 ./.venv-locktest/bin/python smoke_sintese.py --stt
 # verde? aí sim: pip freeze > requirements.lock e atualize o pin no requirements.txt
 
-# smoke test do worker isolado (lento ~1 min, carrega Kokoro real)
+# smoke test do worker isolado (lento ~1 min, carrega Kokoro real). É EXIGIDO
+# quando o diff toca tts_worker.py/live_pipeline.py (#388): o hook liga sozinho,
+# e `tests/test_worker_real_exigido.py` fica vermelho se alguém rodar o pytest
+# sem o env nessa área.
 TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest tests/test_worker.py -q
 
-# regressão de XSS da UI contra o app de pé (./run.sh antes) — Chromium headless
+# SUÍTES .sh — três estágios por dependência (o hook roda o primeiro). O porquê
+# de cada suíte estar onde está: tests/SHELL-SUITES.md (#387).
+./tests/run_sh.sh rapido        # sem navegador, auto-contido, ~19 s (o hook roda)
+./tests/run_sh.sh navegador     # Chromium/Playwright: XSS, key-storage, barge, WS
+BASE=http://127.0.0.1:7860 ./tests/run_sh.sh instancia   # exige app de pé (./run.sh)
+./tests/run_sh.sh lista         # o que cada estágio tem
+
+# regressão de XSS da UI (o estágio `navegador` já a inclui; sozinha, contra o app de pé)
 ./tests/xss_frontend_repro.sh            # --cleanup remove a voz de teste
-
-# política de chave: uso x admin, ponta a ponta (cria e remove as chaves de teste)
-./tests/admin_ui_flow.sh                 # precisa de IP de LAN (en0/en1)
-
-# Conversa: retry do 429 de admissão do TTS (determinístico, sem carregar modelo)
-./tests/conversa_429.sh
 
 # deep-link por hash (#live): sobe servidor próprio em porta livre, sem modelo
 ./tests/hash_deep_link.sh
@@ -686,15 +750,58 @@ TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest tests/test_worker.py -q
 ./.venv-mlx/bin/python smoke_live_turns.py                     # precisa de voices/
 ```
 
-Pre-commit opcional (pyflakes + pytest antes de cada commit):
+Pre-commit opcional (lint + pytest antes de cada commit):
 
 ```bash
 git config core.hooksPath .githooks
 ```
 
-O hook roda `pyflakes` **puro**: os `# noqa` espalhados pelo repo são códigos do
-flake8 e não contam para ele — os de `tests/conftest.py` e `tests/test_app.py`
-inclusive (ver a nota na lista de análise estática, acima).
+O hook roda `ruff check` com o conjunto `F` e a config do `pyproject.toml` (#378;
+antes era `pyflakes`, que ignorava `# noqa`). `# noqa: F401` na linha do import é o
+silêncio aceito; `# noqa` só com código — sem código o ruff avisa e não cala nada.
+
+### CI: o gate que não depende da máquina do autor (#293)
+
+O hook local é disciplina: desfaz-se com um `--no-verify`, não existe em máquina
+limpa e ninguém vê o vermelho do outro. Por isso o mesmo gate roda no GitHub
+Actions em **push para `main` e PR para `main`** (`.github/workflows/ci.yml`), em
+três jobs, nesta ordem:
+
+| job | onde | o que roda | por quê |
+|---|---|---|---|
+| `estatica` | hospedado | `python tests/_pyflakes_gate.py` (lista derivada do hook; a contraprova de que ela não virou no-op é um teste do job seguinte) | é o primeiro estágio do hook e o mais barato; tem de ficar vermelho em segundos |
+| `testes` | runner do mini | `pytest tests/ -q` com `--timeout=180` e 1 retry | o default hermético já é o sem modelo (`worker_real` fica fora, como no hook) |
+| `suites-sh` | hospedado | `limpa_bytecode.sh` e `serial_lock.sh` com `timeout` | não precisam de navegador nem de modelo |
+
+**REGRA:** push/PR só vale com o check verde. `--no-verify` só com motivo dito em
+voz alta (ex.: commit intermediário de WIP que vai ser reescrito) — o check do PR
+cobra de qualquer forma.
+
+O CI é hermético de propósito: nenhuma credencial em `secret`, nada de áudio ou
+texto saindo da máquina (o que já não sai no teste, não sai no CI) e
+`TTS_TEST_WORKER=0`. `torch` é instalado do índice CPU
+(`download.pytorch.org/whl/cpu`): no Linux o wheel padrão é o CUDA, ~2,4 GB que a
+suíte não usa.
+
+Duas asserções da suíte são por **relógio** (cancel no meio de deltas;
+serialização da trava) e já falharam sob carga — elas têm 1 repetição, e um
+vermelho delas só vale investigação depois da repetição. O caminho com modelo
+continua fora da suíte default, mas **deixou de ser aviso**: quando o diff toca
+`tts_worker.py`/`live_pipeline.py`, `tests/test_worker_real_exigido.py` fica
+vermelho sem `TTS_TEST_WORKER=1` (o CI compara com a base do PR; o hook, com o
+índice). O comando é `TTS_TEST_WORKER=1 pytest -m worker_real -q`, mais
+`smoke_sintese.py`.
+
+O job da suíte roda num runner **self-hosted no mini**, e isso é MEDIÇÃO, não
+preferência: no `ubuntu-latest` amd64 o venv instala (precisa de `mlx[cpu]`, sem o
+qual nem `import mlx.core` passa) e o `app` importa, mas a suíte dá **36 falhas em
+642 passes** — MLX/onnx sem Metal, `ps`/pid do `dsh_client`, ffmpeg do webm e
+convenções de `/tmp` do macOS. O estágio estático e as suítes `.sh` ficam no
+hospedado, que é gratuito (repo público) e não importa o app.
+
+Instalação do runner, uma vez, no mini — e o que ele garante sobre o `:7860`:
+`./remote/ci_runner.sh install`, ver `remote/DEPLOY.md` §7. Enquanto o runner não
+estiver instalado, o job da suíte fica **enfileirado** (não vermelho).
 
 ### Instância viva x código do commit (regra de restart)
 

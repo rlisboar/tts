@@ -80,7 +80,8 @@ def wavs_disponiveis() -> list[Path]:
 def rodada(*, eco_dbfs: float, com_voz: bool, semente: int,
            voz_dbfs: float = VOZ_DBFS, atraso_voz_s: float = 2.0,
            margem_db: float | None = None, quantil: float | None = None,
-           teto: int | None = None, sem_eco: bool = False) -> dict:
+           teto: int | None = None, barge_ms: int | None = None,
+           sem_eco: bool = False) -> dict:
     """Uma sessão simulada de 6 s com playback ligado o tempo todo.
 
     Nível do mic = eco + voz (+ ruído), tudo em RMS dBFS. `voz_dbfs` acima de
@@ -115,6 +116,8 @@ def rodada(*, eco_dbfs: float, com_voz: bool, semente: int,
         over["eco_calibracao_quantil"] = quantil
     if teto is not None:
         over["eco_calibracao_teto"] = teto
+    if barge_ms is not None:                 # #313: `vad.barge_ms` do `setup`
+        over["barge_in_ms"] = int(barge_ms)
     cfg = lt.Config(**over)
     motor = lt.TurnEngine(cfg)
     # o nível do PAYLOAD é o do TTS digital; o que o mic ouve é o eco atenuado
@@ -131,8 +134,10 @@ def rodada(*, eco_dbfs: float, com_voz: bool, semente: int,
     barge = [e for e in eventos if e.tipo == "barge_in"]
     # rodando offline o `t_ms` é relógio de parede (30x mais rápido que o áudio),
     # então o instante do disparo sai da posição em amostras do evento
-    c = lt.Config()
-    atraso_frames = (c._frames_barge + c._frames_prefix + c._frames_envelope) * lt.FRAME_SAMPLES
+    # o atraso do disparo é o do CONFIG em uso: com `--barge-ms` diferente do
+    # default, corrigir por um `Config()` novo deslocava a latência medida
+    atraso_frames = (cfg._frames_barge + cfg._frames_prefix
+                     + cfg._frames_envelope) * lt.FRAME_SAMPLES
     disparos = [(e.amostra + atraso_frames) / SR * 1000 for e in barge]
     corte = (inicio_playback_s * 1000 - 200) if (com_voz or sem_eco) else 0
     falsos = sum(1 for d in disparos if d < corte)
@@ -153,6 +158,9 @@ def main() -> int:
                     help="eco_calibracao_quantil (default: o do módulo)")
     ap.add_argument("--teto", type=int, default=None,
                     help="eco_calibracao_teto (default: o do módulo)")
+    ap.add_argument("--barge-ms", type=int, default=None,
+                    help="barge_in_ms — a janela que o cliente pede no `vad.barge_ms` "
+                         "(default: o do módulo, 300)")
     ap.add_argument("--json", action="store_true", help="saída crua p/ registro")
     args = ap.parse_args()
 
@@ -162,7 +170,8 @@ def main() -> int:
 
     if not args.json:
         print(f"backend do VAD: {lt.BACKEND or 'sera carregado agora'} | "
-              f"silence_ms={lt.Config().silence_ms} barge_ms={lt.Config().barge_in_ms} "
+              f"silence_ms={lt.Config().silence_ms} "
+              f"barge_ms={args.barge_ms if args.barge_ms is not None else lt.Config().barge_in_ms} "
               f"margem_eco={lt.Config().barge_in_margin_db}dB", flush=True)
 
     cenarios = [(eco, voz, False) for eco in (-42.0, -36.0, -30.0, -24.0)
@@ -172,7 +181,7 @@ def main() -> int:
     for eco_dbfs, com_voz, sem_eco in cenarios:
             reps = [rodada(eco_dbfs=eco_dbfs, com_voz=com_voz, semente=s,
                            margem_db=args.margem, quantil=args.quantil,
-                           teto=args.teto, sem_eco=sem_eco)
+                           teto=args.teto, barge_ms=args.barge_ms, sem_eco=sem_eco)
                     for s in range(args.repeticoes)]
             disparos = sum(r["barge_in"] for r in reps)
             falsos = sum(r["falsos"] for r in reps)
@@ -215,7 +224,8 @@ def main() -> int:
           f"{sum(t['esperados'] for t in eco)}/{args.repeticoes * len(eco)} rodadas")
     pior = max((t["lat_p90"] or 0) for t in com_voz)
     print(f"latencia p90 maxima (fala->barge_in): {pior} ms "
-          f"(a janela de {lt.Config().barge_in_ms} ms ja esta no pre-roll do audio)")
+          f"(a janela de {args.barge_ms if args.barge_ms is not None else lt.Config().barge_in_ms}"
+          f" ms ja esta no pre-roll do audio)")
     return 0
 
 

@@ -51,9 +51,11 @@ COMPARTILHADOS = {
 }
 
 # `os.environ` entra porque a linha do fallback lê a variável que a suíte exporta
-# com sufixo por execução (`... or "/tmp/nome-antigo.log"`).
+# com sufixo por execução (`... or "/tmp/nome-antigo.log"`). `{porta}` é o sufixo
+# que o fallback do `hash_deep_link.sh` usa: a porta livre é escolhida POR
+# EXECUÇÃO (`porta_livre()`), então duas rodadas não escrevem no mesmo arquivo.
 TOKEN_POR_EXECUCAO = re.compile(
-    r"\$\$|\$RUN|\$\{RUN\}|\$SUF|\$T\b|XXXXXX|\{os\.getpid\(\)\}|mktemp|os\.environ")
+    r"\$\$|\$RUN|\$\{RUN\}|\$SUF|\$T\b|XXXXXX|\{os\.getpid\(\)\}|\{porta\}|mktemp|os\.environ")
 LITERAL = re.compile(r"/tmp/([A-Za-z0-9._-]+)")
 
 

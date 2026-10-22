@@ -67,7 +67,7 @@ print -r -- "$origem -> $caminho" >> "$T_SCP_LOG"
 case "${1:-}" in
   restart) print -r -- "${2:-}" >> "$T_RESTART_LOG" ;;
   is-active) print -r -- active ;;
-  show) print -r -- "FragmentPath=/etc/systemd/system/${@[-1]}.d/override.conf"
+  show) print -r -- "FragmentPath=${T_FRAGMENT:-/etc/systemd/system/${@[-1]}.d/override.conf}"
         print -r -- "Environment=OMNI_API_KEY=$T_SEGREDO OMNI_ALLOW_NO_AUTH=0 VOXTRAL_API_KEY=x" ;;
   list-units) print -r -- "omnivoice-tts.service loaded active running OmniVoice" ;;
 esac
@@ -90,7 +90,15 @@ if [ "$metodo" = POST ]; then
                  *) print -rn -- "${T_CURL_POST_CODE:-401}" ;;
   esac
 elif [[ " $* " == *" -w "* ]]; then
-  print -rn -- "${T_CURL_CODE:-200}"
+  # `T_CURL_CODE_POR_RESTART=1`: o código do /health passa a depender de quantas
+  # vezes o serviço já foi reiniciado — 1 = o rev novo quebrado, 2 = o rollback já
+  # voltou. É como o teste distingue "o deploy quebrou" de "o rollback salvou".
+  if [ -n "${T_CURL_CODE_POR_RESTART:-}" ]; then
+    n=$(wc -l < "$T_RESTART_LOG" 2>/dev/null | tr -d ' ')
+    if [ "${n:-0}" -le 1 ]; then print -rn -- 502; else print -rn -- 200; fi
+  else
+    print -rn -- "${T_CURL_CODE:-200}"
+  fi
 else
   corpo="${T_CURL_BODY:-}"
   [ -z "$corpo" ] && corpo='{"ok":true,"auth":"required"}'
@@ -180,6 +188,34 @@ def test_recon_mostra_fatos_e_redige_a_chave(amb):
     assert "OMNI_API_KEY=<len 7>" in r.stdout, "esperava o valor redigido"
 
 
+# --- #348: o unit é versionado em `remote/systemd/`; o recon compara com o
+# `FragmentPath` do host. Sem isso o arquivo do repo envelhece calado e o rebuild
+# do host volta a ser adivinhação.
+def test_recon_acusa_unit_do_repo_igual_ao_do_host(amb, tmp_path):
+    host = tmp_path / "unit-no-host.service"
+    host.write_text((REPO / "remote" / "systemd" / UNIT_OMNI).read_text())
+    amb["T_FRAGMENT"] = str(host)
+    amb["OMNI_REMOTE_UNIT"] = UNIT_OMNI
+    r = _run(amb, "recon", "--service", "omni")
+    assert "[IGUAL]" in r.stdout and str(REPO / "remote" / "systemd" / UNIT_OMNI) in r.stdout
+
+
+def test_recon_mostra_o_diff_quando_o_unit_divergiu(amb, tmp_path):
+    host = tmp_path / "unit-no-host.service"
+    host.write_text("[Service]\nEnvironment=ALGO=1\n")
+    amb["T_FRAGMENT"] = str(host)
+    r = _run(amb, "recon", "--service", "omni")
+    assert "[DIFERENTE]" in r.stdout
+    # `-` = está no host e não no repo: é o que a linha versionada ainda não tem
+    assert "-Environment=ALGO=1" in r.stdout, "o diff tem de aparecer para dar o que copiar"
+
+
+def test_recon_diz_quando_nao_ha_unit_versionado(amb):
+    """`voxtral.service` ainda não tem arquivo no repo: tem de dizer, não calar."""
+    r = _run(amb, "recon", "--service", "voxtral")
+    assert "(nenhum em" in r.stdout
+
+
 @pytest.mark.parametrize("valor", ["abc def", "abc\\ def", '"abc def"'])
 def test_recon_nao_vaza_pedaco_de_segredo_com_espaco(amb, valor):
     """P3 do gate da #27: a redação quebrava o stdin em TOKENS por espaço — um
@@ -260,6 +296,48 @@ def test_deploy_apply_sem_diff_nao_reinicia(amb):
     assert _run(amb, "deploy", "--apply").returncode == 0
     assert _log(amb, "restart") == []          # já estava igual: nada subiu
     assert "nada a fazer" in _run(amb, "deploy", "--apply").stdout
+
+
+# ------------------------------------- rollback AUTOMÁTICO em smoke vermelho (#345)
+
+def test_deploy_com_smoke_vermelho_volta_o_backup_e_reinicia(amb):
+    """Smoke vermelho com o rev novo já rodando: o servidor volta o backup DESTE
+    deploy, reinicia e diz que reverteu — em vez de ficar quebrado esperando mão."""
+    (_servidor(amb) / "server.py").write_text("# velho\n")
+    amb["T_CURL_CODE_POR_RESTART"] = "1"        # 1 restart = quebrado; 2 = revertido
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode == 1, _saida(r)
+    assert "SMOKE VERMELHO" in r.stdout and "revertendo sozinho" in r.stdout
+    assert "REVERTIDO para server.py.bak-" in r.stdout
+    assert "smoke do rollback passou" in r.stdout
+    assert (_servidor(amb) / "server.py").read_text() == "# velho\n", \
+        "o servidor NÃO voltou para o backup"
+    assert _log(amb, "restart") == [UNIT_VOXTRAL, UNIT_VOXTRAL]
+
+
+def test_rollback_automatico_que_tambem_falha_e_destacado(amb):
+    """Se o próprio rollback não fechar verde, o script não pode mascarar: diz em
+    destaque que a máquina precisa de mão (e continua ≠0)."""
+    (_servidor(amb) / "server.py").write_text("# velho\n")
+    amb["T_CURL_CODE"] = "502"                  # health fora do ar o tempo todo
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode == 1, _saida(r)
+    assert "REVERTIDO PARA server.py.bak-" in r.stdout
+    assert "MAS O SMOKE DO ROLLBACK TAMBÉM FALHOU" in r.stdout
+    assert (_servidor(amb) / "server.py").read_text() == "# velho\n"
+
+
+def test_deploy_verde_nao_dispara_rollback(amb):
+    """Controle negativo: sem vermelho, um único restart e nenhuma menção a volta."""
+    (_servidor(amb) / "server.py").write_text("# velho\n")
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 0, _saida(r)
+    assert "SMOKE VERMELHO" not in r.stdout
+    assert _log(amb, "restart") == [UNIT_VOXTRAL]
 
 
 def test_service_limita_o_alvo_e_rollback_restaura(amb):

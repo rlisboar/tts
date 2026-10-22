@@ -53,10 +53,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      # Só o pyflakes: o estágio não importa nada do app (nem `pytest`, cujo
-      # `conftest.py` puxaria fastapi/torch/MLX e mataria os "segundos" dele).
-      - name: instalar pyflakes
-        run: python -m pip install --quiet --disable-pip-version-check pyflakes
+      # Só o ruff: o estágio não importa nada do app (nem `pytest`, cujo
+      # `conftest.py` puxaria fastapi/torch/MLX e mataria os "segundos" dele). A
+      # config (conjunto `F` + `E9`, excludes) mora no `pyproject.toml` (#378).
+      - name: instalar ruff
+        run: python -m pip install --quiet --disable-pip-version-check ruff
       # `tests/_pyflakes_gate.py` deriva o comando do hook (mesma lista, mesmo
       # intérprete) e roda a contraprova de que ele não virou no-op está no
       # `tests/test_hook_pyflakes.py`, que o job `testes` cobre.
