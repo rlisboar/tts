@@ -8673,6 +8673,47 @@ def _live_rnnoise_derruba(sess: dict, motivo: str) -> None:
     _live_log.warning("rnnoise desligado (%s) — Live segue sem o filtro", motivo)
 
 
+# ── Híbrida do #442: filtro no VAD, PCM CRU no STT ─────────────────────────
+# O filtro salva a ABERTURA do turno sob ventoinha alta e degrada ~50% das palavras
+# quando entra no caminho do STT (medido, `evidence/442-rnnoise-vad-x-stt.md`).
+# Aqui o motor continua recebendo o filtrado (é ele que decide) e o áudio que vai ao
+# STT sai deste ring do PCM cru, alinhado por AMOSTRA. `TTS_LIVE_RNNOISE_STT=filtrado`
+# volta ao caminho antigo (é a mordida) e `TTS_LIVE_RNNOISE=0` desliga o filtro todo.
+_TTS_LIVE_RNNOISE_STT = (os.environ.get("TTS_LIVE_RNNOISE_STT") or "cru").strip().lower()
+_CRU_CAUDA_S = 10.0                  # pré-roll do motor + folga; ~320 kB por sessão
+_CRU_MAX_BYTES = int(_CRU_CAUDA_S * 32000)
+
+
+def _live_cru_guarda(sess: dict, pcm: bytes) -> None:
+    """Guarda o frame CRU com a amostra absoluta dele (antes de qualquer filtro)."""
+    ring = sess.get("cru")
+    if ring is None:
+        # [bytearray, amostra absoluta do 1º byte]
+        ring = sess["cru"] = [bytearray(), 0]
+    ring[0].extend(pcm)
+    sobra = len(ring[0]) - _CRU_MAX_BYTES
+    if sobra > 0:
+        del ring[0][:sobra]
+        ring[1] += sobra // 2
+
+
+def _live_audio_cru(sess: dict, ev) -> bytes:
+    """Trecho CRU do evento (`amostra` do motor), não o pré-roll filtrado dele.
+
+    Sem o ring (sessão sem filtro, ou buraco), devolve o que o motor mandou — o
+    turno nunca fica sem áudio por causa disto."""
+    audio = bytes(getattr(ev, "audio", b"") or b"")
+    if not audio or _TTS_LIVE_RNNOISE_STT != "cru" or sess.get("rnnoise") is None:
+        return audio
+    ring = sess.get("cru")
+    if not ring or not ring[0]:
+        return audio
+    inicio = int(getattr(ev, "amostra", 0) or 0) - ring[1]
+    desloc = max(0, inicio) * 2
+    pedaco = bytes(ring[0][desloc:desloc + len(audio)])
+    return pedaco if len(pedaco) == len(audio) else audio
+
+
 def _live_pcm_limpo(sess: dict, pcm: bytes) -> bytes:
     """RNNoise no frame, ANTES de `TurnEngine.feed`. Mesmo tamanho, ou o PCM cru.
 
@@ -9108,7 +9149,8 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
             sess["t_decisao"] = time.monotonic()
             sess["turno_curto"] = bool(getattr(ev, "curto", False))
             sess["turno_barge_falso"] = bool(getattr(ev, "barge_falso", False))
-            _live_abre_turno(sess, bytes(getattr(ev, "audio", b"") or b""),
+            # áudio do STT: CRU (a decisão já foi tomada no filtrado, #481)
+            _live_abre_turno(sess, _live_audio_cru(sess, ev),
                              barge_in=bool(getattr(ev, "barge_in", False)))
 
 
@@ -9753,6 +9795,9 @@ async def _live_loop(sess: dict, ws) -> None:
         sess["visto"] = time.monotonic()
         if msg.get("bytes"):
             cru = bytes(msg["bytes"])
+            # o CRU é guardado ANTES de qualquer filtro: é dele que o STT vai
+            # receber o áudio do turno (#481)
+            _live_cru_guarda(sess, cru)
             # thread: o prime do ffmpeg pode levar ~0,2 s no 1º frame e o
             # sender (TTS) precisa continuar no event loop. Sem filtro, o
             # cru entra direto — a suíte não paga o hop.

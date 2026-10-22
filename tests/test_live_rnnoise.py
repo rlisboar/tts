@@ -658,3 +658,78 @@ def test_caiu_avisa_e_recolhe(caplog):
     assert any("rnnoise caiu" in r.message and "Live segue sem o filtro" in r.message
                for r in caplog.records), [r.message for r in caplog.records]
     ns.fechar()
+
+
+# ---------------------------------------------------------------------------
+# #481: híbrida — filtro no VAD, PCM CRU no STT
+# ---------------------------------------------------------------------------
+class _NsFalso:
+    morto = False
+
+    def processa(self, pcm):
+        return pcm                      # conteúdo não importa: aqui só o roteamento
+
+    def fechar(self):
+        pass
+
+
+class _EvFake:
+    def __init__(self, amostra: int, audio: bytes):
+        self.amostra, self.audio = amostra, audio
+
+
+def _cru(n_amostras: int) -> bytes:
+    """PCM cujo VALOR identifica a posição: facilita provar o recorte."""
+    return b"".join(int(i % 30000).to_bytes(2, "little", signed=True)
+                    for i in range(n_amostras))
+
+
+def test_stt_recebe_o_cru_e_nao_o_pre_roll_filtrado():
+    import app
+
+    sess = {"id": "s", "rnnoise": _NsFalso()}
+    app._live_cru_guarda(sess, _cru(800))          # 800 amostras guardadas
+    filtrado = b"\xff" * 128                        # 64 amostras "filtradas"
+    ev = _EvFake(amostra=700, audio=filtrado)
+    saida = app._live_audio_cru(sess, ev)
+    assert saida != filtrado and len(saida) == len(filtrado)
+    assert saida == _cru(800)[700 * 2: 764 * 2]     # o trecho CRU, por amostra
+
+
+def test_knob_filtrado_volta_ao_caminho_antigo(monkeypatch):
+    import app
+
+    monkeypatch.setattr(app, "_TTS_LIVE_RNNOISE_STT", "filtrado")
+    sess = {"id": "s", "rnnoise": _NsFalso()}
+    app._live_cru_guarda(sess, _cru(400))
+    ev = _EvFake(amostra=10, audio=b"\x01\x02" * 8)
+    assert app._live_audio_cru(sess, ev) == ev.audio
+
+
+def test_sem_filtro_o_evento_ja_e_cru_e_e_devolvido(monkeypatch):
+    import app
+
+    sess = {"id": "s", "rnnoise": None}             # TTS_LIVE_RNNOISE=0
+    ev = _EvFake(amostra=0, audio=b"\x03\x04" * 8)
+    assert app._live_audio_cru(sess, ev) == ev.audio
+
+
+def test_sem_ring_nao_deixa_o_turno_sem_audio():
+    import app
+
+    sess = {"id": "s", "rnnoise": _NsFalso()}       # filtro ativo, ring nunca alimentado
+    ev = _EvFake(amostra=0, audio=b"\x05\x06" * 8)
+    assert app._live_audio_cru(sess, ev) == ev.audio
+
+
+def test_ring_guarda_a_cauda_e_mantem_o_alinhamento(monkeypatch):
+    import app
+
+    monkeypatch.setattr(app, "_CRU_MAX_BYTES", 200)   # 100 amostras
+    sess = {"id": "s", "rnnoise": _NsFalso()}
+    for i in range(3):                                # frames CONTÍNUOS: 0..299
+        app._live_cru_guarda(sess, _cru(300)[i*100*2:(i+1)*100*2])
+    ring, base = sess["cru"]
+    assert len(ring) == 200 and base == 200           # cortou 100 amostras do início
+    # a amostra 250 está no ring e é lida no lugar certo
+    assert app._live_audio_cru(sess, _EvFake(250, b"\x00\x00" * 10)) == _cru(300)[250*2:260*2]

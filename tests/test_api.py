@@ -2851,7 +2851,7 @@ def test_chat_fila_estourada_nao_e_erro_do_provedor(client, auth, monkeypatch):
     # o flag `fila` é posto pelo worker quando a espera do pool estoura: poll
     import time as _t
     d = {}
-    for _ in range(100):
+    for _ in range(400):                     # 8 s: sob carga a thread do turno demora
         d = client.get(f"/api/chat/{sid}", headers=auth).json()
         if d["fila"]:
             break

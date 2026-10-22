@@ -239,6 +239,12 @@ mesmo tamanho do que entrou, então o relógio do VAD não anda.
 
 - **Desligar:** `TTS_LIVE_RNNOISE=0` no ambiente do servidor (a suíte já usa isso
   pelo conftest; nada mais precisa mudar).
+- **Onde ele age: SÓ no VAD, e o STT recebe o PCM CRU** (#481). Medido
+  (`evidence/442-rnnoise-vad-x-stt.md`): sob ventoinha alta o motor SEM filtro não
+  abre turno nenhum, e o filtro no caminho do STT desvia ~50% das palavras. Então o
+  motor continua comendo o filtrado (é ele que decide) e o áudio do turno sai de um
+  ring do cru, alinhado por amostra — `speech_start`/`speech_end` fatiam dele.
+  `TTS_LIVE_RNNOISE_STT=filtrado` volta ao caminho antigo (é a mordida).
 - **Dependência:** ffmpeg com `arnndn` — o binário do `imageio-ffmpeg` tem; o
   fallback fixo é `/opt/homebrew/bin/ffmpeg`.
 - **Quando ele some:** o filtro degrada sozinho e **sempre com log** — modelo
