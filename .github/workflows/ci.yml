@@ -105,6 +105,10 @@ jobs:
       # launchd NÃO pode ler (TCC) — o python não abre nem a própria stdlib.
       # Venv do CI fica em `$HOME` (fora de Documents) e é reaproveitado entre
       # rodadas; o venv de produção deixa de ser tocado.
+      - name: teste cru — venv em /tmp com o python do sistema
+        run: |
+          rm -rf /tmp/xvenv; /usr/bin/python3 -m venv --without-pip /tmp/xvenv && echo "VENV EM /tmp OK" || echo "VENV EM /tmp FALHOU"
+          ls /tmp/xvenv/bin | head -2
       - name: venv do CI (fora de Documents)
         run: |
           V="$HOME/ci-venv"
