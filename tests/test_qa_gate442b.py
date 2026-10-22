@@ -44,7 +44,23 @@ def _stt_falso(monkeypatch):
     # o arquivo do dono tem `stt_anti_ruido: false`: sem fixar, o `_stt_ok` é no-op
     monkeypatch.setitem(app._settings, "stt_anti_ruido", True)
     monkeypatch.setattr(app, "_vad_tem_fala", lambda *a, **k: True)
-    return _transcreve
+    # Estado de TURNO e de sessão herdado de vizinhos (#462): o registro Live, o
+    # backend de IA e os settings de turno decidem o caminho. Sem isto o arquivo
+    # depende da ordem da rodada; as asserções não são afrouxadas por isso.
+    with app._live_lock:
+        antes_sessoes = dict(app._live_sessions)
+        app._live_sessions.clear()
+    monkeypatch.setattr(app, "_chat_backend_live", lambda: "openai")
+    for campo, valor in (("stt_min_chars", 2), ("stt_min_words", 1),
+                         ("stt_max_no_speech", 0.6), ("stt_min_logprob", -1.0),
+                         ("stt_max_compression", 2.4), ("speaker_gate", "off"),
+                         ("detectar_eco", False), ("pre_sys", ""), ("pre_prompt", "")):
+        monkeypatch.setitem(app._settings, campo, valor)
+    p_atual.clear()
+    yield _transcreve
+    with app._live_lock:
+        app._live_sessions.clear()
+        app._live_sessions.update(antes_sessoes)
 
 
 p_atual = {}
@@ -121,3 +137,16 @@ def test_hold_to_talk_abre_turno_sem_vad_e_aparece_no_stats():
     assert any(getattr(e, "tipo", None) == "speech_start" for e in eventos)
     fechou = eng.set_hold(False)
     assert any(getattr(e, "tipo", None) == "speech_end" for e in fechou)
+
+
+def test_julgamento_vale_mesmo_com_o_filtro_de_ditado_desligado(monkeypatch):
+    """O filtro do Live não pende de `stt_anti_ruido` (#465): alucinação vira
+    RESPOSTA falada, e o dono desligou o filtro para o ditado, não para o Live."""
+    import app
+
+    monkeypatch.setitem(app._settings, "stt_anti_ruido", False)
+    fala = Fala()
+    _p, usou = _roda(fala, "Amara.org")
+    fim = [e for _, e in fala.eventos if e["type"] == "turn_complete"][-1]
+    assert fim["descartado"] is True and fim["motivo"] == "stt"
+    assert usou["llm"] == 0
