@@ -396,16 +396,27 @@ def test_guarda_de_identidade_reavaliada_a_cada_delta(monkeypatch):
     c = cliente(monkeypatch, env={
         "FAKE_ACP_MODO": "deltas",
         "FAKE_ACP_CHUNKS": json.dumps(["1", "2", "3", "4", "5", "6"]),
-        "FAKE_ACP_CHUNK_DELAY_S": "0.1",
+        # 0,4 s entre chunks: janela larga para o cancel cair NO MEIO do stream sem
+        # depender do relógio da máquina (era 0,1 s). `LATE_CHUNK` faz o filho
+        # entregar um chunk DEPOIS do cancel — é ele que a guarda tem de descartar
+        # (sem esse chunk o teste passava mesmo com a guarda removida).
+        "FAKE_ACP_CHUNK_DELAY_S": "0.4",
+        "FAKE_ACP_LATE_CHUNK": "TARDIO",
     })
-    caixa = {}
+    caixa = {"itens": []}          # preenchida DELTA A DELTA (a espera é por ela)
 
     def correr():
-        caixa["itens"] = list(c.stream("conte", "t1"))
+        for pedaco in c.stream("conte", "t1"):
+            caixa["itens"].append(pedaco)
 
     th = threading.Thread(target=correr)
     th.start()
-    time.sleep(0.25)
+    # espera por CONDIÇÃO (o 1º delta), não por relógio: sob carga 0,25 s fixos
+    # podiam passar antes de qualquer delta e o cancel cortava o turno vazio
+    limite = time.time() + 10
+    while time.time() < limite and not caixa.get("itens"):
+        time.sleep(0.01)
+    assert caixa.get("itens"), "nenhum delta antes do prazo — guarda não exercitada"
     c.cancel("t1")
     th.join(10)
     c.close()

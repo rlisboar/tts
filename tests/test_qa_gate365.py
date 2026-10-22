@@ -123,12 +123,15 @@ def test_fila_estourada_marca_a_sessao_sem_erro(client, chat_saudavel, monkeypat
                 break
         time.sleep(0.05)
     # agora ocupa TODAS as threads do pool
-    ocupados = [app._chat_executor.submit(_travado, []) for _ in range(32)]
+    # 2x o tamanho do pool: um worker que libere por acaso não esvazia a fila antes
+    # da marca (o turno tem de ficar parado para `fila` ser escrito)
+    ocupados = [app._chat_executor.submit(_travado, [])
+                for _ in range(2 * app._chat_executor._max_workers)]
     r = client.post(f"/api/chat/{sid}", headers=auth, json={"message": "oi"})
     assert r.status_code == 200
     # o POST responde antes de a thread do turno começar: a marca aparece logo
     # depois, então polla em vez de ler uma vez
-    limite_fila = time.time() + 3
+    limite_fila = time.time() + 8      # sob carga a thread do turno demora
     while time.time() < limite_fila:
         if client.get(f"/api/chat/{sid}", headers=auth).json().get("fila") is True:
             break
