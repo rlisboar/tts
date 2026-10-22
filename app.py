@@ -1067,6 +1067,58 @@ app = FastAPI(title="TTS-STUDIO", root_path=_BASE_PATH or "")
 # quem faz o shutdown gracioso via lifespan) — sem isso, o registro viraria
 # problema.
 # ---------------------------------------------------------------------------
+#: Quem era o pai no BOOT. Quando quem subiu a instância morre, o app é
+#: reparentado para o launchd e `os.getppid()` vira 1 — o dado de boot é o único
+#: que sobrevive a isso (#471).
+_PAI_DO_BOOT: dict = {}
+
+
+def _grava_pai_do_boot() -> None:
+    try:
+        ppid = os.getppid()
+        _PAI_DO_BOOT.update(pid=ppid, lstart=_pid_lstart(ppid),
+                            cmd=_mascara_cmd(_pid_cmd(ppid))[:160])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _pid_lstart(pid) -> str:
+    """Início do processo (formato do `ps`), "" quando não dá para ler."""
+    try:
+        return subprocess.run(["ps", "-p", str(int(pid)), "-o", "lstart="],
+                              capture_output=True, text=True, timeout=2).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+
+
+def _processos_do_grupo(pgid: int, sid: int) -> str:
+    """`pid:pai:pgid:cmd` dos processos do MESMO grupo ou sessão (mascarados).
+
+    Com o app órfão, `pai=1` não diz nada: quem matou costuma ser um IRMÃO de
+    sessão (outra coisa subida pela mesma shell). Esta lista é o que sobra para
+    identificar o autor depois do fato."""
+    try:
+        saida = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,pgid=,command="],
+                               capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    linhas = []
+    for linha in saida.splitlines():
+        partes = linha.split(None, 3)
+        if len(partes) < 4:
+            continue
+        pid, ppid, pg, cmd = partes
+        if pid.startswith(str(os.getpid())) and int(pid) == os.getpid():
+            continue
+        if cmd.startswith("ps -A"):        # a própria chamada não é autor
+            continue
+        if pg == str(pgid) or pg == str(sid):
+            linhas.append(f"{pid}:{ppid}:{pg}:{_mascara_cmd(cmd)[:80]}")
+        if len(linhas) >= 8:
+            break
+    return " | ".join(linhas)
+
+
 def _assinatura_do_sinal(signum: int) -> None:
     try:
         ppid = os.getppid()
@@ -1074,14 +1126,28 @@ def _assinatura_do_sinal(signum: int) -> None:
         # segredo em argumento (`cloudflared --token …`, gate #440 item 4)
         pai = _mascara_cmd(_pid_cmd(ppid))[:200] or "?"
         eu = _mascara_cmd(_pid_cmd(os.getpid()))[:160] or "?"
-        print(f"[sinal] {signal.Signals(signum).name} — pai={ppid} ({pai}) · eu={eu}",
+        try:
+            pgid, sid = os.getpgid(0), os.getsid(0)
+        except OSError:
+            pgid = sid = -1
+        quando = time.strftime("%Y-%m-%dT%H:%M:%S")     # estável, sem locale
+        print(f"[sinal] {quando} {signal.Signals(signum).name} — pid={os.getpid()} "
+              f"pgid={pgid} sid={sid} pai={ppid} ({pai}) · eu={eu}",
               file=sys.stderr, flush=True)
+        # órfão: o pai já foi embora e não identifica nada — vai o grupo, o dado de
+        # boot e quem mais ainda está na sessão
+        if ppid == 1 or ppid == 0:
+            print(f"[sinal] ÓRFÃO — pai de boot={_PAI_DO_BOOT.get('pid')} "
+                  f"({_PAI_DO_BOOT.get('cmd') or '?'} em {_PAI_DO_BOOT.get('lstart') or '?'}) "
+                  f"· grupo/sessão: {_processos_do_grupo(pgid, sid) or '(ninguém)'}",
+                  file=sys.stderr, flush=True)
     except Exception:  # noqa: BLE001 — registro nunca pode impedir o encerramento
         pass
 
 
 def _instala_rastro_de_sinal() -> list[tuple[int, object]]:
     """Instala os handlers e devolve (sinal, handler anterior) para restaurar."""
+    _grava_pai_do_boot()
     anteriores: list[tuple[int, object]] = []
     for signum in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -6872,14 +6938,17 @@ def _transcribe_parakeet(audio_path: Path) -> dict:
                           "text": (s.text or "").strip()} for s in (r.sentences or [])]}
 
 
-def _stt_ok(r: dict, text: str):
+def _stt_ok(r: dict, text: str, forcar: bool = False):
     """Aceita só transcrição que pareça fala real (rejeita ruído/alucinação).
 
     `stt_anti_ruido=false` desliga tudo: o que continua valendo é o gate de
     silêncio (VAD) e o tamanho do áudio — para quem quer ver também o que o
     Whisper duvidou.
-    """
-    if not _settings.get("stt_anti_ruido", True):
+
+    `forcar` ignora o setting. O LIVE usa assim (#314, decisão do PM): lá não há
+    turno de digitação para corrigir, então alucinação vira RESPOSTA — e o dono
+    desligou o filtro para o ditado da Conversa, não para o Live."""
+    if not forcar and not _settings.get("stt_anti_ruido", True):
         return True, ""
     t = text.strip()
     palavras = re.findall(r"[^\W\d_]+", t, flags=re.UNICODE)  # palavras (sem números/símbolos)
@@ -9691,7 +9760,17 @@ async def _live_loop(sess: dict, ws) -> None:
         elif tipo == "end_of_speech":
             eng = sess.get("engine")
             if eng is not None:          # comando é do cliente: força o fim do turno
-                _live_trata_eventos(sess, eng.flush())
+                eventos_do_flush = eng.flush()
+                _live_trata_eventos(sess, eventos_do_flush)
+                # Motor OCIOSO no comando (turno anterior já fechou e nada foi
+                # alimentado desde então): o `flush` devolve [] e NADA abriria o
+                # turno — o cliente ficava esperando o `turn_complete` que nunca
+                # vinha (2º turno travado, medido no smoke do próprio repo).
+                # Abre pelo buffer da sessão, exatamente como o caminho sem motor.
+                pipe = sess.get("pipe")
+                if (not eventos_do_flush and pipe is not None and not pipe.ocupado
+                        and sess.get("buffer")):
+                    _live_abre_turno(sess)
                 continue
             if sess.get("pipe") is not None:
                 _live_abre_turno(sess)               # usa o buffer da sessão

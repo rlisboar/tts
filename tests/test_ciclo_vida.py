@@ -11,6 +11,7 @@ estava em voo vira `error` com motivo.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -213,7 +214,7 @@ def test_killpg_de_worker_morto_e_ignorado(isolado):
 def test_assinatura_do_sinal_diz_sinal_e_pai(isolado, capsys):
     app._assinatura_do_sinal(15)
     saida = capsys.readouterr().err
-    assert "[sinal] SIGTERM" in saida
+    assert re.search(r"\[sinal\] \S+ SIGTERM", saida)
     assert "pai=" in saida and os.getppid() > 0
 
 
@@ -306,3 +307,51 @@ def test_assinatura_mascara_a_cmdline_do_pai(isolado, monkeypatch, capsys):
     app._assinatura_do_sinal(15)
     saida = capsys.readouterr().err
     assert "TOP-SECRET-9999" not in saida and "--token ***9999" in saida
+
+
+# ------------------------------------------------- rastro do autor quando ÓRFÃO (#471)
+
+def test_assinatura_traz_pgid_sid_e_horario_estavel(isolado, capsys):
+    """Um SIGTERM no app órfão não tinha como apontar autor: o `pai=1` só conta
+    que o pai original sumiu. Grupo, sessão e horário são o que sobra."""
+    app._assinatura_do_sinal(15)
+    saida = capsys.readouterr().err
+    assert "pgid=" in saida and "sid=" in saida
+    assert re.search(r"\[\s*sinal\]\s+\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", saida)
+    assert f"pid={os.getpid()}" in saida
+
+
+def test_orfao_traz_pai_de_boot_e_o_grupo(isolado, monkeypatch, capsys):
+    monkeypatch.setattr(app.os, "getppid", lambda: 1)
+    app._PAI_DO_BOOT.clear()
+    app._PAI_DO_BOOT.update(pid=4242, lstart="Thu Oct 22 02:36:06 2026", cmd="bash /tmp/x.sh")
+    monkeypatch.setattr(app, "_processos_do_grupo", lambda pg, sd: "111:1:%d:bash /tmp/x.sh" % pg)
+    app._assinatura_do_sinal(15)
+    saida = capsys.readouterr().err
+    assert "ÓRFÃO" in saida
+    assert "pai de boot=4242" in saida and "bash /tmp/x.sh" in saida
+    assert "111:1:" in saida
+
+
+def test_pai_vivo_nao_polui_com_o_ramo_de_orfao(isolado, capsys):
+    app._assinatura_do_sinal(15)
+    assert "ÓRFÃO" not in capsys.readouterr().err
+
+
+def test_pai_do_boot_e_gravado(isolado):
+    app._PAI_DO_BOOT.clear()
+    app._grava_pai_do_boot()
+    assert app._PAI_DO_BOOT.get("pid") == os.getppid()
+    assert "lstart" in app._PAI_DO_BOOT
+
+
+def test_mapa_do_grupo_mascara_e_nao_lista_o_ps(isolado, monkeypatch):
+    falso = ("1 0 1 /sbin/launchd\n"
+             "111 1 777 bash /tmp/x.sh --token SEGREDO-123456\n"
+             "999 111 777 ps -A -o pid=,ppid=,pgid=,command=\n")
+    monkeypatch.setattr(app.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"stdout": falso})())
+    mapa = app._processos_do_grupo(777, 777)
+    assert "SEGREDO-123456" not in mapa
+    assert "***3456" in mapa
+    assert "ps -A" not in mapa
