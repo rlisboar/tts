@@ -100,26 +100,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements.lock
-      - name: venv
-        # torch do índice CPU primeiro: com o wheel CUDA o job paga ~2,4 GB e
-        # minutos por algo que a suíte não usa.
+      # SEM `setup-python` no mini: ele tem `/Users/runner` cravado e o `/Users` do
+      # mini é root:admin sem escrita para o usuário (sem sudo). O job usa o venv
+      # de produção, SEM `PYTHONHOME` (venv não tem `encodings`; ele empresta do
+      # interpretador base e o `PYTHONHOME` quebra essa busca) e SEM `pip`.
+      - name: interpretador (venv de produção) e verificação
         run: |
-          python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install --quiet -r requirements.txt pytest-timeout pytest-rerunfailures
-      - name: MLX no Linux
-        # O wheel manylinux do `mlx` NÃO traz a `libmlx.so` — só o extra `[cpu]`
-        # traz. Medido: sem ele `import mlx.core` morre com "libmlx.so: cannot
-        # open shared object file" e qualquer teste que importe o app cai junto.
-        # No macOS (runner self-hosted) o extra é inócuo; fica aqui para o job
-        # continuar válido se um dia voltar para linux.
-        run: python -m pip install --quiet "mlx[cpu]"
+          PY312="$HOME/Documents/tts-rod/.venv-mlx/bin"
+          export PATH="$PY312:$PATH"
+          python -V
+          echo "$PY312" >> "$GITHUB_PATH"
+          python -c "import fastapi, soundfile, torch, pytest_timeout, pytest_rerunfailures; print('deps e plugins ok')"
       - name: pytest
         # `--timeout`: um teste pendurado falha em 3 min em vez de comer o job.
         # Método DEFAULT (SIGALRM), não `--timeout-method=thread`: o `thread` só
