@@ -48,7 +48,7 @@ def test_app_aponta_para_copia_em_tmp(monkeypatch):
                               ("SETTINGS_PATH", "settings.json")):
         atual = Path(getattr(app, atributo))
         assert atual != BASE / arquivo, f"{atributo} aponta para o arquivo do dono"
-        assert str(atual).startswith(("/tmp", "/private/tmp", "/var/folders")), atual
+        assert str(atual).startswith(("/tmp", "/private/tmp", "/var/folders", "/private/var/folders")), atual
 
 
 def test_gravar_chave_nao_muda_o_arquivo_do_dono():
