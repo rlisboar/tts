@@ -295,6 +295,9 @@ async def um_turno(ws, pcm, medir_latencia=True):
         if ev["type"] in ("turn_complete", "error", "interrupted"):
             return eventos, primeiro, audio
 
+BASE_UND = [0]          # `underruns` no fim do aquecimento (#492): o alvo é o delta
+
+
 async def espera_ocioso(ws, limite=6.0):
     """Espera o motor voltar a `ocioso` depois do turno descartado (#489).
 
@@ -317,6 +320,7 @@ async def espera_ocioso(ws, limite=6.0):
             continue
         if ev.get("type") != "stats":
             continue
+        BASE_UND[0] = (ev.get("playback") or {}).get("underruns", BASE_UND[0])
         # DUAS leituras seguidas de `ocioso`: uma só pode ser o respiro entre
         # chunks do turno que acabou
         motor = ev.get("motor") or {}
@@ -455,6 +459,19 @@ async def principal():
                 ok("turn_complete no fim do turno")
             else:
                 falha(f"turno não fechou com turn_complete: {tipos}")
+            # 2b) fome do buffer de playback (#492): o contador tem de ficar em 0
+            # num turno longo. `chunks` sai do mesmo `stats`.
+            stats_ev = [e for e in eventos if e.get("type") == "stats"]
+            if stats_ev:
+                pb = (stats_ev[-1].get("playback") or {})
+                n_chunks, n_und = pb.get("chunks", 0), pb.get("underruns", 0)
+                novo = n_und - BASE_UND[0]     # delta desde o aquecimento
+                if n_chunks < 5:
+                    falha(f"turno curto para medir underrun: {n_chunks} chunk(s), queria ≥5")
+                elif novo == 0:
+                    ok(f"playback sem underrun novo em {n_chunks} chunks (total {n_und})")
+                else:
+                    falha(f"{novo} underrun(s) NOVOS em {n_chunks} chunks (buffer vazio)")
             if primeiro is not None:
                 if primeiro <= ALVO_MS:
                     ok(f"fim-de-fala → 1º áudio: {primeiro:.0f} ms (alvo ≤ {ALVO_MS} ms) — OK")
