@@ -108,6 +108,10 @@ jobs:
       # usuário. Correção definitiva é `sudo mkdir /Users/runner && sudo chown`;
       # até lá o venv sai do 3.12 que já existe na máquina.
       - name: intérprete 3.12 e venv
+        env:
+          # o startup do interpretador trava no job (PATH mínimo do runner): o
+          # `PYTHONHOME` pula justamente a descoberta de path que trava
+          PYTHONHOME: /Library/Frameworks/Python.framework/Versions/3.12
         run: |
           # o interpretador REAL do framework, não o python do venv de produção:
           # partindo de um venv o startup trava em `open()` do pyvenv.cfg no
