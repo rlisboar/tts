@@ -104,6 +104,21 @@ warnings.filterwarnings(
     "ignore", message=r"invalid value encountered in divide", category=RuntimeWarning)
 
 
+# `/api/shutdown` termina em `os._exit(0)` numa THREAD que dorme 0,4 s antes e
+# roda o teardown. Neutralizado só no módulo (`test_qa_gate362.py`) o `_exit` real
+# voltava no restore da fixture e a thread matava o pytest NO ARQUIVO SEGUINTE:
+# suíte completa morria a 82% sem resumo nem traceback (3× reproduzido). A suíte
+# nunca quer um exit de verdade, então a neutralização é da SESSÃO; teste que
+# ASSERE o `_exit` continua patchando localmente por cima.
+@pytest.fixture(autouse=True, scope="session")
+def _sem_exit_de_verdade():
+    import app
+    original = app.os._exit
+    app.os._exit = lambda *a, **k: None
+    yield
+    app.os._exit = original
+
+
 def pytest_configure(config):
     """Mesmo filtro do venv na via suportada pelo pytest (por MENSAGEM, não módulo)."""
     config.addinivalue_line(
