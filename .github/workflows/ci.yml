@@ -115,6 +115,8 @@ jobs:
           PY312=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
           [ -x "$PY312" ] || PY312=$(command -v python3.12)
           echo "usando $PY312"; "$PY312" -V
+          echo "--- diagnóstico ---"; env | grep -iE "python|pip" | head -5
+          time "$PY312" -m venv --without-pip .venv-semdip || echo "semdip falhou"
           "$PY312" -m venv .venv-ci
           echo "$PWD/.venv-ci/bin" >> "$GITHUB_PATH"
       - name: dependências
