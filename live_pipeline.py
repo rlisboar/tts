@@ -71,6 +71,8 @@ def _env_positivo(nome: str, padrao: float) -> float:
 
 
 _DSH_FIRST_DELTA_S = _env_positivo("TTS_LIVE_DSH_FIRST_DELTA_S", 12.0)
+#: estouros de relógio SEGUIDOS antes de dar o dsh como indisponível (#287)
+_DSH_ESTOUROS_MAX = max(1, int(os.environ.get("TTS_LIVE_DSH_ESTOUROS_MAX", "2")))
 
 # PCM do TTS no fio (o mesmo 24 kHz do catálogo). Cada chunk entra na fila
 # como o lxToca — max(now, fim) + duração — porque o 1º já toca enquanto o
@@ -91,6 +93,14 @@ def _eco_cauda_s() -> float:
     except Exception:                     # noqa: BLE001 — default do motor
         ms = 900.0
     return max(0.05, ms / 1000.0)
+
+
+def _fechar_sessao_dsh(cliente, timeout: float = 5.0) -> None:
+    """Fecha a SESSÃO ACP (mantém o processo) fora do turno."""
+    try:
+        cliente.fechar_sessao(timeout=timeout)
+    except Exception:                     # noqa: BLE001
+        pass
 
 
 def _fechar_cliente_dsh(cliente) -> None:
@@ -191,7 +201,8 @@ class LivePipeline:
                  history: list | None = None, stt=None, llm=None, tts=None,
                  first_max_chars: int = 18, max_chars: int = 160,
                  first_chunk_max_steps: int = 12, prewarm=None,
-                 detectar_eco: bool = True, dsh=None):
+                 detectar_eco: bool = True, dsh=None, ao_morrer_dsh=None,
+                 teto_primeiro_delta=None, bridge_estado=None):
         self.emit_json = emit_json
         self.emit_audio = emit_audio
         self.voice_id = voice_id
@@ -208,6 +219,17 @@ class LivePipeline:
         self._dsh_turno = ""              # identidade do turno em voo no dsh
         self._dsh_indisponivel = False    # #146: dsh morto -> turnos no openai
         self._dsh_motivo = ""             # motivo do fallback (vai para o `stats`)
+        #: avisa o app quando a morte foi FALHA (não relógio) — o latch de
+        #: processo evita repetir 6 tentativas de handshake a cada sessão nova (#287)
+        self._ao_morrer_dsh = ao_morrer_dsh
+        #: teto do 1º delta: o app encurta quando o bridge está SEM o patch de
+        #: streaming (`clean`) — ali não existe delta a esperar, a resposta vem
+        #: inteira no fim e gastar 12 s é só atraso (#287)
+        self._teto_primeiro = float(teto_primeiro_delta or _DSH_FIRST_DELTA_S)
+        self.bridge_estado = bridge_estado
+        #: estouros de relógio SEGUIDOS: o dsh segue vivo, mas insistir a cada turno
+        #: custaria 12 s por turno — depois do teto de tentativas ele desiste
+        self._dsh_estouros = 0
         # a voz vem do `setup` da sessão, não do default do app
         # Sem `tts` injetado, o turno tenta o worker PERSISTENTE da sessão (#152) e
         # cai no `_tts_app` in-process na 1ª falha (ver `_tts_live`).
@@ -561,7 +583,7 @@ class LivePipeline:
                          parar: threading.Event, pull: threading.Thread,
                          msgs: list, texto: str, turno_id: str):
         """Consome a fila do pull. O teto vale SÓ para o primeiro item."""
-        prazo = time.monotonic() + _DSH_FIRST_DELTA_S
+        prazo = time.monotonic() + self._teto_primeiro
         primeiro = True
         while True:
             if self.cancelado:
@@ -609,6 +631,8 @@ class LivePipeline:
                 return
             if self.cancelado:
                 return                    # chunk tardio não passa do teto nem do barge-in
+            if primeiro:
+                self._dsh_estouros = 0    # veio delta: a contagem de estouros zera
             primeiro = False
             yield payload
             pedido.set()
@@ -623,22 +647,38 @@ class LivePipeline:
             return None
 
     def _dsh_teto_estourou(self, turno_id: str) -> None:
-        """1º delta não veio a tempo: cancela o reasoning e mata o dsh UMA vez.
+        """1º delta não veio a tempo: RELÓGIO, não morte (#287).
 
-        O `close()` vai em thread: o processo ainda está no thought de ~95k e
-        o session/close síncrono esperaria até 60 s antes do openai falar."""
+        O teto é de 12 s e o provedor do dono mede 7–31 s de TTFT — desligar o dsh
+        para o resto da sessão por isso trocava de backend com o harness saudável.
+        Aqui: cancela o turno, FECHA A SESSÃO ACP (a próxima nasce limpa, sem prompt
+        preso) e mantém o processo. Só depois de `_DSH_ESTOUROS_MAX` estouros
+        seguidos o dsh é dado como indisponível — sem isso cada turno pagaria 12 s.
+
+        O `close`/`cancel` vão em thread: o processo está no thought de ~95k e o
+        `session/close` síncrono esperaria até 60 s antes do openai falar."""
         cliente = self._dsh
-        if cliente is not None:
-            try:
-                cliente.cancel(turno_id)
-            except Exception:             # noqa: BLE001 — cancelar é best-effort
-                pass
-        self._dsh_morreu(
-            DshError(f"dsh sem delta falável em {_DSH_FIRST_DELTA_S:g}s"),
-            fecha_async=True)
+        motivo = (f"dsh sem delta falável em {self._teto_primeiro:g}s "
+                  f"(teto de relógio)")
+        if cliente is None:
+            return
+        try:
+            cliente.cancel(turno_id)
+        except Exception:                 # noqa: BLE001 — cancelar é best-effort
+            pass
+        self._dsh_estouros += 1
+        threading.Thread(target=_fechar_sessao_dsh, args=(cliente,),
+                         name="live-dsh-fecha-sessao", daemon=True).start()
+        print(f"[live] {motivo} — tentativa {self._dsh_estouros}/{_DSH_ESTOUROS_MAX}; "
+              f"o turno segue no openai", flush=True)
+        self.emit_json({"type": "dsh_lento", "fallback": "openai",
+                        "tentativas": self._dsh_estouros, "message": motivo})
+        if self._dsh_estouros >= _DSH_ESTOUROS_MAX:
+            self._dsh_morreu(DshError(f"{motivo} — {self._dsh_estouros}x seguidas"),
+                             fecha_async=True, relogio=True)
 
     def _dsh_morreu(self, exc: Exception, avisa: bool = True,
-                    *, fecha_async: bool = False) -> None:
+                    *, fecha_async: bool = False, relogio: bool = False) -> None:
         """Marca o dsh como indisponível nesta sessão (uma vez) e libera o processo.
 
         Sem volta: uma vez marcado, NENHUM turno tenta o dsh de novo (as tentativas
@@ -665,6 +705,13 @@ class LivePipeline:
         if avisa:
             self.emit_json({"type": "dsh_indisponivel", "fallback": "openai",
                             "message": self._dsh_motivo[:200]})
+        if not relogio and self._ao_morrer_dsh is not None:
+            # falha de verdade (binário/perfil/node): segura o caminho para as
+            # próximas sessões também, não só para esta (#287)
+            try:
+                self._ao_morrer_dsh(self._dsh_motivo)
+            except Exception:             # noqa: BLE001 — latch é otimização
+                pass
 
     def _dsh_ctx(self, texto: str) -> list:
         """Prompt de ABERTURA de sessão ACP: persona + system da sessão + histórico.
