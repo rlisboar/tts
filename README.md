@@ -905,5 +905,3 @@ só parte de um arquivo compartilhado: `git add -p` → `git diff --cached --sta
 `git commit` sem pathspec.
 
 <!-- t2 -->
-
-import csv  # F401 de proposito (vermelho controlado)

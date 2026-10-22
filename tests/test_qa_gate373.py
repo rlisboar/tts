@@ -15,6 +15,7 @@ Seis itens do #287/task_6325d5c0. O que cada teste prende:
 Nos itens de patch, `node --check` (o arquivo é JS servido por processo).
 """
 
+import csv  # F401 de proposito (vermelho controlado)
 import subprocess
 import sys
 from pathlib import Path
