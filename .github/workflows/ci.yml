@@ -151,5 +151,19 @@ jobs:
       # existe no macOS) e falha UMA vez se faltar dependência — em vez de cada
       # job repetir a lista e o teto à mão. `instancia` exige app de pé e fica
       # fora do CI; `navegador` pode virar job próprio depois.
+      - uses: actions/setup-python@v5
+        env:
+          RUNNER_TOOL_CACHE: ${{ runner.temp }}/toolcache
+          AGENT_TOOLSDIRECTORY: ${{ runner.temp }}/toolcache
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      # `live_lock_freeze` sobe o app de verdade: sem as deps ele morre em
+      # `No module named 'fastapi'`. Mesmo venv do job `testes`.
+      - name: venv (o app é importado por uma das suítes)
+        run: |
+          python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install --quiet -r requirements.txt
       - name: suítes .sh do estágio rápido
         run: bash tests/run_sh.sh rapido
