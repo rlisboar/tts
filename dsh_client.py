@@ -130,12 +130,32 @@ def dsh_effort_valido(value) -> str:
     return v if v in DSH_EFFORTS else "off"
 
 
+#: memo de `node_versao` por PATH: a versão não muda dentro do processo e a
+#: descoberta roda a checagem em DOIS pontos (o campo `node` e o `_garantir`) — sem
+#: o memo eram dois `node --version` por descoberta, furando a economia do #287.
+_node_versoes: dict = {}
+_node_versoes_lock = threading.Lock()
+
+
 def node_versao(env: dict | None = None) -> tuple[int, int]:
     """Versão do node no PATH. Levanta DshError explicativo se ausente/antiga.
 
     Abaixo de Node 24.2 o launcher do dsh sai MUDO com rc=0 (o `import.meta.main`
-    não existe) e o handshake só estoura por timeout — então checamos ANTES."""
+    não existe) e o handshake só estoura por timeout — então checamos ANTES.
+
+    Memoizado por PATH (o dsh e os testes usam o mesmo PATH): chamar N vezes no
+    mesmo processo custa UM subprocesso."""
     caminho = (env or {}).get("PATH") or os.environ.get("PATH")
+    with _node_versoes_lock:
+        if caminho in _node_versoes:
+            return _node_versoes[caminho]
+    versao = _node_versao_sem_cache(caminho)
+    with _node_versoes_lock:
+        _node_versoes[caminho] = versao
+    return versao
+
+
+def _node_versao_sem_cache(caminho: str | None) -> tuple[int, int]:
     exe = shutil.which("node", path=caminho) or shutil.which("node")
     if not exe:
         raise DshError("node não encontrado no PATH (o dsh exige Node >= "

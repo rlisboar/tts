@@ -4293,6 +4293,7 @@ def dsh_limpo(monkeypatch):
     monkeypatch.setitem(app._settings, "chat_backend_live", "")   # vazio = herda
     monkeypatch.setattr(app, "_dsh_models_cache", {})
     monkeypatch.setattr(app, "_dsh_models_erro", {})     # cache negativo (#287)
+    monkeypatch.setattr(app.dsh_client, "_node_versoes", {})  # memo do node (#373)
     monkeypatch.setattr(app, "_dsh_morto_ate", 0.0)      # latch de processo
     monkeypatch.setattr(app, "_chat_dsh_livres", [])
     # contador GLOBAL de processos dsh (#287): cliente vazado por um teste não pode
