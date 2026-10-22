@@ -89,6 +89,23 @@ def _nofile_nao_desce(atual: tuple[int, int], pedido: tuple[int, int]) -> tuple[
     return (new_soft, new_hard)
 
 
+#: pedidos de NOFILE já registrados: a guarda era MUDA, e um monkeypatch global que
+#: ninguém vê é pior de depurar (#282). Uma linha por valor distinto, em stderr.
+_nofile_pedidos_vistos: set = set()
+
+
+def _nofile_log(pedido, atual, aplicado) -> None:
+    """Registra o pedido de setrlimit(NOFILE) UMA vez por valor (None = recusado)."""
+    chave = tuple(pedido)
+    if chave in _nofile_pedidos_vistos:
+        return
+    _nofile_pedidos_vistos.add(chave)
+    acao = (f"aplicado {aplicado[0]}/{aplicado[1]}" if aplicado
+            else f"recusado (mantido {atual[0]}/{atual[1]})")
+    print(f"[nofile] setrlimit(NOFILE, {pedido[0]}/{pedido[1]}) {acao}",
+          file=sys.stderr, flush=True)
+
+
 def _guarda_setrlimit(orig, getrlimit):
     """`resource.setrlimit` que recusa descer RLIMIT_NOFILE. Os outros limites passam."""
     import resource
@@ -100,7 +117,9 @@ def _guarda_setrlimit(orig, getrlimit):
             atual = getrlimit(resource.RLIMIT_NOFILE)
             novo = _nofile_nao_desce(atual, (int(limits[0]), int(limits[1])))
             if novo == tuple(atual):
+                _nofile_log(limits, atual, None)     # recusou descer: LOG
                 return None
+            _nofile_log(limits, atual, novo)
             return orig(which, novo)
         except Exception:
             return orig(which, limits)
@@ -543,7 +562,11 @@ LANG_DISPLAY = {
 # ---------------------------------------------------------------------------
 _ENV_API_KEY = (os.environ.get("TTS_ROD_API_KEY") or "").strip()
 _ADMIN_API_KEY = (os.environ.get("TTS_ROD_ADMIN_KEY") or "").strip()
-_apikeys_lock = threading.Lock()
+# RLock (#419, achado no gate do shutdown): o handler de ROTATE segura este lock e
+# chama `_primary_api_key()`, que o toma de novo — com `Lock` comum era
+# AUTO-DEADLOCK determinístico (o request ficava pendurado e nada mais entrava).
+# A reentrância é o que o código sempre pressupôs; a exclusão entre threads segue.
+_apikeys_lock = threading.RLock()
 _apikeys: dict = {"enabled": True, "keys": []}  # keys: id, name, secret, created_at
 
 
@@ -1001,7 +1024,59 @@ def _ffmpeg_bin() -> str:
 
 FFMPEG = _ffmpeg_bin()
 
-app = FastAPI(title="TTS-STUDIO")
+# Prefixo de proxy por PATH (ex.: https://dominio/ttsproxy/...). É lido do ambiente
+# ANTES da construção do app porque vira `root_path` — assim o OpenAPI e o `/docs`
+# anunciam o caminho certo (antes o schema saía "cru" e o Swagger atrás do proxy
+# apontava para a raiz do domínio, #282). O roteamento continua funcionando pelo
+# middleware `_strip_base_path`, que é quem remove o prefixo do path.
+_BASE_PATH = os.environ.get("TTS_ROD_BASE_PATH", "/ttsproxy").rstrip("/")
+app = FastAPI(title="TTS-STUDIO", root_path=_BASE_PATH or "")
+
+
+# ---------------------------------------------------------------------------
+# Quem mandou o sinal? (#423)
+#
+# A instância de :7860 caiu DUAS vezes com shutdown limpo no log — sinal, não
+# crash — e o log não dizia quem. Um teste rodando no mesmo repo, um `kill` de
+# script, `pkill` largo: sem a assinatura do autor, cada queda vira adivinhação e
+# derruba toda suíte que dependia da instância. Estes handlers LOGAM o sinal, o pai
+# e a linha de comando do pai e então ENCAMINHAM para o handler do uvicorn (que é
+# quem faz o shutdown gracioso via lifespan) — sem isso, o registro viraria
+# problema.
+# ---------------------------------------------------------------------------
+def _assinatura_do_sinal(signum: int) -> None:
+    try:
+        ppid = os.getppid()
+        pai = _pid_cmd(ppid)[:200] or "?"
+        eu = _pid_cmd(os.getpid())[:160] or "?"
+        print(f"[sinal] {signal.Signals(signum).name} — pai={ppid} ({pai}) · eu={eu}",
+              file=sys.stderr, flush=True)
+    except Exception:  # noqa: BLE001 — registro nunca pode impedir o encerramento
+        pass
+
+
+def _instala_rastro_de_sinal() -> list[tuple[int, object]]:
+    """Instala os handlers e devolve (sinal, handler anterior) para restaurar."""
+    anteriores: list[tuple[int, object]] = []
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            anterior = signal.getsignal(signum)
+            anteriores.append((signum, anterior))
+
+            def _handler(n, _frame, _anterior=anterior):
+                _assinatura_do_sinal(n)
+                # encaminha: uvicorn instala o dele (ou some com SIG_DFL). Chamar o
+                # anterior mantém o shutdown gracioso; com o default, reenvia o
+                # sinal para si mesmo depois de restaurar.
+                if callable(_anterior):
+                    return _anterior(n, _frame)
+                signal.signal(n, signal.SIG_DFL)
+                os.kill(os.getpid(), n)
+
+            signal.signal(signum, _handler)
+        except (ValueError, OSError):
+            continue          # fora da thread principal (ex.: import em thread)
+    return anteriores
 _CORS_ORIGINS = [x.strip() for x in os.environ.get("TTS_CORS_ORIGINS", "").split(",") if x.strip()]
 # NOTA: o CORS é registrado no FIM do módulo (depois dos @app.middleware) de
 # propósito. `add_middleware` empilha na frente, então quem é registrado por
@@ -1170,11 +1245,11 @@ async def _exige_chave(request, call_next):
     return await call_next(request)
 
 
-# Proxy reverso por PATH (ex.: https://dominio/ttsproxy/... atrás de nginx/CF):
-# remove o prefixo antes do roteamento — requisições locais (sem prefixo) são
-# intocadas. Registrado DEPOIS da auth => roda ANTES: a auth vê /api/... limpo
-# e a exigência de chave vale também pelo proxy (origem = IP de LAN, não loopback).
-_BASE_PATH = os.environ.get("TTS_ROD_BASE_PATH", "/ttsproxy").rstrip("/")
+# Proxy reverso por PATH: o middleware REMOVE o prefixo antes do roteamento —
+# requisições locais (sem prefixo) são intocadas. Registrado DEPOIS da auth => roda
+# ANTES: a auth vê /api/... limpo e a exigência de chave vale também pelo proxy
+# (origem = IP de LAN, não loopback). `_BASE_PATH` é definido lá em cima (é o
+# `root_path` do app).
 
 
 # CSP pelo HEADER (não pelo `<meta http-equiv>`): o Chromium ignora
@@ -1190,9 +1265,18 @@ _CSP_POLICY = (
     "http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net; object-src 'none'; "
     "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 )
-# /docs e /redoc montam a própria página (CSS do CDN, que a policy da UI não
-# cobre) — ficam como sempre foram, sem CSP.
-_CSP_SEM_HEADER = ("/docs", "/redoc", "/docs/oauth2-redirect", "/openapi.json")
+# /docs e /redoc montam a própria página com CSS/JS de CDN: precisam de policy
+# PRÓPRIA (a da UI não cobre o CDN no style-src) e não têm script inline nosso,
+# então vão sem nonce. Antes ficavam SEM CSP nenhuma (#282).
+_CSP_DOCS = (
+    "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net "
+    "'unsafe-inline'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net "
+    "https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com "
+    "data:; img-src 'self' data: https://fastapi.tiangolo.com; connect-src 'self'; "
+    "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+)
+#: caminhos que recebem a policy de DOCS em vez da da UI
+_CSP_DOCS_PATHS = ("/docs", "/redoc", "/docs/oauth2-redirect", "/openapi.json")
 # O `<script>` inline precisa do nonce DESTA resposta (sem ele, sem
 # 'unsafe-inline', o app não roda). A marcação no fonte é `<script>` cru: quem
 # atribui o nonce é `_NONCE_RE`, não o texto do arquivo. Assim a injeção não
@@ -1218,6 +1302,43 @@ def _index_com_nonce(nonce: str) -> str:
     return _NONCE_RE.sub(f'<script nonce="{nonce}"', html)
 
 
+_rotas_conhecidas: dict = {}
+
+
+def _rota_casa(path: str, method: str) -> str | None:
+    """Classifica o par path+method para desfazer a mentira do `StaticFiles`.
+
+    O mount `/` aceita QUALQUER path, então o arquivo estático responde 404/405
+    no lugar do roteador. Devolve `"rota"` (um handler responde por path E
+    método), `"metodo"` (o path existe, aquele método não) ou None (path
+    desconhecido). Só roda no caminho de erro, com cache e teto."""
+    from starlette.routing import Match
+    chave = (path, method)
+    if chave in _rotas_conhecidas:
+        return _rotas_conhecidas[chave]
+    escopo = {"type": "http", "path": path, "method": method}
+    achado = None
+    from starlette.routing import Mount
+    for rota in app.router.routes:
+        # o Mount (o `StaticFiles` em `/`) casa com QUALQUER path: ele é justamente
+        # quem responde a mentira, então não serve como prova de existência
+        if isinstance(rota, Mount) or not hasattr(rota, "path"):
+            continue
+        try:
+            casou, _ = rota.matches(escopo)
+        except Exception:  # noqa: BLE001 — rota exótica não derruba a decisão
+            continue
+        if casou is Match.FULL:
+            achado = "rota"
+            break
+        if casou is Match.PARTIAL:
+            achado = "metodo"
+    if len(_rotas_conhecidas) > 256:
+        _rotas_conhecidas.clear()
+    _rotas_conhecidas[chave] = achado
+    return achado
+
+
 @app.middleware("http")
 async def _strip_base_path(request, call_next):
     if _BASE_PATH and (request.url.path == _BASE_PATH
@@ -1229,6 +1350,21 @@ async def _strip_base_path(request, call_next):
         request.scope["path"] = rest
         request.scope["raw_path"] = rest.encode()
     resp = await call_next(request)
+    # 405 em path de API INEXISTENTE vira 404: quem responde 405 é o `StaticFiles`
+    # do mount `/`, que aceita qualquer path. Só converte quando nenhum pattern
+    # casa — `GET /api/tts` (path existe, método não) continua 405.
+    if resp.status_code in (404, 405) and request.url.path.startswith("/api/"):
+        from fastapi.responses import JSONResponse
+        caminho = request.url.path
+        classificado = _rota_casa(caminho, request.method)
+        if classificado is None:
+            resp = JSONResponse({"detail": "Rota não encontrada", "path": caminho},
+                                status_code=404)
+        elif classificado == "metodo" and resp.status_code == 404:
+            # o path existe com outro método: 405 é a resposta honesta
+            resp = JSONResponse({"detail": "Método não permitido para esta rota",
+                                 "path": caminho, "method": request.method},
+                                status_code=405)
     # HTML sempre revalidado (ETag) — updates da UI chegam no refresh;
     # cabeçalhos de segurança básicos
     if (resp.headers.get("content-type") or "").startswith("text/html"):
@@ -1237,9 +1373,12 @@ async def _strip_base_path(request, call_next):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Permissions-Policy", "camera=(), geolocation=(), payment=()")
-    if request.url.path not in _CSP_SEM_HEADER:
-        # nonce é POR RESPOSTA e quem o cria é a rota do SPA (fica em request.state);
-        # nas outras rotas ele não existe e o header sai sem nonce.
+    # nonce é POR RESPOSTA e quem o cria é a rota do SPA (fica em request.state);
+    # nas outras rotas ele não existe e o header sai SEM nonce. `/docs` e `/redoc`
+    # usam a policy própria (CDN no style-src) em vez de ficarem sem CSP (#282).
+    if request.url.path in _CSP_DOCS_PATHS:
+        resp.headers.setdefault("Content-Security-Policy", _CSP_DOCS)
+    else:
         resp.headers.setdefault("Content-Security-Policy",
                                 _csp_com_nonce(getattr(request.state, "nonce", None)))
     if (request.headers.get("x-forwarded-proto") or request.url.scheme).lower() == "https":
@@ -1746,6 +1885,9 @@ def status():
     # tentativas de origem ESTRANGEIRA barradas (#282): a CSRF vira visível no
     # painel em vez de só um 403 mudo na aba alheia.
     st["origens_barradas"] = _resumo_origens_barradas()
+    # processos dsh VIVOS no processo inteiro (pool + Live + descoberta) e o teto:
+    # sem isto o teto seria invisível para quem opera (#287).
+    st.update(_dsh_procs_resumo())
     with _apikeys_lock:
         st["api_keys_count"] = len(_apikeys.get("keys") or [])
     st["lan_urls"] = _lan_urls()
@@ -2012,10 +2154,15 @@ def download_mic_router(request: Request):
     navegador chegou aqui, já é o IP/hostname certo p/ a outra máquina) + a chave
     da API, pra o cliente avisar o modo sem config manual. Sob proxy por path
     (ex.: /ttsproxy), o prefixo vem no próprio path e é preservado na URL.
+
+    ADMIN (#282): o zip entrega credencial UTILIZÁVEL em texto claro, e a chave
+    embutida é a PRIMÁRIA (`keys[0]`), que o dono não escolheu e pode ser uma
+    `use`. Listagem mascarada fica aberta a qualquer chave; a credencial não.
     """
     import io
     import zipfile
 
+    _exige_admin(request)
     src = BASE / "client"
     if not src.is_dir():
         raise HTTPException(404, "Cliente não encontrado")
@@ -2052,10 +2199,32 @@ def download_mic_router(request: Request):
 # Sessões stateful: start → posts até status "confirmed" → text.
 CHAT_TTL = 3600          # sessão expira 1h sem uso
 CHAT_MAX_MSGS = 60       # teto de mensagens enviadas ao LLM por rodada
+# Teto de sessões: sem ele o dict só crescia (o TTL era a única poda e roda no
+# `start`). Evicção pelo `updated` mais antigo, DEPOIS da poda por TTL.
+_CHAT_MAX_SESSIONS = max(1, int(os.environ.get("TTS_CHAT_MAX_SESSIONS", "32")))
+# Espera na FILA do executor ≠ espera do PROVEDOR (#282). O pool tinha 8 threads
+# e o único timeout era 150 s contados de antes de entrar na fila: da 9ª conversa
+# em diante o turno morria com "o provedor demorou" sem o provedor ter sido
+# chamado. Agora o pool é maior, a espera de fila tem prazo próprio (estourou,
+# o turno SEGUE na fila e o cliente acompanha pelo GET) e o prazo do provedor
+# continua existindo, com mensagem separada.
+_CHAT_FILA_ESPERA_S = float(os.environ.get("TTS_CHAT_FILA_ESPERA_S", "20"))
+_CHAT_PROVEDOR_ESPERA_S = 150.0
+#: quanto o `/api/models/unload` espera o `_gen_lock` antes de devolver 409
+_GEN_ESPERA_UNLOAD_S = 3.0
+#: teto do PRIMEIRO delta quando o dsh atende a CONVERSA (#287). Sem isto um
+#: provedor que só pensa segurava o cliente e o `_turno_lock` por até 1 h e o
+#: próximo turno herdava o cliente envenenado. No Live o teto é o do pipeline.
+_CHAT_DSH_PRIMEIRO_DELTA_S = float(os.environ.get("TTS_CHAT_DSH_PRIMEIRO_DELTA_S", "25"))
+#: teto do 1º delta quando o bridge está SEM patch (`clean`): não há delta a
+#: esperar, a resposta vem inteira no fim
+_DSH_FIRST_DELTA_S = 12.0
+_DSH_FIRST_DELTA_CLEAN_S = float(os.environ.get("TTS_LIVE_DSH_TETO_CLEAN_S", "4"))
 _chat_sessions: dict = {}
 _chat_lock = threading.Lock()
-_chat_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8,
-                                                       thread_name_prefix="chat-llm")
+_chat_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=max(2, int(os.environ.get("TTS_CHAT_LLM_WORKERS", "16"))),
+    thread_name_prefix="chat-llm")
 
 CHAT_SYSTEM = (
     "Você ajuda a decidir o TEXTO FINAL que será falado por um agente de voz (TTS). "
@@ -2209,6 +2378,134 @@ _chat_dsh_livres: list = []          # processos quentes e OCIOSOS: [(chave, cli
 # `_pool_chave` — o global era escrito e nunca lido)
 _chat_dsh_prewarm_thread: threading.Thread | None = None
 _CHAT_DSH_POOL_MAX = 3
+
+# ── Teto GLOBAL de processos `dsh` (#287) ──────────────────────────────────
+# O pool (3) e o Live (1 por sessão, até `TTS_LIVE_MAX_SESSIONS`) e a descoberta
+# somavam até 8 harnesses node, cada um com 2 threads leitoras, sem nenhum
+# contador comum — no mini, que é a máquina mais apertada, isso é o que derruba.
+# Quem não consegue slot recebe `dsh_ocupado` (a sessão Live segue no openai).
+_DSH_MAX_PROCESSOS = max(1, int(os.environ.get("TTS_DSH_MAX_PROCESSOS", "5")))
+_dsh_procs = 0
+_dsh_procs_lock = threading.Lock()
+
+
+def _dsh_slot_livre() -> bool:
+    with _dsh_procs_lock:
+        return _dsh_procs < _DSH_MAX_PROCESSOS
+
+
+def _dsh_ocupa_slot(cli) -> bool:
+    """Reserva um slot para o processo deste cliente. False = teto atingido.
+
+    Marca o objeto (`_slot_contado`): quem fecha precisa saber que há slot a
+    devolver — assim `close()` duplo ou cliente sem slot não desbalanceiam."""
+    global _dsh_procs
+    with _dsh_procs_lock:
+        if _dsh_procs >= _DSH_MAX_PROCESSOS:
+            return False
+        _dsh_procs += 1
+    try:
+        cli._slot_contado = True
+    except Exception:  # noqa: BLE001 — objeto exótico não impede a contagem
+        pass
+    return True
+
+
+def _dsh_libera_slot(cli) -> None:
+    global _dsh_procs
+    if not getattr(cli, "_slot_contado", False):
+        return
+    try:
+        cli._slot_contado = False
+    except Exception:  # noqa: BLE001
+        pass
+    with _dsh_procs_lock:
+        _dsh_procs = max(0, _dsh_procs - 1)
+
+
+def _dsh_fecha(cli) -> None:
+    """Fecha o cliente e devolve o slot, uma vez só."""
+    try:
+        cli.close()
+    except Exception:  # noqa: BLE001 — fechar é best-effort
+        pass
+    finally:
+        _dsh_libera_slot(cli)
+
+
+def _dsh_marca_morto(motivo: str) -> None:
+    """Handshake do dsh morreu: segura o caminho por `_DSH_LATCH_TTL_S`.
+
+    A falha NÃO é específica da sessão (binário/perfil/node), então toda sessão
+    nova pagava as 6 tentativas de novo. O latch só vale para FALHA — estouro de
+    relógio (dsh lento, não morto) não liga isto."""
+    global _dsh_morto_ate, _dsh_morto_motivo
+    _dsh_morto_ate = time.monotonic() + _DSH_LATCH_TTL_S
+    _dsh_morto_motivo = str(motivo)[:200]
+    _dsh_log(f"dsh marcado morto por {_DSH_LATCH_TTL_S:.0f}s: {_dsh_morto_motivo}")
+
+
+def _dsh_latch(motivo: str) -> str | None:
+    """Motivo do latch ainda válido (None = pode tentar o dsh)."""
+    global _dsh_morto_ate
+    if not _dsh_morto_ate:
+        return None
+    if time.monotonic() >= _dsh_morto_ate:
+        _dsh_morto_ate = 0.0
+        return None
+    return _dsh_morto_motivo or motivo
+
+
+def _dsh_procs_resumo() -> dict:
+    with _dsh_procs_lock:
+        return {"dsh_procs": _dsh_procs, "dsh_procs_max": _DSH_MAX_PROCESSOS}
+
+
+class _DshSemSlot(RuntimeError):
+    """Teto global de processos `dsh` atingido — quem chamou decide (429/aviso)."""
+
+
+class _DshComSlot:
+    """Envelope que RESERVA um slot global ao nascer e o devolve no `close()`.
+
+    Envelope (e não subclasse) porque os testes substituem `dsh_client.DshClient`
+    por um falso: a classe é resolvida em TEMPO DE CHAMADA, então o falso também
+    entra na contagem. Todo o resto do contrato é delegado por `__getattr__`."""
+
+    def __init__(self, *args, **kwargs):
+        # resolve AGORA (não na definição): quem faz `monkeypatch.setattr(
+        # dsh_client, "DshClient", falso)` continua sendo respeitado
+        self._cli = dsh_client.DshClient(*args, **kwargs)
+        if not _dsh_ocupa_slot(self):
+            try:
+                self._cli.close()
+            finally:
+                raise _DshSemSlot(
+                    f"teto de {_DSH_MAX_PROCESSOS} processos dsh atingido "
+                    f"(TTS_DSH_MAX_PROCESSOS); feche uma sessão Live ou espere")
+
+    def __getattr__(self, nome):
+        # só roda para atributos que o envelope não tem; `_cli` é setado no
+        # `__init__` (cuidado com recursão antes dele existir)
+        if nome == "_cli":
+            raise AttributeError(nome)
+        return getattr(self._cli, nome)
+
+    def __setattr__(self, nome, valor):
+        if nome == "_cli":
+            object.__setattr__(self, nome, valor)
+        else:
+            setattr(self._cli, nome, valor)
+
+    @property
+    def prompt_em_voo(self) -> bool:
+        return bool(getattr(self._cli, "prompt_em_voo", False))
+
+    def close(self) -> None:
+        try:
+            self._cli.close()
+        finally:
+            _dsh_libera_slot(self)
 # campos cuja mudança invalida o processo quente da Conversa (pre-warm + pool)
 _CAMPOS_DHS_BACKEND = ("chat_backend", "chat_backend_live", "chat_dsh_bin",
                        "chat_dsh_profile",
@@ -2231,9 +2528,10 @@ def _dsh_log(msg: str, tag: str = "chat-dsh") -> None:
 
 
 def _chat_dsh_novo(cfg: dict) -> "dsh_client.DshClient":
-    return dsh_client.DshClient(
+    return _DshComSlot(
         bin=cfg["bin"], profile=cfg["profile"], model=cfg["model"],
         effort=cfg["effort"], cwd=BASE / "outputs" / ".dsh-cwd",
+        primeiro_delta_timeout=_CHAT_DSH_PRIMEIRO_DELTA_S,
         on_log=lambda m: _dsh_log(m))
 
 
@@ -2256,9 +2554,12 @@ def _chat_dsh_cliente() -> "dsh_client.DshClient":
     # mas mudo não responde — fechando dentro do lock, TODO uso do pool (o próximo
     # turno da Conversa, o resumo do Live) esperava o processo velho morrer.
     for _k, antigo in antigos:
-        antigo.close()
+        _dsh_fecha(antigo)
     if cli is None:
-        cli = _chat_dsh_novo(cfg)
+        try:
+            cli = _chat_dsh_novo(cfg)
+        except _DshSemSlot as exc:
+            raise HTTPException(429, f"dsh_ocupado: {exc}") from exc
     cli._pool_chave = chave              # a chave viaja COM o cliente
     return cli
 
@@ -2284,7 +2585,7 @@ def _chat_dsh_devolve(cli: "dsh_client.DshClient") -> None:
         if guardar:
             _chat_dsh_livres.append((chave, cli))
     if not guardar:
-        cli.close()
+        _dsh_fecha(cli)
 
 
 def _chat_dsh_prewarm(motivo: str = "") -> threading.Thread | None:
@@ -2330,7 +2631,13 @@ def _chat_llm_dsh(messages: list) -> str:
     except dsh_client.DshError as exc:
         raise HTTPException(502, f"Backend dsh falhou: {exc}")
     finally:
-        _chat_dsh_devolve(cli)
+        # prompt EM VOO não pode voltar ao pool: o próximo turno esperaria o
+        # settle (até 300 s) e arriscaria `-32602`. Fecha e libera o slot (#287).
+        if getattr(cli, "prompt_em_voo", False):
+            _dsh_log("cliente com prompt em voo — fechando em vez de devolver ao pool")
+            _dsh_fecha(cli)
+        else:
+            _chat_dsh_devolve(cli)
 
 
 # Aquece o dsh no boot do app quando o backend já é dsh. Não bloqueia nada e, com
@@ -2344,6 +2651,34 @@ except Exception as exc:  # noqa: BLE001 — prewarm é otimização
 _dsh_models_cache: dict = {}
 _dsh_models_lock = threading.Lock()          # #213: 1 descoberta por vez no frio
 _DSH_MODELS_TTL_S = 300
+#: cache NEGATIVO da descoberta (#287): com o dsh quebrado cada GET pagava 6
+#: tentativas e ~60 s de backoff, com o lock tomado — a tela que polla virava fila.
+#: Falha recente responde na hora com o motivo; acerto limpa o registro.
+_DSH_MODELS_ERRO_TTL_S = 30.0
+_dsh_models_erro: dict = {}                  # {"motivo", "em"}
+#: latch de PROCESSO: com o handshake do dsh morto, toda sessão Live nova repetia
+#: as 6 tentativas. Uma falha real silencia o dsh para todas por este tempo.
+_DSH_LATCH_TTL_S = 20.0
+_dsh_morto_ate = 0.0
+_dsh_morto_motivo = ""
+
+
+_bridge_cache: dict = {}
+_BRIDGE_CACHE_TTL_S = 60.0
+
+
+def _dsh_bridge_estado_cached() -> dict:
+    """`_dsh_bridge_estado` com cache curto: chamado no NASCIMENTO de cada sessão.
+
+    Sem cache, cada sessão Live pagaria `npm root -g` quando a busca por caminho
+    falha."""
+    agora = time.monotonic()
+    if _bridge_cache.get("dados") is not None and \
+            agora - _bridge_cache.get("em", 0) < _BRIDGE_CACHE_TTL_S:
+        return _bridge_cache["dados"]
+    dados = _dsh_bridge_estado()
+    _bridge_cache.update({"dados": dados, "em": agora})
+    return dados
 
 
 def _dsh_bridge_estado() -> dict:
@@ -2367,16 +2702,41 @@ def chat_dsh_models():
     # GETs simultâneos (a tela chama no clique) subiam 2+ processos, com o último
     # sobrescrevendo o cache (#213). O caminho quente não espera.
     with _dsh_models_lock:
+        if not _dsh_slot_livre():
+            raise HTTPException(429, "dsh_ocupado: teto de processos atingido — "
+                                     "tente de novo em instantes")
         if (_dsh_models_cache.get("chave") == chave
                 and agora - _dsh_models_cache.get("em", 0) < _DSH_MODELS_TTL_S):
             dados = _dsh_models_cache["dados"]
+        elif (_dsh_models_erro and _dsh_models_erro.get("chave") == chave
+              and agora - _dsh_models_erro.get("em", 0) < _DSH_MODELS_ERRO_TTL_S):
+            # falha RECENTE: responde na hora (sem spawnar, sem as 6 tentativas)
+            raise HTTPException(
+                502, f"descoberta do dsh falhou há pouco: {_dsh_models_erro.get('motivo')}",
+                headers={"Retry-After": str(int(_DSH_MODELS_ERRO_TTL_S))})
         else:
+            # a descoberta sobe um processo PRÓPRIO: reserva um slot enquanto roda
+            # (senão o teto contaria tudo menos ela)
+            reserva = type("_Reserva", (), {})()
+            if not _dsh_ocupa_slot(reserva):
+                raise HTTPException(429, "dsh_ocupado: teto de processos atingido")
             try:
                 dados = dsh_client.descobrir_modelos(bin=cfg["bin"], profile=cfg["profile"])
             except dsh_client.DshError as exc:
+                # a falha é da CONFIG (bin/perfil): trocar de bin não pode herdar
+                _dsh_models_erro.update({"motivo": str(exc)[:400], "em": agora,
+                                         "chave": chave})
                 raise HTTPException(502, f"descoberta do dsh falhou: {exc}")
-            # cacheado JUNTO da descoberta: a tela não paga leitura de arquivo por request
-            dados = {"bridge_info": _dsh_bridge_estado(), **dados}
+            finally:
+                _dsh_libera_slot(reserva)
+            _dsh_models_erro.clear()
+            _dsh_models_cache.update({"dados": dados, "chave": chave, "em": agora})
+    # o estado do bridge sobe um `npm root -g` quando o caminho falha: fica FORA
+    # do lock (a descoberta é sobre o dsh, o bridge é informativo) — e é cacheados
+    # com o resto porque a tela não paga leitura de arquivo por request.
+    if "bridge_info" not in dados:
+        dados = {**dados, "bridge_info": _dsh_bridge_estado()}
+        with _dsh_models_lock:
             _dsh_models_cache.update({"dados": dados, "chave": chave, "em": agora})
     bridge = dados.get("bridge_info") or {"estado": "unknown"}
     return {"ok": True, "backend": "dsh",
@@ -2426,8 +2786,12 @@ def _chat_get(sid: str) -> dict:
 
 
 def _chat_purge(now: float) -> None:
+    """Poda por TTL e, se ainda passar do TETO, evicta as sessões mais antigas."""
     for sid in [k for k, d in _chat_sessions.items() if now - d["updated"] > CHAT_TTL]:
         _chat_sessions.pop(sid, None)
+    while len(_chat_sessions) > _CHAT_MAX_SESSIONS:
+        mais_velha = min(_chat_sessions, key=lambda k: _chat_sessions[k]["updated"])
+        _chat_sessions.pop(mais_velha, None)
 
 
 def _chat_worker(sid: str, gen: int = 0) -> None:
@@ -2435,13 +2799,22 @@ def _chat_worker(sid: str, gen: int = 0) -> None:
     Com teto hard de 150s: provedor pendurado não deixa a sessão em 'thinking'
     para sempre.
     `gen` é a geração do turno: se o humano interrompeu (barge-in) e mandou fala
-    nova, a sessão já está em outra geração e este resultado é jogado fora."""
+    nova, a sessão já está em outra geração e este resultado é jogado fora.
+
+    FILA × PROVEDOR (#282): `iniciou` é setado quando a thread do pool COMEÇA o
+    turno. A espera por ele e a espera pelo provedor são medidas separadamente —
+    estourar a fila não vira "o provedor demorou" (o turno segue na fila e o GET
+    acompanha), e só a segunda vira erro na sessão."""
+    iniciou = threading.Event()
+
     def _rodar() -> None:
+        iniciou.set()
         try:
             with _chat_lock:
                 s = _chat_sessions.get(sid)
                 if not s or s.get("gen", 0) != gen:
                     return
+                s["na_fila"] = False          # saiu da fila: agora é o provedor
                 hist = s["messages"][:]
                 if len(hist) > CHAT_MAX_MSGS + 1:
                     hist = [hist[0]] + hist[-(CHAT_MAX_MSGS + 1):]
@@ -2477,13 +2850,22 @@ def _chat_worker(sid: str, gen: int = 0) -> None:
                     s["error"] = str(e)[:200]
                     s["thinking"] = False
 
+    futuro = _chat_executor.submit(_rodar)
+    if not iniciou.wait(_CHAT_FILA_ESPERA_S):
+        # ainda na fila: NÃO é erro (o turno continua e o cliente polla o GET)
+        with _chat_lock:
+            s = _chat_sessions.get(sid)
+            if s and s.get("gen", 0) == gen:
+                s["na_fila"] = True
+        return
     try:
-        _chat_executor.submit(_rodar).result(timeout=150)
+        futuro.result(timeout=_CHAT_PROVEDOR_ESPERA_S)
     except concurrent.futures.TimeoutError:
         with _chat_lock:
             s = _chat_sessions.get(sid)
             if s and s.get("gen", 0) == gen and s.get("thinking"):
-                s["error"] = "Provedor de IA demorou demais (150s) — tente de novo"
+                s["error"] = (f"Provedor de IA demorou demais "
+                              f"({_CHAT_PROVEDOR_ESPERA_S:.0f}s) — tente de novo")
                 s["thinking"] = False
 
 
@@ -2501,11 +2883,14 @@ def chat_start(payload: dict):
              "content": f"Objetivo: {objetivo}" + (f"\nContexto: {contexto}" if contexto else "")}]
     now = time.time()
     with _chat_lock:
-        _chat_purge(now)
         _chat_sessions[sid] = {"objective": objetivo, "context": contexto,
                                "messages": msgs, "status": "chatting", "text": "",
                                "reply": "", "thinking": True, "error": "", "last_text": "",
                                "gen": 0, "created": now, "updated": now}
+        # poda DEPOIS de inserir: antes dela, o dict ficava no teto + 1 (o novo
+        # entrava depois da poda); a evicção pega o `updated` mais antigo, então
+        # esta sessão nunca é a escolhida.
+        _chat_purge(now)
     threading.Thread(target=_chat_worker, args=(sid, 0), daemon=True).start()
     return {"session_id": sid, "status": "thinking"}
 
@@ -2550,6 +2935,7 @@ def chat_get(sid: str):
         status = "thinking" if s.get("thinking") else s["status"]
         return {"session_id": sid, "status": status, "text": s["text"],
                 "reply": s.get("reply", ""), "error": s.get("error", ""),
+                "fila": bool(s.get("na_fila")),
                 "last_text": s.get("last_text", ""),
                 "objective": s["objective"],
                 "messages": [{"role": m["role"], "content": m["content"]} for m in s["messages"]]}
@@ -2564,17 +2950,38 @@ def chat_delete(sid: str):
     return {"ok": True}
 
 
+#: teto do log de depuração da Conversa antes de rodar para `.log.1`
+_CHAT_DEBUG_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _chat_debug_arquivo() -> Path:
+    """Arquivo de depuração: `TTS_CHAT_DEBUG_LOG` ou o `/tmp` de sempre."""
+    caminho = (os.environ.get("TTS_CHAT_DEBUG_LOG") or "").strip()
+    return Path(caminho) if caminho else Path("/tmp/tts-chat-debug.log")
+
+
 @app.post("/api/chat-debug")
 def chat_debug(payload: dict):
     """Telemetria temporária do fluxo Conversa no navegador (diagnóstico)."""
     if os.environ.get("TTS_CHAT_DEBUG") != "1":
         return {"ok": True, "disabled": True}
+    alvo = _chat_debug_arquivo()
     try:
-        with open("/tmp/tts-chat-debug.log", "a") as f:
+        # rotação por tamanho ANTES de escrever: o arquivo era um append eterno em
+        # /tmp, sem teto nem permissão restrita (#282)
+        if alvo.exists() and alvo.stat().st_size > _CHAT_DEBUG_MAX_BYTES:
+            alvo.replace(alvo.with_suffix(".log.1"))
+        novo = not alvo.exists()
+        with open(alvo, "a") as f:
             f.write(f"{time.strftime('%H:%M:%S')} {json.dumps(payload, ensure_ascii=False)}\n")
+        if novo:
+            try:
+                os.chmod(alvo, 0o600)
+            except OSError:
+                pass
     except Exception:  # noqa: BLE001
         pass
-    return {"ok": True}
+    return {"ok": True, "arquivo": str(alvo)}
 
 
 # ── Túnel / acesso pela internet (proxy por path) ──────────────────────────
@@ -2886,15 +3293,26 @@ def _chat_dsh_fecha_pool() -> int:
     return len(quentes)
 
 
-def _jobs_mata_workers() -> int:
+def _jobs_mata_workers(somente_proprios: bool = True) -> int:
     """SIGTERM no grupo de cada worker de job vivo (sessão própria => killpg).
 
     Os `.job-*` FICAM: o histórico recarregado no próximo boot aponta para eles e
-    as peças já geradas continuam baixáveis (a limpeza de órfãos do boot só some
-    com o que não tem dono… e agora o dono é o histórico).
+    as peças já geradas continuam baixáveis.
+
+    SÓ O QUE É DESTE PROCESSO (`owner.pid` igual ao nosso, #423): o diretório é
+    compartilhado com a instância de produção e com qualquer suíte rodando no mesmo
+    repo. Sem a checagem, o teardown de um teste de `pytest` matava o worker do
+    servidor vivo — o job dele morria com "worker morto" no meio da geração.
+    `somente_proprios=False` reproduz o comportamento antigo (para diagnóstico).
     """
+    meu = os.getpid()
     mortos = 0
     for pid_file in OUTPUTS_DIR.glob(".job-*/worker.pid"):
+        dono = _job_owner_pid(pid_file.parent)
+        # dono AUSENTE = dir de versão anterior (não atribuível): mantém o
+        # comportamento antigo; dono conhecido e diferente do nosso respeita.
+        if somente_proprios and dono is not None and dono != meu:
+            continue
         try:
             pid = int(pid_file.read_text().strip())
         except (OSError, ValueError):
@@ -2936,6 +3354,11 @@ async def _lifespan(_app):
     botão: sem isto, matar o app deixava worker, Live e dsh para trás.
     """
     _jobs_hist_carrega()
+    # DEPOIS do uvicorn: `install_signal_handlers()` dele roda no serve e
+    # sobrescreveria um handler posto no import. Aqui o nosso fica POR CIMA e
+    # encaminha para o dele (guardado em `_RASTRO_DE_SINAL`), preservando o
+    # shutdown gracioso.
+    globals()["_RASTRO_DE_SINAL"] = _instala_rastro_de_sinal()
     yield
     await asyncio.get_running_loop().run_in_executor(None, _encerra_tudo, "lifespan")
 
@@ -2969,9 +3392,10 @@ def shutdown(request: Request):
 # Gerar fala é uma coisa; repontar a instalação para outro provedor (e ler a
 # credencial dele) é outra. `_SETTINGS_ADMIN` = campos que só admin altera:
 # conexões externas (URLs, chaves, toggles de envio remoto) e escolha de modelo
-# (que dispara download/load de repo). Fora da lista: `remote_tts_voice`/
-# `remote_tts_extra` (formato do payload, não o destino) e políticas de recurso
-# (idle_unload, free_local_on_remote, speech_queue).
+# (que dispara download/load de repo) e o formato do payload remoto
+# (`remote_tts_extra` — ele sobrepõe `text`/`speed` de TODO mundo). Fora da lista:
+# `remote_tts_voice` e políticas de recurso (idle_unload, free_local_on_remote,
+# speech_queue).
 #
 # Compatibilidade: quem não quer separação nenhuma não muda NADA — sem
 # `TTS_ROD_ADMIN_KEY` e sem `role` nas chaves, toda chave válida segue admin.
@@ -2986,6 +3410,9 @@ _SETTINGS_ADMIN = frozenset({
     "chat_backend", "chat_backend_live", "chat_dsh_bin", "chat_dsh_profile",
     "chat_dsh_model",
     "chat_dsh_effort",
+    # o override é JSON aplicado sobre o corpo de TODOS os trechos: uma chave de
+    # uso que manda `{"text": ...}` reescreveria o job alheio (#282)
+    "remote_tts_extra",
 })
 _SETTINGS_SECRETS = ("remote_api_key", "remote_stt_key", "chat_api_key")
 # marcador da máscara: começa com "•" e nunca é confundido com chave de verdade.
@@ -3173,13 +3600,30 @@ def update_settings(request: Request, payload: dict):
         _settings.clear()
         _settings.update(_antes)
         raise
+    avisos = []
     if str(_antes.get("omni_precision", "")).lower() != str(_settings.get("omni_precision", "")).lower():
         # Troca de dtype só pegaria no próximo load_model; descarrega o modelo com o
         # dtype antigo agora, senão continua servindo (e segurando ~GB de RAM com) ele.
         # Com job em voo não encosta: _gen_lock está tomado e o reload é lazy de qualquer jeito.
         if not any(j.get("status") in ("running", "queued")
                    for j in _jobs_snapshot()):
-            _unload_local_models(tts=True, stt=False, mt=False, ser=False)
+            try:
+                _unload_local_models(tts=True, stt=False, mt=False, ser=False)
+            except Exception as exc:     # noqa: BLE001 — efeito, não validação
+                # a config JÁ está gravada; falhar a descarga não pode virar erro do
+                # POST (o cliente perderia a informação de que salvou)
+                avisos.append(f"não foi possível descarregar o modelo antigo: {exc}")
+    # efeitos pós-commit, na ordem: primeiro libera recurso que a config nova tornou
+    # redundante, depois sobe o que ela pediu
+    try:
+        _autofree_local()
+    except Exception as exc:             # noqa: BLE001
+        avisos.append(f"autofree não rodou: {exc}")
+    if tuple(_settings.get(k) for k in _CAMPOS_DHS_BACKEND) != \
+            tuple(_antes.get(k) for k in _CAMPOS_DHS_BACKEND):
+        # trocou de backend/ajuste do dsh: já sobe o processo em thread, para quem
+        # acabou de ligar `dsh` na UI não pagar o boot no 1º turno da Conversa
+        _chat_dsh_prewarm("settings")
     # Cópia: `_apply_settings` devolve o dict vivo `_settings` (e `_save_settings`
     # persiste só as chaves de _SETTINGS_DEFAULTS) — não injetar metadado nele.
     out = dict(_r)
@@ -3188,6 +3632,8 @@ def update_settings(request: Request, payload: dict):
     out.update(_settings_vista(request))
     # sempre presente: a UI/storybook não precisa distinguir "sem campo" de "vazio"
     out["admin_ignored"] = sorted(ignorados)
+    if avisos:
+        out["avisos"] = avisos
     return out
 
 
@@ -3215,7 +3661,8 @@ def _voice_path(v) -> Path | None:
 
 
 def _apply_settings(payload: dict):
-    _dsh_antes = tuple(_settings.get(k) for k in _CAMPOS_DHS_BACKEND)
+    # (o "antes" dos campos do dsh é do `update_settings` desde o #282: os efeitos
+    # ficaram para depois do commit e é lá que a comparação acontece)
     if "model" in payload:
         m = str(payload["model"] or "").strip()
         if m:
@@ -3429,11 +3876,9 @@ def _apply_settings(payload: dict):
     if "speech_queue_gap_s" in payload:
         _settings["speech_queue_gap_s"] = _clamp(payload["speech_queue_gap_s"], 0.0, 5.0, 0.35)
     _save_settings()
-    _autofree_local()                  # se ligado, descarrega já os locais agora redundantes
-    if tuple(_settings.get(k) for k in _CAMPOS_DHS_BACKEND) != _dsh_antes:
-        # trocou de backend/ajuste do dsh: já sobe o processo em thread, para quem
-        # acabou de ligar `dsh` na UI não pagar o boot no 1º turno da Conversa
-        _chat_dsh_prewarm("settings")
+    # EFEITOS ficam para o `update_settings`, DEPOIS do commit (#282): disparados
+    # aqui dentro, um erro posterior (ex.: descarga de modelo) já os tinha feito e o
+    # rollback só devolvia a RAM — o efeito colateral ficava.
     return _settings
 
 
@@ -3556,7 +4001,8 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
 
     meta = {
         "id": voice_id,
-        "name": name.strip() or voice_id,
+        # teto do nome: ele é o único campo livre do meta e vai para a UI
+        "name": (name.strip() or voice_id)[:120],
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "duration": duration,
         "denoised": bool(do_denoise and not recusado),
@@ -3873,8 +4319,6 @@ async def restore_estado(request: Request, arquivo: UploadFile = File(...)):
     se a publicação falhar no meio. Permissões finais 0600 nos quatro blocos.
     """
     _exige_admin(request)
-    import zipfile
-
     with tempfile.NamedTemporaryFile(prefix=".restore-", suffix=".zip",
                                      dir=OUTPUTS_DIR, delete=False) as incoming:
         incoming_path = Path(incoming.name)
@@ -4672,6 +5116,21 @@ _ISOLATED_FAMILIES = frozenset({
 })
 
 
+def _sanitiza_caminhos(texto: str) -> str:
+    """Troca caminho absoluto do repo/Home por `…/` na mensagem de erro do job.
+
+    O job já anexava 500 chars do log do worker, com `/Users/<dono>/Documents/...`
+    e caminhos de venv — ruído que não ajuda o cliente e expõe a instalação (#282).
+    Só rótulos: a CAUDA do log (o motivo real) continua."""
+    if not texto:
+        return texto
+    # do mais específico para o mais genérico: o repo vira caminho relativo, o
+    # resto do home vira `~/…`
+    texto = texto.replace(str(BASE) + "/", "")
+    texto = texto.replace(str(Path.home()) + "/", "~/")
+    return texto.replace(str(BASE), "repo").replace(str(Path.home()), "~")
+
+
 def _unload_local_tts():
     """Libera o modelo MLX do processo principal (antes de spawnar worker)."""
     global _model
@@ -4858,7 +5317,8 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
         err_tail = ""
         try:
             if log_path.exists():
-                err_tail = log_path.read_text(encoding="utf-8", errors="replace")[-500:]
+                err_tail = _sanitiza_caminhos(
+                    log_path.read_text(encoding="utf-8", errors="replace")[-500:])
         except Exception:  # noqa: BLE001
             pass
         if status_path.exists():
@@ -5398,11 +5858,18 @@ def list_outputs(request: Request, limit: int | None = None, offset: int = 0,
     caminho que lê conteúdo; `since` (ISO `YYYY-MM-DD`, ou epoch) corta por data
     no `mtime`.
 
-    Resposta: `{"items", "total", "limit", "offset"}` — `total` é a contagem ANTES
-    do corte, para o cabeçalho e o "mostrar mais". `X-Total-Count` repete o número
-    no header para quem preferir. Meta corrompido continua sendo pulado."""
+    Resposta PAGINADA: `{"items", "total", "limit", "offset"}` — `total` é a
+    contagem ANTES do corte, para o cabeçalho e o "mostrar mais". `X-Total-Count`
+    repete o número no header. Meta corrompido continua sendo pulado.
+
+    COMPATIBILIDADE: cliente que chama a rota SEM parâmetro nenhum recebe a LISTA
+    de sempre (tudo, como antes) — o formato só vira objeto quando algum filtro ou
+    paginação é pedido. Assim um cliente antigo não quebra e a UI, que sempre manda
+    `limit`, já entra no contrato paginado."""
     from fastapi.responses import JSONResponse
-    # default só quando o parâmetro AUSENTE; valor mandado é clampado em 1–500
+    # `limit` ausente = lista completa (compat); presente = clampado em 1–500
+    modo_lista = (limit is None and offset == 0 and not (q or "").strip()
+                  and not (since or "").strip())
     limite = 50 if limit is None else max(1, min(int(limit), 500))
     offset = max(0, int(offset or 0))
     # candidatos por stat: barato e estável (mesmo relógio do created_at)
@@ -5432,13 +5899,16 @@ def list_outputs(request: Request, limit: int | None = None, offset: int = 0,
     candidatos.sort(key=lambda c: (c[0], c[1]), reverse=True)
     total = len(candidatos)
     items = []
-    for _mtime, _nome, f in candidatos[offset:offset + limite]:
+    fatiados = candidatos if modo_lista else candidatos[offset:offset + limite]
+    for _mtime, _nome, f in fatiados:
         try:
             o = json.loads(f.read_text())
         except Exception:  # noqa: BLE001 — meta corrompido não pode derrubar a API
             continue
         if isinstance(o, dict):
             items.append(o)
+    if modo_lista:                           # cliente antigo: a lista crua de antes
+        return JSONResponse(items, headers={"X-Total-Count": str(total)})
     return JSONResponse({"items": items, "total": total, "limit": limite, "offset": offset},
                         headers={"X-Total-Count": str(total)})
 
@@ -5479,11 +5949,21 @@ def output_audio(out_id: str):
 def delete_all_outputs(request: Request):
     _exige_admin(request)
     removidos = 0
+    falhas = []
     for meta in OUTPUTS_DIR.glob("*.json"):
-        meta.with_suffix(".wav").unlink(missing_ok=True)
-        meta.unlink(missing_ok=True)
-        removidos += 1
-    return {"ok": True, "removidos": removidos}
+        try:
+            meta.with_suffix(".wav").unlink(missing_ok=True)
+            meta.unlink(missing_ok=True)
+            removidos += 1
+        except OSError as exc:
+            # um arquivo travado não pode derrubar a resposta no meio já tendo
+            # apagado o resto: acumula e devolve o balanço (#282)
+            falhas.append(f"{meta.name}: {exc.strerror or exc}")
+    corpo = {"ok": True, "removidos": removidos}
+    if falhas:
+        corpo["falhas"] = falhas[:20]
+        corpo["falhas_total"] = len(falhas)
+    return corpo
 
 
 def _auto_cleanup_once():
@@ -5574,24 +6054,44 @@ def _mt_repo() -> str:
     return (_settings.get("translate_model") or "").strip() or TRANSLATE_REPO
 
 
-def _unload_local_models(tts=True, stt=True, mt=True, ser=True) -> dict:
-    """Libera RAM descarregando os modelos LOCAIS (MLX/torch). Cada flag controla um motor."""
+def _unload_local_models(tts=True, stt=True, mt=True, ser=True,
+                         espera_gen_s: float | None = None) -> dict:
+    """Libera RAM descarregando os modelos LOCAIS (MLX/torch). Cada flag controla um motor.
+
+    `espera_gen_s`: prazo para pegar o `_gen_lock` (None = espera indefinida, que é
+    o certo no caminho de ociosidade). A rota passa um prazo curto: com job
+    in-process longo o POST ficava pendurado até o fim da geração, sem timeout e
+    sem explicação (#282). Estourou → TTS não é descarregado e o motivo volta em
+    `tts_pendente`, para a rota devolver 409."""
     global _model
     freed = []
+    tts_pendente = False
     if tts:
-        with _gen_lock:
-            with _model_lock:
-                if _model is not None:
-                    _model = None
-                    freed.append("tts")
-                _conds_cache.clear()
-                _cache_limpa()
-                if _model_state.get("status") != "error":
-                    # precision/path junto com o status: sem isto /api/status segue
-                    # afirmando "ready, precision X, path Y" de um modelo que já
-                    # saiu da RAM (unload por ociosidade / troca de precisão).
-                    _model_state.update(status="idle", error=None, progress=None,
-                                        precision=None, path=None)
+        tomou = True
+        if espera_gen_s is not None:
+            tomou = _gen_lock.acquire(timeout=max(0.0, espera_gen_s))
+            tts_pendente = not tomou
+        else:
+            _gen_lock.acquire()
+        try:
+            if not tomou:
+                pass                     # geração em curso: não encosta no modelo
+            else:
+                with _model_lock:
+                    if _model is not None:
+                        _model = None
+                        freed.append("tts")
+                    _conds_cache.clear()
+                    _cache_limpa()
+                    if _model_state.get("status") != "error":
+                        # precision/path junto com o status: sem isto /api/status segue
+                        # afirmando "ready, precision X, path Y" de um modelo que já
+                        # saiu da RAM (unload por ociosidade / troca de precisão).
+                        _model_state.update(status="idle", error=None, progress=None,
+                                            precision=None, path=None)
+        finally:
+            if tomou:
+                _gen_lock.release()
     if mt:
         with _mt_lock:
             if _mt.get("model") is not None:
@@ -5626,7 +6126,10 @@ def _unload_local_models(tts=True, stt=True, mt=True, ser=True) -> dict:
             torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001
         pass
-    return {"unloaded": freed}
+    corpo = {"unloaded": freed}
+    if tts_pendente:
+        corpo["tts_pendente"] = "geração em curso segurando o lock; tente depois"
+    return corpo
 
 
 def _schedule_job_cleanup(job_id: str, delay_s: float = 90):
@@ -5786,6 +6289,35 @@ def _use_remote_tts() -> bool:
     return bool(_settings.get("remote_tts")) and bool(_settings.get("remote_tts_url"))
 
 
+def _extra_remoto(bruto) -> dict:
+    """JSON de `remote_tts_extra` saneado: sem `text`/`voice` (por trecho).
+
+    Chave fora de formato → dict vazio (o padrão do provedor vale). Avisa UMA vez
+    por valor problemático: override ignorado é degradação silenciosa (#282)."""
+    texto = (bruto or "").strip()
+    if not texto:
+        return {}
+    try:
+        extra = json.loads(texto)
+    except (ValueError, TypeError):
+        if texto not in _extra_remoto_avisados:
+            _extra_remoto_avisados.add(texto)
+            print("[tts-remoto] remote_tts_extra não é JSON válido — ignorado "
+                  f"({texto[:60]!r})", file=sys.stderr, flush=True)
+        return {}
+    if not isinstance(extra, dict):
+        return {}
+    for campo in ("text", "voice"):
+        if campo in extra:
+            print(f"[tts-remoto] remote_tts_extra traz '{campo}' — não vale para "
+                  f"todos os trechos, ignorado", file=sys.stderr, flush=True)
+            extra = {k: v for k, v in extra.items() if k != campo}
+    return extra
+
+
+_extra_remoto_avisados: set = set()
+
+
 def _remote_origin() -> str:
     """scheme://host:port da URL do TTS remoto (p/ os endpoints /voices).
 
@@ -5907,13 +6439,11 @@ def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voi
     lang_name = LANG_DISPLAY.get((language or "").lower())
     if lang_name and "language" not in body:
         body["language"] = lang_name
-    # JSON extra do usuário sobrepõe/adiciona
-    try:
-        extra = json.loads(_settings.get("remote_tts_extra") or "{}")
-        if isinstance(extra, dict):
-            body.update(extra)
-    except (ValueError, TypeError):
-        pass
+    # JSON extra do usuário sobrepõe/adiciona — MENOS `text`/`voice`, que são
+    # por TRECHO: com eles no extra, um único valor fixo sobrescrevia o texto de
+    # todo trecho do job (o campo passou a ser admin, mas admin também se
+    # surpreendia). Ver `_extra_remoto`.
+    body.update(_extra_remoto(_settings.get("remote_tts_extra")))
     # 1 retry p/ falha transitória (rede/Wi-Fi/5xx): um erro no trecho 20 de 30
     # não pode matar o job inteiro
     r = None
@@ -6179,6 +6709,13 @@ def _whisper_repo() -> str:
     return (_settings.get("stt_whisper_repo") or "").strip() or WHISPER_REPO
 
 
+def _com_vad_aviso(res: dict, aviso: str) -> dict:
+    """Carimba o motivo do fail-open do VAD, quando houve."""
+    if aviso and isinstance(res, dict) and "vad_aviso" not in res:
+        res = {**res, "vad_aviso": aviso[:160]}
+    return res
+
+
 def _transcribe(audio_path: Path, language: str | None = None, allow_remote: bool = True):
     caiu_remoto, erro_remoto = False, ""
     if allow_remote and _use_remote_stt():
@@ -6195,9 +6732,14 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
     if not fala:
         return _com_aviso_remoto({"text": "", "language": "", "segments": []},
                                  caiu_remoto, erro_remoto)
+    # o VAD falha ABERTO por desenho (não bloqueia o pipeline), mas o cliente tem
+    # de saber que o guarda anti-alucinação ficou desligado neste trecho (#282)
+    vad_aviso = _vad_erro
 
     if (_settings.get("stt_local_engine") or "whisper").lower() == "parakeet":
-        return _com_aviso_remoto(_transcribe_parakeet(audio_path), caiu_remoto, erro_remoto)
+        return _com_vad_aviso(
+            _com_aviso_remoto(_transcribe_parakeet(audio_path), caiu_remoto, erro_remoto),
+            vad_aviso)
 
     # language fixo (ex.: "pt") melhora muito a precisão em trechos curtos: o
     # whisper deixa de adivinhar o idioma a cada frase. None = auto-detecta.
@@ -6211,7 +6753,7 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
     del audio
     _touch_use("stt")
     _release_mlx_memory()
-    return _com_aviso_remoto(r, caiu_remoto, erro_remoto)
+    return _com_vad_aviso(_com_aviso_remoto(r, caiu_remoto, erro_remoto), vad_aviso)
 
 
 _pk = {"model": None, "repo": ""}
@@ -6454,14 +6996,27 @@ def translate_warmup():
 
 @app.post("/api/models/unload")
 def unload_models(request: Request, payload: dict = None):
-    _exige_admin(request)
     """Descarrega modelos LOCAIS (MLX) p/ liberar RAM. Sem corpo = todos os locais.
-    {"only_remote": true} = só os que têm remoto ativo."""
+    {"only_remote": true} = só os que têm remoto ativo.
+
+    Com job in-process em voo o `_gen_lock` está tomado e o POST ficava PENDURADO
+    até o fim da geração (#282): agora espera `_GEN_ESPERA_UNLOAD_S` e, se não der,
+    devolve 409 explicando — sem descarregar o modelo por baixo da geração."""
+    _exige_admin(request)
+    from fastapi.responses import JSONResponse
     p = payload or {}
     if p.get("only_remote"):
-        r = _unload_local_models(tts=_use_remote_tts(), stt=_use_remote_stt(), mt=_use_remote_translate())
+        r = _unload_local_models(tts=_use_remote_tts(), stt=_use_remote_stt(),
+                                 mt=_use_remote_translate(),
+                                 espera_gen_s=_GEN_ESPERA_UNLOAD_S)
     else:
-        r = _unload_local_models()
+        r = _unload_local_models(espera_gen_s=_GEN_ESPERA_UNLOAD_S)
+    if r.get("tts_pendente"):
+        return JSONResponse(
+            {"detail": "Geração local em curso segurando o modelo; nada foi "
+                       "descarregado do TTS",
+             "hint": "Espere o job terminar (ou use ociosidade) e tente de novo.",
+             **r}, status_code=409)
     return r
 
 
@@ -6903,8 +7458,12 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
     emb = _speaker_embed(wav_path)
     if not emb:
         # sem embedding (áudio curto/erro): enforce rejeita, label segue
+        # `enforce` rejeita; `label` antes seguia MUDO — agora diz que seguiu sem
+        # etiqueta por falta de embedding (#282)
         return ({"rejected": True, "reason": "áudio curto p/ identificar a voz"}
-                if gate == "enforce" else {})
+                if gate == "enforce" else
+                {"speaker_aviso": "áudio curto p/ identificar a voz — segue sem "
+                                  "etiqueta de locutor"})
     melhor, sim = None, 0.0
     for nome, p in perfis.items():
         for vec in p.get("vecs", []):
@@ -7351,8 +7910,16 @@ def _live_stats_ia(sess: dict) -> dict:
         tem_dsh = pedido == "dsh"
     else:
         tem_dsh = pipe._dsh is not None
+    estouros = int(getattr(pipe, "_dsh_estouros", 0) or 0)
+    bridge = getattr(pipe, "bridge_estado", None)
     return {"pedido": pedido, "backend": "openai" if (caiu or not tem_dsh) else "dsh",
-            "fallback": caiu, "motivo": str(getattr(pipe, "_dsh_motivo", "") or "")[:200]}
+            "fallback": caiu, "motivo": str(getattr(pipe, "_dsh_motivo", "") or "")[:200],
+            # estouro de RELÓGIO é diagnóstico separado de queda (#287): o turno caiu
+            # no openai, mas o dsh continua vivo e volta a ser tentado
+            "teto_estouro": estouros,
+            # bridge `clean` explica um turno que caiu no openai sem o dsh estar
+            # morto: sem o patch não há delta a esperar (#287)
+            "bridge": bridge}
 
 
 def _live_fila_itens(sess: dict) -> int:
@@ -7530,11 +8097,25 @@ def _live_ticket_emite() -> str:
 
 
 def _live_ticket_consome(ticket: str) -> bool:
-    """UM uso: o ticket some no handshake, mesmo se a sessão cair depois."""
+    """UM uso: o ticket SOME de vez quando é consumido (inclusive se a sessão cair).
+
+    Ticket inválido/expirado/desconhecido também é descartado (não volta a valer),
+    mas quem decide se ele AUTENTICA é o prazo: `_secrets_iguais`-style, aqui por
+    comparação direta do vencimento."""
     if not ticket:
         return False
     with _live_lock:
         expira = _live_tickets.pop(ticket, None)
+    return expira is not None and expira > time.monotonic()
+
+
+def _live_ticket_vale(ticket: str) -> bool:
+    """O ticket existe e está no prazo — SEM consumir (para tentar a chave antes
+    de gastar o ticket, se o chamador quiser)."""
+    if not ticket:
+        return False
+    with _live_lock:
+        expira = _live_tickets.get(ticket)
     return expira is not None and expira > time.monotonic()
 
 
@@ -7552,11 +8133,19 @@ def _live_autentica(ws) -> bool:
         return True
     if not _auth_enabled():
         return True
+    _live_ticket_limpa()               # varre por TEMPO, não só na emissão
     ticket = (ws.query_params.get("ticket") or "").strip()
     if ticket and _live_ticket_consome(ticket):
         return True
-    chave = (ws.query_params.get("key") or "").strip() or _extract_request_key(ws)
-    return _key_is_valid(chave)
+    chave_query = (ws.query_params.get("key") or "").strip()
+    chave = chave_query or _extract_request_key(ws)
+    ok = _key_is_valid(chave)
+    if ok and chave_query:
+        # chave em query vai para access log do uvicorn/proxy: o ticket existe para
+        # isso, então a queda para `?key=` fica REGISTRADA em vez de invisível (#282)
+        print("[live] auth por ?key= (chave em query string; prefira o ticket)",
+              file=sys.stderr, flush=True)
+    return ok
 
 
 @app.post("/api/live/ticket")
@@ -7891,6 +8480,9 @@ def _live_pcm_limpo(sess: dict, pcm: bytes) -> bytes:
     (o motor conta amostras), então nesse caso o filtro sai e o cru entra."""
     ns = sess.get("rnnoise")
     if ns is None:
+        return pcm
+    if getattr(ns, "morto", False):      # caiu de vez (#375/F3)
+        _live_rnnoise_derruba(sess, "filtro caiu")
         return pcm
     try:
         sai = ns.processa(pcm)
@@ -8358,22 +8950,48 @@ def _live_pipe_novo(sess: dict):
         return None
     historico = [{"role": h["role"], "content": h["text"]} for h in sess["history"]]
     dsh = None
+    bridge, teto = "unknown", None
     if _chat_backend_live() == "dsh":
-        try:
-            cfg = _chat_dsh_cfg()
-            dsh = dsh_client.DshClient(
-                bin=cfg["bin"], profile=cfg["profile"], model=cfg["model"],
-                effort=cfg["effort"], cwd=BASE / "outputs" / ".dsh-cwd",
-                on_log=lambda m: _dsh_log(m, "live-dsh"))
-        except Exception as exc:                 # noqa: BLE001 — cai no openai
-            print(f"[live] dsh indisponível ({type(exc).__name__}: {exc}) — "
-                  f"sessão no backend openai", flush=True)
+        travado = _dsh_latch("handshake do dsh falhou há pouco")
+        if travado:
+            # falha recente de handshake: não repete as 6 tentativas em cada sessão
+            # nova — a sessão nasce e segue no openai (#287)
+            sess["dsh_indisponivel"] = travado
+            _live_envia_json(sess, {"type": "dsh_indisponivel", "fallback": "openai",
+                                    "message": travado[:200]})
+            print(f"[live] dsh em latch — sessão no backend openai: {travado}", flush=True)
+        else:
+            # estado do bridge: `clean` = sem o patch de streaming, a resposta vem
+            # INTEIRA no fim e o teto longo do 1º delta é só atraso (#287)
+            bridge = _dsh_bridge_estado_cached().get("estado", "unknown")
+            teto = _DSH_FIRST_DELTA_S
+            if bridge == "clean":
+                teto = _DSH_FIRST_DELTA_CLEAN_S
+                sess["bridge"] = "clean"
+                print(f"[live] bridge ACP SEM patch (clean) — teto do 1º delta "
+                      f"encurtado para {teto:g}s", flush=True)
+            try:
+                cfg = _chat_dsh_cfg()
+                dsh = _DshComSlot(
+                    bin=cfg["bin"], profile=cfg["profile"], model=cfg["model"],
+                    effort=cfg["effort"], cwd=BASE / "outputs" / ".dsh-cwd",
+                    on_log=lambda m: _dsh_log(m, "live-dsh"))
+            except _DshSemSlot as exc:
+                # teto GLOBAL: a sessão nasce e segue no openai, mas DIZ isso (#287)
+                sess["dsh_ocupado"] = str(exc)
+                _live_envia_json(sess, {"type": "dsh_ocupado", "fallback": "openai",
+                                        "message": str(exc)[:200]})
+                print(f"[live] dsh_ocupado ({exc}) — sessão no backend openai", flush=True)
+            except Exception as exc:             # noqa: BLE001 — cai no openai
+                print(f"[live] dsh indisponível ({type(exc).__name__}: {exc}) — "
+                      f"sessão no backend openai", flush=True)
     sess["dsh"] = dsh
     return _live_mod.LivePipeline(
         lambda obj: _live_envia_json(sess, obj),
         lambda pcm: _live_envia_audio(sess, pcm),
         voice_id=sess["voice_id"], system=sess["system"] or None, history=historico,
-        dsh=dsh)
+        dsh=dsh, ao_morrer_dsh=_dsh_marca_morto, bridge_estado=bridge,
+        teto_primeiro_delta=teto)
 
 
 def _live_pipe_start(sess: dict) -> None:
@@ -8567,16 +9185,21 @@ _LIVE_RESUME_TTL_S = max(60, int(os.environ.get("TTS_LIVE_RESUME_TTL_S", "1800")
 _LIVE_HIST_MAX_MSGS = max(4, int(os.environ.get("TTS_LIVE_HIST_MAX_MSGS", "24")))
 _LIVE_HIST_MAX_CHARS = max(1000, int(os.environ.get("TTS_LIVE_HIST_MAX_CHARS", "12000")))
 _LIVE_MAX_HISTORICOS = max(1, int(os.environ.get("TTS_LIVE_MAX_HISTORICOS", "32")))
-_LIVE_RESUME_MAX_BYTES = 4 * 1024 * 1024
+#: teto do ACERVO de retomada em CARACTERES (não bytes — `_live_hist_tam` soma
+#: `len(str)`, e comparar isso com um número dito em bytes subestimava o
+#: consumo: 4 MiB de ASCII ≈ 4 M chars, mas 1 char acentuado ocupa 2+ bytes no
+#: buffer do Python/JSON). O teto por CONTAGEM (32 registros) mascara hoje; vale
+#: quando o resumo falha e o histórico cresce (#282).
+_LIVE_RESUME_MAX_CHARS = 4 * 1024 * 1024
 _live_historico: dict = {}          # sid -> {msgs, resumo, voz, system, visto, bytes}
 _live_resume_fn = None              # callable(msgs) -> str; default = _chat_llm
 
 
 def _live_hist_tam(reg: dict) -> int:
-    """Chars do registro retomável — `msgs` MAIS o `system` e o `resumo` (#313).
+    """CHARS do registro retomável — `msgs` MAIS o `system` e o `resumo` (#313).
 
     Contar só as mensagens deixava os dois campos de fora e o teto de
-    `_LIVE_RESUME_MAX_BYTES` (4 MB) subcontava: o `system` são até 4000 chars por
+    `_LIVE_RESUME_MAX_CHARS` (4 M chars) subcontava: o `system` são até 4000 chars por
     sessão que ficavam invisíveis para a evicção."""
     total = sum(len(m.get("content") or m.get("text") or "") for m in reg.get("msgs") or [])
     return total + len(reg.get("system") or "") + len(reg.get("resumo") or "")
@@ -8593,7 +9216,7 @@ def _live_hist_varre(agora: float | None = None) -> list:
         while len(_live_historico) > _LIVE_MAX_HISTORICOS:
             mais_antigo = min(_live_historico, key=lambda s: _live_historico[s].get("visto", 0))
             _live_historico.pop(mais_antigo, None)
-        while sum(_live_hist_tam(r) for r in _live_historico.values()) > _LIVE_RESUME_MAX_BYTES:
+        while sum(_live_hist_tam(r) for r in _live_historico.values()) > _LIVE_RESUME_MAX_CHARS:
             mais_antigo = min(_live_historico, key=lambda s: _live_historico[s].get("visto", 0))
             _live_historico.pop(mais_antigo, None)
     return list(_live_historico)
@@ -8869,8 +9492,11 @@ async def live_ws(ws: WebSocket):
     finally:
         ns = sess.pop("rnnoise", None)
         if ns is not None:
+            # thread: `fechar` espera o processo até ~0,3 s (espera do filtro +
+            # `wait`), e aqui é o event loop — reconexão em rajada atrasaria os
+            # frames das OUTRAS sessões (#375/F4)
             try:
-                ns.fechar()
+                await asyncio.to_thread(ns.fechar)
             except Exception:            # noqa: BLE001
                 pass
         sess["fechar"] = True
