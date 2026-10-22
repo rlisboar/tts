@@ -130,7 +130,7 @@ jobs:
         # cancel no meio de deltas) que já falhou 1x sob carga de 6 agentes nesta
         # máquina e passou 3/3 isolada — 1 retry absorve isso sem mascarar erro
         # determinístico.
-        run: python -m pytest tests/ -q --timeout=180 --reruns 1 --reruns-delay 2
+        run: python -m pytest tests/ -q --timeout=180
 
   suites-sh:
     name: suítes .sh sem navegador nem modelo
