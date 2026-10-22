@@ -116,11 +116,10 @@ jobs:
           export PATH="$PY312:$PATH"      # vale neste passo; o GITHUB_PATH abaixo, nos seguintes
           python -V
           echo "$PY312" >> "$GITHUB_PATH"
-          # o venv de produção NÃO é mutado por `pip install -r`: só os dois
-          # plugins do gate entram, `--no-deps` (puros, sem arrastar nada)
-          python -m pip install --quiet --no-deps --disable-pip-version-check \
-            pytest-timeout pytest-rerunfailures
-          python -c "import fastapi, soundfile, torch; print('deps do app ok')"
+          # NENHUM `pip` no passo: com pip o job trava em `open()` (medido 8 min
+          # a 0 % de CPU). Os dois plugins do gate foram instalados UMA vez no
+          # venv de produção, fora do job; aqui só se verifica.
+          python -c "import fastapi, soundfile, torch, pytest_timeout, pytest_rerunfailures; print('deps do app e plugins ok')"
       - name: pytest
         # `--timeout`: um teste pendurado falha em 3 min em vez de comer o job.
         # Método DEFAULT (SIGALRM), não `--timeout-method=thread`: o `thread` só
