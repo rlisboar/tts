@@ -86,6 +86,9 @@ jobs:
     needs: estatica
     env:
       TTS_TEST_WORKER: '0'      # '0' continua RODANDO (só string vazia skippa)
+      # sem rede no Hub: o HEAD-check do whisper não pode virar espera de rede
+      # em PR (nem depender do hub estar de pé) — #166 documenta o efeito
+      HF_HUB_OFFLINE: '1'
       # #388: base do diff de `test_worker_real_exigido`. Se o PR toca
       # tts_worker.py/live_pipeline.py, o caminho real passa a ser EXIGIDO —
       # antes era só um aviso no resumo. Por isso o checkout abaixo usa
@@ -135,8 +138,10 @@ jobs:
     needs: estatica
     steps:
       - uses: actions/checkout@v4
-      - name: limpa_bytecode (invariante do harness)
-        run: timeout 120 bash tests/limpa_bytecode.sh
-      - name: trava de modelo (serial)
-        # Asserção por relógio como a do pytest: uma repetição antes do vermelho.
-        run: timeout 180 bash tests/serial_lock.sh || timeout 180 bash tests/serial_lock.sh
+      # Um comando só: o runner das .sh sabe a CLASSIFICAÇÃO por estágio, roda em
+      # paralelo (-j 3, 19-22 s), tem teto portátil (o `timeout` do coreutils não
+      # existe no macOS) e falha UMA vez se faltar dependência — em vez de cada
+      # job repetir a lista e o teto à mão. `instancia` exige app de pé e fica
+      # fora do CI; `navegador` pode virar job próprio depois.
+      - name: suítes .sh do estágio rápido
+        run: bash tests/run_sh.sh rapido
