@@ -220,13 +220,16 @@ def test_tts_app_mede_a_espera_do_lock(monkeypatch, tmp_path):
     try:
         th = threading.Thread(target=lp._tts_app, args=("oi.", {}), kwargs={"espera": espera})
         th.start()
-        time.sleep(0.35)
+        # 1 s e piso de 900: é o número do aceite do gate #316. O tempo é medido
+        # DENTRO do app, então máquina lenta dá MAIS espera, nunca menos — o piso
+        # não vira flake por carga.
+        time.sleep(1.0)
         app._gen_lock.release()
         th.join(5)
     finally:
         if app._gen_lock.locked():
             app._gen_lock.release()
-    assert espera["lock_espera_ms"] >= 250
+    assert espera["lock_espera_ms"] >= 900, espera
 
 
 # -- 8. `vad.barge_ms` ----------------------------------------------------
