@@ -95,9 +95,16 @@ CFG = _load_config()
 
 
 def save_config():
+    """Grava o config na marra — o arquivo carrega a CHAVE da API em claro.
+
+    `write_text` cria com o umask (0644 numa máquina padrão), então o `chmod` é
+    explícito (#348, achado #15): o zip do cliente já entrega a chave, mas o
+    arquivo extraído ficava legível para qualquer conta do Mac.
+    """
     try:
         CFG_PATH.write_text(json.dumps(
             {"server_url": CFG["url"], "api_key": CFG["key"]}, indent=2))
+        CFG_PATH.chmod(0o600)
     except Exception:
         pass
 

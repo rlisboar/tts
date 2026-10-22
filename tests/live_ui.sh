@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 
-# log do servidor desta execução (179/223 podem rodar em paralelo)
+# O WAV de estímulo é o que de fato colidia: era nome FIXO (`live_ui_fala.wav`)
+# em /tmp e duas rodadas paralelas escreviam e liam o MESMO arquivo. Passou a ser
+# por execução, com o sufixo da PORTA livre — mesma chave do log, cujo fallback
+# também era fixo (esse só valia sem o export do topo). Os dois só morrem no fim
+# em rodada VERDE; numa vermelha o caminho é impresso e o log fica para leitura.
 export LIVE_UI_LOG="${LIVE_UI_LOG:-/tmp/live_ui_servidor-$$.log}"
 # E2E da UI Live (task #94) contra um servidor PRÓPRIO com o stub de chat por ENV
 # (#103) — assim o settings.json do dono fica intocado. O BACKEND também vai por
@@ -63,6 +67,7 @@ def porta_livre():
         s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
 
 stub_porta = porta_livre()
+porta = porta_livre()      # porta do SERVIDOR do teste (também nomeia o wav/log)
 srv = HTTPServer(("127.0.0.1", stub_porta), Stub)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 
@@ -85,7 +90,7 @@ for w in sorted(pathlib.Path("voices").glob("*.wav")):
     # chunk) fazia parecer que faltava ~+10 dB — o ganho era sintoma, não causa.
     picoA = float(np.abs(a16).max()) or 1.0
     a16 = np.clip(a16 / picoA * 0.95, -1.0, 1.0)
-    wav_entrada = pathlib.Path("/tmp") / "live_ui_fala.wav"
+    wav_entrada = pathlib.Path("/tmp") / f"live_ui_fala-{porta}.wav"
     # SILÊNCIO de 5 s depois da fala, DE PROPÓSITO: o Chromium toca este arquivo em
     # loop, e sem a pausa o VAD nunca fecha — e sem fechar não existe "início de
     # fala" para o motor avaliar como barge-in. Foi isso (não o nível) que fez os
@@ -96,7 +101,6 @@ for w in sorted(pathlib.Path("voices").glob("*.wav")):
 if not wav_entrada: raise SystemExit("sem voices/*.wav para alimentar o mic falso")
 
 # ─── servidor próprio com TTS_CHAT_* (settings do dono intocado) ─────────────
-porta = porta_livre()
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1", "TTS_CHAT_MODEL": "stub-live",
        # BACKEND PINADO: sem isto a suíte fica refém do settings.json do dono —
        # com `chat_backend: "dsh"` ela deixaria o stub e falaria com o harness (#143).
@@ -114,7 +118,7 @@ def _barge_estrito():
     """Duro por padrão (#167 fechou); `0`/`false`/`no` relaxam. Vazio = estrito."""
     return (os.environ.get("BARGE_ESTRITO") or "").strip().lower() not in ("0", "false", "no", "nao")
 BARGE_ESTRITO = _barge_estrito()
-log = pathlib.Path(os.environ.get("LIVE_UI_LOG") or "/tmp/live_ui_servidor.log")
+log = pathlib.Path(os.environ.get("LIVE_UI_LOG") or f"/tmp/live_ui_servidor-{porta}.log")
 # Instrumenta SEM editar arquivo de outro agente: envolve `set_speaking` para
 # registrar o nível que vem do payload do TTS e o limiar resultante. É o número
 # que falta para saber se o alvo (estímulo >= limiar) é alcançável pelo mic.
@@ -581,9 +585,12 @@ finally:
 
 print()
 if falhas:
-    print("✖ FALHOU")
+    print("✖ FALHOU — log do servidor da rodada em", log)
     for f in falhas: print("  ·", f)
     sys.exit(1)
+for sobra in (log, wav_entrada):        # rodada verde não deixa lixo fixo em /tmp
+    try: sobra.unlink()
+    except Exception: pass
 print("✔ OK — turno real pela UI: mic->worklet->WS->áudio de volta, transcrição e corte do barge-in medido"
       + ("" if ROTA_LIVE == "openai" else f" [rota do Live: {ROTA_LIVE}, não o stub]"))
 PYEOF

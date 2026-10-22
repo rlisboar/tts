@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 
-# log do servidor desta execução (paralelo com outras suítes)
+# O log do servidor é POR EXECUÇÃO e sai do `$$` (entre rodadas paralelas este
+# já era o certo). O que estava fixo era o FALLBACK do Python — caminho de quem
+# roda o miolo direto, sem passar pelo export do topo — e por isso o sufixo lá
+# passou a vir da PORTA livre. O log agora morre no fim QUANDO PASSA: rodada
+# verde não deixa lixo em /tmp; rodada vermelha imprime o caminho e o mantém.
 export HASH_DEEP_LOG="${HASH_DEEP_LOG:-/tmp/hash_deep_link_servidor-$$.log}"
 # Regressão do deep-link por hash (#128, task_22184151): a rota por `location.hash`
 # não existia — abrir http://127.0.0.1:7860/#live caía na tela padrão, porque o
@@ -38,7 +42,8 @@ def porta_livre():
 
 porta = porta_livre()
 env = {**os.environ, "LIVE_UI_PORT": str(porta)}
-log = pathlib.Path(os.environ.get("HASH_DEEP_LOG") or "/tmp/hash_deep_link_servidor.log")
+log = pathlib.Path(os.environ.get("HASH_DEEP_LOG")
+                   or f"/tmp/hash_deep_link_servidor-{porta}.log")
 _launcher = '''
 import os, uvicorn, app
 uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["LIVE_UI_PORT"]))
@@ -167,9 +172,11 @@ finally:
 
 print()
 if falhas:
-    print("✖ FALHOU")
+    print("✖ FALHOU — log do servidor da rodada em", log)
     for f in falhas: print("  ·", f)
     sys.exit(1)
+try: log.unlink()                      # rodada verde não deixa lixo fixo em /tmp
+except Exception: pass
 print("✔ OK — deep-link por hash: #live abre a aba (com o hook), inválido cai na padrão, "
       "hashchange comuta sem reload e sem hash a última tela é restaurada")
 PYEOF

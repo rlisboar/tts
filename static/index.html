@@ -10,9 +10,10 @@
      a valer depois do parser. Com o header vale para a resposta inteira,
      inclusive sob /ttsproxy/; /docs fica de fora porque monta a própria página
      com CSS de CDN.
-     `script-src 'unsafe-inline'` é necessário porque o app é um <script> inline
-     único (sem build); por isso a auditoria de sinks de innerHTML importa.
-     `wasm-unsafe-eval` é do onnxruntime-web (VAD). -->
+     Para o <script> inline único (sem build) o servidor põe o nonce DESTA
+     resposta (`_NONCE_RE` em app.py) — não há 'unsafe-inline' no script-src, e
+     por isso a auditoria de sinks de innerHTML importa: o que o servidor manda
+     como dado NÃO executa. `wasm-unsafe-eval` é do onnxruntime-web (VAD). -->
 <!-- integrity (SRI): os dois bundles rodam na origem da página e enxergam o
      localStorage — onde vive a chave da API. Sem SRI, uma troca do arquivo no
      CDN executa código novo com acesso à chave. Hash sha384 do conteúdo exato
@@ -202,6 +203,12 @@
     box-shadow: inset 0 0 0 1px var(--accent-border), inset 3px 0 0 0 var(--accent);
   }
   .nav-item.active .ic { opacity: 1; color: var(--accent); }
+  /* sessão do Live viva: ponto verde na navegação, visível de qualquer aba */
+  .nav-item.com-mic::after {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--ok); box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 60%, transparent);
+    margin-left: auto; flex-shrink: 0;
+  }
   .nav-item:focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--ring); }
 
   .side-foot {
@@ -1932,7 +1939,15 @@
     .hero-area { min-height: 160px !important; font-size: 16px !important; }
     .control-bar .field-group select,
     .control-bar .field-group input { min-width: 0; width: 100%; }
-    .control-bar { flex-direction: column; align-items: stretch; }
+    /* Em COLUNA o `flex-basis` deixa de ser largura e vira ALTURA: o
+       `flex-basis:100%` global dos painéis OBS (pensado para barra em linha) dava
+       100% da ALTURA e, com `flex-wrap: wrap`, o painel quebrava em coluna lateral
+       — 140 px fora da tela em 390. `flex:0 0 auto` devolve a base ao conteúdo
+       (a largura cheia vem do `align-items: stretch` acima); o `nowrap` impede a
+       reincidência caso alguém reintroduza um basis. */
+    .control-bar { flex-direction: column; align-items: stretch; flex-wrap: nowrap; }
+    .control-bar #obsTts, .control-bar #obsVozes,
+    .toolbar #obsStt, .toolbar #obsVozes { flex: 0 0 auto; }
     .control-bar .actions { margin-left: 0; width: 100%; }
     .control-bar .actions button { flex: 1; }
     button.primary-lg { width: 100%; }
@@ -1980,6 +1995,10 @@
   .lx-aviso { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--warn);
               background: var(--surface); border: 1px solid var(--border-soft);
               border-left: 3px solid var(--warn); border-radius: 8px; padding: 6px 10px; }
+  /* a faixa do "segurar para falar" leva botão: sem o flex ele cairia na linha
+     de baixo do texto; `[hidden]` explícito porque display:flex venceria o da UA */
+  #lxHoldAviso { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #lxHoldAviso[hidden] { display: none; }
   .lx-log-mini.e-erro { color: var(--err); }
   .lx-log-mini.e-ok { color: var(--ok); }
 
@@ -1997,6 +2016,69 @@
   .cfg-mascarado::placeholder { color: var(--warn); opacity: .9; font-size: 11.5px; }
   #cfgAdminBadge { cursor: help; letter-spacing: .2px; }
   #cfgAdminBadge.travado { color: var(--warn); border-color: var(--warn); }
+  /* ═══════════ Primeiro uso + mapa de atalhos ═══════════ */
+  .onboarding { display: flex; flex-direction: column; gap: 10px; }
+  .onboarding[hidden] { display: none; }
+  .onb-head { display: flex; align-items: center; gap: 10px; }
+  .onb-head h2 { margin: 0; flex: 1; }
+  .onb-head h2::after { display: none; }
+  .onb-passos {
+    display: grid; gap: 12px; margin: 0; padding: 0; list-style: none;
+    grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+    counter-reset: onb;
+  }
+  .onb-passos li {
+    counter-increment: onb;
+    display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--r-md); padding: 12px 14px; font-size: 13px; line-height: 1.5;
+  }
+  .onb-passos li b { color: var(--text); }
+  .onb-passos li b::before {
+    content: counter(onb) ". "; color: var(--accent); font-weight: 700;
+  }
+  .onb-passos li span { color: var(--muted); }
+  .onb-passos li button { margin-top: auto; }
+
+  .at-modal { width: min(880px, 95vw); }
+  .at-grupos {
+    display: grid; gap: 14px; align-items: start;
+    grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  }
+  .at-grupo {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--r-md); padding: 12px 14px;
+  }
+  .at-grupo h3 {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--accent); font-weight: 700; margin-bottom: 8px;
+  }
+  .at-grupo dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; margin: 0; }
+  .at-grupo dt { white-space: nowrap; }
+  .at-grupo dd { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+
+  /* ═══════════ Responsivo de verdade — por ÚLTIMO ═══════════
+     Este arquivo tem o CSS em camadas históricas e alguns seletores são
+     redeclarados bem no fim com largura FIXA (`.tv-right`: 320 → 300 → 340 px).
+     Media query declarada antes de uma redeclaração não vence — o `width:auto`
+     das telas estreitas era letra morta e o painel do tradutor saía 65 px fora
+     da viewport em 390 px. As regras abaixo vêm depois de tudo: aqui a
+     responsividade tem a última palavra. */
+  @media (max-width: 1100px) {
+    .tv-right { width: auto; max-width: 100%; }
+  }
+  @media (max-width: 880px) {
+    .tv-right { width: 100%; }
+    .tv-split { gap: 12px; }
+    /* botão com rótulo comprido ("Filtros do microfone e anti-ruído") não cabia
+       em 360 px: `white-space: nowrap` da base fazia ele sair da viewport em vez
+       de quebrar. Mesmo tratamento que o painel de configurações já usa. */
+    [data-goto-audio], .card-head button {
+      white-space: normal; line-height: 1.25; height: auto;
+      max-width: 100%; padding: 6px 10px; overflow-wrap: anywhere;
+    }
+    .card-head { flex-wrap: wrap; }
+  }
 </style>
 </head>
 <body>
@@ -2098,6 +2180,35 @@
         </div>
       </div>
       <div class="view-scroll">
+        <!-- Primeiro uso: sem chave salva e com o modelo nunca carregado a tela
+             não ensinava nada. Dispensável, e não volta depois de dispensado. -->
+        <section class="card onboarding" id="onboarding" hidden aria-labelledby="onbTitulo">
+          <div class="onb-head">
+            <h2 id="onbTitulo">Primeiros passos</h2>
+            <button type="button" class="ghost small" id="onbFechar">entendi, esconder</button>
+          </div>
+          <ol class="onb-passos">
+            <li id="onbPasso1">
+              <b>Chave da API</b>
+              <span>Se este navegador ainda não tem a chave, cole a que o app mostra no terminal ao subir.
+                Ela fica só aqui e vai apenas no header — nunca na URL.</span>
+              <button type="button" class="ghost small" data-onb="acesso">Abrir Acesso</button>
+            </li>
+            <li id="onbPasso2">
+              <b>Microfone</b>
+              <span>Grave 10–20 s de fala limpa em <b>Vozes</b> para clonar. Em outra máquina da rede,
+                abra por <code>https</code> ou pelo <code>127.0.0.1</code> — IP da LAN em http não abre o mic.</span>
+              <button type="button" class="ghost small" data-onb="vozes">Abrir Vozes</button>
+            </li>
+            <li id="onbPasso3">
+              <b>Falar</b>
+              <span>Escolha a voz, escreva o texto e use <b>Gerar e falar</b> (⌘/Ctrl+Enter).
+                <code>?</code> mostra o mapa de atalhos.</span>
+              <button type="button" class="ghost small" data-onb="atalhos">Ver atalhos</button>
+            </li>
+          </ol>
+        </section>
+
         <div class="card grow-card" style="flex:1; min-height:0; display:flex; flex-direction:column">
 
         <div class="gen-workspace">
@@ -2293,7 +2404,7 @@
           </div>
           <div class="actions">
             <button id="tvStopBtn" class="ghost" style="display:none">■ Parar</button>
-            <span id="tvStatus" class="hint"></span>
+            <span id="tvStatus" class="hint" role="status" aria-live="polite"></span>
           </div>
         </div>
 
@@ -2329,7 +2440,7 @@
                 <option value="ja">日本語</option>
                 <option value="zh">中文</option>
               </select>
-              <span id="sttStatus" class="hint"></span>
+              <span id="sttStatus" class="hint" role="status" aria-live="polite"></span>
             </div>
             <details>
               <summary>Importar do YouTube</summary>
@@ -2372,7 +2483,7 @@
             <span style="flex:1"></span>
             <button type="button" id="cvEnd" class="ghost small">Encerrar sessão</button>
           </div>
-          <p class="hint" id="cvStatus" style="margin-top:6px"></p>
+          <p class="hint" id="cvStatus" role="status" aria-live="polite" style="margin-top:6px"></p>
           <div id="obsCv"></div>
           <button type="button" class="ghost small" data-goto-audio>🎙 Filtros do microfone e anti-ruído</button>
           <details style="margin-top:10px">
@@ -2479,12 +2590,17 @@
               <span>taxa de captura <b id="lxCtx">—</b></span>
               <span>entrada <b id="lxDev">—</b></span>
               <span title="passa-alta e ganho de Configurações → Microfone, no PCM do Live. O slider vale na hora, sem reabrir a sessão.">filtro do mic <b id="lxFiltro">—</b></span>
+              <span title="modo segurar-para-falar do servidor: automático (VAD) ou segurando. A sugestão vem do motor quando o barge-in falha repetido.">segurar p/ falar <b id="lxHold">—</b></span>
             </div>
             <div class="lx-grid" style="grid-template-columns: 1fr">
               <span>latência do turno <b id="lxLat">—</b></span>
               <span id="lxLatHist" style="color: var(--faint)"></span>
             </div>
             <p class="lx-aviso" id="lxDshAviso" hidden role="status"></p>
+            <p class="lx-aviso" id="lxHoldAviso" hidden role="status">
+              <span id="lxHoldTexto"></span>
+              <button type="button" class="ghost small" id="lxHoldBtn"></button>
+            </p>
             <div class="lx-log-mini" id="lxLog" aria-live="off" title="eventos da sessão — erros nunca são silenciosos"></div>
           </div>
           <div class="lx-split">
@@ -2514,17 +2630,21 @@
         </div>
       </div>
       <div class="view-config-body">
-        <div class="settings-tabs" role="tablist">
-          <button type="button" class="stab active" data-stab="modelo" role="tab">Modelo</button>
-          <button type="button" class="stab" data-stab="geracao" role="tab">Geração</button>
-          <button type="button" class="stab" data-stab="audio" role="tab">Áudio</button>
-          <button type="button" class="stab" data-stab="acesso" role="tab">Acesso</button>
-          <button type="button" class="stab" data-stab="rede" role="tab">Rede &amp; memória</button>
+        <!-- `role="tab"` sozinho não bastava: sem aria-selected, aria-controls,
+             tabpanel e roving tabindex o leitor de tela anunciava "aba" sem dizer
+             qual está aberta (B10). O teclado segue o padrão: setas movem, Home/End
+             vão às pontas, e só a aba ativa é parada de Tab. -->
+        <div class="settings-tabs" role="tablist" aria-label="Seções das configurações">
+          <button type="button" class="stab active" data-stab="modelo" role="tab" id="stab-modelo" aria-selected="true" aria-controls="spane-modelo" tabindex="0">Modelo</button>
+          <button type="button" class="stab" data-stab="geracao" role="tab" id="stab-geracao" aria-selected="false" aria-controls="spane-geracao" tabindex="-1">Geração</button>
+          <button type="button" class="stab" data-stab="audio" role="tab" id="stab-audio" aria-selected="false" aria-controls="spane-audio" tabindex="-1">Áudio</button>
+          <button type="button" class="stab" data-stab="acesso" role="tab" id="stab-acesso" aria-selected="false" aria-controls="spane-acesso" tabindex="-1">Acesso</button>
+          <button type="button" class="stab" data-stab="rede" role="tab" id="stab-rede" aria-selected="false" aria-controls="spane-rede" tabindex="-1">Rede &amp; memória</button>
         </div>
         <p class="hint" id="cfgAdminDica" style="display:none; margin:10px 0 0"></p>
         <div class="config-dock" id="configPanel">
           <div class="config-body">
-            <div class="settings-pane active" data-spane="modelo">
+            <div class="settings-pane active" data-spane="modelo" role="tabpanel" id="spane-modelo" aria-labelledby="stab-modelo" tabindex="0">
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">Modelo &amp; geração</h3>
         <label class="cfg-label">Modelo TTS (backend local)
@@ -2564,7 +2684,7 @@
         </label>
       </section>
             </div>
-            <div class="settings-pane" data-spane="geracao">
+            <div class="settings-pane" data-spane="geracao" role="tabpanel" id="spane-geracao" aria-labelledby="stab-geracao" tabindex="0">
 <section class="cfg-sec" id="secOmni">
         <h3 class="cfg-sec-h" id="secOmniTitle">Controles de geração</h3>
         <p class="hint" id="secOmniHint">Escolha um modelo — os controles se adaptam automaticamente.</p>
@@ -2606,7 +2726,7 @@
         </div>
       </section>
             </div>
-            <div class="settings-pane" data-spane="audio">
+            <div class="settings-pane" data-spane="audio" role="tabpanel" id="spane-audio" aria-labelledby="stab-audio" tabindex="0">
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">Áudio (saída)</h3>
         <div class="sliders">
@@ -2703,7 +2823,7 @@
           em áudio ruim.</p>
       </section>
             </div>
-            <div class="settings-pane" data-spane="acesso">
+            <div class="settings-pane" data-spane="acesso" role="tabpanel" id="spane-acesso" aria-labelledby="stab-acesso" tabindex="0">
 <section class="cfg-sec">
         <h3 class="cfg-sec-h">Chaves da API (servidor)</h3>
         <label class="check"><input type="checkbox" id="apiAuthEnabled"> Exigir chave na rede local</label>
@@ -2770,7 +2890,7 @@
         <p class="hint" id="proxyStatus" style="margin-top:6px"></p>
       </section>
             </div>
-            <div class="settings-pane" data-spane="rede">
+            <div class="settings-pane" data-spane="rede" role="tabpanel" id="spane-rede" aria-labelledby="stab-rede" tabindex="0">
         <p class="hint" id="redeResumoSaida">Tudo roda no Mac: nada do seu áudio ou texto sai
           daqui <b>por padrão</b>. Sai só o que você ligar abaixo — áudio da fala (TTS/STT
           remoto), texto (tradução/Conversa) — para a URL configurada em cada bloco. No TTS
@@ -2913,6 +3033,50 @@
 
 <div id="toast" role="status" aria-live="polite"></div>
 
+<div id="atalhos" class="ed-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="atTitulo">
+  <div class="ed-modal at-modal">
+    <div class="ed-head">
+      <strong id="atTitulo">Atalhos do teclado</strong>
+      <button id="atFechar" class="ghost small" style="margin-left:auto">✕ Fechar</button>
+    </div>
+    <p class="hint" style="margin:0">Todos os atalhos que o app tem — nenhum inventado aqui.
+      Campos de texto ficam de fora, com duas exceções ditas na lista (Enter na chave e ⌘/Ctrl+Enter no texto).</p>
+    <div class="at-grupos">
+      <section class="at-grupo"><h3>Telas</h3><dl>
+        <dt><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd><kbd>5</kbd><kbd>6</kbd><kbd>7</kbd></dt><dd>Gerar · Vozes · Tradutor · Conversa · Histórico · Configurações · Live</dd>
+      </dl></section>
+      <section class="at-grupo"><h3>Gerar fala</h3><dl>
+        <dt><kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd></dt><dd>no campo de texto: gerar e falar</dd>
+        <dt><kbd>Esc</kbd></dt><dd>parar o áudio que está tocando</dd>
+      </dl></section>
+      <section class="at-grupo"><h3>Editor de áudio</h3><dl>
+        <dt><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></dt><dd>anda entre os controles (o foco não escapa do editor)</dd>
+        <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>move o cursor na onda</dd>
+        <dt><kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd></dt><dd>estende a seleção do trecho</dd>
+        <dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>começo / fim da onda</dd>
+        <dt><kbd>Enter</kbd> / <kbd>Espaço</kbd></dt><dd>toca / pausa</dd>
+        <dt><kbd>Esc</kbd></dt><dd>fecha o editor</dd>
+      </dl></section>
+      <section class="at-grupo"><h3>Ondas da lista de vozes</h3><dl>
+        <dt><kbd>Tab</kbd> até a onda, <kbd>←</kbd> <kbd>→</kbd></dt><dd>navega no áudio da voz</dd>
+        <dt><kbd>Enter</kbd> / <kbd>Espaço</kbd></dt><dd>toca / pausa</dd>
+      </dl></section>
+      <section class="at-grupo"><h3>Live</h3><dl>
+        <dt><kbd>Espaço</kbd> ou <kbd>Enter</kbd> no botão</dt><dd>segurar para falar (modo "segurar para falar")</dd>
+      </dl></section>
+      <section class="at-grupo"><h3>Abas de Configurações</h3><dl>
+        <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>troca de seção</dd>
+        <dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>primeira / última seção</dd>
+      </dl></section>
+      <section class="at-grupo"><h3>Chave e este mapa</h3><dl>
+        <dt><kbd>Enter</kbd></dt><dd>no campo da chave: salvar neste navegador</dd>
+        <dt><kbd>?</kbd></dt><dd>abre este mapa (fora de campo de texto)</dd>
+        <dt><kbd>Esc</kbd></dt><dd>fecha este mapa</dd>
+      </dl></section>
+    </div>
+  </div>
+</div>
+
 <div id="audioEditor" class="ed-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="edTitle">
   <div class="ed-modal">
     <div class="ed-head">
@@ -2920,7 +3084,8 @@
       <span id="edInfo" class="hint" style="margin:0"></span>
       <button id="edClose" class="ghost small" style="margin-left:auto">✕ Fechar</button>
     </div>
-    <canvas id="edWave" class="ed-wave" width="1000" height="170"></canvas>
+    <canvas id="edWave" class="ed-wave" width="1000" height="170" tabindex="0" role="application"
+            aria-label="forma de onda: setas movem o cursor, Shift+setas estendem a seleção, Home/End vão às pontas, Enter toca"></canvas>
     <div class="ed-transport">
       <button id="edPlay" class="wplay" type="button">▶</button>
       <span id="edTime" class="wtime" style="min-width:90px">0:00 / 0:00</span>
@@ -3104,6 +3269,16 @@ function marcarSegredosMascarados() {
     el.classList.toggle("cfg-mascarado", mascarado);
   }
 }
+
+/* Aba oculta × visível: o app tinha ZERO `visibilitychange` e seguia com todos os
+   timers no mesmo ritmo (M4). Aqui só se ajusta RITMO — nada é religado por conta
+   própria, para não surpreender quem está no meio de uma sessão. */
+document.addEventListener("visibilitychange", () => {
+  if (typeof LX === "object" && LX.obs && LX.obs.tick) lxRearmaTick();
+  if (document.hidden) return;
+  refreshStatus();      // volta visível: atualiza já, sem esperar o próximo ciclo
+  pollMicRoute();
+});
 
 /* ───────── Backend de IA: endpoint+chave OU dsh (task_bde89b9a) ─────────
    O `chat_backend` decide POR ONDE o texto da Conversa sai. O dsh é um processo
@@ -3367,8 +3542,32 @@ async function apiBlob(path, opts = {}) {
 }
 
 /* ───────── Navegação por abas ───────── */
+let viewAtual = null;
+// Sair de uma tela não podia deixar o mic aberto e invisível: o indicador do
+// navegador fica aceso, a pessoa troca de assunto e não sabe que segue sendo
+// captada (M4). `try` porque os `let` de cada tela são declarados mais adiante.
+function aoSairDaView(anterior) {
+  try {
+    if (anterior === "conversa" && cvVadLigado) {
+      if (cvVad) cvVad.pause();
+      cvSetMic(false);
+      cvStatus("mic pausado ao sair da aba — volte e ligue de novo");
+    }
+  } catch (e) {}
+}
 function showView(id, opts) {
   const ok = ["gerar","vozes","tradutor","conversa","historico","live","config"].includes(id) ? id : "gerar";
+  // Alteração não salva não pode sumir por troca de aba: o "•" no botão era só
+  // enfeite, nada interceptava a saída (B6). Sair da Configurações com o
+  // formulário sujo passa a pedir confirmação — e o texto diz que os valores
+  // seguem na tela (não são recarregados), para não prometer descarte.
+  if (ok !== "config" && viewAtual === "config" && CFG_SUJO
+      && !confirm("Sair de Configurações sem salvar?\n\n"
+               + "As alterações continuam na tela e valem se você voltar, "
+               + "mas não foram gravadas no servidor.")) return;
+  const anterior = viewAtual;
+  viewAtual = ok;
+  if (anterior && anterior !== ok) aoSairDaView(anterior);
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + ok));
   document.querySelectorAll(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.view === ok));
   localStorage.setItem("ttsStudioView", ok);
@@ -3395,6 +3594,11 @@ document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const tag = (e.target && e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select" || e.target?.isContentEditable) return;
+  // com o editor aberto o foco está no diálogo: trocar a view por baixo dele
+  // desorienta (o modal continua na frente, mas o contexto mudou) — B4
+  if (editorAberto()) return;
+  // `?` é Shift+/ no teclado ABNT e US: `e.key` já vem "?" nos dois
+  if (e.key === "?") { e.preventDefault(); abreAtalhos(); return; }
   const map = { "1": "gerar", "2": "vozes", "3": "tradutor", "4": "conversa", "5": "historico", "6": "config", "7": "live" };
   if (map[e.key]) { e.preventDefault(); showView(map[e.key]); }
 });
@@ -3757,6 +3961,7 @@ async function refreshStatus() {
   };
   try {
     const s = await api("/api/status");
+    decideOnboarding(s.status);
     const name = (s.backend_id || s.model || "").toString().split("/").pop() || "modelo";
     const short = name.length > 28 ? name.slice(0, 26) + "…" : name;
     const label = s.backend_label || s.backend_id || s.model || short;
@@ -3823,7 +4028,14 @@ $("recBtn").onclick = async () => {
   let cap;
   try {
     cap = await micFilteredStream({ echoCancellation: false, noiseSuppression: micFx.ns, autoGainControl: true }, obsVozesM);
-  } catch { toast("Permissão de microfone negada."); return; }
+  } catch (e) {
+    // sem isto o painel ficava PRESO em "● gravando" depois de a captura falhar
+    const msg = micErroTexto(e);
+    obsVozesM.setEstado("✖ mic", "err");
+    obsVozesM.log("mic: " + msg, "e-erro");
+    toast("Mic: " + msg, 6000);
+    return;
+  }
   obsVozesM.log("gravando amostra de voz");
   const stream = cap.stream;
 
@@ -3995,6 +4207,22 @@ async function drawPeaks(canvas, id, buster, au, btn, tEl) {
     au.currentTime = Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * au.duration;
     render(prog());
   };
+  // M3: mesma navegação no teclado (o canvas era mouse-only)
+  canvas.addEventListener("keydown", e => {
+    if (!au.duration) return;
+    const passo = e.shiftKey ? 0.1 : 0.02;
+    const f = au.currentTime / au.duration;
+    let alvo = null;
+    if (e.key === "ArrowRight") alvo = f + passo;
+    else if (e.key === "ArrowLeft") alvo = f - passo;
+    else if (e.key === "Home") alvo = 0;
+    else if (e.key === "End") alvo = 1;
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); au.paused ? au.play() : au.pause(); return; }
+    if (alvo == null) return;
+    e.preventDefault();
+    au.currentTime = Math.min(1, Math.max(0, alvo)) * au.duration;
+    render(prog());
+  });
   canvas.addEventListener("pointerdown", e => {
     canvas.setPointerCapture(e.pointerId); canvas._drag = true; seek(e.clientX);
     if (au.paused) au.play();
@@ -4041,6 +4269,9 @@ async function edSetBlob(blob, pushHist) {
 }
 async function openEditor(blob, onApply, title) {
   ED._prevFocus = document.activeElement;
+  // o diálogo promete `aria-modal` — então o fundo tem de sair da árvore de foco.
+  // Sem `inert`, Shift+Tab do primeiro controle escapava para a página atrás (B5).
+  travaFundo();
   ED.hist = []; ED.sel = null; ED.onApply = onApply;
   $("edTitle").textContent = title || "Editor de áudio";
   $("edSel").textContent = "arraste na onda p/ selecionar um trecho";
@@ -4050,14 +4281,89 @@ async function openEditor(blob, onApply, title) {
   await edSetBlob(blob, true);
 }
 function closeEditor() {
+  soltaFundo();
   if (ED.au) { try { ED.au.pause(); } catch {} }
   $("audioEditor").style.display = "none";
   ED._prevFocus?.focus?.(); ED._prevFocus = null;   // devolve o foco a quem abriu
 }
 // atalhos globais: Esc fecha o editor (ou para o áudio); Cmd/Ctrl+Enter gera a fala
+/* ───────── Primeiro uso (cartão) e mapa de atalhos (task #1cfbbfa7) ─────────
+   O cartão aparece só quando NÃO há chave salva E o modelo nunca foi carregado
+   (`/api/status` em `idle`: o estado volta a idle a cada boot, então isto é o
+   primeiro uso de fato). Dispensado, não volta — o marcador é local e o botão
+   fica na própria tela. */
+const ONB_DISPENSADO = "ttsOnboardingDispensado";
+const ONB_JA_GEROU = "ttsJaGerou";         // este navegador já concluiu uma geração
+let onbDecidido = false;
+function decideOnboarding() {
+  const el = $("onboarding");
+  if (!el || onbDecidido) return;
+  onbDecidido = true;                       // uma decisão por carga; refresh de 15 s não insiste
+  // "primeiro uso" = este navegador não tem chave e nunca gerou nada. O status do
+  // motor não serve como sinal: depois de um restart o modelo fica `idle` de novo
+  // mesmo com o dono já usando o app há semanas.
+  const primeiroUso = !KEY && !localStorage.getItem(ONB_JA_GEROU);
+  el.hidden = !(primeiroUso && !localStorage.getItem(ONB_DISPENSADO));
+}
+if ($("onbFechar")) $("onbFechar").onclick = () => {
+  localStorage.setItem(ONB_DISPENSADO, "1");
+  $("onboarding").hidden = true;
+};
+document.querySelectorAll("[data-onb]").forEach(b => b.onclick = () => {
+  const alvo = b.dataset.onb;
+  if (alvo === "atalhos") abreAtalhos();
+  else if (alvo === "acesso") showView("config", { tab: "acesso" });
+  else showView(alvo);
+});
+
+/* Mapa de atalhos: lista o que EXISTE (nada inventado) e é o destino do `?`.
+   Usa o mesmo trap e o mesmo `inert` do editor — um serviço, dois overlays. */
+function abreAtalhos() {
+  const el = $("atalhos");
+  if (!el || el.style.display !== "none") return;
+  el._prevFocus = document.activeElement;
+  el.style.display = "flex";
+  travaFundo();
+  $("atFechar").focus();
+}
+function fechaAtalhos() {
+  const el = $("atalhos");
+  if (!el || el.style.display === "none") return;
+  el.style.display = "none";
+  soltaFundo();
+  el._prevFocus?.focus?.();
+}
+if ($("atFechar")) $("atFechar").onclick = fechaAtalhos;
+
+/* Overlays modais do app: editor de áudio e mapa de atalhos. O trap e o `inert`
+   são UM serviço para os dois (o mapa reaproveita o trabalho de a11y em vez de
+   abrir um segundo handler concorrente). */
+const OVERLAYS = ["audioEditor", "atalhos"];
+const overlayAberto = () => OVERLAYS.find(id => $(id) && $(id).style.display !== "none");
+const editorAberto = () => !!$("audioEditor") && $("audioEditor").style.display !== "none";
+function travaFundo() { const c = document.querySelector(".app"); if (c) c.inert = true; }
+function soltaFundo() { const c = document.querySelector(".app"); if (c) c.inert = false; }
+
 document.addEventListener("keydown", e => {
+  const aberto = overlayAberto();
+  // Trap declarado: com o fundo inerte o Tab do último controle sairia para a
+  // barra do navegador (e o Shift+Tab do primeiro idem). Aqui o foco dá a volta
+  // DENTRO do diálogo, que é o que `aria-modal="true"` promete (B5).
+  if (e.key === "Tab" && aberto) {
+    const focaveis = [...document.querySelectorAll(
+      `#${aberto} button, #${aberto} input, #${aberto} canvas, #${aberto} a, #${aberto} [tabindex="0"]`)]
+      .filter(el => !el.disabled && el.offsetParent !== null);
+    if (focaveis.length) {
+      const i = focaveis.indexOf(document.activeElement);
+      const prox = e.shiftKey ? (i <= 0 ? focaveis.length - 1 : i - 1)
+                              : (i === -1 || i === focaveis.length - 1 ? 0 : i + 1);
+      e.preventDefault();
+      focaveis[prox].focus();
+    }
+  }
   if (e.key === "Escape") {
-    if ($("audioEditor").style.display !== "none") closeEditor();
+    if (aberto === "atalhos") fechaAtalhos();
+    else if (aberto === "audioEditor") closeEditor();
     else stopPlayback();
   }
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && e.target === $("ttsText")) $("ttsBtn").click();
@@ -4088,6 +4394,39 @@ async function edOp(op) {
     ED.dragging = false; try { c.releasePointerCapture(e.pointerId); } catch {}
     if (!ED.sel && ED.au && ED.dur) { ED.au.currentTime = ED.anchor * ED.dur; edDraw(); }   // clique = seek
   });
+  /* M3: a onda era exclusivamente mouse. Mesmo gesto no teclado — cursor com as
+     setas, seleção com Shift (o `ED.anchor` é o par do arraste), Home/End nas
+     pontas e Enter/Space tocando. Sem isto, cortar/normalizar era inalcançável
+     para quem não usa mouse. */
+  const PASSO = 0.01;
+  const posiciona = f => {
+    f = Math.min(1, Math.max(0, f));
+    if (ED.anchor == null) ED.anchor = f;
+    const a = Math.min(ED.anchor, f), b = Math.max(ED.anchor, f);
+    if (b - a > 0.004 && e_shift) ED.sel = { a, b };
+    else if (!e_shift) { ED.sel = null; ED.anchor = f; }
+    if (ED.sel) $("edSel").textContent = `seleção ${(ED.sel.a * ED.dur).toFixed(2)}–${(ED.sel.b * ED.dur).toFixed(2)}s`;
+    else if (ED.au) ED.au.currentTime = f * ED.dur;
+    edDraw();
+  };
+  let e_shift = false;
+  c.addEventListener("keydown", e => {
+    if (!ED.dur) return;
+    const atual = ED.au && ED.au.duration ? ED.au.currentTime / ED.au.duration : (ED.anchor || 0);
+    const anda = e.shiftKey ? PASSO * 5 : PASSO;
+    let f = null;
+    if (e.key === "ArrowRight") f = atual + anda;
+    else if (e.key === "ArrowLeft") f = atual - anda;
+    else if (e.key === "Home") f = 0;
+    else if (e.key === "End") f = 1;
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (ED.au) ED.au.paused ? ED.au.play() : ED.au.pause(); return; }
+    if (f == null) return;
+    e.preventDefault();
+    if (e.shiftKey && ED.anchor == null) ED.anchor = atual;
+    e_shift = e.shiftKey;
+    posiciona(f);
+  });
+  c.addEventListener("focus", () => { if (ED.anchor == null && ED.dur) ED.anchor = 0; });
 })();
 $("edPlay").onclick = () => { if (ED.au) ED.au.paused ? ED.au.play() : ED.au.pause(); };
 $("edClose").onclick = closeEditor; $("edCancel").onclick = closeEditor;
@@ -4180,7 +4519,9 @@ async function refreshVoices() {
         <div class="meta"><span>${esc(v.duration)}s</span><span class="dot">${v.preset ? "voz padrão" : esc(v.created_at)}</span>${limpa ? '<span class="badge-soft">limpa</span>' : ''}<code class="vid" title="clique p/ copiar o id">${esc(v.id)}</code></div>
         <div class="wrow">
           <button class="wplay" type="button" title="tocar/pausar">▶</button>
-          <canvas class="wave" width="600" height="38" title="clique/arraste p/ navegar"></canvas>
+          <canvas class="wave" width="600" height="38" tabindex="0"
+                  title="clique/arraste p/ navegar — setas também andam (Shift = 5×), Enter toca"
+                  aria-label="forma de onda da voz: setas navegam, Enter toca"></canvas>
           <span class="wtime">0:00 / ${v.duration ? fmtTime(v.duration) : "0:00"}</span>
         </div></div>
         <audio class="weng" data-voice-id="${esc(v.id)}" preload="metadata"></audio>
@@ -4191,9 +4532,19 @@ async function refreshVoices() {
         </div>`;
       const au = div.querySelector(".weng");
       const wplay = div.querySelector(".wplay");
-      protectedAudio(au, `/api/voices/${v.id}/audio?_v=${buster}`);
+      // O áudio vem no 1º play, não no render (M2): a lista era N downloads de WAV
+      // inteiro só para abrir a página, mesmo sem ninguém encostar na aba. O
+      // `/peaks` continua adiantado — é ele que desenha a onda.
       drawPeaks(div.querySelector(".wave"), v.id, buster, au, wplay, div.querySelector(".wtime"));
-      wplay.onclick = () => { au.paused ? au.play() : au.pause(); };
+      wplay.onclick = async () => {
+        if (!au.src) {
+          wplay.disabled = true;
+          await protectedAudio(au, `/api/voices/${v.id}/audio?_v=${buster}`);
+          wplay.disabled = false;
+          if (!au.src) { toast("Não consegui carregar o áudio: " + (au.dataset.loadError || "?"), 5000); return; }
+        }
+        au.paused ? au.play() : au.pause();
+      };
       const eb = div.querySelector(".edit");
       if (eb) eb.onclick = async () => {
         eb.disabled = true;
@@ -4222,11 +4573,21 @@ async function refreshVoices() {
           refreshVoices();
         } catch (e) { toast("Erro: " + e.message); cb.disabled = false; cb.textContent = "limpar"; }
       };
-      div.querySelector(".danger").onclick = async () => {
+      div.querySelector(".danger").onclick = async (ev) => {
         const verbo = v.preset ? "Resetar" : "Apagar";
         if (!confirm(`${verbo} a voz "${v.name}"?`)) return;
-        await api(`/api/voices/${v.id}`, { method: "DELETE" });
-        refreshVoices();
+        // destrutivo e sem catch antes: se o servidor recusasse, a lista seguia
+        // mostrando a voz e ninguém sabia que o apagar não aconteceu (B11)
+        const btn = ev.currentTarget;
+        btn.disabled = true;
+        try {
+          await api(`/api/voices/${v.id}`, { method: "DELETE" });
+          toast(`Voz "${v.name}" ${verbo === "Resetar" ? "resetada" : "apagada"} ✔`);
+          refreshVoices();
+        } catch (e) {
+          toast(`Erro ao ${verbo === "Resetar" ? "resetar" : "apagar"} a voz: ` + e.message, 6000);
+          btn.disabled = false;
+        }
       };
     }
     const vidEl = div.querySelector(".vid");
@@ -4525,8 +4886,15 @@ function selectedModelId() {
   return v || "";
 }
 
+const TEXTO_MAX = 5000;   // o mesmo teto do servidor (app.py) — um lugar só
 $("ttsBtn").onclick = async () => {
   const text = $("ttsText").value.trim();
+  if (text.length > TEXTO_MAX) {
+    toast(`Texto longo demais: ${text.length} caracteres (máx. ${TEXTO_MAX}) — `
+        + `corte ${text.length - TEXTO_MAX} ou divida em duas gerações.`, 7000);
+    $("ttsText").focus();
+    return;
+  }
   const voice_id = $("voiceSelect").value;
   const designMode = voice_id === "__design__";
   const designInstruct = getInstruct();
@@ -4561,6 +4929,10 @@ $("ttsBtn").onclick = async () => {
     const j = await streamJob(job_id, $("ttsStatus"));
     const be = (j.output && j.output.backend) || mid || "";
     $("ttsStatus").textContent = `pronto em ${j.output.elapsed}s${be ? " · " + be : ""} — salvo no histórico`;
+    if (!localStorage.getItem(ONB_JA_GEROU)) {      // cumpriu o 1º uso: o cartão não volta
+      localStorage.setItem(ONB_JA_GEROU, "1");
+      onbDecidido = false; decideOnboarding();
+    }
   } catch (e) { $("ttsStatus").textContent = ""; toast("Erro: " + e.message, 6000); }
   finally {
     $("ttsBtn").disabled = false;
@@ -4806,7 +5178,7 @@ $("micFxMonitor").onclick = async () => {
   micMed = { rms: 0, pico: 0, clip: 0, piso: Infinity, freq: micMed.freq };
   try {
     micMonitor = await micFilteredStream({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: false });
-  } catch (e) { toast("Microfone: " + e.message, 5000); return; }
+  } catch (e) { toast("Mic: " + micErroTexto(e), 5000); return; }
   // grava o monitor: no fim, o texto captado e o tempo de transcrição aparecem na
   // caixa ao lado — é o único jeito de ver o efeito de um filtro no resultado, não
   // só na forma de onda
@@ -4886,6 +5258,31 @@ let outDeviceId = localStorage.getItem("outDeviceId") || "";
 function micAudioConstraints(base) {
   return micDeviceId ? { ...base, deviceId: { exact: micDeviceId } } : base;
 }
+/* Falha de captura: dizer a CAUSA, nunca um genérico. `navigator.mediaDevices`
+   nem existe em origem não segura (http num IP da LAN) — é exatamente o cenário
+   que a regra "a UI tem de funcionar em LAN" encontra, e o `TypeError` que sobra
+   lê-se como "o app quebrou". Antes só o Live explicava isso; a frase virou UMA
+   fonte para todas as telas (uma frase, não cinco cópias divergindo).
+   Ordem importa: origem não segura VENCE o nome do erro, porque alguns browsers
+   respondem `NotAllowedError` nela e a ação a tomar é outra (abrir por https ou
+   127.0.0.1, não "liberar no navegador"). */
+function micIndisponivel() {
+  return !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+function micErroTexto(e) {
+  if (micIndisponivel() || window.isSecureContext === false) {
+    return "mic exige origem segura — abra por http://127.0.0.1:7860 "
+         + "(IP da LAN em http não serve; https serve)";
+  }
+  const n = (e && e.name) || "";
+  if (n === "NotAllowedError" || n === "SecurityError")
+    return "permissão de microfone negada — libere o microfone para este site no navegador";
+  if (n === "NotFoundError" || n === "OverconstrainedError")
+    return "nenhum microfone encontrado (o dispositivo salvo pode ter saído)";
+  if (n === "NotReadableError" || n === "AbortError")
+    return "o microfone está ocupado por outro app";
+  return "não consegui abrir o microfone" + (e && e.message ? ": " + e.message : "");
+}
 /* Microfone já filtrado (passa-alta + ganho do painel) para quem grava por
    MediaRecorder. Antes só o Tradutor contínuo aplicava os filtros: na amostra de
    voz, na transcrição e na biometria o painel era decorativo. Retorna o stream p/
@@ -4893,6 +5290,7 @@ function micAudioConstraints(base) {
    AudioContext NÃO libera o dispositivo). */
 let ctxObsMed = null;   // ctx do tap de monitoramento (OBS-3), criado sob demanda
 async function micFilteredStream(base, obs) {
+  if (micIndisponivel()) throw new Error(micErroTexto());   // origem não segura
   let raw;
   try {
     raw = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints(base) });
@@ -4985,7 +5383,7 @@ function mkCtx() {   // AudioContext de reprodução roteado p/ a saída escolhi
    funciona, sem depender de rota até o servidor remoto (proxy/VPN/subnet). Se o
    cliente não estiver rodando, caímos no canal do servidor (/api/mic-route). */
 const CTRL_PORTS = [7861, 7862, 7863, 7864, 7865];
-let ctrlBase = null, ctrlProbe = 0;
+let ctrlBase = null, ctrlProbe = 0, ctrlRodada = 0, ctrlVarreuNoAudio = false;
 // O gate ("voz real" x "voz do app") raramente muda, mas era consultado a cada
 // 350 ms: sem cliente roteador nesta máquina ele re-sondava as 5 portas locais e
 // caía em /api/mic-route — ~3 requests/s pelo túnel/Cloudflare competindo por
@@ -5001,15 +5399,35 @@ function micRouteBusy() {
 }
 async function pollMicRoute() {
   const agora = Date.now(), ocupado = micRouteBusy();
-  // 1) descobre a porta do cliente local (uma vez; re-tenta a cada 1,5s ouvindo
-  //    áudio, 10s parado — sem ele existir, sondar 5 portas 3x/s é só ruído)
-  if (!ctrlBase && agora - ctrlProbe > (ocupado ? 1500 : 10000)) {
+  // 1) descobre a porta do cliente local. Cada porta recusada vira UMA linha
+  //    ERR_CONNECTION_REFUSED no console, então sem o roteador instalado uma
+  //    varredura de 5 portas a cada 10 s era lixo contínuo (B9). Regra:
+  //    · com áudio rolando — varre as 5 e rápido (1,5 s): é quando o modo muda;
+  //    · ocioso — UMA porta por vez (round-robin) e de 30 em 30 s, então o
+  //      repouso gasta 1 erro/30 s em vez de 5/10 s (30× menos);
+  //    · achou o roteador, para de sondar (o canal é usado direto).
+  const tentar = async p => {
+    try {
+      const r = await fetch(`http://127.0.0.1:${p}/mode`, { cache: "no-store" });
+      if (r.ok) { ctrlBase = `http://127.0.0.1:${p}`; return true; }
+    } catch {}
+    return false;
+  };
+  // aba oculta: ninguém está olhando os medidores — multiplica os prazos
+  const fator = document.hidden ? 4 : 1;
+  // A varredura das 5 portas só na ENTRADA do áudio (5 erros, uma vez). Repetida
+  // a cada 1,5 s com áudio rolando ela dava 5 erros/1,5 s — PIOR que os 5/10 s de
+  // antes justamente durante o uso. Depois da primeira varredura o áudio anda em
+  // rodada de uma porta, de 2 em 2 s (a corretagem ao vivo fica barata).
+  if (!ocupado) ctrlVarreuNoAudio = false;
+  const prazo = ocupado ? 2000 : 30000;
+  if (!ctrlBase && agora - ctrlProbe > prazo * fator) {
     ctrlProbe = agora;
-    for (const p of CTRL_PORTS) {
-      try {
-        const r = await fetch(`http://127.0.0.1:${p}/mode`, { cache: "no-store" });
-        if (r.ok) { ctrlBase = `http://127.0.0.1:${p}`; break; }
-      } catch {}
+    if (ocupado && !ctrlVarreuNoAudio) {
+      ctrlVarreuNoAudio = true;
+      for (const p of CTRL_PORTS) { if (await tentar(p)) break; }
+    } else {
+      await tentar(CTRL_PORTS[ctrlRodada++ % CTRL_PORTS.length]);
     }
   }
   if (ctrlBase) {
@@ -5452,13 +5870,17 @@ async function pumpPipeline(st) {
 }
 
 /* ───────── Histórico ───────── */
+// Sem teto, o histórico virava um render de tudo a cada conclusão de job (e o
+// "mostrar mais" precisa de estado entre renders, por isso o OUT_TETO é de fora).
+let outTeto = 30;
+const OUT_PASSO = 30;
 async function refreshOutputs() {
   let outs;
   try { outs = await api("/api/outputs"); }
   catch { return; }
   const list = $("outputList");
   list.innerHTML = outs.length ? "" : '<div class="empty">Nada gerado ainda.</div>';
-  for (const o of outs) {
+  for (const o of outs.slice(0, outTeto)) {
     const div = document.createElement("div");
     div.className = "item";
     const short = o.text.length > 90 ? o.text.slice(0, 90) + "…" : o.text;
@@ -5470,15 +5892,39 @@ async function refreshOutputs() {
       <button class="ghost small download-output">Baixar</button>
       <button class="danger small">Apagar</button>
       </div>`;
-    div.querySelector(".danger").onclick = async () => {
-      await api(`/api/outputs/${o.id}`, { method: "DELETE" });
-      refreshOutputs();
+    div.querySelector(".danger").onclick = async (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      try {
+        await api(`/api/outputs/${o.id}`, { method: "DELETE" });
+        refreshOutputs();
+      } catch (e) {
+        toast("Erro ao apagar o áudio: " + e.message, 6000);
+        btn.disabled = false;
+      }
     };
     list.appendChild(div);
-    protectedAudio(div.querySelector("audio"), `/api/outputs/${o.id}/audio`);
+    // idem M2: o blob só desce no 1º gesto no player nativo
+    const au = div.querySelector("audio");
+    const carrega = () => {
+      if (au.dataset.carregado) return;
+      au.dataset.carregado = "1";
+      protectedAudio(au, `/api/outputs/${o.id}/audio`)
+        .then(() => au.play().catch(() => {}))
+        .catch(e => toast("Erro ao carregar o áudio: " + e.message, 5000));
+    };
+    au.addEventListener("pointerdown", carrega, { once: true });
+    au.addEventListener("keydown", carrega, { once: true });
     div.querySelector(".download-output").onclick = () =>
       protectedDownload(`/api/outputs/${o.id}/audio`, `tts-${o.id}.wav`)
         .catch(e => toast("Erro no download: " + e.message, 6000));
+  }
+  if (outs.length > outTeto) {
+    const mais = document.createElement("button");
+    mais.className = "ghost small";
+    mais.textContent = `mostrar mais ${Math.min(OUT_PASSO, outs.length - outTeto)} de ${outs.length - outTeto} restante(s)`;
+    mais.onclick = () => { outTeto += OUT_PASSO; refreshOutputs(); };
+    list.appendChild(mais);
   }
 }
 
@@ -5500,6 +5946,7 @@ function trocarChave(nova) {
   if ($("keyInput")) $("keyInput").value = KEY;
   if ($("keyBar")) $("keyBar").style.display = "none";
   updateClientKeyStatus();
+  onbDecidido = false; decideOnboarding();   // ganhou chave: o cartão de 1º uso sai
   refreshStatus(); refreshVoices(); refreshOutputs();
   loadSettings();          // reconsulta is_admin/admin_fields desta chave
 }
@@ -5784,10 +6231,17 @@ if ($("proxyTunnelStatus")) $("proxyTunnelStatus").onclick = async () => {
     const q = base ? `?url=${encodeURIComponent(base)}` : "";
     const d = await api(`/api/tunnel/status${q}`);
     const parts = [d.tunnel_running ? "✔ túnel rodando" : "✖ túnel parado"];
+    // Destino loopback = túnel "de pé" com a auth pública desligada (o furo
+    // silencioso do invariante): tem de aparecer, não sumir atrás do ✔ anterior.
+    if (d.tunnel_running && d.destino_e_lan === false) {
+      parts.push(`✖ destino ${d.tunnel_destino || "?"} (loopback — auth desligada)`);
+    } else if (d.tunnel_running && d.tunnel_destino) {
+      parts.push(`✔ destino ${d.tunnel_destino} (LAN)`);
+    }
     if (d.launchd_loaded === true) parts.push("✔ LaunchAgent carregado");
     else if (d.launchd_loaded === false) parts.push("✖ LaunchAgent ausente (tunnel.sh install)");
     if (d.cloudflared_running) parts.push("✔ Cloudflare conectado");
-    else if (d.cloudflared_installed) parts.push("✖ Cloudflare parado (cloudflare.sh)");
+    else if (d.cloudflared_installed) parts.push(`✖ Cloudflare parado${d.cloudflared_motivo ? ` (${d.cloudflared_motivo})` : " (cloudflare.sh)"}`);
     if (d.public_check) {
       const c = d.public_check;
       parts.push(c.ok ? `✔ internet OK (${c.latency_ms} ms)` : `✖ internet falhou: ${c.error || "?"}`);
@@ -5843,23 +6297,35 @@ if ($("proxyTunnelOn")) {
 /* ───────── Limpeza de áudios ───────── */
 $("clearAll").onclick = async () => {
   if (!confirm("Apagar TODOS os áudios gerados?")) return;
-  const r = await api("/api/outputs", { method: "DELETE" });
-  toast(`${r.removidos} áudio(s) apagado(s)`);
-  refreshOutputs();
+  const btn = $("clearAll");
+  btn.disabled = true;
+  try {
+    const r = await api("/api/outputs", { method: "DELETE" });
+    toast(`${r.removidos} áudio(s) apagado(s)`);
+    refreshOutputs();
+  } catch (e) {
+    // a lista fica na tela: se o servidor recusou, nada foi apagado
+    toast("Erro ao apagar os áudios: " + e.message, 6000);
+  } finally { btn.disabled = false; }
 };
 
 async function salvaAutoClean() {
-  await api("/api/settings", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      auto_cleanup: $("autoClean").checked,
-      auto_cleanup_minutes: parseInt($("autoCleanMin").value) || 15
-    })
-  });
-  toast($("autoClean").checked
-    ? `Auto-limpeza ativa: áudios somem após ${$("autoCleanMin").value} min`
-    : "Auto-limpeza desativada");
+  try {
+    await api("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        auto_cleanup: $("autoClean").checked,
+        auto_cleanup_minutes: parseInt($("autoCleanMin").value) || 15
+      })
+    });
+    toast($("autoClean").checked
+      ? `Auto-limpeza ativa: áudios somem após ${$("autoCleanMin").value} min`
+      : "Auto-limpeza desativada");
+  } catch (e) {
+    // o checkbox fica mexido na tela mesmo com o servidor recusando: avisa
+    toast("Erro ao salvar a auto-limpeza: " + e.message, 6000);
+  }
 }
 $("autoClean").onchange = salvaAutoClean;
 $("autoCleanMin").onchange = () => { if ($("autoClean").checked) salvaAutoClean(); };
@@ -6120,12 +6586,30 @@ async function loadSettings() {
   const tabs = document.querySelectorAll(".settings-tabs .stab");
   const panes = document.querySelectorAll(".settings-pane");
   const show = (id) => {
-    tabs.forEach(t => t.classList.toggle("active", t.dataset.stab === id));
+    tabs.forEach(t => {
+      const ativa = t.dataset.stab === id;
+      t.classList.toggle("active", ativa);
+      // roving tabindex: só a aba ativa é parada de Tab; o resto anda por seta
+      t.setAttribute("aria-selected", ativa ? "true" : "false");
+      t.tabIndex = ativa ? 0 : -1;
+    });
     panes.forEach(p => p.classList.toggle("active", p.dataset.spane === id));
     localStorage.setItem("ttsCfgTab", id);
     if (id === "acesso" && typeof loadApiKeys === "function") loadApiKeys();
   };
   tabs.forEach(t => t.onclick = () => show(t.dataset.stab));
+  // setas ←/→/Home/End: mover e já abrir (padrão de tablist, sem segundo passo)
+  tabs.forEach(t => t.addEventListener("keydown", e => {
+    const i = [...tabs].indexOf(t);
+    const alvo = e.key === "ArrowRight" ? (i + 1) % tabs.length
+               : e.key === "ArrowLeft" ? (i - 1 + tabs.length) % tabs.length
+               : e.key === "Home" ? 0
+               : e.key === "End" ? tabs.length - 1 : null;
+    if (alvo == null) return;
+    e.preventDefault();
+    show(tabs[alvo].dataset.stab);
+    tabs[alvo].focus();
+  }));
   const saved = localStorage.getItem("ttsCfgTab") || "modelo";
   show(saved);
 })();
@@ -6177,7 +6661,7 @@ $("spEnroll")?.addEventListener("click", async () => {
   const btn = $("spEnroll"), nome = ($("spName")?.value || "").trim();
   const st = $("spStatus");
   if (!nome) { toast("Dê um nome ao perfil (ex.: você)", 4000); return; }
-  if (!navigator.mediaDevices?.getUserMedia) { toast("Mic indisponível", 4000); return; }
+  if (micIndisponivel()) { toast("Mic: " + micErroTexto(), 6000); obsVozesM.setEstado("✖ mic", "err"); return; }
   btn.disabled = true;
   try {
     st.textContent = "🔴 gravando… fale naturalmente por 8s";
@@ -6193,14 +6677,14 @@ $("spEnroll")?.addEventListener("click", async () => {
     refreshSpProfiles();
   } catch (e) {
     st.textContent = "";
-    toast("✖ " + e.message, 5000);
+    toast("✖ " + micErroTexto(e), 5000);
   }
   btn.disabled = false;
 });
 
 $("spTest")?.addEventListener("click", async () => {
   const btn = $("spTest"), st = $("spStatus");
-  if (!navigator.mediaDevices?.getUserMedia) { toast("Mic indisponível", 4000); return; }
+  if (micIndisponivel()) { toast("Mic: " + micErroTexto(), 6000); obsVozesM.setEstado("✖ mic", "err"); return; }
   btn.disabled = true;
   try {
     st.textContent = "🔴 gravando… fale naturalmente por 6s";
@@ -6215,7 +6699,7 @@ $("spTest")?.addEventListener("click", async () => {
       (r.sim >= lim ? "✅ passa no rigor atual" : `🔻 abaixo do rigor (${lim.toFixed(2)})`);
   } catch (e) {
     st.textContent = "";
-    toast("✖ " + e.message, 5000);
+    toast("✖ " + micErroTexto(e), 5000);
   }
   btn.disabled = false;
 });
@@ -6225,10 +6709,13 @@ $("spTest")?.addEventListener("click", async () => {
   const ta = $("ttsText"), out = $("ttsCharCount");
   if (!ta || !out) return;
   const upd = () => {
-    const n = ta.value.length, max = 5000;
-    out.textContent = n + " / " + max;
-    out.classList.toggle("warn", n > max * 0.85);
+    const n = ta.value.length, max = TEXTO_MAX;
+    // o contador sozinho pintado de vermelho não impedia nada: o servidor recusava
+    // com 400 só no clique (B7). O excesso agora é DITO aqui e o Gerar bloqueia.
+    out.textContent = n + " / " + max + (n > max ? ` · ${n - max} acima` : "");
+    out.classList.toggle("warn", n > max * 0.85 && n <= max);
     out.classList.toggle("err", n > max);
+    ta.setAttribute("aria-invalid", n > max ? "true" : "false");
   };
   ta.addEventListener("input", upd);
   upd();
@@ -6240,12 +6727,28 @@ const CFG_DIRTY_IDS = ["cfgModel","cfgModelCustom","cfgPrePrompt","cfgLang","cfg
   "remoteTts","remoteTtsUrl","remoteTtsVoice","remoteTtsExtra","remoteBaseUrl","remoteApiKey",
   "remoteTranslate","remoteTranslateModel","vdGender","vdAge","vdPitch","vdAccent","vdWhisper",
   "freeLocalOnRemote","idleUnloadMin","speechQueue","speechQueueGap",
-  "sttFiltros","sttDenoise"];
+  "sttFiltros","sttDenoise",
+  // faltavam: editar estes não marcava nada (B6). `sttBeam` fica de fora porque
+  // já persiste no onchange, como o `oSeed`.
+  "speakerGate","sttWhisperModel","audioInDevice","audioOutDevice"];
   // oSeed fora da lista: o onchange dele já persiste na hora (marcaria "não salvo" à toa)
+let CFG_SUJO = false;
 function markCfgDirty() {
+  CFG_SUJO = true;
   if ($("cfgSave")) $("cfgSave").textContent = "Salvar configurações •";
   if ($("cfgStatus")) $("cfgStatus").textContent = "alterações não salvas";
 }
+function limpaCfgSujo() {
+  CFG_SUJO = false;
+  if ($("cfgSave")) $("cfgSave").textContent = "Salvar configurações";
+}
+// Recarregar/fechar a aba perdia tudo calado. `preventDefault` + `returnValue`
+// é o par que os browsers atuais exigem (o texto do diálogo é do browser).
+window.addEventListener("beforeunload", e => {
+  if (!CFG_SUJO) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
 CFG_DIRTY_IDS.forEach(id => { const el = $(id); if (el) { el.addEventListener("input", markCfgDirty); el.addEventListener("change", markCfgDirty); } });
 
 $("cfgSave").onclick = async () => {
@@ -6319,7 +6822,7 @@ $("cfgSave").onclick = async () => {
       body: JSON.stringify(body),
     });
     LAST_SETTINGS = { ...LAST_SETTINGS, ...body };
-    $("cfgSave").textContent = "Salvar configurações";
+    limpaCfgSujo();
     // Com campo ignorado, tratarRespostaSettings (dentro de api()) já escreveu
     // em cfgStatus o que ficou de fora e por quê — não sobrescrever com o
     // "salvo ✔" genérico. Troca de precisão tem efeito invisível (só no próximo
@@ -6350,7 +6853,13 @@ $("sttRecBtn").onclick = async () => {
   let cap;
   try {
     cap = await micFilteredStream({ echoCancellation: true, noiseSuppression: micFx.ns, autoGainControl: true }, obsSttM);
-  } catch { toast("Sem acesso ao microfone."); return; }
+  } catch (e) {
+    const msg = micErroTexto(e);
+    obsSttM.setEstado("✖ mic", "err");
+    obsSttM.log("mic: " + msg, "e-erro");
+    toast("Mic: " + msg, 6000);
+    return;
+  }
   obsSttM.log("gravando — fale");
   sttStream = cap.stream;
   sttChunks = [];
@@ -6710,6 +7219,9 @@ $("cvMic").onclick = async () => {
     return;
   }
   try {
+    // o VAD abre o mic por conta própria: a guarda de origem segura tem de vir
+    // ANTES, senão o que chega é o erro cru do getUserMedia dele
+    if (micIndisponivel()) throw new Error(micErroTexto());
     if (!cvVad) {
       cvVad = await vad.MicVAD.new({
         baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/",
@@ -6744,7 +7256,12 @@ $("cvMic").onclick = async () => {
     await cvVad.start();
     cvSetMic(true);
     cvStatus("🎧 ouvindo… fale o objetivo");
-  } catch (e) { cvStatus("✖ " + e.message); }
+  } catch (e) {
+    cvSetMic(false);
+    const msg = micErroTexto(e);
+    cvStatus("✖ " + msg);
+    if (obsCvM) { obsCvM.setEstado("✖ mic", "err"); obsCvM.log("mic: " + msg, "e-erro"); }
+  }
 };
 $("cvEnd").onclick = async () => {
   cvCancelarTurno();   // encerrar = nada da resposta em voo pode tocar depois
@@ -6837,7 +7354,13 @@ loadSettings();
 ligaControlesBackendChat();   // mesmo se o load falhar (servidor fora), o seletor responde
 initMicControls();
 refreshDevices();
-const statusTimer = setInterval(refreshStatus, 15000);
+// o /api/status não é caro, mas repetir a 15 s numa aba oculta é request de graça
+let statusUltimo = Date.now();
+const statusTimer = setInterval(() => {
+  if (document.hidden && Date.now() - statusUltimo < 60000) return;
+  statusUltimo = Date.now();
+  refreshStatus();
+}, 15000);
 /* ───── OBS-3 (#120): componente único de monitoramento ─────
    O painel do Live (#119) é a referência visual; o núcleo que todas as telas
    compartilham vive aqui: UMA malha de RAF para todas as barras de áudio do app
@@ -7006,6 +7529,10 @@ function lxEstado(novo, msg) {
   // o botão reflete se EXISTE sessão, não o estado do turno: erro de pipeline
   // (ex.: chat fora) deixa a sessão viva e o clique deve DESLIGAR, não reconectar
   if (lig) lig.textContent = (novo === "desligado" || !LX.ws) ? "🎙 Ligar" : "⏹ Desligar";
+  // o Live segue vivo fora da aba (é sessão contínua): sem a marca na navegação
+  // ele vira captura invisível. A Conversa, ao contrário, pausa ao sair.
+  const navLive = document.querySelector('.nav-item[data-view="live"]');
+  if (navLive) navLive.classList.toggle("com-mic", !!LX.ws);
   if (msg != null && $("lxStatus")) $("lxStatus").textContent = msg;
 }
 
@@ -7134,9 +7661,7 @@ async function lxCaptura() {
   // Origem NÃO segura (ex.: IP da LAN em http) não tem `navigator.mediaDevices`:
   // o erro saía como "Not supported" e não dizia o que fazer. Medido: 127.0.0.1 é
   // contexto seguro; 192.168.x.x NÃO é.
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    throw new Error("mic exige origem segura — abra por http://127.0.0.1:7860 (IP da LAN em http não serve)");
-  }
+  if (micIndisponivel()) throw new Error(micErroTexto());
   // NS SEMPRE ligado, independente de micFx.ns. As outras telas seguem o
   // checkbox (default off) porque o afftdn do servidor já denoisa o upload —
   // duas supressões comem consoante. Este PCM não passa por afftdn.
@@ -7225,6 +7750,58 @@ function lxAvisaDsh() {
   el.hidden = false;
   el.textContent = "⚠ dsh indisponível nesta sessão (" + d.message
                  + ") — respondendo pelo " + d.fallback + ", não pelo harness";
+}
+
+/* ───────── Fallback "segurar para falar" (task #22099a25) ─────────
+   O motor calcula `hold_to_talk_sugerido` quando o barge-in falha repetido e
+   aceita `{"type":"hold","on":bool}`. A UI só TORNA isso utilizável: faixa de
+   aviso com o botão, estado no OBS e o botão de segurar aparecendo sozinho.
+   Fonte da verdade é o `stats` (o servidor confirma); `holdPedido` cobre a
+   janela entre o clique e o próximo `stats`, para o botão não mentir o estado. */
+function lxHoldLigado() { return !!(LX.obs.stats && LX.obs.stats.motor && LX.obs.stats.motor.hold_to_talk); }
+function lxHoldSugerido() { return !!(LX.obs.stats && LX.obs.stats.motor && LX.obs.stats.motor.hold_to_talk_sugerido); }
+function lxPedeHold(ligar) {
+  LX.obs.holdPedido = ligar;
+  lxEnviaJSON({ type: "hold", on: !!ligar });
+  lxLogEvento(ligar ? "pedi o modo segurar-para-falar" : "pedi de volta o modo automático");
+  lxHoldRender();
+  // Rede de segurança: o pedido otimista NÃO pode ficar de pé se o servidor não
+  // confirmar (ex.: servidor antigo responde `comando desconhecido: 'hold'`).
+  // Sem prazo o botão mentiria "segurando" para sempre. 3 s cobrem o round-trip
+  // do `stats` (~4 Hz); estourou, volta ao que o servidor diz.
+  clearTimeout(LX.obs.holdT);
+  LX.obs.holdT = setTimeout(() => {
+    if (LX.obs.holdPedido === undefined) return;
+    LX.obs.holdPedido = undefined;
+    lxHoldRender();
+  }, 3000);
+}
+function lxHoldRender() {
+  const aviso = $("lxHoldAviso"), txt = $("lxHoldTexto"), btn = $("lxHoldBtn");
+  const chave = $("lxHold");
+  if (!aviso || !txt || !btn) return;
+  // sem os campos (servidor antigo) nada aparece — nem faixa, nem estado
+  const temCampo = !!(LX.obs.stats && LX.obs.stats.motor
+    && (LX.obs.stats.motor.hold_to_talk_sugerido !== undefined || LX.obs.stats.motor.hold_to_talk !== undefined));
+  const ligado = LX.obs.holdPedido === false ? false
+               : LX.obs.holdPedido === true ? true : lxHoldLigado();
+  if (chave) chave.textContent = temCampo ? (ligado ? "segurando" : "automático") : "—";
+  if (LX.obs.holdPedido === false && lxHoldLigado()) LX.obs.holdPedido = undefined;
+  else if (LX.obs.holdPedido === true && lxHoldLigado()) LX.obs.holdPedido = undefined;
+  // botão de segurar aparece com o modo ligado OU com o checkbox manual
+  const b = $("lxPttBtn");
+  if (b && $("lxPtt")) b.style.display = (ligado || $("lxPtt").checked) ? "" : "none";
+  const mostrar = ligado || lxHoldSugerido();
+  aviso.hidden = !mostrar;
+  if (!mostrar) { txt.textContent = ""; btn.textContent = ""; return; }
+  if (ligado) {
+    txt.textContent = "🎚 modo segurar-para-falar está LIGADO (o VAD não abre turno sozinho). ";
+    btn.textContent = "voltar ao automático";
+  } else {
+    txt.textContent = "⚠ o barge-in falhou repetido: segure para falar tende a funcionar melhor aqui. ";
+    btn.textContent = "usar segurar para falar";
+  }
+  btn.onclick = () => lxPedeHold(!ligado);
 }
 
 // helper de texto do painel, no escopo do script (o `txt` local do render não
@@ -7353,9 +7930,17 @@ function lxObsRender() {
     }
   }
   txt("lxLat", o.lat ? lxLatTxt(o.lat) : "—");
+  lxHoldRender();
   txt("lxLatHist", o.latHist.length ? "histórico (1º áudio): " + o.latHist.map(v => v + " ms").join(" · ") : "");
 }
 
+// O render do painel é 4 Hz para o medidor parecer vivo; oculto, 1 Hz basta.
+// Rearma em `visibilitychange` para voltar ao ritmo quando a aba reaparece.
+const LX_TICK_MS = () => (document.hidden ? 1000 : 250);
+function lxRearmaTick() {
+  if (LX.obs.tick) clearInterval(LX.obs.tick);
+  LX.obs.tick = setInterval(lxObsRender, LX_TICK_MS());
+}
 function lxObsInicia(ctx, stream) {
   const taxa = $("lxCtx");
   if (taxa) taxa.textContent = ctx.sampleRate + " Hz (dispositivo "
@@ -7364,7 +7949,7 @@ function lxObsInicia(ctx, stream) {
   const entrada = $("lxDev");
   if (entrada) entrada.textContent = (dev && dev.selectedIndex > 0)
       ? dev.options[dev.selectedIndex].text : "padrão do sistema";
-  LX.obs.tick = setInterval(lxObsRender, 250);
+  lxRearmaTick();
   // medidores na malha compartilhada do OBS-3: UMA RAF para o app inteiro
   OBS.liga("live:mic", () => lxBarra("mic", LX.anMic, "lxMicBar", "lxMicPeak", "lxMicDb"));
   OBS.liga("live:out", () => lxBarra("out", LX.anOut, "lxOutBar", "lxOutPeak", "lxOutDb"));
@@ -7499,7 +8084,7 @@ function lxRecebe(ev) {
                                chip.title = "o dsh não subiu nesta sessão — o turno está sendo respondido pelo "
                                           + (m.fallback || "openai") + (m.message ? ": " + m.message : ""); } }
                            lxAvisaDsh(); break;
-    case "stats":          LX.obs.stats = m; break;   // telemetria ~4 Hz: render no tick, fora do log
+    case "stats":          LX.obs.stats = m; lxHoldRender(); break;   // telemetria ~4 Hz: render no tick, fora do log
     // `turn_complete` pode vir DESCARTADO (turno curto/barge-in falso): sem áudio
     // a caminho e sem STT. Sem tratar, o estado ficava preso em pensando/falando
     // esperando um áudio que nunca vem.
@@ -7526,6 +8111,13 @@ function lxRecebe(ev) {
       }
       break;
     case "error":
+      // se havia pedido de `hold` em voo, um `error` significa que ele não valeu
+      // (servidor antigo devolve `comando desconhecido: 'hold'`): desfaz já
+      if (LX.obs.holdPedido !== undefined) {
+        LX.obs.holdPedido = undefined;
+        clearTimeout(LX.obs.holdT);
+        lxHoldRender();
+      }
       // TIMING — contrato do servidor, não escolha da tela (#192):
       // · `error{busy}` chega DEPOIS do setup e ANTES do ready, com close 1013 logo
       //   atrás. O close limpo não é falha de transporte (`LX.erro` só liga em
@@ -7599,17 +8191,35 @@ if ($("lxLimpar")) $("lxLimpar").onclick = () => {
   // CARACTERES — o botão não limpava nada (achado verificando o #117)
   for (const id of ["lxUser", "lxIA"]) { const el = $(id); if (el) el.innerHTML = ""; }
 };
-if ($("lxPtt")) $("lxPtt").onchange = () => {
-  const b = $("lxPttBtn");
-  if (b) b.style.display = $("lxPtt").checked ? "" : "none";
-};
+if ($("lxPtt")) $("lxPtt").onchange = () => lxHoldRender();
 if ($("lxPttBtn")) {
   // fallback "segurar para falar": solta -> `end_of_speech` (o servidor fecha o
   // turno sem depender do VAD automático)
-  const solta = () => { if (LX.ws) lxEnviaJSON({ type: "end_of_speech" }); };
-  $("lxPttBtn").onpointerdown = () => { LX.ptt = true; $("lxPttBtn").textContent = "🎙 falando…"; };
-  $("lxPttBtn").onpointerup = () => { LX.ptt = false; $("lxPttBtn").textContent = "🔊 Segurar para falar"; solta(); };
-  $("lxPttBtn").onpointerleave = () => { if (LX.ptt) { LX.ptt = false; solta(); } };
+  const b = $("lxPttBtn");
+  const aperta = () => { LX.ptt = true; b.textContent = "🎙 falando…"; };
+  const solta = () => {
+    LX.ptt = false; b.textContent = "🔊 Segurar para falar";
+    if (LX.ws) lxEnviaJSON({ type: "end_of_speech" });
+  };
+  b.onpointerdown = aperta;
+  b.onpointerup = () => { if (LX.ptt) solta(); };
+  b.onpointerleave = () => { if (LX.ptt) solta(); };
+  // TECLADO (B3): botão não dispara evento de ponteiro com Space/Enter, então o
+  // PTT era inutilizável sem mouse. Segurar a tecla = segurar o botão: `keydown`
+  // aperta (o `repeat` não reaperta) e `keyup` solta. `preventDefault` evita o
+  // clique sintético e a rolagem do Space.
+  const tecla = e => e.key === " " || e.key === "Enter";
+  b.addEventListener("keydown", e => {
+    if (!tecla(e)) return;
+    e.preventDefault();
+    if (!LX.ptt) aperta();
+  });
+  b.addEventListener("keyup", e => {
+    if (!tecla(e) || !LX.ptt) return;
+    e.preventDefault();
+    solta();
+  });
+  b.title = "Segurar (mouse ou Espaço) para falar";
 }
 lxEstado("desligado", "");
 
