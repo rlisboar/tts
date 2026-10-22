@@ -1347,9 +1347,9 @@ def test_meta_traz_metricas_de_audio(monkeypatch, tmp_path):
 
 def test_render_baixo_marca_aviso_e_rms_baixo(monkeypatch, tmp_path):
     """Ganho ÷10 DEPOIS do pós (senão o normalize por trecho devolve tudo ao alvo)."""
-    original = app._pos_processa
-    monkeypatch.setattr(app, "_pos_processa",
-                        lambda audio, sr, pad_s=0.0: original(audio, sr, pad_s) * 0.1)
+    original = app._pos_processa_com_ganho
+    monkeypatch.setattr(app, "_pos_processa_com_ganho",
+                        lambda audio, sr, pad_s=0.0: (original(audio, sr, pad_s)[0] * 0.1, 0.0))
     monkeypatch.setattr(app, "_normaliza_loudness", lambda *a, **k: 0.0)
     job, _ = _render_cache(monkeypatch, tmp_path)
     meta = job["output"]

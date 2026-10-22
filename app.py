@@ -148,7 +148,7 @@ try:                                     # cache de áudio por texto (#325)
     import tts_cache as _tts_cache
 except Exception:                        # noqa: BLE001 — sem o módulo, sem cache
     _tts_cache = None
-from common import (LUFS_ALVO, NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,
+from common import (GANHO_AVISO_DB, LUFS_ALVO, NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,
                     RMS_AVISO,
                     resolve_omni_source, write_json_atomic,
                     apply_audio_fx,
@@ -1698,12 +1698,13 @@ def _metricas_audio(caminho: Path) -> dict:
     try:
         y, _ = sf.read(str(caminho), dtype="float32")
     except Exception:  # noqa: BLE001 — métrica é registro, não bloqueia
-        return {"rms": 0.0, "peak": 0.0, "crest_db": 0.0}
+        # zeros são "arquivo mudo" na leitura — ilegível é OUTRO motivo (#439)
+        return {"rms": 0.0, "peak": 0.0, "crest_db": 0.0, "ilegivel": True}
     y = np.asarray(y, dtype=np.float64)
     rms = float(np.sqrt(np.mean(y ** 2))) if y.size else 0.0
     pico = float(np.abs(y).max()) if y.size else 0.0
     crista = 20.0 * float(np.log10(pico / rms)) if rms > 1e-9 and pico > 0 else 0.0
-    return {"rms": rms, "peak": pico, "crest_db": crista}
+    return {"rms": rms, "peak": pico, "crest_db": crista, "ilegivel": False}
 
 
 def _cache_audio():
@@ -1747,8 +1748,25 @@ def _pos_processa(audio, sr: int, pad_s: float = PAD_CAUDA_S):
     80 ms desde o #319: a pausa de verdade agora vem da pontuação, inserida pelo
     chamador). O Live passa 0,15 s, que é a pausa dele — lá não há inserção.
     """
-    return _fade_edges(
+    return _pos_processa_com_ganho(audio, sr, pad_s)[0]
+
+
+def _pos_processa_com_ganho(audio, sr: int, pad_s: float = PAD_CAUDA_S):
+    """Igual ao `_pos_processa`, mas devolve `(áudio, ganho_db)`.
+
+    O ganho é o que a normalização REALMENTE aplicou ao trecho: com o RMS final
+    sempre no alvo e o job ancorado em LUFS, o `rms` do meta não enxerga fonte
+    baixa — quem enxerga é este número (#439).
+    """
+    import numpy as np
+
+    antes = np.asarray(audio, dtype=np.float32)
+    rms_antes = float(np.sqrt(np.mean(antes.astype(np.float64) ** 2))) if antes.size else 0.0
+    y = _fade_edges(
         _apply_audio_fx(_normalize(_trim_tail_silence(audio, sr, pad_s=pad_s)), sr), sr)
+    rms_depois = float(np.sqrt(np.mean(np.asarray(y, dtype=np.float64) ** 2))) if y.size else 0.0
+    ganho = 20.0 * float(np.log10(rms_depois / rms_antes)) if rms_antes > 1e-9 else 0.0
+    return y, ganho
 
 
 
@@ -5458,6 +5476,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             anomalias: list[str] = []
             nao_resolvidas: list[str] = []
             soma_quad, n_amostras = 0.0, 0
+            ganho_max = 0.0     # maior amplificação aplicada pela normalização (#439)
 
             # CAMINHO efetivo do job. Começa remoto quando pedido e vira LOCAL de
             # vez se o remoto falhar ou insistir em devolver áudio anômalo: trecho
@@ -5619,7 +5638,8 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                 else:
                     if audio is None:
                         audio = _gera_local(chunk, i, sob_lock=caiu_agora)
-                    audio = _pos_processa(audio, sr)
+                    audio, ganho_trecho = _pos_processa_com_ganho(audio, sr)
+                    ganho_max = max(ganho_max, ganho_trecho)
                     if chave_audio:
                         cache.guarda(chave_audio, audio, sr,
                                      ttl_s=_tts_cache._ttl_s(_settings),
@@ -5660,11 +5680,22 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         # métricas do ARQUIVO FINAL (pós-ganho): é o que o usuário ouve, e é o que
         # denuncia regressão de nível. Sem isso a única prova era o ouvido (#323).
         medido = _metricas_audio(OUTPUTS_DIR / f"{out_id}.wav")
-        if medido["rms"] < RMS_AVISO:
-            _av = (f"nível final baixo (rms {medido['rms']:.4f} < {RMS_AVISO}) — "
-                   f"confira o áudio antes de publicar")
-            print(f"[tts] {_av}", flush=True)
-            job["warning"] = f"{job['warning']} | {_av}" if job.get("warning") else _av
+        aviso_nivel = ""
+        if medido.get("ilegivel"):
+            aviso_nivel = "arquivo final ilegível para medir (métrica perdida)"
+        elif medido["rms"] < RMS_AVISO:
+            aviso_nivel = (f"nível final baixo (rms {medido['rms']:.4f} < {RMS_AVISO}) — "
+                           f"confira o áudio antes de publicar")
+        # fonte muito baixa não muda o rms final (a normalização devolve ao alvo):
+        # quem denuncia é o ganho aplicado (#439)
+        if ganho_max > GANHO_AVISO_DB:
+            aviso_nivel = (f"{aviso_nivel + ' | ' if aviso_nivel else ''}"
+                           f"fonte muito baixa: normalização amplificou até "
+                           f"{ganho_max:.1f} dB (aviso acima de {GANHO_AVISO_DB:g} dB)")
+        if aviso_nivel:
+            print(f"[tts] {aviso_nivel}", flush=True)
+            job["warning"] = (f"{job['warning']} | {aviso_nivel}"
+                              if job.get("warning") else aviso_nivel)
         meta = {
             "id": out_id,
             "text": text,
@@ -5689,6 +5720,8 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             "rms": round(medido["rms"], 4),
             "peak": round(medido["peak"], 4),
             "crest_db": round(medido["crest_db"], 2),
+            "ilegivel": bool(medido.get("ilegivel")),
+            "ganho_normalizacao_db": round(ganho_max, 1),
             "rms_bruto": round(float(np.sqrt(soma_quad / n_amostras)) if n_amostras else 0.0, 4),
             "lufs_ganho_db": lufs_db,
             "remote_fallback": bool(job.get("remote_fallback")),

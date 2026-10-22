@@ -39,7 +39,7 @@ if str(BASE) not in sys.path:
 
 from backends import generate_with_backend, resolve_backend  # noqa: E402
 from common import (NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,  # noqa: E402
-                    RMS_AVISO,  # noqa: E402
+                    GANHO_AVISO_DB, RMS_AVISO,  # noqa: E402
                     motivo_anomalia,  # noqa: E402
                     pausa_apos, pontua_corte,  # noqa: E402
                     apply_audio_fx, fade_edges, normalize,  # noqa: E402
@@ -173,6 +173,8 @@ def _sintetiza(est: dict, texto: str, omni: dict | None = None, fx: bool = False
         audio = time_stretch(audio, speed, est["sr"])
     if fx:
         s = est["settings"]
+        import numpy as np
+        rms_antes = float(np.sqrt(np.mean(np.asarray(audio, dtype=np.float64) ** 2)))
         audio = fade_edges(apply_audio_fx(
             normalize(trim_tail_silence(audio, est["sr"], pad_s=PAD_CAUDA_S)),
             est["sr"],
@@ -181,6 +183,9 @@ def _sintetiza(est: dict, texto: str, omni: dict | None = None, fx: bool = False
             g_high=float(s.get("audio_eq_high_db", 0.0)),
             gain_db=float(s.get("audio_gain_db", 0.0)),
         ), est["sr"])
+        rms_depois = float(np.sqrt(np.mean(np.asarray(audio, dtype=np.float64) ** 2)))
+        if rms_antes > 1e-9 and rms_depois > 1e-9:
+            est["ganho_db"] = 20.0 * float(np.log10(rms_depois / rms_antes))
     return audio
 
 
@@ -222,7 +227,7 @@ def main() -> int:
         sr = est["sr"]
 
         started = time.time()
-        retries, anomalias = 0, []
+        retries, anomalias, ganho_max = 0, [], 0.0
         for i, chunk in enumerate(chunks):
             _write_status(status_path, {
                 "status": "running", "pieces": i, "total": len(chunks),
@@ -245,6 +250,7 @@ def main() -> int:
                     if float(o_try.get("temperature") or 0) < 0.5:
                         o_try["temperature"] = 0.7
                 audio = _sintetiza(est, chunk, o_try, fx=True)
+                ganho_max = max(ganho_max, float(est.pop("ganho_db", 0.0)))
                 motivo = motivo_anomalia(audio, sr, chunk,
                                          speed=float(o_try.get("speed") or 1.0))
                 if not motivo:
@@ -281,9 +287,18 @@ def main() -> int:
             print(f"[worker] nível final ajustado {lufs_db:+.2f} dB", flush=True)
         # métricas do arquivo final (#323): registro do que saiu, não do que pedimos
         medido = _metricas(saida)
-        if medido["rms"] < RMS_AVISO:
-            print(f"[worker] nível final baixo (rms {medido['rms']:.4f} < {RMS_AVISO}) "
-                  f"— confira o áudio", flush=True)
+        aviso_nivel = ""
+        if medido.get("ilegivel"):
+            aviso_nivel = "arquivo final ilegível para medir (métrica perdida)"
+        elif medido["rms"] < RMS_AVISO:
+            aviso_nivel = (f"nível final baixo (rms {medido['rms']:.4f} < {RMS_AVISO})"
+                           f" — confira o áudio")
+        if ganho_max > GANHO_AVISO_DB:
+            aviso_nivel = (f"{aviso_nivel + ' | ' if aviso_nivel else ''}"
+                           f"fonte muito baixa: normalização amplificou até "
+                           f"{ganho_max:.1f} dB")
+        if aviso_nivel:
+            print(f"[worker] {aviso_nivel}", flush=True)
         omni = est["omni"]
         meta = {
             "id": out_id,
@@ -301,13 +316,15 @@ def main() -> int:
             "duration": duration,
             "elapsed": elapsed,
             "isolated": True,
-            "warning": ("nível final baixo" if medido["rms"] < RMS_AVISO else ""),
+            "warning": aviso_nivel,
             "rms": round(medido["rms"], 4),
             "peak": round(medido["peak"], 4),
             "crest_db": round(medido["crest_db"], 2),
             "retries": retries,
             "anomalias": len(anomalias),
             "anomalias_motivos": anomalias[:20],
+            "ilegivel": bool(medido.get("ilegivel")),
+            "ganho_normalizacao_db": round(ganho_max, 1),
             "lufs_ganho_db": lufs_db,
         }
         write_json_atomic(outputs_dir / f"{out_id}.json", meta)
@@ -340,19 +357,19 @@ def main() -> int:
 
 
 def _metricas(caminho) -> dict:
-    """RMS, pico e crista (dB) do arquivo final."""
+    """RMS, pico e crista (dB) do arquivo final. `ilegivel` ≠ "mudo" (#439)."""
     import numpy as np
     import soundfile as sf
 
     try:
         y, _ = sf.read(str(caminho), dtype="float32")
     except Exception:  # noqa: BLE001
-        return {"rms": 0.0, "peak": 0.0, "crest_db": 0.0}
+        return {"rms": 0.0, "peak": 0.0, "crest_db": 0.0, "ilegivel": True}
     y = np.asarray(y, dtype=np.float64)
     rms = float(np.sqrt(np.mean(y ** 2))) if y.size else 0.0
     pico = float(np.abs(y).max()) if y.size else 0.0
     crista = 20.0 * float(np.log10(pico / rms)) if rms > 1e-9 and pico > 0 else 0.0
-    return {"rms": rms, "peak": pico, "crest_db": crista}
+    return {"rms": rms, "peak": pico, "crest_db": crista, "ilegivel": False}
 
 
 def _concat(est: dict, audio, pausa_s: float):

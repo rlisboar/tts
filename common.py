@@ -180,6 +180,11 @@ RMS_MINIMO = 0.01
 #: final, depois do ganho de loudness): é o sinal de regressão tipo phase vocoder
 #: 15× mais baixo, que antes só aparecia ouvindo (#323)
 RMS_AVISO = 0.02
+#: acima disto a normalização teve de amplificar muito o trecho: a FONTE saiu
+#: baixa (o rms final não denuncia, porque volta ao alvo). Calibrado nas 21 vozes
+#: do repo: p50 2,5 dB, p95 6,5 dB, máximo 10,1 dB — 12 dB fica acima do normal e
+#: abaixo do defeito clássico (o phase vocoder entregava ~24 dB) (#439)
+GANHO_AVISO_DB = 12.0
 
 
 def motivo_anomalia(audio, sr: int, chunk: str, speed: float = 1.0) -> str:
