@@ -155,6 +155,11 @@ def _espera(cond, limite: float) -> None:
 def _perfis(monkeypatch, n_chunks: int) -> list[dict]:
     usados: list[dict] = []
     monkeypatch.setitem(app._settings, "live_num_steps", 20)
+    # o teto do perfil só aparece no `min()` se o setting global da família for
+    # MAIOR: com o default do código (16) o 2º chunk sairia 16 e a prova mediria
+    # o outro caminho. Fixar aqui deixa a asserção independente do settings.json
+    # do dono (em máquina limpa/CI o arquivo não existe).
+    monkeypatch.setitem(app._settings, "omni_num_steps", 64)
     p = lp.LivePipeline(lambda o: None, lambda pcm: None,
                         stt=lambda pcm, l: "fala",
                         llm=lambda msgs: iter(["um. ", "dois. ", "tres. ", "quatro. "]),
