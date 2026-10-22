@@ -131,11 +131,14 @@ jobs:
         # máquina e passou 3/3 isolada — 1 retry absorve isso sem mascarar erro
         # determinístico.
         run: |
-          # PR: para na PRIMEIRA falha (`-x`) — lista completa é do push/main.
-          # Mediu-se 15 min por execução sem que falha nem retry explicassem
-          # (#487): o caro é rodar 1300 testes a cada push de branch.
+          # PR roda só os GATES (contract tests): 241 testes, 39 s aqui contra
+          # 5m19 da suíte inteira — no mini isso é ~2 min contra 15. Medido que
+          # `-x`, retry, `os._exit` e o freio de prioridade NÃO mudam o tempo
+          # (#487); o que pesa é rodar 1300 testes numa máquina 2,7x mais lenta.
+          # A suíte INTEIRA continua obrigatória no push/main (e antes de fechar
+          # card). `-x` fica no PR para falhar na primeira.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            python -m pytest tests/ -q --timeout=180 -x
+            python -m pytest tests/test_qa_gate*.py -q --timeout=180 -x
           else
             python -m pytest tests/ -q --timeout=180 --reruns 1 --reruns-delay 2
           fi
