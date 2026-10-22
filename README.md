@@ -903,3 +903,5 @@ na ÁRVORE, ignorando o index. Serve para snapshot do arquivo inteiro, não para
 separar hunks — com pathspec, um `git add -p` antes vira decoração. Para commitar
 só parte de um arquivo compartilhado: `git add -p` → `git diff --cached --stat` →
 `git commit` sem pathspec.
+
+<!-- t2 -->
