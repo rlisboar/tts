@@ -80,19 +80,6 @@ CONSUMO = [
 ]
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _sem_exit():
-    """`/api/shutdown` termina em `os._exit(0)` — em thread, DEPOIS do teste.
-
-    Escopo de módulo (não de teste): o teardown de um teste devolveria o `_exit`
-    real antes de a thread disparar e o pytest morreria sem resumo.
-    """
-    original = app.os._exit
-    app.os._exit = lambda *a: None
-    yield
-    app.os._exit = original
-
-
 @pytest.fixture
 def preparado(voices_tmp, monkeypatch):
     """Voz e speaker de mentira para as rotas por id não darem 404 antes do 403."""
