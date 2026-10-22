@@ -36,8 +36,6 @@ PAUSA_SEG = {",": 0.15, ";": 0.17, ":": 0.17, ".": 0.40, "!": 0.42, "?": 0.42, "
 PAUSA_PADRAO_S = 0.15          # corte seco (sem pontuação) = pausa de vírgula
 # cauda que o trim deixa no FIM de cada trecho, só para o fade não comer a fala
 PAD_CAUDA_S = 0.08
-# legado: quem ainda monta um silêncio fixo usa este
-CHUNK_SILENCE_S = 0.25
 # modelo sai com volume baixo (RMS ~0,10); normaliza para nível de fala
 TARGET_RMS = 0.15
 PEAK_LIMIT = 0.95
