@@ -168,6 +168,51 @@ def pausa_apos(fim: str) -> float:
     return PAUSA_SEG.get((fim or " ")[-1], PAUSA_PADRAO_S)
 
 
+#: teto de caracteres por segundo para o teste de truncamento. A fala real medida
+#: na auditoria (#284) dá 15,4 chars/s, e o portão antigo aceitava até 45 (quase
+#: 3× o natural — cortar 2/3 de um trecho passava). 25 = ~1,6× o medido: aceita a
+#: variação normal e reprova o que só caberia se o modelo tivesse falado rápido
+#: demais. Calibrado pelos dois pontos do aceite: 40% da duração natural (38,5
+#: chars/s) dispara, 90% (17,1 chars/s) não.
+CPS_MINIMO = 25.0
+RMS_MINIMO = 0.01
+#: abaixo disto o OUTPUT é considerado baixo demais e vira aviso (rms do arquivo
+#: final, depois do ganho de loudness): é o sinal de regressão tipo phase vocoder
+#: 15× mais baixo, que antes só aparecia ouvindo (#323)
+RMS_AVISO = 0.02
+
+
+def motivo_anomalia(audio, sr: int, chunk: str, speed: float = 1.0) -> str:
+    """Por que a geração descarrilou ("" = aprovado).
+
+    OmniVoice é masked-diffusion não-AR (sem teto de tokens nem EOS frágil): a
+    duração é estimada internamente e varia mais legitimamente, então só
+    truncamento grosseiro e áudio inaudível pedem nova tentativa. Com speed>1
+    o time-stretch encurta o áudio — o limiar acompanha, senão velocidade alta
+    falsifica 'truncamento' e dispara retry (com jitter de seed) à toa.
+
+    Não-finito tem motivo PRÓPRIO de propósito: `nan < 0.01` é **False**, então
+    NaN/Inf passava como áudio bom, o `normalize` propagava, o PCM16 gravava
+    ZEROS e o job terminava `done` com arquivo mudo e sem retry (#303). O motivo
+    sai no log e no meta — degradação não pode ser silenciosa.
+
+    Vive no `common` porque o worker de lote também julga os trechos dele (#320).
+    """
+    import numpy as np
+
+    a = np.asarray(audio)
+    if a.size == 0:
+        return "vazio"
+    if not np.isfinite(a).all():
+        return "não-finito (NaN/Inf)"
+    rms = float(np.sqrt(np.mean(a.astype(np.float64) ** 2)))
+    if not np.isfinite(rms) or rms < RMS_MINIMO:
+        return f"inaudível (rms {rms:.4f})"
+    if len(a) / sr < len(chunk) / CPS_MINIMO / max(1.0, float(speed or 1.0)):
+        return f"truncado ({len(a) / sr:.2f}s p/ {len(chunk)} chars)"
+    return ""
+
+
 def sanitize_text(text: str) -> str:
     """Limpeza leve para o tokenizer multilíngue (Qwen3) do OmniVoice.
 

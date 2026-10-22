@@ -39,6 +39,8 @@ if str(BASE) not in sys.path:
 
 from backends import generate_with_backend, resolve_backend  # noqa: E402
 from common import (NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,  # noqa: E402
+                    RMS_AVISO,  # noqa: E402
+                    motivo_anomalia,  # noqa: E402
                     pausa_apos, pontua_corte,  # noqa: E402
                     apply_audio_fx, fade_edges, normalize,  # noqa: E402
                     normaliza_loudness,  # noqa: E402
@@ -220,6 +222,7 @@ def main() -> int:
         sr = est["sr"]
 
         started = time.time()
+        retries, anomalias = 0, []
         for i, chunk in enumerate(chunks):
             _write_status(status_path, {
                 "status": "running", "pieces": i, "total": len(chunks),
@@ -228,7 +231,31 @@ def main() -> int:
             })
             # pontuação do corte preservada (vírgula não vira ponto — #319)
             chunk = pontua_corte(chunk, ultimo=(i == len(chunks) - 1))
-            audio = _sintetiza(est, chunk, fx=True)
+            # MESMO julgamento e retry do caminho in-process (#320): o lote não
+            # tinha `_anomalo` nenhum, então trecho mudo/truncado passava direto
+            motivo = ""
+            for tentativa in (1, 2):
+                o_try = dict(est["omni"])
+                if tentativa > 1:
+                    seed = o_try.get("seed")
+                    if seed is not None and int(seed) >= 0:
+                        o_try["seed"] = int(seed) + tentativa
+                    if not float(o_try.get("class_temperature") or 0):
+                        o_try["class_temperature"] = 0.4
+                    if float(o_try.get("temperature") or 0) < 0.5:
+                        o_try["temperature"] = 0.7
+                audio = _sintetiza(est, chunk, o_try, fx=True)
+                motivo = motivo_anomalia(audio, sr, chunk,
+                                         speed=float(o_try.get("speed") or 1.0))
+                if not motivo:
+                    break
+                retries += 1
+                anomalias.append(f"trecho {i + 1} (tentativa {tentativa}): {motivo}")
+                print(f"[worker] trecho {i + 1}/{len(chunks)} anômalo [{motivo}] "
+                      f"— tentativa {tentativa}/2", flush=True)
+                if tentativa == 2:
+                    print(f"[worker] trecho {i + 1} ENTROU anômalo [{motivo}]", flush=True)
+                _release_mlx_memory()
             if i < len(chunks) - 1:
                 audio = _concat(est, audio, pausa_apos(chunk[-1]))
             sf.write(piece_dir / f"{i}.wav", audio, sr, subtype="PCM_16")
@@ -252,6 +279,11 @@ def main() -> int:
                   flush=True)
         elif abs(lufs_db) > 0.05:
             print(f"[worker] nível final ajustado {lufs_db:+.2f} dB", flush=True)
+        # métricas do arquivo final (#323): registro do que saiu, não do que pedimos
+        medido = _metricas(saida)
+        if medido["rms"] < RMS_AVISO:
+            print(f"[worker] nível final baixo (rms {medido['rms']:.4f} < {RMS_AVISO}) "
+                  f"— confira o áudio", flush=True)
         omni = est["omni"]
         meta = {
             "id": out_id,
@@ -269,6 +301,13 @@ def main() -> int:
             "duration": duration,
             "elapsed": elapsed,
             "isolated": True,
+            "warning": ("nível final baixo" if medido["rms"] < RMS_AVISO else ""),
+            "rms": round(medido["rms"], 4),
+            "peak": round(medido["peak"], 4),
+            "crest_db": round(medido["crest_db"], 2),
+            "retries": retries,
+            "anomalias": len(anomalias),
+            "anomalias_motivos": anomalias[:20],
             "lufs_ganho_db": lufs_db,
         }
         write_json_atomic(outputs_dir / f"{out_id}.json", meta)
@@ -298,6 +337,22 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             pass
         return 1
+
+
+def _metricas(caminho) -> dict:
+    """RMS, pico e crista (dB) do arquivo final."""
+    import numpy as np
+    import soundfile as sf
+
+    try:
+        y, _ = sf.read(str(caminho), dtype="float32")
+    except Exception:  # noqa: BLE001
+        return {"rms": 0.0, "peak": 0.0, "crest_db": 0.0}
+    y = np.asarray(y, dtype=np.float64)
+    rms = float(np.sqrt(np.mean(y ** 2))) if y.size else 0.0
+    pico = float(np.abs(y).max()) if y.size else 0.0
+    crista = 20.0 * float(np.log10(pico / rms)) if rms > 1e-9 and pico > 0 else 0.0
+    return {"rms": rms, "peak": pico, "crest_db": crista}
 
 
 def _concat(est: dict, audio, pausa_s: float):

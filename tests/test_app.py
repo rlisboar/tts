@@ -150,12 +150,12 @@ def test_gate_duracao_estimada_por_texto(gate_rapido):
 
 def test_anomalo_considera_speed():
     sr = 24000
-    # 3s de áudio, texto de 100 chars → limiar base 100/45 ≈ 2.22s
-    audio = np.full(3 * sr, 0.2, dtype=np.float32)
+    # 5s de áudio, texto de 100 chars → limiar base 100/25 = 4s (#320)
+    audio = np.full(5 * sr, 0.2, dtype=np.float32)
     assert not app._anomalo(audio, sr, "x" * 100)              # ok a speed 1
     assert app._anomalo(np.zeros(1, dtype=np.float32), sr, "x" * 100)  # inaudível
-    # speed 2 encurta o áudio pela metade (1.5s < limiar 2.22): NÃO é truncamento
-    curto = audio[:int(1.5 * sr)]
+    # speed 2 encurta o áudio pela metade (2.5s < limiar 4s): NÃO é truncamento
+    curto = audio[:int(2.5 * sr)]
     assert app._anomalo(curto, sr, "x" * 100, speed=1.0)        # falso-positivo antigo
     assert not app._anomalo(curto, sr, "x" * 100, speed=2.0)    # corrigido
 
@@ -736,7 +736,7 @@ _TEXTO_1_TRECHO = ("Hoje a gente vai falar de tres coisas na ordem primeiro o cr
                    "depois os custos e por ultimo as duvidas de voces")
 
 
-def _bom(segundos: float = 3.0) -> np.ndarray:
+def _bom(segundos: float = 5.0) -> np.ndarray:
     """Fala sintética audível, longa o bastante para não ser 'truncada'."""
     n = int(segundos * 24000)
     t = np.arange(n) / 24000.0
@@ -1221,7 +1221,8 @@ def test_cache_invalida_por_texto_parametro_e_voz(monkeypatch, tmp_path):
     monkeypatch.setenv("TTS_TTS_CACHE", "1")
     _render_cache(monkeypatch, tmp_path)
     # texto diferente
-    _, n_texto = _render_cache(monkeypatch, tmp_path, texto=_TEXTO_1_TRECHO + " E mais.")
+    _, n_texto = _render_cache(
+        monkeypatch, tmp_path, texto=_TEXTO_1_TRECHO.replace("custos", "gastos"))
     assert n_texto == 1
     # parâmetro diferente (num_steps)
     _, n_param = _render_cache(monkeypatch, tmp_path, omni={"num_steps": 8})
@@ -1266,3 +1267,92 @@ def test_cache_limpo_nos_pontos_de_invalidacao(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "_release_mlx_memory", lambda *a, **k: None)
     app._unload_local_tts()
     assert chamou["n"] == 2
+
+
+# ---------------------------------------------------------------------------
+# #320 — VAD: serializado (modelo com estado) e falha VISÍVEL
+# ---------------------------------------------------------------------------
+
+def _wav_fala(tmp_path) -> Path:
+    import soundfile as sf
+
+    p = tmp_path / "fala.wav"
+    sf.write(str(p), _bom(1.5), 24000, subtype="PCM_16")
+    return p
+
+
+def test_vad_concorrente_serializa_a_inferencia(tmp_path, monkeypatch):
+    """O modelo é global e reseta estado: duas chamadas juntas embolavam o RNN."""
+    import silero_vad
+
+    real = silero_vad.get_speech_timestamps
+    dentro = {"n": 0, "pico": 0}
+    trava = threading.Lock()
+
+    def medido(*a, **k):
+        with trava:
+            dentro["n"] += 1
+            dentro["pico"] = max(dentro["pico"], dentro["n"])
+        try:
+            time.sleep(0.02)               # alarga a janela de sobreposição
+            return real(*a, **k)
+        finally:
+            with trava:
+                dentro["n"] -= 1
+
+    monkeypatch.setattr(silero_vad, "get_speech_timestamps", medido)
+    caminho = _wav_fala(tmp_path)
+    saidas: list[bool] = []
+    ts = [threading.Thread(target=lambda: saidas.append(app._vad_tem_fala(caminho)))
+          for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(30)
+    assert len(saidas) == 8
+    assert dentro["pico"] == 1, f"inferências se sobrepuseram (pico {dentro['pico']})"
+    assert len(set(saidas)) == 1, f"vereditos divergentes: {saidas}"
+
+
+def test_vad_erro_fica_visivel_no_estado_e_no_log(tmp_path, monkeypatch, capsys):
+    import silero_vad
+
+    def explode(*a, **k):
+        raise RuntimeError("silero quebrado")
+
+    monkeypatch.setattr(silero_vad, "get_speech_timestamps", explode)
+    monkeypatch.setattr(app, "_vad_erro", "")
+    caminho = _wav_fala(tmp_path)
+    assert app._vad_tem_fala(caminho) is True, "fail-open é a decisão, tem de manter"
+    assert "silero quebrado" in app._vad_estado()[1]
+    assert "[vad]" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# #323 — métricas de áudio no meta e aviso de nível baixo
+# ---------------------------------------------------------------------------
+
+def test_meta_traz_metricas_de_audio(monkeypatch, tmp_path):
+    """Todo output carrega rms/peak/crest_db/retries/anomalias — resultado, não parâmetro."""
+    monkeypatch.setitem(app._settings, "chunk_max_chars", 140)
+    job, _ = _render_cache(monkeypatch, tmp_path)
+    meta = job["output"]
+    for campo in ("rms", "peak", "crest_db", "retries", "anomalias"):
+        assert campo in meta, f"meta sem {campo}"
+    assert meta["rms"] > 0.05 and 0.0 < meta["peak"] <= 1.0
+    assert meta["crest_db"] > 0.0
+    # e o mesmo número aparece na listagem (o meta é o que /api/outputs serve)
+    assert meta == job["output"]
+
+
+def test_render_baixo_marca_aviso_e_rms_baixo(monkeypatch, tmp_path):
+    """Ganho ÷10 DEPOIS do pós (senão o normalize por trecho devolve tudo ao alvo)."""
+    original = app._pos_processa
+    monkeypatch.setattr(app, "_pos_processa",
+                        lambda audio, sr, pad_s=0.0: original(audio, sr, pad_s) * 0.1)
+    monkeypatch.setattr(app, "_normaliza_loudness", lambda *a, **k: 0.0)
+    job, _ = _render_cache(monkeypatch, tmp_path)
+    meta = job["output"]
+    assert meta["rms"] < 0.02, meta["rms"]
+    assert "nível final baixo" in meta["warning"]
+    assert "nível final baixo" in (job.get("warning") or "")

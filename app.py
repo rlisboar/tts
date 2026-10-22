@@ -130,6 +130,7 @@ try:                                     # cache de áudio por texto (#325)
 except Exception:                        # noqa: BLE001 — sem o módulo, sem cache
     _tts_cache = None
 from common import (LUFS_ALVO, NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,
+                    RMS_AVISO,
                     resolve_omni_source, write_json_atomic,
                     apply_audio_fx,
                     atempo_chain as _atempo_chain,
@@ -138,6 +139,7 @@ from common import (LUFS_ALVO, NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,
                     normalize as _normalize,
                     pausa_apos as _pausa_apos,
                     pontua_corte as _pontua_corte,
+                    motivo_anomalia as _motivo_anomalia,
                     normaliza_loudness as _normaliza_loudness,
                     release_mlx_memory as _release_mlx_memory,
                     sanitize_text as _sanitize_text,
@@ -1532,35 +1534,6 @@ def _referencia_pronta(audio, sr: int):
     return _fade_edges(_normalize(audio), sr)
 
 
-def _motivo_anomalia(audio, sr: int, chunk: str, speed: float = 1.0) -> str:
-    """Por que a geração descarrilou ("" = aprovado).
-
-    OmniVoice é masked-diffusion não-AR (sem teto de tokens nem EOS frágil): a
-    duração é estimada internamente e varia mais legitimamente, então só
-    truncamento grosseiro e áudio inaudível pedem nova tentativa. Com speed>1
-    o time-stretch encurta o áudio — o limiar acompanha, senão velocidade alta
-    falsifica 'truncamento' e dispara retry (com jitter de seed) à toa.
-
-    Não-finito tem motivo PRÓPRIO de propósito: `nan < 0.01` é **False**, então
-    NaN/Inf passava como áudio bom, o `normalize` propagava, o PCM16 gravava
-    ZEROS e o job terminava `done` com arquivo mudo e sem retry (#303). O motivo
-    sai no log e no meta — degradação não pode ser silenciosa.
-    """
-    import numpy as np
-
-    a = np.asarray(audio)
-    if a.size == 0:
-        return "vazio"
-    if not np.isfinite(a).all():
-        return "não-finito (NaN/Inf)"
-    rms = float(np.sqrt(np.mean(a.astype(np.float64) ** 2)))
-    if not np.isfinite(rms) or rms < 0.01:
-        return f"inaudível (rms {rms:.4f})"
-    if len(a) / sr < len(chunk) / 45 / max(1.0, float(speed or 1.0)):
-        return f"truncado ({len(a) / sr:.2f}s p/ {len(chunk)} chars)"
-    return ""
-
-
 def _anomalo(audio, sr: int, chunk: str, speed: float = 1.0) -> bool:
     """Geração inaceitável (o motivo fica em `_motivo_anomalia`)."""
     return bool(_motivo_anomalia(audio, sr, chunk, speed))
@@ -1576,6 +1549,22 @@ def _apply_audio_fx(audio, sr: int):
         g_high=float(_settings.get("audio_eq_high_db", 0.0)),
         gain_db=float(_settings.get("audio_gain_db", 0.0)),
     )
+
+
+def _metricas_audio(caminho: Path) -> dict:
+    """RMS, pico e crista (dB) do arquivo final. Arquivo ilegível = zeros."""
+    import numpy as np
+    import soundfile as sf
+
+    try:
+        y, _ = sf.read(str(caminho), dtype="float32")
+    except Exception:  # noqa: BLE001 — métrica é registro, não bloqueia
+        return {"rms": 0.0, "peak": 0.0, "crest_db": 0.0}
+    y = np.asarray(y, dtype=np.float64)
+    rms = float(np.sqrt(np.mean(y ** 2))) if y.size else 0.0
+    pico = float(np.abs(y).max()) if y.size else 0.0
+    crista = 20.0 * float(np.log10(pico / rms)) if rms > 1e-9 and pico > 0 else 0.0
+    return {"rms": rms, "peak": pico, "crest_db": crista}
 
 
 def _cache_audio():
@@ -4921,6 +4910,14 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         elif abs(lufs_db) > 0.05:
             print(f"[tts] nível final ajustado {lufs_db:+.2f} dB (alvo {LUFS_ALVO:g} LUFS)",
                   flush=True)
+        # métricas do ARQUIVO FINAL (pós-ganho): é o que o usuário ouve, e é o que
+        # denuncia regressão de nível. Sem isso a única prova era o ouvido (#323).
+        medido = _metricas_audio(OUTPUTS_DIR / f"{out_id}.wav")
+        if medido["rms"] < RMS_AVISO:
+            _av = (f"nível final baixo (rms {medido['rms']:.4f} < {RMS_AVISO}) — "
+                   f"confira o áudio antes de publicar")
+            print(f"[tts] {_av}", flush=True)
+            job["warning"] = f"{job['warning']} | {_av}" if job.get("warning") else _av
         meta = {
             "id": out_id,
             "text": text,
@@ -4942,7 +4939,10 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             "anomalias": len(anomalias),
             "anomalias_motivos": anomalias[:20],
             "warning": job.get("warning") or "",
-            "rms": round(float(np.sqrt(soma_quad / n_amostras)) if n_amostras else 0.0, 4),
+            "rms": round(medido["rms"], 4),
+            "peak": round(medido["peak"], 4),
+            "crest_db": round(medido["crest_db"], 2),
+            "rms_bruto": round(float(np.sqrt(soma_quad / n_amostras)) if n_amostras else 0.0, 4),
             "lufs_ganho_db": lufs_db,
             "remote_fallback": bool(job.get("remote_fallback")),
             "cache_hits": int(job.get("cache_hits", 0)),
@@ -5753,6 +5753,11 @@ _vad_model = None
 
 
 _vad_backend = ""  # "onnx" | "torch-jit" — caminho realmente carregado
+_vad_erro = ""     # último erro do Silero ("" = nenhum) — fail-open VISÍVEL
+# O modelo é GLOBAL e o `get_speech_timestamps` chama `reset_states()`: sem trava,
+# duas transcrições concorrentes embolam o estado RNN um do outro (#320). RLock
+# porque o load pode acontecer dentro do caminho que já segura a trava.
+_vad_lock = threading.RLock()
 
 
 def _vad_load():
@@ -5771,16 +5776,17 @@ def _vad_load():
     explícito e logado. Sem onnxruntime o load estoura e o fallback é o jit do
     torch (mesmo resultado, dependência extra)."""
     global _vad_model, _vad_backend
-    if _vad_model is None:
-        from silero_vad import load_silero_vad
-        try:
-            _vad_model = load_silero_vad(onnx=True)
-            _vad_backend = "onnx"
-        except Exception as e:  # noqa: BLE001 — sem onnxruntime: cai no torch
-            print(f"[vad] modelo ONNX indisponível ({str(e)[:120]}) — caindo no torch jit",
-                  flush=True)
-            _vad_backend = "torch-jit"
-            _vad_model = load_silero_vad(onnx=False)
+    with _vad_lock:
+        if _vad_model is None:
+            from silero_vad import load_silero_vad
+            try:
+                _vad_model = load_silero_vad(onnx=True)
+                _vad_backend = "onnx"
+            except Exception as e:  # noqa: BLE001 — sem onnxruntime: cai no torch
+                print(f"[vad] modelo ONNX indisponível ({str(e)[:120]}) — caindo no torch jit",
+                      flush=True)
+                _vad_backend = "torch-jit"
+                _vad_model = load_silero_vad(onnx=False)
     return _vad_model
 
 
@@ -5792,16 +5798,32 @@ def _vad_tem_fala(audio_path: Path, minimo_s: float = 0.3) -> bool:
     `except` devolvia True, ou seja, o guarda anti-alucinação era no-op em todo
     áudio vindo de arquivo (ruído puro passava como fala).
     Em caso de erro no Silero, devolve True (não bloqueia o pipeline)."""
+    global _vad_erro
     try:
         import torch
         from silero_vad import get_speech_timestamps
         audio = _wav_to_mono16k(audio_path)          # 16 kHz mono, sr suportado
-        speech = get_speech_timestamps(torch.from_numpy(audio), _vad_load(),
-                                       sampling_rate=16000, threshold=0.6, speech_pad_ms=100)
+        # a inferência vai sob a MESMA trava do load: o modelo guarda estado
+        with _vad_lock:
+            speech = get_speech_timestamps(torch.from_numpy(audio), _vad_load(),
+                                           sampling_rate=16000, threshold=0.6,
+                                           speech_pad_ms=100)
         dur_fala = sum((t["end"] - t["start"]) for t in speech) / 16000
+        _vad_erro = ""
         return dur_fala >= minimo_s
-    except Exception:  # noqa: BLE001 — Silero indisponível não bloqueia o STT
+    except Exception as exc:  # noqa: BLE001 — Silero indisponível não bloqueia o STT
+        # fail-open é decisão de projeto, mas deixá-lo MUDO escondia o guarda
+        # virando no-op: o erro fica no estado e no log (#320)
+        msg = f"{type(exc).__name__}: {exc}"
+        if msg != _vad_erro:
+            print(f"[vad] {msg[:160]} — fail-open, o trecho segue como fala", flush=True)
+        _vad_erro = msg
         return True
+
+
+def _vad_estado() -> tuple[str, str]:
+    """(caminho carregado, último erro) — diagnóstico sem mexer no modelo."""
+    return _vad_backend, _vad_erro
 
 
 def _whisper_repo() -> str:

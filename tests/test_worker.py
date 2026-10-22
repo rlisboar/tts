@@ -195,3 +195,61 @@ def test_write_status_limpa_tmp_quando_replace_falha(tmp_path, monkeypatch):
         _write_status(dst, {"status": "running"})
 
     assert list(tmp_path.iterdir()) == []   # sem status.tmp / status.json.*.tmp órfão
+
+
+# ---------------------------------------------------------------------------
+# #320 — o lote isolado também julga e repete trecho anômalo
+# ---------------------------------------------------------------------------
+
+def test_lote_regera_trecho_anomalo(tmp_path, monkeypatch, capsys):
+    """Antes o lote não tinha `_anomalo`: trecho mudo entrava no WAV final."""
+    import json
+    import sys
+
+    import numpy as np
+    import soundfile as sf
+
+    import tts_worker
+
+    chamadas = {"n": 0}
+
+    def _sintetiza(est, texto, omni=None, fx=False):
+        chamadas["n"] += 1
+        if chamadas["n"] == 1:
+            return np.zeros(24000, dtype=np.float32)      # 1ª tentativa muda
+        t = np.arange(int(4.0 * 24000)) / 24000.0   # acima do piso de cps
+        return (0.15 * np.sin(2 * np.pi * 180 * t)).astype(np.float32)
+
+    cfg = {
+        "status_path": str(tmp_path / "status.json"),
+        "piece_dir": str(tmp_path / "pieces"),
+        "outputs_dir": str(tmp_path / "out"),
+        "text": "Hoje a gente vai falar de tres coisas na ordem e depois os custos",
+        "voice_id": "v", "voices_dir": str(tmp_path / "voices"),
+        "voice_path": str(tmp_path / "voices" / "v.wav"),
+        "model": "omnivoice", "settings": {"chunk_max_chars": 140},
+        "omni": {"num_steps": 4, "seed": 42}, "base_dir": str(tmp_path),
+    }
+    (tmp_path / "cfg.json").write_text(json.dumps(cfg))
+    monkeypatch.setattr(tts_worker, "_carrega",
+                        lambda c: {"sr": 24000, "family": "omnivoice",
+                                   "omni": {"num_steps": 4, "seed": 42},
+                                   "settings": {"chunk_max_chars": 140}})
+    monkeypatch.setattr(tts_worker, "_sintetiza", _sintetiza)
+    monkeypatch.setattr(tts_worker, "_release_mlx_memory", lambda *a, **k: None)
+    monkeypatch.setattr(tts_worker, "normaliza_loudness", lambda *a, **k: 0.0)
+    monkeypatch.setattr(sys, "argv", ["tts_worker.py", str(tmp_path / "cfg.json")])
+
+    assert tts_worker.main() == 0
+    assert chamadas["n"] == 2, "o trecho mudo não foi regerado"
+    saida = capsys.readouterr().out
+    assert "anômalo" in saida and "inaudível" in saida
+    meta = json.loads((tmp_path / "out").glob("*.json").__next__().read_text())
+    assert meta["retries"] == 1 and meta["anomalias"] == 1
+    assert "inaudível" in meta["anomalias_motivos"][0]
+    # as MESMAS métricas de áudio do caminho in-process (#323)
+    for campo in ("rms", "peak", "crest_db", "retries", "anomalias"):
+        assert campo in meta, f"meta do worker sem {campo}"
+    assert meta["rms"] > 0.05 and meta["warning"] == ""
+    wav, _ = sf.read(str((tmp_path / "out").glob("*.wav").__next__()), dtype="float32")
+    assert float(np.sqrt(np.mean(wav ** 2))) > 0.05

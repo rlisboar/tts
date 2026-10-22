@@ -10,7 +10,8 @@ import pytest
 
 import common
 from common import (PAD_CAUDA_S, PAUSA_PADRAO_S, assemble_omnivoice_path, fade_edges,
-                    normalize, pausa_apos, pontua_corte, sanitize_text, split_text,
+                    motivo_anomalia, normalize, pausa_apos, pontua_corte,
+                    sanitize_text, split_text,
                     time_stretch, trim_tail_silence, write_json_atomic,
                     write_wav_concat)
 
@@ -507,3 +508,28 @@ def test_pausa_por_pontuacao():
     assert PAD_CAUDA_S + pausa_apos(",") <= 0.25
     assert PAD_CAUDA_S + max(pausa_apos(c) for c in ".!?…") <= 0.50
     assert PAD_CAUDA_S <= 0.10
+
+
+# ---------------------------------------------------------------------------
+# #320 — portão de truncamento derivado do cps MEDIDO
+# ---------------------------------------------------------------------------
+
+# cps medido na auditoria (#284) em fala real do próprio modelo
+CPS_MEDIDO = 15.4
+
+
+def test_cps_minimo_e_derivado_do_medido_e_nao_do_45_frouxo():
+    # fica ENTRE os dois pontos do aceite: reprova 40% da duração natural
+    # (38,5 chars/s) e aceita 90% (17,1 chars/s). E é mais apertado que o 45.
+    assert CPS_MEDIDO / 0.40 > common.CPS_MINIMO > CPS_MEDIDO / 0.90
+    assert common.CPS_MINIMO < 45
+
+
+def test_truncado_a_40_por_cento_dispara_e_a_90_nao():
+    sr = 24000
+    texto = "x" * 100
+    natural = len(texto) / CPS_MEDIDO          # ~6,5 s do trecho natural
+    curto = np.zeros(int(natural * 0.40 * sr), dtype=np.float32) + 0.1
+    quase = np.zeros(int(natural * 0.90 * sr), dtype=np.float32) + 0.1
+    assert "truncado" in motivo_anomalia(curto, sr, texto)
+    assert motivo_anomalia(quase, sr, texto) == ""
