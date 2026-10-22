@@ -41,7 +41,7 @@ if [ -z "$LAN" ]; then
 fi
 
 # Serializa com as outras que carregam modelo (#134): esta suíte gera por TTS.
-source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
+source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"
 
 # A UI SÓ vê chave de uso por um IP não-loopback, então metade do teste roda em
 # http://<LAN>:<porta>. A porta tem de sair do PRÓPRIO BASE (#140): com :7860
@@ -418,6 +418,9 @@ with sync_playwright() as p:
             "document.querySelector('#voiceList .item:not([data-velho]) .danger').disabled")
         cobrar(apagar_voz is True,
                "o apagar voz nasceu com o papel VELHO depois da troca de chave (render antes do is_admin)")
+        # o aceite é TODOS os elevados, não só os de render
+        cobrar(pg.evaluate("document.getElementById('shutdownBtn').disabled") is True,
+               "o desligar (ação estática) não travou com a chave de uso")
     except Exception:
         cobrar(False, "as listas nem renderizaram depois da troca de chave")
     pg.evaluate("window.__restauraApi && window.__restauraApi()")
@@ -426,6 +429,9 @@ with sync_playwright() as p:
     pg.wait_for_timeout(1200)
     cobrar(pg.evaluate("document.querySelector('#apiKeyCreate')?.disabled") is False,
            "a sessão não voltou a ser admin depois do ensaio de troca")
+    # o inverso tem de DESTRAVAR os elevados também
+    cobrar(pg.evaluate("document.getElementById('shutdownBtn').disabled") is False,
+           "voltar para admin não destravou o desligar")
 
     # papel: cria pelo form (default "uso"), confere o selo da linha, troca e apaga
     pg.eval_on_selector(".nav-item[data-view='config']", "el => el.click()")
