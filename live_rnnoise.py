@@ -113,6 +113,10 @@ class RnnoiseAoVivo:
         # `fechar()` pode correr com `abrir()` (a sessão cai no handshake). A flag
         # fecha a janela: ver `_abrir`/`processa`/`fechar` (#374).
         self._fechado = False
+        # Filtro CAIU (não é "ainda abrindo"): o chamador para de chamar e derruba
+        # a sessão de vez. `ativo` só diz se ele LIGOU — no handshake ele é None
+        # justamente enquanto `abrir()` corre (#375/F3).
+        self._morto = False
         self.faltas = 0          # bytes completados com zero (não deu tempo)
         self._leitor: threading.Thread | None = None
         self._erros: threading.Thread | None = None
@@ -120,6 +124,11 @@ class RnnoiseAoVivo:
     @property
     def ativo(self) -> bool:
         return self._ok
+
+    @property
+    def morto(self) -> bool:
+        """Caiu de vez — o filtro não volta sozinho (só um `abrir()` novo)."""
+        return self._morto
 
     def abrir(self) -> bool:
         try:
@@ -323,10 +332,21 @@ class RnnoiseAoVivo:
             return sai
 
     def _caiu(self) -> None:
+        """O filtro morreu (pipe quebrado/processo saiu): recolhe e marca `morto`.
+
+        Sem recolher, `_proc` continuava preenchido e o app seguia pagando
+        `asyncio.to_thread` + lock + `poll()` a cada frame (10/s) pelo resto da
+        sessão só para devolver o PCM cru (#375/F3). `morto` é o sinal que o
+        chamador lê para tirar o filtro de vez — é distinto de `ativo`, que é False
+        durante o `abrir()`."""
         if self._ok:
             err = bytes(self._err).decode("utf-8", "replace").strip().replace("\n", " ")
             _avisa(f"rnnoise caiu ({err[:160] or 'sem stderr'}) — Live segue sem o filtro")
         self._ok = False
+        self._morto = True
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            self._mata(proc)
 
     def fechar(self) -> None:
         """Idempotente e seguro contra um `abrir()` em andamento (ver `_abrir`)."""
