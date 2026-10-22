@@ -102,11 +102,13 @@ jobs:
       # macOS não tem /Users/runner (default do hospedado): sem isto o
       # `setup-python` morre em `mkdir: /Users/runner: Permission denied`.
       # `env:` de job não aceita o contexto `runner`, então vai por GITHUB_ENV.
-      - name: toolcache num diretório gravável
-        run: |
-          echo "RUNNER_TOOL_CACHE=$HOME/.cache/runner-toolcache" >> "$GITHUB_ENV"
-          echo "AGENT_TOOLSDIRECTORY=$HOME/.cache/runner-toolcache" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
+        env:
+          # macOS não tem /Users/runner (default do hospedado): o setup-python
+          # morre em `mkdir: /Users/runner: Permission denied`. Contexto `runner`
+          # só vale em `env:` de STEP, não de job.
+          RUNNER_TOOL_CACHE: ${{ runner.temp }}/toolcache
+          AGENT_TOOLSDIRECTORY: ${{ runner.temp }}/toolcache
         with:
           python-version: '3.12'
           cache: pip
