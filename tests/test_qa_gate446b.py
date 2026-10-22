@@ -70,12 +70,14 @@ def test_turno_seguinte_volta_ao_dsh(monkeypatch):
     dsh = DshFalso(deltas=("voltou ", "o dsh"))
     p = _pipe(fala, dsh, ("voltou ", "o dsh"),
               llm=lambda m: iter(["openai"]) )
-    p._teto_primeiro = 1.0                        # teto folgado: o saudável não espera
+    # teto LONGO (3 s) contra janela de 1 s: se o código esperasse o teto a
+    # diferença seria grosseira, e o teste aguenta a suíte carregada (#449)
+    p._teto_primeiro = 3.0
     t0 = time.perf_counter()
     p.end_of_speech(inicia_thread=False)          # turno 1 chega rápido: usa o dsh
     decorrido = time.perf_counter() - t0
     assert p._dsh_estouros == 0
-    assert decorrido < 0.6, f"caminho saudável esperou o teto: {decorrido:.2f}s"
+    assert decorrido < 1.0, f"caminho saudável esperou o teto: {decorrido:.2f}s"
     assert any("dsh" in str(q[0]) or True for q in dsh.chamadas)
     assert dsh.chamadas, "o dsh não recebeu o turno"
 
