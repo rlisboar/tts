@@ -84,11 +84,19 @@ if [ -z "$TMP" ] || [ ! -d "$TMP" ]; then
   mkdir -p "$TMP"
 fi
 # só apaga o que é DESTA execução (`$STEM*`) — nunca varre o `voices/` do dono
+# LISTA do que ESTA execução pode criar (não glob por prefixo frouxo): só estes
+# nomes — os três stems desta rodada, json e wav — são candidatos à remoção.
+CRIADOS=(
+  "$RAIZ/voices/$STEM.json" "$RAIZ/voices/$STEM.wav"
+  "$RAIZ/voices/$STEM_V.json" "$RAIZ/voices/$STEM_V.wav"
+  "$RAIZ/voices/$STEM_M.json" "$RAIZ/voices/$STEM_M.wav"
+)
 limpa_vozes() {
   [ "$MANTER" = "1" ] && return 0
-  rm -f "$RAIZ/voices/$STEM.json" "$RAIZ/voices/$STEM.wav" \
-        "$RAIZ/voices/$STEM_V.json" "$RAIZ/voices/$STEM_V.wav" \
-        "$RAIZ/voices/$STEM_M.json" "$RAIZ/voices/$STEM_M.wav"
+  local f
+  for f in "${CRIADOS[@]}"; do
+    [ -e "$f" ] && rm -f "$f"
+  done
 }
 trap 'limpa_vozes; rm -rf "$TMP"' EXIT
 
