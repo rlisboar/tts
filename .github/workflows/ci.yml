@@ -100,21 +100,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # SEM `setup-python` no mini: ele tem `/Users/runner` cravado e o `/Users` do
-      # mini é root:admin sem escrita para o usuário (sem sudo). O job usa o venv
-      # de produção, SEM `PYTHONHOME` (venv não tem `encodings`; ele empresta do
-      # interpretador base e o `PYTHONHOME` quebra essa busca) e SEM `pip`.
-      - name: interpretador (venv de produção) e verificação
+      # `setup-python` não serve no mini (`/Users/runner` cravado, `/Users` sem
+      # escrita) e o venv de PRODUÇÃO fica em `~/Documents`, que o agente do
+      # launchd NÃO pode ler (TCC) — o python não abre nem a própria stdlib.
+      # Venv do CI fica em `$HOME` (fora de Documents) e é reaproveitado entre
+      # rodadas; o venv de produção deixa de ser tocado.
+      - name: venv do CI (fora de Documents)
         run: |
-          PY312="$HOME/Documents/tts-rod/.venv-mlx/bin"
-          export PATH="$PY312:$PATH"
-          python -V
-          echo "$PY312" >> "$GITHUB_PATH"
-          echo "== sistema (fora de Documents) =="
-          /usr/bin/python3 -c "import json, ssl; print('sistema ok')" || echo "sistema FALHOU"
-          echo "== venv em Documents =="
-          python -c "import json; print('venv json ok')" || echo "venv FALHOU"
-          python -c "import fastapi; print('fastapi ok')" || echo "fastapi FALHOU"
+          V="$HOME/ci-venv"
+          PY=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
+          [ -x "$V/bin/python" ] || "$PY" -m venv "$V"
+          echo "$V/bin" >> "$GITHUB_PATH"
+          "$V/bin/python" -V
+          "$V/bin/python" -m pip install --quiet --disable-pip-version-check \
+            --index-url https://download.pytorch.org/whl/cpu torch
+          "$V/bin/python" -m pip install --quiet --disable-pip-version-check \
+            -r requirements.txt pytest-timeout pytest-rerunfailures
       - name: pytest
         # `--timeout`: um teste pendurado falha em 3 min em vez de comer o job.
         # Método DEFAULT (SIGALRM), não `--timeout-method=thread`: o `thread` só
