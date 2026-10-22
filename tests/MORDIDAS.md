@@ -32,3 +32,27 @@ Aplicado em: `evidence/232-mordidas.sh`, `evidence/223-revert-hand.py`,
 
 Se uma célula de mordida passar **e** o md5 do arquivo revertido for igual ao da
 mordida anterior, desconfie do `.pyc` antes de concluir que o fix é inerte.
+
+## Célula medida — #281 (RNNoise: `fechar()` correndo com `abrir()`)
+
+Três mordidas, todas com o `.pyc` removido antes de medir. As três caem **só pelo
+teste** — o `pyflakes` fica em `0` nas três, então nenhuma seria pega pelo estático.
+
+| Sabotagem | Resultado |
+|---|---|
+| remover a instalação do filtro no handler (`sess["rnnoise"] = _live_rnnoise_novo()`) | `test_handler_abre_o_filtro_e_fecha_no_finally` **FAILED** |
+| tirar o `fechar()` do `finally` da sessão | mesmo teste **FAILED** (a asserção `fechou == 1`) |
+| arrancar as duas rechecagens de `_fechado` em `_abrir` | `test_fechar_durante_abrir_nao_vaza_ffmpeg` **FAILED** **e** o repro real volta a vazar **8/8** |
+
+**Repro real do defeito** (antes do fix): `abrir()` em thread + `fechar()` na
+sequência → ffmpeg vivo depois do `fechar`, `_ok=True` num objeto fechado, e os
+processos acumulando (1→5 na repetição). Medido no processo vivo: 15,5 MB de RSS e
+1,3 % de CPU por sessão vazada, até o app reiniciar. Com o fix: **8/8 limpo**
+(5 com `fechar()` imediato e 3 a 15 ms), `ativo=False`, `_proc=None`, zero processo.
+
+O teste do F1 usa um espião de `Popen` que **segura o `__init__`** para cair na
+janela exata, cobra `_proc is None` antes de fechar e usa `returncode` (não
+`poll`, que o espião mente de propósito). O do F2 exige o frame filtrado no `feed`
+**e** `fechou == 1` no `finally`.
+
+Commit: `ea29b2d`. Gate: `task_2c6d833c` (veredito APROVADO).

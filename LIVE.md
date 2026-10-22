@@ -222,6 +222,25 @@ cru: medido nos wavs do app, o nível de um frame de fala varia até 34 dB entre
 vogal e consoante — com esse espalhamento o eco passa por cima de qualquer
 limiar calibrado. Com o envelope o espalhamento cai para ~10 dB.
 
+### Filtro de ruído no PCM: RNNoise (`TTS_LIVE_RNNOISE`)
+
+O NS do navegador (`noiseSuppression` no `getUserMedia`) ataca a ventoinha, mas é
+opaco e come consoante. O Live põe um segundo filtro, **no servidor**, sobre o PCM
+que chega — um ffmpeg por sessão com o filtro `arnndn` (16 kHz → 48 kHz → modelo →
+16 kHz, `models/rnnoise/sh.rnnn`, BSD, versionado). O frame que sai tem sempre o
+mesmo tamanho do que entrou, então o relógio do VAD não anda.
+
+- **Desligar:** `TTS_LIVE_RNNOISE=0` no ambiente do servidor (a suíte já usa isso
+  pelo conftest; nada mais precisa mudar).
+- **Dependência:** ffmpeg com `arnndn` — o binário do `imageio-ffmpeg` tem; o
+  fallback fixo é `/opt/homebrew/bin/ffmpeg`.
+- **Quando ele some:** o filtro degrada sozinho e **sempre com log** — modelo
+  ausente, ffmpeg sem o filtro, processo que não abre ou que cai no meio da sessão.
+  Em todos os casos o PCM segue cru e a sessão continua (`rnnoise: null` no `stats`
+  e `rnnoise.ativo=false`; ver a seção de telemetria).
+- **Custo:** um processo por sessão, vivo enquanto ela durar; ele é morto no
+  `finally` do handler, inclusive quando a sessão cai logo depois do `ready`.
+
 ### Prefix padding
 
 `prefix_ms = 100`. Quando o detector confirma o início, o `speech_start` é
