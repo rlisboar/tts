@@ -111,8 +111,12 @@ jobs:
       # recriar por ssh é o caminho conhecido.
       - name: venv do CI
         run: |
-          V=/tmp/ci-venv
-          [ -x "$V/bin/python" ] || /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 -m venv "$V"
+          V="$HOME/actions-runner/venv"   # fora de Documents (TCC) e fora do /tmp (some no reboot)
+          if [ ! -x "$V/bin/python" ]; then
+            echo "✖ sem venv do CI em $V — crie por ssh (fora do job):"
+            echo "  ssh lisboa@mini '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 -m venv ~/actions-runner/venv && ~/actions-runner/venv/bin/python -m pip install -r requirements.txt pytest-timeout pytest-rerunfailures'"
+            exit 1
+          fi
           echo "$V/bin" >> "$GITHUB_PATH"
           "$V/bin/python" -V
           "$V/bin/python" -c "import fastapi, soundfile, torch, pytest_timeout; print('deps ok')"
