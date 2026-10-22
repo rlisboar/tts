@@ -105,21 +105,17 @@ jobs:
       # launchd NÃO pode ler (TCC) — o python não abre nem a própria stdlib.
       # Venv do CI fica em `$HOME` (fora de Documents) e é reaproveitado entre
       # rodadas; o venv de produção deixa de ser tocado.
-      - name: teste cru — venv em /tmp com o python do sistema
+      # venv do CI em `/tmp`: fora de `~/Documents` (o agente do launchd não tem
+      # TCC ali) e fora do `$HOME` (onde `python -m venv` também trava no job).
+      # É reaproveitado entre rodadas; se sumir (reboot), `--no-deps` não basta —
+      # recriar por ssh é o caminho conhecido.
+      - name: venv do CI
         run: |
-          rm -rf /tmp/xvenv; /usr/bin/python3 -m venv --without-pip /tmp/xvenv && echo "VENV /tmp (sistema) OK" || echo "VENV /tmp (sistema) FALHOU"
-          rm -rf /tmp/yvenv; /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 -m venv --without-pip /tmp/yvenv && echo "VENV /tmp (3.12) OK" || echo "VENV /tmp (3.12) FALHOU"
-      - name: venv do CI (fora de Documents)
-        run: |
-          V="/tmp/ci-venv"      # /tmp: fora de Documents (TCC) e fora do HOME (que também travou)
-          PY=/usr/bin/python3
-          [ -x "$V/bin/python" ] || "$PY" -m venv "$V"
+          V=/tmp/ci-venv
+          [ -x "$V/bin/python" ] || /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 -m venv "$V"
           echo "$V/bin" >> "$GITHUB_PATH"
           "$V/bin/python" -V
-          "$V/bin/python" -m pip install --quiet --disable-pip-version-check \
-            --index-url https://download.pytorch.org/whl/cpu torch
-          "$V/bin/python" -m pip install --quiet --disable-pip-version-check \
-            -r requirements.txt pytest-timeout pytest-rerunfailures
+          "$V/bin/python" -c "import fastapi, soundfile, torch, pytest_timeout; print('deps ok')"
       - name: pytest
         # `--timeout`: um teste pendurado falha em 3 min em vez de comer o job.
         # Método DEFAULT (SIGALRM), não `--timeout-method=thread`: o `thread` só
