@@ -21,9 +21,14 @@ from fastapi.testclient import TestClient
 BASE = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(BASE / "tests"))
-from test_remote_auth_policy import carrega_servidor  # noqa: E402, F401 (fixture)
+from test_remote_auth_policy import carrega_servidor  # noqa: E402, F401
 
-# `noqa` no import (#378: o ruff respeita; o pyflakes, que saiu, exigia `__all__`).
+# Fixture importada de outro arquivo: o silêncio é o `noqa` do import, que o
+# ruff respeita desde o #378. O `__all__` abaixo é INERTE em runtime — fica
+# porque declara o que este módulo reexporta, não porque algum linter atual exija.
+__all__ = [
+    "carrega_servidor",
+]
 
 
 def _client(mod, chave="k1"):
