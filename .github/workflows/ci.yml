@@ -108,6 +108,10 @@ jobs:
       # worker do macOS (startup do interpretador preso em `open()`). O job usa o
       # venv de PRODUÇÃO — decisão consciente: é o único já quente na máquina,
       # com torch/MLX/fastapi instalados.
+      - name: TCC? sistema x Documents
+        run: |
+          echo "== sistema (fora de Documents) =="; time /usr/bin/python3 -c "import json, ssl, hashlib; print('ok')"
+          echo "== venv em Documents =="; timeout 60 "$HOME/Documents/tts-rod/.venv-mlx/bin/python" -c "import json; print('ok')" || echo "TRAVOU/DEMOROU"
       - name: interpretador (venv de produção) e verificação
         env:
           # o startup do interpretador trava no job; `PYTHONHOME` pula a
