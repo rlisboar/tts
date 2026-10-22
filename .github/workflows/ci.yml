@@ -100,26 +100,26 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements.lock
-      - name: venv
-        # torch do índice CPU primeiro: com o wheel CUDA o job paga ~2,4 GB e
-        # minutos por algo que a suíte não usa.
+      # SEM `setup-python` e SEM venv novo: no macOS (runner self-hosted) o
+      # `setup-python` tem `/Users/runner` cravado e o job morre em
+      # `mkdir: /Users/runner: Permission denied`; e o passo do venv trava no
+      # worker do macOS (startup do interpretador preso em `open()`). O job usa o
+      # venv de PRODUÇÃO — decisão consciente: é o único já quente na máquina,
+      # com torch/MLX/fastapi instalados.
+      - name: interpretador (venv de produção) e verificação
+        env:
+          # o startup do interpretador trava no job; `PYTHONHOME` pula a
+          # descoberta de path (que é onde ele trava)
+          PYTHONHOME: /Library/Frameworks/Python.framework/Versions/3.12
         run: |
-          python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install --quiet -r requirements.txt pytest-timeout pytest-rerunfailures
-      - name: MLX no Linux
-        # O wheel manylinux do `mlx` NÃO traz a `libmlx.so` — só o extra `[cpu]`
-        # traz. Medido: sem ele `import mlx.core` morre com "libmlx.so: cannot
-        # open shared object file" e qualquer teste que importe o app cai junto.
-        # No macOS (runner self-hosted) o extra é inócuo; fica aqui para o job
-        # continuar válido se um dia voltar para linux.
-        run: python -m pip install --quiet "mlx[cpu]"
+          PY312="$HOME/Documents/tts-rod/.venv-mlx/bin"
+          "$PY312/python" -V
+          echo "$PY312" >> "$GITHUB_PATH"
+          # o venv de produção NÃO é mutado por `pip install -r`: só os dois
+          # plugins do gate entram, `--no-deps` (puros, sem arrastar nada)
+          python -m pip install --quiet --no-deps --disable-pip-version-check \
+            pytest-timeout pytest-rerunfailures
+          python -c "import fastapi, soundfile, torch; print('deps do app ok')"
       - name: pytest
         # `--timeout`: um teste pendurado falha em 3 min em vez de comer o job.
         # Método DEFAULT (SIGALRM), não `--timeout-method=thread`: o `thread` só
