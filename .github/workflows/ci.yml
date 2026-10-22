@@ -41,7 +41,9 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # PILOTO: `false` para empurrar sem matar a rodada anterior (o cancelamento
+  # deixa o log sem resumo e não dá para distinguir ambiente de código)
+  cancel-in-progress: false
 
 jobs:
   estatica:
