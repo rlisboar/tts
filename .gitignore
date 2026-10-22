@@ -49,3 +49,8 @@ state/
 tmp/
 # log de sonda local (ex.: rodar a suíte em container para medir o CI)
 .ci-probe.log
+
+# artefatos de cobertura (pytest-cov)
+.coverage
+.coverage.*
+htmlcov/
