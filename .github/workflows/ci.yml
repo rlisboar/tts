@@ -107,8 +107,8 @@ jobs:
       # rodadas; o venv de produção deixa de ser tocado.
       - name: teste cru — venv em /tmp com o python do sistema
         run: |
-          rm -rf /tmp/xvenv; /usr/bin/python3 -m venv --without-pip /tmp/xvenv && echo "VENV EM /tmp OK" || echo "VENV EM /tmp FALHOU"
-          find /tmp/xvenv/bin -maxdepth 1 -name "python*" | head -2
+          rm -rf /tmp/xvenv; /usr/bin/python3 -m venv --without-pip /tmp/xvenv && echo "VENV /tmp (sistema) OK" || echo "VENV /tmp (sistema) FALHOU"
+          rm -rf /tmp/yvenv; /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 -m venv --without-pip /tmp/yvenv && echo "VENV /tmp (3.12) OK" || echo "VENV /tmp (3.12) FALHOU"
       - name: venv do CI (fora de Documents)
         run: |
           V="$HOME/ci-venv"
