@@ -1,0 +1,24 @@
+name: probe
+on:
+  pull_request:
+    branches: [main]
+    paths: ['probe.txt']
+concurrency:
+  group: probe-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  setup-python:
+    name: setup-python no runner self-hosted
+    runs-on: [self-hosted, tts-mini]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: versão
+        run: |
+          python -V
+          python -c "import json, ssl; print('import ok')"
