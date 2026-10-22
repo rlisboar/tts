@@ -3911,7 +3911,9 @@ async def restore_estado(request: Request, arquivo: UploadFile = File(...)):
             for nome, sha in esperados.items():
                 if nome in _ESTADO_SIMPLES:
                     alvo = stag / nome
-                elif nome.startswith("voices/") and _safe_id(nome[7:].rsplit(".", 1)[0]):
+                elif (nome.startswith("voices/")            # `_safe_id` LEVANTA em nome
+                      and re.fullmatch(r"[A-Za-z0-9_-]+\.(wav|json)", nome[7:])):
+
                     alvo = stag / "voices" / Path(nome).name
                 else:
                     raise HTTPException(400, f"Arquivo inesperado no pacote: {nome}")

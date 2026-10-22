@@ -123,3 +123,58 @@ def test_backup_nao_leva_audio_de_saida(client, auth, estado):
     nomes = zipfile.ZipFile(io.BytesIO(pacote)).namelist()
     assert "manifest.json" in nomes and "voices/v1.wav" in nomes
     assert not any(n.startswith("outputs/") for n in nomes)
+
+
+def _reembala_nomes(zip_bytes: bytes, trocas: dict) -> bytes:
+    """Reescreve o pacote renomeando entradas (e o manifest junto)."""
+    origem = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    man = json.loads(origem.read("manifest.json"))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as novo:
+        for info in origem.infolist():
+            if info.filename == "manifest.json":
+                continue
+            dados = origem.read(info.filename)
+            novo.writestr(trocas.get(info.filename, info.filename), dados)
+        man["arquivos"] = {trocas.get(n, n): s for n, s in man.get("arquivos", {}).items()}
+        novo.writestr("manifest.json", json.dumps(man))
+    return buf.getvalue()
+
+
+def test_nome_fora_da_lista_e_recusado(client, auth, estado):
+    pacote = client.get("/api/backup", headers=auth).content
+    antes = _hash(estado)
+    ruim = _reembala_nomes(pacote, {"voices/v1.wav": "voices/sub/v1.wav"})
+    r = client.post("/api/restore", headers=auth,
+                    files={"arquivo": ("b.zip", ruim, "application/zip")})
+    assert r.status_code == 400 and "inesperado" in r.text
+    assert _hash(estado) == antes
+
+
+def test_arquivo_listado_e_ausente_do_pacote_recusa(client, auth, estado):
+    pacote = client.get("/api/backup", headers=auth).content
+    antes = _hash(estado)
+    origem = zipfile.ZipFile(io.BytesIO(pacote))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as novo:
+        for info in origem.infolist():
+            if info.filename == "voices/v1.json":
+                continue                      # prometido no manifest, ausente no zip
+            novo.writestr(info.filename, origem.read(info.filename))
+    r = client.post("/api/restore", headers=auth,
+                    files={"arquivo": ("b.zip", buf.getvalue(), "application/zip")})
+    assert r.status_code == 400
+    assert _hash(estado) == antes
+
+
+def test_pacote_sem_chaves_nao_apaga_as_que_estao_no_disco(client, auth, estado):
+    """Restaurar só configuração não pode zerar as chaves de quem restaurou."""
+    chaves = estado["base"] / "apikeys.json"
+    guardado = chaves.read_bytes()
+    chaves.unlink()
+    pacote = client.get("/api/backup", headers=auth).content      # sem .apikeys.json
+    chaves.write_bytes(guardado)
+    r = client.post("/api/restore", headers=auth,
+                    files={"arquivo": ("b.zip", pacote, "application/zip")})
+    assert r.status_code == 200, r.text
+    assert chaves.exists() and json.loads(chaves.read_text())["keys"][0]["id"] == "k1"
