@@ -48,7 +48,7 @@ def backend_do_chat_pinado(monkeypatch):
     monkeypatch.setitem(app._settings, "chat_backend_live", "")
 
 
-def _espera(cond, msg: str, limite: float = 10.0) -> None:
+def _espera(cond, msg: str, limite: float = 20.0, diag=None) -> None:
     """Espera a CONDIÇÃO com prazo (#444).
 
     A limpeza do endpoint roda na task do WS, fora desta thread: `ws1.close()` só
@@ -60,7 +60,8 @@ def _espera(cond, msg: str, limite: float = 10.0) -> None:
         if cond():
             return
         time.sleep(0.02)
-    raise AssertionError(msg)
+    extra = f" · diagnóstico: {diag()}" if callable(diag) else ""
+    raise AssertionError(msg + extra)
 
 
 # ---------------------------------------------------------------- #186 (P2)
@@ -99,9 +100,18 @@ def test_socket_ANTIGO_morrendo_nao_apaga_a_sessao_retomada(ws_client, live_limp
         def _antigo_limpou() -> bool:
             return bool(sess_velha.get("fechar")) and sess_velha["fila"].qsize() == 0
 
-        _espera(_antigo_limpou, "a limpeza do socket antigo não terminou (10 s)")
+        _espera(_antigo_limpou, "a limpeza do socket antigo não terminou (20 s)")
+        # Se cair sob carga, o motivo tem de sair junto (#478): registro sumido,
+        # entrada trocada, ou a sessão NOVA tendo morrido por conta própria (aí é
+        # outro defeito, e o `fechar`/`erro` dela é que dizem qual).
+        def _diag_registro() -> str:
+            atual = app._live_sessions.get(sid)
+            return (f"entrada={'ausente' if atual is None else ('nova' if atual is sess_nova else 'outra')}"
+                    f" nova_fechar={sess_nova.get('fechar')} nova_erro={sess_nova.get('st_erro')}"
+                    f" velha_fechar={sess_velha.get('fechar')} sessoes={len(app._live_sessions)}")
+
         _espera(lambda: app._live_sessions.get(sid) is sess_nova,
-                "o finally do socket antigo apagou a sessão retomada")
+                "o finally do socket antigo apagou a sessão retomada", diag=_diag_registro)
 
         # o zumbi não pode regravar o contexto velho por cima do da retomada
         _espera(lambda: [m["content"] for m in
