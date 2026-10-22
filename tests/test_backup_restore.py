@@ -4,6 +4,8 @@ import copy
 import hashlib
 import io
 import json
+import threading
+import time
 import zipfile
 import pytest
 from fastapi.testclient import TestClient
@@ -178,3 +180,51 @@ def test_pacote_sem_chaves_nao_apaga_as_que_estao_no_disco(client, auth, estado)
                     files={"arquivo": ("b.zip", pacote, "application/zip")})
     assert r.status_code == 200, r.text
     assert chaves.exists() and json.loads(chaves.read_text())["keys"][0]["id"] == "k1"
+
+
+def test_restores_concorrentes_nao_misturam_estado(client, auth, estado):
+    """Dois restores ao mesmo tempo: o resultado é UM dos pacotes, nunca mistura."""
+    # pacote A com uma voz e outra setting
+    estado["settings"].write_text(json.dumps({"language": "pt", "marca": "A"}))
+    pac_a = client.get("/api/backup", headers=auth).content
+    # pacote B: setting diferente e a voz trocada
+    estado["settings"].write_text(json.dumps({"language": "en", "marca": "B"}))
+    (estado["vozes"] / "v1.wav").write_bytes(b"RIFF" + b"\xff" * 64)
+    pac_b = client.get("/api/backup", headers=auth).content
+    (estado["vozes"] / "v1.json").unlink()          # estraga antes de restaurar
+
+    # publica devagar ARQUIVO A ARQUIVO: sem a trava as duas publicações se
+    # entrelaçam e o estado final mistura os pacotes
+    def devagar(preparados, rollback):
+        for nome, origem in preparados:
+            destino = (app._caminho_estado(nome) if nome in app._ESTADO_SIMPLES
+                       else app.VOICES_DIR / origem.name)
+            destino.parent.mkdir(exist_ok=True)
+            origem.replace(destino)
+            time.sleep(0.05)
+
+    import pytest as _pytest
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(app, "_publica_estado", devagar)
+        erros = []
+
+        def dispara(pacote):
+            try:
+                caminho = estado["base"] / f"pac-{id(pacote)}-{threading.get_ident()}.zip"
+                caminho.write_bytes(pacote)
+                app._executa_restore(caminho)
+            except Exception as exc:                  # noqa: BLE001
+                erros.append(repr(exc))
+
+        threads = [threading.Thread(target=dispara, args=(p,))
+                   for p in (pac_a, pac_b, pac_a)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+    assert not erros, erros
+    marca = json.loads(estado["settings"].read_text())["marca"]
+    wav = (estado["vozes"] / "v1.wav").read_bytes()
+    # v1.wav e settings têm de ser do MESMO pacote (A: zeros, B: 0xff)
+    assert (marca == "A") == (wav.endswith(b"\x00" * 4)), (marca, wav[-4:])
+    assert (estado["vozes"] / "v1.json").exists()

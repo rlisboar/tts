@@ -3794,6 +3794,9 @@ async def import_voices(request: Request, zip_file: UploadFile = File(...)):
 # ---------------------------------------------------------------------------
 
 SCHEMA_BACKUP = 1
+# Serializa backup e restore: um restore publicando enquanto outro monta o pacote
+# entregaria zip meio-velho/meio-novo, e dois restores juntos misturariam os blocos.
+_restore_lock = threading.Lock()
 _ESTADO_SIMPLES = ("settings.json", ".apikeys.json", ".speaker-profiles.json")
 
 
@@ -3816,6 +3819,11 @@ def backup_estado(request: Request):
     o mesmo padrão do export de vozes (nunca o zip inteiro na RAM).
     """
     _exige_admin(request)
+    with _restore_lock:
+        return _monta_backup()
+
+
+def _monta_backup():
     import zipfile
     from starlette.background import BackgroundTask
 
@@ -3885,66 +3893,78 @@ async def restore_estado(request: Request, arquivo: UploadFile = File(...)):
             raise
 
     try:
-        try:
-            zf = zipfile.ZipFile(incoming_path)
-        except zipfile.BadZipFile as exc:
-            raise HTTPException(400, "Arquivo não é um pacote .zip") from exc
-        with zf, tempfile.TemporaryDirectory(prefix=".restore-", dir=OUTPUTS_DIR) as staging:
-            stag = Path(staging)
-            try:
-                manifest = json.loads(zf.read("manifest.json"))
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(400, "Pacote sem manifest.json legível") from exc
-            if not isinstance(manifest, dict):
-                raise HTTPException(400, "manifest.json inválido")
-            schema = manifest.get("schema")
-            if schema != SCHEMA_BACKUP:
-                raise HTTPException(
-                    400, f"Versão de pacote desconhecida ({schema!r}); esta build "
-                         f"lê a {SCHEMA_BACKUP} — nada foi tocado")
-            esperados = manifest.get("arquivos")
-            if not isinstance(esperados, dict) or not esperados:
-                raise HTTPException(400, "manifest.json sem a lista de arquivos")
-
-            # staging + conferência de sha256 de TUDO antes de publicar
-            preparados = []
-            for nome, sha in esperados.items():
-                if nome in _ESTADO_SIMPLES:
-                    alvo = stag / nome
-                elif (nome.startswith("voices/")            # `_safe_id` LEVANTA em nome
-                      and re.fullmatch(r"[A-Za-z0-9_-]+\.(wav|json)", nome[7:])):
-
-                    alvo = stag / "voices" / Path(nome).name
-                else:
-                    raise HTTPException(400, f"Arquivo inesperado no pacote: {nome}")
-                alvo.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    with zf.open(nome) as origem, alvo.open("wb") as saida:
-                        shutil.copyfileobj(origem, saida, length=1024 * 1024)
-                except KeyError as exc:
-                    raise HTTPException(400, f"Pacote não tem {nome}") from exc
-                if _sha256_arquivo(alvo) != sha:
-                    raise HTTPException(400, f"sha256 divergente em {nome} "
-                                             f"— pacote corrompido, nada foi tocado")
-                preparados.append((nome, alvo))
-
-            # rollback: cópia do estado atual antes de mexer
-            rollback = stag / ".rollback"
-            rollback.mkdir()
-            _snapshot_estado(rollback)
-            try:
-                _publica_estado(preparados, rollback)
-            except Exception:
-                _restaura_estado(rollback)
-                raise
+        resultado = _executa_restore(incoming_path)
     finally:
         incoming_path.unlink(missing_ok=True)
 
     _recarrega_settings()
     _conds_cache.clear()
     _cache_limpa()
-    return {"ok": True, "schema": schema,
-            "restaurados": len(preparados),
+    return resultado
+
+
+def _executa_restore(incoming_path: Path) -> dict:
+    """Restore sob a trava — serializa com o backup e com outro restore."""
+    with _restore_lock:
+        return _aplica_restore(incoming_path)
+
+
+def _aplica_restore(incoming_path: Path) -> dict:
+    """Valida o pacote e publica; devolve o resumo. Roda sob `_restore_lock`."""
+    import zipfile
+
+    try:
+        zf = zipfile.ZipFile(incoming_path)
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(400, "Arquivo não é um pacote .zip") from exc
+    with zf, tempfile.TemporaryDirectory(prefix=".restore-", dir=OUTPUTS_DIR) as staging:
+        stag = Path(staging)
+        try:
+            manifest = json.loads(zf.read("manifest.json"))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, "Pacote sem manifest.json legível") from exc
+        if not isinstance(manifest, dict):
+            raise HTTPException(400, "manifest.json inválido")
+        schema = manifest.get("schema")
+        if schema != SCHEMA_BACKUP:
+            raise HTTPException(
+                400, f"Versão de pacote desconhecida ({schema!r}); esta build "
+                     f"lê a {SCHEMA_BACKUP} — nada foi tocado")
+        esperados = manifest.get("arquivos")
+        if not isinstance(esperados, dict) or not esperados:
+            raise HTTPException(400, "manifest.json sem a lista de arquivos")
+
+        # staging + conferência de sha256 de TUDO antes de publicar
+        preparados = []
+        for nome, sha in esperados.items():
+            if nome in _ESTADO_SIMPLES:
+                alvo = stag / nome
+            elif (nome.startswith("voices/")          # `_safe_id` LEVANTA em nome
+                  and re.fullmatch(r"[A-Za-z0-9_-]+\.(wav|json)", nome[7:])):
+                alvo = stag / "voices" / Path(nome).name
+            else:
+                raise HTTPException(400, f"Arquivo inesperado no pacote: {nome}")
+            alvo.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with zf.open(nome) as origem, alvo.open("wb") as saida:
+                    shutil.copyfileobj(origem, saida, length=1024 * 1024)
+            except KeyError as exc:
+                raise HTTPException(400, f"Pacote não tem {nome}") from exc
+            if _sha256_arquivo(alvo) != sha:
+                raise HTTPException(400, f"sha256 divergente em {nome} "
+                                         f"— pacote corrompido, nada foi tocado")
+            preparados.append((nome, alvo))
+
+        # rollback: cópia do estado atual antes de mexer
+        rollback = stag / ".rollback"
+        rollback.mkdir()
+        _snapshot_estado(rollback)
+        try:
+            _publica_estado(preparados, rollback)
+        except Exception:
+            _restaura_estado(rollback)
+            raise
+    return {"ok": True, "schema": schema, "restaurados": len(preparados),
             "vozes": len([n for n in esperados if n.endswith(".wav")]),
             "build_do_pacote": manifest.get("build")}
 
