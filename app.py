@@ -496,10 +496,14 @@ _SETTINGS_DEFAULTS = {
     # o escore é normalizado (AS-norm) e o limiar vem da calibração do R2 (#525)
     # O seletor na tela entra junto do #528; até lá vale por `POST /api/settings`.
     "speaker_far_alvo": "",
-    # Anti-clone (#525): GANCHO do gate, DESLIGADO por decisão do PM — o R3 ainda
-    # não foi medido. Ligado, `_speaker_gate_ok` acrescenta `anticlone` na resposta
-    # (hoje "pendente") sem mudar veredito; desligado, nem o campo aparece.
+    # Anti-clone (#525): GANCHO do gate. Ligado, `_speaker_gate_ok` consulta a
+    # MARCA d'água do áudio e rejeita clone em `enforce`; desligado, nem o campo sai.
     "speaker_anticlone": False,
+    # Marca d'água AudioSeal em todo áudio GERADO (#657, decisão do dono): o app
+    # clona voz, então sem marca a saída é indistinguível de fala humana. É admin
+    # porque muda o áudio de todo mundo. Sem os pesos/`audioseal`, sai sem marca e
+    # o log diz; o default só vale em produção depois do ABX do dono.
+    "tts_marca_dagua": True,
     # "Só a minha voz" no Live (#533): portão ECAPA no TURNO. Desligado, nada
     # muda. Ligado, terceiro/TV não corta a resposta nem vira turno (o filtro
     # `identidade` do I4 reusa a MESMA verificação). `perfil` é o nome do perfil
@@ -3877,6 +3881,12 @@ def _encerra_tudo(motivo: str = "shutdown") -> dict:
             separa_voz.fecha()
         except Exception:         # noqa: BLE001 — encerrar é best-effort
             pass
+        try:                      # filho da marca (#657): idem
+            import marca_dagua
+
+            marca_dagua.fecha()
+        except Exception:         # noqa: BLE001
+            pass
         _jobs_hist_salva()
         feito["hist"] = True
         print(f"[shutdown] {motivo}: {feito['live']} sessão(ões) Live, "
@@ -3967,6 +3977,8 @@ _SETTINGS_ADMIN = frozenset({
     "remote_tts_extra",
     # limpeza do `outputs/`: APAGA arquivo do dono (#543)
     "auto_cleanup", "auto_cleanup_minutes", "auto_cleanup_max_outputs",
+    # marca d'água: muda o áudio de TODO mundo (#657)
+    "tts_marca_dagua",
 })
 _SETTINGS_SECRETS = ("remote_api_key", "remote_stt_key", "chat_api_key")
 # marcador da máscara: começa com "•" e nunca é confundido com chave de verdade.
@@ -4524,6 +4536,10 @@ def _apply_settings(payload: dict):
     if "speaker_far_alvo" in payload:
         v = str(payload["speaker_far_alvo"] or "").strip().replace(",", ".")
         _settings["speaker_far_alvo"] = v if v in ("1", "0.1") else ""
+    if "tts_marca_dagua" in payload:
+        v = payload["tts_marca_dagua"]
+        _settings["tts_marca_dagua"] = (v if isinstance(v, bool)
+                                        else str(v).strip().lower() in ("1", "true", "on"))
     if "speaker_anticlone" in payload:
         # booleano por aceitação explícita: "false"/"0"/"" desligam de verdade
         v = payload["speaker_anticlone"]
@@ -6416,6 +6432,16 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                     audio = np.concatenate(
                         [audio, np.zeros(pausa, dtype=np.float32)])
                 sf.write(pdir / f"{i}.wav", audio, sr, subtype="PCM_16")
+                if _settings.get("tts_marca_dagua"):
+                    try:                     # marca o TRECHO no disco (#657)
+                        import marca_dagua
+
+                        if marca_dagua.disponivel():
+                            marca_dagua.marca_wav(pdir / f"{i}.wav")
+                        else:
+                            _avisa_sem_marca(marca_dagua.motivo())
+                    except Exception as exc:  # noqa: BLE001
+                        _avisa_sem_marca(str(exc)[:120])
                 del audio
                 if not hold_pieces:
                     job["pieces"] = i + 1  # publica só depois do arquivo no disco
@@ -8854,17 +8880,26 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
     # nem campo na resposta. O R3 ainda não foi medido, então ligar hoje só diria
     # "pendente"; o detector entra é aqui.
     if _settings.get("speaker_anticlone"):
-        out.update(_speaker_anticlone())
+        out.update(_speaker_anticlone(wav_path))
     return out
 
 
-def _speaker_anticlone() -> dict:
-    """Resultado do anti-clone no gate ({} = nada a dizer).
+def _speaker_anticlone(wav_path: Path) -> dict:
+    """Anti-clone do áudio pela MARCA d'água do AudioSeal (#657).
 
-    Enquanto o R3 não medir marca d'água/detector não há veredito a dar: devolve
-    `pendente` em vez de inventar aprovação. Quando o detector existir ele entra
-    como campo aditivo e o `enforce` passa a rejeitar clone."""
-    return {"anticlone": "pendente"}
+    Clone feito pelo app sai marcado; fala humana não. Devolve a probabilidade e o
+    veredito; sem detector disponível diz `indisponivel` (nunca inventa aprovação).
+    O limite honesto é o áudio curto/cortado (R3: 83 % com 60 % do trecho cortado),
+    por isso a política de rejeitar em `enforce` é do #613, não daqui."""
+    import marca_dagua
+
+    if not marca_dagua.disponivel():
+        return {"anticlone": "indisponivel", "anticlone_motivo": marca_dagua.motivo()}
+    prob = marca_dagua.detecta_prob(wav_path)
+    if prob is None:
+        return {"anticlone": "indisponivel", "anticlone_motivo": "detecção falhou"}
+    return {"anticlone": "marcado" if prob >= 0.5 else "cru",
+            "anticlone_prob": round(prob, 3)}
 
 
 # ── "só a minha voz" no Live (#533) ────────────────────────────────────────
@@ -10175,8 +10210,52 @@ def _live_conta_underrun(sess: dict, nbytes: int) -> None:
     sess["st_ultimo_dur_ms"] = nbytes / 48.0
 
 
+def _marca_pcm(pcm: bytes, sr: int = 16000) -> bytes:
+    """Devolve o PCM marcado (AudioSeal), ou o MESMO pcm se a marca estiver fora.
+
+    Nunca levanta: marca é higiene anti-clone, não pode derrubar geração. O aviso
+    de indisponibilidade sai uma vez por processo (`marca_dagua.motivo`)."""
+    if not pcm or not _settings.get("tts_marca_dagua"):
+        return pcm
+    import marca_dagua
+
+    try:
+        if not marca_dagua.disponivel():
+            _avisa_sem_marca(marca_dagua.motivo())
+            return pcm
+        import numpy as np
+        import soundfile as sf
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fh:
+            caminho = Path(fh.name)
+        try:
+            x = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+            sf.write(str(caminho), x, sr, subtype="PCM_16")
+            marca_dagua.marca_wav(caminho)
+            y = sf.read(str(caminho), dtype="int16")[0]
+            return y.tobytes()
+        finally:
+            caminho.unlink(missing_ok=True)
+    except Exception as exc:  # noqa: BLE001 — sem marca o áudio segue
+        _avisa_sem_marca(str(exc)[:120])
+        return pcm
+
+
+_marca_avisada = False
+
+
+def _avisa_sem_marca(motivo: str) -> None:
+    """Uma linha por processo: marca fora não vira spam no stderr."""
+    global _marca_avisada
+    if _marca_avisada:
+        return
+    _marca_avisada = True
+    print(f"[marca] áudio saindo SEM marca d'água: {motivo}", file=sys.stderr, flush=True)
+
+
 def _live_envia_audio(sess: dict, pcm: bytes) -> None:
     if pcm:
+        pcm = _marca_pcm(pcm)            # anti-clone: o áudio sai marcado (#657)
         _live_janela_turno(sess, True)   # #167: turno do assistente com áudio em voo
         sess["audio_pendente"] = sess.get("audio_pendente", 0) + 1
         derrubados = sess["fila"].put(("audio", pcm))
@@ -10704,10 +10783,24 @@ def _live_transcreve_trecho(sess: dict, audio: bytes, cru: bool = False,
             if prazo_s <= 0:
                 return (_transcreve_em_janelas(a, idioma).get("text") or "").strip()
             # PRAZO por passada: o STT sob carga leva segundos e sem prazo a fila
-            # de passadas cresce até estourar o teto de 2 s do cliente (#503)
-            with _cf.ThreadPoolExecutor(max_workers=1) as pool:
-                fut = pool.submit(_transcreve_em_janelas, a, idioma)
+            # de passadas cresce até estourar o teto de 2 s do cliente (#503).
+            # `shutdown(wait=False)` é ESSENCIAL (#547): com o `with`, o
+            # `__exit__` espera o pool e a passada "abandonada" continuava
+            # bloqueando a thread do passo pelos segundos do STT — o prazo era
+            # decorativo e cada passo levava o tempo todo, atrasando a decisão em
+            # até 76 s medidos. Abandonar de verdade é devolver na hora e deixar a
+            # passada morrer sozinha.
+            pool = _cf.ThreadPoolExecutor(max_workers=1)
+            fut = pool.submit(_transcreve_em_janelas, a, idioma)
+            try:
                 return (fut.result(timeout=prazo_s).get("text") or "").strip()
+            except _cf.TimeoutError:
+                st = sess.setdefault("barge_stats", {"tipos": {}, "decisoes": [],
+                                                     "modelo": []})
+                st["passo_abandonado"] = int(st.get("passo_abandonado") or 0) + 1
+                return ""
+            finally:
+                pool.shutdown(wait=False)
         except Exception as exc:           # noqa: BLE001
             _live_log_kv("barge_stt_erro", sess=sess["id"], erro=str(exc)[:100])
             return ""
@@ -11796,6 +11889,13 @@ async def live_ws(ws: WebSocket):
                         # com `barge_ms` junto — o efetivo, não o pedido.
                         "history_descartados": cfg.get("history_descartados", 0),
                         "vad": sess["vad"]})
+    if _settings.get("tts_marca_dagua"):
+        try:                    # #657: sobe o marcador fora do caminho do 1º áudio
+            import marca_dagua
+
+            marca_dagua.prewarm()
+        except Exception:       # noqa: BLE001 — sem marca a sessão segue
+            pass
     sender = None
     try:
         # dentro do try: o `finally` mata o ffmpeg mesmo se o pipeline não nascer.

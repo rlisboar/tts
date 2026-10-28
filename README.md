@@ -388,6 +388,24 @@ Metal segurada no pai (nada de geração local em paralelo); ociosidade de 10 mi
 corpus do R4: vazamento de terceiro cai de 6,0 % para 3,6 % (SIR 0) e de 3,6 % para
 2,4 % (SIR 5), com o WER caindo junto — `evidence/534-separacao-alvo.txt`.
 
+### Marca d'água do áudio gerado (anti-clone)
+
+O app clona voz, então sem marca a saída dele é indistinguível de fala humana para
+qualquer verificador. Todo áudio GERADO (job, trecho do Live e `/v1/audio/speech`)
+sai com a marca do **AudioSeal** (MIT, Meta, CPU) — medido no R3: 100 % de detecção
+no marcado, 0 % no cru, e sobrevive a mp3/opus 32k, reamostragem e ganho −12 dB (o
+limite honesto é corte grande: 83 % com 60 % do trecho cortado).
+
+`tts_marca_dagua` (default **ligado**, campo **admin** — muda o áudio de todo
+mundo). Custo medido: **28 ms por segundo de áudio**; a carga do modelo (~2,6 s) é
+paga uma vez e o Live a adianta na abertura da sessão, para o `first_audio_ms` não
+incluir. Sem o pacote `audioseal` ou sem os pesos em `models/audioseal`, o áudio
+sai SEM marca e o log avisa uma vez — nada quebra.
+
+O detector alimenta o gate de locutor com `speaker_anticlone` ligado (`anticlone`:
+`marcado`/`cru`/`indisponivel` + `anticlone_prob`). Detalhe de custo e pino:
+`evidence/657-marca-dagua.txt`.
+
 ### Modos do gate
 
 `speaker_gate` em Configurações → Rede & memória, seção *Tradução / STT ·
@@ -955,7 +973,7 @@ navegador.
 # deriva (mesma fonte do estágio `estatica` do CI). Doc com cópia à mão já deixou
 # `live_rnnoise.py` fora do gate (#288/#389).
 ./.venv-mlx/bin/python tests/_pyflakes_gate.py
-# (24 alvos explícitos hoje; `tests/*.py` é glob e não conta —
+# (26 alvos explícitos hoje; `tests/*.py` é glob e não conta —
 #  ao acrescentar módulo ao hook, atualize aqui: um teste compara)
 # o linter é o ruff (conjunto `F` = o mesmo do pyflakes que ele substituiu), config
 # no `pyproject.toml`. `# noqa` VALE: import que só existe para virar fixture de

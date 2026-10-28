@@ -95,3 +95,11 @@ resemblyzer
 # moveu torch/transformers/mlx-*.
 speechbrain==1.1.2
 parakeet-mlx
+
+# Marca d'água anti-clone (#657): MIT, roda em CPU num processo filho.
+# Dry-run `-c requirements.lock` NÃO move torch/transformers/mlx — instala só ele
+# e `omegaconf`. Pesos em models/audioseal (sha256 no manifesto), carregados por
+# ARQUIVO: nenhum acesso ao Hub em runtime. Sem o pacote ou sem os pesos, o áudio
+# sai sem marca e o log avisa.
+audioseal==0.2.0
+omegaconf==2.4.0

@@ -2582,23 +2582,35 @@ def test_speaker_far_alvo_so_aceita_os_alvos_calibrados_e_sai_no_get(client, aut
 
 
 def test_speaker_anticlone_desligado_nao_muda_a_resposta(monkeypatch):
-    """GANCHO do anti-clone (#525): desligado (default) nem o campo aparece.
+    """GANCHO do anti-clone: desligado (default) nem o campo aparece (#525).
 
-    O R3 ainda não mediu marca d'água/detector; um campo inerte por padrão faria a
-    resposta prometer o que não existe."""
+    Ligado, o gate consulta a MARCA d'água e classifica o áudio — sem mexer no
+    veredito, que é política do #613."""
+    import marca_dagua
+
     perfis = {"eu": {"vecs": [[1.0, 0.0]], "modelo": app._speaker_modelo_efetivo()}}
     monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
     monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
     monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
+    monkeypatch.setattr(marca_dagua, "disponivel", lambda: True)
+    monkeypatch.setattr(marca_dagua, "detecta_prob", lambda p: 0.97)
     monkeypatch.setitem(app._settings, "speaker_gate", "label")
     monkeypatch.setitem(app._settings, "speaker_anticlone", False)
     sem = app._speaker_gate_ok(Path("x.wav"))
     assert sem.get("speaker") == "eu" and "anticlone" not in sem
-    # LIGADO: avisa que está pendente e NÃO mexe no veredito
+    # LIGADO: classifica pela marca e NÃO mexe no veredito
     monkeypatch.setitem(app._settings, "speaker_anticlone", True)
     com = app._speaker_gate_ok(Path("x.wav"))
-    assert com["anticlone"] == "pendente"
-    assert {k: v for k, v in com.items() if k != "anticlone"} == sem
+    assert com["anticlone"] == "marcado" and com["anticlone_prob"] == 0.97
+    assert {k: v for k, v in com.items()
+            if k not in ("anticlone", "anticlone_prob")} == sem
+    # áudio cru e detector fora também são ditos, sem aprovar nem reprovar
+    monkeypatch.setattr(marca_dagua, "detecta_prob", lambda p: 0.02)
+    assert app._speaker_gate_ok(Path("x.wav"))["anticlone"] == "cru"
+    monkeypatch.setattr(marca_dagua, "disponivel", lambda: False)
+    monkeypatch.setattr(marca_dagua, "motivo", lambda: "pesos ausentes")
+    fora = app._speaker_gate_ok(Path("x.wav"))
+    assert fora["anticlone"] == "indisponivel" and fora["anticlone_motivo"]
 
 
 def test_status_expoe_caminho_do_vad(client, auth, monkeypatch):
@@ -6851,3 +6863,44 @@ def test_speaker_alvo_distingue_perfil_inexistente_de_perfil_vazio(client, auth,
     r = client.post("/api/transcribe", headers=auth, data={"speaker_alvo": "naoexiste"},
                     files={"audio": ("a.wav", b"x", "audio/wav")})
     assert r.status_code == 400 and "não existe" in r.json()["detail"]
+
+
+# --- marca d'água AudioSeal (#657, decisão do dono) ---------------------------
+_marca_fake = {"chamadas": 0}
+
+
+def _marca_stub(monkeypatch, ok=True):
+    import marca_dagua
+
+    _marca_fake["chamadas"] = 0
+    monkeypatch.setattr(marca_dagua, "disponivel", lambda: ok)
+    monkeypatch.setattr(marca_dagua, "motivo", lambda: "" if ok else "pesos ausentes")
+    monkeypatch.setattr(marca_dagua, "marca_wav",
+                        lambda p: _marca_fake.__setitem__("chamadas",
+                                                          _marca_fake["chamadas"] + 1) or p)
+
+
+def test_marca_dagua_marca_o_audio_do_live(monkeypatch):
+    """Trecho do Live sai marcado; desligado (ou sem pesos), sai o mesmo PCM."""
+    _marca_stub(monkeypatch)
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    pcm = b"\x00\x01" * 800
+    saida = app._marca_pcm(pcm)
+    assert _marca_fake["chamadas"] == 1, "não mandou marcar"
+    assert len(saida) == len(pcm), "o PCM tem de voltar do mesmo tamanho (16 bits)"
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", False)
+    assert app._marca_pcm(pcm) == pcm and _marca_fake["chamadas"] == 1
+    # sem pesos: devolve o original e avisa uma vez
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    _marca_stub(monkeypatch, ok=False)
+    monkeypatch.setattr(app, "_marca_avisada", False)
+    assert app._marca_pcm(pcm) == pcm
+
+
+def test_marca_dagua_e_campo_ADMIN(monkeypatch):
+    """Ligar/desligar muda o áudio de TODO mundo: só admin."""
+    assert "tts_marca_dagua" in app._SETTINGS_ADMIN
+    assert app._SETTINGS_DEFAULTS["tts_marca_dagua"] is True, "o dono decidiu LIGADO"
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    assert app._apply_settings({"tts_marca_dagua": "false"})["tts_marca_dagua"] is False
+    assert app._apply_settings({"tts_marca_dagua": True})["tts_marca_dagua"] is True

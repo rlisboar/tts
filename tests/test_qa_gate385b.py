@@ -46,7 +46,7 @@ def _render(monkeypatch, tmp_path):
 
 
 def _vaos_e_cauda(wav: np.ndarray):
-    quieto = np.abs(wav) <= 1e-4
+    quieto = np.abs(wav) <= 2e-3   # piso da marca d'água (#657)
     vaos, i = [], 0
     while i < quieto.size:
         if quieto[i]:
@@ -60,7 +60,7 @@ def _vaos_e_cauda(wav: np.ndarray):
             i += 1
     cauda = 0
     for v in wav[::-1]:
-        if abs(float(v)) > 1e-4:
+        if abs(float(v)) > 2e-3:   # idem
             break
         cauda += 1
     return vaos, cauda

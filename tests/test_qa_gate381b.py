@@ -93,7 +93,8 @@ def test_bordas_rampeadas_e_pico_limitado(monkeypatch, tmp_path):
     jid, _job = _roda(monkeypatch, tmp_path)
     for i in range(4):
         y, _ = sf.read(str(app._piece_dir(jid) / f"{i}.wav"), dtype="float32")
-        assert abs(float(y[0])) < 1e-6 and abs(float(y[-1])) < 1e-6, f"borda crua no trecho {i}"
+        assert abs(float(y[0])) < 2e-3 and abs(float(y[-1])) < 2e-3, (
+            f"borda crua no trecho {i}")   # 2e-3 = piso da marca d'água (#657)
         assert float(np.abs(y).max()) <= 1.0 + 1e-6
 
 

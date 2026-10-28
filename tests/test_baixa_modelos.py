@@ -40,6 +40,9 @@ PESOS = (("models/ecapa-voxceleb/hyperparams.yaml", *_ECAPA),
           "soniqo/DeepFilterNet3-ONNX", "63d8ba442ba900143c468b798e94a04009b2f0c9"),
          # `repo` = "url": o script baixa da URL literal (o wheel do PyPI); o espelho
          # local substitui a URL no manifesto
+         # #657: marca d'água (o manifesto confere sha256 como os demais)
+         ("models/audioseal/gerador.pt", "facebook/audioseal", "main"),
+         ("models/audioseal/detector.pt", "facebook/audioseal", "main"),
          ("models/dnsmos/speechmos-0.0.1.1-py3-none-any.whl", "url", "-"))
 #: membros extraídos do wheel (DERIVADOS `zip:`) e o nome deles dentro do pacote
 WHEEL_MEMBROS = ("speechmos/dnsmos_models/sig_bak_ovr.onnx",

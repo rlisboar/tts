@@ -28,6 +28,7 @@ unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OB
     tts_cache.py metrics_hist.py \
     smoke_eco_regra.py smoke_barge_intencao.py smoke_so_minha_voz.py \
     live_intencao.py intencao_worker.py separa_voz.py separa_worker.py \
+    marca_dagua.py marca_worker.py \
     tests/*.py client/mic_router.py || exit 1
 
 # #388: o caminho REAL do worker (modelo verdadeiro + lock de Metal) era só aviso.

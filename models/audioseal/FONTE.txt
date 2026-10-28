@@ -1,0 +1,2 @@
+Pesos AudioSeal (gerador e detector, MIT) — facebook/audioseal.
+Materializados pelo tools/baixa_modelos.sh; carregados por ARQUIVO (sem Hub).

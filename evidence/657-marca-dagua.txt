@@ -1,0 +1,22 @@
+#657 — marca d'água AudioSeal: custo por segundo e carga (2026-10-28)
+CPU, venv do app, pesos locais em models/audioseal (carregados por arquivo, com
+HF_HOME vazio + HF_HUB_OFFLINE=1).
+
+| áudio | tempo de marca | ms por segundo de áudio | detecção depois |
+|---|---|---|---|
+| 0,1 s (1ª chamada, com carga+aquecimento) | 3859 ms | — | 1,000 |
+| 1,0 s | 28 ms | 28 | 1,000 |
+| 5,0 s | 141 ms | 28 | 1,000 |
+
+Carga fria do filho: ~70 ms de import + ~2,6 s de aquecimento (uma vez por
+processo). Por isso o Live faz `prewarm()` na ABERTURA da sessão: o
+`first_audio_ms` não paga a carga.
+
+Detecção: 1,000 no marcado e 0,000 no cru do MESMO trecho (o R3 já tinha 100 %/0 %).
+No uso do Live, 28 ms por segundo de áudio fica ~2 % de um `first_audio_ms` de 1,5 s
+— dentro do teto de 10 % do card, DESDE QUE o worker esteja aquecido (é o que o
+prewarm garante).
+
+Pino: `pip install --dry-run audioseal` instala SÓ `audioseal-0.2.0` e
+`omegaconf-2.4.0`; `torch 2.12.1` e `numpy 2.4.6` ficam onde estão (nenhum mlx-*
+se move).
