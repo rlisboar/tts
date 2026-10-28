@@ -274,21 +274,42 @@ def test_live_lock_freeze_muta_uma_copia_e_deixa_a_arvore_intacta(tmp_path):
     COMPARTILHADA, o arquivo fica revertido por ~12 s — e um commit de terceiro
     commita a reversão (suspeita nº 1 dos "códigos que sumiram", #573).
 
-    Aqui: sha256 e mtime do `app.py` da árvore principal idênticos, a suíte diz em
-    qual CÓPIA rodou e não sobra diretório de trabalho."""
-    def _impressao(arq: Path) -> tuple[str, int]:
-        import hashlib
-        return (hashlib.sha256(arq.read_bytes()).hexdigest(), arq.stat().st_mtime_ns)
-
+    Sha/mtime sozinhos são reféns da árvore viva: outro agente editando o `app.py`
+    durante a medida deixa marcas que a suíte não fez (medido — o hook caiu assim uma
+    vez). O sinal imune a isso é a FORMA do bloco: a suíte reverte o `busy` por ~10 s
+    e só a reversão muda a indentação do `await`. A célula AMOSTRA o arquivo enquanto
+    a suíte roda; ver a forma revertida na árvore principal = mutou ali (terceiro não
+    muda indentação). Sentinela no fim do arquivo cobre o outro dano, o `cp` de foto
+    velha; ele sai no `finally`."""
     alvo = AQUI.parent / "app.py"
+    revertido = re.compile(r"^            await ws\.send_json", re.M)
+    sentinela = f"# sentinela-isolamento-{os.getpid()}-{int(time.time())}"
     copia_txt = tmp_path / "copia.txt"
-    antes = _impressao(alvo)
-    r = _rodar("rapido", env={"SUITES": str(AQUI / "live_lock_freeze.sh"),
-                              "MORDIDA": "1", "FREEZE_SONO": "0.15",
-                              "TETO_S": "300", "SONDA_SAIDA": str(copia_txt),
-                              "TTS_SERIAL_LOCK": str(tmp_path / "lock")})
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert _impressao(alvo) == antes, "a suíte mexeu no app.py da árvore principal"
+    alvo.write_text(alvo.read_text() + sentinela + "\n")
+    proc = subprocess.Popen(
+        ["bash", str(RUNNER), "rapido"], cwd=str(AQUI.parent),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env={**os.environ, "PATH": os.environ.get("PATH", ""),
+             "HOME": os.environ.get("HOME", "/tmp"), "TTS_SERIAL_ESPERA": "60",
+             "SUITES": str(AQUI / "live_lock_freeze.sh"), "MORDIDA": "1",
+             "FREEZE_SONO": "0.15", "TETO_S": "300",
+             "SONDA_SAIDA": str(copia_txt), "TTS_SERIAL_LOCK": str(tmp_path / "lock")})
+    vi_revertido = False
+    try:
+        while proc.poll() is None:
+            if revertido.search(alvo.read_text()):
+                vi_revertido = True
+            time.sleep(0.15)
+        saida, erro = proc.communicate()
+        texto = alvo.read_text()
+    finally:
+        if proc.poll() is None:      # falhou no meio do caminho: não deixe o runner vivo
+            proc.kill()
+            proc.communicate()
+        alvo.write_text(alvo.read_text().replace(sentinela + "\n", ""))
+    assert proc.returncode == 0, saida + erro
+    assert not vi_revertido, "a suíte deixou o app.py da ÁRVORE na forma revertida"
+    assert sentinela in texto, "o app.py da árvore foi sobrescrito (restore por `cp` de foto velha)"
     assert copia_txt.is_file(), "a suíte não registrou a cópia de trabalho"
     copia = copia_txt.read_text().strip()
     assert not copia.startswith(str(AQUI.parent)), f"mutou a árvore: {copia}"

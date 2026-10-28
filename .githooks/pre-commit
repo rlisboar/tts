@@ -26,8 +26,8 @@ unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OB
 "$PY" -m ruff check app.py common.py tts_worker.py backends.py dsh_client.py smoke_sintese.py remote/*.py \
     live_turns.py smoke_live_turns.py live_pipeline.py smoke_worker_persist.py live_rnnoise.py \
     tts_cache.py metrics_hist.py \
-    smoke_eco_regra.py smoke_barge_intencao.py \
-    live_intencao.py intencao_worker.py \
+    smoke_eco_regra.py smoke_barge_intencao.py smoke_so_minha_voz.py \
+    live_intencao.py intencao_worker.py separa_voz.py separa_worker.py \
     tests/*.py client/mic_router.py || exit 1
 
 # #388: o caminho REAL do worker (modelo verdadeiro + lock de Metal) era só aviso.

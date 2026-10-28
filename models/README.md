@@ -16,6 +16,9 @@ Artefatos ao lado:
   AS-norm passa a normalizar pelo lugar errado (no Resemblyzer ele piora: 1,9 % →
   5,0 % de EER em 1 s).
 - `sha256sums.txt` — sha256 de cada arquivo de peso/artefato. Divergência é ERRO.
+  O que o script materializa sai em `444` (peso é imutável na árvore): para
+  inspecionar/substituir à mão, `chmod 644` antes — o teste que injeta divergência
+  faz isso e a falta do `chmod` foi um vermelho real do hook (#630).
   Os `.ckpt` NÃO estão no git (83 MB de um só): quem os materializa é o script,
   conferindo o sha256. `label_encoder.ckpt` é DERIVADO do `label_encoder.txt`
   (cópia byte a byte, mesmo sha256) e TAMBÉM está no manifesto: o `Pretrainer` do
