@@ -99,3 +99,21 @@ A célula do `auth_policy.py` AUSENTE antes do deploy é a que pega o caso sutil
 volta é **remover** o arquivo (deixar o novo seria, de novo, um estado que nunca
 existiu). Mordida medida com `git stash push -- remote/deploy.sh` e `git stash
 pop` — o `.pyc` não entra na conta porque o script é shell.
+
+## #497 — `test_7b_nao_espera_o_14b` não mordia (chamava o pool, não o handler)
+
+A célula original exercitava `MT_FAST_POOL` direto: o pool estava certo e o
+roteamento do handler podia quebrar em silêncio. Sabotagem de uma linha (passar
+`MT_POOL` no `offload` do `/v1/chat/completions`, omni_server.py:361) e o teste
+antigo continua verde; a célula nova **FAILED** com o 14B preso (medido: 3,06 s
+de espera contra 0,05 s pelo pool certo).
+
+| Sabotagem | Resultado |
+|---|---|
+| `offload(MT_FAST_POOL if fast else MT_POOL, …)` → `offload(MT_POOL, …)` | `test_7b_nao_espera_o_14b` **FAILED** (espera > 1 s e `x_gen_seconds` alto) |
+| rotear TUDO para o `MT_FAST_POOL` | `test_14b_continua_indo_pelo_pool_lento` **FAILED** (o controle negativo) |
+
+O `x_gen_seconds` é a medida do handler, e o nome do thread (`mt7b` × `mt`) diz
+por qual pool a geração passou — as duas pontas ficam presas. O 14B fica preso
+por um `Event` que só é solto no `finally` (e, no controle negativo, por um
+`Timer` de 0,5 s).

@@ -170,39 +170,77 @@ def test_health_normal_publica_o_asr(carrega_servidor):
 
 # ------------------------------------------------- 3) pool separado por tradutor
 
-def test_7b_nao_espera_o_14b(monkeypatch):
-    """Com um pool só, o "rápido" enfileirava atrás do lento — o nome mentia.
-    Aqui o 14B segura o pool dele e o 7B conclui antes."""
-    import asyncio
-    import importlib.util
-
-    import test_remote_auth_policy as base
-
-    carregados: list = []
-    base._instala_stubs(monkeypatch, carregados)
-    monkeypatch.setattr("os.makedirs", lambda *a, **k: None)
-    monkeypatch.syspath_prepend(str(BASE / "remote"))
-    monkeypatch.setenv("OMNI_API_KEY", "k1")
-    spec = importlib.util.spec_from_file_location("omni_pool", BASE / "remote" / "omni_server.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["omni_pool"] = mod
-    spec.loader.exec_module(mod)
-
+def test_pools_dos_tradutores_sao_separados_e_de_um_worker(carrega_servidor):
+    """O pool do "rápido" não pode ser o do lento (com um pool só o nome mente) e
+    cada um serializa o SEU modelo (o 4-bit não é thread-safe)."""
+    mod = carrega_servidor("omni_server.py", chave="k1")
     assert mod.MT_POOL is not mod.MT_FAST_POOL, "os dois tradutores dividem o mesmo pool"
     assert mod.MT_POOL._max_workers == 1 and mod.MT_FAST_POOL._max_workers == 1
 
-    # ocupar o 14B e provar que o 7B passa pelo pool DELE
-    solta = threading.Event()
 
-    async def exercita():
-        preso = mod.MT_POOL.submit(lambda: solta.wait(2))
-        fast = await asyncio.get_running_loop().run_in_executor(
-            mod.MT_FAST_POOL, lambda: "7b rodou")
-        solta.set()
-        preso.result(2)
-        return fast
+def test_7b_nao_espera_o_14b(carrega_servidor, monkeypatch):
+    """Com um pool só, o "rápido" enfileirava atrás do lento — o nome mentia.
 
-    assert asyncio.run(exercita()) == "7b rodou"
+    A célula é pelo HANDLER (`/v1/chat/completions`), não pelo pool: chamar
+    `MT_FAST_POOL` direto provava o pool e deixava passar a regressão que importa
+    (o handler mandar o 7B para o `MT_POOL`). Medido antes: 3,06 s com o 14B
+    preso × 0,05 s pelo pool certo. Aqui o 14B fica preso o tempo todo e o pedido
+    do 7B tem de voltar com ele AINDA preso — o `x_gen_seconds` é o que denuncia
+    a espera, e o nome do thread diz por qual pool a geração passou."""
+    mod = carrega_servidor("omni_server.py", chave="k1")
+    monkeypatch.setitem(mod.mt, "ready", True)
+    monkeypatch.setitem(mod.mt_fast, "ready", True)
+    usou: list[str] = []
+
+    def gera(slot, _msgs, _temperatura=0.3, _max_tokens=512):
+        usou.append(threading.current_thread().name)
+        return "traduzido"
+
+    monkeypatch.setattr(mod, "mt_chat", gera)
+    cliente = _client(mod)
+    preso = threading.Event()
+    mod.MT_POOL.submit(lambda: preso.wait(4))     # o 14B ocupado pelo turno dele
+    try:
+        t0 = time.monotonic()
+        r = cliente.post("/v1/chat/completions",
+                         json={"model": "qwen2.5-7b-instruct",
+                               "messages": [{"role": "user", "content": "oi"}]})
+        decorrido = time.monotonic() - t0
+    finally:
+        preso.set()
+
+    assert r.status_code == 200, r.text
+    assert decorrido < 1.0, f"o 7B esperou o 14B ({decorrido:.2f}s)"
+    assert r.json()["x_gen_seconds"] < 1.0, r.json()
+    assert usou and usou[0].startswith("mt7b"), f"gerou no pool errado: {usou}"
+
+
+def test_14b_continua_indo_pelo_pool_lento(carrega_servidor, monkeypatch):
+    """Controle negativo do roteamento: se TUDO fosse para o pool rápido, o teste
+    acima passaria sem provar nada. O 14B tem de esperar o pool dele."""
+    mod = carrega_servidor("omni_server.py", chave="k1")
+    monkeypatch.setitem(mod.mt, "ready", True)
+    monkeypatch.setitem(mod.mt_fast, "ready", True)
+    usou: list[str] = []
+
+    def gera(slot, _msgs, _temperatura=0.3, _max_tokens=512):
+        usou.append(threading.current_thread().name)
+        return "traduzido"
+
+    monkeypatch.setattr(mod, "mt_chat", gera)
+    cliente = _client(mod)
+    preso = threading.Event()
+    mod.MT_POOL.submit(lambda: preso.wait(4))
+    threading.Timer(0.5, preso.set).start()         # o 14B só solta depois
+    t0 = time.monotonic()
+    r = cliente.post("/v1/chat/completions",
+                     json={"model": "qwen2.5-14b-instruct",
+                           "messages": [{"role": "user", "content": "oi"}]})
+    decorrido = time.monotonic() - t0
+
+    assert r.status_code == 200, r.text
+    assert decorrido >= 0.5, f"o 14B não esperou o próprio pool ({decorrido:.2f}s)"
+    assert usou and usou[0].startswith("mt"), f"gerou no pool errado: {usou}"
 
 
 # ------------------------------------------------- 4) rev no /health
