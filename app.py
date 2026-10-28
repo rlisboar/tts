@@ -7902,10 +7902,33 @@ SPEAKER_MAX_SAMPLES = 5      # embeddings por perfil (média robuza o timbre)
 #: o gerou. Perfil sem o campo é do extrator legado — segue valendo, marcado como
 #: "precisa recadastrar"; o `enforce` nunca tranca o dono numa atualização (#525).
 SPEAKER_MODELO_LEGADO = "resemblyzer:v1"
-SPEAKER_MODELO_ATUAL = SPEAKER_MODELO_LEGADO     # vira o vencedor do R2 (#521)
+#: extrator DESEJADO (vencedor do R2, #521). Sem os pesos instalados (#526) o
+#: app não baixa nada em runtime: `_speaker_modelo_efetivo()` cai no legado.
+SPEAKER_MODELO_ATUAL = "ecapa:v1"
+_SPEAKER_PESOS = BASE / "tools" / "bakeoff" / "ecapa_voxceleb.pt"
 _speaker_lock = threading.Lock()
 _speaker_enc_lock = threading.Lock()   # só a criação do encoder
 _speaker_encoder = None      # VoiceEncoder carregado sob demanda
+
+
+def _speaker_ecapa_ok() -> bool:
+    """Dá para usar o ECAPA agora? (lib instalada E pesos presentes)
+
+    Sem download em runtime (decisão do PM no #525): quem traz os pesos é o #526.
+    Ausente = False e o app segue no Resemblyzer."""
+    import importlib.util
+
+    try:
+        if importlib.util.find_spec("speechbrain") is None:
+            return False
+    except (ImportError, ValueError):     # pacote quebrado no venv
+        return False
+    return _SPEAKER_PESOS.exists()
+
+
+def _speaker_modelo_efetivo() -> str:
+    """Extrator que ESTA instalação usa de fato (o desejado, se disponível)."""
+    return SPEAKER_MODELO_ATUAL if _speaker_ecapa_ok() else SPEAKER_MODELO_LEGADO
 
 
 def _speaker_modelo_do_perfil(perfil: dict) -> str:
@@ -8001,7 +8024,7 @@ def _speaker_pontua(wav_path: Path, perfis: dict
     sai UMA vez, não por perfil. Escore = cosseno contra o CENTRÓIDE das amostras
     do perfil (o R2 mostrou o centróide vencendo o máximo)."""
     modelos = {_speaker_modelo_do_perfil(p) for p in perfis.values()}
-    modelos.add(SPEAKER_MODELO_ATUAL)      # o extrator atual sempre participa
+    modelos.add(_speaker_modelo_efetivo())   # o extrator em uso sempre participa
     embs = {}
     for m in modelos:
         v = _speaker_embed(wav_path, m)
@@ -8117,7 +8140,7 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
                 {"speaker_aviso": "áudio curto p/ identificar a voz — segue sem "
                                   "etiqueta de locutor"})
     modelo_limiar = _speaker_modelo_do_perfil(perfis[melhor]) if melhor \
-        else SPEAKER_MODELO_ATUAL
+        else _speaker_modelo_efetivo()
     lim, modo_lim = _speaker_limiar(modelo_limiar)
     autorizado = melhor is not None and sim is not None and sim >= lim
     out: dict = {}
@@ -8169,7 +8192,7 @@ def _speaker_avalia_amostra(tmp: Path, emb: list | None, vecs: list, modelo: str
 
 def _speaker_avalia(tmp: Path, vecs_antes: list) -> tuple[list | None, list[str]]:
     """(embedding, problemas) — o corpo bloqueante do enroll, para a threadpool."""
-    modelo = SPEAKER_MODELO_ATUAL
+    modelo = _speaker_modelo_efetivo()
     emb = _speaker_embed(tmp, modelo)
     if not emb:
         return None, []
@@ -8209,17 +8232,17 @@ async def speaker_enroll(name: str = Form(...),
         p = perfis.get(nome, {"vecs": [], "updated": 0})
         # perfil de OUTRO extrator não acumula vetor incompatível: começa do zero
         # no atual (o `modelo` é o que diz a que espaço aquele vetor pertence)
-        vecs = ([] if _speaker_modelo_do_perfil(p) != SPEAKER_MODELO_ATUAL
+        vecs = ([] if _speaker_modelo_do_perfil(p) != _speaker_modelo_efetivo()
                 else list(p.get("vecs") or []))
         vecs.append(emb)
         p["vecs"] = vecs[-SPEAKER_MAX_SAMPLES:]
-        p["modelo"] = SPEAKER_MODELO_ATUAL
+        p["modelo"] = _speaker_modelo_efetivo()
         p["updated"] = time.time()
         perfis[nome] = p
         _speaker_save(perfis)
     faltam = max(0, SPEAKER_MIN_AMOSTRAS - len(p["vecs"]))
     return {"ok": True, "name": nome, "samples": len(p["vecs"]),
-            "modelo": SPEAKER_MODELO_ATUAL, "problemas": problemas,
+            "modelo": _speaker_modelo_efetivo(), "problemas": problemas,
             # cadastro incompleto é AVISO, não erro: dá para ir gravando
             "completo": faltam == 0,
             "faltando": [f"mais {faltam} amostra(s)"] if faltam else []}
@@ -8235,7 +8258,7 @@ def speaker_profiles():
              # perfil de outro extrator segue autenticando, mas o dono precisa saber
              # que ele sai daqui a um recadastro (a UI oferece a gravação de novo)
              "precisa_recadastrar":
-                 _speaker_modelo_do_perfil(p) != SPEAKER_MODELO_ATUAL}
+                 _speaker_modelo_do_perfil(p) != _speaker_modelo_efetivo()}
             for n, p in sorted(perfis.items())]
 
 

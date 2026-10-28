@@ -2033,7 +2033,7 @@ def test_speaker_perfil_de_outro_extrator_autentica_e_pede_recadastro(
     legado = {"eu": {"vecs": [[1.0, 0.0]]}}          # sem `modelo` = Resemblyzer
     # simula o DEPOIS do R2: o extrator atual é outro. Com os dois iguais (o
     # estado de hoje) nada seria "legado" e o teste passaria vazio.
-    monkeypatch.setattr(app, "SPEAKER_MODELO_ATUAL", "ecapa:v1")
+    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: True)   # extrator novo
     monkeypatch.setattr(app, "_speaker_load_estado", lambda: (legado, ""))
     # o extrator NOVO devolve outro espaço: só acerta quem pontuar pelo extrator
     # que gerou o vetor (com o atual para todo mundo, a similaridade cai a zero)
@@ -2063,7 +2063,7 @@ def test_speaker_escore_usa_centroide_e_nao_o_maximo(monkeypatch):
     O R2 mediu o centróide vencendo o máximo em todos os modelos — com máximo, uma
     gravação ruidosa (aqui `[0, 1]`) dá escore 1,0 para uma voz que não é do
     perfil em `[1, 0]`; o centróide de `[[1,0],[0,1]]` dá 0,707."""
-    perfis = {"eu": {"vecs": [[1.0, 0.0], [0.0, 1.0]], "modelo": app.SPEAKER_MODELO_ATUAL}}
+    perfis = {"eu": {"vecs": [[1.0, 0.0], [0.0, 1.0]], "modelo": app._speaker_modelo_efetivo()}}
     monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
     _nome, sim, houve, _modo = app._speaker_pontua(Path("x.wav"), perfis)
     assert houve and abs(sim - 0.7071) < 1e-3
@@ -2074,20 +2074,20 @@ def test_speaker_enroll_troca_de_extrator_zera_vetores_incompativeis(
     """Enrolar no extrator ATUAL substitui os vetores do extrator antigo."""
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".voz": Path("f.wav"))
     monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [0.5, 0.5])
-    monkeypatch.setattr(app, "SPEAKER_MODELO_ATUAL", "ecapa:v1")   # depois do R2
+    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: True)   # depois do R2
     store = {"eu": {"vecs": [[1.0, 0.0], [0.9, 0.1]], "updated": 0}}   # legado
     monkeypatch.setattr(app, "_speaker_load", lambda: store)
     monkeypatch.setattr(app, "_speaker_save", lambda p: None)
     r = client.post("/api/speaker/enroll", headers=auth,
                     data={"name": "eu"}, files={"audio": ("v.wav", b"x", "audio/wav")})
     assert r.status_code == 200 and r.json()["samples"] == 1
-    assert store["eu"]["modelo"] == app.SPEAKER_MODELO_ATUAL
+    assert store["eu"]["modelo"] == app._speaker_modelo_efetivo()
     assert store["eu"]["vecs"] == [[0.5, 0.5]], "vetor do extrator antigo ficou junto"
 
 
 def _coorte_falsa(monkeypatch, vecs):
     """Coorte sintética no cache: evita depender do arquivo real do repositório."""
-    monkeypatch.setattr(app, "_speaker_cohorte_cache", {app.SPEAKER_MODELO_ATUAL: vecs})
+    monkeypatch.setattr(app, "_speaker_cohorte_cache", {app._speaker_modelo_efetivo(): vecs})
 
 
 def test_speaker_far_alvo_normaliza_o_escore_e_usa_o_limiar_calibrado(monkeypatch):
@@ -2096,7 +2096,7 @@ def test_speaker_far_alvo_normaliza_o_escore_e_usa_o_limiar_calibrado(monkeypatc
     A coorte é de impostores: quanto mais longe dela, maior o escore. O limiar
     calibrado (2,434 para FAR 1 %) é em unidades normalizadas — comparar com o
     0,6 cru seria erro de escala."""
-    perfis = {"eu": {"vecs": [[1.0, 0.0]], "modelo": app.SPEAKER_MODELO_ATUAL}}
+    perfis = {"eu": {"vecs": [[1.0, 0.0]], "modelo": app._speaker_modelo_efetivo()}}
     monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
     monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
     _coorte_falsa(monkeypatch, [[0.0, 1.0], [0.1, 0.99], [0.2, 0.98],
@@ -2105,10 +2105,10 @@ def test_speaker_far_alvo_normaliza_o_escore_e_usa_o_limiar_calibrado(monkeypatc
     monkeypatch.setitem(app._settings, "speaker_far_alvo", "1")
     monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
     try:
-        lim, modo = app._speaker_limiar(app.SPEAKER_MODELO_ATUAL)
+        lim, modo = app._speaker_limiar(app._speaker_modelo_efetivo())
         assert modo == "asnorm"
         # limiar da tabela calibrada PARA ESTE modelo (o R2 calibrou por modelo)
-        assert lim == app._SPEAKER_LIMIAR_FAR[app.SPEAKER_MODELO_ATUAL]["1"]
+        assert lim == app._SPEAKER_LIMIAR_FAR[app._speaker_modelo_efetivo()]["1"]
         _n, sim, _h, modo_escore = app._speaker_pontua(Path("x.wav"), perfis)
         assert modo_escore == "asnorm"
         # mesma voz (cosseno 1,0 contra a coorte toda em 0) ⇒ escore normalizado
@@ -2121,13 +2121,33 @@ def test_speaker_far_alvo_normaliza_o_escore_e_usa_o_limiar_calibrado(monkeypatc
         monkeypatch.setitem(app._settings, "speaker_gate", "off")
 
 
+def test_speaker_sem_pesos_cai_no_extrator_legado(client, auth, monkeypatch):
+    """Sem lib/pesos do extrator novo, o app usa o legado e MARCA assim.
+
+    Sem download em runtime (#525): a ausência de `speechbrain` ou do arquivo de
+    pesos não pode gerar perfil etiquetado com um extrator que não roda — nasceria
+    "precisa recadastrar" e o gate compararia espaços diferentes."""
+    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: False)
+    assert app._speaker_modelo_efetivo() == app.SPEAKER_MODELO_LEGADO
+    store = {}
+    monkeypatch.setattr(app, "_vad_fala_s", lambda p: 5.0)
+    monkeypatch.setattr(app, "_snr_estimado", lambda p: 30.0)
+    r = _enroll(client, auth, monkeypatch, store)
+    assert r.status_code == 200, r.text
+    assert store["eu"]["modelo"] == app.SPEAKER_MODELO_LEGADO
+    assert r.json()["modelo"] == app.SPEAKER_MODELO_LEGADO
+    # e com o extrator novo disponível o mesmo código o usa
+    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: True)
+    assert app._speaker_modelo_efetivo() == app.SPEAKER_MODELO_ATUAL
+
+
 def test_speaker_coorte_do_repositorio_carrega():
     """O arquivo de coorte versionado tem de servir o extrator ATUAL.
 
     Sem ele o alvo de FAR nunca vale — e `_speaker_cohorte` engole o erro e cai no
     escore cru, então o defeito passaria calado."""
     app._speaker_cohorte_cache.clear()
-    vecs = app._speaker_cohorte(app.SPEAKER_MODELO_ATUAL)
+    vecs = app._speaker_cohorte(app._speaker_modelo_efetivo())
     assert len(vecs) >= 20, "coorte versionada ausente/curta para o extrator atual"
     assert all(len(v) == len(vecs[0]) for v in vecs), "vetores de dimensões diferentes"
 
@@ -2138,7 +2158,7 @@ def test_speaker_far_alvo_sem_coorte_cai_no_escore_cru(monkeypatch):
     monkeypatch.setitem(app._settings, "speaker_far_alvo", "0.1")
     monkeypatch.setitem(app._settings, "speaker_threshold", 0.6)
     try:
-        lim, modo = app._speaker_limiar(app.SPEAKER_MODELO_ATUAL)
+        lim, modo = app._speaker_limiar(app._speaker_modelo_efetivo())
         assert modo == "cru" and lim == 0.6
     finally:
         monkeypatch.setitem(app._settings, "speaker_far_alvo", "")
@@ -2189,7 +2209,7 @@ def test_speaker_cadastro_recusa_fala_curta_e_ruido(client, auth, monkeypatch):
 def test_speaker_cadastro_recusa_amostra_que_destoa(client, auth, monkeypatch):
     """Amostra cuja média contra o centróide fica abaixo do limiar não entra."""
     store = {"eu": {"vecs": [[1.0, 0.0], [0.98, 0.2]],
-                    "modelo": app.SPEAKER_MODELO_ATUAL}}
+                    "modelo": app._speaker_modelo_efetivo()}}
     monkeypatch.setattr(app, "_vad_fala_s", lambda p: 5.0)
     monkeypatch.setattr(app, "_snr_estimado", lambda p: 30.0)
     monkeypatch.setitem(app._settings, "speaker_threshold", 0.6)
