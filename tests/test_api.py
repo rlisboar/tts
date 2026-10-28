@@ -2375,6 +2375,23 @@ def test_settings_chave_de_uso_nao_muda_conexao_externa(client, auth, chave_de_u
         assert app._settings[k] == antes[k], k
 
 
+def test_default_do_limiar_de_locutor_bate_com_a_ui():
+    """O default espelhado na UI tem de ser o do SERVIDOR (#525).
+
+    O campo mostrava 0,75 quando o settings vinha sem valor, e o servidor aplica
+    `_SETTINGS_DEFAULTS` — quem abrisse a tela sem valor veria um rigor que não
+    está valendo, e salvar gravaria o número errado."""
+    import pathlib
+
+    html = (pathlib.Path(app.__file__).resolve().parent / "static" / "index.html"
+            ).read_text(encoding="utf-8")
+    padrao = app._SETTINGS_DEFAULTS["speaker_threshold"]
+    assert f'cfgNum("spThr", s.speaker_threshold, {padrao})' in html
+    assert f'speaker_threshold: parseFloat($("spThr")?.value) || {padrao},' in html
+    # e o próprio campo nasce com ele (o `value` do input é o que a tela mostra)
+    assert f'id="spThr" min="0.35" max="0.9" step="0.05" value="{padrao}"' in html
+
+
 def test_settings_admin_muda_a_limpeza_do_outputs(client, auth):
     """Admin manda teto 1 e os três campos de limpeza passam (#543).
 

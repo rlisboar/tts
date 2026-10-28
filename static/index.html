@@ -6903,7 +6903,7 @@ async function loadSettings() {
     cfgTxt("chatExtra", s.chat_extra);
     if ($("speakerGate")) $("speakerGate").value = s.speaker_gate || "off";
     cfgTxt("sttWhisperModel", s.stt_whisper_repo);
-    cfgNum("spThr", s.speaker_threshold, 0.75);
+    cfgNum("spThr", s.speaker_threshold, 0.6)   // mesmo default do servidor (#525);
     if ($("spThrOut")) $("spThrOut").textContent = (+($("spThr").value)).toFixed(2);
     if (typeof refreshSpProfiles === "function") refreshSpProfiles();
     $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
@@ -7166,7 +7166,7 @@ $("cfgSave").onclick = async () => {
       chat_dsh_model: $("chatDshModel")?.value || (LAST_SETTINGS || {}).chat_dsh_model || "",
       chat_dsh_effort: $("chatDshEffort")?.value || "off",
       speaker_gate: $("speakerGate")?.value || "off",
-      speaker_threshold: parseFloat($("spThr")?.value) || 0.75,
+      speaker_threshold: parseFloat($("spThr")?.value) || 0.6,
       stt_whisper_repo: $("sttWhisperModel")?.value || "",
       stt_anti_ruido: $("sttFiltros")?.checked !== false,
       stt_denoise: $("sttDenoise")?.checked !== false,
@@ -7210,17 +7210,7 @@ $("shutdownBtn").onclick = async () => {
   if (aviso) { aviso.hidden = true; aviso.textContent = ""; }
   try {
     await api("/api/shutdown", { method: "POST" });
-  } catch (e) {
-    // #511: o `api()` já abriu a faixa com o motivo do 403 — substituir o body
-    // aqui apagava a explicação e a tela passava a jurar "Servidor desligado"
-    // com o servidor vivo. Falhou: a página FICA, os timers seguem (o status não
-    // pode congelar à toa) e o motivo fica DITO, no aviso e no toast.
-    const semAdmin = e && e.status === 403;
-    const texto = semAdmin ? "não desligou — precisa de chave administrativa"
-                           : "não desligou";
-    if (aviso) { aviso.hidden = false; aviso.textContent = texto; }
-    toast(texto + (e && e.message ? " — " + e.message : ""), 6000);
-    return;
+  } catch (e) {}
   }
   // para os timers: sem isto continuariam falhando contra o servidor morto
   clearInterval(micRouteTimer); clearInterval(statusTimer);
