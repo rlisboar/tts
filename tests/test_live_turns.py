@@ -1685,3 +1685,29 @@ def test_lista_cadastrada_substitui_a_interna(monkeypatch):
     assert (tipo, filtro) == ("interrupcao", "palavras_corte")
     tipo, _p, _m, filtro = app._live_avalia_filtros(sess, "espera", 400, filtros)
     assert filtro != "palavras_corte", "com lista cadastrada a interna não vale"
+
+
+def test_prazo_da_passada_abandona_DE_VERDADE(monkeypatch):
+    """#547: o prazo era decorativo.
+
+    `with ThreadPoolExecutor(...)` chama `shutdown(wait=True)` na saída, então a
+    passada "abandonada" continuava bloqueando a thread do passo pelos segundos do
+    STT — cada passo levava o tempo todo e a decisão atrasava (medido: até 76 s
+    entre o suspeito e o `barge_decisao`). Agora o passo devolve no prazo."""
+    import time
+
+    import app
+
+    def stt_lento(a, idioma):
+        time.sleep(2.0)
+        return {"text": "para"}
+
+    monkeypatch.setattr(app, "_transcreve_em_janelas", stt_lento)
+    sess = {"id": "s"}
+    audio = b"\x01\x00" * 16000
+    t0 = time.monotonic()
+    texto = app._live_transcreve_trecho(sess, audio, cru=True, prazo_s=0.1)
+    decorrido = time.monotonic() - t0
+    assert texto == "", "o texto da passada abandonada não pode ser usado"
+    assert decorrido < 1.0, f"o passo esperou {decorrido:.2f}s (prazo era 0,1)"
+    assert sess["barge_stats"]["passo_abandonado"] == 1

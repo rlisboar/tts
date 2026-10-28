@@ -355,6 +355,13 @@ try:
                     // a injeção pegar a janela aberta (o ✔ por iteração depende).
                     if (m.type === "barge_in") window.__barges++;
                     if (m.type === "interrupted") window.__interr++;
+                    // DECISÕES cumulativas (nunca zeradas): a iteração correlaciona
+                    // pelo ÍNDICE do onset, o que sobrevive ao `__ev` zerado
+                    if (m.type === "barge_decisao") {
+                        (window.__decisoes = window.__decisoes || []).push(
+                            { t: performance.now(), tipo: m.tipo_barge, texto: m.texto,
+                              filtro: m.filtro });
+                    }
                     // #216: contadores do MOTOR (cumulativos) — diagnóstico
                     if (m.type === "stats" && m.motor) window.__motor = m.motor;
                     // #547: `restante_ms` é o que o MOTOR acha que falta tocar —
@@ -430,9 +437,16 @@ try:
                 if pg.evaluate("() => ((window.__turno||{}).stage)") in ("idle", None):
                     break
                 pg.wait_for_timeout(100)
-            n0 = audio_n()
-            injeta(estimulo, segundos=2.0)
-            ok = espera_audio(n0, timeout=60000)
+            # RE-TENTA a injeção: depois de um corte o app pode levar um minuto
+            # para voltar a falar; uma injeção perdida não pode custar a iteração
+            ok = False
+            limite_t = time.monotonic() + 90
+            while time.monotonic() < limite_t:
+                n0 = audio_n()
+                injeta(estimulo, segundos=2.0)
+                if espera_audio(n0, timeout=15000):
+                    ok = True
+                    break
             # e o MIC tem de estar quieto: frames do turno anterior ainda em voo
             # fariam a fala de medição dividir o buffer com eles
             limite = time.monotonic() + 6
@@ -634,13 +648,15 @@ try:
                         "(n) => window.__ev.some(e => e.tipo === 'interrupted')"
                         " || (window.__decisoes || []).slice(n)"
                         "      .some(d => d.tipo === 'interrupcao')",
-                        arg=decisoes0, timeout=40000)
+                        arg=decisoes0, timeout=90000)
                 except Exception:
                     pass
                 ok = bool(pg.evaluate(
                     "(n) => window.__ev.some(e => e.tipo === 'interrupted')"
                     " || (window.__decisoes || []).slice(n)"
                     "      .some(d => d.tipo === 'interrupcao')", decisoes0))
+                print(f"  [{i}/{REP}] decisões desta injeção: "
+                      f"{pg.evaluate('(n) => JSON.stringify((window.__decisoes||[]).slice(n))', decisoes0)[:160]}")
             corte = None
             if ok:
                 corte = pg.evaluate("() => { const t = window.__ev.find(e => e.tipo === 'interrupted'); return t ? Math.round(performance.now() - t.t) : null; }")
