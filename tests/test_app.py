@@ -845,7 +845,22 @@ def test_render_anomalo_nas_duas_tentativas_avisa(monkeypatch, tmp_path):
         # `anomalias` conta EVENTOS (as duas tentativas); o aviso é do não resolvido
         assert job["output"]["anomalias"] == 2
         assert job["warning"] in job["output"]["warning"]
-        assert job["output"]["rms"] == 0.0
+        # NaN vira zero, mas o arquivo NÃO fica em silêncio digital: a marca d'água
+        # entra em toda saída e deixa um resíduo (~1e-3). O rms BRUTO é o do áudio
+        # antes do FX e continua 0 — é ele que responde "o trecho saiu mudo".
+        assert job["output"]["rms_bruto"] == 0.0
+        assert 0.0 < job["output"]["rms"] < 0.01
+        # desligando a marca, o arquivo volta ao silêncio digital exato: é o que
+        # prova que o resíduo ACIMA é da marca e não de outra etapa
+        app._settings["tts_marca_dagua"] = False
+        job2 = _job_de_render(monkeypatch, tmp_path, _gerador)
+        try:
+            app._run_tts_job(job2, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                             "pt", {"num_steps": 4}, use_queue=False)
+            assert app._jobs[job2]["output"]["rms"] == 0.0
+        finally:
+            app._jobs.pop(job2, None)
+            app._settings["tts_marca_dagua"] = True
     finally:
         app._jobs.pop(job_id, None)
 
@@ -1044,7 +1059,13 @@ def test_fallback_desligado_volta_a_dar_error(monkeypatch, tmp_path):
 # #319 — pausas medidas no WAV final (vírgula curta, fim de frase longa)
 # ---------------------------------------------------------------------------
 
-def _maior_vale(wav: np.ndarray, sr: int, limiar: float = 1e-4) -> int:
+#: piso do SILÊNCIO com a marca d'água ligada (#657): o AudioSeal deixa ~-60 dBFS
+#: no que era zero (pico medido 9,5e-4). Sem a marca o piso seria 1e-4; com ela uma
+#: borda "crua" de fala (0,2) continua distinguível de longe.
+_PISO_MARCA = 2e-3
+
+
+def _maior_vale(wav: np.ndarray, sr: int, limiar: float = _PISO_MARCA) -> int:
     """Maior sequência de amostras em silêncio, em amostras."""
     quieto = np.abs(wav) <= limiar
     maior = atual = 0
@@ -1054,7 +1075,7 @@ def _maior_vale(wav: np.ndarray, sr: int, limiar: float = 1e-4) -> int:
     return maior
 
 
-def _cauda(wav: np.ndarray, limiar: float = 1e-4) -> int:
+def _cauda(wav: np.ndarray, limiar: float = _PISO_MARCA) -> int:
     """Só a sequência de silêncio que FECHA o arquivo (do fim para o começo)."""
     n = 0
     for v in wav[::-1]:
@@ -1095,7 +1116,7 @@ def test_pausas_do_render_seguem_a_pontuacao(monkeypatch, tmp_path):
         assert final <= int(0.10 * sr) + 5, f"cauda final {final / sr * 1000:.0f} ms"
         # vãos internos: cada um respeita o limite da SUA pontuação
         maiores = []
-        quieto = np.abs(wav) <= 1e-4
+        quieto = np.abs(wav) <= _PISO_MARCA
         i = 0
         while i < quieto.size:
             if quieto[i]:
