@@ -52,6 +52,7 @@ ELEVADAS = [
     ("POST", "/api/voices/import"),
     ("GET", "/api/voices/export"),
     ("DELETE", "/api/speaker/abc123"),
+    ("DELETE", "/api/speaker/abc123/pendente"),   # descarta recadastro (#645)
     ("POST", "/api/apikeys"),
     ("PATCH", "/api/apikeys/abc"),
     ("POST", "/api/apikeys/abc/rotate"),

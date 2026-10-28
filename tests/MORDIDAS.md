@@ -290,6 +290,18 @@ CI. `test_app_nao_baixa_modelo_no_boot` e `test_manifesto_lista_todos_os_pesos`
 cobrem o contrato do card por leitura (o boot não chama o downloader; peso sem
 sha256 no manifesto reprova).
 
+## #635 — `state/metrics` é nota, não veredito
+
+O knob `TTS_EXIGE_DONO_INTOCADO=1` reprovava por `state/metrics/` que o app do
+PRÓPRIO dono anexa pelo polling da tela (+171 B em 40 s com o dono intocado).
+
+| Sabotagem | Resultado |
+|---|---|
+| `state/metrics` volta para dentro de `_impressao_dono` (veredito) | `test_metrics_do_dono_vira_nota_e_nao_reprova_o_knob` **FAILED** |
+
+O controle `test_settings_do_dono_continua_reprovando_o_knob` garante que a nota
+não virou passe livre para os três arquivos de leitura-escrita.
+
 ## #621 — medir mutando o `app.py` sem sujar a árvore compartilhada
 
 | Sabotagem | Resultado |

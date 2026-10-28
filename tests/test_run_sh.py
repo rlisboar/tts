@@ -196,6 +196,28 @@ def test_knob_exige_dono_intocado_vira_falha(tmp_path):
     assert "TTS_EXIGE_DONO_INTOCADO=1" in r.stdout, r.stdout
 
 
+def test_metrics_do_dono_vira_nota_e_nao_reprova_o_knob(tmp_path):
+    """`state/metrics` é histórico ANEXADO por requisição: o app do PRÓPRIO dono
+    engorda o arquivo pelo polling da tela (medido: +171 B em 40 s com o dono
+    intocado). No veredito do knob isso acusava suíte inocente (#635)."""
+    r = _rodar("navegador", env={"SUITES": str(SONDAS / "suja_metrics.sh"),
+                                 "TTS_DONO_DIR": _dono(tmp_path),
+                                 "TTS_EXIGE_DONO_INTOCADO": "1"})
+    assert r.returncode == 0, r.stdout
+    assert "state/metrics` mudou" in r.stdout or "state/metrics mudou" in r.stdout, r.stdout
+    assert "não reprova" in r.stdout, r.stdout
+    assert "escreveu state/metrics/" not in r.stdout.split("nota:")[-1].replace("MUDOU", ""), r.stdout
+
+
+def test_settings_do_dono_continua_reprovando_o_knob(tmp_path):
+    """Controle do anterior: os três arquivos de leitura-escrita seguem valendo."""
+    r = _rodar("navegador", env={"SUITES": str(SONDAS / "suja_o_dono.sh"),
+                                 "TTS_DONO_DIR": _dono(tmp_path),
+                                 "TTS_EXIGE_DONO_INTOCADO": "1"})
+    assert r.returncode == 1, r.stdout
+    assert "settings.json escreveu" in r.stdout or "escreveu settings.json" in r.stdout, r.stdout
+
+
 def test_suite_que_nao_escreve_nao_aparece(tmp_path):
     """Controle: suíte limpa não gera linha nenhuma."""
     r = _rodar("navegador", env={"SUITES": str(SONDAS / "sonda_env.sh"),
