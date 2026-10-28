@@ -108,6 +108,7 @@ for linha in "${FONTES[@]}"; do
     rm -f "$arq.$TMP_SUF"; falhas=1; continue
   fi
   mv "$arq.$TMP_SUF" "$arq"
+  chmod 444 "$arq" 2>/dev/null   # peso é imutável na árvore, como os já materializados
   print -r -- "  [ok] $arq baixado e conferido"
 done
 

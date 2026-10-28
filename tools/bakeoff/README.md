@@ -29,5 +29,8 @@ qualquer um a dependência do app.
 
 ## Ambiente de bancada
 
-`venv` separado (`/tmp/tts-bakeoff/venv`), **sem pino novo** no `requirements.txt`
-nesta fase.
+`venv` separado (`/tmp/tts-bakeoff/venv`). Enquanto os candidatos são só bancada,
+**sem pino novo** no `requirements.txt`; quando um deles vira caminho do app ele
+sai de lá: o MossFormer2_SS_16K (#526-bis) foi vendorizado em `tools/separa_vend/`,
+os pesos foram para `models/` com sha256 e as duas dependências dele (`einops`,
+`rotary_embedding_torch`) entraram pinadas — inclusive em `requirements.lock`.
