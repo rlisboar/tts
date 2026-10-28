@@ -351,12 +351,25 @@ def _rodar_boot_isolado(base):
 
     A cópia isola BASE/OUTPUTS_DIR: o subprocesso roda o import de app sem mexer
     no `outputs/` do repo. `backends`, `common` e `static` vêm do repo (o mount
-    do StaticFiles exige o diretório); a cópia fica em sys.path[0] via cwd."""
+    do StaticFiles exige o diretório); a cópia fica em sys.path[0] via cwd.
+
+    Os caminhos de estado vão FIXADOS em `base` (#538): eles têm override por
+    ambiente (#461) e o `os.environ` herdado fazia um `TTS_OUTPUTS_DIR` exportado
+    no shell do operador mover a limpeza de boot para fora da cópia. Hermético por
+    construção vale mais do que depender de o shell estar limpo."""
     shutil.copy(app.__file__, base / "app.py")
     if not (base / "static").exists():
         (base / "static").symlink_to(Path(app.__file__).resolve().parent / "static")
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join(
-        [str(base), str(Path(app.__file__).resolve().parent)])}
+    env = {**os.environ,
+           "PYTHONPATH": os.pathsep.join(
+               [str(base), str(Path(app.__file__).resolve().parent)]),
+           "TTS_OUTPUTS_DIR": str(base / "outputs"),
+           "TTS_VOICES_DIR": str(base / "voices"),
+           "TTS_SETTINGS_PATH": str(base / "settings.json"),
+           "TTS_APIKEYS_PATH": str(base / ".apikeys.json"),
+           "TTS_LEGACY_APIKEY_PATH": str(base / ".apikey"),
+           "TTS_SPEAKER_PATH": str(base / ".speaker-profiles.json"),
+           "TTS_JOBS_HIST_PATH": str(base / "state" / "jobs-history.json")}
     r = subprocess.run([sys.executable, "-c", "import app"], cwd=str(base), env=env,
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr[-800:]
@@ -429,6 +442,36 @@ def test_boot_preserva_job_de_instancia_viva_e_remove_orfao(tmp_path):
         worker_vivo.wait(10)
         worker_morto.wait(10)
         worker_legado.wait(10)
+
+
+def test_boot_isolado_ignora_variaveis_de_caminho_do_shell(tmp_path, monkeypatch):
+    """`TTS_*_PATH` exportada no shell não pode desviar a limpeza de boot (#538).
+
+    O helper herda o `os.environ`; sem fixar os caminhos, um `TTS_OUTPUTS_DIR`
+    exportado fazia o app da cópia varrer um diretório de fora e o órfão de
+    `base/outputs` sobrevivia."""
+    base = tmp_path / "app-sob-teste"
+    out = base / "outputs"
+    out.mkdir(parents=True)
+    fora = tmp_path / "fora"
+    (fora / "outputs").mkdir(parents=True)
+
+    orfao = out / ".job-morto"
+    orfao.mkdir()
+    (orfao / "owner.pid").write_text("999999")
+    antigo = time.time() - (app._JOB_ORFAO_JANELA_S + 600)
+    os.utime(orfao, (antigo, antigo))
+
+    # shell do operador com o estado todo apontado para fora
+    monkeypatch.setenv("TTS_OUTPUTS_DIR", str(fora / "outputs"))
+    monkeypatch.setenv("TTS_VOICES_DIR", str(fora / "voices"))
+    monkeypatch.setenv("TTS_SETTINGS_PATH", str(fora / "settings.json"))
+    monkeypatch.setenv("TTS_APIKEYS_PATH", str(fora / ".apikeys.json"))
+
+    _rodar_boot_isolado(base)
+
+    assert not orfao.exists(), "a limpeza de boot varreu o diretório de fora"
+    assert list((fora / "outputs").iterdir()) == [], "o diretório de fora foi usado"
 
 
 def test_job_dir_ativo_por_dono_e_por_atividade(tmp_path):
