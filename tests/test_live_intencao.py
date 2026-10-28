@@ -47,7 +47,9 @@ for linha in sys.stdin:
         # fora de ordem de propósito: a fala de "cortar" demora e a de "continuar"
         # volta primeiro. Sem isso os ids saem na ordem de chegada e um cliente que
         # case "a próxima linha é minha" passa mesmo trocando as respostas.
-        threading.Thread(target=responde, args=(p.get("id"), fala, {atraso}),
+        threading.Thread(target=responde,
+                         args=(p.get("id"), fala,
+                               {atraso} if MAPA.get(fala, 0) > 0.5 else 0),
                          daemon=True).start()
     else:
         responde(p.get("id"), fala, 0)
