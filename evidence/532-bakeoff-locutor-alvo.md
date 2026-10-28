@@ -47,9 +47,21 @@ Seleção por janela sozinha **piora** a sobreposição total em 4 de 6 células
 janela tem as duas vozes, então apagar a janela apaga fala do alvo junto. No
 melhor caso (SIR 0) ela só empata com a mistura.
 
-Vazamento de terceiros (fração de palavra alheia na transcrição): mistura
-6,4 %–32 %, seleção 0–6,4 %, **separação 2,1 %–9,0 %** — no piso do falante
-(8,2 % é o piso do 1462 limpo, não vazamento).
+Vazamento de terceiros (fração de palavra alheia na transcrição), contra a meta
+de **≤ 2 %** do card:
+
+| camada | faixa medida | piso limpo do falante | meta ≤ 2 % |
+|---|---|---|---|
+| mistura | 6,4 %–32 % | 2,1 % e 8,2 % | **não cumpre** |
+| seleção | 0 %–6,4 % | idem | **não cumpre em parte das células** |
+| separação | 2,1 %–9,0 % | idem | **NÃO cumpre em nenhuma célula** |
+
+**A meta de ≤ 2 % não é atingida pela separação em célula alguma** — o melhor caso
+(2,1 %) empata com o piso do falante e fica acima da meta; no 1462 ela nunca desce
+ao piso (8,2 %), que ali já é 4× a meta. A seleção desce a 0 % em várias células,
+mas passa de 2 % em parte delas. O piso limpo alto do corpus (2,1 % e 8,2 %) é
+parte da explicação: com ele, "≤ 2 %" é uma meta que o corpus quase não permite
+medir — não é só o método que falha.
 
 ## Resultado — sobreposição PARCIAL (blocos alternando)
 
@@ -122,11 +134,14 @@ Memória: 1,16 GB só do separador, somados ao resto do app.
    2 confirmações e piso de energia. Custo 17 ms, 0 falso em 10 min com vozes
    distintas. Não colocar separação na decisão do turno.
 2. **Live (áudio que segue para o STT):** separação em MPS, escolha do fluxo pelo
-   ECAPA, correndo atrás do turno com ~1 s de atraso. Sem veto por janela (não
-   ganha nada e às vezes perde).
+   ECAPA, correndo atrás do turno com ~1 s de atraso, **com veto por `corte-abs`**.
 3. **Transcrição offline (STT/Tradutor/Conversa):** separação em MPS com escolha
-   pelo ECAPA, **sempre** — é a única camada que resolve sobreposição total e
-   custa 0,25 de RTF, que offline é irrelevante. Nada de apagar janela.
+   pelo ECAPA, **também com veto por `corte-abs`**.
+   **Correção do que a primeira versão dizia:** "separar sempre" está errado. Na
+   sobreposição PARCIAL a separação é PIOR que a mistura (SI-SDRi −11,9 a −13,7 dB
+   no 1462), então separar sem veto atrapalha. O desenho que os números sustentam é
+   separar **só onde há sobreposição**, com o veto por janela decidindo o resto — é
+   o que a coluna `sep+veto` já mostrava e a recomendação não aproveitava.
 4. **Seleção por janela:** só quando houver motivo para acreditar em
    sobreposição parcial; nunca sobre o fluxo já separado.
 

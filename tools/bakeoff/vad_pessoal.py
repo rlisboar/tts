@@ -79,7 +79,12 @@ def energia(x: np.ndarray) -> list[float]:
 
 def turnos(escores: list[float], ener: list[float], limiar: float,
            confirmacoes: int, piso_energia: float = 0.15) -> list[int]:
-    """Início (em janelas) de cada turno aberto, com histerese e confirmação."""
+    """Início (em janelas) de cada turno aberto.
+
+    É CONTAGEM DE CONFIRMAÇÃO, não histerese: exige `confirmacoes` janelas seguidas
+    acima do limiar para abrir, e basta uma janela abaixo para zerar a contagem.
+    Não há limiar de saída separado — o nome "histerese" prometia mais do que há
+    (achado P3 do gate), e a métrica de abertura não muda com um ou com outro."""
     abertos, seguidos = [], 0
     for i, (e, en) in enumerate(zip(escores, ener, strict=False)):
         if en >= piso_energia and e >= limiar:
