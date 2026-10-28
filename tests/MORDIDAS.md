@@ -146,3 +146,18 @@ O controle `test_nada_a_fazer_com_smoke_verde_continua_zero` passa nos dois lado
 de propósito. A célula do mini usa `T_CURL_HEALTH_CODE` (knob novo do shim) e não
 o `/api/build`: o build vermelho tira a condição `-n "$(codigo_no_ar)"` e o
 caminho deixa de ser "nada a fazer" — medido, era um falso alvo.
+
+## #498 — gate de sintaxe do `auth_policy.py` e `.rev -dirty` (medidos, sem prova)
+
+Duas sabotagens, um teste cada — ambas caem:
+
+| Sabotagem | Resultado |
+|---|---|
+| `ast.parse` só no `server.py` (tirar o `$COMPARTILHADO` do comando) | `test_sintaxe_quebrada_no_auth_policy_para_antes_do_restart` **FAILED** |
+| publicar `$local_rev` sem o sufixo `-dirty` | `test_rev_publicado_marca_dirty_quando_o_que_sobe_tem_wip` **FAILED** |
+
+Os controles (`test_sintaxe_do_par_ok_quando_os_dois_parseiam`,
+`test_rev_publicado_sem_dirty_na_arvore_limpa`) passam nos dois lados. A fixture
+`script_proprio` copia `remote/` com um git PRÓPRIO: editar `auth_policy.py` na
+árvore compartilhada por vários agentes mexeria no repo de todo mundo, e sem o
+git próprio o `rev` do `.rev` nem existiria.

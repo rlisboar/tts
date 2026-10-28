@@ -137,8 +137,8 @@ def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
     return env
 
 
-def _run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([ZSH, "-f", str(SCRIPT), *args], env=env, capture_output=True,
+def _run(env: dict[str, str], *args: str, script: Path = SCRIPT) -> subprocess.CompletedProcess:
+    return subprocess.run([ZSH, "-f", str(script), *args], env=env, capture_output=True,
                           text=True, cwd=str(REPO))
 
 
@@ -153,6 +153,27 @@ def _servidor(env: dict[str, str], servico: str = "voxtral") -> Path:
 def _log(env: dict[str, str], nome: str) -> list[str]:
     p = Path(env[f"T_{nome.upper()}_LOG"])
     return p.read_text().splitlines() if p.exists() else []
+
+
+@pytest.fixture
+def script_proprio(tmp_path: Path) -> Path:
+    """Cópia PRÓPRIA de `remote/` — com git próprio — para editar os arquivos
+    LOCAIS que o script lê (`$RAIZ/<servidor>.py`, `$RAIZ/auth_policy.py`) sem
+    mexer na árvore compartilhada por outros agentes. `RAIZ` é o diretório do
+    script (`${0:A:h}`), então a cópia é o "repo" que o deploy enxerga; o git
+    próprio é o que dá um `rev` de verdade (e o `status --porcelain` do `-dirty`)."""
+    copia = tmp_path / "remote"
+    shutil.copytree(REPO / "remote", copia, ignore=shutil.ignore_patterns("__pycache__"))
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(copia)]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "base"], check=True)
+    return copia / "deploy.sh"
+
+
+def _rev_do_script(script: Path) -> str:
+    return subprocess.run(["git", "-C", str(script.parent), "rev-parse", "--short", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
 
 
 # ------------------------------------------------------------------- compare
@@ -310,6 +331,63 @@ def test_deploy_apply_sem_diff_ainda_faz_smoke_e_reprova(amb):
     assert "nada a fazer" in r.stdout
     assert "[FALHA] /health devolveu 502" in r.stdout
     assert _log(amb, "restart") == [], "restart sem diff continua proibido"
+
+
+# ------------------------- gate de sintaxe do PAR e rev `-dirty` (#498)
+# O deploy sobe DOIS arquivos e passa `ast.parse` nos dois; e o rev publicado no
+# `.rev` marca `-dirty` quando o que sobe é WIP. Os dois eram só leitura de
+# código: um deles quebrado passaria a regressão verde.
+
+def test_sintaxe_quebrada_no_auth_policy_para_antes_do_restart(amb, script_proprio):
+    """`auth_policy.py` que não parseia morre em `[PARA]` — e NADA é reiniciado:
+    o restart com arquivo inválido derrubaria o processo velho para subir um
+    servidor que morre no import."""
+    (_servidor(amb) / "server.py").write_text("# velho\n")
+    (script_proprio.parent / "auth_policy.py").write_text("def (\n")
+
+    r = _run(amb, "deploy", "--apply", "--service", "voxtral", script=script_proprio)
+
+    assert r.returncode == 1, _saida(r)
+    assert "[PARA] sintaxe reprovada" in r.stdout
+    assert "auth_policy.py" in r.stdout
+    assert _log(amb, "restart") == [], "reiniciou com arquivo que não parseia"
+
+
+def test_sintaxe_do_par_ok_quando_os_dois_parseiam(amb, script_proprio):
+    """Controle: o gate não pode reprovar o caminho bom (os dois arquivos sobem e
+    o smoke roda)."""
+    (_servidor(amb) / "server.py").write_text("# velho\n")
+
+    r = _run(amb, "deploy", "--apply", "--service", "voxtral", script=script_proprio)
+
+    assert r.returncode == 0, _saida(r)
+    assert "sintaxe-ok (server.py + auth_policy.py)" in r.stdout
+    assert _log(amb, "restart") == [UNIT_VOXTRAL]
+
+
+def test_rev_publicado_marca_dirty_quando_o_que_sobe_tem_wip(amb, script_proprio):
+    """O que sobe é o ARQUIVO da árvore, não o commit: o `/health` diria o rev
+    errado se o `.rev` não marcasse `-dirty`. O aviso sozinho não basta — o valor
+    publicado é o que o `/health` mostra."""
+    (_servidor(amb) / "server.py").write_text("# velho\n")
+    politica = script_proprio.parent / "auth_policy.py"
+    politica.write_text(politica.read_text() + "\n# WIP de teste\n")   # parseia
+
+    r = _run(amb, "deploy", "--apply", "--service", "voxtral", script=script_proprio)
+
+    assert r.returncode == 0, _saida(r)
+    assert "árvore suja" in r.stdout
+    assert (_servidor(amb) / ".rev").read_text().strip() == f"{_rev_do_script(script_proprio)}-dirty"
+
+
+def test_rev_publicado_sem_dirty_na_arvore_limpa(amb, script_proprio):
+    (_servidor(amb) / "server.py").write_text("# velho\n")
+
+    r = _run(amb, "deploy", "--apply", "--service", "voxtral", script=script_proprio)
+
+    assert r.returncode == 0, _saida(r)
+    rev = (_servidor(amb) / ".rev").read_text().strip()
+    assert rev == _rev_do_script(script_proprio) and "dirty" not in rev
 
 
 # ------------------------------------- rollback AUTOMÁTICO em smoke vermelho (#345)

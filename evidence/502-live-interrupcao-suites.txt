@@ -1,0 +1,80 @@
+502 — LIVE UI da interrupção inteligente: medições da suíte e das mordidas
+
+Task #502 (contrato do servidor no card irmão #501). Suíte nova:
+`tests/live_interrupcao_ui.sh` (estágio `navegador`). Todo número abaixo saiu do
+app rodando em porta livre com stub de chat, mic falso do Chromium e o volume
+medido no ANALISADOR DA SAÍDA (o mesmo do painel OBS), não só no ganho.
+
+== 1) Rodada verde (antes das mordidas) ==
+  seletor: {'valor': 'inteligente', 'opcoes': ['inteligente', 'imediata', 'so_comando'], ...}
+  speech_start/inteligente: ganho 1.000 -> 0.2 em 49.1 ms · RMS 0.0691 -> 0.0087 · fila 1
+  teto de 2 s: ganho voltou a 1.000 · aviso no log=True
+  barge_suspeito/retoma: duck em 48.2 ms · retoma em 150.5 ms · log "↩ continuei — era backchannel" · fila 1
+  log da decisão: backchannel · “uhum” · 380 ms de voz · decidido em 240 ms
+  interrupted: fila 0 · ganho 1.000
+  modo pelo seletor: {'lx': 'imediata', 'sel': 'imediata'}
+  speech_start/imediata: fila 0 · ganho 1.000
+  speech_start/so_comando: fila 1
+  gravado no servidor: imediata · avisou desconhecido: False
+  modo depois do reload: imediata
+  valor inválido no servidor: {'sel': 'inteligente', 'lx': 'inteligente'}
+  ✔ OK — duck ≤50 ms sem cortar a fila, retoma ~150 ms, corte no interrupted,
+    teto de 2 s devolvendo o volume e o modo imediata preservando o corte da #225
+
+O bloco 8 é a ida-e-volta pelas settings: `live_interrupcao` ainda não existe no
+`_apply_settings` (é do #501), então o launcher da suíte ENVOLVE a função e serve a
+chave. Sem o stub, o POST da tela não teria como ser lido de volta e o teste
+passaria a mentir "gravado".
+
+Raiz quadrada média 0.0691 -> 0.0087 = razão 0.126, exatamente os -18 dB.
+
+== 2) MORDIDA A — tira o duck do `barge_suspeito` (`case "barge_suspeito": break;`) ==
+  barge_suspeito/retoma: duck em None ms · retoma em 7 ms · fila 1
+  ✖ FALHOU
+    · barge_suspeito não abaixou em ≤50 ms (medido None ms)
+
+== 3) MORDIDA B — inverte a condição do modo em `speech_start` (`===` -> `!==`) ==
+  ✖ FALHOU
+    · speech_start no modo inteligente CORTOU a fila (devia só abaixar)
+    · duck não desceu a -18 dB em ≤50 ms (medido None ms)
+    · chip de volume abaixado não apareceu
+    · o teto de 2 s não avisa no log
+    · modo imediata não cortou no speech_start (a #225 se perdeu)
+    · modo so_comando cortou no speech_start (devia abaixar e esperar)
+
+== 3b) MORDIDA C — desliga o load do modo em `loadSettings` ==
+  modo depois do reload: inteligente
+  valor inválido no servidor: {'sel': 'inteligente', 'lx': None}
+  ✖ FALHOU
+    · o modo gravado não voltou no load (select='inteligente')
+
+== 4) Estágio `navegador` inteiro, com a suíte nova ==
+  ok admin_ui_flow 17s · ok cfg_sujo_e_erros 9s · ok dsh_ui 16s · ok hash_deep_link 13s
+  FALHA live_barge_rep 90s (rc=142) · FALHA live_dsh_fallback 79s (rc=1)
+  ok live_interrupcao_ui 15s · FALHA live_ui 90s (rc=142) · FALHA live_ws 90s (rc=142)
+  ok obs_ui 9s · ok ultima_chave_ui 10s
+
+  CONTROLE, sem a suíte nova na lista (mesmo `-j 3`), para separar o que é dela:
+  FALHA live_barge_rep 90s · FALHA live_dsh_fallback 78s · FALHA live_ui 90s
+  FALHA live_ws 0s · o resto ok
+
+  Ou seja: os vermelhos de teto/`live_dsh_fallback` são de ANTES desta entrega.
+  Todos os que estouram 90 s (rc=142) estão parados na trava de modelo do
+  `serial.sh` — o teto do runner é o mesmo 90 s que eles gastam esperando, e
+  `live_dsh_fallback` segura a trava por ~78 s e falha por conta própria.
+
+== 5) Sem regressão nas suítes vizinhas (rodadas isoladas) ==
+  ./tests/live_ui.sh      -> ✔ OK — turno real pela UI, corte do barge-in medido
+  BASE=:7860 ./tests/mobile_layout.sh
+                          -> ✔ mobile: nenhum elemento fora da viewport (390 e 360 px)
+  pytest tests/test_run_sh.py -> 6 passed (a suíte nova está no estágio `navegador`)
+
+== 6) App real (:7860, instância do dono, somente leitura) ==
+  ganho durante o duck: 0.1258925348520279 (1/10^(18/20) exato)
+  chip "volume abaixado" visível: True · seletor em `inteligente`
+  erros de JS (pageerror / console error): nenhum
+  requisições falhas: apenas as 5 sondas de porta do controlador
+  (127.0.0.1:7861..7865 `/mode`, preexistentes quando não há controlador)
+
+Captura: `502-live-interrupcao-duck.png` (seletor, chip aceso e as linhas de
+decisão/retoma no log de eventos).

@@ -2568,6 +2568,17 @@
                      title="ms de silêncio que fecham o turno — vai no setup"></div>
             <label class="check"><input type="checkbox" id="lxPtt"
               title="Se o barge-in automático estiver cortando você sem querer"> segurar para falar</label>
+            <!-- #502: como o assistente reage quando você fala por cima dele.
+                 O seletor é do SERVIDOR (settings.live_interrupcao) e a tela só o
+                 espelha; o título diz cada opção porque `option` não mostra tooltip. -->
+            <div class="field-group"><span>Interrupção</span>
+              <select id="lxInterrupcao" aria-label="Modo de interrupção"
+                      style="max-width:190px"
+                      title="Inteligente (padrão): abaixa o volume, ouve o que você disse e só corta se for interrupção de verdade — &quot;uhum&quot;/tosse não cortam. Imediata: corta no primeiro som, como antes. Só com comando: só &quot;para&quot;/&quot;espera&quot;/pergunta cortam.">
+                <option value="inteligente">Inteligente</option>
+                <option value="imediata">Imediata</option>
+                <option value="so_comando">Só com comando</option>
+              </select></div>
             <span style="flex:1"></span>
             <button id="lxLimpar" class="ghost small" type="button">Limpar</button>
           </div>
@@ -2595,6 +2606,8 @@
               <span class="lx-chip">motor <b id="lxMotor">—</b></span>
               <span class="lx-chip">turno <b id="lxTurno">—</b></span>
               <span class="lx-chip" title="backend que de FATO responde o turno (o servidor publica em stats.backend)">backend chat <b id="lxProv">—</b></span>
+              <span class="lx-chip warn" id="lxDuck" hidden
+                    title="uma fala foi detectada por cima da resposta: playback em -18 dB até o motor decidir (teto de segurança: 2 s)">🔉 volume abaixado</span>
               <span class="lx-chip ok" id="lxNs" title="noiseSuppression do navegador, sempre ligado no Live — o checkbox de Configurações não manda aqui. Nas outras telas ele fica off porque o servidor já roda afftdn; duas supressões comem consoante. O PCM do Live não passa por afftdn.">ventoinha <b>supressão ligada</b></span>
             </div>
             <div class="lx-grid">
@@ -6678,6 +6691,12 @@ async function loadSettings() {
     if ($("chatBackend")) $("chatBackend").value = s.chat_backend === "dsh" ? "dsh" : "openai";
     if ($("chatBackendLive")) $("chatBackendLive").value = ["openai", "dsh"].includes(s.chat_backend_live)
       ? s.chat_backend_live : "";   // "" = herda da Conversa
+    // #502: o modo de interrupção do Live vem das settings. Escolha feita nesta
+    // tela vence (o load pode chegar depois do clique e não pode desfazê-lo).
+    if (!LX.interrupcao && LX_MODOS_INTERRUPCAO.includes(s.live_interrupcao)) {
+      LX.interrupcao = s.live_interrupcao;
+      lxPintaInterrupcao();
+    }
     // ANTES de escrever o effort: o select nasce vazio, e `value=` num select sem
     // options não pega — o liga() é quem o popula (lista completa) e dispara a
     // descoberta; o valor salvo é aplicado logo abaixo e a descoberta o preserva
@@ -6961,6 +6980,7 @@ $("cfgSave").onclick = async () => {
       idle_unload_minutes: parseInt($("idleUnloadMin")?.value, 10) || 0,
       speech_queue: !!$("speechQueue")?.checked,
       speech_queue_gap_s: parseFloat($("speechQueueGap")?.value) || 0,
+      live_interrupcao: lxModoInterrupcao(),   // #502: o "Salvar" daqui também o leva
       ...ctl,
     };
     const precAntes = (LAST_SETTINGS || {}).omni_precision;
@@ -7649,7 +7669,10 @@ const obsTtsM = criaObsMonitor("obsTts", { compacto: true }); // sem áudio capt
 const LX = { ws: null, estado: "desligado", ctxCap: null, noCap: null, stream: null,
              fonte: null, hpCap: null, gainCap: null, mudoCap: null,
              ctxPlay: null, ativos: [], proximo: 0, ptt: false, erro: false,
-             substituida: false };   // #244: o servidor fechou ESTA por takeover do id
+             substituida: false,   // #244: o servidor fechou ESTA por takeover do id
+             // #502: ganho do duck, marca de abaixado + prazo do teto de 2 s e o
+             // modo escolhido nesta tela (null = vale o das settings)
+             duck: null, abaixado: false, duckT: 0, interrupcao: null };
 
 // #244 (contrato aditivo do #222): motivo único do ramo `session_substituida` —
 // a mesma frase no `case "error"` e no `onclose` (o close chega logo atrás).
@@ -7742,6 +7765,15 @@ async function lxwsConectar() {
              bufs: {}, picos: {}, ws: "abrindo…", pendente: false, pendenteTrechos: 0,
              dshFallback: null };   // #150: aviso do fallback é POR SESSÃO
   lxAvisaDsh();
+  // #502: o duck nasce desligado em cada sessão e a tela mostra o modo EM VIGOR
+  // (settings, se a pessoa ainda não escolheu nada nesta tela)
+  LX.abaixado = false; clearTimeout(LX.duckT); LX.duckT = 0; lxPintaDuck();
+  lxPintaInterrupcao();
+  {
+    const modoInt = lxModoInterrupcao();
+    if (modoInt !== "imediata")
+      lxLogEvento("⚙ interrupção " + LX_MODO_ROTULO[modoInt] + " — falo por cima e o motor decide");
+  }
   let q = "";
   if (KEY) {
     try {
@@ -7845,12 +7877,16 @@ async function lxCaptura() {
     const anMic = ctx.createAnalyser(); anMic.fftSize = 2048;
     ganho.connect(anMic);
     const bus = play.createGain();
+    // #502: `duck` é o ganho da interrupção INTELIGENTE, ANTES do bus — o medidor
+    // de saída (depois dele) mostra o que de fato se ouve. Sem duck, ganho 1.
+    const duck = play.createGain(); duck.gain.value = 1;
     const anOut = play.createAnalyser(); anOut.fftSize = 2048;
-    bus.connect(anOut); anOut.connect(play.destination);
+    duck.connect(bus); bus.connect(anOut); anOut.connect(play.destination);
     no.port.onmessage = e => lxEnviaBin(e.data);
     LX.ctxPlay = play; LX.ctxCap = ctx; LX.noCap = no;
     LX.fonte = fonte; LX.hpCap = hp; LX.gainCap = ganho; LX.mudoCap = mudo;
-    LX.anMic = anMic; LX.bus = bus; LX.anOut = anOut;
+    LX.anMic = anMic; LX.bus = bus; LX.duck = duck; LX.anOut = anOut;
+    LX.abaixado = false; clearTimeout(LX.duckT); LX.duckT = 0;
   } catch (e) {
     try { stream.getTracks().forEach(t => t.stop()); } catch (e2) {}
     LX.stream = null;
@@ -7868,12 +7904,15 @@ function lxParaCaptura() {
   lxObsPara();
   try { LX.anMic && LX.anMic.disconnect(); } catch (e) {}
   try { LX.bus && LX.bus.disconnect(); } catch (e) {}
+  try { LX.duck && LX.duck.disconnect(); } catch (e) {}
   try { LX.anOut && LX.anOut.disconnect(); } catch (e) {}
   try { LX.hpCap && LX.hpCap.disconnect(); } catch (e) {}
   try { LX.gainCap && LX.gainCap.disconnect(); } catch (e) {}
   try { LX.mudoCap && LX.mudoCap.disconnect(); } catch (e) {}
-  LX.anMic = LX.anOut = LX.bus = null;
+  LX.anMic = LX.anOut = LX.bus = LX.duck = null;
   LX.hpCap = LX.gainCap = LX.mudoCap = null;
+  LX.abaixado = false; clearTimeout(LX.duckT); LX.duckT = 0;
+  lxPintaDuck();
   try { LX.noCap && (LX.noCap.port.onmessage = null); } catch (e) {}
   try { LX.fonte && LX.fonte.disconnect(); } catch (e) {}
   try { LX.stream && LX.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
@@ -8122,6 +8161,105 @@ function lxObsPara() {
   const mark = $("lxMicMark"); if (mark) mark.style.display = "none";
 }
 
+/* ───── Interrupção inteligente (#502) ───────────────────────────────────────
+   Contrato fixo do servidor (#501):
+   · `barge_suspeito{turn}`  → ABAIXA o playback ~18 dB em ≤50 ms, sem parar a fila;
+   · `barge_retoma{turn,tipo}` → rampa de VOLTA ao normal (~150 ms): era
+     backchannel/ruído, a resposta continua e nenhum turno abre;
+   · `interrupted`           → corta como sempre (o volume volta, senão o turno
+     seguinte nasceria mudo).
+   O cliente tem TETO de 2 s: sem decisão, o volume volta sozinho — senão um
+   `barge_suspeito` órfão (motor travado, WS mudo) deixaria o resto da resposta
+   inaudível para sempre.
+   `live_interrupcao` (settings) escolhe o comportamento: em `inteligente` e
+   `so_comando` a fala por cima NÃO corta mais localmente (#225) — abaixa e
+   espera; só `imediata` mantém o corte no `speech_start`. */
+const LX_MODOS_INTERRUPCAO = ["inteligente", "imediata", "so_comando"];
+const LX_MODO_ROTULO = { inteligente: "Inteligente", imediata: "Imediata", so_comando: "Só com comando" };
+const LX_DUCK_DB = -18, LX_DUCK_MS = 50, LX_RETOMA_MS = 150, LX_DUCK_TETO_MS = 2000;
+
+// Modo VIGENTE: o escolhido nesta sessão de tela vence o das settings; settings
+// ausente (servidor antigo) cai no padrão, que é o comportamento conservador.
+function lxModoInterrupcao() {
+  if (LX_MODOS_INTERRUPCAO.includes(LX.interrupcao)) return LX.interrupcao;
+  const s = (typeof LAST_SETTINGS === "object" && LAST_SETTINGS) || {};
+  return LX_MODOS_INTERRUPCAO.includes(s.live_interrupcao) ? s.live_interrupcao : "inteligente";
+}
+
+function lxPintaInterrupcao() {
+  const el = $("lxInterrupcao");
+  if (el) el.value = lxModoInterrupcao();
+}
+
+// Grava o modo no servidor (settings.live_interrupcao). A tela obedece o modo
+// local de qualquer jeito — mas um POST que o servidor não conhece (chave antiga)
+// não pode passar calado: o seletor estaria prometendo um ajuste inexistente.
+function lxDefineInterrupcao(modo) {
+  const novo = LX_MODOS_INTERRUPCAO.includes(modo) ? modo : "inteligente";
+  LX.interrupcao = novo;
+  lxPintaInterrupcao();
+  lxLogEvento("⚙ interrupção: " + LX_MODO_ROTULO[novo]
+            + (LX.ws ? " (o motor aplica na próxima sessão)" : ""));
+  api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
+                         body: JSON.stringify({ live_interrupcao: novo }) })
+    .then(r => {
+      const gravado = (r || {}).live_interrupcao;
+      if (!gravado) {
+        lxLogEvento("⚠ o servidor ainda não conhece este ajuste — vale só nesta tela", "e-erro");
+      } else if (gravado !== novo) {
+        lxLogEvento("⚠ o servidor ficou com “" + gravado + "” no lugar de “" + novo + "”", "e-erro");
+      }
+    })
+    .catch(e => lxLogEvento("⚠ não consegui gravar o modo (" + e.message
+                          + ") — vale só nesta tela", "e-erro"));
+}
+
+function lxPintaDuck() {
+  const el = $("lxDuck");
+  if (el) el.hidden = !LX.abaixado;
+}
+
+// Rampa de ganho com o valor CORRENTE como ponto de partida: uma retomada no meio
+// da descida não pula para 1 (estalo), continua de onde estava.
+function lxRampaVolume(alvo, ms) {
+  const g = LX.duck, ctx = LX.ctxPlay;
+  if (!g || !ctx) return;
+  const t = ctx.currentTime;
+  const de = g.gain.value;
+  try {
+    g.gain.cancelScheduledValues(t);
+    g.gain.setValueAtTime(de, t);
+    g.gain.linearRampToValueAtTime(alvo, t + ms / 1000);
+  } catch (e) { try { g.gain.value = alvo; } catch (e2) {} }
+}
+
+function lxAbaixaVolume(origem) {
+  if (!LX.duck) return;
+  const jaEstava = LX.abaixado;   // `speech_start` e `barge_suspeito` chegam
+                                  // juntos: um log só, mas o prazo se RENOVA
+  LX.abaixado = true;
+  lxRampaVolume(Math.pow(10, LX_DUCK_DB / 20), LX_DUCK_MS);
+  lxPintaDuck();
+  clearTimeout(LX.duckT);
+  // teto de segurança: sem `barge_retoma`/`interrupted` em 2 s, volta sozinho
+  LX.duckT = setTimeout(() => {
+    LX.duckT = 0;
+    if (!LX.abaixado) return;
+    lxRetomaVolume();
+    lxLogEvento("⏱ 2 s sem decisão do motor — devolvi o volume sozinho", "e-erro");
+  }, LX_DUCK_TETO_MS);
+  if (!jaEstava)
+    lxLogEvento("🔉 abaixei a resposta — o motor decide em até 2 s" + (origem ? " · " + origem : ""));
+}
+
+function lxRetomaVolume() {
+  clearTimeout(LX.duckT); LX.duckT = 0;
+  if (!LX.abaixado) return;
+  LX.abaixado = false;
+  lxRampaVolume(1, LX_RETOMA_MS);
+  lxPintaDuck();
+}
+
 // Fila de playback: agenda em `proximo` (sem sobrepor) e, no `interrupted`,
 // PARA tudo na hora — `stop(0)` corta o que já está tocando, sem esperar o fim.
 function lxToca(int16) {
@@ -8131,7 +8269,8 @@ function lxToca(int16) {
   const dados = buf.getChannelData(0);
   for (let i = 0; i < int16.length; i++) dados[i] = int16[i] / 32768;
   const src = ctx.createBufferSource();
-  src.buffer = buf; src.connect(LX.bus || ctx.destination);
+  // #502: todo trecho passa pelo ganho da interrupção (duck) antes do bus
+  src.buffer = buf; src.connect(LX.duck || LX.bus || ctx.destination);
   const agora = ctx.currentTime;
   if (LX.proximo < agora + 0.02) LX.proximo = agora + 0.02;   // não agenda no passado
   src.start(LX.proximo);
@@ -8139,13 +8278,18 @@ function lxToca(int16) {
   LX.ativos.push(src);
   src.onended = () => {
     LX.ativos = LX.ativos.filter(x => x !== src);
-    if (!LX.ativos.length && LX.estado === "falando") lxEstado("ouvindo", null);
+    // acabou o áudio: o duck não tem mais o que abaixar
+    if (!LX.ativos.length) {
+      lxRetomaVolume();
+      if (LX.estado === "falando") lxEstado("ouvindo", null);
+    }
   };
 }
 
 function lxCancelaPlayback() {
   for (const s of LX.ativos) { try { s.stop(0); } catch (e) {} }
   LX.ativos = []; LX.proximo = 0;
+  lxRetomaVolume();     // corte com o ganho abaixado deixaria o PRÓXIMO turno mudo
 }
 
 function lxRecebe(ev) {
@@ -8184,9 +8328,17 @@ function lxRecebe(ev) {
                            // barge e o `interrupted` não vem — sem isto o assistente segue
                            // falando por cima do usuário. Mesma política do barge (se o
                            // `interrupted` vier depois, o corte é idempotente).
+                           // #502: o CORTE local agora depende do modo. Em `inteligente` e
+                           // `so_comando` a fala por cima só ABAIXA: quem decide cortar é o
+                           // motor, pelo conteúdo — "uhum" não pode derrubar a resposta.
+                           // `imediata` mantém o corte daqui (comportamento antigo).
                            if (LX.ativos.length) {
-                             lxCancelaPlayback();
-                             lxLogEvento("⏹ cortei o assistente — você começou a falar");
+                             if (lxModoInterrupcao() === "imediata") {
+                               lxCancelaPlayback();
+                               lxLogEvento("⏹ cortei o assistente — você começou a falar");
+                             } else {
+                               lxAbaixaVolume("você falou");
+                             }
                            }
                            lxEstado("pensando", "✋ ouvi você…");
                            lxLogEvento("▶ fala começou"); break;
@@ -8209,6 +8361,23 @@ function lxRecebe(ev) {
     case "transcript_user": lxAppend("lxUser", m.delta ?? m.text ?? ""); break;
     case "assistant_text":  lxAppend("lxIA", m.delta ?? m.text ?? ""); break;
     case "barge_in":       lxLogEvento("✋ barge-in — cortei a resposta", "e-ok"); break;
+    // #502: o gesto do assistente diante da fala por cima. `barge_suspeito` só
+    // ABAIXA (nada é cortado ainda — o motor ouve o conteúdo e decide); o
+    // `barge_retoma` devolve o volume e a resposta segue de onde estava.
+    case "barge_suspeito": lxAbaixaVolume("motor"); break;
+    case "barge_retoma":
+                           lxRetomaVolume();
+                           lxLogEvento("↩ continuei — era " + (m.tipo || "sem classificação"), "e-ok");
+                           if (LX.ativos.length) lxEstado("falando", null);
+                           break;
+    // toda decisão do classificador vai para o log com tipo, texto e tempo
+    case "barge_decisao":
+                           lxLogEvento("🧠 decisão: " + (m.tipo || "?")
+                                     + (m.texto ? " · “" + m.texto + "”" : "")
+                                     + (m.fala_ms != null ? " · " + m.fala_ms + " ms de voz" : "")
+                                     + (m.decisao_ms != null ? " · decidido em " + m.decisao_ms + " ms" : ""),
+                                     m.tipo === "interrupcao" ? "e-ok" : null);
+                           break;
     case "interrupted":    lxCancelaPlayback(); lxEstado("interrompido", "✋ interrompi — pode falar");
                            lxLogEvento("interrompido", "e-ok"); break;
     case "latency":        LX.obs.lat = m;
@@ -8345,6 +8514,9 @@ if ($("lxLimpar")) $("lxLimpar").onclick = () => {
   for (const id of ["lxUser", "lxIA"]) { const el = $(id); if (el) el.innerHTML = ""; }
 };
 if ($("lxPtt")) $("lxPtt").onchange = () => lxHoldRender();
+// #502: o seletor de interrupção grava na hora (settings) — não passa pelo "Salvar"
+// de Configurações, que é de outra tela e de outro assunto.
+if ($("lxInterrupcao")) $("lxInterrupcao").onchange = () => lxDefineInterrupcao($("lxInterrupcao").value);
 if ($("lxPttBtn")) {
   // fallback "segurar para falar": solta -> `end_of_speech` (o servidor fecha o
   // turno sem depender do VAD automático)

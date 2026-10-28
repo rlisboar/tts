@@ -255,7 +255,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `243-mordidas.txt` | #243 | 2026-10-01 | == 1 — 202-gate.sh perde o RUN (backup de settings volta a ser global) |
 | `243-varredura-tmp.txt` | #243 | 2026-10-01 | VARREDURA DA CASA — CAMINHO FIXO EM /tmp (classe #12/#83/#224/#240) — task #243 |
 | `244-live-substituida-status.png` | #244 | 2026-10-21 | (imagem) |
-| `244-live-substituida.png` | #244 | 2026-10-21 | (imagem) |
+| `244-live-substituida.png` | #244 | 2026-10-22 | (imagem) |
 | `244-live_ui.txt` | #244 | 2026-10-02 | Exception occurred during processing of request from ('127.0.0.1', 54047) |
 | `244-mordida-A.txt` | #244 | 2026-10-02 | servidor de teste em http://127.0.0.1:63347 (stub :63346) |
 | `244-mordida-B.txt` | #244 | 2026-10-02 | servidor de teste em http://127.0.0.1:63807 (stub :63804) |
@@ -280,11 +280,13 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `249-live-prod-worker-durante.txt` | #249 | 2026-10-02 | === 249 · WORKER/ORPHAN CHECK — DURANTE a sessão WS aberta (2ª tentativa) === |
 | `252-aviso-boot.txt` | #252 | 2026-10-02 | 252 — aviso de boot_ms ancorado no marcador do restart (.deploy-mini-boot) |
 | `257-repro-index.txt` | #257 | 2026-10-02 | == REPRO ANTES do fix (GIT_INDEX_FILE=/tmp/probe-257 + pytest) |
-| `331-mobile-obs-360.png` | #331 | — | (imagem) |
-| `331-mobile-obs-390.png` | #331 | — | (imagem) |
+| `331-mobile-obs-360.png` | #331 | 2026-10-22 | (imagem) |
+| `331-mobile-obs-390.png` | #331 | 2026-10-22 | (imagem) |
 | `375-F5-ns-rnnoise.md` | #375 | 2026-10-22 | 375/F5 — NS do navegador + RNNoise: o filtro custa precisão do STT |
-| `440-rastro-sinal-mascara.txt` | #440 | — | == ANTES da máscara (vazava) == |
-| `442-rnnoise-vad-x-stt.md` | #442 | — | 442 — decisão do default do RNNoise: o filtro serve ao VAD, não ao STT |
+| `440-rastro-sinal-mascara.txt` | #440 | 2026-10-22 | == ANTES da máscara (vazava) == |
+| `442-rnnoise-vad-x-stt.md` | #442 | 2026-10-22 | 442 — decisão do default do RNNoise: o filtro serve ao VAD, não ao STT |
+| `502-live-interrupcao-duck.png` | #502 | — | (imagem) |
+| `502-live-interrupcao-suites.txt` | #502 | — | 502 — LIVE UI da interrupção inteligente: medições da suíte e das mordidas |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |
