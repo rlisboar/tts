@@ -1,0 +1,30 @@
+ECAPA-TDNN (spkrec-ecapa-voxceleb) — identificação de locutor
+============================================================
+
+Origem: https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb
+Revisão fixada: 0f99f2d0ebe89ac095bcc5903c4dd8f72b367286
+
+Arquivos e papéis
+-----------------
+- embedding_model.ckpt   pesos do extrator (ECAPA-TDNN, 192 dimensões)
+- mean_var_norm_emb.ckpt normalização global de embedding do checkpoint
+- classifier.ckpt        classificador dos 7205 locutores do VoxCeleb (não usado
+                         para verificação aberta, mas exigido pelo hyperparams)
+- label_encoder.txt      rótulos desses locutores
+- hyperparams.yaml       grafo do SpeechBrain (referencia os arquivos acima)
+
+Licenças
+--------
+- Código do SpeechBrain: Apache License 2.0
+  https://github.com/speechbrain/speechbrain/blob/develop/LICENSE
+- Pesos: derivados do VoxCeleb (CC BY 4.0), treinados e publicados pelo time do
+  SpeechBrain. Uso comercial permitido com atribuição.
+
+Atribuição mínima a manter onde quer que o vetor seja usado:
+"Embedding de locutor: SpeechBrain ECAPA-TDNN (spkrec-ecapa-voxceleb),
+Apache-2.0 / pesos CC BY 4.0 (VoxCeleb)."
+
+Por que este modelo: vencedor do bake-off público #521 (EER 1,86 % em 3 s com
+AS-norm, IC 95 %; Resemblyzer marcava 4,39 % no mesmo ensaio). O AS-norm é
+específico DELE — a coorte vive em `models/asnorm-coorte-ecapa.*` e NÃO serve
+para outro extrator.

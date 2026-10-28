@@ -274,3 +274,18 @@ O controle `test_suite_que_nao_escreve_nao_aparece` passa de propósito. O hook 
 é o próprio `[dono] … escreveu settings.json` que aparece no resumo do pytest
 quando algum teste toca o arquivo (visível ao rodar esta suíte). Sem o knob
 `TTS_EXIGE_DONO_INTOCADO=1` é AVISO, porque o app do dono pode gravar ao lado.
+
+## #526 — `tools/baixa_modelos.sh`: divergência e idempotência
+
+O script materializa pesos conferidos por sha256; baixar de novo à toa é caro
+(85 MB) e sobrescrever divergência em silêncio troca o modelo sem ninguém ver.
+
+| Sabotagem | Resultado |
+|---|---|
+| aceitar divergência sem `--forca` (sobrescreve) | `test_divergencia_e_erro_e_forca_rebaixa` **FAILED** |
+| rebaixar mesmo com sha256 conferindo | `test_segunda_rodada_nao_rebaixa` **FAILED** |
+
+O servidor do teste é um `http.server` local (`TTS_MODELOS_URL`): nada de rede no
+CI. `test_app_nao_baixa_modelo_no_boot` e `test_manifesto_lista_todos_os_pesos`
+cobrem o contrato do card por leitura (o boot não chama o downloader; peso sem
+sha256 no manifesto reprova).

@@ -79,4 +79,13 @@ importlib_resources==7.1.0
 # e medido: 1.30.0, wheel macosx_14_0_arm64 (py3.12).
 onnxruntime
 resemblyzer
+# speechbrain: extrator de locutor ECAPA-TDNN (identidade de voz, #521/#525). O
+# app NÃO baixa peso: lê `models/ecapa-voxceleb` por `TTS_SPEAKER_MODELO_DIR` e
+# cai no extrator anterior com aviso quando o diretório falta (tools/baixa_modelos.sh
+# materializa os pesos, conferidos por sha256).
+# >= 1.1 é obrigatório: a 1.0.3 chama `torchaudio.list_audio_backends()`, que a
+# 2.11 do venv já não tem (AttributeError no import). 1.1.2 instalada, inferência
+# offline verificada com HF_HUB_OFFLINE=1 e síntese real; dry-run com o lock não
+# moveu torch/transformers/mlx-*.
+speechbrain==1.1.2
 parakeet-mlx

@@ -1,0 +1,416 @@
+{
+ "modelo": "models/ecapa-voxceleb",
+ "revisao_modelo": "repo=huggingface.co/speechbrain/spkrec-ecapa-voxceleb\nrevisao=0f99f2d0ebe89ac095bcc5903c4dd8f72b367286\nbaixado_em=2026-10-28\nvia=tools/baixa_modelos.sh",
+ "dimensao": 192,
+ "vetores": 80,
+ "locutores": 40,
+ "dur_s": 3.0,
+ "por_locutor": 2,
+ "corpus": "/tmp/tts-bakeoff/fala",
+ "corpus_manifesto": "tools/bakeoff/corpus.py (sha256 por arquivo)",
+ "fala_usada": [
+  {
+   "locutor": "1272",
+   "arquivo": "pub_1272_1272-128104-0000.wav",
+   "sha256": "513a7692d9874995106dc53443ad23142db1c6857cedf737a8c19cf36342f4e3"
+  },
+  {
+   "locutor": "1272",
+   "arquivo": "pub_1272_1272-128104-0013.wav",
+   "sha256": "d06b0ce8bdf58909e78fd02644589733a153e78602aac6d88ebbd111ab975fba"
+  },
+  {
+   "locutor": "1462",
+   "arquivo": "pub_1462_1462-170138-0015.wav",
+   "sha256": "8e77e42402b1195fa79d0c546e6461bc38a899f0d69f0b4b831e8cc89cd872d8"
+  },
+  {
+   "locutor": "1462",
+   "arquivo": "pub_1462_1462-170138-0018.wav",
+   "sha256": "be0646d4dbf335b687be9df30750ede6682e8ae74e6485eac5ea23a9504871eb"
+  },
+  {
+   "locutor": "1673",
+   "arquivo": "pub_1673_1673-143396-0003.wav",
+   "sha256": "b825922a0daa551a641e085c334f7b293c8b4dd252321eb4431c04c4e7622fdc"
+  },
+  {
+   "locutor": "1673",
+   "arquivo": "pub_1673_1673-143396-0007.wav",
+   "sha256": "2c233a395c468b9f98c4d7b055a6fd2b1b9a0d9595ae6c1adf7cb4fd0c93e7b7"
+  },
+  {
+   "locutor": "174",
+   "arquivo": "pub_174_174-168635-0021.wav",
+   "sha256": "6f0f0c50429f66eeaab16094b2337b887fc428b61c650419297572e96e88ed90"
+  },
+  {
+   "locutor": "174",
+   "arquivo": "pub_174_174-50561-0003.wav",
+   "sha256": "50710f2e8a1d837130f6b2f08c7ce9a10f8dc3a36dcb167de03255c77afc3276"
+  },
+  {
+   "locutor": "1919",
+   "arquivo": "pub_1919_1919-142785-0019.wav",
+   "sha256": "f6185e977c98227ad22a5057d12a62426d9be761cb6983e7e3444175117eed7e"
+  },
+  {
+   "locutor": "1919",
+   "arquivo": "pub_1919_1919-142785-0028.wav",
+   "sha256": "707869e8c84b28ffa919509f1c2f38fc75223f2a61577d740b4429521f2c12c0"
+  },
+  {
+   "locutor": "1988",
+   "arquivo": "pub_1988_1988-147956-0004.wav",
+   "sha256": "1a92ff9e2ca64c96189313ace2696de966460ffae738e76f8692675b09e6f672"
+  },
+  {
+   "locutor": "1988",
+   "arquivo": "pub_1988_1988-147956-0007.wav",
+   "sha256": "b41a817b4dfbde148cb9ca4fb4b8ac5f86a95e7595af97361e77a7940c0b7395"
+  },
+  {
+   "locutor": "1993",
+   "arquivo": "pub_1993_1993-147149-0005.wav",
+   "sha256": "71ae67b30bfcd59428958c75a95fb76229c061948eecf51df48d36a740a7048b"
+  },
+  {
+   "locutor": "1993",
+   "arquivo": "pub_1993_1993-147149-0018.wav",
+   "sha256": "3627fe3bbe75c1ac6e91c8a0e02b6fbbf82007b30ebcc0dffaeb5fa2cdc36328"
+  },
+  {
+   "locutor": "2035",
+   "arquivo": "pub_2035_2035-147960-0000.wav",
+   "sha256": "488834211e4185ba29ef395abdd17486e9249022c05c36a542f074a1284bc038"
+  },
+  {
+   "locutor": "2035",
+   "arquivo": "pub_2035_2035-147961-0001.wav",
+   "sha256": "e65366d19019122f9244ca5a87694ec641ffedaf7d9d67113c1aa096e9365f76"
+  },
+  {
+   "locutor": "2078",
+   "arquivo": "pub_2078_2078-142845-0011.wav",
+   "sha256": "a2078476e6b91cf599c9a803871d17b3e5a6eb7f4fea1823df3ffc1bd83e2727"
+  },
+  {
+   "locutor": "2078",
+   "arquivo": "pub_2078_2078-142845-0015.wav",
+   "sha256": "9bf5883dc531138b05fb322622573e8d459880bb1dcf366c7199a69c1111619d"
+  },
+  {
+   "locutor": "2086",
+   "arquivo": "pub_2086_2086-149220-0007.wav",
+   "sha256": "ed1d443d76a99d918ba1abeb0f44b3a01aa78fdfba5ed7dba5c40412529b109f"
+  },
+  {
+   "locutor": "2086",
+   "arquivo": "pub_2086_2086-149220-0008.wav",
+   "sha256": "988b0237b6b0d39e2ac369500a3cde20f68e2326bfe10d49195d88d07246afb4"
+  },
+  {
+   "locutor": "2277",
+   "arquivo": "pub_2277_2277-149874-0007.wav",
+   "sha256": "87fcae266f63e3afbc3284650a4b40b3b267c022074cc93080cb61c977bb6934"
+  },
+  {
+   "locutor": "2277",
+   "arquivo": "pub_2277_2277-149874-0020.wav",
+   "sha256": "21da0245cdf73716640726a20dcc3d40ccb13570706c84dc8646ad8c1a6a1f50"
+  },
+  {
+   "locutor": "2412",
+   "arquivo": "pub_2412_2412-153947-0005.wav",
+   "sha256": "9c0c1cf18658d1ae23c26c30f8a717d36f04cdc62d10e54b5e0f209570718582"
+  },
+  {
+   "locutor": "2412",
+   "arquivo": "pub_2412_2412-153947-0011.wav",
+   "sha256": "ce4df355d6d97b540d7c46865481048dab9239c1b576e80ea30a6d24a3b9d34d"
+  },
+  {
+   "locutor": "2428",
+   "arquivo": "pub_2428_2428-83699-0000.wav",
+   "sha256": "539a306b1e8ba589db658553193ad56c2727f826e96d1040d9bb4bdea273b877"
+  },
+  {
+   "locutor": "2428",
+   "arquivo": "pub_2428_2428-83699-0038.wav",
+   "sha256": "97bb2d9cd27a3cb90b1b4d8f3668bdc337da79c73768251a7ffc1c20a6534936"
+  },
+  {
+   "locutor": "251",
+   "arquivo": "pub_251_251-118436-0015.wav",
+   "sha256": "43ffc54146a424a8cbd552808fc252bed1efe1e6803d82e6d7b33004af37097b"
+  },
+  {
+   "locutor": "251",
+   "arquivo": "pub_251_251-118436-0016.wav",
+   "sha256": "3af3dfcca5ca4be697a0397fe2d0da018e80d92819ea2ce876ac477b6c7c7455"
+  },
+  {
+   "locutor": "2803",
+   "arquivo": "pub_2803_2803-154320-0000.wav",
+   "sha256": "07d5f4ed43369f15183cdd68b837614bf97c02dee25d8c2b3eab252e4f80a9c5"
+  },
+  {
+   "locutor": "2803",
+   "arquivo": "pub_2803_2803-154320-0010.wav",
+   "sha256": "e1977cd077c14a52d813bdae1a8e6d21dd7558f9522e9001002bf369892bf12c"
+  },
+  {
+   "locutor": "2902",
+   "arquivo": "pub_2902_2902-9006-0001.wav",
+   "sha256": "26c5e79862e81a1c9887b9aa1525939801b5b0d4a0f8de6a06a1384a007ab6f4"
+  },
+  {
+   "locutor": "2902",
+   "arquivo": "pub_2902_2902-9006-0003.wav",
+   "sha256": "35d9a499b92062ede8adb43e419246a6d9e6b42312c77b083bdd9341add25e94"
+  },
+  {
+   "locutor": "3000",
+   "arquivo": "pub_3000_3000-15664-0003.wav",
+   "sha256": "da9d7b3ac58701e5cce1aaf5a160a2bdfc1697c18e4bcf8dae66fcb7be70afea"
+  },
+  {
+   "locutor": "3000",
+   "arquivo": "pub_3000_3000-15664-0008.wav",
+   "sha256": "f4c45cad28b913a0b1c8548613a81c24124e9a0f472734d18e43d2465a288057"
+  },
+  {
+   "locutor": "3081",
+   "arquivo": "pub_3081_3081-166546-0009.wav",
+   "sha256": "f99a8b9dc11075519930d5e7e85b8724577406b8a2811be35070caae9ec3492a"
+  },
+  {
+   "locutor": "3081",
+   "arquivo": "pub_3081_3081-166546-0012.wav",
+   "sha256": "c7bbb31004dfe7d48516b56e2633bbf383e9492b1638e694384851ddb462421b"
+  },
+  {
+   "locutor": "3170",
+   "arquivo": "pub_3170_3170-137482-0014.wav",
+   "sha256": "fcf55f8c3c8575a8411b0b24897779d18a2bbd68209c2d2330e5b0b16a5debde"
+  },
+  {
+   "locutor": "3170",
+   "arquivo": "pub_3170_3170-137482-0020.wav",
+   "sha256": "774c6f2b6353bf2d0a2ae0ceebcdb9f97496fe98af4234e53cdcc145edd2a0af"
+  },
+  {
+   "locutor": "3536",
+   "arquivo": "pub_3536_3536-23268-0016.wav",
+   "sha256": "fdd8e22a488196cb82f426ccbc540220837e99b89fea359f3abff0c908fd05ca"
+  },
+  {
+   "locutor": "3536",
+   "arquivo": "pub_3536_3536-23268-0020.wav",
+   "sha256": "988d2f4fb2d75496700c52acdbd184c72a7e53d6977ec929271e7b7d3cc533a3"
+  },
+  {
+   "locutor": "3576",
+   "arquivo": "pub_3576_3576-138058-0000.wav",
+   "sha256": "9e0c5409f47350ff317131199d9b97d2b488692693b5f3836a8d4f0a2ef50d3f"
+  },
+  {
+   "locutor": "3576",
+   "arquivo": "pub_3576_3576-138058-0007.wav",
+   "sha256": "a3b1a9b65f2e190ed69ee3bebe08a28a330c658cb549e47a6e517b463def0e98"
+  },
+  {
+   "locutor": "3752",
+   "arquivo": "pub_3752_3752-4943-0008.wav",
+   "sha256": "38640905c1ce747858af20a56016c7f982813d37699b53fb5539c2f377ce8dcc"
+  },
+  {
+   "locutor": "3752",
+   "arquivo": "pub_3752_3752-4944-0022.wav",
+   "sha256": "8ecccd81c1defad1bf818f6451fce2f26b380d546446b28b90555605a9d193f6"
+  },
+  {
+   "locutor": "3853",
+   "arquivo": "pub_3853_3853-163249-0002.wav",
+   "sha256": "e46868e3f7923c39048e16c46b8e07c9316c181da9343973fee9dabd4f9e0111"
+  },
+  {
+   "locutor": "3853",
+   "arquivo": "pub_3853_3853-163249-0010.wav",
+   "sha256": "5d06ead333a8bf123971c6d7239ed5e897870d9e754b58c566f90b1b5983b224"
+  },
+  {
+   "locutor": "422",
+   "arquivo": "pub_422_422-122949-0002.wav",
+   "sha256": "6f1a364428e790fa2af438716a8e032ff1cfde007fe7d901deba91555421172a"
+  },
+  {
+   "locutor": "422",
+   "arquivo": "pub_422_422-122949-0010.wav",
+   "sha256": "3d2259b1e921caa86c329e3418c7516a63021888e1daeb332eb1fb42585db38a"
+  },
+  {
+   "locutor": "5338",
+   "arquivo": "pub_5338_5338-24640-0005.wav",
+   "sha256": "2389c04fead1f51b35d92f3cc651ae360ef8a328916ddc48f24b90ca2d1f9b92"
+  },
+  {
+   "locutor": "5338",
+   "arquivo": "pub_5338_5338-284437-0000.wav",
+   "sha256": "993bdbbac977fd25de1089482c2e15fa0d9169959a148e195aeb8fd6ef0700f8"
+  },
+  {
+   "locutor": "5536",
+   "arquivo": "pub_5536_5536-43358-0001.wav",
+   "sha256": "6523427fe7764d564be1ae70a43f55b1575f984069b9c7f1f9789035c48a4ecc"
+  },
+  {
+   "locutor": "5536",
+   "arquivo": "pub_5536_5536-43358-0002.wav",
+   "sha256": "6159fa3fa2e860916eb2691ae67c06a30152d9b6c2de0d7f890d4aa34585937d"
+  },
+  {
+   "locutor": "5694",
+   "arquivo": "pub_5694_5694-64025-0005.wav",
+   "sha256": "9fd8e074e37df116c678c1fd0b3ede36ed1bcc7293dec46c83f739b7b7283f4d"
+  },
+  {
+   "locutor": "5694",
+   "arquivo": "pub_5694_5694-64025-0009.wav",
+   "sha256": "51c6f3249ad41b96d1417c85b7dbc79125804c1aa342cacc5b0b6359bbbb8c80"
+  },
+  {
+   "locutor": "5895",
+   "arquivo": "pub_5895_5895-34622-0000.wav",
+   "sha256": "b32aa13237600f4cd6349b0b4f4e98eb3348e9753aa9795a182b2b028ce9eabd"
+  },
+  {
+   "locutor": "5895",
+   "arquivo": "pub_5895_5895-34622-0013.wav",
+   "sha256": "44ecac3edd7a8e048bdd7c5344061a006559074117b0caa3f705a60a68d8611d"
+  },
+  {
+   "locutor": "6241",
+   "arquivo": "pub_6241_6241-61943-0013.wav",
+   "sha256": "e05515a3707009601bdc5f2bc2c967292faa022fb11bf10cfd8dcb21778336bb"
+  },
+  {
+   "locutor": "6241",
+   "arquivo": "pub_6241_6241-61943-0016.wav",
+   "sha256": "85851a46e3a5295869243d3c559077b316bfc347b75c0e67a143865793b214a0"
+  },
+  {
+   "locutor": "6295",
+   "arquivo": "pub_6295_6295-244435-0005.wav",
+   "sha256": "04b1a363b1ef3321d0422c8f622367914d976d9e97f1707075de8d28b0cf608e"
+  },
+  {
+   "locutor": "6295",
+   "arquivo": "pub_6295_6295-244435-0015.wav",
+   "sha256": "463d21afaac3dc9cb00697b0df6dc2b4d612c88d1e52ee74317e228932ba899f"
+  },
+  {
+   "locutor": "6313",
+   "arquivo": "pub_6313_6313-66125-0007.wav",
+   "sha256": "ee956aad598d5282a582e3622d5e92933430f11a03478b2081dd4249a44a9932"
+  },
+  {
+   "locutor": "6313",
+   "arquivo": "pub_6313_6313-66125-0022.wav",
+   "sha256": "f05f0e8d4806b1329970e8fe7e63b631bea47863e32358b6bc830aa5c48d9bfe"
+  },
+  {
+   "locutor": "6319",
+   "arquivo": "pub_6319_6319-275224-0007.wav",
+   "sha256": "cd1bdbf05799e57531996539ef0760ee5cc7b1db8c49bd65a8e36d6b6779f730"
+  },
+  {
+   "locutor": "6319",
+   "arquivo": "pub_6319_6319-275224-0018.wav",
+   "sha256": "81f08442a70a9b85cbf2bc9071c1608cadee076a79fced772b87bf49024c159f"
+  },
+  {
+   "locutor": "6345",
+   "arquivo": "pub_6345_6345-64257-0000.wav",
+   "sha256": "7ba43e9d7d795f27c79ddffec424bfa6e85495b9c9c8472dcdd956a3545e6fd1"
+  },
+  {
+   "locutor": "6345",
+   "arquivo": "pub_6345_6345-64257-0008.wav",
+   "sha256": "872cb72aed16fc0698f07186574710755a72874f82137340f78bc5ccf5256135"
+  },
+  {
+   "locutor": "652",
+   "arquivo": "pub_652_652-129742-0002.wav",
+   "sha256": "953dd53e5d6b84ca0ad019f072eeffe680b09fa0dd59e08b32cd2a71513d8df2"
+  },
+  {
+   "locutor": "652",
+   "arquivo": "pub_652_652-129742-0006.wav",
+   "sha256": "5149ada7a6102fbd9ec6d7bd1217099dce2925e9cf4a58d5483e357afa884d6b"
+  },
+  {
+   "locutor": "777",
+   "arquivo": "pub_777_777-126732-0000.wav",
+   "sha256": "e8608b256fe82753081b81e280816c2490f618c1725a5ccd2ef3f5fe62c553a0"
+  },
+  {
+   "locutor": "777",
+   "arquivo": "pub_777_777-126732-0012.wav",
+   "sha256": "a176b5d167e70044994eb4e53ba7e7dd67da493f0c608c2e0a120b8f6d58588b"
+  },
+  {
+   "locutor": "7850",
+   "arquivo": "pub_7850_7850-111771-0003.wav",
+   "sha256": "40d898ec865070da019fb4ce2ec70bdfe56a63fe039d190ec9b6e64b690c7993"
+  },
+  {
+   "locutor": "7850",
+   "arquivo": "pub_7850_7850-281318-0005.wav",
+   "sha256": "efbefe307503611272a9a48d4afee9c4c52b52575ca1bf1a4f7c2f5bb7d4c2e6"
+  },
+  {
+   "locutor": "7976",
+   "arquivo": "pub_7976_7976-105575-0001.wav",
+   "sha256": "b2561833d564b691d0452fa8f32a7386fe3e903f9cb5688c885da9fd207e9044"
+  },
+  {
+   "locutor": "7976",
+   "arquivo": "pub_7976_7976-105575-0016.wav",
+   "sha256": "9de282edbe185ea0117e60e94c73394e3c8efe3a604ac996e0ee6c79085424e1"
+  },
+  {
+   "locutor": "8297",
+   "arquivo": "pub_8297_8297-275154-0003.wav",
+   "sha256": "56acca536c690fa6227b5fa173f43fca91fa3f3ec39c5deb511e8ad477f1399b"
+  },
+  {
+   "locutor": "8297",
+   "arquivo": "pub_8297_8297-275154-0005.wav",
+   "sha256": "66108e55d0ec0f450191f5916faa11e44af9a2c36d7b5b170b64fcc061a08f98"
+  },
+  {
+   "locutor": "84",
+   "arquivo": "pub_84_84-121123-0002.wav",
+   "sha256": "ddc6e0c4c1e919c495b02ee78efa6cca1ce04e593a531b7042366caf9130761d"
+  },
+  {
+   "locutor": "84",
+   "arquivo": "pub_84_84-121123-0019.wav",
+   "sha256": "bff5ae309b2f1126ef71b6a107b9c9af891a2773cab267e2c04bd544a3feb2c2"
+  },
+  {
+   "locutor": "8842",
+   "arquivo": "pub_8842_8842-302196-0001.wav",
+   "sha256": "29507d0156823c76f4db8f6b892fa1fd84938883b57fd115348d75ac5794ec27"
+  },
+  {
+   "locutor": "8842",
+   "arquivo": "pub_8842_8842-302196-0007.wav",
+   "sha256": "8a5e03dc666c67a196a55a741c5d669518eee896a516db17de81bd2ae3321014"
+  }
+ ],
+ "protocolo": "recorte repetindo fala curta, embedding L2-normalizado, normalização por top-k da coorte (k<=50) no escore",
+ "aviso": "coorte ESPECÍFICA do modelo: trocar o extrator exige refazer",
+ "gera": "tools/coorte_asnorm.py"
+}

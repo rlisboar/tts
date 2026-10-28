@@ -72,6 +72,7 @@ flatbuffers==25.12.19
 fsspec==2026.4.0
 greenlet==3.5.5
 h11==0.16.0
+hyperpyyaml==1.2.3
 hf-xet==1.5.1
 httpcore2==2.13.1
 httpcore==1.0.9
@@ -136,6 +137,8 @@ referencing==0.37.0
 regex==2026.5.9
 requests==2.34.2
 rfc3986==1.5.0
+ruamel.yaml==0.18.17
+ruamel.yaml.clib==0.2.15
 rich==15.0.0
 rpds-py==2026.6.3
 ruff==0.17.1
@@ -151,6 +154,7 @@ six==1.17.0
 smart_open==8.0.1
 sounddevice==0.5.5
 soundfile==0.14.0
+speechbrain==1.1.2
 soxr==1.1.0
 spacy-curated-transformers==0.3.1
 spacy-legacy==3.0.12
