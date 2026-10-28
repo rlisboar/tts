@@ -66,7 +66,7 @@ _teto_da_suite() {
     case "$n" in
         admin_ui_flow|live_barge_rep) echo 600 ;;
         live_ui|live_ws|live_interrupcao_ui|obs_ui) echo 300 ;;
-        voz_cadastro_ui|voz_desfazer_ui|voz_check_ui|voz_far_alvo_ui) echo 300 ;;
+        voz_cadastro_ui|voz_desfazer_ui|voz_check_ui|voz_far_alvo_ui|voz_recadastro_ui) echo 300 ;;
         onboarding_atalhos) echo 600 ;;   # gera fala de verdade, modelo frio
         live_dsh_fallback|conversa_429) echo 240 ;;
         live_lock_freeze) echo 300 ;;   # duas rodadas + cópia; roda no hook
@@ -88,7 +88,7 @@ RAPIDO=(limpa_bytecode pendurada_probe serial_lock live_lock_freeze)
 NAVEGADOR=(dsh_ui hash_deep_link live_dsh_fallback live_barge_rep live_ui
             live_interrupcao_ui obs_ui live_ws ultima_chave_ui admin_ui_flow cfg_sujo_e_erros
             voz_desfazer_ui voz_cadastro_ui voz_check_ui voz_far_alvo_ui live_retomada_ui
-            onboarding_atalhos xss_frontend_repro)
+            onboarding_atalhos xss_frontend_repro voz_recadastro_ui)
 INSTANCIA=(a11y_teclado conversa_429 key_storage_repro live_hold_ui mic_erro_ui
            mobile_layout ui_repouso)
 
@@ -173,6 +173,13 @@ _com_teto() {
 # autoria — e para ela o estado é amostrado enquanto há suíte rodando.
 # `TTS_DONO_DIR` aponta o "dono" para uma CÓPIA: é assim que o teste roda sem
 # encostar no `settings.json` real da máquina de trabalho.
+#
+# SÓ os três arquivos de leitura-escrita entram no VEREDITO. `state/metrics/` fica
+# de fora (#635): é histórico ANEXADO a cada requisição de API, então o app do
+# PRÓPRIO dono engorda o arquivo do dia pelo polling da tela dele — com o knob
+# ligado, cobrar esse arquivo reprovava sem nenhuma suíte culpada (medido: +171 B
+# em 40 s com o dono intocado). As métricas seguem na rodada como NOTA, com o mesmo
+# diff, sem entrar em `FALHAS`.
 _ARQ_DONO=(settings.json .apikeys.json .apikey)
 DONO_DIR="${TTS_DONO_DIR:-$RAIZ}"
 # portátil: o job `suites-sh` do CI é Linux (`sha256sum`/`stat -c`), a máquina de
@@ -190,16 +197,16 @@ _impressao_dono() {
             printf '%s - -\n' "$a"
         fi
     done
-    # `state/metrics` (#610): o histórico de operação é ANEXADO a cada requisição de
-    # API; sem ele no retrato, a suíte que sobe o app sem `TTS_METRICS_DIR` engorda
-    # o diretório do dono sem aparecer em lugar nenhum.
-    if [ -d "$DONO_DIR/state/metrics" ]; then
-        for a in "$DONO_DIR"/state/metrics/*.jsonl; do
-            [ -f "$a" ] || continue
-            printf '%s %s %s\n' "${a#"$DONO_DIR"/}" \
-                "$(_hash "$a" | cut -c1-12)" "$(_mtime "$a")"
-        done
-    fi
+}
+# Nota (não veredito): histórico de operação. Ver o porquê no bloco acima.
+_impressao_metricas() {
+    local a
+    [ -d "$DONO_DIR/state/metrics" ] || return 0
+    for a in "$DONO_DIR"/state/metrics/*.jsonl; do
+        [ -f "$a" ] || continue
+        printf '%s %s %s\n' "${a#"$DONO_DIR"/}" \
+            "$(_hash "$a" | cut -c1-12)" "$(_mtime "$a")"
+    done
 }
 _arquivos_tocados() { # $1 = impressão de antes, $2 = de depois
     diff <(printf '%s\n' "$1") <(printf '%s\n' "$2") 2>/dev/null | sed -n 's/^> \([^ ]*\).*/\1/p'
@@ -208,6 +215,7 @@ _arquivos_tocados() { # $1 = impressão de antes, $2 = de depois
 declare -a FALHAS=() RODADAS=()
 comeca=$(date +%s)
 DONO_ANTES="$(_impressao_dono)"
+METRICAS_ANTES="$(_impressao_metricas)"
 mkdir -p "$DIR/rodando" "$DIR/inicio" "$DIR/nome"
 
 # Amostrador do estado do dono a cada 0,2 s (#591). Registra, a cada mudança, o
@@ -268,6 +276,7 @@ for nome in "${ALVOS[@]}"; do
         echo "$nome" > "$DIR/nome/$CHAVE"
         : > "$DIR/rodando/$CHAVE"
         DONO_ANTES="$(_impressao_dono)"
+METRICAS_ANTES="$(_impressao_metricas)"
         # `instancia` pressupõe app DE PÉ, mas duas suítes dele recusam o `:7860`
         # (para não escrever no app/arquivo do dono) e ficariam vermelhas por
         # contrato: quando o alvo É o 7860, o runner liga o escape delas — a
@@ -346,6 +355,15 @@ _dica() {
             }
         }' "$DIR/eventos" 2>/dev/null
 }
+
+# ── nota (sem veredito): o histórico de métricas mudou? ────────────────────
+METRICAS_AGORA="$(_impressao_metricas)"
+MUDOU_METRICAS="$(_arquivos_tocados "$METRICAS_ANTES" "$METRICAS_AGORA")"
+if [ -n "$MUDOU_METRICAS" ]; then
+    echo
+    echo "══ nota: \`state/metrics\` mudou (o app do dono também anexa ali — não reprova):"
+    printf '%s\n' "$MUDOU_METRICAS" | sed 's/^/  /'
+fi
 
 # ── veredito: a impressão GLOBAL da rodada mudou? ──────────────────────────
 DONO_AGORA="$(_impressao_dono)"

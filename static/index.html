@@ -7093,6 +7093,10 @@ function spExtratorAviso(v) {
       + `perfis feitos no extrator atual vão pedir recadastro. Falta o modelo novo nesta instalação.`
     : "";
 }
+//: perfil em RECADASTRO (o nome): o próximo retorno que não seja `recadastro`
+//: significa que a troca concluiu — sem isso a tela não distingue "concluiu" de
+//: "perfil novo no mesmo extrator" (#646).
+let spRecadastro = "";
 //: o cadastro precisa de 3–5 amostras (#525). O número real vem do servidor
 //: (`samples`/`completo`/`faltando`); esta cópia só rotula a lista de perfis.
 const SP_MIN_AMOSTRAS = 3, SP_ALVO_AMOSTRAS = 5;
@@ -7101,26 +7105,44 @@ async function refreshSpProfiles() {
   if (!el) return;
   try {
     const lista = await api("/api/speaker/profiles");
+    // `pendente` (#646) = recadastro EM ANDAMENTO: as amostras do extrator novo estão
+    // separadas e o perfil ANTIGO segue autenticando até a mínima chegar. Quem
+    // decide é o servidor — a tela só conduz e deixa descartar o parcial.
     el.innerHTML = lista.length
       ? "Cadastradas: " + lista.map(p => {
           const n = Number(p.samples) || 0;
-          // perfil de OUTRO extrator segue autenticando, mas vai sair daqui a um
-          // recadastro — quem decide é o servidor (`precisa_recadastrar`)
-          const classe = p.precisa_recadastrar ? " recadastrar" : n < SP_MIN_AMOSTRAS ? " incompleto" : "";
-          const falta = n < SP_MIN_AMOSTRAS ? ` ${n}/${SP_MIN_AMOSTRAS}` : ` ${n}`;
+          const pend = p.pendente || null;
+          const pendN = pend ? Number(pend.samples) || 0 : 0;
+          const faltamPend = Math.max(0, SP_MIN_AMOSTRAS - pendN);
+          const classe = pend ? " recadastrar" : p.precisa_recadastrar ? " recadastrar"
+                       : n < SP_MIN_AMOSTRAS ? " incompleto" : "";
+          const contagem = pend ? ` ${pendN}/${SP_MIN_AMOSTRAS} do extrator novo`
+                        : n < SP_MIN_AMOSTRAS ? ` ${n}/${SP_MIN_AMOSTRAS}` : ` ${n}`;
           return `<span class="sp-chip${classe}" data-nome="${esc(p.name)}">` +
-            `${esc(p.name)}${falta}` +
-            (p.modelo ? ` <span class="extrator">${esc(p.modelo)}</span>` : "") +
+            `${esc(p.name)}${contagem}` +
+            (p.modelo ? ` <span class="extrator">antigo em uso: ${esc(p.modelo)}</span>` : "") +
             (p.precisa_recadastrar
               ? ` <button type="button" class="ghost small" data-regravar="${esc(p.name)}"` +
-                ` title="perfil do extrator ${esc(p.modelo || "antigo")}: gravar de novo recomeça os` +
-                ` vetores no extrator atual">↻ regravar</button>`
+                ` title="${pend
+                  ? `faltam ${faltamPend} amostra(s) para trocar do extrator ${esc(p.modelo || "antigo")}`
+                    + ` para o novo (a troca acontece sozinha na ${SP_MIN_AMOSTRAS}ª)`
+                  : `perfil do extrator ${esc(p.modelo || "antigo")}: gravar de novo recomeça os`
+                    + ` vetores no extrator atual`}">${pend ? "＋ continuar" : "↻ regravar"}</button>`
               : ` <button type="button" class="ghost small" data-mais="${esc(p.name)}"` +
                 ` title="gravar mais ${SP_MIN_AMOSTRAS - n > 0 ? "amostra(s) para o mínimo" : "amostra"}">＋</button>`) +
+            (pend
+              ? ` <button type="button" class="ghost small" data-descarta="${esc(p.name)}"` +
+                ` title="descartar as ${pendN} amostra(s) do recadastro — o perfil do extrator` +
+                ` ${esc(p.modelo || "antigo")} fica intacto e segue valendo">⨯ parcial</button>`
+              : "") +
             ` <button type="button" class="ghost small" data-del="${esc(p.name)}"` +
             ` title="remover perfil">🗑</button></span>`;
         }).join(" · ") +
-        (lista.some(p => p.precisa_recadastrar)
+        (lista.some(p => p.pendente)
+          ? `<br>⏳ recadastro em andamento: o perfil ANTIGO está em uso; as amostras novas` +
+            ` passam a valer sozinhas na ${SP_MIN_AMOSTRAS}ª e o antigo sai.`
+          : "") +
+        (lista.some(p => p.precisa_recadastrar && !p.pendente)
           ? `<br>↻ os perfis marcados foram feitos por outro extrator: continuam valendo,` +
             ` mas regrave para ficarem comparáveis com o atual.`
           : "")
@@ -7138,6 +7160,23 @@ async function refreshSpProfiles() {
         toast("Perfil removido");
         refreshSpProfiles();
       } catch (e) { toast("✖ " + e.message, 4000); }
+      };
+    });
+    // descartar o parcial: rota admin (#645) — mesma régua do 🗑
+    el.querySelectorAll("[data-descarta]").forEach(b => {
+      if (!ADMIN.is) {
+        b.disabled = true;
+        b.title = "Precisa de chave administrativa (Configurações → Acesso)";
+      }
+      b.onclick = async () => {
+        try {
+          await api("/api/speaker/" + encodeURIComponent(b.dataset.descarta) + "/pendente",
+                    { method: "DELETE" });
+          toast("Recadastro parcial descartado — o perfil antigo segue valendo");
+          spRecadastro = "";
+          $("spProgresso").textContent = "";
+          refreshSpProfiles();
+        } catch (e) { toast("✖ " + e.message, 4000); }
       };
     });
     // gravar mais / regravar: o nome preenche o campo e a próxima gravação cai
@@ -7245,7 +7284,20 @@ async function spEnviaAmostra(nome, blob, forcar) {
     if ($("spName")) $("spName").value = nomeSrv;
     st.textContent = `nome do perfil ajustado para "${nomeSrv}" (limite de 40 caracteres)`;
   }
-  if (r.completo) {
+  // RECADASTRO (#646): as amostras estão entrando no espaço NOVO e o perfil
+  // ANTIGO segue autenticando — quem diz é o servidor (`recadastro`/`em_uso`).
+  const eraRecadastro = spRecadastro === nomeSrv;
+  if (r.recadastro) {
+    spRecadastro = nomeSrv;
+    $("spProgresso").textContent = `⏳ "${nomeSrv}": perfil antigo em uso (${r.em_uso || "extrator anterior"})` +
+      ` — ${n} de ${SP_MIN_AMOSTRAS} amostras do extrator novo` +
+      (faltam ? `, faltam ${faltam}` : "") +
+      `; a troca acontece sozinha na ${SP_MIN_AMOSTRAS}ª e o antigo sai`;
+  } else if (eraRecadastro) {
+    spRecadastro = "";
+    $("spProgresso").textContent = `✔ recadastro de "${nomeSrv}" concluído — o extrator novo passou a valer` +
+      (n < SP_ALVO_AMOSTRAS ? ` (até ${SP_ALVO_AMOSTRAS} amostras fica mais estável)` : "");
+  } else if (r.completo) {
     $("spProgresso").textContent = `✔ "${nomeSrv}": ${n} amostra(s) — perfil completo` +
       (n < SP_ALVO_AMOSTRAS ? ` (até ${SP_ALVO_AMOSTRAS} fica mais estável)` : "");
   } else {
@@ -7258,7 +7310,9 @@ async function spEnviaAmostra(nome, blob, forcar) {
     $("spProgresso").textContent += ` · ⚠ aceito assim mesmo: ${r.problemas.join("; ")}`;
   }
   if (btn) btn.textContent = r.completo ? "＋ Gravar outra amostra (8s)" : "🎙 Gravar próxima (8s)";
-  toast(r.completo ? `Voz "${nomeSrv}" cadastrada` : `Amostra ${n}/${SP_MIN_AMOSTRAS} de "${nomeSrv}"`);
+  toast(r.recadastro ? `Amostra ${n}/${SP_MIN_AMOSTRAS} do recadastro de "${nomeSrv}"`
+        : r.completo ? `Voz "${nomeSrv}" cadastrada`
+        : `Amostra ${n}/${SP_MIN_AMOSTRAS} de "${nomeSrv}"`);
   refreshSpProfiles();
   if (!r.completo) $("spDica").hidden = false;
 }
@@ -7289,6 +7343,7 @@ $("spForcarCancela")?.addEventListener("click", () => {
 // troca de perfil no campo: o andamento é do OUTRO nome
 $("spName")?.addEventListener("input", () => {
   $("spProgresso").textContent = "";
+  spRecadastro = "";
   $("spEnroll").textContent = "🎙 Gravar amostra (8s)";
   $("spDica").hidden = false;
 });
