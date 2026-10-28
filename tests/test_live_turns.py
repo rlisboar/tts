@@ -1105,25 +1105,39 @@ def test_eco_classifica_como_eco_antes_do_conteudo():
     assert lt.classifica_barge("qual o prazo", 600, ref_eco=ref) == "interrupcao"
 
 
-def test_filtros_do_settings_mudam_o_desfecho():
-    """A cadeia lê `live_barge_filtros`: desligar o backchannel faz "uhum" cortar."""
+@pytest.mark.parametrize("filtro,texto,filtros,sem,esperado", [
+    # desligar o backchannel manda "uhum" ao fim da cadeia (que continua)
+    ("backchannel", "uhum", {"backchannel": {"on": False}}, "continua", "ruido"),
+    # desligar a lista tira o corte de "para"
+    ("palavras_corte", "para", {"palavras_corte": {"on": False}}, "continua", "ruido"),
+    # desligar a pergunta tira o corte de frase interrogativa
+    # 2 palavras: só o filtro de pergunta pega (não cai em frase_longa)
+    ("pergunta", "quando sai?", {"pergunta": {"on": False}}, "continua", "ruido"),
+    # desligar frase_longa tira o corte de fala com conteúdo
+    ("frase_longa", "o dia ta bonito", {"frase_longa": {"on": False}}, "continua", "ruido"),
+    # ruído desligado + sem_decisao que corta = corta em vez de seguir
+    ("ruido", "", {"ruido": {"on": False}}, "interrompe", "interrupcao"),
+])
+def test_cada_filtro_desligado_muda_o_desfecho(filtro, texto, filtros, sem, esperado):
+    """Tabela do adendo: cada filtro, DESLIGADO, muda o desfecho do caso dele."""
     import app
 
-    def decide(texto, fala_ms, filtros, eco="", sem="continua"):
-        sess = {"id": "s", "ultimo_assistente": eco, "pipe": None}
-        app._settings["live_barge_filtros"] = filtros
-        app._settings["live_barge_sem_decisao"] = sem
-        return app._live_avalia_filtros(sess, texto, fala_ms, filtros)[0]
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    app._settings["live_barge_filtros"] = filtros
+    app._settings["live_barge_sem_decisao"] = sem
+    tipo, _p, _m, _f = app._live_avalia_filtros(sess, texto, 300, filtros)
+    assert tipo == esperado
 
-    assert decide("uhum", 300, {}) == "backchannel"
-    # sem o backchannel, "uhum" não é comando: cai no `sem_decisao` (continua)
-    assert decide("uhum", 300, {"backchannel": {"on": False}}) == "ruido"
-    # desligada a lista, "para" deixa de cortar (é o efeito do filtro)
-    assert decide("para", 300, {"palavras_corte": {"on": False}}) == "ruido"
-    # palavra cadastrada pelo dono vale mesmo fora da lista de fábrica
-    assert decide("basta", 300, {"palavras_corte": {"palavras": ["basta"]}}) == "interrupcao"
-    # ruído desligado + sem decisão "interrompe": corta em vez de seguir
-    assert decide("", 200, {"ruido": {"on": False}}, sem="interrompe") == "interrupcao"
+
+def test_palavra_cadastrada_pelo_dono_corta_mesmo_fora_da_lista():
+    import app
+
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    filtros = {"palavras_corte": {"palavras": ["basta"]}}
+    app._settings["live_barge_filtros"] = filtros
+    app._settings["live_barge_sem_decisao"] = "continua"
+    tipo, _p, _m, f = app._live_avalia_filtros(sess, "basta", 300, filtros)
+    assert (tipo, f) == ("interrupcao", "palavras_corte")
 
 
 def test_filtro_modelo_ausente_nao_segura_a_cadeia():

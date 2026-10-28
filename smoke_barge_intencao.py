@@ -124,7 +124,8 @@ def main(argv: list[str]) -> int:
     ms_corte.sort()
     p50 = ms_corte[len(ms_corte) // 2]
     marca = "✔" if p50 <= 600 else "✘"
-    print(f"{marca} corte por comando p50 = {p50} ms (pior {ms_corte[-1]} ms, piso 600 ms)")
+    print(f"{marca} onset→corte do comando p50 = {p50} ms (pior {ms_corte[-1]} ms,"
+          f" piso 600 ms; áudio real no frame, STT stubado)")
     falhou |= p50 > 600
 
     # amostras de intenção: a mesma classificação pura, direto na função
