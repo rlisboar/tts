@@ -6375,7 +6375,11 @@ def _limpa_temporarios() -> int:
     Roda mesmo com `auto_cleanup` desligado: eles nunca são histórico."""
     removidos = 0
     temp_cutoff = time.time() - 6 * 3600
-    for pattern in (".stt-*", ".pstt-*", ".voz-*", ".vozchk-*", ".up-*", ".rep-*"):
+    # `.live-*` (#554): temporário do Live tem sufixo `.wav` e, sem entrar aqui,
+    # era imortal — a poda também não o come (nome com ponto). 301 medidos no
+    # diretório do dono antes disto.
+    for pattern in (".stt-*", ".pstt-*", ".voz-*", ".vozchk-*", ".up-*", ".rep-*",
+                    ".live-*"):
         for tmp in OUTPUTS_DIR.glob(pattern):
             try:
                 if tmp.is_file() and tmp.stat().st_mtime < temp_cutoff:

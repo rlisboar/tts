@@ -2967,17 +2967,39 @@ def test_poda_conta_e_remove_diretorio_de_trechos_orfao(tmp_path, monkeypatch):
 
 
 def test_poda_nao_conta_nem_come_temporario(tmp_path, monkeypatch):
-    """Temporário de upload (`.stt-*`) não é output: nem conta, nem é podado.
+    """Temporário de upload não é output: nem conta, nem é podado.
 
-    Quem recolhe temporário é o `_limpa_temporarios` (por idade, >6 h) — se ele for
-    fundido de volta na poda, um upload em curso vira candidato e some.
+    DOIS formatos de propósito: sem sufixo (`.stt-antigo`, o upload do STT) e com
+    sufixo `.wav` (`.live-*`, o temporário do Live, #554). O segundo é o que
+    MORDE a guarda `startswith(".")` da poda — sem ela o arquivo casaria o
+    `glob("*.wav")` e viraria candidato. Quem recolhe temporário é o
+    `_limpa_temporarios` (por idade, >6 h).
     """
     d = _saidas_para_poda(tmp_path, monkeypatch, quantos=2)
-    tmp = d / ".stt-antigo"
-    tmp.write_bytes(b"\x00" * 16)
-    os.utime(tmp, (1_600_000_000.0, 1_600_000_000.0))   # o mais velho do diretório
+    sem_sufixo = d / ".stt-antigo"
+    com_wav = d / ".live-123-456.wav"
+    for tmp in (sem_sufixo, com_wav):
+        tmp.write_bytes(b"\x00" * 16)
+        os.utime(tmp, (1_600_000_000.0, 1_600_000_000.0))   # os mais velhos
     assert app._poda_outputs_por_quantidade(2) == 0      # 2 candidatos, no teto
-    assert tmp.exists(), "o temporário foi comido pela poda"
+    assert sem_sufixo.exists() and com_wav.exists(), "temporário comido pela poda"
+
+
+def test_limpa_temporarios_recolhe_o_live_antigo(tmp_path, monkeypatch):
+    """`.live-*` é temporário do Live e TEM de sair com os outros (#554).
+
+    Fora da lista de padrões ele era imortal: a poda não o come (tem ponto no
+    nome) e a limpeza por idade não o via — 301 acumulados no diretório do dono.
+    """
+    d = _saidas_para_poda(tmp_path, monkeypatch, quantos=1)
+    velho = d / ".live-9-9.wav"
+    novo = d / ".live-9-8.wav"
+    for arq, mtime in ((velho, 1_600_000_000.0), (novo, time.time())):
+        arq.write_bytes(b"\x00" * 16)
+        os.utime(arq, (mtime, mtime))
+    assert app._limpa_temporarios() >= 1
+    assert not velho.exists(), "o `.live-*` velho ficou"
+    assert novo.exists(), "temporário recente saiu (a janela de 6 h não valeu)"
 
 
 @pytest.mark.parametrize("status", ["running", "queued"])
