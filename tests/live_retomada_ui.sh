@@ -241,7 +241,11 @@ try:
         # ── 3) `busy` retoma (com espera maior) e desiste no teto ────────────
         roteiro["modo"] = "busy_sempre"
         conns.clear()
-        pg.evaluate("() => { LX.sid=''; LX.retoma=0; }")
+        # estado limpo à força: com `LX.ws` de pé o clique DESLIGA em vez de ligar
+        pg.evaluate("""() => { clearTimeout(LX.retomaT); LX.retomaT = 0;
+            if (LX.ws) { try { LX.ws.close(); } catch (e) {} LX.ws = null; }
+            lxParaCaptura(); LX.sid = ''; LX.retoma = 0; LX.estado = 'desligado'; }""")
+        pg.wait_for_timeout(200)
         pg.click("#lxLigar")
         esperar(lambda: pg.wait_for_function(
             "() => /não consegui retomar/.test(document.getElementById('lxStatus').textContent)",
