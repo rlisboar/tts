@@ -44,7 +44,7 @@ VAD cai no mesmo jit de hoje, com aviso no log.
 | Como conferir qual VAD subiu | `GET /health` devolve `"vad": "onnx"` \| `"torch-jit"` | idem |
 | Autenticação | `OMNI_API_KEY` e `VOXTRAL_API_KEY` **obrigatórias** (fail closed: sem elas o processo não sobe; escape hatch `<PREFIXO>_ALLOW_NO_AUTH=1`) | `remote/auth_policy.py`, README §"servidores `remote/`" |
 | Arquivo de política no servidor | `auth_policy.py` ao lado do `server.py` (`/root/omnivoice/`, `/root/voxtral/`) — **copiar junto no deploy** | `remote/auth_policy.py` |
-| **Unit versionado** (reconstruído) | `remote/systemd/omnivoice-tts.service` + drop-in `cuda-visible-devices.conf` + `secrets.conf.example`; o `recon` compara com o `FragmentPath` do host (`[IGUAL]`/`[DIFERENTE]` com diff) | `remote/systemd/`, `remote/deploy.sh` (§4) |
+| **Unit versionado** (reconstruído) | `remote/systemd/omnivoice-tts.service` + drop-in `cuda-visible-devices.conf` + `secrets.conf.example`; o `recon` compara com o `FragmentPath` do host (`[IGUAL]`/`[DIFERENTE]` com diff; sem `FragmentPath` é `[INDETERMINADO]`, não chute) | `remote/systemd/`, `remote/deploy.sh` (§4) |
 | **Agente do mini versionado** | `remote/launchd/studio.tts.server.plist` + `start-server.sh` (cópia literal do que roda; sem segredo — a chave fica em `.apikey`) | `remote/launchd/` |
 
 ### Não confirmado (❓)
