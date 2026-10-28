@@ -74,7 +74,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 RAIZ = pathlib.Path(sys.argv[1])
 REP = int(os.environ.get("REP", "6"))
-PLAYBACK_MIN_MS = int(os.environ.get("PLAYBACK_MIN_MS", "2000"))
+# 1200 ms: os chunks do stub são curtos e 2000 nunca era alcançado — o wait
+# estourava 20 s e a injeção caía depois do playback (0/3, nenhum barge_suspeito)
+PLAYBACK_MIN_MS = int(os.environ.get("PLAYBACK_MIN_MS", "1200"))
 # BLOCO (#547): qual família esta rodada mede. `misto` mantém o diagnóstico antigo.
 BLOCO = (os.environ.get("BLOCO") or "misto").lower()
 LIMIAR = int(os.environ.get("LIMIAR", "6"))
@@ -330,12 +332,20 @@ try:
             # playback AINDA POR TOCAR. Sem isto a fala podia cair no fim do
             # chunk e o `fim_de_resposta` (correto) era lido como falha.
             try:
-                pg.wait_for_function(
-                    "(m) => { const c = LX.ctxPlay; if (!c) return false;"
-                    " return (LX.proximo - c.currentTime) * 1000 >= m; }",
-                    arg=PLAYBACK_MIN_MS, timeout=20000)
+                if BLOCO == "fim":
+                    # bloco `fim`: o alvo é o CONTRÁRIO — injetar no ÚLTIMO segundo,
+                    # quando o `fim_de_resposta` deve deixar terminar e anotar
+                    pg.wait_for_function(
+                        "() => { const c = LX.ctxPlay; if (!c) return false;"
+                        " const r = (LX.proximo - c.currentTime) * 1000;"
+                        " return r > 0 && r <= 900; }", timeout=20000)
+                else:
+                    pg.wait_for_function(
+                        "(m) => { const c = LX.ctxPlay; if (!c) return false;"
+                        " return (LX.proximo - c.currentTime) * 1000 >= m; }",
+                        arg=PLAYBACK_MIN_MS, timeout=8000)
             except Exception:
-                print(f"  [{i}/{REP}] ⚠ sem {PLAYBACK_MIN_MS} ms de playback adiante")
+                print(f"  [{i}/{REP}] ⚠ janela de playback não atingida")
             marco = pg.evaluate("() => window.__ev.length")
             est0 = pg.evaluate("() => ({ estado: LX.estado, ativos: LX.ativos.length, chunks: (LX.obs.stats||{}).playback ? LX.obs.stats.playback.chunks : null })")
             # #225: FILA = o que o cliente ainda vai tocar AGORA (segundos de áudio
