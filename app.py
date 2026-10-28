@@ -9420,7 +9420,8 @@ def _live_descarrega_pendente(sess: dict) -> None:
             _live_acorda_pendente(sess)
 
 
-def _live_transcreve_trecho(sess: dict, audio: bytes, cru: bool = False) -> str:
+def _live_transcreve_trecho(sess: dict, audio: bytes, cru: bool = False,
+                            prazo_s: float = 0.0) -> str:
     """Transcreve o trecho suspeito.
 
     `cru=True` (passo do comando): vai DIRETO no whisper, sem o VAD e o juiz de
@@ -9433,11 +9434,18 @@ def _live_transcreve_trecho(sess: dict, audio: bytes, cru: bool = False) -> str:
     stt = getattr(pipe, "_stt", None)
     if cru:                              # o passo do comando não usa o `_stt`
         try:
+            import concurrent.futures as _cf
             import numpy as _np
             a = _np.frombuffer(audio, dtype="<i2").astype(_np.float32) / 32768.0
             a = a[:24000]                      # ~1,5 s do INÍCIO: o comando vem no
                                                # ataque, não no fim do trecho
-            return (_transcreve_em_janelas(a, idioma).get("text") or "").strip()
+            if prazo_s <= 0:
+                return (_transcreve_em_janelas(a, idioma).get("text") or "").strip()
+            # PRAZO por passada: o STT sob carga leva segundos e sem prazo a fila
+            # de passadas cresce até estourar o teto de 2 s do cliente (#503)
+            with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(_transcreve_em_janelas, a, idioma)
+                return (fut.result(timeout=prazo_s).get("text") or "").strip()
         except Exception as exc:           # noqa: BLE001
             _live_log_kv("barge_stt_erro", sess=sess["id"], erro=str(exc)[:100])
             return ""
@@ -9677,7 +9685,13 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
     if so_comando:
         # passo intermediário: só o filtro de COMANDO pode fechar agora
         audio = audio_cru or sus.get("audio") or b""
-        texto = _live_transcreve_trecho(sess, audio, cru=True)
+        # INCREMENTAL: só a janela NOVA desde a última passada (+0,2 s de
+        # sobreposição para não cortar palavra no meio). Re-transcrever o trecho
+        # inteiro a cada passo fazia o custo crescer durante a fala.
+        desde = int(sess.get("barge_cru_ate") or 0)
+        novo = audio[max(0, desde - 6400):]
+        sess["barge_cru_ate"] = len(audio)
+        texto = _live_transcreve_trecho(sess, novo, cru=True, prazo_s=0.6)
         # os filtros RÁPIDOS que não decidem no passo ficam desligados, mas a lista
         # de palavras é a CONFIGURADA (o dono cadastra o que quiser)
         rapidos = dict(_settings.get("live_barge_filtros") or {})

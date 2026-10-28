@@ -1230,3 +1230,32 @@ def test_defaults_tem_os_nove_filtros_com_modelo_desligado():
                       "pergunta", "frase_longa", "fala_sustentada", "fim_de_resposta"}
     assert f["modelo"] == {"on": False, "provedor": "local", "limiar": 0.5,
                            "timeout_ms": 400}
+
+
+def test_stt_lento_decide_dentro_do_teto_de_2s(monkeypatch):
+    """#503: passada mais lenta que o prazo é ABANDONADA e a decisão sai no prazo."""
+    import queue
+    import threading
+    import time
+
+    import app
+
+    def stt_lento(pcm, idioma, prazo_s=0.0):
+        time.sleep(3.0)                      # bem acima do prazo de 0,6
+        return "para"
+
+    monkeypatch.setattr(app, "_live_transcreve_trecho", stt_lento)
+    app._settings["live_barge_filtros"] = {"palavras_corte": {"palavras": ["para"],
+                                                             "passo_ms": 100}}
+    app._settings["live_barge_sem_decisao"] = "continua"
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None,
+            "cancelado": threading.Event(), "turno": 0, "fila": queue.Queue()}
+    motor, rel = _motor_inteligente()
+    sess["engine"] = motor
+    class _Ev:
+        audio = b"\x01\x00" * 8000
+    t0 = time.monotonic()
+    app._live_suspeita_barge(sess, _Ev())
+    while sess.get("barge_suspeito") and time.monotonic() - t0 < 2.0:
+        time.sleep(0.01)
+    assert not sess.get("barge_suspeito"), "passou de 2 s sem decidir"

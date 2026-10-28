@@ -40,6 +40,16 @@
 set -euo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# REGIME (#503): latência é sensível a carga. Acima de 0,5 de load por núcleo a
+# rodada sai INCONCLUSIVA (rc 2) em vez de reprovar por ambiente — o número vira
+# medida da máquina, não do produto.
+CARGA_LIMITE=$(sysctl -n hw.ncpu 2>/dev/null | awk '{print $1 * 0.5}')
+CARGA_AGORA=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')
+if [ -n "$CARGA_LIMITE" ] && [ -n "$CARGA_AGORA" ] && \
+   [ "$(awk -v a="$CARGA_AGORA" -v b="$CARGA_LIMITE" 'BEGIN{print (a > b) ? 1 : 0}')" = "1" ]; then
+    echo "! carga $CARGA_AGORA acima de $CARGA_LIMITE (0,5/núcleo): rodada INCONCLUSIVA" >&2
+    exit 2
+fi
 PY="$RAIZ/.venv-mlx/bin/python"
 [ -x "$PY" ] || PY="$(command -v python3)"
 export REP="${REP:-6}"
@@ -133,7 +143,10 @@ env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        "TTS_CHAT_BACKEND_LIVE": os.environ.get("TTS_CHAT_BACKEND_LIVE") or "openai",
        "BARGE_PORT": str(porta), "ORT_DISABLE_TELEMETRY": "1",
        "BARGE_SETTINGS": f"/tmp/live_barge_settings_{SUF}.json",
-       "BARGE_APIKEYS": f"/tmp/live_barge_apikeys_{SUF}.json"}
+       "BARGE_APIKEYS": f"/tmp/live_barge_apikeys_{SUF}.json",
+       # `.apikey` legado é espelho de `_save_apikeys`: sem ele a rodada reescrevia
+       # o arquivo do DONO mesmo com o JSON de chaves em /tmp (#535)
+       "BARGE_LEGADO": f"/tmp/live_barge_apikey_{SUF}"}
 log = pathlib.Path("/tmp") / f"live_barge_rep_{SUF}.log"
 # Instrumenta a JANELA DE PLAYBACK do servidor (sem editar arquivo de outro dono):
 # é ela que arma o barge. Imprime quando abre/fecha, para correlacionar com a injeção.
@@ -147,6 +160,7 @@ live_turns.TurnEngine.set_speaking = _patched
 # settings/chaves em tmp: a rodada não lê nem escreve os arquivos do dono
 app.SETTINGS_PATH = pathlib.Path(os.environ["BARGE_SETTINGS"])
 app.APIKEYS_PATH = pathlib.Path(os.environ["BARGE_APIKEYS"])
+app.LEGACY_APIKEY_PATH = pathlib.Path(os.environ["BARGE_LEGADO"])
 app.API_KEY = None
 uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["BARGE_PORT"]), log_level="info")
 '''
