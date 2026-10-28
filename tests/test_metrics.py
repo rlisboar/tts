@@ -10,6 +10,7 @@ O diretório é sempre um tmp (fixture): a suíte não escreve no `state/` do re
 """
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -185,3 +186,64 @@ def test_nada_de_chave_nem_texto_no_arquivo(client, auth, dir_tmp, voices_tmp):
     for segredo in list(auth.values()) + [texto]:
         if segredo:
             assert segredo not in bruto, segredo
+
+
+# --- #610: o diretório do histórico tem de ser isolável por ambiente ----------
+# `DIR` é constante de módulo lida no IMPORT: sem env, todo processo que importasse
+# o app (suíte, driver, launcher antes de repontar) anexava no histórico REAL do
+# dono. O conftest exporta a env antes da coleta e a guarda de sessão reprova se um
+# arquivo novo aparecer lá — estas duas células cobram as duas metades.
+def test_dir_do_historico_vem_do_ambiente(tmp_path):
+    """`TTS_METRICS_DIR` decide o diretório; vazio mantém o default histórico."""
+    env = {**os.environ, "TTS_METRICS_DIR": str(tmp_path / "m"),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    saida = __import__("subprocess").run(
+        [sys.executable, "-c", "import metrics_hist; print(metrics_hist.DIR)"],
+        cwd=str(Path(__file__).resolve().parent.parent), env=env, check=True,
+        capture_output=True, text=True)
+    assert saida.stdout.strip() == str(tmp_path / "m")
+    sem = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    sem.pop("TTS_METRICS_DIR", None)
+    saida = __import__("subprocess").run(
+        [sys.executable, "-c", "import metrics_hist; print(metrics_hist.DIR)"],
+        cwd=str(Path(__file__).resolve().parent.parent), env=sem, check=True,
+        capture_output=True, text=True)
+    assert saida.stdout.strip().endswith("state/metrics"), "o default saiu do repo"
+
+
+def test_a_suite_roda_com_o_historico_fora_do_repo():
+    """A rodada do pytest tem de estar com `DIR` em tmp, não no `state/` do dono.
+
+    É a outra metade: a env sozinha não basta se o conftest parar de exportá-la
+    (a célula acima passaria e a suíte voltaria a engordar o diretório real)."""
+    assert not str(metrics_hist.DIR).startswith(str(Path(__file__).resolve().parent.parent
+                                                      / "state")), metrics_hist.DIR
+    assert os.environ.get("TTS_METRICS_DIR"), "o conftest parou de exportar a env"
+
+
+def test_escrita_sem_env_cai_no_repo_e_com_env_nao(tmp_path):
+    """A env desvia a ESCRITA de verdade — não só a constante `DIR`.
+
+    `registrar` sem override anexa no `state/metrics` do dono (é o defeito do
+    #610); com `TTS_METRICS_DIR` a linha nasce no tmp. Rota única por execução para
+    achar a linha sem depender do que já existe no arquivo do dia."""
+    rota = f"/api/_610_{os.getpid()}"
+    raiz = Path(__file__).resolve().parent.parent
+    real = raiz / "state" / "metrics"
+    antes = {p.name: p.stat().st_size for p in real.glob("*.jsonl")}
+    cmd = ("import metrics_hist, time;"
+           f"metrics_hist.registrar({rota!r}, 1.0, 200); time.sleep(0.05)")
+    sem = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    sem.pop("TTS_METRICS_DIR", None)
+    __import__("subprocess").run([sys.executable, "-c", cmd], cwd=str(raiz), env=sem,
+                                 check=True, capture_output=True)
+    cresceu = {p.name: p.stat().st_size for p in real.glob("*.jsonl")}
+    assert cresceu != antes, "sem a env a escrita NÃO caiu no diretório do dono"
+    # com a env, o arquivo do dono volta a ficar do mesmo tamanho
+    antes = {p.name: p.stat().st_size for p in real.glob("*.jsonl")}
+    alvo = tmp_path / "m"
+    __import__("subprocess").run([sys.executable, "-c", cmd], cwd=str(raiz),
+                                 env={**sem, "TTS_METRICS_DIR": str(alvo)},
+                                 check=True, capture_output=True)
+    assert {p.name: p.stat().st_size for p in real.glob("*.jsonl")} == antes
+    assert any(rota in p.read_text() for p in alvo.glob("*.jsonl")), "não escreveu no tmp"

@@ -153,6 +153,13 @@ def pytest_configure(config):
         raiz.mkdir(parents=True, exist_ok=True)
         config.option.basetemp = str(raiz)
         _limpa_raizes_velhas(raiz.parent)      # lixo de rodadas verdes antigas
+    # `state/metrics` do dono (#610): `metrics_hist.DIR` é constante lida no IMPORT,
+    # então a env tem de valer antes da coleta — não cabe na fixture de estado (que
+    # roda depois). Sem isto, a rodada engorda o histórico REAL de métricas.
+    if not os.environ.get("TTS_METRICS_DIR"):
+        metricas = pathlib.Path(config.option.basetemp) / "estado" / "metrics"
+        metricas.mkdir(parents=True, exist_ok=True)
+        os.environ["TTS_METRICS_DIR"] = str(metricas)
 
 
 # #6cd62cf4: raiz por processo não pode virar lixo em TMPDIR. O que sobra de sessão
@@ -484,3 +491,31 @@ def _outputs_do_dono_intocado():
             + (f" (+{len(nossos) - 10})" if len(nossos) > 10 else "")
             + " — algum caminho não está seguindo `TTS_OUTPUTS_DIR`",
             pytrace=False)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _metricas_do_dono_intocadas():
+    """A suíte não pode gravar no `state/metrics` REAL do dono (#610).
+
+    O `metrics_hist.DIR` é constante de módulo, lida no import: quem não isolar por
+    `TTS_METRICS_DIR` (exportada no `pytest_configure`) engorda o histórico de
+    operação do dono com rota de teste. Arquivo NOVO lá é nosso e reprova.
+    CRESCIMENTO de arquivo do dia é só aviso: o app do dono vivo escreve no mesmo
+    arquivo, então não dá para separar pelo tamanho."""
+    import app
+
+    alvo = app.BASE / "state" / "metrics"
+    antes = {p.name: p.stat().st_size for p in alvo.glob("*.jsonl")}
+    yield
+    depois = {p.name: p.stat().st_size for p in alvo.glob("*.jsonl")}
+    novos = sorted(set(depois) - set(antes))
+    if novos:
+        pytest.fail(
+            "a suíte escreveu no `state/metrics` REAL do dono (#610): "
+            + ", ".join(novos[:10])
+            + " — algum caminho não está seguindo `TTS_METRICS_DIR`",
+            pytrace=False)
+    cresceram = sorted(n for n, tam in depois.items() if tam > antes.get(n, 0))
+    if cresceram:
+        print(f"\n[metricas] o histórico real cresceu por fora da suíte: "
+              f"{', '.join(cresceram[:5])} (app do dono rodando? se não, investigue)")

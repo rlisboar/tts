@@ -21,12 +21,16 @@ por arquivo. A poda roda junto com cada gravação, sem timer próprio — o cus
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
-DIR = BASE / "state" / "metrics"
+#: diretório do histórico, com override por ambiente (`TTS_METRICS_DIR`, #610):
+#: sem ele a suíte gravava no histórico REAL do dono. Mesmo padrão do #461 — vazio
+#: = o de sempre, e o valor é lido no IMPORT (é constante de módulo).
+DIR = Path(os.environ.get("TTS_METRICS_DIR") or (BASE / "state" / "metrics")).expanduser()
 
 TTL_PADRAO_DIAS = 14
 TETO_PADRAO_MB = 8
