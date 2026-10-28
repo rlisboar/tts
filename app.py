@@ -9474,12 +9474,29 @@ def _live_modelo_decide(sess: dict, texto: str, fala_ms: int, eco_txt: str,
     """Slot do filtro `modelo` (#509). Sem classificador instalado devolve
     `(None, None)` e a cadeia segue — nunca segura o turno."""
     decide = globals().get("_live_classificador_barge")
+    cli = None
     if decide is None:
-        return None, None
+        # classificador real (audio-ml): `Intencao.decide(ref, fala) -> dict|None`
+        cli = sess.get("intencao")
+        if cli is None:
+            try:
+                import live_intencao
+                cli = sess["intencao"] = live_intencao.Intencao(
+                    timeout_ms=int(cfg.get("timeout_ms") or 400))
+            except Exception as exc:      # noqa: BLE001 — sem classificador, segue
+                _live_log_kv("barge_modelo_indisponivel", sess=sess["id"],
+                             erro=str(exc)[:100])
+                return None, None
+        if not cli.aquece(espera_s=5.0):
+            return None, None
     limite = float(cfg.get("limiar") or 0.5)
     t0 = time.monotonic()
     try:
-        p = decide(texto, fala_ms, ref_eco=eco_txt)
+        if cli is None:
+            p = decide(texto, fala_ms, ref_eco=eco_txt)
+        else:
+            r = cli.decide(eco_txt, texto) or {}
+            p = r.get("p_cortar")
     except Exception as exc:              # noqa: BLE001 — timeout/erro segue adiante
         _live_log_kv("barge_modelo_erro", sess=sess["id"], erro=str(exc)[:100])
         st = sess.setdefault("barge_stats", {"tipos": {}, "decisoes": [], "modelo": []})

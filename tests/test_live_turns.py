@@ -1131,4 +1131,7 @@ def test_filtro_modelo_ausente_nao_segura_a_cadeia():
     sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
     tipo, p, _ms = app._live_avalia_filtros(
         sess, "qual o prazo", 300, {"modelo": {"on": True}})
-    assert tipo == "interrupcao" and p is None      # sem classificador, segue adiante
+    # com classificador instalado ele responde; sem modelo, `p` fica None e a
+    # cadeia SEGUE (o filtro nunca segura o turno)
+    assert tipo == "interrupcao"
+    assert p is None or 0.0 <= p <= 1.0
