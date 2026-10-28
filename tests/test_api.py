@@ -6833,3 +6833,18 @@ def test_denoise_sucesso_diz_que_o_dnsmos_nao_foi_medido(client, auth, voices_tm
     assert corpo["limpeza"]["dnsmos_motivo"] == "indisponivel"
     # voz inexistente continua sendo erro do cliente (4xx)
     assert client.post("/api/voices/naoexiste/denoise", headers=auth).status_code == 404
+
+
+def test_speaker_alvo_distingue_perfil_inexistente_de_perfil_vazio(client, auth,
+                                                                   monkeypatch):
+    """Perfil que existe e está sem amostra tem de mandar CADASTRAR, não dizer que
+    não existe — a ação do dono é outra (P3 do gate)."""
+    perfis = {"vazio": {"vecs": [], "modelo": app.SPEAKER_MODELO_LEGADO}}
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("f.wav"))
+    r = client.post("/api/transcribe", headers=auth, data={"speaker_alvo": "vazio"},
+                    files={"audio": ("a.wav", b"x", "audio/wav")})
+    assert r.status_code == 400 and "sem amostras" in r.json()["detail"]
+    r = client.post("/api/transcribe", headers=auth, data={"speaker_alvo": "naoexiste"},
+                    files={"audio": ("a.wav", b"x", "audio/wav")})
+    assert r.status_code == 400 and "não existe" in r.json()["detail"]
