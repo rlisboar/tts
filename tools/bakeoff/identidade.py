@@ -267,6 +267,9 @@ def roda(modelo: str, k_cadastro: int, modo: str, ruidos: tuple[str, ...],
                 pos, neg = _scores(m, cad_r, test_r, modo, cohorte)
                 saida["por_duracao"][f"{dur:g}s_{fam}_{snr}dB"] = metricas.resumo(pos, neg)
     saida["clone"] = _clones(m, dados, locutores, k_cadastro, modo, cohorte)
+    import os
+
+    saida["loadavg"] = round(os.getloadavg()[0], 2)
     saida["rss_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6, 1)
     return saida
 

@@ -70,8 +70,35 @@ def resumo(escores_pos, escores_neg) -> dict:
     """Bloco padrão de números para a evidência."""
     far, frr = curva(escores_pos, escores_neg)
     return {"eer": round(eer(escores_pos, escores_neg), 3),
+            "eer_ic95": eer_ci(escores_pos, escores_neg),
             "minDCF_p001": round(min_dcf(escores_pos, escores_neg), 4),
             "frr_far1": round(frr_em_far(escores_pos, escores_neg, 0.01), 3),
             "frr_far01": round(frr_em_far(escores_pos, escores_neg, 0.001), 3),
             "n_pos": int(len(escores_pos)), "n_neg": int(len(escores_neg)),
             "det": {"far": far, "frr": frr}}
+
+
+def _boot(escores_pos, escores_neg, fn, n: int = 400, semente: int = 7) -> tuple[float, float]:
+    """Intervalo de confiança 95 % por bootstrap do ENSAIO (reamostra as duas
+    listas). Com 20 locutores o EER tem cauda larga e o número cru enganava —
+    `task_a870518d`."""
+    rng = np.random.default_rng(semente)
+    pos, neg = np.asarray(escores_pos, float), np.asarray(escores_neg, float)
+    vals = []
+    for _ in range(n):
+        p = pos[rng.integers(0, pos.size, pos.size)]
+        q = neg[rng.integers(0, neg.size, neg.size)]
+        v = fn(p, q)
+        if v == v:
+            vals.append(v)
+    if not vals:
+        return (float("nan"), float("nan"))
+    return (round(float(np.percentile(vals, 2.5)), 3), round(float(np.percentile(vals, 97.5)), 3))
+
+
+def eer_ci(escores_pos, escores_neg) -> list[float]:
+    return list(_boot(escores_pos, escores_neg, eer))
+
+
+def frr_ci(escores_pos, escores_neg, far_alvo: float) -> list[float]:
+    return list(_boot(escores_pos, escores_neg, lambda p, q: frr_em_far(p, q, far_alvo)))

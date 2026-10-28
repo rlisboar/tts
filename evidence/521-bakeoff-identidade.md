@@ -4,18 +4,22 @@ Corpus público em `/tmp/tts-bakeoff` (LibriSpeech dev-clean, CC BY 4.0; manifes
 sha256 em `resultados/corpus.json`), 40 locutores, recortes de 1–8 s, CPU do M3.
 Nada de `voices/`, `outputs/` ou `.speaker-profiles.json`.
 
-## Placar (20 locutores, cadastro de 5, centróide, escore cosseno)
+## Placar (40 locutores, cadastro de 5, centróide, AS-norm, IC 95 % por bootstrap)
 
-| modelo | EER 1 s | EER 3 s | EER 3 s com AS-norm | FRR@FAR1% (3 s, AS-norm) | clone aceito @FAR1% |
-|---|---|---|---|---|---|
-| Resemblyzer (hoje no app) | 1,9 % | 1,7 % | 1,4 % | 14,0 % | 0 de 24 |
-| SpeechBrain ECAPA | 5,3 % | 1,6 % | **0,19 %** | **2,5 %** | 0 de 24 |
-| 3D-Speaker ERes2NetV2 | 3,1 % | 1,8 % | 3,5 % | 7,0 % | 0 de 24 |
-| 3D-Speaker CAM++ | 8,8 % | 5,3 % | n/m | n/m | 0 de 24 |
-| WeSpeaker ResNet34 | 17,5 % | 8,8 % | n/m | n/m | 0 de 24 |
+| modelo | EER 1 s (IC 95 %) | EER 3 s (IC 95 %) | clone aceito @FAR1% |
+|---|---|---|---|
+| SpeechBrain ECAPA | **2,55 %** (1,6–5,2) | **1,86 %** (0,13–4,3) | 0 de 24 |
+| 3D-Speaker ERes2NetV2 | a medir | a medir | a medir |
+| Resemblyzer (hoje no app) | 4,39 % | a medir | a medir |
 
-Cadastro de 1 amostra (quem acabou de gravar): 9,5 % a 22,1 % de EER em 1 s nos
-modelos com AS-norm medido — 5× pior que com 5 amostras.
+**O número de 20 locutores enganava:** com 20 o Resemblyzer marcava 1,9 % e o
+ECAPA 5,3 %; com 40 o ECAPA vai a 2,55 % e o Resemblyzer a 4,39 %. Os intervalos
+são largos dos dois lados — diferença de 1–2 pontos com este corpus não decide
+nada sozinha, que é exatamente o que o card alertou.
+
+Carga da máquina na rodada: loadavg **6,2** (outros agentes na mesma máquina). A
+latência do R2 foi medida nessa condição; a latência de produção precisa de
+máquina folgada (≤0,5 por núcleo), que ainda não foi registrada.
 
 ## Veredito
 
