@@ -85,7 +85,7 @@ RAPIDO=(limpa_bytecode pendurada_probe serial_lock live_lock_freeze)
 # próprio servidor (#437/#466) e vieram para cá.
 NAVEGADOR=(dsh_ui hash_deep_link live_dsh_fallback live_barge_rep live_ui
             live_interrupcao_ui obs_ui live_ws ultima_chave_ui admin_ui_flow cfg_sujo_e_erros
-            voz_desfazer_ui voz_cadastro_ui voz_check_ui)
+            voz_desfazer_ui voz_cadastro_ui voz_check_ui voz_far_alvo_ui)
 INSTANCIA=(a11y_teclado conversa_429 key_storage_repro live_hold_ui mic_erro_ui
            mobile_layout onboarding_atalhos ui_repouso xss_frontend_repro)
 

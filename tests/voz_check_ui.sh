@@ -221,8 +221,9 @@ try:
                 "o rótulo do rigor com FAR alvo ativo")
         nota = (pg.text_content("#spThrNota") or "").strip()
         print(f"  rótulo com FAR alvo: {nota[:100]!r}")
-        cobrar("modo CRU" in nota, f"o rótulo não diz que só vale no modo cru ({nota[:100]!r})")
-        cobrar("1 %" in nota, f"o alvo de FAR não aparece no rótulo ({nota[:100]!r})")
+        cobrar("modo cru" in nota.lower(), f"o rótulo não diz que só vale no modo cru ({nota[:100]!r})")
+        cobrar(("1 %" in nota) or ("a cada 100" in nota),
+               f"o alvo de FAR não aparece no rótulo ({nota[:100]!r})")
         cobrar(not erros, "erros de JS: " + "; ".join(erros[:3]))
         ctx.close(); b.close()
 

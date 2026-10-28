@@ -524,6 +524,14 @@
   .sp-chip.incompleto { color: var(--warn); border-color: var(--warn-border, var(--border)); }
   .sp-chip.recadastrar { color: var(--err); border-color: var(--err); }
   .sp-chip .extrator { font-family: var(--mono); font-size: 10px; opacity: .7; }
+  /* rigor cru debaixo de "Avançado" (#528): com FAR alvo ele não decide */
+  .sp-avancado { margin: 6px 0 2px; }
+  .sp-avancado > summary {
+    cursor: pointer; font-size: 12px; color: var(--muted); padding: 2px 0;
+  }
+  .sp-avancado > summary:hover { color: var(--text); }
+  .sp-extrator { color: var(--warn); border-left: 3px solid var(--warn); padding-left: 8px; }
+  .sp-extrator[hidden] { display: none; }
 
   .cols2 {
     flex: 1; min-height: 0;
@@ -3197,13 +3205,29 @@
             <option value="enforce">Só vozes cadastradas</option>
             <option value="label">Todos, etiquetando quem fala</option>
           </select></label>
-        <label class="cfg-label">Rigor <output id="spThrOut">0.60</output>
-          <input type="range" id="spThr" min="0.35" max="0.9" step="0.05" value="0.6" aria-describedby="spThrNota"></label>
-        <!-- com FAR alvo o slider deixa de decidir: quem decide é o limiar
-             calibrado, sobre escore AS-normalizado (outra escala) — o rótulo
-             evita a leitura de que 0,60 ainda vale (#590) -->
+        <label class="cfg-label">Rigor por alvo de erro (FAR)
+          <select id="spFarAlvo">
+            <option value="">Pelo número abaixo (modo cru)</option>
+            <option value="1">1 erro a cada 100 falas — FAR 1 %</option>
+            <option value="0.1">1 erro a cada 1000 falas — FAR 0,1 %</option>
+          </select></label>
+        <!-- com FAR alvo quem decide é o limiar calibrado, sobre escore
+             AS-normalizado (outra escala) — o rótulo evita a leitura de que o
+             número cru ainda vale (#590/#528) -->
         <p class="hint" id="spThrNota" hidden></p>
-        <p class="hint">Sua voz costuma dar <b>0.65–0.85</b>; outra pessoa, <b>0.40–0.55</b>. Padrão 0.60 — rejeita intrusos sem rejeitar você (resfriado/afastado do mic).</p>
+        <!-- o número cru vai para "avançado": com alvo de erro ele deixa de ser o
+             que decide, e quem quer o controle fino o acha debaixo do resumo -->
+        <details class="sp-avancado" id="spAvancado">
+          <summary>Número cru do rigor</summary>
+          <label class="cfg-label">Rigor <output id="spThrOut">0.60</output>
+            <input type="range" id="spThr" min="0.35" max="0.9" step="0.05" value="0.6" aria-describedby="spThrNota"></label>
+          <p class="hint" style="margin-top:0">Sua voz costuma dar <b>0.65–0.85</b>; outra pessoa, <b>0.40–0.55</b>. Padrão 0.60 — rejeita intrusos sem rejeitar você (resfriado/afastado do mic). Só vale no modo cru.</p>
+        </details>
+        <label class="check" title="Marca d'água em toda saída do TTS, com detector — ainda não implementado (#522)"><input type="checkbox" id="spAntiClone" disabled> Anti-clone (marca d'água) <span class="hint">— em breve</span></label>
+        <!-- o app pode cair para o extrator legado quando faltam os pesos do
+             atual; quem diz é o servidor (`extrator_efetivo`) e aqui só se avisa
+             — sem o campo (servidor anterior) o parágrafo fica oculto -->
+        <p class="hint sp-extrator" id="spExtratorAviso" hidden></p>
         <!-- A dica vem ANTES da gravação (#585): o servidor recusa o que não
              serve para biometria, e descobrir o critério depois de falar 8 s é
              perder a gravação. Mesmos números do servidor (SPEAKER_MIN_FALA_S /
@@ -6957,7 +6981,8 @@ async function loadSettings() {
     cfgTxt("sttWhisperModel", s.stt_whisper_repo);
     cfgNum("spThr", s.speaker_threshold, 0.6)   // mesmo default do servidor (#525);
     if ($("spThrOut")) $("spThrOut").textContent = (+($("spThr").value)).toFixed(2);
-    spRigorNota(s.speaker_far_alvo);
+    spFarAlvoAplica(s.speaker_far_alvo);
+    spExtratorAviso(s.extrator_efetivo);   // ausente = servidor sem o campo
     if (typeof refreshSpProfiles === "function") refreshSpProfiles();
     $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
     applySttEngine(false);
@@ -7034,9 +7059,38 @@ function spRigorNota(alvo) {
   const v = String(alvo || "").trim().replace(",", ".");
   el.hidden = !v;
   el.textContent = v
-    ? "⚠ O rigor acima só vale no modo CRU — com o alvo de FAR " + v.replace(".", ",")
-      + " % quem decide é o limiar calibrado do extrator, sobre escore normalizado"
+    ? "⚠ O número cru (abaixo, em Avançado) só vale no modo CRU — com o alvo de "
+      + (v === "0.1" ? "1 erro a cada 1000 falas" : "1 erro a cada 100 falas")
+      + " quem decide é o limiar calibrado do extrator, sobre escore normalizado"
       + " (outra escala; o número do slider não se compara a ele)."
+    : "";
+}
+
+//: o alvo de FAR é LISTA FECHADA no servidor (`""`/`"1"`/`"0.1"`); valor de fora
+//: (settings editado à mão, servidor mais novo) não pode virar opção fantasma no
+//: select nem ser gravado de volta.
+const SP_FAR_VALIDOS = ["", "1", "0.1"];
+function spFarAlvoAplica(v) {
+  const sel = $("spFarAlvo");
+  if (!sel) return "";
+  const bruto = String(v || "").trim().replace(",", ".");
+  const ok = SP_FAR_VALIDOS.includes(bruto) ? bruto : "";
+  sel.value = ok;
+  spRigorNota(ok);
+  return ok;
+}
+
+//: aviso do extrator LEGADO (#528): só quando o servidor manda `extrator_efetivo`
+//: (feature-detect) e ele não é o atual. Sem o campo, nada é afirmado.
+function spExtratorAviso(v) {
+  const el = $("spExtratorAviso");
+  if (!el) return;
+  const modelo = typeof v === "string" ? v.trim() : "";
+  const caiu = !!modelo && !modelo.startsWith("ecapa");
+  el.hidden = !caiu;
+  el.textContent = caiu
+    ? `⚠ esta instalação está no extrator ANTIGO (${modelo}): a identidade separa pior e os `
+      + `perfis feitos no extrator atual vão pedir recadastro. Falta o modelo novo nesta instalação.`
     : "";
 }
 //: o cadastro precisa de 3–5 amostras (#525). O número real vem do servidor
@@ -7099,6 +7153,8 @@ async function refreshSpProfiles() {
   } catch {}
 }
 $("spThr")?.addEventListener("input", () => { $("spThrOut").textContent = (+$("spThr").value).toFixed(2); });
+// trocar o alvo muda o que decide: o rótulo do número cru acompanha na hora
+$("spFarAlvo")?.addEventListener("change", () => spRigorNota($("spFarAlvo").value));
 async function spGravar(segundos, st) {
   // mesma cadeia das demais telas: biometria cadastrada por outro caminho de áudio
   // desalinha o limiar usado na escuta real
@@ -7376,6 +7432,7 @@ $("cfgSave").onclick = async () => {
       chat_dsh_effort: $("chatDshEffort")?.value || "off",
       speaker_gate: $("speakerGate")?.value || "off",
       speaker_threshold: parseFloat($("spThr")?.value) || 0.6,
+      speaker_far_alvo: $("spFarAlvo")?.value || "",
       stt_whisper_repo: $("sttWhisperModel")?.value || "",
       stt_anti_ruido: $("sttFiltros")?.checked !== false,
       stt_denoise: $("sttDenoise")?.checked !== false,
