@@ -68,6 +68,7 @@ _teto_da_suite() {
         live_ui|live_ws|live_interrupcao_ui|obs_ui) echo 300 ;;
         voz_cadastro_ui|voz_desfazer_ui|voz_check_ui) echo 300 ;;
         live_dsh_fallback|conversa_429) echo 240 ;;
+        live_lock_freeze) echo 300 ;;   # duas rodadas + cópia; roda no hook
         *) echo 90 ;;
     esac
 }
@@ -85,7 +86,7 @@ RAPIDO=(limpa_bytecode pendurada_probe serial_lock live_lock_freeze)
 # próprio servidor (#437/#466) e vieram para cá.
 NAVEGADOR=(dsh_ui hash_deep_link live_dsh_fallback live_barge_rep live_ui
             live_interrupcao_ui obs_ui live_ws ultima_chave_ui admin_ui_flow cfg_sujo_e_erros
-            voz_desfazer_ui voz_cadastro_ui voz_check_ui voz_far_alvo_ui)
+            voz_desfazer_ui voz_cadastro_ui voz_check_ui voz_far_alvo_ui live_retomada_ui)
 INSTANCIA=(a11y_teclado conversa_429 key_storage_repro live_hold_ui mic_erro_ui
            mobile_layout onboarding_atalhos ui_repouso xss_frontend_repro)
 
@@ -187,6 +188,16 @@ _impressao_dono() {
             printf '%s - -\n' "$a"
         fi
     done
+    # `state/metrics` (#610): o histórico de operação é ANEXADO a cada requisição de
+    # API; sem ele no retrato, a suíte que sobe o app sem `TTS_METRICS_DIR` engorda
+    # o diretório do dono sem aparecer em lugar nenhum.
+    if [ -d "$DONO_DIR/state/metrics" ]; then
+        for a in "$DONO_DIR"/state/metrics/*.jsonl; do
+            [ -f "$a" ] || continue
+            printf '%s %s %s\n' "${a#"$DONO_DIR"/}" \
+                "$(_hash "$a" | cut -c1-12)" "$(_mtime "$a")"
+        done
+    fi
 }
 _arquivos_tocados() { # $1 = impressão de antes, $2 = de depois
     diff <(printf '%s\n' "$1") <(printf '%s\n' "$2") 2>/dev/null | sed -n 's/^> \([^ ]*\).*/\1/p'

@@ -55,14 +55,14 @@ def test_queda_de_nivel_na_limpeza_recusa_e_nao_muda_a_referencia(monkeypatch):
     x = _suja(1.0)
     monkeypatch.setattr(app, "_denoise_audio",
                         lambda a, sr, s: np.asarray(a, dtype=np.float32) * 0.01)
-    y, recusado = app._denoise_para_referencia(x, 24000, 1.0)
+    y, recusado, _rel = app._denoise_para_referencia(x, 24000, 1.0)
     assert recusado is True and np.allclose(y, x)
 
 
 def test_perfis_corrompidos_nao_viram_gate_inerte(tmp_path, monkeypatch):
     alvo = tmp_path / ".speaker-profiles.json"
     monkeypatch.setattr(app, "SPEAKER_PATH", alvo)
-    monkeypatch.setattr(app, "_speaker_embed", lambda p: [1.0, 0.0])
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
     app._settings["speaker_gate"] = "enforce"
     try:
         assert app._speaker_gate_ok(__import__("pathlib").Path("x.wav")) == {}   # ausente
