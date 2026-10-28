@@ -8311,10 +8311,11 @@ async function lxwsConectar(opts) {
     LX.conectando = false;
     const atual = LX.ws === ws;
     lxObsWs("fechado (código " + ev.code + ")" + (atual ? "" : " — conexão antiga"), LX.erro);
+    // o aviso do dsh é DA SESSÃO: sai do ar mesmo quando o socket morto é o antigo
+    LX.obs.dshFallback = null;
+    lxAvisaDsh();
     if (!atual) return;          // outra conexão (retomada) já assumiu
     LX.ws = null; lxParaCaptura(); lxCancelaPlayback();
-    LX.obs.dshFallback = null;   // aviso é DA SESSÃO: morre com ela (#150)
-    lxAvisaDsh();
     // #244: o close da substituição é LIMPO (1000, sem `onerror` — `LX.erro` fica
     // falso), então sem esta precedência o motivo real morreria aqui como "sessão
     // encerrada". A substituição vem ANTES de `LX.erro`: é causa conhecida e
