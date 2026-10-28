@@ -10,6 +10,10 @@
 #              do harness (limpa_bytecode), trava de modelo e a prova de lock do Live.
 #   navegador  auto-contido, mas precisa de Chromium/Playwright. Cobre UI de verdade
 #              (XSS, key-storage, barge, WS). ~4 min; rode no gate que mexe em tela.
+#              NÃO encosta no app do dono: BASE e os escapes (`*_NO_DONO`) são
+#              exportados SÓ no `instancia`, então cada suíte aqui sobe o próprio
+#              servidor. Antes o `:7860` com escrita liberada vazava para cá e uma
+#              rodada reescreveu o `settings.json` do dono (#535).
 #   instancia  NÃO sobe servidor: precisa de app de pé (BASE=...). Está fora do hook
 #              de propósito — exige MLX carregado e ninguém deve subir app por commit.
 #              REGRA do estágio: LEITURA por padrão. Suíte daqui que ESCREVA no app
@@ -26,6 +30,9 @@
 #   BASE=http://IP:7860 ./tests/run_sh.sh instancia     # com o app de pé
 #   ./tests/run_sh.sh lista                # o que cada estágio tem
 #   ./tests/run_sh.sh rapido -j 1          # serial
+#   SUITES="x y" ./tests/run_sh.sh navegador   # roda só essas (nome do estágio
+#                                              # continua valendo p/ a decisão de BASE)
+#   TTS_RUN_SH_PULA_PRECHECK=1 BASE=… ./tests/run_sh.sh instancia   # sem o app no ar
 #
 # Paralelo-seguro por construção: cada suíte escreve o log num diretório próprio
 # (`mktemp -d`), nunca em nome fixo de /tmp — duas rodadas simultâneas não se
@@ -37,7 +44,12 @@ RAIZ="$(dirname "$AQUI")"
 # 90 s: o hook HERDA este teto, e 240 s por suíte pendurada prendiam o commit por
 # minutos. Suíte que passa de 90 s de verdade (as de Live ficam perto de 40 s) usa
 # `TETO_S=…` para si; pendurada agora falha rápido em vez de segurar o gate.
-TETO="${TETO_S:-90}"           # segundos por suíte
+TETO="${TETO_S:-90}"           # segundos de TRABALHO por suíte (depois da trava)
+# Teto de FILA: o tempo esperando a trava de modelo não pode comer o teto do
+# trabalho (com -j 3 e 8 suítes de modelo, as últimas morriam no alarme antes de
+# rodar — #535). Quem segura a fila é o `serial_pega` (`TTS_SERIAL_ESPERA`); este
+# é só o limite duro para suíte que trava ANTES de pedir a trava.
+TETO_FILA="${TETO_FILA_S:-900}"
 J=3
 
 RAPIDO=(limpa_bytecode pendurada_probe serial_lock live_lock_freeze)
@@ -46,7 +58,8 @@ RAPIDO=(limpa_bytecode pendurada_probe serial_lock live_lock_freeze)
 # quem não tem app no ar. `admin_ui_flow` e `cfg_sujo_e_erros` passaram a subir o
 # próprio servidor (#437/#466) e vieram para cá.
 NAVEGADOR=(dsh_ui hash_deep_link live_dsh_fallback live_barge_rep live_ui
-            live_interrupcao_ui obs_ui live_ws ultima_chave_ui admin_ui_flow cfg_sujo_e_erros)
+            live_interrupcao_ui obs_ui live_ws ultima_chave_ui admin_ui_flow cfg_sujo_e_erros
+            voz_desfazer_ui)
 INSTANCIA=(a11y_teclado conversa_429 key_storage_repro live_hold_ui mic_erro_ui
            mobile_layout onboarding_atalhos ui_repouso xss_frontend_repro)
 
@@ -75,7 +88,9 @@ esac
 # ── instância: falha com o motivo, não com N vermelhos ───────────────────────────
 if [ "$estagio" = "instancia" ] || [ "$estagio" = "tudo" ]; then
     BASE="${BASE:-http://127.0.0.1:7860}"
-    if ! "$RAIZ/.venv-mlx/bin/python" - "$BASE" <<'PY'
+    if [ "${TTS_RUN_SH_PULA_PRECHECK:-0}" = 1 ]; then
+        :
+    elif ! "$RAIZ/.venv-mlx/bin/python" - "$BASE" <<'PY'
 import socket, sys, urllib.parse, urllib.request
 url = urllib.parse.urlsplit(sys.argv[1])
 try:
@@ -92,12 +107,26 @@ PY
     fi
 fi
 
+# `SUITES="a b"` troca a lista do estágio (é como o teste roda uma suíte-sonda sem
+# tocar na lista real). O estágio passado continua mandando na decisão de BASE.
+if [ -n "${SUITES:-}" ]; then read -r -a ALVOS <<< "$SUITES"; fi
+
+# Caminho da suíte: nome puro vive em `tests/`, caminho absoluto é usado como veio.
+_arquivo_da_suite() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s.sh' "$AQUI" "$1" ;; esac; }
+# BASE/escapes são do `instancia` (único estágio que pressupõe app de pé). Em
+# `tudo`, só as suítes de `instancia` recebem — as de `navegador` seguem limpas.
+_e_de_instancia() { case " ${INSTANCIA[*]} " in *" $1 "*) return 0 ;; esac; return 1; }
+# Quem pede a trava de modelo re-arma o teto REAL ao obtê-la (serial.sh).
+_toma_a_trava() { grep -qs 'serial\.sh' "$(_arquivo_da_suite "$1")"; }
+
 DIR="$(mktemp -d "${TMPDIR:-/tmp}/suites-sh.XXXXXX")"
 trap 'rm -rf "$DIR"' EXIT
 
 # teto portátil: o `timeout` do coreutils NÃO existe no macOS; o alarme do perl sim.
+# `$1` é o teto (o do trabalho ou o da fila) — o valor não pode ser fixo aqui.
 _com_teto() {
-    perl -e 'alarm shift; exec @ARGV' "$TETO" "$@"
+    local teto="$1"; shift
+    perl -e 'alarm shift; exec @ARGV' "$teto" "$@"
 }
 
 declare -a FALHAS=() RODADAS=()
@@ -113,23 +142,41 @@ for nome in "${ALVOS[@]}"; do
         # chamador estava.
         cd "$RAIZ" || exit 1
         inicio=$(date +%s)
-        # O estágio pressupõe app DE PÉ; mas duas suítes recusam o `:7860` (para
-        # não escrever no app/arquivo do dono) e ficavam vermelhas por contrato
-        # aqui. Quando o alvo É o 7860, o runner liga o escape delas — a escolha é
-        # do PM: o estágio assume a escrita em troca de medir o app real.
+        # `SUITES` aceita caminho absoluto; `/` no nome não pode virar diretório
+        # dentro do `$DIR`. O nome do log é achatado e o caminho real vai no
+        # resultado (o relatório lê de lá, sem reconstruir).
+        LOG="$DIR/$(printf '%s' "$nome" | tr '/' '_').log"
+        # `instancia` pressupõe app DE PÉ, mas duas suítes dele recusam o `:7860`
+        # (para não escrever no app/arquivo do dono) e ficariam vermelhas por
+        # contrato: quando o alvo É o 7860, o runner liga o escape delas — a
+        # escolha é do PM, e só ALI o estágio assume a escrita para medir o app
+        # real. `navegador` fica com BASE vazio e sobe o próprio servidor (#535).
         # `VAR=x $lista cmd` NÃO funciona: o shell decide o que é atribuição ANTES
         # de expandir, então `ADMIN_UI_NO_DONO=1` virava nome de comando (rc=127).
         # Exportar dentro do subshell resolve e não vaza para as outras suítes.
-        export BASE="${BASE:-http://127.0.0.1:7860}"
-        case "$BASE" in *:7860*) export ADMIN_UI_NO_DONO=1 NO_DONO=1 ;; esac
-        _com_teto bash "$AQUI/$nome.sh" >"$DIR/$nome.log" 2>&1
+        if [ "$estagio" = "instancia" ] || _e_de_instancia "$nome"; then
+            export BASE="${BASE:-http://127.0.0.1:7860}"
+            case "$BASE" in *:7860*) export ADMIN_UI_NO_DONO=1 NO_DONO=1 ;; esac
+        else
+            # `navegador` é auto-contido: `BASE` herdado do shell do chamador faria
+            # a suíte rodar contra o app do DONO (com escrita liberada) em vez de
+            # subir o próprio servidor. Descartar aqui é o que fecha o buraco.
+            unset BASE ADMIN_UI_NO_DONO NO_DONO
+        fi
+        if _toma_a_trava "$nome"; then
+            # teto largo na fila; a suíte troca pelo teto real quando pega a trava
+            export TTS_TETO_POS_TRAVA="$TETO"
+            _com_teto "$TETO_FILA" bash "$(_arquivo_da_suite "$nome")" >"$LOG" 2>&1
+        else
+            _com_teto "$TETO" bash "$(_arquivo_da_suite "$nome")" >"$LOG" 2>&1
+        fi
         rc=$?
-        echo "$rc $nome $(( $(date +%s) - inicio ))"
+        echo "$rc $nome $(( $(date +%s) - inicio )) $LOG"
     ) >>"$DIR/resultado" &
 done
 wait
 
-while read -r rc nome dur; do
+while read -r rc nome dur log; do
     if [ "$rc" -eq 0 ]; then
         printf '  ok    %-24s %ss\n' "$nome" "$dur"
     else
@@ -142,14 +189,17 @@ echo "--- $estagio: ${#FALHAS[@]} falha(s) de ${#RODADAS[@]} suíte(s) em $(( $(
 
 if [ "${#FALHAS[@]}" -gt 0 ]; then
     for nome in "${FALHAS[@]}"; do
+        log="$(awk -v n="$nome" '$2 == n {print $4; exit}' "$DIR/resultado")"
         echo
-        echo "===== $nome (últimas 30 linhas; log completo em $DIR/$nome.log) ====="
-        tail -30 "$DIR/$nome.log"
+        echo "===== $nome (últimas 30 linhas; log completo em $log) ====="
+        tail -30 "$log"
     done
     # o diretório sai do trap: copia o que falhou para um lugar previsível
     destino="${TMPDIR:-/tmp}/suites-sh-falhas.$$"
     mkdir -p "$destino"
-    for nome in "${FALHAS[@]}"; do cp "$DIR/$nome.log" "$destino/" 2>/dev/null; done
+    while read -r rc nome dur log; do
+        case " ${FALHAS[*]} " in *" $nome "*) cp "$log" "$destino/" 2>/dev/null ;; esac
+    done < <(sort -k2 "$DIR/resultado")
     # Poda: um teste por rodada, e rodada vermelha acumulava um diretório por vez
     # (18 no /tmp quando isso foi medido — #428). Fica o dos últimos 3 vermelhos.
     ls -1dt "${TMPDIR:-/tmp}"/suites-sh-falhas.* 2>/dev/null | tail -n +4 | xargs rm -rf 2>/dev/null || true

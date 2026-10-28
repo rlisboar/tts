@@ -3406,6 +3406,16 @@ function aplicarPoliticaAdmin() {
     if ($("apiKeyNewName")) $("apiKeyNewName").disabled = !ADMIN.is;
     if ($("apiAuthEnabled")) $("apiAuthEnabled").disabled = !ADMIN.is;
   }
+  // Botões elevados CRIADOS POR RENDER (apagar/desfazer voz, apagar output) levam
+  // a trava na criação — mas a política pode chegar DEPOIS do render (o load
+  // termina depois, ou a chave é adotada sem recarregar) e eles ficavam clicáveis
+  // com 403 garantido. Reaplica aqui, sobre o que já está na tela.
+  for (const b of document.querySelectorAll("#voiceList .danger, #voiceList .undo, #outputList .danger")) {
+    b.disabled = !ADMIN.is;
+    if (b.dataset.tituloOriginal === undefined) b.dataset.tituloOriginal = b.title || "";
+    b.title = ADMIN.is ? b.dataset.tituloOriginal
+                       : "Precisa de chave administrativa (Configurações → Acesso)";
+  }
 }
 
 /* AÇÕES elevadas: apagar voz/output, importar/exportar vozes, descarregar modelo,
@@ -4714,6 +4724,11 @@ async function refreshVoices() {
       const buster = encodeURIComponent(`${v.duration || 0}-${v.denoised ? 1 : 0}`);
       const cleanBtn = v.preset ? "" : `<button class="ghost small clean">Limpar</button>`;
       const editBtn = v.preset ? "" : `<button class="ghost small edit">✂️ Editar</button>`;
+      // #493: só aparece quando o servidor diz que há original guardado. Sem
+      // `.orig` não existe o que desfazer — melhor sumir do que oferecer 404.
+      const undoBtn = (!v.preset && v.tem_original)
+        ? `<button class="ghost small undo" title="devolve o áudio ORIGINAL guardado, byte a byte — desfaz a limpeza/edição">↩ desfazer edição</button>`
+        : "";
       div.innerHTML = `
         <div class="grow"><div class="name">${tag}${esc(v.name)}</div>
         <div class="meta"><span>${esc(v.duration)}s</span><span class="dot">${v.preset ? "voz padrão" : esc(v.created_at)}</span>${limpa ? '<span class="badge-soft">limpa</span>' : ''}<code class="vid" title="clique p/ copiar o id">${esc(v.id)}</code></div>
@@ -4726,6 +4741,7 @@ async function refreshVoices() {
         </div></div>
         <audio class="weng" data-voice-id="${esc(v.id)}" preload="metadata"></audio>
         <div class="item-actions">
+        ${undoBtn}
         ${editBtn}
         ${cleanBtn}
         <button class="danger small">${v.preset ? "Resetar" : "Apagar"}</button>
@@ -4773,6 +4789,26 @@ async function refreshVoices() {
           refreshVoices();
         } catch (e) { toast("Erro: " + e.message); cb.disabled = false; cb.textContent = "limpar"; }
       };
+      const ub = div.querySelector(".undo");
+      if (ub) {
+        // restaurar é ADMIN (o denoise/replace são `use`): mesma trava do apagar
+        if (!ADMIN.is) {
+          ub.disabled = true;
+          ub.title = "Precisa de chave administrativa (Configurações → Acesso)";
+        }
+        ub.onclick = async () => {
+          if (!confirm(`Desfazer a edição da voz "${v.name}"? O áudio volta ao original guardado.`)) return;
+          ub.disabled = true; ub.textContent = "desfazendo…";
+          try {
+            await api(`/api/voices/${v.id}/restore-original`, { method: "POST" });
+            toast("Edição desfeita ✔ — a voz voltou ao original");
+            refreshVoices();          // áudio e duração mudaram: recarrega a lista
+          } catch (e) {
+            toast("Erro ao desfazer: " + e.message, 6000);
+            ub.disabled = false; ub.textContent = "↩ desfazer edição";
+          }
+        };
+      }
       const btnApagar = div.querySelector(".danger");
       if (!ADMIN.is) {                       // ação elevada: nem chega a clicar
         btnApagar.disabled = true;

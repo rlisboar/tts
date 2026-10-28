@@ -246,6 +246,9 @@ O `.orig.wav` entra no export de vozes e no backup do estado (e volta no import 
 no restore, byte a byte), e some junto com a voz. Sem ele (voz nunca editada) o
 restore responde 404.
 
+Na tela de **Vozes**, a voz que tem original guardado ganha o botão **↩ desfazer
+edição** (só admin; sem `.orig` o botão nem aparece).
+
 ### Idioma
 
 Aceita o **OmniVoice ID** (código, ex.: `pt`, `en`, `es`, `fr`, `de`, `it`) ou
