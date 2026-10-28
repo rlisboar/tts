@@ -32,7 +32,11 @@ PESOS = (("models/ecapa-voxceleb/hyperparams.yaml", *_ECAPA),
          ("models/ecapa-voxceleb/classifier.ckpt", *_ECAPA),
          ("models/ecapa-voxceleb/label_encoder.txt", *_ECAPA),
          ("models/mossformer2-ss-16k/last_best_checkpoint.pt",
-          "alibabasglab/MossFormer2_SS_16K", "407cb030cd66340918ebb6c8cc63b18f8592cdbe"))
+          "alibabasglab/MossFormer2_SS_16K", "407cb030cd66340918ebb6c8cc63b18f8592cdbe"),
+         ("models/dfn3-onnx/deepfilter.onnx",
+          "soniqo/DeepFilterNet3-ONNX", "63d8ba442ba900143c468b798e94a04009b2f0c9"),
+         ("models/dfn3-onnx/config.json",
+          "soniqo/DeepFilterNet3-ONNX", "63d8ba442ba900143c468b798e94a04009b2f0c9"))
 
 
 def _sha(p: Path) -> str:
@@ -206,7 +210,7 @@ def test_manifesto_lista_todos_os_pesos_do_repo():
     listados = {linha.split("  ", 1)[1] for linha in manifesto.splitlines() if "  " in linha}
     no_disco = {f"models/{p.relative_to(REPO / 'models').as_posix()}"
                 for p in (REPO / "models").rglob("*")
-                if p.is_file() and p.suffix in {".ckpt", ".pt", ".yaml", ".txt", ".npy"}
+                if p.is_file() and p.suffix in {".ckpt", ".pt", ".onnx", ".yaml", ".txt", ".npy"}
                 and p.name not in {"sha256sums.txt"} | GERADOS}
     assert not (no_disco - listados), f"peso fora do manifesto: {sorted(no_disco - listados)}"
 

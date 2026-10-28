@@ -1,0 +1,7 @@
+repo=huggingface.co/soniqo/DeepFilterNet3-ONNX
+revisao=63d8ba442ba900143c468b798e94a04009b2f0c9
+arquivos=deepfilter.onnx (grafo ONNX, 8,6 MB) e config.json
+licenca=MIT (tag license:mit na ficha e MIT também no DFN3 v0.5.6 de origem)
+baixado_em=2026-10-28
+via=tools/baixa_modelos.sh
+obs=export do DFN3; o DSP (STFT/ERB/máscara/filtro) é nosso, em tools/bakeoff/dfn_dsp.py

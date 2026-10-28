@@ -39,8 +39,6 @@ COMPARTILHADOS = {
     "tts-studio.log": "log do app — um por máquina (run.sh/TTS-STUDIO.command)",
     "tts-tunnel.log": "log do túnel — um por máquina (tunnel.sh)",
     "dsh4a-trace.on": "handshake do probe com o app: a PRESENÇA do arquivo liga o trace",
-    "tts-bakeoff": "diretório de bancada dos bake-offs (`BAKEOFF_DIR`), compartilhado por desenho — "
-                   "os artefatos são versionados por sha256 no manifesto do corpus",
     "dsh4a-trace.": "trace do bridge: um arquivo POR PID (`...jsonl.<pid>`), presença do `.on` liga (sufixo dinâmico)",
     "dsh-home": "DSH_HOME (cache de sessões) — compartilhar é o ponto",
     "x": "/tmp/x é caminho FALSO de modelo em fake (não precisa existir; só retorno de lambda)",

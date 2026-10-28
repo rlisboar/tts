@@ -60,3 +60,6 @@ htmlcov/
 # `label_encoder.ckpt` é gerado pelo próprio speechbrain no primeiro load.
 models/**/*.ckpt
 models/**/*.pt
+# artefato baixado pelo script (grafo + config): ver models/dfn3-onnx/NOTICE
+models/dfn3-onnx/deepfilter.onnx
+models/dfn3-onnx/config.json

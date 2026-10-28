@@ -18,6 +18,8 @@ do bake-off, não fica no git.
 
 from __future__ import annotations
 
+import os
+import pathlib
 import sys
 from pathlib import Path
 
@@ -69,11 +71,16 @@ def test_filtro_profundo_aplica_o_coeficiente_central():
 
 
 def _sem_modelo() -> bool:
-    """Respeita `BAKEOFF_DIR` (o default é `/tmp/tts-bakeoff`, a bancada) em vez de
-    cravar o caminho — o #243 põe `/tmp/tts-bakeoff` na lista de compartilhados por
-    desenho, mas o teste não deve depender do literal."""
+    """Procura o grafo onde o APP procura primeiro: `TTS_DFN3_DIR` ou
+    `models/dfn3-onnx` (#622 — é o caminho de produção). A bancada
+    (`BAKEOFF_DIR/modelos/dfn3-onnx`) fica como queda, para quem só rodou o
+    bake-off; o literal de `/tmp` não entra."""
     import comum
 
+    pasta = pathlib.Path(os.environ.get("TTS_DFN3_DIR")
+                         or pathlib.Path(__file__).resolve().parent.parent / "models" / "dfn3-onnx")
+    if (pasta / "deepfilter.onnx").is_file():
+        return False
     return not (comum.BASE / "modelos" / "dfn3-onnx" / "deepfilter.onnx").is_file()
 
 

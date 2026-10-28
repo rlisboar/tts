@@ -1,0 +1,15 @@
+DeepFilterNet3 (ONNX) — pesos e grafo
+=====================================
+
+Obra: DeepFilterNet3 (Rikorose / Hendrik Schröter e colaboradores), export ONNX
+publicado em https://huggingface.co/soniqo/DeepFilterNet3-ONNX (revisão fixada em
+`FONTE.txt`). O DSP que consome este grafo é nosso (`tools/bakeoff/dfn_dsp.py`).
+
+Licença: MIT — a do DFN3 de origem e a declarada na ficha do repositório
+(tag `license:mit`). Cópia: https://opensource.org/licenses/MIT
+
+Os arquivos não são modificados: o sha256 em `models/sha256sums.txt` é o dos
+arquivos publicados.
+
+Atenção de escopo: este diretório é só o artefato de inferência; o pacote `df`
+(torch + `libdf` em Rust) NÃO entra no app — a execução é por `onnxruntime`.
