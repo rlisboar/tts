@@ -211,6 +211,14 @@ _impressao_metricas() {
 _arquivos_tocados() { # $1 = impressão de antes, $2 = de depois
     diff <(printf '%s\n' "$1") <(printf '%s\n' "$2") 2>/dev/null | sed -n 's/^> \([^ ]*\).*/\1/p'
 }
+# #635 (decisão do PM): o VEREDITO é por SHA256 — o app do dono, num rev antigo,
+# regrava o `settings.json` com o MESMO conteúdo e só o mtime muda; reescrita
+# idêntica não é vazamento. O mtime vira NOTA. Conteúdo diferente segue reprovando.
+_arquivos_mudados_conteudo() { # $1 = impressão de antes, $2 = de depois
+    diff <(printf '%s\n' "$1" | awk '{print $1, $2}') \
+         <(printf '%s\n' "$2" | awk '{print $1, $2}') 2>/dev/null \
+        | sed -n 's/^> \([^ ]*\).*/\1/p'
+}
 
 declare -a FALHAS=() RODADAS=()
 comeca=$(date +%s)
@@ -367,10 +375,17 @@ fi
 
 # ── veredito: a impressão GLOBAL da rodada mudou? ──────────────────────────
 DONO_AGORA="$(_impressao_dono)"
-MUDOU="$(_arquivos_tocados "$DONO_ANTES" "$DONO_AGORA")"
+MUDOU_TUDO="$(_arquivos_tocados "$DONO_ANTES" "$DONO_AGORA")"
+MUDOU="$(_arquivos_mudados_conteudo "$DONO_ANTES" "$DONO_AGORA")"
+SO_MTIME="$(printf '%s\n' "$MUDOU_TUDO" | grep -vxF -f <(printf '%s\n' "$MUDOU") 2>/dev/null || true)"
+if [ -n "$SO_MTIME" ]; then
+    echo
+    echo "══ nota: reescrito com o MESMO conteúdo (só o mtime mudou — não reprova):"
+    printf '%s\n' "$SO_MTIME" | sed 's/^/  /'
+fi
 if [ -n "$MUDOU" ]; then
     echo
-    echo "══ o estado REAL do dono MUDOU nesta rodada (veredito: impressão global):"
+    echo "══ o estado REAL do dono MUDOU nesta rodada (veredito: conteúdo/sha256):"
     printf '%s\n' "$MUDOU" | sed 's/^/  /'
     echo "  dica de autoria (amostrador; sob -j N pode haver co-roda):"
     for a in $MUDOU; do

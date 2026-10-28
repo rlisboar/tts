@@ -218,6 +218,18 @@ def test_settings_do_dono_continua_reprovando_o_knob(tmp_path):
     assert "settings.json escreveu" in r.stdout or "escreveu settings.json" in r.stdout, r.stdout
 
 
+def test_reescrita_do_mesmo_conteudo_nao_reprova_o_knob(tmp_path):
+    """#635 (decisão do PM): o app do dono, num rev antigo, regrava o
+    `settings.json` com o MESMO conteúdo — o mtime muda e o sha256 não. Reescrita
+    idêntica não é vazamento: vira nota, não reprovação."""
+    r = _rodar("navegador", env={"SUITES": str(SONDAS / "reescreve_o_dono.sh"),
+                                 "TTS_DONO_DIR": _dono(tmp_path),
+                                 "TTS_EXIGE_DONO_INTOCADO": "1"})
+    assert r.returncode == 0, r.stdout
+    assert "MESMO conteúdo" in r.stdout, r.stdout
+    assert "não reprova" in r.stdout, r.stdout
+
+
 def test_suite_que_nao_escreve_nao_aparece(tmp_path):
     """Controle: suíte limpa não gera linha nenhuma."""
     r = _rodar("navegador", env={"SUITES": str(SONDAS / "sonda_env.sh"),

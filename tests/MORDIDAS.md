@@ -290,7 +290,17 @@ CI. `test_app_nao_baixa_modelo_no_boot` e `test_manifesto_lista_todos_os_pesos`
 cobrem o contrato do card por leitura (o boot não chama o downloader; peso sem
 sha256 no manifesto reprova).
 
-## #635 — `state/metrics` é nota, não veredito
+## #622 — grafo do DFN3 offline em `models/`
+
+| Sabotagem | Resultado |
+|---|---|
+| `TTS_DFN3_DIR` aponta para um `deepfilter.onnx` que não é ONNX | `test_grafo_carrega_offline_com_hfhome_vazio` **FAILED** (`INVALID_PROTOBUF`) |
+| peso do DFN3 entra no índice (`git add -f`) | `test_artefato_fica_fora_do_git` **FAILED** |
+
+O skipif segue `TTS_DFN3_DIR`/`models/dfn3-onnx` (caminho de produção) e só cai na
+bancada como queda: sem o grafo a célula de carga **skipa**, não reprova.
+
+## #635 — `state/metrics` (e o mtime) é nota, não veredito
 
 O knob `TTS_EXIGE_DONO_INTOCADO=1` reprovava por `state/metrics/` que o app do
 PRÓPRIO dono anexa pelo polling da tela (+171 B em 40 s com o dono intocado).
@@ -301,6 +311,18 @@ PRÓPRIO dono anexa pelo polling da tela (+171 B em 40 s com o dono intocado).
 
 O controle `test_settings_do_dono_continua_reprovando_o_knob` garante que a nota
 não virou passe livre para os três arquivos de leitura-escrita.
+
+O mesmo vale para o **mtime**: o app do dono, num rev antigo, regrava o
+`settings.json` com o MESMO conteúdo (mtime muda, sha256 não). O veredito é por
+sha256 e o mtime é nota (`_arquivos_mudados_conteudo`).
+
+| Sabotagem | Resultado |
+|---|---|
+| veredito volta a olhar a impressão inteira (mtime junto) | `test_reescrita_do_mesmo_conteudo_nao_reprova_o_knob` **FAILED** |
+
+A sonda `tests/fixtures/run_sh/reescreve_o_dono.sh` espera 1 s ANTES de escrever:
+o `stat` só tem resolução de segundo e o retrato "antes" é tirado no instante em
+que a suíte começa.
 
 ## #621 — medir mutando o `app.py` sem sujar a árvore compartilhada
 
