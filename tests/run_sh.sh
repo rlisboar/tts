@@ -33,6 +33,14 @@
 #   SUITES="x y" ./tests/run_sh.sh navegador   # roda só essas (nome do estágio
 #                                              # continua valendo p/ a decisão de BASE)
 #   TTS_RUN_SH_PULA_PRECHECK=1 BASE=… ./tests/run_sh.sh instancia   # sem o app no ar
+#   TTS_EXIGE_DONO_INTOCADO=1 ./tests/run_sh.sh navegador   # escrita no estado real
+#                                              # do dono vira FALHA (padrão: aviso)
+#
+# Estado real do dono (`settings.json`, `.apikeys.json`, `.apikey`): o runner tira
+# uma impressão GLOBAL antes e depois da rodada — arquivo que mudou é AVISO, ou
+# FALHA sob o knob acima. Quem escreveu vem como dica amostrada (sob `-j N` pode
+# haver co-roda) e, sem ninguém da rodada rodando no instante, a dica diz "escritor
+# de fora" (um pytest de outro agente). `TTS_DONO_DIR` aponta o alvo para uma CÓPIA.
 #
 # Paralelo-seguro por construção: cada suíte escreve o log num diretório próprio
 # (`mktemp -d`), nunca em nome fixo de /tmp — duas rodadas simultâneas não se
@@ -59,7 +67,7 @@ RAPIDO=(limpa_bytecode pendurada_probe serial_lock live_lock_freeze)
 # próprio servidor (#437/#466) e vieram para cá.
 NAVEGADOR=(dsh_ui hash_deep_link live_dsh_fallback live_barge_rep live_ui
             live_interrupcao_ui obs_ui live_ws ultima_chave_ui admin_ui_flow cfg_sujo_e_erros
-            voz_desfazer_ui voz_cadastro_ui)
+            voz_desfazer_ui voz_cadastro_ui voz_check_ui)
 INSTANCIA=(a11y_teclado conversa_429 key_storage_repro live_hold_ui mic_erro_ui
            mobile_layout onboarding_atalhos ui_repouso xss_frontend_repro)
 
@@ -129,16 +137,28 @@ _com_teto() {
     perl -e 'alarm shift; exec @ARGV' "$teto" "$@"
 }
 
-# Impressão digital do estado REAL do dono: sha256 + mtime dos arquivos que as
-# suítes já vazaram. Serve para NOMEAR quem escreve — sem isso, "o settings mudou"
-# é fato sem autor (#535). O app do dono pode gravar ao lado: por padrão é aviso;
-# `TTS_EXIGE_DONO_INTOCADO=1` transforma em falha (é o que a prova do card usa).
+# ───────────────────── estado REAL do dono: impressão e veredito ─────────────
+# Arquivos que as suítes já vazaram. O VEREDITO do estágio é o diff de uma
+# impressão GLOBAL da rodada: com `-j 3` a janela de uma suíte longa engole a
+# escrita de outra e a acusação por janela trocava de culpado a cada rodada (4
+# conjuntos diferentes para a mesma causa — #591); escritor de fora (um pytest de
+# outro agente) também não aparecia. A janela por suíte CONTINUA, como DICA de
+# autoria — e para ela o estado é amostrado enquanto há suíte rodando.
+# `TTS_DONO_DIR` aponta o "dono" para uma CÓPIA: é assim que o teste roda sem
+# encostar no `settings.json` real da máquina de trabalho.
 _ARQ_DONO=(settings.json .apikeys.json .apikey)
+DONO_DIR="${TTS_DONO_DIR:-$RAIZ}"
+# portátil: o job `suites-sh` do CI é Linux (`sha256sum`/`stat -c`), a máquina de
+# trabalho é macOS (`shasum`/`stat -f`). Sem o ramo, a impressão degrada a ruído.
+if command -v sha256sum >/dev/null 2>&1; then _hash() { sha256sum "$1"; }
+else _hash() { shasum -a 256 "$1"; }; fi
+if stat --version >/dev/null 2>&1; then _mtime() { stat -c %Y "$1"; }
+else _mtime() { stat -f %m "$1"; }; fi
 _impressao_dono() {
     local a
     for a in "${_ARQ_DONO[@]}"; do
-        if [ -f "$a" ]; then
-            printf '%s %s %s\n' "$a" "$(/usr/bin/shasum -a 256 "$a" | cut -c1-12)" "$(/usr/bin/stat -f %m "$a")"
+        if [ -f "$DONO_DIR/$a" ]; then
+            printf '%s %s %s\n' "$a" "$(_hash "$DONO_DIR/$a" | cut -c1-12)" "$(_mtime "$DONO_DIR/$a")"
         else
             printf '%s - -\n' "$a"
         fi
@@ -150,9 +170,48 @@ _arquivos_tocados() { # $1 = impressão de antes, $2 = de depois
 
 declare -a FALHAS=() RODADAS=()
 comeca=$(date +%s)
+DONO_ANTES="$(_impressao_dono)"
+mkdir -p "$DIR/rodando" "$DIR/inicio" "$DIR/nome"
 
+# Amostrador do estado do dono a cada 0,2 s (#591). Registra, a cada mudança, o
+# arquivo tocado e QUEM estava rodando com a idade de cada um: a escrita vazada
+# acontece ~1 s depois da largada (é o `_save_settings()` do import), então o
+# candidato mais NOVO é o provável e os demais entram como "co-rodavam". Para
+# quando o `$DIR/fim` aparece (o `wait` só volta depois disso).
+_amostra() {
+    local antes="$DONO_ANTES" agora ts a n t lista
+    while [ ! -e "$DIR/fim" ]; do
+        agora="$(_impressao_dono)"
+        if [ "$agora" != "$antes" ]; then
+            ts="$(_agora)"
+            lista=""
+            for n in $(ls "$DIR/rodando" 2>/dev/null); do
+                t="$(cat "$DIR/inicio/$n" 2>/dev/null || echo "$ts")"
+                lista="$lista $(cat "$DIR/nome/$n" 2>/dev/null || echo "$n"):$(awk -v a="$ts" -v b="$t" 'BEGIN{printf "%.3f", a - b}')"
+            done
+            for a in $(_arquivos_tocados "$antes" "$agora"); do
+                printf '%s|%s\n' "$a" "${lista# }" >> "$DIR/eventos"
+            done
+            antes="$agora"
+        fi
+        sleep 0.2
+    done
+}
+# `EPOCHREALTIME` só existe no bash 5 (o macOS traz 3.2): sub-segundo pelo perl,
+# que o runner já usa para o alarme. Idade em SEGUNDOS FRACIONÁRIOS é o que
+# desempata quem largou por último (o escritor é o mais novo, não o do nome).
+_agora() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
+_amostra &
+AMOSTRADOR=$!
+
+# `-1`: o amostrador também é job — ele não ocupa vaga de suíte.
+declare -a PIDS=()
+N=0
 for nome in "${ALVOS[@]}"; do
-    while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$J" ]; do wait -n 2>/dev/null || break; done
+    while [ "$(( $(jobs -rp | wc -l | tr -d ' ') - 1 ))" -ge "$J" ]; do
+        wait -n 2>/dev/null || break
+    done
+    N=$((N + 1))          # no PAI: o contador dentro do subshell não voltaria
     RODADAS+=("$nome")
     (
         # CWD na raiz: várias suítes leem `static/index.html` e afins por caminho
@@ -163,8 +222,14 @@ for nome in "${ALVOS[@]}"; do
         inicio=$(date +%s)
         # `SUITES` aceita caminho absoluto; `/` no nome não pode virar diretório
         # dentro do `$DIR`. O nome do log é achatado e o caminho real vai no
-        # resultado (o relatório lê de lá, sem reconstruir).
-        LOG="$DIR/$(printf '%s' "$nome" | tr '/' '_').log"
+        # resultado (o relatório lê de lá, sem reconstruir). A CHAVE achatada é
+        # também o marcador de "esta suíte estava rodando" lido pelo amostrador, e
+        # o `N` a torna única quando o mesmo nome roda duas vezes.
+        CHAVE="$N-$(printf '%s' "$nome" | tr '/' '_')"
+        LOG="$DIR/$CHAVE.log"
+        echo "$(_agora)" > "$DIR/inicio/$CHAVE"
+        echo "$nome" > "$DIR/nome/$CHAVE"
+        : > "$DIR/rodando/$CHAVE"
         DONO_ANTES="$(_impressao_dono)"
         # `instancia` pressupõe app DE PÉ, mas duas suítes dele recusam o `:7860`
         # (para não escrever no app/arquivo do dono) e ficariam vermelhas por
@@ -191,15 +256,24 @@ for nome in "${ALVOS[@]}"; do
             _com_teto "$TETO" bash "$(_arquivo_da_suite "$nome")" >"$LOG" 2>&1
         fi
         rc=$?
-        # quem tocou no estado do dono durante ESTA suíte (nomeia o culpado)
-        DONO_DEPOIS="$(_impressao_dono)"
-        for a in $(_arquivos_tocados "$DONO_ANTES" "$DONO_DEPOIS"); do
-            printf '%s escreveu %s\n' "$nome" "$a" >> "$DIR/dono-sujos"
+        # janela DESTA suíte: só dica de autoria, nunca veredito (com `-j 3` a
+        # janela de uma suíte longa contém a escrita de outra) — a fonte precisa é
+        # o amostrador; esta linha é o que sobra se ele morrer.
+        DONO_DEPOIS_S="$(_impressao_dono)"
+        for a in $(_arquivos_tocados "$DONO_ANTES" "$DONO_DEPOIS_S"); do
+            printf '%s|%s\n' "$a" "$nome" >> "$DIR/janelas"
         done
+        rm -f "$DIR/rodando/$CHAVE"
         echo "$rc $nome $(( $(date +%s) - inicio )) $LOG"
     ) >>"$DIR/resultado" &
+    PIDS+=($!)
 done
-wait
+# `wait` nas suítes (e não em tudo: o amostrador só sai no `$DIR/fim`). O `fim` é
+# criado com as suítes JÁ terminadas para a amostra não perder o fim de uma suíte
+# curta; o `wait` final é só para o amostrador sair e o último estado ficar lido.
+[ "${#PIDS[@]}" -gt 0 ] && wait "${PIDS[@]}"
+: > "$DIR/fim"
+wait "$AMOSTRADOR" 2>/dev/null || true
 
 while read -r rc nome dur log; do
     if [ "$rc" -eq 0 ]; then
@@ -210,10 +284,55 @@ while read -r rc nome dur log; do
     fi
 done < <(sort -k2 "$DIR/resultado")
 
-if [ -s "$DIR/dono-sujos" ]; then
+# Dica de autoria de UM arquivo: o evento com MENOS candidatos e, ali, o candidato
+# mais NOVO (a escrita do import sai ~1 s depois da largada); os outros ficam como
+# "co-rodavam". Sem candidato em nenhum evento → escritor de fora.
+_dica() {
+    awk -F'|' -v alvo="$1" '
+        $1 != alvo { next }
+        { n = split($2, c, " "); if (n == 0) { sem = 1; next }
+          if (melhor == "" || n < n_melhor) { melhor = $2; n_melhor = n } }
+        END {
+            if (melhor == "") { if (sem) print "-"; exit }
+            split(melhor, c, " "); esc = ""; mi = -1
+            for (i = 1; i <= n_melhor; i++) {
+                split(c[i], p, ":")
+                if (mi < 0 || p[2] + 0 < mi) { mi = p[2] + 0; esc = p[1] }
+            }
+            printf "%s %.1f", esc, mi
+            for (i = 1; i <= n_melhor; i++) {
+                split(c[i], p, ":")
+                if (p[1] != esc) printf " %s", p[1]
+            }
+        }' "$DIR/eventos" 2>/dev/null
+}
+
+# ── veredito: a impressão GLOBAL da rodada mudou? ──────────────────────────
+DONO_AGORA="$(_impressao_dono)"
+MUDOU="$(_arquivos_tocados "$DONO_ANTES" "$DONO_AGORA")"
+if [ -n "$MUDOU" ]; then
     echo
-    echo "══ escrita(s) no estado REAL do dono nesta rodada (culpado nomeado):"
-    sort -u "$DIR/dono-sujos" | sed 's/^/  /'
+    echo "══ o estado REAL do dono MUDOU nesta rodada (veredito: impressão global):"
+    printf '%s\n' "$MUDOU" | sed 's/^/  /'
+    echo "  dica de autoria (amostrador; sob -j N pode haver co-roda):"
+    for a in $MUDOU; do
+        read -r quem idade outros <<< "$(_dica "$a")"
+        # suíte curta (0 s) escreve e sai ANTES da amostra: sem candidato ou sem
+        # evento, a janela é o que sobra — e, sem janela também, não é da rodada.
+        if [ -z "$quem" ] || [ "$quem" = "-" ]; then
+            por_janela="$(awk -F'|' -v x="$a" '$1 == x {printf " %s", $2}' "$DIR/janelas")"
+            if [ -n "$por_janela" ]; then
+                for q in $por_janela; do echo "    $q escreveu $a (janela da suíte)"; done
+            elif [ "$quem" = "-" ]; then
+                echo "    $a: ninguém desta rodada rodava no instante — escritor de fora (pytest/outro agente)"
+            else
+                echo "    $a: sem dica (amostragem e janela vazias)"
+            fi
+        else
+            echo "    $quem escreveu $a (mudou ${idade}s após começar)"
+            [ -n "${outros:-}" ] && echo "      co-rodavam no instante: $outros"
+        fi
+    done
     if [ "${TTS_EXIGE_DONO_INTOCADO:-0}" = 1 ]; then
         FALHAS+=("dono-sujos")
         echo "  ✖ TTS_EXIGE_DONO_INTOCADO=1: suíte do estágio não pode encostar no estado do dono"
@@ -225,9 +344,12 @@ echo "--- $estagio: ${#FALHAS[@]} falha(s) de ${#RODADAS[@]} suíte(s) em $(( $(
 if [ "${#FALHAS[@]}" -gt 0 ]; then
     for nome in "${FALHAS[@]}"; do
         log="$(awk -v n="$nome" '$2 == n {print $4; exit}' "$DIR/resultado")"
+        # falha que não é suíte (ex.: escrita no estado do dono) não tem log: sem
+        # isto o `awk` não acha linha e o relatório imprime um bloco vazio.
+        [ -n "$log" ] || continue
         echo
-        echo "===== $nome (últimas 30 linhas; log completo em ${log:-—}) ====="
-        [ -n "$log" ] && [ -f "$log" ] && tail -30 "$log"
+        echo "===== $nome (últimas 30 linhas; log completo em $log) ====="
+        [ -f "$log" ] && tail -30 "$log"
     done
     # o diretório sai do trap: copia o que falhou para um lugar previsível
     destino="${TMPDIR:-/tmp}/suites-sh-falhas.$$"

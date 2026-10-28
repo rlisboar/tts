@@ -1,0 +1,27 @@
+"Testar" do perfil (#590): o veredito vem do SERVIDOR e o slider se rotula no modo normalizado
+
+Instância isolada (TTS_SPEAKER_PATH/OUTPUTS/SETTINGS/APIKEYS em tmp — nada do dono),
+microfone falso do Chromium sobre `tests/fixtures/voz_fala_5s_16k.wav` e o servidor
+real decidindo. As combinações que o servidor de hoje ainda não emite (sem veredito,
+modo `asnorm` passando e barrando) são roteadas por `page.route` para o MESMO caminho
+de tela. Suíte: `tests/voz_check_ui.sh`.
+
+Antes: `r.sim >= spThr` — com alvo de FAR o escore vem normalizado (~2,4 de limiar
+contra 0,6 do slider) e o veredito saía invertido.
+
+Estados medidos na rodada (texto renderizado em #spStatus / #spThrNota):
+
+  servidor real: 'Dono: sim 0.99 — ✅ passaria no gate (rigor 0.60 do modo cru)'
+  sem veredito: 'Dono: sim 0.71 — ⚠ este servidor não manda o veredito: sem afirmação de aprovação (com alvo de FAR o número ac'
+  asnorm passa: 'Dono: sim 2.91 (escore normalizado — não se compara ao slider cru) — ✅ passaria no gate (rigor 2.43 do modo as'
+  asnorm barra: 'Outro: sim 2.00 (escore normalizado — não se compara ao slider cru) — 🔻 ficaria de fora (rigor 2.43 do modo as'
+  rótulo com FAR alvo: '⚠ O rigor acima só vale no modo CRU — com o alvo de FAR 1 % quem decide é o limiar calibrado do extr'
+
+Mordidas medidas (suíte vermelha), uma mutação por vez:
+ · veredito trocado de volta por `sim >= spThr`  → "seguiu o slider em vez do servidor"
+   (o caso `sim 2.00 < limiar 2.434`, que o slider antigo aprovava);
+ · sem o ramo de servidor antigo                → "afirmou aprovação sem veredito";
+ · sem a chamada de `spRigorNota` no load        → rótulo do rigor não aparece.
+
+Achado de passagem (mesma classe do #585): o catch do `spTest` mandava 400 de
+servidor para `micErroTexto` e a tela dizia "não consegui abrir o microfone".

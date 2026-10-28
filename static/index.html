@@ -3198,7 +3198,11 @@
             <option value="label">Todos, etiquetando quem fala</option>
           </select></label>
         <label class="cfg-label">Rigor <output id="spThrOut">0.60</output>
-          <input type="range" id="spThr" min="0.35" max="0.9" step="0.05" value="0.6"></label>
+          <input type="range" id="spThr" min="0.35" max="0.9" step="0.05" value="0.6" aria-describedby="spThrNota"></label>
+        <!-- com FAR alvo o slider deixa de decidir: quem decide é o limiar
+             calibrado, sobre escore AS-normalizado (outra escala) — o rótulo
+             evita a leitura de que 0,60 ainda vale (#590) -->
+        <p class="hint" id="spThrNota" hidden></p>
         <p class="hint">Sua voz costuma dar <b>0.65–0.85</b>; outra pessoa, <b>0.40–0.55</b>. Padrão 0.60 — rejeita intrusos sem rejeitar você (resfriado/afastado do mic).</p>
         <!-- A dica vem ANTES da gravação (#585): o servidor recusa o que não
              serve para biometria, e descobrir o critério depois de falar 8 s é
@@ -6952,6 +6956,7 @@ async function loadSettings() {
     cfgTxt("sttWhisperModel", s.stt_whisper_repo);
     cfgNum("spThr", s.speaker_threshold, 0.6)   // mesmo default do servidor (#525);
     if ($("spThrOut")) $("spThrOut").textContent = (+($("spThr").value)).toFixed(2);
+    spRigorNota(s.speaker_far_alvo);
     if (typeof refreshSpProfiles === "function") refreshSpProfiles();
     $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
     applySttEngine(false);
@@ -7019,6 +7024,20 @@ async function loadSettings() {
 })();
 
 // ── Biometria de voz (perfis autorizados) ──
+//: o slider de rigor só vale no modo CRU. Com alvo de FAR o servidor AS-normaliza
+//: o escore e compara com o limiar calibrado do extrator — escala diferente, então
+//: o slider deixa de ser o que decide e tem de dizer isso (#590).
+function spRigorNota(alvo) {
+  const el = $("spThrNota");
+  if (!el) return;
+  const v = String(alvo || "").trim().replace(",", ".");
+  el.hidden = !v;
+  el.textContent = v
+    ? "⚠ O rigor acima só vale no modo CRU — com o alvo de FAR " + v.replace(".", ",")
+      + " % quem decide é o limiar calibrado do extrator, sobre escore normalizado"
+      + " (outra escala; o número do slider não se compara a ele)."
+    : "";
+}
 //: o cadastro precisa de 3–5 amostras (#525). O número real vem do servidor
 //: (`samples`/`completo`/`faltando`); esta cópia só rotula a lista de perfis.
 const SP_MIN_AMOSTRAS = 3, SP_ALVO_AMOSTRAS = 5;
@@ -7221,13 +7240,29 @@ $("spTest")?.addEventListener("click", async () => {
     const fd = new FormData();
     fd.append("audio", blob, "voz.webm");
     const r = await api("/api/speaker/check", { method: "POST", body: fd });
-    if (!r.speaker) { st.textContent = "❌ não pareceu com nenhum perfil (sim " + (r.sim || 0).toFixed(2) + ")"; return; }
-    const lim = parseFloat($("spThr")?.value) || 0.6;
-    st.textContent = `${r.speaker}: sim ${r.sim.toFixed(2)} — ` +
-      (r.sim >= lim ? "✅ passa no rigor atual" : `🔻 abaixo do rigor (${lim.toFixed(2)})`);
+    const sim = Number(r.sim) || 0;
+    if (!r.speaker) { st.textContent = "❌ não pareceu com nenhum perfil (sim " + sim.toFixed(2) + ")"; return; }
+    // Quem sabe se passa é o SERVIDOR, não esta tela: com alvo de FAR o escore vem
+    // AS-normalizado e o rigor cru não se aplica. `passaria` é o contrato novo e
+    // `autorizado` o anterior — feature-detect; sem NENHUM dos dois (servidor
+    // antigo) a tela mostra o número e não afirma aprovação (#590).
+    const veredito = typeof r.passaria === "boolean" ? r.passaria
+                   : typeof r.autorizado === "boolean" ? r.autorizado : null;
+    const modo = r.modo === "asnorm" ? "asnorm" : r.modo === "cru" ? "cru" : null;
+    const limiar = typeof r.limiar === "number" ? r.limiar : null;
+    const rigor = limiar != null ? `rigor ${limiar.toFixed(2)} do modo ${modo || "?"}` : "";
+    let txt = `${r.speaker}: sim ${sim.toFixed(2)}`;
+    if (modo === "asnorm") txt += " (escore normalizado — não se compara ao slider cru)";
+    if (veredito === true) txt += " — ✅ passaria no gate" + (rigor ? ` (${rigor})` : "");
+    else if (veredito === false) txt += " — 🔻 ficaria de fora" + (rigor ? ` (${rigor})` : "");
+    else txt += " — ⚠ este servidor não manda o veredito: sem afirmação de aprovação"
+              + " (com alvo de FAR o número acima é de outra escala)";
+    st.textContent = txt;
   } catch (e) {
     st.textContent = "";
-    toast("✖ " + micErroTexto(e), 5000);
+    // 400 do servidor ("áudio curto demais…") não é falha de microfone
+    if (e && e.status) toast("✖ " + e.message, 6000);
+    else toast("✖ " + micErroTexto(e), 5000);
   }
   btn.disabled = false;
 });

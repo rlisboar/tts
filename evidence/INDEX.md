@@ -294,11 +294,12 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `522-anticlone-PARCIAL.md` | #522 | 2026-10-28 | Anti-clone (#522) — primeiro corte: marca d'água AudioSeal |
 | `532-bakeoff-locutor-alvo-PARCIAL.md` | #532 | 2026-10-28 | Locutor-alvo (#532) — primeiro corte |
 | `563-dsh-fallback-prewarm.txt` | #563 | 2026-10-28 | 563 — `live_dsh_fallback.sh`: espera o pre-warm antes de mandar áudio |
-| `585-cadastro-dica.png` | #585 | — | (imagem) |
-| `585-estados.txt` | #585 | — | Estados da tela do cadastro de voz (#585) — instância isolada, microfone falso do |
-| `585-guia-amostras.png` | #585 | — | (imagem) |
-| `585-perfil-precisa-recadastrar.png` | #585 | — | (imagem) |
-| `585-recusa-motivo-forcar.png` | #585 | — | (imagem) |
+| `585-cadastro-dica.png` | #585 | 2026-10-28 | (imagem) |
+| `585-estados.txt` | #585 | 2026-10-28 | Estados da tela do cadastro de voz (#585) — instância isolada, microfone falso do |
+| `585-guia-amostras.png` | #585 | 2026-10-28 | (imagem) |
+| `585-perfil-precisa-recadastrar.png` | #585 | 2026-10-28 | (imagem) |
+| `585-recusa-motivo-forcar.png` | #585 | 2026-10-28 | (imagem) |
+| `590-testar-veredito.txt` | #590 | — | "Testar" do perfil (#590): o veredito vem do SERVIDOR e o slider se rotula no modo normalizado |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |
