@@ -2000,17 +2000,17 @@ def test_speaker_enforce_rejeita_e_aceita(client, auth, monkeypatch):
     perfis = {"eu": {"vecs": [VEC_A], "updated": 0}}
     monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
     monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
-    monkeypatch.setattr(app, "_speaker_embed", lambda p: list(VEC_A))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: list(VEC_A))
     app._settings["speaker_gate"] = "enforce"
     app._settings["speaker_threshold"] = 0.75
     # mesma voz → passa
     assert app._speaker_gate_ok(Path("x.wav")) == {}
     # outra voz (similaridade 0) → rejeitada
-    monkeypatch.setattr(app, "_speaker_embed", lambda p: list(VEC_B))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: list(VEC_B))
     out = app._speaker_gate_ok(Path("x.wav"))
     assert out["rejected"] and "não" in out["reason"]
     # modo etiqueta: reconhece e rotula
-    monkeypatch.setattr(app, "_speaker_embed", lambda p: list(VEC_A))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: list(VEC_A))
     app._settings["speaker_gate"] = "label"
     out = app._speaker_gate_ok(Path("x.wav"))
     assert out["speaker"] == "eu" and out["speaker_sim"] >= 0.99
@@ -2023,9 +2023,71 @@ def test_speaker_enforce_rejeita_e_aceita(client, auth, monkeypatch):
     app._settings["speaker_threshold"] = 0.75
 
 
+def test_speaker_perfil_de_outro_extrator_autentica_e_pede_recadastro(
+        client, auth, monkeypatch):
+    """Perfil gravado pelo extrator ANTIGO segue valendo, marcado para recadastro.
+
+    Vetor de modelos diferentes não se compara: sem o `modelo` no perfil a
+    atualização de extrator trancaria o dono fora em `enforce` (#525). A regra:
+    o gate pontua cada perfil pelo extrator que o gerou."""
+    legado = {"eu": {"vecs": [[1.0, 0.0]]}}          # sem `modelo` = Resemblyzer
+    # simula o DEPOIS do R2: o extrator atual é outro. Com os dois iguais (o
+    # estado de hoje) nada seria "legado" e o teste passaria vazio.
+    monkeypatch.setattr(app, "SPEAKER_MODELO_ATUAL", "ecapa:v1")
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: (legado, ""))
+    # o extrator NOVO devolve outro espaço: só acerta quem pontuar pelo extrator
+    # que gerou o vetor (com o atual para todo mundo, a similaridade cai a zero)
+    pedidos = []
+
+    def _embed(_p, modelo=None):
+        pedidos.append(modelo)
+        return [0.0, 1.0] if modelo == "ecapa:v1" else [1.0, 0.0]
+
+    monkeypatch.setattr(app, "_speaker_embed", _embed)
+    app._settings["speaker_gate"] = "enforce"
+    try:
+        assert app._speaker_gate_ok(Path("x.wav")) == {}, "perfil legado foi rejeitado"
+        assert app.SPEAKER_MODELO_LEGADO in pedidos
+
+        monkeypatch.setattr(app, "_speaker_load", lambda: legado)
+        lista = client.get("/api/speaker/profiles", headers=auth).json()
+        assert lista[0]["precisa_recadastrar"] is True
+        assert lista[0]["modelo"] == app.SPEAKER_MODELO_LEGADO
+    finally:
+        app._settings["speaker_gate"] = "off"
+
+
+def test_speaker_escore_usa_centroide_e_nao_o_maximo(monkeypatch):
+    """Média das amostras decide; uma amostra fora não puxa o perfil sozinha.
+
+    O R2 mediu o centróide vencendo o máximo em todos os modelos — com máximo, uma
+    gravação ruidosa (aqui `[0, 1]`) dá escore 1,0 para uma voz que não é do
+    perfil em `[1, 0]`; o centróide de `[[1,0],[0,1]]` dá 0,707."""
+    perfis = {"eu": {"vecs": [[1.0, 0.0], [0.0, 1.0]], "modelo": app.SPEAKER_MODELO_ATUAL}}
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
+    _nome, sim, houve = app._speaker_pontua(Path("x.wav"), perfis)
+    assert houve and abs(sim - 0.7071) < 1e-3
+
+
+def test_speaker_enroll_troca_de_extrator_zera_vetores_incompativeis(
+        client, auth, monkeypatch):
+    """Enrolar no extrator ATUAL substitui os vetores do extrator antigo."""
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".voz": Path("f.wav"))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [0.5, 0.5])
+    monkeypatch.setattr(app, "SPEAKER_MODELO_ATUAL", "ecapa:v1")   # depois do R2
+    store = {"eu": {"vecs": [[1.0, 0.0], [0.9, 0.1]], "updated": 0}}   # legado
+    monkeypatch.setattr(app, "_speaker_load", lambda: store)
+    monkeypatch.setattr(app, "_speaker_save", lambda p: None)
+    r = client.post("/api/speaker/enroll", headers=auth,
+                    data={"name": "eu"}, files={"audio": ("v.wav", b"x", "audio/wav")})
+    assert r.status_code == 200 and r.json()["samples"] == 1
+    assert store["eu"]["modelo"] == app.SPEAKER_MODELO_ATUAL
+    assert store["eu"]["vecs"] == [[0.5, 0.5]], "vetor do extrator antigo ficou junto"
+
+
 def test_speaker_enroll_lista_e_apaga(client, auth, monkeypatch):
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".voz": Path("falso.wav"))
-    monkeypatch.setattr(app, "_speaker_embed", lambda p: [0.5, 0.5])
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [0.5, 0.5])
     store = {}
     monkeypatch.setattr(app, "_speaker_load", lambda: store)
     monkeypatch.setattr(app, "_speaker_save", lambda p: None)  # store é mutado pelo endpoint
@@ -3492,7 +3554,7 @@ def test_speaker_gate_label_avisa_sem_embedding(tmp_path, monkeypatch):
     monkeypatch.setitem(app._settings, "speaker_gate", "label")
     monkeypatch.setattr(app, "_speaker_load_estado",
                         lambda: ({"ana": {"vecs": []}}, ""))
-    monkeypatch.setattr(app, "_speaker_embed", lambda p: None)
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: None)
     wav = tmp_path / "a.wav"
     wav.write_bytes(_wav_bytes(0.2))
     saida = app._speaker_gate_ok(wav)

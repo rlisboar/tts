@@ -7840,13 +7840,28 @@ def youtube_audio(payload: dict):
 # autorizadas são transcritas, ou etiqueta quem falou.
 
 SPEAKER_MAX_SAMPLES = 5      # embeddings por perfil (média robuza o timbre)
+#: versão do EXTRATOR. Embedding de um modelo não se compara com o de outro, então
+#: o perfil carrega a dele (`modelo`) e o gate pontua cada perfil pelo extrator que
+#: o gerou. Perfil sem o campo é do extrator legado — segue valendo, marcado como
+#: "precisa recadastrar"; o `enforce` nunca tranca o dono numa atualização (#525).
+SPEAKER_MODELO_LEGADO = "resemblyzer:v1"
+SPEAKER_MODELO_ATUAL = SPEAKER_MODELO_LEGADO     # vira o vencedor do R2 (#521)
 _speaker_lock = threading.Lock()
 _speaker_enc_lock = threading.Lock()   # só a criação do encoder
 _speaker_encoder = None      # VoiceEncoder carregado sob demanda
 
 
-def _speaker_embed(wav_path: Path) -> list[float] | None:
-    """Embedding 256-d do wav 16k mono. None = lib ausente/áudio curto demais."""
+def _speaker_modelo_do_perfil(perfil: dict) -> str:
+    """Versão do extrator que gerou o perfil; ausente = legado (Resemblyzer)."""
+    return str((perfil or {}).get("modelo") or SPEAKER_MODELO_LEGADO)
+
+
+def _speaker_embed(wav_path: Path, modelo: str | None = None) -> list[float] | None:
+    """Embedding do wav 16k mono no extrator `modelo` (default: o atual).
+
+    None = lib ausente/áudio curto demais. O `modelo` existe para o gate ainda
+    pontuar perfil antigo depois de uma troca de extrator (#525); hoje os dois
+    valores caem no mesmo Resemblyzer."""
     try:
         from resemblyzer import VoiceEncoder, preprocess_wav
         global _speaker_encoder
@@ -7870,6 +7885,24 @@ def _cos_sim(a, b) -> float:
     da = math.sqrt(sum(x * x for x in a))
     db = math.sqrt(sum(x * x for x in b))
     return num / (da * db) if da and db else 0.0
+
+
+def _speaker_centroide(vecs: list) -> list:
+    """Média normalizada dos vetores do perfil.
+
+    O R2 (#521) mediu o centróide vencendo o máximo entre amostras em TODOS os
+    modelos (ECAPA 3 s: 0,19 % x 1,34 % de EER): a média cancela o ruído de cada
+    gravação, o máximo deixa uma amostra ruim decidir sozinha."""
+    import math
+
+    n = len(vecs)
+    if n == 0:
+        return []
+    if n == 1:
+        return list(vecs[0])
+    media = [sum(v[i] for v in vecs) / n for i in range(len(vecs[0]))]
+    norma = math.sqrt(sum(x * x for x in media))
+    return [x / norma for x in media] if norma else media
 
 
 def _speaker_load_estado() -> tuple[dict, str]:
@@ -7902,17 +7935,35 @@ def _speaker_save(perfis: dict) -> None:
         pass
 
 
+def _speaker_pontua(wav_path: Path, perfis: dict) -> tuple[str | None, float, bool]:
+    """(melhor perfil, melhor escore, houve_embedding) contra TODOS os perfis.
+
+    Cada perfil é pontuado pelo extrator que o gerou — um vetor do Resemblyzer não
+    se compara com um do extrator novo (#525). O embedding de cada modelo presente
+    sai UMA vez, não por perfil. Escore = cosseno contra o CENTRÓIDE das amostras
+    do perfil (o R2 mostrou o centróide vencendo o máximo)."""
+    modelos = {_speaker_modelo_do_perfil(p) for p in perfis.values()}
+    modelos.add(SPEAKER_MODELO_ATUAL)      # o extrator atual sempre participa
+    embs = {}
+    for m in modelos:
+        v = _speaker_embed(wav_path, m)
+        if v:
+            embs[m] = v
+    melhor, sim = None, 0.0
+    for nome, p in perfis.items():
+        emb = embs.get(_speaker_modelo_do_perfil(p))
+        vecs = p.get("vecs") or []
+        if emb is None or not vecs:
+            continue
+        s = _cos_sim(emb, _speaker_centroide(vecs))
+        if s > sim:
+            melhor, sim = nome, s
+    return melhor, sim, bool(embs)
+
+
 def _speaker_identify(wav_path: Path) -> tuple[str | None, float]:
     """Quem fala no wav: (nome, melhor_sim) ou (None, melhor_sim) se ninguém."""
-    emb = _speaker_embed(wav_path)
-    if not emb:
-        return None, 0.0
-    melhor, sim = None, 0.0
-    for nome, p in _speaker_load().items():
-        for vec in p.get("vecs", []):
-            s = _cos_sim(emb, vec)
-            if s > sim:
-                melhor, sim = nome, s
+    melhor, sim, _houve = _speaker_pontua(wav_path, _speaker_load())
     return melhor, sim
 
 
@@ -7934,8 +7985,8 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
         return {"speaker_aviso": f"perfis de voz ilegíveis ({erro[:80]})"}
     if not perfis:
         return {}  # sem perfis cadastrados: gate inerte (não é erro)
-    emb = _speaker_embed(wav_path)
-    if not emb:
+    melhor, sim, houve_emb = _speaker_pontua(wav_path, perfis)
+    if not houve_emb:
         # sem embedding (áudio curto/erro): enforce rejeita, label segue
         # `enforce` rejeita; `label` antes seguia MUDO — agora diz que seguiu sem
         # etiqueta por falta de embedding (#282)
@@ -7943,12 +7994,6 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
                 if gate == "enforce" else
                 {"speaker_aviso": "áudio curto p/ identificar a voz — segue sem "
                                   "etiqueta de locutor"})
-    melhor, sim = None, 0.0
-    for nome, p in perfis.items():
-        for vec in p.get("vecs", []):
-            s = _cos_sim(emb, vec)
-            if s > sim:
-                melhor, sim = nome, s
     lim = float(_settings.get("speaker_threshold")
                 or _SETTINGS_DEFAULTS["speaker_threshold"])
     autorizado = melhor is not None and sim >= lim
@@ -7982,13 +8027,18 @@ async def speaker_enroll(name: str = Form(...), audio: UploadFile = None):
     with _speaker_lock:
         perfis = _speaker_load()
         p = perfis.get(nome, {"vecs": [], "updated": 0})
-        vecs = p.get("vecs", [])
+        # perfil de OUTRO extrator não acumula vetor incompatível: começa do zero
+        # no atual (o `modelo` é o que diz a que espaço aquele vetor pertence)
+        vecs = ([] if _speaker_modelo_do_perfil(p) != SPEAKER_MODELO_ATUAL
+                else list(p.get("vecs") or []))
         vecs.append(emb)
         p["vecs"] = vecs[-SPEAKER_MAX_SAMPLES:]
+        p["modelo"] = SPEAKER_MODELO_ATUAL
         p["updated"] = time.time()
         perfis[nome] = p
         _speaker_save(perfis)
-    return {"ok": True, "name": nome, "samples": len(p["vecs"])}
+    return {"ok": True, "name": nome, "samples": len(p["vecs"]),
+            "modelo": SPEAKER_MODELO_ATUAL}
 
 
 @app.get("/api/speaker/profiles")
@@ -7996,7 +8046,13 @@ def speaker_profiles():
     with _speaker_lock:
         perfis = _speaker_load()
     return [{"name": n, "samples": len(p.get("vecs", [])),
-             "updated": p.get("updated", 0)} for n, p in sorted(perfis.items())]
+             "updated": p.get("updated", 0),
+             "modelo": _speaker_modelo_do_perfil(p),
+             # perfil de outro extrator segue autenticando, mas o dono precisa saber
+             # que ele sai daqui a um recadastro (a UI oferece a gravação de novo)
+             "precisa_recadastrar":
+                 _speaker_modelo_do_perfil(p) != SPEAKER_MODELO_ATUAL}
+            for n, p in sorted(perfis.items())]
 
 
 @app.delete("/api/speaker/{name}")
