@@ -4002,6 +4002,12 @@ def list_voices():
                 continue
         except Exception:  # noqa: BLE001 — meta corrompido não pode derrubar a API
             continue
+        # a tela só oferece "desfazer" quando existe o que desfazer (#443); o id
+        # já passou pelo glob de .json, mas `_safe_id` é quem manda no caminho
+        try:
+            m["tem_original"] = (VOICES_DIR / f"{_safe_id(m['id'])}.orig.wav").exists()
+        except HTTPException:
+            m["tem_original"] = False
         voices.append(m)
         existentes.add(m["id"])
     voices.sort(key=lambda v: v.get("created_at", ""), reverse=True)
@@ -4010,7 +4016,7 @@ def list_voices():
         if pid not in existentes:
             voices.append({"id": pid, "name": p["name"], "preset": True,
                            "materialized": False, "instruct": p["instruct"],
-                           "duration": 0, "created_at": ""})
+                           "duration": 0, "created_at": "", "tem_original": False})
     return voices
 
 
@@ -4257,6 +4263,18 @@ def export_voices(request: Request):
 # protege contra muitas entradas grandes)
 _IMPORT_MAX_TOTAL = 512 * 1024 * 1024
 
+# Nome de arquivo de voz aceito DENTRO de um zip (import de vozes e restore do
+# backup). O `<id>` é estrito porque as rotas remontam o caminho por ele; o
+# satélite `.orig.wav` (#443) é opcional e carrega o `id` inteiro antes do
+# sufixo, senão o próprio backup que o app gera voltaria como "arquivo
+# inesperado" no restore. É a ÚNICA régua dos dois caminhos.
+_NOME_VOZ_NO_ZIP = re.compile(r"[A-Za-z0-9_-]+(?:\.(?:orig|prev))?\.(?:wav|json)")
+
+
+def _eh_satelite(nome: str) -> bool:
+    """Arquivo que acompanha uma voz em vez de ser uma voz (`<id>.orig.wav`)."""
+    return nome.endswith((".orig.wav", ".prev.wav"))
+
 
 @app.post("/api/voices/import")
 async def import_voices(request: Request, zip_file: UploadFile = File(...)):
@@ -4264,10 +4282,10 @@ async def import_voices(request: Request, zip_file: UploadFile = File(...)):
     """Restaura um backup gerado por /api/voices/export (zip com .wav + .json).
 
     Sobrescreve vozes com o mesmo id (é um restore). Só extrai .wav/.json com
-    nome seguro (achata subpastas); o resto do zip é ignorado. Arquivos órfãos
-    (wav sem json ou vice-versa) entram, mas são avisados no response.
+    nome seguro (achata subpastas), incluindo o satélite `<id>.orig.wav` do #443
+    — o resto do zip é ignorado. Arquivos órfãos (wav sem json ou vice-versa)
+    entram, mas são avisados no response.
     """
-    import re as _re
     import zipfile
 
     # Copia em streaming para não depender de UploadFile.size nem carregar o
@@ -4314,7 +4332,7 @@ async def import_voices(request: Request, zip_file: UploadFile = File(...)):
                         continue
                     nome = Path(info.filename).name
                     chave = nome.lower()
-                    if (not _re.fullmatch(r"[A-Za-z0-9_-]+\.(wav|json)", nome)
+                    if (not _NOME_VOZ_NO_ZIP.fullmatch(nome)
                             or chave in vistos):
                         ignorados.append(info.filename)
                         continue
@@ -4376,9 +4394,13 @@ async def import_voices(request: Request, zip_file: UploadFile = File(...)):
         incoming_path.unlink(missing_ok=True)
     if not importados:
         raise HTTPException(400, "Nenhuma voz (.wav/.json) encontrada no zip")
-    # órfãos: .wav sem .json (voz some da lista) ou .json sem .wav (clonagem quebra)
-    wav_stems = {Path(n).stem for n in importados if n.endswith(".wav")}
-    json_stems = {Path(n).stem for n in importados if n.endswith(".json")}
+    # órfãos: .wav sem .json (voz some da lista) ou .json sem .wav (clonagem quebra).
+    # Satélite (`<id>.orig.wav`) não tem json próprio: sem tirá-lo da conta o
+    # par legítimo apareceria como órfão.
+    wav_stems = {Path(n).stem for n in importados
+                 if n.endswith(".wav") and not _eh_satelite(n)}
+    json_stems = {Path(n).stem for n in importados
+                  if n.endswith(".json") and not _eh_satelite(n)}
     orfaos = sorted((wav_stems - json_stems) | (json_stems - wav_stems))
     # restore pode ter sobrescrito amostras em uso -> invalida o cache de refs
     _conds_cache.clear()
@@ -4448,8 +4470,8 @@ def _monta_backup():
                     continue
                 z.write(p, f"voices/{p.name}")
                 arquivos[f"voices/{p.name}"] = _sha256_arquivo(p)
-                if p.suffix == ".wav":
-                    contagens["vozes"] += 1
+                if p.suffix == ".wav" and not _eh_satelite(p.name):
+                    contagens["vozes"] += 1       # o `.orig.wav` não é voz nova
             manifest = {
                 "schema": SCHEMA_BACKUP,
                 "criado_em": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -4540,7 +4562,7 @@ def _aplica_restore(incoming_path: Path) -> dict:
             if nome in _ESTADO_SIMPLES:
                 alvo = stag / nome
             elif (nome.startswith("voices/")          # `_safe_id` LEVANTA em nome
-                  and re.fullmatch(r"[A-Za-z0-9_-]+\.(wav|json)", nome[7:])):
+                  and _NOME_VOZ_NO_ZIP.fullmatch(nome[7:])):
                 alvo = stag / "voices" / Path(nome).name
             else:
                 raise HTTPException(400, f"Arquivo inesperado no pacote: {nome}")
@@ -4565,7 +4587,8 @@ def _aplica_restore(incoming_path: Path) -> dict:
             _restaura_estado(rollback)
             raise
     return {"ok": True, "schema": schema, "restaurados": len(preparados),
-            "vozes": len([n for n in esperados if n.endswith(".wav")]),
+            "vozes": len([n for n in esperados
+                          if n.endswith(".wav") and not _eh_satelite(n)]),
             "build_do_pacote": manifest.get("build")}
 
 

@@ -8,6 +8,7 @@ sobrescrita guarda `<id>.orig.wav`, e o admin restaura byte a byte.
 import hashlib
 import io
 import pathlib
+import zipfile
 
 import numpy as np
 import soundfile as sf
@@ -17,8 +18,9 @@ import app
 pytest_plugins = ["test_api"]
 
 from test_api import auth, chave_de_uso, client  # noqa: E402, F401
+from test_backup_restore import estado  # noqa: E402, F401
 
-__all__ = ["auth", "chave_de_uso", "client"]
+__all__ = ["auth", "chave_de_uso", "client", "estado"]
 
 
 def _voz(tmp_path, monkeypatch, nome="v1") -> pathlib.Path:
@@ -91,9 +93,63 @@ def test_delecao_leva_o_satelite(tmp_path, monkeypatch, client, auth, chave_de_u
 
 
 def test_export_leva_o_orig(tmp_path, monkeypatch, client, auth, chave_de_uso):
-    import zipfile
-
     _voz(tmp_path, monkeypatch)
     client.post("/api/voices/v1/denoise", headers=chave_de_uso, json={"strength": 0.3})
     z = zipfile.ZipFile(io.BytesIO(client.get("/api/voices/export", headers=auth).content))
     assert "voices/v1.orig.wav" in z.namelist()
+
+
+def test_listagem_diz_quando_ha_o_que_desfazer(tmp_path, monkeypatch, client,
+                                               chave_de_uso):
+    """A UI só pode oferecer "desfazer" com o `.orig` presente (#443)."""
+    _voz(tmp_path, monkeypatch)
+
+    def _v1():
+        r = client.get("/api/voices", headers=chave_de_uso)
+        assert r.status_code == 200, r.text
+        return next(v for v in r.json() if v["id"] == "v1")
+
+    assert _v1()["tem_original"] is False
+    client.post("/api/voices/v1/denoise", headers=chave_de_uso, json={"strength": 0.3})
+    assert _v1()["tem_original"] is True
+
+
+# --- o satélite em pacote: export -> import e backup -> restore -----------------
+# O `.orig` só serve se voltar junto com a voz. As duas rotas que comem zip
+# validavam o nome com `[A-Za-z0-9_-]+\.(wav|json)` e o `.` do satélite batia
+# fora: o backup que o PRÓPRIO app gera voltava 400 "arquivo inesperado".
+
+
+def test_import_de_zip_com_orig_entra_sem_virar_orfao(client, auth, estado):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("voices/v2.wav", b"RIFF" + b"\x00" * 64)
+        z.writestr("voices/v2.json", '{"id": "v2", "name": "Bruno"}')
+        z.writestr("voices/v2.orig.wav", b"RIFF" + b"\x02" * 64)
+    r = client.post("/api/voices/import", headers=auth,
+                    files={"zip_file": ("v.zip", buf.getvalue(), "application/zip")})
+    assert r.status_code == 200, r.text
+    assert (estado["vozes"] / "v2.orig.wav").exists(), "o satélite foi descartado"
+    corpo = r.json()
+    assert corpo["orfaos"] == [], "satélite não tem json próprio: não é órfão"
+    assert corpo["ignorados"] == []
+    assert corpo["vozes"] == 1
+
+
+def test_backup_com_orig_volta_no_restore(client, auth, estado):
+    orig = estado["vozes"] / "v1.orig.wav"
+    orig.write_bytes(b"RIFF" + b"\x01" * 64)
+    sha = hashlib.sha256(orig.read_bytes()).hexdigest()
+    r = client.get("/api/backup", headers=auth)
+    assert r.status_code == 200
+    pacote = r.content
+    assert "voices/v1.orig.wav" in zipfile.ZipFile(io.BytesIO(pacote)).namelist()
+
+    orig.unlink()                      # o pacote tem de trazer o satélite de volta
+    r = client.post("/api/restore", headers=auth,
+                    files={"arquivo": ("b.zip", pacote, "application/zip")})
+    assert r.status_code == 200, r.text
+    assert orig.exists(), "o restore descartou o `.orig`"
+    assert hashlib.sha256(orig.read_bytes()).hexdigest() == sha
+    assert r.json()["vozes"] == 1, "o `.orig` foi contado como voz nova"
+

@@ -242,8 +242,9 @@ curl -X POST -H "X-API-Key: $ADMIN" $BASE/api/voices/<id>/restore-original
 curl -X DELETE -H "X-API-Key: $ADMIN" $BASE/api/voices/<id>   # apaga a voz e o .orig junto
 ```
 
-O `.orig.wav` entra no export de vozes e no backup do estado, e some junto com a
-voz. Sem ele (voz nunca editada) o restore responde 404.
+O `.orig.wav` entra no export de vozes e no backup do estado (e volta no import e
+no restore, byte a byte), e some junto com a voz. Sem ele (voz nunca editada) o
+restore responde 404.
 
 ### Idioma
 
