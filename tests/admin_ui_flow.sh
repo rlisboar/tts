@@ -252,7 +252,7 @@ PYEOF
 echo
 echo "→ UI em $LANURL"
 "$PY" - "$LANURL" "$USE_KEY" "$ADM_KEY" "$SUF" <<'PYEOF'
-import os, sys, time, urllib.request
+import json, os, sys, time, urllib.request
 from playwright.sync_api import sync_playwright
 
 SUF = sys.argv[4]                     # mesmo sufixo do shell ($SUF), não o pid do python:
@@ -355,6 +355,18 @@ with sync_playwright() as p:
         cobrar(a.get("desab") is True, f"#{a['id']} devia estar desabilitado com chave de uso")
         cobrar("administrativa" in a.get("titulo", "").lower(),
                f"#{a['id']} desabilitado sem dizer o motivo (title: {a.get('titulo')!r})")
+    # #508: o teto de áudios é CAMPO admin (cbcd540): travado e explicado como
+    # os demais — e preenchido com o valor do servidor, não vazio.
+    teto = pg.evaluate("""() => { const el = document.getElementById('autoCleanMax');
+        return el ? { desab: el.disabled, titulo: el.title || '', valor: el.value } : null; }""")
+    cobrar(teto is not None, "o campo do teto de áudios (#508) não existe no Histórico")
+    if teto:
+        print(f"  teto de áudios com chave use -> desab={teto['desab']} · valor={teto['valor']!r}")
+        cobrar(teto["desab"], "o teto de áudios devia estar travado com chave de uso")
+        cobrar("administrativa" in teto["titulo"].lower(),
+               f"o teto travado não diz o motivo ({teto['titulo']!r})")
+        cobrar(teto["valor"] not in ("", None), "o teto não veio preenchido do servidor")
+
     # o 🗑 do perfil de locutor é ação elevada (DELETE leva _exige_admin): com
     # chave de uso tem de estar travado. A instância de teste nasce sem perfis,
     # então a lista é servida por rota stubada — o alvo é a régua do botão.
@@ -470,6 +482,20 @@ with sync_playwright() as p:
     cobrar("admin" in selo.lower(), f"selo de admin errado: {selo!r}")
     cobrar(travados == 0, f"admin não devia ter campo travado ({travados})")
     cobrar(not segredo.startswith("••••"), "admin deveria ver o segredo, não a máscara")
+    cobrar(not pg.evaluate("() => document.getElementById('autoCleanMax').disabled"),
+           "com chave admin o teto de áudios devia estar destravado")
+    # `0` é valor (sem teto), não "campo vazio": o salvamento tem de mandar zero
+    pg.evaluate("""() => { const c = document.getElementById('autoCleanMax');
+                            c.value = '0'; c.onchange(); }""")
+    pg.wait_for_timeout(900)
+    with urllib.request.urlopen(urllib.request.Request(
+            base + "/api/settings", headers={"X-API-Key": adm}), timeout=5) as rr:
+        teto_srv = json.load(rr).get("auto_cleanup_max_outputs")
+    print(f"  teto zerado pelo admin -> servidor: {teto_srv!r}")
+    cobrar(teto_srv == 0, f"o 0 do teto não chegou ao servidor (veio {teto_srv!r})")
+    pg.evaluate("""() => { const c = document.getElementById('autoCleanMax');
+                            c.value = '500'; c.onchange(); }""")
+    pg.wait_for_timeout(700)
 
     # trocar a chave na mão: o papel NOVO tem de chegar antes das listas
     # dinâmicas. Sem isso os botões são renderizados com o papel velho (admin) e

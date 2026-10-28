@@ -2563,9 +2563,21 @@
         </div>
         <div class="view-head-actions">
           <label class="check">
-            <input type="checkbox" id="autoClean"> auto-limpeza após
+            <!-- #543 tornou a limpeza ADMIN: os dois controles precisam do
+                 marcador, senão ficam editáveis para chave de uso (e o console
+                 acusa campo administrativo sem campo na UI). -->
+            <input type="checkbox" id="autoClean" data-admin-setting="auto_cleanup"> auto-limpeza após
             <input type="number" id="autoCleanMin" min="1" max="1440" step="1" value="15"
+                   data-admin-setting="auto_cleanup_minutes"
                    style="width:64px; padding:5px 8px"> min
+          </label>
+          <!-- #508: teto de QUANTIDADE. Vale mesmo com a auto-limpeza por tempo
+               desligada (proteção do diretório); `0` = sem teto. -->
+          <label class="check" title="Quantos áudios manter em outputs/. Os mais ANTIGOS são apagados; job em andamento e o histórico não são tocados. 0 = sem teto. Vale mesmo com a auto-limpeza por tempo desligada.">
+            manter no máximo
+            <input type="number" id="autoCleanMax" min="0" max="100000" step="10"
+                   data-admin-setting="auto_cleanup_max_outputs"
+                   style="width:80px; padding:5px 8px"> áudios
           </label>
           <button id="clearAll" class="danger">Apagar todos</button>
         </div>
@@ -6597,19 +6609,27 @@ $("clearAll").onclick = async () => {
   } finally { btn.disabled = false; }
 };
 
-async function salvaAutoClean() {
+async function salvaAutoClean(motivo) {
   try {
     await api("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         auto_cleanup: $("autoClean").checked,
-        auto_cleanup_minutes: parseInt($("autoCleanMin").value) || 15
+        auto_cleanup_minutes: parseInt($("autoCleanMin").value) || 15,
+        // #508: campo vazio = mantém o que está; `0` é valor (sem teto) e não
+        // pode cair no default como o `parseInt(...) || n` faz
+        auto_cleanup_max_outputs: $("autoCleanMax").value.trim() === ""
+          ? undefined : parseInt($("autoCleanMax").value, 10)
       })
     });
-    toast($("autoClean").checked
-      ? `Auto-limpeza ativa: áudios somem após ${$("autoCleanMin").value} min`
-      : "Auto-limpeza desativada");
+    toast(motivo === "teto"
+      ? ($("autoCleanMax").value === "0"
+          ? "Sem teto: o outputs/ não é podado por quantidade"
+          : `Mantenho no máximo ${$("autoCleanMax").value} áudios — os mais antigos vão sendo apagados`)
+      : ($("autoClean").checked
+          ? `Auto-limpeza ativa: áudios somem após ${$("autoCleanMin").value} min`
+          : "Auto-limpeza desativada"));
   } catch (e) {
     // o checkbox fica mexido na tela mesmo com o servidor recusando: avisa
     toast("Erro ao salvar a auto-limpeza: " + e.message, 6000);
@@ -6617,6 +6637,9 @@ async function salvaAutoClean() {
 }
 $("autoClean").onchange = salvaAutoClean;
 $("autoCleanMin").onchange = () => { if ($("autoClean").checked) salvaAutoClean(); };
+// o teto de QUANTIDADE vale mesmo com a auto-limpeza por tempo desligada: salva
+// sempre (o `"teto"` só troca a mensagem do toast)
+if ($("autoCleanMax")) $("autoCleanMax").onchange = () => salvaAutoClean("teto");
 
 /* Fila de falas: grava na hora (não depende do botão Salvar) */
 async function salvaSpeechQueue() {
@@ -6789,6 +6812,7 @@ async function loadSettings() {
     $("cfgPrePrompt").value = s.pre_prompt;
     $("autoClean").checked = s.auto_cleanup;
     $("autoCleanMin").value = s.auto_cleanup_minutes;
+    if ($("autoCleanMax")) $("autoCleanMax").value = s.auto_cleanup_max_outputs ?? 500;
     $("langSelect").value = s.language;
     $("cfgPrecision").value = s.omni_precision || "bf16";
     if ($("sttBeam")) { $("sttBeam").value = s.stt_beam ?? 5; $("sttBeamOut").textContent = s.stt_beam ?? 5; }
