@@ -69,6 +69,18 @@ limiar com a coorte nova e só então apagar os vetores antigos. Como o app já
 guarda os `.wav` de referência, o recadastro é offline e não pede nova gravação —
 mas é irreversível e tem de ser anunciado.
 
+## Tentativa do pipeline oficial do WeSpeaker — não confirmada
+
+Uma rodada, como o PM pediu. O pacote não está no PyPI (só no git) e falha no
+import nas duas versões do ambiente: `torchaudio.set_audio_backend` e
+`torchaudio.sox_effects` sumiram na 2.9+, e são usados pelo `wespeaker` e pelo
+`s3prl` que ele arrasta. Instalar uma 2.4 exigiria um quarto interpretador.
+
+Consequência para a leitura: o número do WeSpeaker é **"não confirmado por falta
+de ambiente"**, não "modelo ruim". As duas causas candidatas continuam abertas
+(exportação ONNX ou normalização de escore), e o número dele não é usado para
+rejeitar o modelo no veredito.
+
 ## Licenças (conferir antes de embarcar)
 
 ECAPA: Apache-2.0 (código SpeechBrain; pesos CC BY 4.0 do VoxCeleb) ·
