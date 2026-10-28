@@ -50,12 +50,19 @@ def _deps() -> list[tuple[int, str, str]]:
     return fora
 
 
+def _norm(nome: str) -> str:
+    """Nome normalizado (PEP 503): `-`, `_` e `.` são a mesma coisa. Sem isto uma
+    dependência cujo nome de distribuição tem hífen (`rotary-embedding-torch`)
+    ficava "fora do lock" mesmo pinada, porque o import usa sublinhado."""
+    return nome.lower().replace("_", "-").replace(".", "-")
+
+
 def _pinadas_no_lock() -> set[str]:
     nomes = set()
     for bruta in LOCK.read_text().splitlines():
         m = PINADA_NO_LOCK.match(bruta.strip())
         if m:
-            nomes.add(m.group("nome").lower())
+            nomes.add(_norm(m.group("nome")))
     return nomes
 
 
@@ -96,7 +103,7 @@ def test_lock_tem_as_dependencias_de_runtime():
     """O lock é o teto: se ele parar de cobrir o runtime, o `-c` do deploy emudece."""
     lock = _pinadas_no_lock()
     faltando = [n for _, n, _ in _deps()
-                if n not in ALLOWLIST and n.lower() not in lock]
+                if _norm(n) not in {_norm(a) for a in ALLOWLIST} and _norm(n) not in lock]
     assert not faltando, f"fora do lock: {faltando}"
 
 

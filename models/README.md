@@ -7,6 +7,7 @@ ausente nunca derruba o servidor, mas também nunca é buscado sozinho.
 | Diretório | Papel | Licença |
 |---|---|---|
 | `ecapa-voxceleb/` | extrator de locutor (identidade de voz, #521/#525) | Apache-2.0 (código) / CC BY 4.0 (pesos) — ver `NOTICE` |
+| `mossformer2-ss-16k/` | separação de dois locutores (alvo × concorrente, #532/#526-bis) | Apache-2.0 (código vendorizado em `tools/separa_vend/` e pesos) — ver `NOTICE` |
 
 Artefatos ao lado:
 - `asnorm-coorte-ecapa.npy` / `.json` — coorte de impostores do AS-norm do ECAPA,
@@ -45,6 +46,14 @@ diretório acima: é o par que mantém o load fora do cache do HuggingFace. A c�
 |---|---|
 | `TTS_SPEAKER_MODELO_DIR` | `models/ecapa-voxceleb` |
 | `TTS_ASNORM_COORTE` | `models/asnorm-coorte-ecapa.npy` |
+| `TTS_SEPARA_MODELO_DIR` | `models/mossformer2-ss-16k` |
+
+O separador (`last_best_checkpoint.pt`, 670 MB) segue o mesmo contrato do ECAPA:
+sha256 no manifesto, `.pt` fora do git, e quem materializa é o script. O código da
+rede é **vendorizado** em `tools/separa_vend/` (revisão fixada, NOTICE e sha256 por
+arquivo no `FONTE.txt` próprio) — as únicas dependências são `torch` (do lock) e
+`einops`/`rotary_embedding_torch`. O load é local: com `HF_HOME` vazio e
+`HF_HUB_OFFLINE=1` funciona, e sem os pesos o app/CLI cai na seleção por janela.
 
 Sem `TTS_SPEAKER_MODELO_DIR` (ou com o diretório incompleto) o app usa o extrator
 anterior; sem `TTS_ASNORM_COORTE` usa o escore cru. Os dois casos são AVISO no log,

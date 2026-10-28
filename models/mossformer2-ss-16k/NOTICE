@@ -1,0 +1,13 @@
+MossFormer2_SS_16K — pesos (separação de dois locutores)
+========================================================
+
+Obra: MossFormer2_SS_16K (ClearerVoice-Studio / "MossFormer2", Alibaba Group).
+Repositório dos pesos: https://huggingface.co/alibabasglab/MossFormer2_SS_16K
+Revisão fixada em `FONTE.txt`.
+
+Licença: Apache-2.0 (tag `license:apache-2.0` na ficha do repositório).
+Cópia da licença: https://www.apache.org/licenses/LICENSE-2.0
+
+O código que monta a rede é vendorizado em `tools/separa_vend/` (Apache-2.0, com
+NOTICE próprio). Os pesos não são modificados: o sha256 em `models/sha256sums.txt`
+é o do arquivo publicado.

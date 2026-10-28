@@ -186,3 +186,5 @@ webrtcvad==2.0.10
 websockets==17.1
 wrapt==2.3.0
 yt-dlp==2026.8.19
+einops==0.8.2
+rotary-embedding-torch==0.9.1

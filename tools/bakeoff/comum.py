@@ -28,6 +28,13 @@ SR = 16000
 MODELO_ECAPA = Path(os.environ.get("TTS_SPEAKER_MODELO_DIR")
                     or RAIZ_REPO / "models" / "ecapa-voxceleb")
 
+#: diretório dos pesos do separador de locutores (MossFormer2_SS_16K). Mesmo
+#: contrato: `TTS_SEPARA_MODELO_DIR`, default em `models/`, e o load NUNCA vai ao
+#: Hub. O código da rede é vendorizado em `tools/separa_vend/` (#526-bis).
+MODELO_SEPARA = Path(os.environ.get("TTS_SEPARA_MODELO_DIR")
+                     or RAIZ_REPO / "models" / "mossformer2-ss-16k")
+VENDIDO_SEPARA = RAIZ_REPO / "tools" / "separa_vend"
+
 
 def garante() -> None:
     for d in (FALA, RUIDO, MISTURA, CLONE, RESULTADOS):

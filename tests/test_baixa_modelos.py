@@ -23,14 +23,16 @@ ZSH = shutil.which("zsh")
 
 pytestmark = pytest.mark.skipif(ZSH is None, reason="precisa de zsh")
 
-#: mesmo conjunto do `FONTES` do script (os grandes viram arquivinhos de teste)
-PESOS = ("models/ecapa-voxceleb/hyperparams.yaml",
-         "models/ecapa-voxceleb/embedding_model.ckpt",
-         "models/ecapa-voxceleb/mean_var_norm_emb.ckpt",
-         "models/ecapa-voxceleb/classifier.ckpt",
-         "models/ecapa-voxceleb/label_encoder.txt")
-#: revisão que o script fixa — o caminho do espelho tem de ser idêntico ao real
-REV = "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
+#: mesmo conjunto do `FONTES` do script (os grandes viram arquivinhos de teste) e
+#: o (repo, revisão) de cada um — o caminho do espelho tem de ser idêntico ao real
+_ECAPA = ("speechbrain/spkrec-ecapa-voxceleb", "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286")
+PESOS = (("models/ecapa-voxceleb/hyperparams.yaml", *_ECAPA),
+         ("models/ecapa-voxceleb/embedding_model.ckpt", *_ECAPA),
+         ("models/ecapa-voxceleb/mean_var_norm_emb.ckpt", *_ECAPA),
+         ("models/ecapa-voxceleb/classifier.ckpt", *_ECAPA),
+         ("models/ecapa-voxceleb/label_encoder.txt", *_ECAPA),
+         ("models/mossformer2-ss-16k/last_best_checkpoint.pt",
+          "alibabasglab/MossFormer2_SS_16K", "407cb030cd66340918ebb6c8cc63b18f8592cdbe"))
 
 
 def _sha(p: Path) -> str:
@@ -61,15 +63,15 @@ def amb(tmp_path: Path):
     (tmp_path / "tools").mkdir()
     shutil.copy(SCRIPT, tmp_path / "tools" / "baixa_modelos.sh")
     (tmp_path / "models").mkdir()
-    origem = tmp_path / "origem" / "speechbrain" / "spkrec-ecapa-voxceleb" / "resolve" / REV
-    origem.mkdir(parents=True)
     linhas = []
-    for rel in PESOS:
+    for rel, repo, rev in PESOS:
+        origem = tmp_path / "origem" / repo / "resolve" / rev
+        origem.mkdir(parents=True, exist_ok=True)
         fake = origem / Path(rel).name
         fake.write_bytes(f"conteudo de {rel}\n".encode() * 20)
         linhas.append(f"{_sha(fake)}  {rel}")
     # o `label_encoder.ckpt` é DERIVADO do `.txt` (mesmo sha256) e não é baixável
-    txt = origem / "label_encoder.txt"
+    txt = tmp_path / "origem" / _ECAPA[0] / "resolve" / _ECAPA[1] / "label_encoder.txt"
     linhas.append(f"{_sha(txt)}  models/ecapa-voxceleb/label_encoder.ckpt")
     # a coorte é gerada: entra no manifesto mas não é baixável (repo "-")
     coorte_fake = tmp_path / "origem" / "coorte.npy"
@@ -179,8 +181,12 @@ def test_app_nao_baixa_modelo_no_boot():
     extrator quando os pesos já estão em disco (`_speaker_ecapa_ok`); o que não pode
     é chamar com id de repositório cravado."""
     for arq in ("run.sh", "app.py"):
-        texto = (REPO / arq).read_text()
-        assert "baixa_modelos" not in texto, f"{arq} chama o downloader no boot"
+        for linha in (REPO / arq).read_text().splitlines():
+            # o script pode ser CITADO (mensagem "rode ./tools/baixa_modelos.sh");
+            # o que não pode é ser EXECUTADO no boot
+            if "baixa_modelos" in linha and any(
+                    m in linha for m in ("subprocess", "os.system", "call(", ".run(")):
+                raise AssertionError(f"{arq} executa o downloader no boot: {linha.strip()}")
     for trecho in (REPO / "app.py").read_text().split("from_hparams(")[1:]:
         chamada = trecho[:200]
         assert "source=str(" in chamada, "`from_hparams` sem `source` local (baixa do Hub)"
@@ -199,7 +205,7 @@ def test_manifesto_lista_todos_os_pesos_do_repo():
     listados = {linha.split("  ", 1)[1] for linha in manifesto.splitlines() if "  " in linha}
     no_disco = {f"models/{p.relative_to(REPO / 'models').as_posix()}"
                 for p in (REPO / "models").rglob("*")
-                if p.is_file() and p.suffix in {".ckpt", ".yaml", ".txt", ".npy"}
+                if p.is_file() and p.suffix in {".ckpt", ".pt", ".yaml", ".txt", ".npy"}
                 and p.name not in {"sha256sums.txt"} | GERADOS}
     assert not (no_disco - listados), f"peso fora do manifesto: {sorted(no_disco - listados)}"
 

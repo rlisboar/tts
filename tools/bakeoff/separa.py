@@ -10,8 +10,11 @@ Os dois fluxos saem sem ordem: quem diz qual é o do dono é o extrator do R2
 
 Licença: código Apache-2.0 (ClearerVoice-Studio) e pesos Apache-2.0
 (`alibabasglab/MossFormer2_SS_16K`, tag `license:apache-2.0`) — linha no
-`LICENCAS.md`. Nada disso entra em `requirements.txt` nesta fase: roda na venv de
-bancada (/tmp/tts-bakeoff/venv312), não na .venv-mlx do app.
+`LICENCAS.md`. O CÓDIGO é vendorizado em `tools/separa_vend/` (revisão fixada, com
+NOTICE) e os PESOS moram em `models/mossformer2-ss-16k` com sha256 no manifesto: o
+load é `torch.load` do ARQUIVO LOCAL (sem `from_hparams`, sem Hub, sem cache do
+HF) e funciona com `HF_HOME` vazio + `HF_HUB_OFFLINE=1` (#526-bis). As únicas
+dependências são `torch` (o do lock) e `einops`/`rotary_embedding_torch`.
 
 Uso:
     import separa
@@ -25,7 +28,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -33,13 +35,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import comum  # noqa: E402
 
-MODELOS = comum.BASE / "vendf" / "mf2_ss"
-HF = "https://huggingface.co/alibabasglab/MossFormer2_SS_16K/resolve/main"
-GH = ("https://raw.githubusercontent.com/modelscope/ClearerVoice-Studio/main"
-      "/clearvoice/clearvoice/models/mossformer2_ss")
-ARQUIVOS = ["__init__.py", "conv_module.py", "fsmn.py", "layer_norm.py",
-            "mossformer2.py", "mossformer2_block.py"]
 CHECKPOINT = "last_best_checkpoint.pt"
+#: onde estão os pesos (contrato do `models/README.md`; nunca o cache do HF)
+MODELOS = comum.MODELO_SEPARA
 
 #: argumentos que o `ClearerVoice` passa para a rede (defaults do parser deles);
 #: conferidos contra as formas do checkpoint (enc 512×1×16, output 512×512×1)
@@ -47,21 +45,36 @@ ARGS = {"num_spks": 2, "encoder_kernel_size": 16, "encoder_embedding_dim": 512,
         "mossformer_sequence_dim": 512, "num_mossformer_layer": 24}
 
 
+def disponivel() -> bool:
+    """Os pesos estão no disco? (o app cai na seleção por janela quando não estão)"""
+    try:
+        return (MODELOS / CHECKPOINT).is_file() and (MODELOS / CHECKPOINT).stat().st_size > 100_000_000
+    except OSError:
+        return False
+
+
 def garante(verbose: bool = False) -> Path:
-    """Vendoriza código e pesos se faltarem (670 MB, só na primeira vez)."""
-    MODELOS.mkdir(parents=True, exist_ok=True)
-    for f in ARQUIVOS:
-        destino = MODELOS / f
-        if destino.exists() and destino.stat().st_size:
-            continue
-        if verbose:
-            print(f"baixando {f}", flush=True)
-        urllib.request.urlretrieve(f"{GH}/{f}", destino)
-    ck = MODELOS / CHECKPOINT
-    if not ck.exists() or ck.stat().st_size < 100_000_000:
-        if verbose:
-            print(f"baixando {CHECKPOINT} (670 MB)", flush=True)
-        urllib.request.urlretrieve(f"{HF}/{CHECKPOINT}", ck)
+    """Materializa o que faltar.
+
+    Os pesos vêm do `tools/baixa_modelos.sh` (sha256 conferido, espelho por
+    `TTS_MODELOS_URL`); o `urllib` do venv do app não tem bundle de certificado,
+    então NÃO se baixa por aqui. O código já é vendorizado — só falta o `.pt`.
+    """
+    if disponivel():
+        return MODELOS
+    script = comum.RAIZ_REPO / "tools" / "baixa_modelos.sh"
+    if verbose:
+        print(f"pesos ausentes em {MODELOS}: rode {script}", flush=True)
+    import subprocess
+
+    r = subprocess.run(["zsh" if sys.platform == "darwin" else "bash", "-f", str(script)],
+                       capture_output=True, text=True)
+    if not disponivel():
+        raise SystemExit(
+            f"pesos do separador ausentes em {MODELOS} — rode {script}. "
+            f"Se TTS_SEPARA_MODELO_DIR aponta para fora de models/, o script não "
+            f"sabe desse diretório: aponte a variável para models/mossformer2-ss-16k "
+            f"ou copie {CHECKPOINT} para lá (rc do script={r.returncode}).")
     return MODELOS
 
 
@@ -76,9 +89,10 @@ def carrega(modelos: Path | None = None, dispositivo: str | None = None):
     from types import SimpleNamespace
 
     modelos = modelos or garante()
+
     # o código vendorizado usa import relativo (`from .mossformer2_block import ...`),
-    # então o pacote tem de ser importado pelo diretório PAI
-    sys.path.insert(0, str(modelos.parent))
+    # então o pacote é importado pelo diretório PAI (`tools/separa_vend/`)
+    sys.path.insert(0, str(comum.VENDIDO_SEPARA))
     from mf2_ss.mossformer2 import MossFormer2_SS_16K  # type: ignore[import-not-found]
 
     rede = MossFormer2_SS_16K(SimpleNamespace(**ARGS)).model

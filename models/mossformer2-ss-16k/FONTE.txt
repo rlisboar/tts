@@ -1,0 +1,7 @@
+repo=huggingface.co/alibabasglab/MossFormer2_SS_16K
+revisao=407cb030cd66340918ebb6c8cc63b18f8592cdbe
+arquivo=last_best_checkpoint.pt (670 MB, checkpoint do separador de 2 locutores)
+licenca=Apache-2.0 (tag license:apache-2.0 na ficha do repo)
+baixado_em=2026-10-28
+via=tools/baixa_modelos.sh
+codigo=vendorizado em tools/separa_vend/ (FONTE.txt próprio)

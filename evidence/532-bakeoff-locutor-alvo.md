@@ -85,7 +85,9 @@ cada 0,25 s, exigindo 2 janelas seguidas. Escore mediano: dono **0,613**, tercei
 | 0,60 | 0,0 | 0,0 | 56 % |
 
 Meta do card (≤1 falso/10 min): **cumprida em toda a faixa**. O joelho fica em
-~0,35–0,40 (99 % → 96 % de cobertura), com 0 falso.
+~0,35–0,40 (99 % → 96 % de cobertura), com 0 falso. **O limiar adotado é 0,44**,
+mais alto que o joelho, porque esta curva é de vozes distintas — com parecidos o
+0,35 passa terceiro (ver `evidence/521`, seção de vozes parecidas).
 
 Curva por duração de cadastro, limiar 0,35: 10 s → 97 % de cobertura e 0 falso;
 30 s e 60 s → 99 % e 0 falso. Ou seja, 10 s de cadastro já bastam **neste
@@ -95,7 +97,7 @@ corpus**; o cadastro não é o gargalo.
 
 | item | CPU | MPS (Metal) |
 |---|---|---|
-| RTF da separação | 6,09 | **0,31** |
+| RTF da separação | 6,09 | **0,31** (0,25 na `.venv-mlx`) |
 | bloco de 1 s | 8.807 ms | **470 ms** |
 | bloco de 0,6 s | — | 221 ms |
 | carga do modelo | 1,8 s | 1,8 s |
@@ -114,15 +116,17 @@ Memória: 1,16 GB só do separador, somados ao resto do app.
 
 ## Recomendação
 
-1. **Live (turno):** portão ECAPA-only, limiar **0,35** com 2 confirmações e piso
-   de energia. Custo 17 ms, 0 falso em 10 min, 99 % de cobertura. Não colocar
-   separação na decisão do turno.
+1. **Live (turno):** portão ECAPA-only, limiar **0,44** — era 0,35, corrigido no
+   fechamento do R2 (`evidence/521`): com vozes parecidas o 0,35 deixava passar
+   60 % e o 0,44 zera isso, ao custo de ~6 % de cobertura (94 % na curva acima).
+   2 confirmações e piso de energia. Custo 17 ms, 0 falso em 10 min com vozes
+   distintas. Não colocar separação na decisão do turno.
 2. **Live (áudio que segue para o STT):** separação em MPS, escolha do fluxo pelo
    ECAPA, correndo atrás do turno com ~1 s de atraso. Sem veto por janela (não
    ganha nada e às vezes perde).
 3. **Transcrição offline (STT/Tradutor/Conversa):** separação em MPS com escolha
    pelo ECAPA, **sempre** — é a única camada que resolve sobreposição total e
-   custa 0,31 de RTF, que offline é irrelevante. Nada de apagar janela.
+   custa 0,25 de RTF, que offline é irrelevante. Nada de apagar janela.
 4. **Seleção por janela:** só quando houver motivo para acreditar em
    sobreposição parcial; nunca sobre o fluxo já separado.
 
@@ -130,9 +134,10 @@ Memória: 1,16 GB só do separador, somados ao resto do app.
 
 - **Vozes muito parecidas não foram testadas.** O corpus tem falantes de timbres
   bem distintos (escore mediano do terceiro 0,037 contra 0,613 do dono). Com dois
-  homens de timbre próximo, o limiar 0,35 vai deixar passar terceiro e a escolha
-  do fluxo na separação pode trocar alvo por concorrente. É o risco maior e está
-  **em aberto**.
+  homens de timbre próximo, o limiar baixo deixa passar terceiro. Medido depois
+  em `evidence/521` (seção de vozes parecidas): 0,35 passa 60 % dos pares
+  parecidos, 0,44 passa 0 %. A escolha do fluxo na separação, que era o outro
+  risco, errou 0 % nos mesmos pares.
 - **Sobreposição total só é resolvida até 2 falantes.** O modelo é `num_spks=2`;
   com três pessoas falando ao mesmo tempo, o terceiro entra como resíduo em um dos
   fluxos.
@@ -141,8 +146,12 @@ Memória: 1,16 GB só do separador, somados ao resto do app.
   é justamente onde a seleção pura deve começar a falhar.
 - **A referência contém os clipes avaliados** (sem holdout): os escores de
   identidade estão otimistas.
-- **MPS é outra pilha.** O app é MLX/Metal; usar este modelo exige torch no tempo
-  de execução, o que hoje a `.venv-mlx` não tem. Nenhum pino foi mexido nesta fase.
+- **O modelo é torch, não MLX.** A `.venv-mlx` **tem** torch 2.12.1 com MPS e ele
+  funciona — a primeira versão desta evidência dizia o contrário e estava errada.
+  Medido de novo **na própria `.venv-mlx`**: RTF 0,25 e SI-SDR 12,5 dB no fluxo do
+  alvo, iguais aos da venv de bancada. A única dependência que faltava era
+  `torchinfo` (puro Python, importado sem uso pelo código vendorizado), instalada
+  e sem pino. Nenhum pino foi mexido nesta fase.
 - O WER limpo alto (0,41–0,49) limita a resolução da meta de +5 p.p.
 
 ## Instrumento (o que foi corrigido para estes números existirem)
@@ -192,8 +201,10 @@ isso: +10,8 dB no mesmo par.
 ```
 
 O runner roda na `.venv-mlx` (Whisper do app) e chama a venv de bancada
-(`/tmp/tts-bakeoff/venv312`) por subprocesso para o ECAPA e a separação; o modelo é
-vendorizado em `/tmp/tts-bakeoff/vendf/mf2_ss` na primeira chamada. Licença
+(`/tmp/tts-bakeoff/venv312`) por subprocesso para o ECAPA e a separação. O código
+do separador foi vendorizado em `tools/separa_vend/` (revisão fixada) e os pesos
+foram para `models/mossformer2-ss-16k` com sha256 no manifesto (#526-bis) — os
+caminhos de `/tmp` desta evidência são os da rodada, não os do repo. Licença
 Apache-2.0 (código e pesos) registrada no `LICENCAS.md`.
 
 ## Ainda em aberto

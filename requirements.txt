@@ -14,6 +14,12 @@ mlx-lm==0.31.3
 transformers==5.10.2
 torch
 soundfile
+# separação de locutores (MossFormer2_SS_16K, #526-bis): o código é vendorizado em
+# `tools/separa_vend/`, mas ele importa `einops` e `rotary_embedding_torch` — as
+# duas ÚNICAS dependências que o modelo acrescenta (torch já é do app). 0.8.2 e
+# 0.9.1 conferidas com separação REAL em 2026-10-28 no torch 2.12.1 do lock.
+einops==0.8.2
+rotary_embedding_torch==0.9.1
 # scipy: DSP do app (resample_poly em _wav_to_mono16k, sosfilt nos filtros) e
 # reamostragem do áudio do navegador (24 kHz) p/ 16 kHz antes do VAD — sem ele
 # aquele caminho cai no `except` e o guarda anti-alucinação volta a ser no-op.

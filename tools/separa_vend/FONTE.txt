@@ -1,0 +1,16 @@
+repo=github.com/modelscope/ClearerVoice-Studio
+revisao=6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61
+origem=clearvoice/clearvoice/models/mossformer2_ss/
+baixado_em=2026-10-28
+via=tools/baixa_modelos.sh (código: vendorizado à mão, conferido por sha256 abaixo)
+
+# Patch LOCAL, o único desvio do upstream: `torchinfo` é opcional (só serve à
+# `summary()` de depuração e não é dependência do app). Reaplicar ao re-vendorizar.
+
+# sha256 dos arquivos vendorizados (o teste confere):
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  __init__.py
+b413aa0cb0df34742460a1f1af2e2cd1d2005900af8ac17e8de8675b8f80de86  conv_module.py
+62c376b2708ac1c59853c13cbe9acb7ea011082c39f1a42e1af0f8213a00bb76  fsmn.py
+d28fea41b3c5a2dd8bb7a1a8c1c97492fcc7eb88cc7b46283fc21e4dbf19f062  layer_norm.py
+31ed978059c906283bb52846b8733f1f6bdcdbfe2b3e994d0f02b3a2776c5056  mossformer2_block.py
+66f14af8efc0758d8c79bd7d1054851558081c5f6f1150cdf133ae4b6ca9c442  mossformer2.py

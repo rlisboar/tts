@@ -59,3 +59,4 @@ htmlcov/
 # `models/sha256sums.txt` fica e `tools/baixa_modelos.sh` materializa conferindo.
 # `label_encoder.ckpt` é gerado pelo próprio speechbrain no primeiro load.
 models/**/*.ckpt
+models/**/*.pt

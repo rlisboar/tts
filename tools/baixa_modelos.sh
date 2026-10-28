@@ -44,6 +44,7 @@ FONTES=(
   "models/ecapa-voxceleb/mean_var_norm_emb.ckpt|speechbrain/spkrec-ecapa-voxceleb|0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
   "models/ecapa-voxceleb/classifier.ckpt|speechbrain/spkrec-ecapa-voxceleb|0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
   "models/ecapa-voxceleb/label_encoder.txt|speechbrain/spkrec-ecapa-voxceleb|0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
+  "models/mossformer2-ss-16k/last_best_checkpoint.pt|alibabasglab/MossFormer2_SS_16K|407cb030cd66340918ebb6c8cc63b18f8592cdbe"
   "models/asnorm-coorte-ecapa.npy|-|-"
 )
 # Arquivos DERIVADOS de outro arquivo versionado (não vêm da internet): o script

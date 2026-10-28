@@ -1,0 +1,20 @@
+MossFormer2_SS_16K — código vendorizado (separação de dois locutores)
+=====================================================================
+
+Origem: ClearerVoice-Studio (https://github.com/modelscope/ClearerVoice-Studio),
+diretório `clearvoice/clearvoice/models/mossformer2_ss/`, revisão fixada em
+`FONTE.txt`. Copyright dos autores originais.
+
+Licença do CÓDIGO: Apache-2.0 (a mesma do repositório de origem). Cópia da licença
+em https://www.apache.org/licenses/LICENSE-2.0 — o texto integral acompanha o
+projeto de origem e vale para os arquivos em `mf2_ss/`.
+
+Licença dos PESOS: Apache-2.0, conforme a ficha do repositório
+`alibabasglab/MossFormer2_SS_16K` no HuggingFace (tag `license:apache-2.0`).
+
+Desvio do upstream: um só, em `mf2_ss/mossformer2_block.py` — o import de
+`torchinfo` virou opcional (ele só serve à `summary()` de depuração e não é
+dependência do app). Registrado também em `FONTE.txt`.
+
+Não há marca de modificação nos demais arquivos: são byte a byte o upstream da
+revisão fixada (o teste confere o sha256 de cada um).
