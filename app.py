@@ -4667,6 +4667,18 @@ def _guarda_original(voice_id: str) -> None:
     os.replace(tmp, destino)
 
 
+def _com_dnsmos_motivo(relatorio: dict) -> dict:
+    """Marca o DNSMOS como NÃO MEDIDO quando não há pacote (#523).
+
+    O `speechmos` não está no `requirements.txt` (sem pino novo por ora, decisão do
+    PM), então os dois campos vêm `null` — mas `null` sozinho a tela lê como "0" e
+    mostra nota mínima. `dnsmos_motivo: "indisponivel"` diz para escrever "não
+    medido"; quando o pacote entrar, ele some."""
+    if relatorio.get("dnsmos_antes") is None and relatorio.get("dnsmos_depois") is None:
+        relatorio["dnsmos_motivo"] = "indisponivel"
+    return relatorio
+
+
 @app.post("/api/voices/{voice_id}/denoise")
 def denoise_voice(voice_id: str, payload: dict = None):
     """Limpa o ruído de fundo de uma voz JÁ existente, sobrescrevendo o .wav. O
@@ -4681,12 +4693,14 @@ def denoise_voice(voice_id: str, payload: dict = None):
                   float(_settings.get("voice_denoise_strength", 0.7)))
     data, sr = sf.read(str(path), dtype="float32")
     data, recusado, relatorio = _denoise_para_referencia(data, sr, strg)
+    relatorio = _com_dnsmos_motivo(relatorio)
     if recusado:
-        # não sobrescreve com algo pior do que já estava
-        motivo = {"nivel": "a limpeza derrubou o nível demais (RMS caiu mais de 20 dB)",
-                  "timbre": "a limpeza trocou o timbre da voz"}.get(
-                      relatorio.get("recusado_por") or "", "a limpeza piorou a amostra")
-        raise HTTPException(400, f"{motivo} — a amostra original foi mantida")
+        # RECUSA é estado ESPERADO, não erro do cliente (#523, decisão do PM):
+        # 200 com o motivo e o relatório; a amostra original fica intacta (nada é
+        # escrito antes daqui). 4xx é só para voz inexistente/permissão.
+        return {"ok": True, "recusado": True,
+                "motivo": relatorio.get("recusado_por") or "piorou",
+                "duration": _wav_duration(path), "limpeza": relatorio}
     data = _referencia_pronta(data, sr)
     _guarda_original(voice_id)          # antes de sobrescrever (#443)
     sf.write(str(path), data, sr, subtype="PCM_16")
@@ -4703,7 +4717,7 @@ def denoise_voice(voice_id: str, payload: dict = None):
             write_json_atomic(jp, m)
         except Exception:  # noqa: BLE001
             pass
-    return {"ok": True, "duration": duration, "limpeza": relatorio}
+    return {"ok": True, "recusado": False, "duration": duration, "limpeza": relatorio}
 
 
 @app.post("/api/voices/{voice_id}/restore-original")

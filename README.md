@@ -249,6 +249,18 @@ restore responde 404.
 Na tela de **Vozes**, a voz que tem original guardado ganha o botão **↩ desfazer
 edição** (só admin; sem `.orig` o botão nem aparece).
 
+**Recusa é estado esperado, não erro**: se a limpeza derrubar o nível (>20 dB) ou
+trocar o timbre (similaridade abaixo de `voice_timbre_min`, 0,80), a rota responde
+**200** com `{"ok": true, "recusado": true, "motivo": "nivel"|"timbre", "limpeza":
+{…}}` e **não toca na amostra**. 4xx fica para erro do cliente (voz inexistente,
+chave sem permissão).
+
+O relatório `limpeza` traz `motor` (`dfn3`|`gating`), `timbre`, as etapas
+(`musica`/`dereverb`) e o DNSMOS antes/depois. Sem o pacote `speechmos` os dois
+campos vêm `null` com `dnsmos_motivo: "indisponivel"` — mostre "não medido", nunca
+0. O motor `dfn3` cai sozinho no gating quando os pesos não estão em `models/`, e o
+relatório diz qual rodou.
+
 ### Idioma
 
 Aceita o **OmniVoice ID** (código, ex.: `pt`, `en`, `es`, `fr`, `de`, `it`) ou

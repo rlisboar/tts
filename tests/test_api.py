@@ -6781,3 +6781,55 @@ def test_descartar_recadastro_parcial_mantem_o_legado(client, auth, monkeypatch)
         assert r.status_code == 403
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
+
+
+# --- contrato da limpeza de amostra (#523, decisão do PM no card) -------------
+# Recusa é estado ESPERADO: 200 com motivo, original intacto. 4xx só para erro do
+# cliente. DNSMOS sem pacote vem `null` + motivo, nunca 0.
+def _voz_para_limpar(voices_dir):
+    import soundfile as sf
+
+    sr = 16000
+    x = (np.random.default_rng(7).standard_normal(sr) * 0.02).astype(np.float32)
+    sf.write(str(voices_dir / "limpa00001.wav"), x, sr, subtype="PCM_16")
+    (voices_dir / "limpa00001.json").write_text(_json.dumps(
+        {"id": "limpa00001", "name": "Limpa", "duration": 1.0}))
+    return voices_dir / "limpa00001.wav"
+
+
+def test_denoise_recusado_e_200_com_motivo_e_original_intacto(client, auth, voices_tmp,
+                                                              monkeypatch):
+    """Timbre abaixo do limiar: 200, `recusado`, `motivo` e arquivo não tocado."""
+    wav = _voz_para_limpar(voices_tmp)
+    antes = wav.read_bytes()
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: np.asarray(a, dtype=np.float32) * 0.9)
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: 0.62)
+    monkeypatch.setitem(app._settings, "voice_timbre_min", 0.80)
+    r = client.post("/api/voices/limpa00001/denoise", headers=auth)
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert corpo["ok"] is True and corpo["recusado"] is True
+    assert corpo["motivo"] == "timbre"
+    assert corpo["limpeza"]["recusado_por"] == "timbre"
+    assert wav.read_bytes() == antes, "recusa não pode sobrescrever a amostra"
+
+
+def test_denoise_sucesso_diz_que_o_dnsmos_nao_foi_medido(client, auth, voices_tmp,
+                                                         monkeypatch):
+    """Sem `speechmos`, os campos saem `null` e o motivo diz para escrever "não
+    medido" — `null` sozinho a tela lê como nota zero."""
+    _voz_para_limpar(voices_tmp)
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: np.asarray(a, dtype=np.float32))
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: 0.99)
+    monkeypatch.setattr(app, "_dnsmos", lambda a, sr: None)
+    corpo = client.post("/api/voices/limpa00001/denoise", headers=auth).json()
+    assert corpo["recusado"] is False and corpo["ok"] is True
+    assert corpo["limpeza"]["dnsmos_antes"] is None
+    assert corpo["limpeza"]["dnsmos_depois"] is None
+    assert corpo["limpeza"]["dnsmos_motivo"] == "indisponivel"
+    # voz inexistente continua sendo erro do cliente (4xx)
+    assert client.post("/api/voices/naoexiste/denoise", headers=auth).status_code == 404
