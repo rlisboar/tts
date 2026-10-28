@@ -78,6 +78,10 @@ _teto_matar() {
   [ -n "${_TETO_PID:-}" ] && kill "$_TETO_PID" 2>/dev/null
   _TETO_PID=""
   [ -n "${_TETO_MARCA:-}" ] && rm -f "$_TETO_MARCA"
+  # `return 0` OBRIGATÓRIO (#592): sem o vigia armado as duas linhas acima são
+  # `[ -n "" ] && …` e voltam 1, então o trap de EXIT devolvia 1 e suíte VERDE saía
+  # rc=1 (`./tests/voz_check_ui.sh` imprimia "✔ OK" e o runner marcava FALHA).
+  return 0
 }
 
 serial_pega() {

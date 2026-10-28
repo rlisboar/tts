@@ -29,6 +29,7 @@
 #   ./tests/run_sh.sh navegador            # gate que mexe em static/ ou client/
 #   BASE=http://IP:7860 ./tests/run_sh.sh instancia     # com o app de pé
 #   ./tests/run_sh.sh lista                # o que cada estágio tem
+#   ./tests/run_sh.sh teto live_ui         # teto efetivo de um nome (90/240/300/600)
 #   ./tests/run_sh.sh rapido -j 1          # serial
 #   SUITES="x y" ./tests/run_sh.sh navegador   # roda só essas (nome do estágio
 #                                              # continua valendo p/ a decisão de BASE)
@@ -56,12 +57,17 @@ RAIZ="$(dirname "$AQUI")"
 # de UI/Live — com a máquina carregada elas passam disso trabalhando (medido 93 s
 # e 423 s) e morriam de teto no meio do trabalho. A tabela é o ÚNICO lugar que
 # decide; `TETO_S=…` do operador continua mandando em tudo.
+# A tabela é indexada pelo NOME da suíte, sem extensão: é assim que `ALVOS` e
+# `SUITES` trazem (a extensão fica só no caminho do arquivo). Já veio errada com
+# `.sh` nos padrões e o efeito era a tabela INERTA — tudo caía em 90 s (#592).
 _teto_da_suite() {
-    case "$(basename "$1")" in
-        admin_ui_flow.sh|live_barge_rep.sh) echo 600 ;;
-        live_ui.sh|live_ws.sh|live_interrupcao_ui.sh|obs_ui.sh) echo 300 ;;
-        voz_cadastro_ui.sh|voz_desfazer_ui.sh|voz_check_ui.sh) echo 300 ;;
-        live_dsh_fallback.sh|conversa_429.sh) echo 240 ;;
+    local n="${1##*/}"
+    n="${n%.sh}"
+    case "$n" in
+        admin_ui_flow|live_barge_rep) echo 600 ;;
+        live_ui|live_ws|live_interrupcao_ui|obs_ui) echo 300 ;;
+        voz_cadastro_ui|voz_desfazer_ui|voz_check_ui) echo 300 ;;
+        live_dsh_fallback|conversa_429) echo 240 ;;
         *) echo 90 ;;
     esac
 }
@@ -85,6 +91,12 @@ INSTANCIA=(a11y_teclado conversa_429 key_storage_repro live_hold_ui mic_erro_ui
 
 estagio="${1:-rapido}"
 shift || true
+# `teto <nomes…>`: imprime o teto EFETIVO de cada um (o teste cobra a tabela pelo
+# comportamento, não pelo texto). `TETO_S` do operador vence, como na rodada.
+if [ "$estagio" = "teto" ]; then
+    for n in "$@"; do printf '%s %s\n' "$n" "${TETO_S:-$(_teto_da_suite "$n")}"; done
+    exit 0
+fi
 while [ $# -gt 0 ]; do
     case "$1" in
         -j) J="$2"; shift 2 ;;
@@ -102,7 +114,7 @@ case "$estagio" in
         printf 'navegador: %s\n' "${NAVEGADOR[*]}"
         printf 'instancia: %s\n' "${INSTANCIA[*]}"
         exit 0 ;;
-    *) echo "estágio inválido: $estagio (rapido|navegador|instancia|tudo|lista)" >&2; exit 2 ;;
+    *) echo "estágio inválido: $estagio (rapido|navegador|instancia|tudo|lista|teto)" >&2; exit 2 ;;
 esac
 
 # ── instância: falha com o motivo, não com N vermelhos ───────────────────────────

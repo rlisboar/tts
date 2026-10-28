@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Sonda do #591 — a MORDIDA do "caminho por env ANTES do import".
 #
-# O import de `app` resolve os caminhos de estado (TTS_*_PATH) e JÁ ESCREVE: ele
-# roda `_sync_legacy_apikey_file()`, que normaliza o espelho legado `.apikey`. Se
-# o caminho só é trocado DEPOIS do import (patch de ATRIBUTO, como os launchers
-# faziam), essa escrita cai no arquivo secreto do DONO.
+# O import de `app` LÊ os arquivos de estado (`_settings` e `_load_apikeys`). Se o
+# caminho só é trocado DEPOIS do import (patch de ATRIBUTO, como os launchers
+# faziam), o processo nasce com o estado do DONO na RAM e só as escritas FUTURAS
+# vão para o alvo de isolamento — a rodada roda com as configurações dele.
 #
-#   SONDA_MODO=env       caminhos no AMBIENTE antes do import  → o dono fica INTOCADO
-#   SONDA_MODO=atributo  patch de atributo depois do import    → o dono é ESCRITO
+#   SONDA_MODO=env       caminhos no AMBIENTE antes do import  → lê do isolamento
+#   SONDA_MODO=atributo  patch de atributo depois do import    → lê do DONO
 #
-# Em ambos os modos o arquivo de teste nasce SUJO (`.apikey` = "VELHO" contra a
-# chave "S1" do `.apikeys.json`) para a normalização ter o que escrever, e os
-# arquivos do dono são copiados/restaurados no trap. O alvo de isolamento
-# (`SONDA_ISO`) e o do dono são medidos em SENTIDOS OPOSTOS.
+# Marcador: `pre_prompt` = "ISO" no alvo, "DONO" no arquivo real (restaurado no
+# trap). Chaves SINTÉTICAS nos dois lados — nenhum segredo do dono cai no basetemp.
+# As escritas explícitas depois do import são conferidas de quebra: têm de cair no
+# isolamento e nunca no arquivo do dono.
 set -uo pipefail
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RAIZ="$(cd "$AQUI/../../.." && pwd)"
@@ -21,57 +21,80 @@ cd "$RAIZ" || exit 1
 
 ORIG="$RAIZ"
 BAK="$(mktemp -d -t dono-sonda.XXXXXX)"
-cp -p "$ORIG/.apikey" "$BAK/.apikey.orig"      # `-p`: o restore devolve o mtime
-cp -p "$ORIG/.apikeys.json" "$BAK/.apikeys.json.orig"
-trap 'cp -p "$BAK/.apikey.orig" "$ORIG/.apikey"; cp -p "$BAK/.apikeys.json.orig" "$ORIG/.apikeys.json"; rm -rf "$BAK"' EXIT
+cp -p "$ORIG/settings.json" "$BAK/settings.json.orig" 2>/dev/null
+cp -p "$ORIG/.apikey" "$BAK/.apikey.orig" 2>/dev/null
+cp -p "$ORIG/.apikeys.json" "$BAK/.apikeys.json.orig" 2>/dev/null
+trap 'for f in settings.json .apikey .apikeys.json; do
+        [ -f "$BAK/$f.orig" ] && cp -p "$BAK/$f.orig" "$ORIG/$f"
+      done; rm -rf "$BAK"' EXIT
 # o runner só mostra o stdout da suíte quando ela FALHA: o veredito também vai
 # para `SONDA_SAIDA` (arquivo), que é o que o teste cobra.
 _fala() { printf '%s\n' "$1"; [ -n "${SONDA_SAIDA:-}" ] && printf '%s\n' "$1" > "$SONDA_SAIDA"; return 0; }
-# par sujo determinístico: chave S1 no JSON, espelho legado velho
-_suja() {
-    printf '{"enabled":true,"keys":[{"id":"a","name":"x","secret":"S1","created_at":""}]}' > "$1/.apikeys.json"
-    printf 'VELHO\n' > "$1/.apikey"
+# estado SINTÉTICO determinístico: marcador no settings e um par de chaves falso
+_marca() { "$PY" - "$1" "$2" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["pre_prompt"] = sys.argv[2]
+open(sys.argv[1], "w").write(json.dumps(d))
+PY
 }
+_chaves() {
+    printf '{"enabled":true,"keys":[{"id":"a","name":"x","secret":"S1","created_at":""}]}' > "$1/.apikeys.json"
+    printf 'S1\n' > "$1/.apikey"
+}
+# o dono fica com o marcador "DONO" durante a sonda (o trap restaura)
+_marca "$ORIG/settings.json" DONO
+_chaves "$ORIG"
+# baseline do dono JÁ sujo (o `.orig` é só para o trap)
+cp -p "$ORIG/settings.json" "$BAK/settings.json.base"
+cp -p "$ORIG/.apikey" "$BAK/.apikey.base"
+cp -p "$ORIG/.apikeys.json" "$BAK/.apikeys.json.base"
+ISO="${SONDA_ISO:?a sonda precisa de SONDA_ISO}"
+cp "$ORIG/settings.json" "$ISO/settings.json"
+_marca "$ISO/settings.json" ISO
+_chaves "$ISO"
 
 if [ "${SONDA_MODO:-env}" = env ]; then
-    ISO="${SONDA_ISO:?modo env precisa de SONDA_ISO}"
-    cp "$ORIG/.apikey" "$ORIG/.apikeys.json" "$ISO/"
-    _suja "$ISO"
     # `TTS_*_PATH` no ambiente da linha de comando: o import já resolve para o tmp
     TTS_SETTINGS_PATH="$ISO/settings.json" TTS_APIKEYS_PATH="$ISO/.apikeys.json" \
-    TTS_LEGACY_APIKEY_PATH="$ISO/.apikey" "$PY" - <<'PY'
-import os, app  # o import basta: ele é quem escreve
-# o caminho do settings também tem de vir do ambiente (não do default do módulo)
-assert str(app.SETTINGS_PATH) == os.environ["TTS_SETTINGS_PATH"], app.SETTINGS_PATH
-assert str(app.APIKEYS_PATH) == os.environ["TTS_APIKEYS_PATH"], app.APIKEYS_PATH
-assert str(app.LEGACY_APIKEY_PATH) == os.environ["TTS_LEGACY_APIKEY_PATH"], app.LEGACY_APIKEY_PATH
+    TTS_LEGACY_APIKEY_PATH="$ISO/.apikey" "$PY" - "$ISO" <<'PY'
+import os, sys, app
+iso = sys.argv[1]
+for attr, env in (("SETTINGS_PATH", "TTS_SETTINGS_PATH"),
+                  ("APIKEYS_PATH", "TTS_APIKEYS_PATH"),
+                  ("LEGACY_APIKEY_PATH", "TTS_LEGACY_APIKEY_PATH")):
+    assert str(getattr(app, attr)) == os.environ[env], (attr, getattr(app, attr))
+# a LEITURA tem de ter vindo do isolamento, não do arquivo do dono
+assert app._settings.get("pre_prompt") == "ISO", app._settings.get("pre_prompt")
+# e a escrita explícita seguinte também fica no isolamento
+app._settings["default_voice"] = "voz-do-iso"
+app._save_settings()
 PY
-    if [ "$(cat "$ISO/.apikey")" != "S1" ]; then
-        _fala "✖ o import não normalizou o espelho no alvo de isolamento — a sonda não provou nada" >&2
+    if ! grep -q "voz-do-iso" "$ISO/settings.json"; then
+        _fala "✖ a escrita explícita não foi para o isolamento — a sonda não provou nada" >&2
         exit 1
     fi
-    if cmp -s "$BAK/.apikey.orig" "$ORIG/.apikey" && cmp -s "$BAK/.apikeys.json.orig" "$ORIG/.apikeys.json"; then
-        _fala "arquivos do dono INTOCADOS (caminho por env)"
+    if cmp -s "$BAK/settings.json.base" "$ORIG/settings.json" &&
+       cmp -s "$BAK/.apikey.base" "$ORIG/.apikey" &&
+       cmp -s "$BAK/.apikeys.json.base" "$ORIG/.apikeys.json"; then
+        _fala "arquivos do dono INTOCADOS e estado lido do isolamento (caminho por env)"
         exit 0
     fi
-    _fala "✖ o import reescreveu arquivo do DONO mesmo com o env" >&2
+    _fala "✖ a rodada encostou em arquivo do DONO mesmo com o env" >&2
     exit 1
 fi
 
-# modo atributo: sem env nenhum, e o patch vem DEPOIS do import (o defeito)
+# modo atributo: sem env, patch DEPOIS do import (o defeito)
 unset TTS_SETTINGS_PATH TTS_APIKEYS_PATH TTS_LEGACY_APIKEY_PATH
-ISO="${SONDA_ISO:?modo atributo precisa de SONDA_ISO}"
-_suja "$ORIG"                       # o dono fica sujo durante a sonda (trap restaura)
-cp "$ORIG/.apikey" "$BAK/.apikey.base"   # baseline: o dono sujo
 "$PY" - "$ISO" <<'PY'
 import pathlib, sys, app
-# patch DEPOIS do import: o `_sync_legacy_apikey_file()` do import já rodou no dono
+# patch DEPOIS do import: a leitura já aconteceu no arquivo do dono
 app.SETTINGS_PATH = pathlib.Path(sys.argv[1], "settings.json")
 app.APIKEYS_PATH = pathlib.Path(sys.argv[1], ".apikeys.json")
 app.LEGACY_APIKEY_PATH = pathlib.Path(sys.argv[1], ".apikey")
+assert app._settings.get("pre_prompt") == "DONO", app._settings.get("pre_prompt")
 PY
-if cmp -s "$BAK/.apikey.base" "$ORIG/.apikey"; then
-    _fala "✖ sem env o import não encostou no dono — a mordida não morde" >&2
-    exit 1
-fi
-_fala "atributo DEPOIS do import: o \`.apikey\` do DONO foi reescrito (defeito)"
+# O veredito do modo é o MARCADOR (a leitura veio do dono, não do isolamento) —
+# não a escrita: desde o #601 o import não grava, então o arquivo ficaria igual
+# mesmo com o patch por atributo.
+_fala "atributo DEPOIS do import: o estado do DONO entrou na RAM (defeito)"

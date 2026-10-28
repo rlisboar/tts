@@ -244,26 +244,27 @@ def test_launchers_passam_os_caminhos_por_env_e_nao_por_atributo():
 
 
 def test_import_com_os_caminhos_no_ambiente_nao_toca_o_settings_do_dono(tmp_path):
-    """Mordida do defeito: o `import app` escreve no arquivo do dono quando os
-    caminhos só são trocados depois dele. Com o env ANTES, o dono fica intacto e a
-    escrita cai no alvo de isolamento."""
+    """Mordida do defeito: o `import app` LÊ o estado do dono quando os caminhos só
+    são trocados depois dele. Com o env ANTES, a leitura vem do isolamento, as
+    escritas seguintes caem lá e os arquivos do dono ficam intactos."""
     saida = tmp_path / "veredito.txt"
     r = _rodar("navegador", env={"SUITES": str(SONDAS / "sonda_import_app.sh"),
                                  "SONDA_MODO": "env", "SONDA_SAIDA": str(saida),
                                  "SONDA_ISO": str(tmp_path)})
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "INTOCADO" in saida.read_text()
+    assert "estado lido do isolamento" in saida.read_text()
 
 
 def test_o_defeito_do_atributo_ainda_morde(tmp_path):
     """Controle da célula acima: do jeito antigo (patch por atributo DEPOIS do
-    import) o arquivo do dono É reescrito — a sonda não passa por acidente."""
+    import) o processo nasce com o estado do DONO na RAM — a sonda não passa por
+    acidente. Desde o #601 o import não grava, então o sintoma é a LEITURA."""
     saida = tmp_path / "veredito.txt"
     r = _rodar("navegador", env={"SUITES": str(SONDAS / "sonda_import_app.sh"),
                                  "SONDA_MODO": "atributo", "SONDA_SAIDA": str(saida),
                                  "SONDA_ISO": str(tmp_path)})
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "reescrito" in saida.read_text()
+    assert "estado do DONO entrou na RAM" in saida.read_text()
 
 
 
@@ -326,18 +327,39 @@ def test_toda_suite_com_trava_que_troca_o_trap_exit_chama_o_limpa_vigia():
         assert "_teto_matar" in fonte, f"{nome} troca o trap EXIT e não chama `_teto_matar`"
 
 
-def test_suite_pesada_tem_teto_proprio_e_o_operador_manda(tmp_path):
-    """90 s é o default do HOOK: suíte de UI/Live passa disso trabalhando. A tabela
-    do runner tem de dar teto próprio, e `TETO_S=…` do operador tem de vencer."""
-    fonte = RUNNER.read_text()
-    for pesada in ("admin_ui_flow.sh", "live_barge_rep.sh", "live_interrupcao_ui.sh"):
-        trecho = fonte.split("_teto_da_suite()", 1)[1].split("esac", 1)[0]
-        assert pesada in trecho, f"{pesada} sem teto próprio na tabela"
-    # operador vence: com TETO_S=2 a sonda lenta (6 s) reprova
-    r = _rodar("rapido", env={"SUITES": str(SONDAS / "trava_lenta.sh"),
-                              "TETO_S": "2", "SONDA_SONO": "6",
-                              "TTS_SERIAL_LOCK": str(tmp_path / "lock")})
-    assert r.returncode == 1, r.stdout
+def test_teto_da_suite_casa_pelo_NOME_e_o_operador_vence():
+    """90 s é o default do HOOK: suíte de UI/Live passa disso trabalhando.
+
+    A tabela já veio indexada com `.sh` enquanto o chamador passa o nome SEM
+    extensão — ficou INERTA e `live_ui` morria aos 90 s com 300 na tabela. A célula
+    cobra o teto EFETIVO (subcomando `teto`), não o texto da tabela."""
+    r = _rodar("teto", "live_ui", "admin_ui_flow", "live_barge_rep", "trava_lenta")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "live_ui 300" in r.stdout, r.stdout
+    assert "admin_ui_flow 600" in r.stdout and "live_barge_rep 600" in r.stdout, r.stdout
+    assert "trava_lenta 90" in r.stdout, "nome fora da tabela tem de cair no default"
+    # caminho absoluto COM extensão também casa: o nome é normalizado
+    r = _rodar("teto", "/qualquer/live_ws.sh")
+    assert "live_ws.sh 300" in r.stdout, r.stdout
+    # `TETO_S=…` do operador vence a tabela
+    r = _rodar("teto", "live_ui", env={"TETO_S": "7"})
+    assert "live_ui 7" in r.stdout, r.stdout
+
+
+def test_suite_verde_sem_teto_sai_zero(tmp_path):
+    """`_teto_matar` tem de terminar em `return 0`: sem o vigia armado as guardas
+    `[ -n "" ] && …` voltavam 1 e o trap de EXIT devolvia 1 — suíte verde com
+    "✔ OK" saía rc=1 (`./tests/voz_check_ui.sh` à mão, medido pelo PM)."""
+    r = subprocess.run(["bash", str(SONDAS / "verde_sem_teto.sh")],
+                       capture_output=True, text=True, timeout=60,
+                       env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp"),
+                            "TTS_SERIAL_LOCK": str(tmp_path / "lock")})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "trabalhei e passei" in r.stdout
+    # e pelo runner (com o teto exportado) também
+    r = _rodar("rapido", env={"SUITES": str(SONDAS / "verde_sem_teto.sh"),
+                              "TTS_SERIAL_LOCK": str(tmp_path / "lock2")})
+    assert r.returncode == 0, r.stdout + r.stderr
 
 
 def test_doc_lista_exatamente_o_que_o_runner_tem():
