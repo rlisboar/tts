@@ -252,7 +252,7 @@ PYEOF
 echo
 echo "→ UI em $LANURL"
 "$PY" - "$LANURL" "$USE_KEY" "$ADM_KEY" "$SUF" <<'PYEOF'
-import os, sys, time
+import os, sys, time, urllib.request
 from playwright.sync_api import sync_playwright
 
 SUF = sys.argv[4]                     # mesmo sufixo do shell ($SUF), não o pid do python:
@@ -386,6 +386,36 @@ with sync_playwright() as p:
     cobrar("administrativa" in aviso.lower(),
            f"o 403 do servidor não foi explicado na faixa ({aviso[:80]!r})")
     pg.evaluate("document.getElementById('keyBar').style.display = 'none'")  # não contaminar a fase seguinte
+
+    # --- #511: o Desligar (forçado) com chave de uso NÃO pode fingir sucesso ---
+    # Antes: o `catch {}` engolia o 403, o corpo era trocado por "Servidor
+    # desligado" (apagando a própria faixa do 403) e o servidor seguia vivo.
+    pg.evaluate("""() => {
+        const orig = window.confirm; window.confirm = () => true;
+        const b = document.getElementById('shutdownBtn');
+        b.disabled = false; b.click();
+        setTimeout(() => { window.confirm = orig; }, 100);
+    }""")
+    pg.wait_for_timeout(1200)
+    corpo_off = pg.evaluate("() => document.body.innerText")
+    aviso_off = pg.text_content("#keyBarText") or ""
+    falha_off = pg.text_content("#shutdownAviso") or ""
+    try:
+        with urllib.request.urlopen(base + "/health", timeout=5) as rr:
+            saude = rr.status
+    except Exception:
+        saude = None
+    print(f"  desligar com chave use -> faixa={aviso_off[:40]!r} · aviso={falha_off[:40]!r}"
+          f" · /health={saude} · corpo diz desligado={'Servidor desligado' in corpo_off}")
+    cobrar("administrativa" in aviso_off.lower(),
+           f"o 403 do desligar não ficou explicado na faixa ({aviso_off[:80]!r})")
+    cobrar("Servidor desligado" not in corpo_off,
+           "a tela disse 'Servidor desligado' com o servidor vivo (#511)")
+    cobrar("não desligou" in falha_off.lower(),
+           f"a tela não disse que NÃO desligou ({falha_off[:80]!r})")
+    cobrar(saude == 200, f"o /health devia seguir 200 depois da recusa (veio {saude})")
+    pg.evaluate("document.getElementById('keyBar').style.display = 'none'")
+    pg.evaluate("() => travarAcoesElevadas()")   # volta o estado travado da chave de uso
     # --- CSP pelo header (task #36): sem <meta> e com a policy APLICADA ---
     # Reintroduzir um <meta> traz de volta o erro de frame-ancestors (ignorado em
     # meta) e a aplicação tardia; e com o meta fora, se o header cair a policy
