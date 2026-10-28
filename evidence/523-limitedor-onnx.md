@@ -132,6 +132,33 @@ Com isso a equivalência foi de **10,3 dB para 13–27 dB** de SI-SDR contra o
 original (4 amostras: 16,0 / 21,5 / 13,0 / 17,1). A ordem dos coeficientes do
 filtro profundo também foi conferida (a invertida dá 15,5 dB contra 16,5).
 
+### Aceite do PM (com três condições)
+
+Aceito assim: o timbre, que é o critério principal de uma amostra de clone, passa;
+o OVRL do DSP próprio (3,01) segue muito acima do gating de hoje (2,72); e a
+diferença está concentrada em 1 amostra de 8. As condições:
+
+1. **Feito:** a amostra discrepante virou caso versionado
+   (`tests/data/dfn_discrepante_*.wav`, `test_caso_discrepante_fica_travado`) com
+   o número registrado. Detalhe que reforça o diagnóstico: nela o SI-SDR é **20,69
+   dB** (bom) — a discrepância é do que o DNSMOS percebe, não de fidelidade.
+2. **Em produção:** quem decide é o dono — a guarda de timbre recusa o que troca a
+   voz e a prévia A/B da tela (#528) mostra antes/depois com as métricas. O motor
+   não escolhe sozinho.
+3. **Trabalho futuro anotado (abaixo).**
+
+### Trabalho futuro anotado
+
+Duas hipóteses ficaram por testar para fechar o 0,128 de OVRL, ambas caras em
+relação ao ganho:
+
+- **`lsnr_droput`**: o modelo torch tem despacho por SNR local (pula quadros com
+  `lsnr > −10 dB`); o grafo ONNX congela o caminho. Reintroduzir o despacho do
+  lado de fora pode alinhar a atuação nos quadros de fala alta.
+- **`pad_feat`**: a rede preenche as features no tempo antes das convoluções; a
+  diferença entre esse preenchimento e o do export pode deslocar a borda dos
+  quadros.
+
 ### Leitura honesta de onde estamos
 
 O que sobrou não é mais a normalização: é a diferença entre o grafo ONNX e o

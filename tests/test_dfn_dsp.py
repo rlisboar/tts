@@ -68,8 +68,11 @@ def test_filtro_profundo_aplica_o_coeficiente_central():
     assert np.allclose(saida[:, : dfn_dsp.NB_DF], spec[:, : dfn_dsp.NB_DF])
 
 
-@pytest.mark.skipif(not (Path("/tmp/tts-bakeoff/modelos/dfn3-onnx/deepfilter.onnx")).is_file(),
-                    reason="modelo ONNX do DFN3 ausente (baixado pelo bake-off)")
+def _sem_modelo() -> bool:
+    return not Path("/tmp/tts-bakeoff/modelos/dfn3-onnx/deepfilter.onnx").is_file()
+
+
+@pytest.mark.skipif(_sem_modelo(), reason="modelo ONNX do DFN3 ausente (baixado pelo bake-off)")
 def test_limpeza_bate_com_a_referencia():
     import dfn_onnx
 
@@ -80,3 +83,25 @@ def test_limpeza_bate_com_a_referencia():
     assert limpo.size == sujo.size, "o tamanho tem de ser preservado"
     valor = _si_sdr(limpo, ref)
     assert valor >= 8.0, f"SI-SDR {valor:.1f} dB contra a referência — port divergiu"
+
+
+@pytest.mark.skipif(_sem_modelo(), reason="modelo ONNX do DFN3 ausente (baixado pelo bake-off)")
+def test_caso_discrepante_fica_travado():
+    """A amostra em que o DSP próprio MAIS se afasta do original em OVRL.
+
+    Ela é a pior das 8 células medidas (OVRL 2,66 contra 3,24 do original) e fica
+    versionada para a diferença não crescer sem ninguém notar. Registro honesto: em
+    SI-SDR ela é BOA (20,69 dB na criação), então a discrepância é do que o DNSMOS
+    percebe, não de fidelidade do sinal — mais um indício de que o resíduo é o grafo
+    ONNX contra o modelo torch, não a normalização.
+
+    Piso de 12 dB: abaixo do medido, para não brigar com ruído numérico.
+    """
+    import dfn_onnx
+
+    sujo, sr = sf.read(str(DADOS / "dfn_discrepante_entrada.wav"), dtype="float32")
+    assert sr == SR
+    ref, _ = sf.read(str(DADOS / "dfn_discrepante_referencia.wav"), dtype="float32")
+    limpo = dfn_onnx.limpa(sujo)
+    valor = _si_sdr(limpo, ref)
+    assert valor >= 12.0, f"SI-SDR {valor:.1f} dB no caso discrepante (medido 20,7)"
