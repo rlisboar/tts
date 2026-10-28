@@ -1153,9 +1153,84 @@ def test_denoise_para_referencia_recusa_quando_o_nivel_desaba(monkeypatch):
     x = _fala_suja(1.0)
     monkeypatch.setattr(app, "_denoise_audio",
                         lambda a, sr, s: np.asarray(a, dtype=np.float32) * 0.01)
-    y, recusado = app._denoise_para_referencia(x, 24000, 1.0)
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    y, recusado, rel = app._denoise_para_referencia(x, 24000, 1.0)
     assert recusado is True
+    assert rel["recusado_por"] == "nivel"
     assert np.allclose(y, x), "recusado tem de devolver a amostra ORIGINAL"
+
+
+def test_denoise_recusa_quando_o_timbre_cai(monkeypatch):
+    """A limpeza pode entregar outra pessoa: abaixo do mínimo, mantém o original."""
+    x = _fala_suja(1.0)
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: np.asarray(a, dtype=np.float32) * 0.9)
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: 0.62)
+    monkeypatch.setitem(app._settings, "voice_timbre_min", 0.80)
+    y, recusado, rel = app._denoise_para_referencia(x, 24000, 1.0)
+    assert recusado is True and rel["recusado_por"] == "timbre"
+    assert np.allclose(y, x), "recusado por timbre também devolve o ORIGINAL"
+
+
+def test_mordida_da_guarda_de_timbre(monkeypatch):
+    """Abaixar o mínimo com o MESMO áudio tem de virar a decisão: é o que prova
+    que a guarda morde e não está só decorando o relatório."""
+    x = _fala_suja(1.0)
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: np.asarray(a, dtype=np.float32) * 0.9)
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: 0.62)
+    monkeypatch.setitem(app._settings, "voice_timbre_min", 0.50)
+    _, recusado, rel = app._denoise_para_referencia(x, 24000, 1.0)
+    assert recusado is False and rel["recusado_por"] is None
+    assert rel["timbre"] == pytest.approx(0.62)
+
+
+def test_musica_roda_antes_do_denoise(monkeypatch):
+    """A música sai antes: limpar primeiro deixaria o instrumental competindo com
+    a voz na redução de ruído."""
+    ordem = []
+    x = _fala_suja(1.0)
+    monkeypatch.setitem(app._settings, "voice_limpar_musica", True)
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setitem(app._settings, "voice_timbre_min", 0.0)
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: None)
+    monkeypatch.setattr(app, "_separa_musica",
+                        lambda a, sr: (ordem.append("musica"), np.asarray(a, np.float32))[1])
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: (ordem.append("denoise"),
+                                          np.asarray(a, np.float32) * 0.9)[1])
+    _, recusado, rel = app._denoise_para_referencia(x, 24000, 1.0)
+    assert ordem == ["musica", "denoise"] and recusado is False
+    assert rel["musica"] is True
+
+    # sem o pacote (None), a etapa é pulada e o relatório diz que NÃO rodou
+    monkeypatch.setattr(app, "_separa_musica", lambda a, sr: None)
+    _, _, rel = app._denoise_para_referencia(x, 24000, 1.0)
+    assert rel["musica"] is False
+
+
+def test_limpeza_usa_o_dfn3_e_cai_no_gating_sem_modelo(monkeypatch):
+    x = _fala_suja(1.0)
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "dfn3")
+    monkeypatch.setitem(app._settings, "voice_timbre_min", 0.0)
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: None)
+    chamado = {}
+
+    def fake_gating(a, sr, s):
+        chamado["gating"] = True
+        return np.asarray(a, dtype=np.float32) * 0.9
+
+    monkeypatch.setattr(app, "_denoise_audio", fake_gating)
+    monkeypatch.setattr(app, "_dfn3_limpa", lambda a, sr: np.asarray(a, dtype=np.float32))
+    _, recusado, rel = app._denoise_para_referencia(x, 24000, 1.0)
+    assert rel["motor"] == "dfn3" and "gating" not in chamado and recusado is False
+
+    # modelo ausente/quebrado (None) -> gating, e o relatório diz qual foi
+    monkeypatch.setattr(app, "_dfn3_limpa", lambda a, sr: None)
+    _, _, rel = app._denoise_para_referencia(x, 24000, 1.0)
+    assert rel["motor"] == "gating" and chamado.get("gating") is True
 
 
 def test_referencia_pronta_normaliza_e_rampeia():
@@ -1180,7 +1255,7 @@ def test_perfis_corrompidos_nao_viram_gate_inerte(tmp_path, monkeypatch):
     """Arquivo ilegível: `enforce` FALHA FECHADO e avisa; ausente continua inerte."""
     alvo = tmp_path / ".speaker-profiles.json"
     monkeypatch.setattr(app, "SPEAKER_PATH", alvo)
-    monkeypatch.setattr(app, "_speaker_embed", lambda p: [1.0, 0.0])
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
     app._settings["speaker_gate"] = "enforce"
     try:
         # ausente = "ninguém cadastrado": inerte, sem aviso

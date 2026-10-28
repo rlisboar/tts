@@ -420,6 +420,10 @@ _SETTINGS_DEFAULTS = {
     "gen_voxtral_voice": "casual_male",
     "voice_denoise": True,            # limpa ruído de fundo da amostra ao salvar a voz
     "voice_denoise_strength": 0.7,    # agressividade do spectral gating (0–1)
+    "voice_limpar_motor": "dfn3",     # "dfn3" (ONNX) ou "gating"; cai no gating sozinho
+    "voice_limpar_musica": False,     # separa música antes de limpar (Demucs, se houver)
+    "voice_limpar_dereverb": False,   # dereverb opcional (se houver)
+    "voice_timbre_min": 0.80,         # similaridade mínima antes/depois; abaixo recusa
     # Áudio de saída (pós-geração): ganho + EQ 3 bandas (dB)
     "audio_gain_db": 0.0,             # ganho geral (-15..+15)
     # cache de áudio por texto/voz/parâmetros (#325): OFF por padrão
@@ -1824,24 +1828,183 @@ def _denoise_audio(audio, sr: int, strength: float = 0.7):
     return y
 
 
-def _denoise_para_referencia(audio, sr: int, strength: float):
-    """Denoise com guarda de integridade para AMOSTRA DE VOZ.
+#: DFN3 em ONNX (#523) — o vencedor do R1 para AMOSTRA. Mesmo contrato do
+#: `models/README.md`; sem o arquivo a limpeza cai no gating de sempre.
+_DFN3_DIR = _caminho_estado_env("TTS_DFN3_DIR", BASE / "models" / "dfn3-onnx")
+_DFN3_ONNX = _DFN3_DIR / "deepfilter.onnx"
+_modulo_dfn = None
 
-    Devolve `(audio, recusado)`. `recusado=True` quando a limpeza derrubou o RMS
-    mais de 20 dB abaixo do original — nesse caso vale a amostra sem limpeza em
-    vez de uma referência muda que o clone vai copiar (#324).
+
+def _dfn3_disponivel() -> bool:
+    return _DFN3_ONNX.is_file()
+
+
+def _carrega_modulo_dfn():
+    """Importa `tools/bakeoff/dfn_onnx.py` — o DSP em volta do grafo mora lá."""
+    global _modulo_dfn
+    if _modulo_dfn is not None:
+        return _modulo_dfn
+    import importlib.util
+
+    caminho = BASE / "tools" / "bakeoff" / "dfn_onnx.py"
+    especificacao = importlib.util.spec_from_file_location("dfn_onnx_app", caminho)
+    if especificacao is None or especificacao.loader is None:
+        raise ImportError(f"não achei {caminho}")
+    modulo = importlib.util.module_from_spec(especificacao)
+    especificacao.loader.exec_module(modulo)
+    _modulo_dfn = modulo
+    return modulo
+
+
+def _dfn3_limpa(audio, sr: int):
+    """Limpa com o DeepFilterNet3 (48 kHz por dentro). None quando indisponível.
+
+    ONNX no processo: não usa Metal nem torch, então não precisa do worker
+    isolado (que existe para o segfault do MLX)."""
+    import numpy as np
+    from scipy.signal import resample_poly
+
+    if not _dfn3_disponivel():
+        return None
+    try:
+        modulo = _carrega_modulo_dfn()
+        x = np.asarray(audio, dtype=np.float32).reshape(-1)
+        x48 = resample_poly(x, 48000, sr).astype(np.float32) if sr != 48000 else x
+        limpo = np.asarray(modulo.limpa(x48), dtype=np.float32)
+        if sr != 48000:
+            limpo = resample_poly(limpo, sr, 48000).astype(np.float32)
+        return limpo[: x.size]
+    except Exception as erro:  # noqa: BLE001
+        print(f"[voice] DFN3 indisponível ({erro}) — caindo no gating", flush=True)
+        return None
+
+
+def _separa_musica(audio, sr: int):
+    """Tira música/instrumental antes de limpar (import de YouTube). None se o
+    Demucs não estiver instalado — a etapa é opcional e some calada, mas o
+    relatório registra que não rodou."""
+    import numpy as np
+
+    try:
+        __import__("demucs.separate")   # só a presença do pacote decide a etapa
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        import subprocess
+
+        import soundfile as sf
+
+        with tempfile.TemporaryDirectory(prefix="musica-") as pasta:
+            entrada = Path(pasta) / "in.wav"
+            sf.write(str(entrada), np.asarray(audio, dtype=np.float32), sr, subtype="PCM_16")
+            subprocess.run([sys.executable, "-m", "demucs", "--two-stems", "vocals",
+                            "-o", pasta, str(entrada)], capture_output=True, check=True)
+            achado = sorted(Path(pasta).rglob("vocals.wav"))
+            if not achado:
+                return None
+            x, sr2 = sf.read(str(achado[0]), dtype="float32")
+            from scipy.signal import resample_poly
+
+            if sr2 != sr:
+                x = resample_poly(x, sr, sr2).astype(np.float32)
+            return np.asarray(x, dtype=np.float32)[: np.asarray(audio).size]
+    except Exception as erro:  # noqa: BLE001
+        print(f"[voice] separação de música falhou ({erro})", flush=True)
+        return None
+
+
+def _dereverb(audio, sr: int):
+    """Dereverb opcional. Sem modelo instalado devolve None (a etapa não existe
+    hoje; o gancho fica para o WPE quando entrar)."""
+    return None
+
+
+def _cosseno(a, b) -> float:
+    import numpy as np
+
+    x = np.asarray(a, dtype=np.float64).reshape(-1)
+    y = np.asarray(b, dtype=np.float64).reshape(-1)
+    nx, ny = float(np.linalg.norm(x)), float(np.linalg.norm(y))
+    if not nx or not ny:
+        return 0.0
+    return float(x @ y / (nx * ny))
+
+
+def _guarda_timbre(antes, depois, sr: int) -> float | None:
+    """Similaridade do locutor antes x depois. None se o extrator não carregar.
+
+    O denoiser pode entregar um áudio limpo que já não é a mesma pessoa; a amostra
+    é o que o clone copia, então trocar a voz custa mais que o ruído restante."""
+    import numpy as np
+    import soundfile as sf
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="timbre-") as pasta:
+            pa = Path(pasta) / "antes.wav"
+            pb = Path(pasta) / "depois.wav"
+            sf.write(str(pa), np.asarray(antes, dtype=np.float32), sr, subtype="PCM_16")
+            sf.write(str(pb), np.asarray(depois, dtype=np.float32), sr, subtype="PCM_16")
+            ea = _speaker_embed(pa)
+            eb = _speaker_embed(pb)
+    except Exception:  # noqa: BLE001
+        return None
+    if ea is None or eb is None:
+        return None
+    return _cosseno(ea, eb)
+
+
+def _denoise_para_referencia(audio, sr: int, strength: float):
+    """Limpeza da AMOSTRA DE VOZ com as guardas de integridade (#324, #523).
+
+    Devolve `(audio, recusado, relatorio)`. Recusa — mantendo o original — quando
+    a limpeza derrubou o nível mais de 20 dB (referência muda que o clone copia) ou
+    quando o TIMBRE caiu abaixo de `voice_timbre_min` (a limpeza entregou outra
+    pessoa). O motor vem de `voice_limpar_motor`: o DFN3 do R1 quando o modelo
+    está instalado, senão o gating espectral de sempre.
     """
     import numpy as np
 
     antes = np.asarray(audio, dtype=np.float32)
-    limpo = _denoise_audio(antes, sr, strength)
+    relatorio = {"motor": "gating", "timbre": None, "recusado_por": None,
+                 "musica": False, "dereverb": False}
+    # etapas opcionais, nesta ordem: música -> dereverb -> denoise
+    if _settings.get("voice_limpar_musica"):
+        sem_musica = _separa_musica(antes, sr)
+        if sem_musica is not None:
+            antes = sem_musica
+            relatorio["musica"] = True
+    if _settings.get("voice_limpar_dereverb"):
+        seco = _dereverb(antes, sr)
+        if seco is not None:
+            antes = seco
+            relatorio["dereverb"] = True
+    limpo = None
+    if str(_settings.get("voice_limpar_motor", "dfn3")).lower() == "dfn3":
+        limpo = _dfn3_limpa(antes, sr)
+        if limpo is not None:
+            relatorio["motor"] = "dfn3"
+    if limpo is None:
+        limpo = _denoise_audio(antes, sr, strength)
+
     rms_antes = float(np.sqrt(np.mean(antes ** 2)))
     rms_depois = float(np.sqrt(np.mean(limpo ** 2)))
     if rms_antes > 1e-6 and (rms_depois <= 1e-6 or rms_depois < rms_antes / 10.0):
         print(f"[voice] denoise derrubou o nível (rms {rms_antes:.4f} -> "
               f"{rms_depois:.4f}) — mantendo a amostra sem limpeza", flush=True)
-        return antes, True
-    return limpo, False
+        relatorio["recusado_por"] = "nivel"
+        return antes, True, relatorio
+
+    # guarda de timbre: só faz sentido depois que a limpeza produziu áudio
+    timbre = _guarda_timbre(antes, limpo, sr)
+    relatorio["timbre"] = None if timbre is None else round(timbre, 4)
+    if timbre is not None:
+        minimo = float(_settings.get("voice_timbre_min", 0.80))
+        if timbre < minimo:
+            print(f"[voice] limpeza trocou o timbre (similaridade {timbre:.3f} < "
+                  f"{minimo:.2f}) — mantendo a amostra sem limpeza", flush=True)
+            relatorio["recusado_por"] = "timbre"
+            return antes, True, relatorio
+    return limpo, False, relatorio
 
 
 def _referencia_pronta(audio, sr: int):
@@ -4113,6 +4276,15 @@ def _apply_settings(payload: dict):
         _settings["voice_denoise"] = bool(payload["voice_denoise"])
     if "voice_denoise_strength" in payload:
         _settings["voice_denoise_strength"] = _clamp(payload["voice_denoise_strength"], 0.0, 1.0, 0.7)
+    if "voice_limpar_motor" in payload:
+        motor = str(payload["voice_limpar_motor"]).lower()
+        _settings["voice_limpar_motor"] = motor if motor in ("dfn3", "gating") else "dfn3"
+    if "voice_limpar_musica" in payload:
+        _settings["voice_limpar_musica"] = _truthy(payload["voice_limpar_musica"])
+    if "voice_limpar_dereverb" in payload:
+        _settings["voice_limpar_dereverb"] = _truthy(payload["voice_limpar_dereverb"])
+    if "voice_timbre_min" in payload:
+        _settings["voice_timbre_min"] = _clamp(payload["voice_timbre_min"], 0.0, 1.0, 0.80)
     if "audio_gain_db" in payload:
         _settings["audio_gain_db"] = _clamp(payload["audio_gain_db"], -15.0, 15.0, 0.0)
     # cache de áudio por texto (#325): desligado por padrão
@@ -4382,8 +4554,9 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
         strg = float(_settings.get("voice_denoise_strength", 0.7))
     strg = _clamp(strg, 0.0, 1.0, 0.7)
     recusado = False
+    relatorio: dict = {}
     if do_denoise:
-        data, recusado = _denoise_para_referencia(data, sr, strg)
+        data, recusado, relatorio = _denoise_para_referencia(data, sr, strg)
     data = _referencia_pronta(data, sr)      # nível + fade: o clone copia isso
     sf.write(str(wav_path), data, sr, subtype="PCM_16")
 
@@ -4401,6 +4574,9 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
         "denoised": bool(do_denoise and not recusado),
         "denoise_recusado": bool(recusado),
     }
+    if relatorio:
+        # motor usado, similaridade de timbre e motivo da recusa ficam no meta
+        meta["limpeza"] = relatorio
     # transcrição opcional da amostra: clonagem do OmniVoice fica mais estável
     if ref_text.strip():
         meta["ref_text"] = ref_text.strip()[:500]
@@ -4437,11 +4613,13 @@ def denoise_voice(voice_id: str, payload: dict = None):
     strg = _clamp((payload or {}).get("strength"), 0.0, 1.0,
                   float(_settings.get("voice_denoise_strength", 0.7)))
     data, sr = sf.read(str(path), dtype="float32")
-    data, recusado = _denoise_para_referencia(data, sr, strg)
+    data, recusado, relatorio = _denoise_para_referencia(data, sr, strg)
     if recusado:
         # não sobrescreve com algo pior do que já estava
-        raise HTTPException(400, "A limpeza derrubou o nível demais (RMS caiu mais de "
-                                 "20 dB) — a amostra original foi mantida")
+        motivo = {"nivel": "a limpeza derrubou o nível demais (RMS caiu mais de 20 dB)",
+                  "timbre": "a limpeza trocou o timbre da voz"}.get(
+                      relatorio.get("recusado_por") or "", "a limpeza piorou a amostra")
+        raise HTTPException(400, f"{motivo} — a amostra original foi mantida")
     data = _referencia_pronta(data, sr)
     _guarda_original(voice_id)          # antes de sobrescrever (#443)
     sf.write(str(path), data, sr, subtype="PCM_16")
@@ -4454,10 +4632,11 @@ def denoise_voice(voice_id: str, payload: dict = None):
             m = json.loads(jp.read_text())
             m["duration"] = duration
             m["denoised"] = True
+            m["limpeza"] = relatorio          # motor, timbre e recusa vão para o meta
             write_json_atomic(jp, m)
         except Exception:  # noqa: BLE001
             pass
-    return {"ok": True, "duration": duration}
+    return {"ok": True, "duration": duration, "limpeza": relatorio}
 
 
 @app.post("/api/voices/{voice_id}/restore-original")

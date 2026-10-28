@@ -49,20 +49,42 @@ Dois defeitos apareceram no caminho e ficam registrados porque voltariam:
 vezes; dentro do processo, a diferença é de overhead, não de conta. Para uso
 offline em amostra de 10–30 s isso é irrelevante.
 
-## O que fica para a próxima etapa do card
+## Fio no app (feito na janela quieta nº 2, sem medir)
 
-A medição está feita; falta o **fio no app**, que é a outra metade do #523:
+`_denoise_para_referencia` deixa de ser um denoise solto e vira a cadeia do card:
 
-- cadeia `separa música → denoise` com etapas opcionais por configuração;
-- guarda de timbre antes/depois (mesmo limiar do R1) recusando e mantendo o
-  original;
-- DNSMOS antes/depois e similaridade no retorno;
-- worker isolado (o modelo é pesado) e o `.orig` do #443 preservado.
+- ordem **música → dereverb → denoise**, cada etapa opcional por configuração
+  (`voice_limpar_musica`, `voice_limpar_dereverb`) e pulada, com registro no
+  relatório, quando o pacote não existe;
+- motor por `voice_limpar_motor`: `dfn3` (ONNX) por padrão, caindo no gating de
+  sempre quando o modelo falta ou o import quebra — a queda é registrada, não
+  silenciosa;
+- **guarda de timbre**: similaridade de locutor antes/depois contra
+  `voice_timbre_min` (0,80); abaixo disso **recusa e mantém o original**, igual à
+  guarda de nível do #324 e pelo mesmo motivo — a amostra é o que o clone copia;
+- o relatório (motor, timbre, etapas, motivo da recusa) vai para o `.json` da voz,
+  para o retorno do `POST /api/voices/{id}/denoise` e para o meta do cadastro;
+- `.orig` do #443 continua sendo gravado antes de sobrescrever.
 
-O `dfn_onnx.py` roda hoje na venv de bancada (`vendf`). Para o app falta conferir
-o import do pacote `df` na `.venv-mlx` — no `venv312` ele quebra em
-`torchaudio.backend`, que sumiu nas versões novas; é o mesmo atrito já registrado
-no WeSpeaker em `evidence/521`.
+Mordidas em `tests/test_app.py`: recusa por timbre devolve o áudio original;
+abaixar o mínimo com o MESMO áudio vira a decisão (prova que a guarda morde e não
+só decora o relatório); o DFN3 é usado quando presente e a queda para o gating
+acontece quando não está; música roda ANTES do denoise e a etapa pulada aparece
+como `false` no relatório.
+
+## O que ainda falta
+
+- **Conferir o import do pacote `df` na `.venv-mlx`** — no `venv312` ele quebra em
+  `torchaudio.backend`, que sumiu nas versões novas (mesmo atrito do WeSpeaker em
+  `evidence/521`). Sem isso o motor `dfn3` não liga em produção e a cadeia fica no
+  gating.
+- **DNSMOS antes/depois no retorno**: depende de um modelo ONNX que ainda não está
+  instalado; hoje o relatório traz a similaridade de timbre, não o OVRL.
+- **Dereverb**: o gancho existe e devolve `None`; falta o modelo (WPE).
+- **Separação de música**: o caminho chama o Demucs se estiver instalado, e ele
+  não está — a etapa está ligada por código, não medida.
+- Worker isolado: o ONNX é CPU puro, então não precisa; se o Demucs entrar (torch),
+  ele passa a precisar.
 
 ## Reprodução
 
