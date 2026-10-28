@@ -38,6 +38,29 @@ foram para ABX com nomes neutros e gabarito fora de ordem
 (`resultados/abx.json`). **O ABX ainda não foi ouvido por ninguém**: é o pendente
 que fecha o critério de inaudibilidade, e depende de uma pessoa com fones.
 
+## Regravação alto-falante→mic (o caso do eco do Live)
+
+Autorizada pelo dono, volume moderado, 0,5 m e 2 m, 4 amostras. O piso da sala foi
+medido antes (rms 0,0026) e o sinal ficou 8–20 dB acima dele — não é problema de
+nível.
+
+| distância | detectados | mediana da probabilidade |
+|---|---|---|
+| 0,5 m | **0 de 4** | 0,01 |
+| 2 m | **0 de 4** | 0,00 |
+
+Controlado: a fonte marcada pontua 1,00 na mesma sessão, e normalizar o gravado ao
+nível da fonte sobe só para 0,08–0,12. Não é recorte, não é nível, não é o
+detector: **a marca morre na transmissão acústica**.
+
+Consequência dura para o uso (b) do card: o filtro de ECO do Live **não pode
+contar com a marca**. O áudio do próprio TTS voltando pelo alto-falante e pelo mic
+chega sem marca detectável — o eco tem de ser reconhecido por outro caminho
+(correlação com o que foi tocado, ou o próprio controle de eco).
+
+A gravação ficou em tmp e foi **APAGADA** ao fim, como combinado; sobrevive só o
+`resultados/regrava.json` com os números.
+
 ## Detector genérico (AASIST, `clovaai/aasist`, MIT)
 
 Licença revisada: código e pesos no mesmo repositório MIT (NAVER Corp.); os termos
@@ -81,9 +104,8 @@ Parte do falso positivo pode ser o recorte, não o modelo — **não isolado**.
 
 ## O que falta
 
-- **Regravação alto-falante→mic a 0,5–2 m** — é o caso do eco do Live e o único
-  que ainda não rodou (depende do Mic do Mac e de som na sala; o PM está
-  confirmando com o dono).
+- **Regravação alto-falante→mic**: medida e REPROVADA (0 de 8). O eco do Live
+  precisa de outra detecção que não a marca.
 - **ABX ouvido por gente** (os pares estão gerados).
 - AASIST em corpus mais próximo do produto (fala espontânea, microfone de Mac) e o
   recorte oficial testado separadamente do modelo.
