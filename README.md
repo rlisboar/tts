@@ -320,6 +320,9 @@ podado. Ele é proteção do diretório, não preferência: vale mesmo com
 `auto_cleanup` desligado (esse é só o corte por TEMPO, `auto_cleanup_minutes`).
 Uma instalação com anos de uso chegou a 3.528 `.wav` (37 MB, a maioria sem `.json`
 e invisível na listagem); com o teto padrão ela voltou a 500 arquivos (14 MB).
+Entram na conta o `.wav`, o `.json` sem áudio e o diretório de trechos órfão
+(`.job-*` sem `.wav`) — os temporários de upload (`.stt-*` etc.) não, porque quem
+os recolhe é a limpeza por idade.
 
 Pela internet o `POST /api/tts` também passa pelo limitador de taxa
 (`TTS_RATE_LIMIT` / `TTS_HEAVY_RATE_LIMIT`, `TTS_POLL_RATE_LIMIT`); loopback é

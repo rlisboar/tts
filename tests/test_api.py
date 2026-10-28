@@ -2871,7 +2871,7 @@ def test_outputs_meta_corrompido_e_pulado(client, auth, tmp_path, monkeypatch):
 # EXCESSO — os recentes ficam — e o que está em `_jobs` nunca sai.
 # ---------------------------------------------------------------------------
 
-def _saidas_para_poda(tmp_path, monkeypatch, quantos=6, jobs=()):
+def _saidas_para_poda(tmp_path, monkeypatch, quantos=6, jobs=(), status="done"):
     d = _outputs_falsos(tmp_path, monkeypatch, quantos=quantos)
     base = 1_700_000_000.0
     for i in range(quantos):
@@ -2881,7 +2881,7 @@ def _saidas_para_poda(tmp_path, monkeypatch, quantos=6, jobs=()):
         jd = d / f".job-{oid}"
         jd.mkdir()
         (jd / "0.wav").write_bytes(b"RIFF")
-    monkeypatch.setattr(app, "_jobs", {jid: {"status": "done"} for jid in jobs})
+    monkeypatch.setattr(app, "_jobs", {jid: {"status": status} for jid in jobs})
     return d
 
 
@@ -2918,6 +2918,79 @@ def test_poda_conta_e_remove_wav_sem_meta(tmp_path, monkeypatch):
     assert app._poda_outputs_por_quantidade(3) == 2      # 5 candidatos, teto 3
     assert sorted(p.name for p in d.glob("t*.wav")) == ["t2.wav"]
     assert sorted(p.stem for p in d.glob("out*.wav")) == ["out0000", "out0001"]
+
+
+def test_poda_conta_e_remove_json_sem_audio(tmp_path, monkeypatch):
+    """Meta sem `.wav` também ocupa lugar (aparece na listagem e não toca)."""
+    d = _saidas_para_poda(tmp_path, monkeypatch, quantos=2)
+    (d / "so_meta.json").write_text('{"id": "so_meta"}')
+    os.utime(d / "so_meta.json", (1_600_000_000.0, 1_600_000_000.0))
+    assert app._poda_outputs_por_quantidade(2) == 1      # 3 candidatos, teto 2
+    assert not (d / "so_meta.json").exists(), "o meta órfão ficou"
+    assert (d / "out0001.wav").exists() and (d / "out0001.json").exists()
+
+
+def test_poda_conta_e_remove_diretorio_de_trechos_orfao(tmp_path, monkeypatch):
+    """`.job-<id>` sem `.wav` (síntese interrompida) entra pela própria idade."""
+    d = _saidas_para_poda(tmp_path, monkeypatch, quantos=2)
+    jd = d / ".job-solto"
+    jd.mkdir()
+    (jd / "0.wav").write_bytes(b"RIFF")
+    os.utime(jd, (1_600_000_000.0, 1_600_000_000.0))
+    assert app._poda_outputs_por_quantidade(2) == 1      # 3 candidatos, teto 2
+    assert not jd.exists(), "o diretório de trechos órfão ficou"
+    assert (d / ".job-out0001").is_dir()
+
+
+def test_poda_nao_conta_nem_come_temporario(tmp_path, monkeypatch):
+    """Temporário de upload (`.stt-*`) não é output: nem conta, nem é podado.
+
+    Quem recolhe temporário é o `_limpa_temporarios` (por idade, >6 h) — se ele for
+    fundido de volta na poda, um upload em curso vira candidato e some.
+    """
+    d = _saidas_para_poda(tmp_path, monkeypatch, quantos=2)
+    tmp = d / ".stt-antigo"
+    tmp.write_bytes(b"\x00" * 16)
+    os.utime(tmp, (1_600_000_000.0, 1_600_000_000.0))   # o mais velho do diretório
+    assert app._poda_outputs_por_quantidade(2) == 0      # 2 candidatos, no teto
+    assert tmp.exists(), "o temporário foi comido pela poda"
+
+
+@pytest.mark.parametrize("status", ["running", "queued"])
+def test_poda_nunca_come_job_em_voo(tmp_path, monkeypatch, status):
+    """`running` e `queued` são os casos nomeados no card: os dois ficam."""
+    d = _saidas_para_poda(tmp_path, monkeypatch, quantos=3, jobs=("out0000",),
+                          status=status)
+    assert app._poda_outputs_por_quantidade(2) == 1      # sai o 2º mais antigo
+    assert (d / "out0000.wav").exists(), f"job {status} foi podado"
+    assert not (d / "out0001.wav").exists()
+    assert (d / "out0002.wav").exists()
+
+
+def test_poda_roda_no_loop_mesmo_com_auto_cleanup_desligado(tmp_path, monkeypatch):
+    """A poda não pode depender de `auto_cleanup` (esse é só o corte por TEMPO).
+
+    Roda UMA volta do loop (o `sleep` levanta) com `auto_cleanup` no default,
+    False: se a chamada descer para dentro do `if`, o diretório fica cheio.
+    """
+    d = _saidas_para_poda(tmp_path, monkeypatch, quantos=4)
+    monkeypatch.setitem(app._settings, "auto_cleanup", False)
+    monkeypatch.setitem(app._settings, "auto_cleanup_max_outputs", 2)
+
+    class _Parou(Exception):
+        pass
+
+    dormidas = []
+
+    def _sleep(_s):
+        dormidas.append(_s)          # o `sleep` é o TOPO da volta: deixa a 1ª
+        if len(dormidas) > 1:        # passar e para na 2ª, com a volta já feita
+            raise _Parou
+
+    monkeypatch.setattr(app.time, "sleep", _sleep)
+    with pytest.raises(_Parou):
+        app._auto_cleanup_loop()
+    assert len(list(d.glob("*.json"))) == 2, "a volta do loop não podou"
 
 
 def test_poda_respeita_o_teto_da_setting(client, auth, tmp_path, monkeypatch):
