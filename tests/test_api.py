@@ -2065,7 +2065,7 @@ def test_speaker_escore_usa_centroide_e_nao_o_maximo(monkeypatch):
     perfil em `[1, 0]`; o centróide de `[[1,0],[0,1]]` dá 0,707."""
     perfis = {"eu": {"vecs": [[1.0, 0.0], [0.0, 1.0]], "modelo": app.SPEAKER_MODELO_ATUAL}}
     monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
-    _nome, sim, houve = app._speaker_pontua(Path("x.wav"), perfis)
+    _nome, sim, houve, _modo = app._speaker_pontua(Path("x.wav"), perfis)
     assert houve and abs(sim - 0.7071) < 1e-3
 
 
@@ -2083,6 +2083,74 @@ def test_speaker_enroll_troca_de_extrator_zera_vetores_incompativeis(
     assert r.status_code == 200 and r.json()["samples"] == 1
     assert store["eu"]["modelo"] == app.SPEAKER_MODELO_ATUAL
     assert store["eu"]["vecs"] == [[0.5, 0.5]], "vetor do extrator antigo ficou junto"
+
+
+def _coorte_falsa(monkeypatch, vecs):
+    """Coorte sintética no cache: evita depender do arquivo real do repositório."""
+    monkeypatch.setattr(app, "_speaker_cohorte_cache", {app.SPEAKER_MODELO_ATUAL: vecs})
+
+
+def test_speaker_far_alvo_normaliza_o_escore_e_usa_o_limiar_calibrado(monkeypatch):
+    """Com alvo de FAR o escore é AS-normalizado e o limiar vem do R2.
+
+    A coorte é de impostores: quanto mais longe dela, maior o escore. O limiar
+    calibrado (2,434 para FAR 1 %) é em unidades normalizadas — comparar com o
+    0,6 cru seria erro de escala."""
+    perfis = {"eu": {"vecs": [[1.0, 0.0]], "modelo": app.SPEAKER_MODELO_ATUAL}}
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    _coorte_falsa(monkeypatch, [[0.0, 1.0], [0.1, 0.99], [0.2, 0.98],
+                                [0.3, 0.95], [0.4, 0.92]])
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
+    monkeypatch.setitem(app._settings, "speaker_far_alvo", "1")
+    monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
+    try:
+        lim, modo = app._speaker_limiar(app.SPEAKER_MODELO_ATUAL)
+        assert modo == "asnorm"
+        # limiar da tabela calibrada PARA ESTE modelo (o R2 calibrou por modelo)
+        assert lim == app._SPEAKER_LIMIAR_FAR[app.SPEAKER_MODELO_ATUAL]["1"]
+        _n, sim, _h, modo_escore = app._speaker_pontua(Path("x.wav"), perfis)
+        assert modo_escore == "asnorm"
+        # mesma voz (cosseno 1,0 contra a coorte toda em 0) ⇒ escore normalizado
+        # bem acima do limiar de FAR 1 %, com o modo declarado na resposta
+        assert sim > lim
+        out = app._speaker_gate_ok(Path("x.wav"))
+        assert out == {"speaker_escore_modo": "asnorm"}, out
+    finally:
+        monkeypatch.setitem(app._settings, "speaker_far_alvo", "")
+        monkeypatch.setitem(app._settings, "speaker_gate", "off")
+
+
+def test_speaker_coorte_do_repositorio_carrega():
+    """O arquivo de coorte versionado tem de servir o extrator ATUAL.
+
+    Sem ele o alvo de FAR nunca vale — e `_speaker_cohorte` engole o erro e cai no
+    escore cru, então o defeito passaria calado."""
+    app._speaker_cohorte_cache.clear()
+    vecs = app._speaker_cohorte(app.SPEAKER_MODELO_ATUAL)
+    assert len(vecs) >= 20, "coorte versionada ausente/curta para o extrator atual"
+    assert all(len(v) == len(vecs[0]) for v in vecs), "vetores de dimensões diferentes"
+
+
+def test_speaker_far_alvo_sem_coorte_cai_no_escore_cru(monkeypatch):
+    """Sem arquivo de coorte o alvo não inventa limiar: volta ao cru e ao 0,6."""
+    _coorte_falsa(monkeypatch, [])
+    monkeypatch.setitem(app._settings, "speaker_far_alvo", "0.1")
+    monkeypatch.setitem(app._settings, "speaker_threshold", 0.6)
+    try:
+        lim, modo = app._speaker_limiar(app.SPEAKER_MODELO_ATUAL)
+        assert modo == "cru" and lim == 0.6
+    finally:
+        monkeypatch.setitem(app._settings, "speaker_far_alvo", "")
+
+
+def test_speaker_setting_do_far_alvo_aceita_so_os_alvos(monkeypatch):
+    """A setting só guarda o que a calibração cobre (1 % e 0,1 %)."""
+    for entrada, esperado in (("1", "1"), ("0,1", "0.1"), ("0.1", "0.1"),
+                              ("5", ""), ("", ""), (None, "")):
+        limpo = app._apply_settings({"speaker_far_alvo": entrada})
+        assert app._settings["speaker_far_alvo"] == esperado, entrada
+        del limpo
 
 
 def test_speaker_enroll_lista_e_apaga(client, auth, monkeypatch):

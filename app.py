@@ -480,7 +480,10 @@ _SETTINGS_DEFAULTS = {
     # Verificação de locutor (biometria de voz): off | enforce (só vozes
     # cadastradas) | label (transcreve todos e etiqueta quem falou)
     "speaker_gate": "off",
-    "speaker_threshold": 0.6,         # rigor: similaridade cosseno mínima (0.35–0.9)
+    "speaker_threshold": 0.6,         # rigor CRU (escore cosseno 0.35–0.9)
+    # alvo de FAR em %: "1" ou "0,1"; vazio = usa `speaker_threshold` cru. Com alvo
+    # o escore é normalizado (AS-norm) e o limiar vem da calibração do R2 (#525)
+    "speaker_far_alvo": "",
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
     # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
@@ -4154,6 +4157,9 @@ def _apply_settings(payload: dict):
         _settings["speaker_gate"] = g
     if "speaker_threshold" in payload:
         _settings["speaker_threshold"] = _clamp(payload["speaker_threshold"], 0.35, 0.9, 0.6)
+    if "speaker_far_alvo" in payload:
+        v = str(payload["speaker_far_alvo"] or "").strip().replace(",", ".")
+        _settings["speaker_far_alvo"] = v if v in ("1", "0.1") else ""
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
             _settings[chave] = str(payload[chave] or "").strip()[:120]
@@ -7935,7 +7941,8 @@ def _speaker_save(perfis: dict) -> None:
         pass
 
 
-def _speaker_pontua(wav_path: Path, perfis: dict) -> tuple[str | None, float, bool]:
+def _speaker_pontua(wav_path: Path, perfis: dict
+                    ) -> tuple[str | None, float | None, bool, str]:
     """(melhor perfil, melhor escore, houve_embedding) contra TODOS os perfis.
 
     Cada perfil é pontuado pelo extrator que o gerou — um vetor do Resemblyzer não
@@ -7949,22 +7956,86 @@ def _speaker_pontua(wav_path: Path, perfis: dict) -> tuple[str | None, float, bo
         v = _speaker_embed(wav_path, m)
         if v:
             embs[m] = v
-    melhor, sim = None, 0.0
+    melhor, sim, modo = None, None, "cru"
     for nome, p in perfis.items():
-        emb = embs.get(_speaker_modelo_do_perfil(p))
+        modelo = _speaker_modelo_do_perfil(p)
+        emb = embs.get(modelo)
         vecs = p.get("vecs") or []
         if emb is None or not vecs:
             continue
-        s = _cos_sim(emb, _speaker_centroide(vecs))
-        if s > sim:
-            melhor, sim = nome, s
-    return melhor, sim, bool(embs)
+        s_, modo_ = _speaker_asnorm(emb, vecs, modelo)
+        if sim is None or s_ > sim:
+            melhor, sim, modo = nome, s_, modo_
+    return melhor, sim, bool(embs), modo
+
+
+#: limiar normalizado por (modelo, FAR alvo), calibrado no R2 (#521). Só vale
+#: para escore AS-normalizado — não se compara com o 0,6/0,75 cru.
+_SPEAKER_LIMIAR_FAR = {
+    "resemblyzer:v1": {"1": 2.906, "0.1": 3.173},
+    "ecapa:v1": {"1": 2.434, "0.1": 3.044},
+}
+_SPEAKER_COHORTE_ARQ = {"resemblyzer:v1": "cohorte_resemblyzer.json",
+                        "ecapa:v1": "cohorte_ecapa.json"}
+_speaker_cohorte_cache: dict = {}
+
+
+def _speaker_cohorte(modelo: str) -> list:
+    """Coorte de impostores do modelo (embeddings), vazia se não houver arquivo.
+
+    A coorte é POR MODELO: aplicar AS-norm do Resemblyzer num vetor de outro
+    modelo piora em vez de ajudar (o R2 mediu 1,9 % → 5,0 % em 1 s)."""
+    if modelo in _speaker_cohorte_cache:
+        return _speaker_cohorte_cache[modelo]
+    nome = _SPEAKER_COHORTE_ARQ.get(modelo)
+    vecs: list = []
+    if nome:
+        try:
+            dados = json.loads((BASE / "tools" / "bakeoff" / nome).read_text())
+            if dados.get("modelo") == modelo and isinstance(dados.get("vecs"), list):
+                vecs = [v for v in dados["vecs"] if isinstance(v, list) and v]
+        except Exception as e:  # noqa: BLE001 — sem coorte cai no escore cru
+            print(f"[speaker] coorte {modelo} ilegível: {e}", flush=True)
+    _speaker_cohorte_cache[modelo] = vecs
+    return vecs
+
+
+def _speaker_asnorm(emb, vecs_perfil: list, modelo: str) -> tuple[float, str]:
+    """(escore, modo). Sem coorte ou sem alvo de FAR, devolve o cosseno CRU.
+
+    Com alvo, normaliza pelo top-10 da coorte de impostores: `(s - mu) / sd`. É a
+    normalização que fez o ECAPA sair de 1,6 % para 0,19 % de EER no R2 — e é
+    específica do modelo."""
+    centroide = _speaker_centroide(vecs_perfil)
+    cru = _cos_sim(emb, centroide)
+    alvo = str(_settings.get("speaker_far_alvo") or "").strip()
+    coorte = _speaker_cohorte(modelo) if alvo else []
+    if not alvo or not coorte:
+        return cru, "cru"
+    notas = sorted((_cos_sim(emb, c) for c in coorte), reverse=True)[:10]
+    n = len(notas)
+    if n < 2:
+        return cru, "cru"
+    mu = sum(notas) / n
+    sd = (sum((x - mu) ** 2 for x in notas) / n) ** 0.5
+    return (cru - mu) / (sd or 1e-6), "asnorm"
+
+
+def _speaker_limiar(modelo: str) -> tuple[float, str]:
+    """(limiar, modo). `speaker_threshold` cru explícito continua vencendo."""
+    alvo = str(_settings.get("speaker_far_alvo") or "").strip()
+    if alvo and _speaker_cohorte(modelo):
+        lim = _SPEAKER_LIMIAR_FAR.get(modelo, {}).get(alvo)
+        if lim is not None:
+            return float(lim), "asnorm"
+    return float(_settings.get("speaker_threshold")
+                 or _SETTINGS_DEFAULTS["speaker_threshold"]), "cru"
 
 
 def _speaker_identify(wav_path: Path) -> tuple[str | None, float]:
     """Quem fala no wav: (nome, melhor_sim) ou (None, melhor_sim) se ninguém."""
-    melhor, sim, _houve = _speaker_pontua(wav_path, _speaker_load())
-    return melhor, sim
+    melhor, sim, _houve, _modo = _speaker_pontua(wav_path, _speaker_load())
+    return melhor, (sim or 0.0)
 
 
 def _speaker_gate_ok(wav_path: Path) -> dict:
@@ -7985,7 +8056,7 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
         return {"speaker_aviso": f"perfis de voz ilegíveis ({erro[:80]})"}
     if not perfis:
         return {}  # sem perfis cadastrados: gate inerte (não é erro)
-    melhor, sim, houve_emb = _speaker_pontua(wav_path, perfis)
+    melhor, sim, houve_emb, modo = _speaker_pontua(wav_path, perfis)
     if not houve_emb:
         # sem embedding (áudio curto/erro): enforce rejeita, label segue
         # `enforce` rejeita; `label` antes seguia MUDO — agora diz que seguiu sem
@@ -7994,15 +8065,20 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
                 if gate == "enforce" else
                 {"speaker_aviso": "áudio curto p/ identificar a voz — segue sem "
                                   "etiqueta de locutor"})
-    lim = float(_settings.get("speaker_threshold")
-                or _SETTINGS_DEFAULTS["speaker_threshold"])
-    autorizado = melhor is not None and sim >= lim
+    modelo_limiar = _speaker_modelo_do_perfil(perfis[melhor]) if melhor \
+        else SPEAKER_MODELO_ATUAL
+    lim, modo_lim = _speaker_limiar(modelo_limiar)
+    autorizado = melhor is not None and sim is not None and sim >= lim
     out: dict = {}
+    # o modo só aparece quando é normalizado: escore AS-norm não se confunde com
+    # o cru, e o caminho cru (default) mantém a resposta de antes
+    if modo_lim == "asnorm":
+        out["speaker_escore_modo"] = modo_lim
     if gate == "enforce" and not autorizado:
         out["rejected"] = True
         out["reason"] = (f"voz não autorizada (melhor: {melhor or 'ninguém'} "
-                         f"{sim:.2f} < {lim:.2f})" if melhor else
-                         f"voz não reconhecida ({sim:.2f} < {lim:.2f})")
+                         f"{sim if sim is not None else 0:.2f} < {lim:.2f})" if melhor
+                         else f"voz não reconhecida ({lim:.2f})")
     if gate == "label" and autorizado:
         out["speaker"] = melhor
         out["speaker_sim"] = round(sim, 3)
