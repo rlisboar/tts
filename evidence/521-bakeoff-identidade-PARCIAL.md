@@ -29,7 +29,9 @@ Cadastro de 5 amostras, centróide, escore cosseno, recortes de 1–8 s:
 
 | modelo | EER 1 s | EER 3 s | FAR de clone @FAR1% | clone médio x impostor |
 |---|---|---|---|---|
-| Resemblyzer (hoje no app) | **1,9 %** | **1,7 %** | **0 %** | 0,578 x 0,542 |
+| Resemblyzer (hoje no app) | **1,9 %** | 1,7 % | **0 %** | 0,578 x 0,542 |
+| SpeechBrain ECAPA-TDNN | 5,3 % | **1,6 %** | **0 %** | 0,049 x 0,045 |
+| 3D-Speaker ERes2NetV2 | **3,1 %** | 1,8 % | **0 %** (4,2 % com k=1) | 0,393 x 0,363 |
 | 3D-Speaker CAM++ | 8,8 % | 5,3 % | **0 %** | 0,410 x 0,382 |
 | WeSpeaker ResNet34 | 17,5 % | 8,8 % | **0 %** | 0,547 x 0,522 |
 
@@ -46,8 +48,26 @@ locutor, comparados contra o cadastro dele no limiar calibrado para FAR 1 %:
 - **CAM++: 0 de 24** (0,410 x 0,382) e **WeSpeaker: 0 de 24** (0,547 x 0,522)
 
 Leitura: hoje um clone do próprio app **não passa** como o dono no limiar de FAR
-1 %. É bom para anti-fraude e ruim para quem espera que a voz clonada sirva de
-credencial — a decisão é de produto e depende do R3 (#76d13f93).
+1 %, em nenhum dos cinco modelos. É bom para anti-fraude e ruim para quem espera
+que a voz clonada sirva de credencial — a decisão é de produto e depende do R3.
+
+## Veredito preliminar
+
+**Nenhum candidato bate o Resemblyzer por margem decisiva.** ECAPA e ERes2NetV2
+ficam estatisticamente colados nele (1,6–3,1 % contra 1,7–1,9 %), e a diferença
+está dentro do ruído deste corpus (20 locutores, 314 falas). O que os dados
+sustentam:
+
+1. **Não trocar o Resemblyzer só por "modelo mais novo"** — a troca custa
+   incompatibilidade de embeddings (recadastro de todas as vozes) e ainda não
+   mostra ganho.
+2. **Se for trocar, o candidato é ECAPA** (melhor em 3 s, mesma FAR de clone,
+   Apache-2.0), com **ERes2NetV2** como alternativa — nunca o WeSpeaker, que é o
+   pior em tudo aqui.
+3. **Cadastro com 1 amostra é frágil em todos** (9,5–22,1 % de EER em 1 s): a regra
+   de qualidade do cadastro vale mais que a escolha do modelo.
+4. **Falta para fechar**: corpus maior, AS-norm e fala espontânea. Sem isso o
+   veredito acima é preliminar, e está escrito como tal.
 
 ## Ressalvas
 

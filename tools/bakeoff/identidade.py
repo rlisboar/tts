@@ -103,11 +103,45 @@ class _Campplus:
         return e / (np.linalg.norm(e) or 1e-9)
 
 
+class _Eres2netv2(_Campplus):
+    """3D-Speaker ERes2NetV2 (192-d), mesmo protocolo do CAM++ (fbank cru)."""
+
+    CACHE = Path.home() / ".cache/modelscope/models/iic--speech_eres2netv2_sv_zh-cn_16k-common/snapshots/master/pretrained_eres2netv2.ckpt"
+
+    def __init__(self):
+        import torch
+        from funasr.models.eres2net.eres2netv2 import ERes2NetV2
+
+        self.torch = torch
+        self.m = ERes2NetV2(feat_dim=80, embedding_size=192, m_channels=64, baseWidth=26)
+        self.m.load_state_dict(torch.load(str(self.CACHE), map_location="cpu"))
+        self.m.eval()
+
+
+class _Ecapa:
+    """SpeechBrain ECAPA-TDNN (VoxCeleb). Espera WAVEFORM normalizada, não fbank."""
+
+    def __init__(self):
+        from speechbrain.inference.speaker import EncoderClassifier
+
+        self.enc = EncoderClassifier.from_hparams(
+            source="speechbrain/spkrec-ecapa-voxceleb", run_opts={"device": "cpu"})
+
+    def emb(self, x: np.ndarray) -> np.ndarray:
+        import torch
+
+        with torch.no_grad():
+            e = self.enc.encode_batch(torch.from_numpy(x)[None]).squeeze().numpy()
+        return e / (np.linalg.norm(e) or 1e-9)
+
+
 ADAPTADORES = {
     "resemblyzer": lambda: _Resemblyzer(),
     "wespeaker34": lambda: _Onnx("voxceleb_resnet34_LM.onnx"),
     "wespeaker221": lambda: _Onnx("voxceleb_resnet221_LM.onnx"),
     "campplus": lambda: _Campplus(),
+    "eres2netv2": lambda: _Eres2netv2(),
+    "ecapa": lambda: _Ecapa(),
 }
 
 
