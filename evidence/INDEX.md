@@ -292,6 +292,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `520-bakeoff-ruido-PARCIAL.md` | #520 | 2026-10-28 | Bake-off de redução de ruído (#520) — parcial com recomendação |
 | `521-bakeoff-identidade.md` | #521 | 2026-10-28 | Bake-off de identidade de voz (#521) — veredito |
 | `522-anticlone-PARCIAL.md` | #522 | 2026-10-28 | Anti-clone (#522) — primeiro corte: marca d'água AudioSeal |
+| `523-limitedor-onnx.md` | #523 | — | Limpar amostra pelo DFN3 em ONNX (#523) — medição refeita |
 | `532-bakeoff-locutor-alvo.md` | #532 | 2026-10-28 | Locutor-alvo (#532) — bake-off: seleção por janela × separação |
 | `563-dsh-fallback-prewarm.txt` | #563 | 2026-10-28 | 563 — `live_dsh_fallback.sh`: espera o pre-warm antes de mandar áudio |
 | `585-cadastro-dica.png` | #585 | 2026-10-28 | (imagem) |

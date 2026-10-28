@@ -92,7 +92,32 @@ def cand_dfnet(x, sr):
     return _iguala_nivel(y[: x.size], x), time.perf_counter() - t, 0.0
 
 
-CANDIDATOS = {"atual": cand_atual, "rnnoise": cand_rnnoise, "dfnet3": cand_dfnet}
+def cand_dfnet_onnx(x, sr):
+    """O MESMO DFN3, agora pelo grafo ONNX (sem torch na inferência).
+
+    O grafo é 48 kHz; a fala do corpus é 16 kHz, então reamostra antes e depois —
+    é o que o app faria com o modelo em 48 kHz. `dfn_onnx.limpa` foi conferido
+    contra o caminho torch: SI-SDR 136,9 dB e correlação 1,0 na mesma entrada."""
+    import scipy.signal as ss
+
+    tmp = comum.BASE / "resultados" / "_dfn"
+    tmp.mkdir(parents=True, exist_ok=True)
+    ent, sai = tmp / "in48.wav", tmp / "out48.wav"
+    x48 = ss.resample_poly(x, 48000, sr).astype(np.float32)
+    sf.write(str(ent), x48, 48000, subtype="PCM_16")
+    t = time.perf_counter()
+    r = subprocess.run([str(VENV_DF), str(Path(__file__).with_name("dfn_onnx.py")),
+                        str(ent), str(sai)], capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.decode()[-300:])
+    y, sr2 = sf.read(str(sai), dtype="float32")
+    if sr2 != sr:
+        y = ss.resample_poly(y, sr, sr2)
+    return _iguala_nivel(y[: x.size], x), time.perf_counter() - t, 0.0
+
+
+CANDIDATOS = {"atual": cand_atual, "rnnoise": cand_rnnoise, "dfnet3": cand_dfnet,
+              "dfnet3onnx": cand_dfnet_onnx}
 
 
 def _dnsmos(x: np.ndarray, sr: int) -> dict:
