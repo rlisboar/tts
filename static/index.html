@@ -6903,7 +6903,7 @@ async function loadSettings() {
     cfgTxt("chatExtra", s.chat_extra);
     if ($("speakerGate")) $("speakerGate").value = s.speaker_gate || "off";
     cfgTxt("sttWhisperModel", s.stt_whisper_repo);
-    cfgNum("spThr", s.speaker_threshold, 0.75);
+    cfgNum("spThr", s.speaker_threshold, 0.6)   // mesmo default do servidor (#525);
     if ($("spThrOut")) $("spThrOut").textContent = (+($("spThr").value)).toFixed(2);
     if (typeof refreshSpProfiles === "function") refreshSpProfiles();
     $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
@@ -7166,7 +7166,7 @@ $("cfgSave").onclick = async () => {
       chat_dsh_model: $("chatDshModel")?.value || (LAST_SETTINGS || {}).chat_dsh_model || "",
       chat_dsh_effort: $("chatDshEffort")?.value || "off",
       speaker_gate: $("speakerGate")?.value || "off",
-      speaker_threshold: parseFloat($("spThr")?.value) || 0.75,
+      speaker_threshold: parseFloat($("spThr")?.value) || 0.6,
       stt_whisper_repo: $("sttWhisperModel")?.value || "",
       stt_anti_ruido: $("sttFiltros")?.checked !== false,
       stt_denoise: $("sttDenoise")?.checked !== false,
