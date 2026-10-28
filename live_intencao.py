@@ -137,8 +137,13 @@ class Intencao:
 
     @property
     def tenta_em_s(self) -> float:
-        """Segundos até a próxima tentativa (0 = livre)."""
-        return max(0.0, round(self._tenta_em - time.monotonic(), 1))
+        """Segundos até a próxima tentativa (0 = livre).
+
+        SEM arredondar: com `round(..., 1)` o valor já dava 0,0 com até 0,05 s de
+        cooldown restando, e quem esperasse por `== 0.0` para chamar o `aquece`
+        caía na janela morta e recebia False — foi assim que o re-arme do #595
+        apareceu vermelho."""
+        return max(0.0, self._tenta_em - time.monotonic())
 
     # -- decisão ----------------------------------------------------------
     def decide(self, ref_assistente: str, fala_usuario: str, idioma: str = "") -> dict | None:
