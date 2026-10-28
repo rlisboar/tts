@@ -369,3 +369,7 @@ def test_retomada_que_nasce_DURANTE_o_fechamento_sobrevive(ws_client, live_limpo
         time.sleep(0.5)
         assert app._live_sessions.get(sid) is nova, \
             "o fechamento da sessão antiga apagou a retomada que nasceu no meio"
+        # a retomada é o que o teste deixa de propósito; sai daqui para o espiao
+        # de teardown não acusar sessão viva em todo teste seguinte (#505)
+        with app._live_lock:
+            app._live_sessions.pop(sid, None)

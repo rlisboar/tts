@@ -348,6 +348,31 @@ def _estado_isolado(tmp_path_factory):
 # `tests/test_chaves_isoladas.py`.)
 
 
+@pytest.fixture(autouse=True)
+def _registro_limpo_entre_testes():
+    """Zera `_jobs` e o pool do dsh entre testes — o espiao de teardown é sinal.
+
+    Antes, o job de um teste sobrava para o próximo e o espiao (`tests/_espiao.py`)
+    falava em ~metade da suíte (667 linhas em 1332 testes, medido no #505): com
+    ruído constante, vazamento NOVO não se distinguia de acúmulo conhecido. Aqui
+    também se espera o pre-warm do dsh que esteja em voo — sem o join, o cliente
+    aterrissa no pool DEPOIS do teste que o pediu, e a conta cairia no seguinte.
+
+    O que um teste precisa herdar de outro passa por `monkeypatch`/fixture própria.
+    """
+    import app
+
+    with app._jobs_lock:
+        app._jobs.clear()
+    yield
+    prewarm = getattr(app, "_chat_dsh_prewarm_thread", None)
+    if prewarm is not None and prewarm.is_alive():
+        prewarm.join(30)
+    with app._jobs_lock:
+        app._jobs.clear()
+    app._chat_dsh_livres.clear()
+
+
 def _retrato_outputs(pasta) -> set:
     """Nomes do diretório real, sem recursão (a suíte só cria arquivo solto)."""
     try:

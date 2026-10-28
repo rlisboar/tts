@@ -139,6 +139,8 @@ def _confere_que_o_codigo_e_do_boot(d: dict) -> None:
 
 @pytest.fixture()
 def client():
+    """Cliente de teste. O registro de `_jobs` é zerado pelo conftest
+    (`_registro_limpo_entre_testes`, #505): aqui só se monta o cliente."""
     return TestClient(app.app, raise_server_exceptions=False)
 
 

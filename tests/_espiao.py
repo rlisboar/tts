@@ -16,7 +16,15 @@ estado para o próximo.
 """
 
 
+import pytest
+
+
+@pytest.hookimpl(trylast=True)
 def pytest_runtest_teardown(item):
+    """`trylast`: roda DEPOIS dos finalizadores de fixture (#505).
+
+    Sem isso o espiao vê o estado de ANTES da limpeza do teste (o fixture `client`
+    zera `_jobs` no teardown) e acusa o que já ia sair."""
     import app
 
     vivo = len(app._live_sessions)
