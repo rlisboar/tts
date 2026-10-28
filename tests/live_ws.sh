@@ -34,11 +34,11 @@
 # (ex.: `trace-speed-191`) fica para sempre, e o dono vê na tela.
 #
 # O contador de `underrun` (#492) é sensível à carga: com outras suítes rodando
-# junto o TTS não acompanha o tempo real e um vão isolado aparece. Por isso ele
-# agora TOLERA até 1 vão a cada 5 chunks como aviso — acima disso reprova —, e o
-# número absoluto sai sempre na linha. A/B no mesmo minuto mostrou a versão
-# anterior deste arquivo piorando igual ou mais (4 vãos em 11 chunks contra 1 em
-# 8, no #463).
+# junto o TTS não acompanha o tempo real e um vão isolado aparece. O critério é
+# ZERO; a tolerância (1 vão a cada 5 chunks, como aviso) só vale quando a carga
+# por núcleo passa de `LIMITE_CARGA` — e a carga sai escrita na linha, para a
+# exceção ser auditável. A/B no mesmo minuto mostrou a versão anterior deste
+# arquivo piorando igual ou mais (4 vãos em 11 chunks contra 1 em 8, no #463).
 #
 # O alvo de 1500 ms vale para ESTE cenário (stub local): com o provedor de chat
 # REMOTO do dono o 1º token sozinho custa segundos e o alvo não cabe — quem medir
@@ -88,6 +88,9 @@ def define_chave(chave):
     H.clear()
     H["X-API-Key"] = chave
 ALVO_MS = 1500
+#: carga por núcleo acima da qual o `underrun` tolera vão (ver 2b): com a máquina
+#: de 18 núcleos parada a 1m dá ~0,1; com o time de agentes rodando passa de 0,5.
+LIMITE_CARGA = 0.5
 # Backend do Live desta rodada (o env do chamador manda; sem ele, stub). O alvo de
 # 1,5 s é do cenário STUB (#173): com o Live no harness dsh, o 1º token DELE domina
 # e o alvo não cabe — aí o número é AVISO qualificado, não falha.
@@ -530,29 +533,33 @@ async def principal():
                 ok("turn_complete no fim do turno")
             else:
                 falha(f"turno não fechou com turn_complete: {tipos}")
-            # 2b) fome do buffer de playback (#492): num turno longo o contador tem
-            # de ficar em 0. Vão TOLERADOS até 1 vão a cada 5 chunks (`limite`),
-            # como AVISO: com a máquina ocupada — e essa é a regra de convivência
-            # aqui, outros agentes rodam ao mesmo tempo — uma geração isolada passa
-            # do tempo real e o buffer seca uma vez; A/B medido no #463/#545 mostra
-            # a versão anterior do arquivo piorando igual ou mais no mesmo minuto.
-            # Acima do limite é regressão de verdade. `chunks` sai do mesmo `stats`.
+            # 2b) fome do buffer de playback (#492): o critério é ZERO vão novo num
+            # turno longo. Máquina CARREGADA é a exceção declarada: se a carga por
+            # núcleo no momento da medida passa de LIMITE_CARGA, o turno tolera até
+            # 1 vão a cada 5 chunks como AVISO — o TTS não acompanha o tempo real
+            # quando outras suítes disputam CPU (A/B do #463: a versão anterior
+            # deste arquivo dava 4 vãos em 11 chunks contra 1 em 8, mesmo minuto).
+            # Sem carga alta, 1 vão já reprova. A carga sai no texto da linha, para
+            # ninguém precisar adivinhar por que a tolerância valeu.
             stats_ev = [e for e in eventos if e.get("type") == "stats"]
             if stats_ev:
                 pb = (stats_ev[-1].get("playback") or {})
                 n_chunks, n_und = pb.get("chunks", 0), pb.get("underruns", 0)
                 novo = n_und - BASE_UND[0]     # delta desde o aquecimento
-                limite = max(1, n_chunks // 5)
+                carga = os.getloadavg()[0] / max(1, os.cpu_count() or 1)
+                limite = max(1, n_chunks // 5) if carga > LIMITE_CARGA else 0
                 if n_chunks < 5:
                     falha(f"turno curto para medir underrun: {n_chunks} chunk(s), queria ≥5")
                 elif novo == 0:
-                    ok(f"playback sem underrun novo em {n_chunks} chunks (total {n_und})")
+                    ok(f"playback sem underrun novo em {n_chunks} chunks "
+                       f"(total {n_und}, carga {carga:.2f}/núcleo)")
                 elif novo <= limite:
-                    aviso(f"{novo} underrun(s) em {n_chunks} chunks — dentro do "
-                          f"limite de {limite} por carga (buffer vazio)")
+                    aviso(f"{novo} underrun(s) em {n_chunks} chunks — tolerado por CARGA "
+                          f"{carga:.2f}/núcleo (limite {limite}; buffer vazio)")
                 else:
-                    falha(f"{novo} underrun(s) NOVOS em {n_chunks} chunks "
-                          f"(limite por carga: {limite})")
+                    porque = (f"carga {carga:.2f}/núcleo, limite {limite}" if limite
+                              else f"máquina folgada, carga {carga:.2f}/núcleo, critério é zero")
+                    falha(f"{novo} underrun(s) NOVOS em {n_chunks} chunks ({porque})")
             if primeiro is not None:
                 if primeiro <= ALVO_MS:
                     ok(f"fim-de-fala → 1º áudio: {primeiro:.0f} ms (alvo ≤ {ALVO_MS} ms) — OK")
