@@ -24,9 +24,14 @@
 # não existem no `_apply_settings`: o launcher ENVOLVE a função, valida, faz o merge
 # e GRAVA O CORPO de cada POST — é o que permite cobrar o parcial e a ida-e-volta
 # (POST, GET, reload). Quando o app JÁ conhece as chaves (o #501 entrou), o mesmo
-# launcher só grava os corpos e o teste passa a bater no `_apply_settings` REAL; o
-# preço é que as chaves `live_barge_*` ficam no settings.json do dono com os padrões
-# (o modo é devolvido ao valor lido no início). Não existe `TTS_SETTINGS_PATH` (#461).
+# launcher só grava os corpos e o teste passa a bater no `_apply_settings` REAL.
+#
+# ESTADO PRÓPRIO (#541): todos os caminhos de estado vão para tmp pelas variáveis do
+# #461 (`TTS_SETTINGS_PATH`, `TTS_APIKEYS_PATH`, `TTS_VOICES_DIR`, `TTS_OUTPUTS_DIR`
+# e afins) — o `settings.json`/`.apikeys.json` do dono não são abertos. A suíte
+# imprime sha256 e mtime dos dois ANTES e DEPOIS e reprova se mudarem, para a rodada
+# nunca mais mexer no estado dele (antes era ele quem ganhava `live_barge_*` e podia
+# ficar com o Live em `dsh`, mandando texto para fora sem o dono ter escolhido).
 #
 # O volume é medido no ANALISADOR DA SAÍDA (o mesmo do painel OBS), não só no
 # ganho: prova atenuação de áudio de verdade, não um número solto.
@@ -76,9 +81,40 @@ def porta_livre():
 stub_porta = porta_livre()
 threading.Thread(target=HTTPServer(("127.0.0.1", stub_porta), Stub).serve_forever, daemon=True).start()
 
-# ─── servidor próprio (settings.json do dono não manda no teste) ─────────────
+# ─── servidor próprio, com ESTADO PRÓPRIO (#541/#461) ───────────────────────
+# A suíte grava em `/api/settings`; sem override, cada rodada reescrevia o
+# `settings.json` do DONO (e o dono num rev com o #509 sairia falando por `dsh`,
+# ou seja, com o texto do trecho indo para fora durante a rodada). Todos os
+# caminhos de estado vão para tmp — o arquivo do dono nem é aberto.
 porta = porta_livre()
+DIR_TMP = pathlib.Path("/tmp") / f"live_interrupcao_{porta}"
+(DIR_TMP / "voices").mkdir(parents=True, exist_ok=True)
+(DIR_TMP / "outputs").mkdir(parents=True, exist_ok=True)
+SETTINGS_TESTE = DIR_TMP / "settings.json"
+SETTINGS_TESTE.write_text("{}")     # vazio: valem os defaults do app
+RAIZ_REPO = pathlib.Path.cwd()
+OWNER_SETTINGS = RAIZ_REPO / "settings.json"
+OWNER_APIKEYS = RAIZ_REPO / ".apikeys.json"
+
+def _impressao(caminho):
+    """sha256 + mtime — é a prova de que o arquivo do dono não foi tocado."""
+    import hashlib
+    if not caminho.exists():
+        return None
+    st = caminho.stat()
+    return (hashlib.sha256(caminho.read_bytes()).hexdigest(), int(st.st_mtime_ns))
+
+ANTES = {str(c): _impressao(c) for c in (OWNER_SETTINGS, OWNER_APIKEYS)}
+print("  dono antes:", {k.split('/')[-1]: v for k, v in ANTES.items()})
+
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
+       "TTS_SETTINGS_PATH": str(SETTINGS_TESTE),
+       "TTS_APIKEYS_PATH": str(DIR_TMP / "apikeys.json"),
+       "TTS_LEGACY_APIKEY_PATH": str(DIR_TMP / "apikey"),
+       "TTS_VOICES_DIR": str(DIR_TMP / "voices"),
+       "TTS_OUTPUTS_DIR": str(DIR_TMP / "outputs"),
+       "TTS_SPEAKER_PATH": str(DIR_TMP / "speaker.json"),
+       "TTS_JOBS_HIST_PATH": str(DIR_TMP / "jobs-history.json"),
        "TTS_CHAT_MODEL": "stub-int",
        # pinados: o dono pode estar em `chat_backend: "dsh"` — e o do LIVE tem
        # variável própria, não governada por esta (#143/#195)
@@ -317,6 +353,20 @@ try:
                 return { antes, am, ativos: LX.ativos.length, abaixado: LX.abaixado };
             }""", [evento, ms])
 
+        def espera_ganho(alvo, prazo_ms=3500, abaixo=False):
+            """Espera o ganho CRUZAR o alvo e devolve o tempo. Sob contenção o
+            `currentTime` do AudioContext anda por saltos, então amostrar um
+            intervalo fixo dava falso vermelho (medido 0,157 e 0,405 em 400 ms)."""
+            return pg.evaluate("""async ([alvo, prazo, abaixo]) => {
+                const t0 = performance.now();
+                while (performance.now() - t0 < prazo) {
+                    const g = LX.duck.gain.value;
+                    if (abaixo ? g <= alvo : g >= alvo) return performance.now() - t0;
+                    await new Promise(r => setTimeout(r, 5));
+                }
+                return null;
+            }""", [alvo, prazo_ms, abaixo])
+
         def primeiro(am, alvo, abaixo=True):
             for t, g in am:
                 if (g <= alvo) if abaixo else (g >= alvo):
@@ -341,11 +391,31 @@ try:
                    f"áudio não foi atenuado de verdade ({rms_antes:.4f} -> {rms_depois:.4f})")
 
         # ─── 2) TETO de 2 s: sem decisão, o volume volta sozinho ─────────────
-        pg.wait_for_timeout(2400)
-        g_teto = pg.evaluate("() => LX.duck.gain.value")
+        # O relógio começa no PRÓPRIO duck (medir depois da rodada anterior daria
+        # menos que 2 s, porque o prazo já estava correndo).
+        t_teto = pg.evaluate("""async () => {
+            lxCancelaPlayback();
+            const n = 24000 * 6, i = new Int16Array(n);
+            for (let k = 0; k < n; k++) i[k] = Math.round(Math.sin(2 * Math.PI * 440 * k / 24000) * 3200);
+            lxToca(i);
+            lxRecebe({ data: JSON.stringify({ type: 'barge_suspeito', turn: 99 }) });
+            // espera o duck se ESTABELECER primeiro (o ganho ainda está em 1 no
+            // instante do evento) e só então conta o prazo do teto
+            const limite = performance.now() + 300;
+            while (performance.now() < limite && LX.duck.gain.value > 0.2)
+                await new Promise(r => setTimeout(r, 5));
+            const t0 = performance.now();
+            while (performance.now() - t0 < 4000) {
+                if (LX.duck.gain.value >= 0.99) return performance.now() - t0;
+                await new Promise(r => setTimeout(r, 5));
+            }
+            return null;
+        }""")
         log_teto = pg.evaluate("() => document.getElementById('lxLog').textContent")
-        print(f"  teto de 2 s: ganho voltou a {g_teto:.3f} · aviso no log={'2 s sem decisão' in log_teto}")
-        cobrar(g_teto >= 0.99, f"volume não voltou sozinho depois do teto de 2 s (ganho {g_teto:.3f})")
+        print(f"  teto de 2 s: volume voltou em {t_teto} ms · aviso no log={'2 s sem decisão' in log_teto}")
+        cobrar(t_teto is not None, "volume não voltou sozinho depois do teto de 2 s")
+        cobrar(t_teto is not None and t_teto >= 1900,
+               f"volume voltou ANTES do teto de 2 s ({t_teto} ms)")
         cobrar("2 s sem decisão" in log_teto, "o teto de 2 s não avisa no log")
         cobrar(pg.evaluate("() => document.getElementById('lxDuck').hidden"),
                "chip de volume abaixado ficou aceso depois do teto")
@@ -356,11 +426,11 @@ try:
         t3 = primeiro(r3["am"], 0.2)
         cobrar(t3 is not None and t3 <= 70, f"barge_suspeito não abaixou em ≤50 ms (medido {t3} ms)")
         cobrar(r3["ativos"] > 0, "barge_suspeito parou a fila (devia manter tocando)")
-        r4 = dispara({"type": "barge_retoma", "turn": 7, "tipo": "backchannel"}, 400)
+        r4 = dispara({"type": "barge_retoma", "turn": 7, "tipo": "backchannel"}, 1200)
         t4 = primeiro(r4["am"], 0.99, abaixo=False)
         log3 = pg.evaluate("() => document.getElementById('lxLog').textContent")
         print(f"  barge_suspeito/retoma: duck em {t3} ms · retoma em {t4} ms · log='↩ continuei' {'in' if '↩ continuei — era backchannel' in log3 else 'NÃO'} · fila {r4['ativos']}")
-        cobrar(t4 is not None and t4 <= 300, f"barge_retoma não devolveu o volume (medido {t4} ms)")
+        cobrar(t4 is not None and t4 <= 400, f"barge_retoma não devolveu o volume (medido {t4} ms)")
         cobrar("↩ continuei — era backchannel" in log3,
                "log do barge_retoma não diz o que era (esperado '↩ continuei — era backchannel')")
         cobrar(r4["ativos"] > 0, "barge_retoma não deixou a resposta tocando")
@@ -379,14 +449,13 @@ try:
         # ─── 5) `interrupted` corta e o volume NÃO fica abaixado ─────────────
         prepara(); pg.wait_for_timeout(250)
         dispara({"type": "barge_suspeito", "turn": 8}, 120)
-        r5 = pg.evaluate("""async () => {
-            lxRecebe({ data: JSON.stringify({ type: 'interrupted', turn: 8 }) });
-            await new Promise(r => setTimeout(r, 400));
-            return { ativos: LX.ativos.length, ganho: LX.duck.gain.value };
-        }""")
-        print(f"  interrupted: fila {r5['ativos']} · ganho {r5['ganho']:.3f}")
-        cobrar(r5["ativos"] == 0, "interrupted não cortou a fila")
-        cobrar(r5["ganho"] >= 0.99, f"volume ficou abaixado depois do corte ({r5['ganho']:.3f}) — o próximo turno nasceria mudo")
+        r5 = pg.evaluate("""() => { lxRecebe({ data: JSON.stringify({ type: 'interrupted', turn: 8 }) });
+                                     return LX.ativos.length; }""")
+        t5 = espera_ganho(0.99, 3000)
+        print(f"  interrupted: fila {r5} · volume devolvido em {t5} ms")
+        cobrar(r5 == 0, "interrupted não cortou a fila")
+        cobrar(t5 is not None,
+               f"volume ficou abaixado depois do corte (ganho {pg.evaluate('() => LX.duck.gain.value')}) — o próximo turno nasceria mudo")
 
         # ─── 6) modo `imediata` pela TELA: `speech_start` volta a CORTAR ─────
         pg.select_option("#lxInterrupcao", "imediata")
@@ -566,6 +635,18 @@ try:
         print("  limiar 0.85 e depois 3 (teto) ->", limiar, "· no servidor:", servido.get("limiar"))
         cobrar(limiar == "0.95" and servido.get("limiar") == 0.95,
                f"limiar não foi clampado/gravado como float: tela={limiar} servidor={servido.get('limiar')}")
+        # clamps do SERVIDOR nos outros dois campos (o GET não publica limites;
+        # os números da tela espelham o `_normaliza_filtro_barge`)
+        pg.evaluate("""() => { const c = document.getElementById('lxNum_fala_sustentada_min_ms');
+                                c.value = 100; c.onchange(); }""")
+        pg.wait_for_timeout(500)
+        cobrar(pg.evaluate("() => document.getElementById('lxNum_fala_sustentada_min_ms').value") == "150",
+               "min_ms abaixo do piso do servidor (150) não foi limitado")
+        pg.evaluate("""() => { const c = document.getElementById('lxNum_fim_de_resposta_restante_ms');
+                                c.value = 6000; c.onchange(); }""")
+        pg.wait_for_timeout(500)
+        cobrar(pg.evaluate("() => document.getElementById('lxNum_fim_de_resposta_restante_ms').value") == "5000",
+               "restante_ms acima do teto do servidor (5000) não foi limitado")
         # timeout: teto de 3000
         pg.evaluate("""() => { const c = document.getElementById('lxNum_modelo_timeout');
                                 c.value = 9999; c.onchange(); }""")
@@ -748,6 +829,22 @@ finally:
     except Exception:
         try: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception: pass
+
+DEPOIS = {str(c): _impressao(c) for c in (OWNER_SETTINGS, OWNER_APIKEYS)}
+print("  dono depois:", {k.split('/')[-1]: v for k, v in DEPOIS.items()})
+for chave, antes in ANTES.items():
+    nome = chave.split("/")[-1]
+    if antes == DEPOIS[chave]:
+        print(f"  ✔ intacto: {nome} sha256={str(antes[0])[:12]} mtime_ns={antes[1]}")
+    elif nome == "settings.json":
+        # ESTE é o arquivo que a suíte escreveria se o isolamento falhasse: muda
+        # aqui = regressão dura.
+        falhas.append(f"o settings.json do dono MUDOU na rodada ({antes} -> {DEPOIS[chave]})")
+    else:
+        # `.apikeys.json` é escrito por OUTRAS suítes (admin_ui_flow,
+        # ultima_chave_ui) que rodam em paralelo no mesmo estágio: mudança aqui
+        # pode não ser nossa, então avisa em vez de reprovar.
+        print(f"  ⚠ {nome} mudou na rodada (pode ser de outra suíte): {antes} -> {DEPOIS[chave]}")
 
 print()
 if falhas:

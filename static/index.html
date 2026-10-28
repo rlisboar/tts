@@ -2643,7 +2643,7 @@
             <div class="lx-filtro" data-filtro="fala_sustentada">
               <label class="check"><input type="checkbox" id="lxLiga_fala_sustentada"><b>fala sustentada</b></label>
               <span class="lx-dica">corto com</span>
-              <input type="number" id="lxNum_fala_sustentada_min_ms" min="400" max="5000" step="100" class="lx-num"
+              <input type="number" id="lxNum_fala_sustentada_min_ms" min="150" max="5000" step="50" class="lx-num"
                      aria-label="duração mínima da fala sustentada em ms">
               <span class="lx-dica">ms falando por cima, mesmo sem o STT responder</span>
             </div>
@@ -2688,7 +2688,7 @@
             <div class="lx-filtro" data-filtro="fim_de_resposta">
               <label class="check"><input type="checkbox" id="lxLiga_fim_de_resposta"><b>fim de resposta</b></label>
               <span class="lx-dica">deixo terminar (anoto sua fala) quando faltam</span>
-              <input type="number" id="lxNum_fim_de_resposta_restante_ms" min="0" max="3000" step="50" class="lx-num"
+              <input type="number" id="lxNum_fim_de_resposta_restante_ms" min="200" max="5000" step="50" class="lx-num"
                      aria-label="faltando quanto de resposta, em ms, deixa terminar">
               <span class="lx-dica">ms ou menos</span>
             </div>
@@ -7806,7 +7806,7 @@ const LX = { ws: null, estado: "desligado", ctxCap: null, noCap: null, stream: n
              // #502 (adendo): estado local dos filtros, o "sem decisão" e o corpo
              // acumulado do POST parcial (debounce)
              filtros: null, semDecisao: "continua", pendenteBarge: null, bargeT: 0,
-             filtrosStatusT: 0, modeloVisivel: false };
+             filtrosStatusT: 0, modeloVisivel: false, rampaT: 0, rampaT2: 0 };
 
 // #244 (contrato aditivo do #222): motivo único do ramo `session_substituida` —
 // a mesma frase no `case "error"` e no `onclose` (o close chega logo atrás).
@@ -8376,10 +8376,12 @@ const LX_MAX_PALAVRAS = 100, LX_MAX_PALAVRA_CHARS = 40;
 // campos numéricos por filtro: [campo, id do input, min, max, passo, float?]
 const LX_NUM_CAMPOS = {
   frase_longa: [["min_palavras", "lxNum_frase_longa_min_palavras", 1, 20, 1]],
-  fala_sustentada: [["min_ms", "lxNum_fala_sustentada_min_ms", 400, 5000, 100]],
+  // limites espelhados do `_normaliza_filtro_barge` (app.py): o SERVIDOR é a
+  // verdade e o GET não os publica — os dois números moram lá e aqui
+  fala_sustentada: [["min_ms", "lxNum_fala_sustentada_min_ms", 150, 5000, 50]],
   modelo: [["limiar", "lxNum_modelo_limiar", 0.05, 0.95, 0.05, true],
            ["timeout_ms", "lxNum_modelo_timeout", 100, 3000, 50]],
-  fim_de_resposta: [["restante_ms", "lxNum_fim_de_resposta_restante_ms", 0, 3000, 50]],
+  fim_de_resposta: [["restante_ms", "lxNum_fim_de_resposta_restante_ms", 200, 5000, 50]],
 };
 
 function lxClona(o) { return JSON.parse(JSON.stringify(o)); }
@@ -8408,8 +8410,8 @@ function lxFiltroCfg(nome, v) {
     }
   }
   if (padrao.min_palavras !== undefined) cfg.min_palavras = lxClampNum(v && v.min_palavras, 1, 20, padrao.min_palavras);
-  if (padrao.min_ms !== undefined) cfg.min_ms = lxClampNum(v && v.min_ms, 400, 5000, padrao.min_ms);
-  if (padrao.restante_ms !== undefined) cfg.restante_ms = lxClampNum(v && v.restante_ms, 0, 3000, padrao.restante_ms);
+  if (padrao.min_ms !== undefined) cfg.min_ms = lxClampNum(v && v.min_ms, 150, 5000, padrao.min_ms);
+  if (padrao.restante_ms !== undefined) cfg.restante_ms = lxClampNum(v && v.restante_ms, 200, 5000, padrao.restante_ms);
   if (padrao.limiar !== undefined) {
     cfg.provedor = (v && v.provedor === "dsh") ? "dsh" : "local";
     cfg.limiar = lxClampFloat(v && v.limiar, 0.05, 0.95, padrao.limiar);
@@ -8651,6 +8653,33 @@ function lxRampaVolume(alvo, ms) {
     g.gain.setValueAtTime(de, t);
     g.gain.linearRampToValueAtTime(alvo, t + ms / 1000);
   } catch (e) { try { g.gain.value = alvo; } catch (e2) {} }
+  // Vigia: uma rampa agendada na MESMA task de um `stop(0)` do trecho fica
+  // congelada no valor de UM quantum (medido: 0,126 -> 0,157 e para; o áudio
+  // segue naquele ganho, ou seja o próximo turno nasceria mudo). Duas amostras
+  // 40 ms distantes detectam o congelamento sem adivinhar posição de rampa; aí o
+  // alvo é cravado — perder a rampa é melhor que ficar mudo.
+  clearTimeout(LX.rampaT); clearTimeout(LX.rampaT2);
+  let v1 = null;
+  LX.rampaT = setTimeout(() => { v1 = g.gain.value; }, 40);
+  LX.rampaT2 = setTimeout(() => {
+    if (Math.abs(g.gain.value - alvo) < 0.004) return;          // chegou
+    if (v1 !== null && Math.abs(g.gain.value - v1) > 0.004) return;  // andou
+    try { g.gain.cancelScheduledValues(ctx.currentTime); g.gain.value = alvo; } catch (e) {}
+  }, 80);
+}
+
+/* Corte: crava 1 no mesmo passo. Aqui NÃO cabe rampa — o áudio já parou — e o
+   `stop(0)` e a automação na mesma task era justamente o caso que congelava. */
+function lxZeraVolume() {
+  clearTimeout(LX.duckT); LX.duckT = 0;
+  clearTimeout(LX.rampaT); clearTimeout(LX.rampaT2);
+  LX.abaixado = false;
+  const g = LX.duck, ctx = LX.ctxPlay;
+  if (g && ctx) {
+    try { g.gain.cancelScheduledValues(ctx.currentTime); g.gain.value = 1; }
+    catch (e) { try { g.gain.value = 1; } catch (e2) {} }
+  }
+  lxPintaDuck();
 }
 
 function lxAbaixaVolume(origem) {
@@ -8709,7 +8738,7 @@ function lxToca(int16) {
 function lxCancelaPlayback() {
   for (const s of LX.ativos) { try { s.stop(0); } catch (e) {} }
   LX.ativos = []; LX.proximo = 0;
-  lxRetomaVolume();     // corte com o ganho abaixado deixaria o PRÓXIMO turno mudo
+  lxZeraVolume();     // corte com o ganho abaixado deixaria o PRÓXIMO turno mudo
 }
 
 function lxRecebe(ev) {

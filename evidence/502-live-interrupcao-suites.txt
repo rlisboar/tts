@@ -12,9 +12,14 @@ medido no ANALISADOR DA SAÍDA (o mesmo do painel OBS), não só no ganho.
 As chaves do barge já entraram no `app.py` (#501, commit 9188349) no meio da
 entrega: o launcher serve as chaves SÓ se o app não as conhecer e, de todo jeito,
 GRAVA O CORPO de cada POST — é assim que o parcial é conferido. Na rodada registrada
-o app já conhecia, então o caminho exercitado é o `_apply_settings` REAL; o preço é
-que as chaves ficam no `settings.json` do dono nos padrões (não existe
-`TTS_SETTINGS_PATH`, #461), e o modo é devolvido ao valor lido no início.
+o app já conhecia, então o caminho exercitado é o `_apply_settings` REAL.
+
+ESTADO ISOLADO (#541): todos os caminhos de estado vão para tmp pelas variáveis do
+#461 (`TTS_SETTINGS_PATH`, `TTS_APIKEYS_PATH`, `TTS_VOICES_DIR`, `TTS_OUTPUTS_DIR`,
+`TTS_SPEAKER_PATH`, `TTS_JOBS_HIST_PATH`) — o `settings.json` e o `.apikeys.json` do
+dono não são abertos. A suíte imprime sha256+mtime dos dois antes e depois e reprova
+se o `settings.json` mudar (o `.apikeys.json` muda por outras suítes em paralelo, aí
+só avisa). PROVA em 3 rodadas: hash e mtime idênticos antes/depois nas três.
 
 == 1) Rodada verde ==
   seletor: opcoes ['inteligente', 'imediata'] · título explica os dois e os filtros
@@ -50,8 +55,7 @@ que as chaves ficam no `settings.json` do dono nos padrões (não existe
     restaurar deixa de levar `modelo`; servidor de volta -> linha volta no load
   valor inválido no servidor -> tela cai no padrão (inteligente)
   filtros e sem_decisao devolvidos ao dono no fim (modo volta ao valor lido)
-  ✔ OK — três rodadas SEGUIDAS verdes (a suíte é reexecutável: o baseline do painel
-    é reposto no início e o estado é devolvido no fim)
+  ✔ OK
 
 Raiz quadrada média 0.0690 -> 0.0087 = razão 0.126, exatamente os -18 dB.
 
@@ -124,6 +128,22 @@ Raiz quadrada média 0.0690 -> 0.0087 = razão 0.126, exatamente os -18 dB.
   erros de JS (pageerror / console error): nenhum
   requisições falhas: apenas as 5 sondas de porta do controlador
   (127.0.0.1:7861..7865 `/mode`, preexistentes quando não há controlador)
+
+== 7) REGRESSÃO ACHADA NO CAMINHO, POR CAUSA DESTA ISOLAR: o ganho congelava no corte ==
+Sem o `settings.json` do dono, o app sobe com os DEFAULTS (modelo não carregado) e a
+máquina fica mais apertada; aí apareceu um defeito que estava escondido: `stop(0)` no
+trecho e `linearRampToValueAtTime` na MESMA task congelam o `AudioParam` do duck — a
+rampa executa UM quantum (0,126 -> 0,157) e para, e o áudio segue naquele ganho (o
+próximo turno nasceria mudo). Medido em laboratório: mesma task congela; task
+seguinte, 40 ms depois, ou `gain.value = 1` direto NÃO congelam. Correções:
+  · no CORTE o volume é cravado em 1 sem rampa (o áudio já parou) — não depende de
+    automação e passa nos três casos medidos;
+  · fora do corte (retoma, teto) o vigia pega congelamento por duas amostras 40 ms
+    distantes e crava o alvo em vez de deixar mudo.
+Medições depois: teto volta em 2094/2101/2107 ms (≥ 2 s), retoma em 148 ms, corte
+devolve o volume em 0 ms.
+Também nesta rodada: teto de 2 s e retoma passaram a ESPERAR o alvo em vez de amostrar
+intervalo fixo (sob contenção o `currentTime` anda por saltos e dava falso vermelho).
 
 Capturas: `502-live-interrupcao-duck.png` (chip aceso e log de decisão/retoma),
 `502-live-filtros-painel.png` (painel aberto com chips, números e restaurar padrões) e
