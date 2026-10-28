@@ -13,6 +13,10 @@
 #     sobrescreve em silêncio — peso trocado muda o veredito do bake-off);
 #   • o que é gerado localmente (coorte do AS-norm) NÃO vem da internet: o script
 #     diz o comando e falha se o artefato faltar;
+#   • o que é DERIVADO de outro arquivo versionado (`label_encoder.ckpt`, cópia do
+#     `label_encoder.txt`) o próprio script materializa e confere o sha256 — sem
+#     ele o load offline morre no `Pretrainer` (#598);
+#   • `--check` REPROVA quando falta arquivo (antes saía 0 com tudo faltando);
 #   • a coorte é específica do modelo — trocar o extrator exige refazê-la.
 set -u
 RAIZ="${0:A:h:h}"
@@ -42,8 +46,25 @@ FONTES=(
   "models/ecapa-voxceleb/label_encoder.txt|speechbrain/spkrec-ecapa-voxceleb|0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
   "models/asnorm-coorte-ecapa.npy|-|-"
 )
+# Arquivos DERIVADOS de outro arquivo versionado (não vêm da internet): o script
+# copia e confere o sha256. `label_encoder.ckpt` é um deles porque o `Pretrainer`
+# do speechbrain busca `<savedir>/label_encoder.ckpt` no load e, ausente, cai no
+# Hub — mesmo com `savedir` (medido: `LocalEntryNotFoundError` offline, #598).
+# Formato: caminho|origem local
+DERIVADOS=(
+  "models/ecapa-voxceleb/label_encoder.ckpt|models/ecapa-voxceleb/label_encoder.txt"
+)
 
-sha_de() { /usr/bin/shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
+# portátil: o job do CI é Linux (`sha256sum`), a máquina de trabalho é macOS
+# (`shasum`). Antes o caminho cravado em /usr/bin quebrava no CI (#598).
+if command -v sha256sum >/dev/null 2>&1; then
+  sha_de() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
+else
+  sha_de() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
+fi
+# `.tmp` POR EXECUÇÃO: nome fixo fazia duas rodadas simultâneas atropelarem o
+# arquivo uma da outra (#598).
+TMP_SUF="$$.$RANDOM"
 esperado() { awk -v alvo="$1" '$2 == alvo {print $1}' "$SUMS"; }
 
 falhas=0
@@ -77,22 +98,55 @@ for linha in "${FONTES[@]}"; do
   mkdir -p "${arq:h}"
   url="$BASE_URL/$repo/resolve/$rev/${arq:t}"
   print -r -- "  baixando ${arq:t} de $repo@${rev[1,8]}…"
-  if ! curl -fsSL --retry 2 -o "$arq.tmp" "$url"; then
-    print -r -- "  [FALHA] download de $arq falhou"; rm -f "$arq.tmp"; falhas=1; continue
+  if ! curl -fsSL --retry 2 -o "$arq.$TMP_SUF" "$url"; then
+    print -r -- "  [FALHA] download de $arq falhou"; rm -f "$arq.$TMP_SUF"; falhas=1; continue
   fi
-  atual="$(sha_de "$arq.tmp")"
+  atual="$(sha_de "$arq.$TMP_SUF")"
   if [ "$atual" != "$alvo" ]; then
     print -r -- "  [FALHA] $arq baixado com sha256 ${atual[1,12]}… ≠ esperado ${alvo[1,12]}…"
-    rm -f "$arq.tmp"; falhas=1; continue
+    rm -f "$arq.$TMP_SUF"; falhas=1; continue
   fi
-  mv "$arq.tmp" "$arq"
+  mv "$arq.$TMP_SUF" "$arq"
   print -r -- "  [ok] $arq baixado e conferido"
+done
+
+for linha in "${DERIVADOS[@]}"; do
+  arq="${linha%%|*}"; origem="${linha#*|}"
+  alvo="$(esperado "$arq")"
+  if [ -z "$alvo" ]; then
+    print -r -- "  [FALHA] $arq sem sha256 em $SUMS"; falhas=1; continue
+  fi
+  if [ -f "$arq" ] && [ "$(sha_de "$arq")" = "$alvo" ]; then
+    print -r -- "  [ok] $arq (derivado, sha256 confere)"; continue
+  fi
+  if [ -f "$arq" ] && [ "$FORCA" = 0 ]; then
+    atual="$(sha_de "$arq")"
+    print -r -- "  [FALHA] $arq divergente da origem: ${atual[1,12]}… ≠ ${alvo[1,12]}…"
+    print -r -- "          (derivado: use --forca para refazer de $origem)"
+    falhas=1; continue
+  fi
+  if [ ! -f "$origem" ]; then
+    print -r -- "  [FALHA] $arq falta e a origem ($origem) também"; falhas=1; continue
+  fi
+  if [ "$CHECK" = 1 ]; then faltando+=("$arq"); continue; fi
+  print -r -- "  derivando ${arq:t} de ${origem:t}"
+  if ! cp "$origem" "$arq.$TMP_SUF" || ! chmod 444 "$arq.$TMP_SUF"; then
+    print -r -- "  [FALHA] não consegui derivar $arq"; rm -f "$arq.$TMP_SUF"; falhas=1; continue
+  fi
+  atual="$(sha_de "$arq.$TMP_SUF")"
+  if [ "$atual" != "$alvo" ]; then
+    print -r -- "  [FALHA] $arq derivado com sha256 ${atual[1,12]}… ≠ esperado ${alvo[1,12]}…"
+    rm -f "$arq.$TMP_SUF"; falhas=1; continue
+  fi
+  mv "$arq.$TMP_SUF" "$arq"
+  print -r -- "  [ok] $arq derivado e conferido"
 done
 
 if [ "${#faltando[@]}" -gt 0 ]; then
   print -r -- ""
   print -r -- "faltando (modo --check não baixa):"
   print -r -- "  ${faltando[*]}"
+  falhas=1     # `--check` com arquivo faltando é REPROVAÇÃO (#598)
 fi
 [ "$falhas" = 0 ] || exit 1
 print -r -- ""

@@ -2106,6 +2106,12 @@ def test_speaker_ecapa_ok_exige_o_DIRETORIO_do_extrator(tmp_path, monkeypatch):
     for arq in app._SPEAKER_ARQ_OBRIG:
         (tmp_path / arq).write_bytes(b"x")
     assert app._speaker_ecapa_ok() is True
+    # #598: o `label_encoder.ckpt` é o que o `Pretrainer` busca no load; sem ele a
+    # disponibilidade dizia True e o embedding voltava None, calado.
+    (tmp_path / "label_encoder.ckpt").unlink()
+    assert app._speaker_ecapa_ok() is False, (
+        "sem o label_encoder.ckpt o load offline morre — não pode se dizer disponível")
+    (tmp_path / "label_encoder.ckpt").write_bytes(b"x")
     (tmp_path / "embedding_model.ckpt").unlink()
     assert app._speaker_ecapa_ok() is False, "sem os pesos o load falharia em toda amostra"
 

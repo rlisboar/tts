@@ -68,6 +68,9 @@ def amb(tmp_path: Path):
         fake = origem / Path(rel).name
         fake.write_bytes(f"conteudo de {rel}\n".encode() * 20)
         linhas.append(f"{_sha(fake)}  {rel}")
+    # o `label_encoder.ckpt` é DERIVADO do `.txt` (mesmo sha256) e não é baixável
+    txt = origem / "label_encoder.txt"
+    linhas.append(f"{_sha(txt)}  models/ecapa-voxceleb/label_encoder.ckpt")
     # a coorte é gerada: entra no manifesto mas não é baixável (repo "-")
     coorte_fake = tmp_path / "origem" / "coorte.npy"
     coorte_fake.write_bytes(b"\x93NUMPY falso")
@@ -119,9 +122,17 @@ def test_divergencia_e_erro_e_forca_rebaixa(amb):
 
 
 def test_check_nao_baixa_e_lista_o_que_falta(amb):
+    """`--check` com arquivo faltando é REPROVAÇÃO (saía 0 com tudo faltando)."""
+    r = _roda(amb, "--check")
+    assert r.returncode == 1, r.stdout
+    assert "faltando" in r.stdout and "baixando" not in r.stdout
+
+
+def test_check_com_tudo_no_lugar_passa(amb):
+    assert _roda(amb).returncode == 0
     r = _roda(amb, "--check")
     assert r.returncode == 0, r.stdout
-    assert "faltando" in r.stdout and "baixando" not in r.stdout
+    assert "faltando" not in r.stdout
 
 
 def test_coorte_que_falta_nao_e_baixada_e_aponta_o_gerador(amb):
@@ -130,6 +141,34 @@ def test_coorte_que_falta_nao_e_baixada_e_aponta_o_gerador(amb):
     r = _roda(amb)
     assert r.returncode == 1, r.stdout
     assert "coorte_asnorm.py" in r.stdout
+
+
+def test_label_encoder_ckpt_e_derivado_e_nao_symlink(amb):
+    """#598: o `Pretrainer` busca `<savedir>/label_encoder.ckpt` e, sem ele, cai no
+    Hub (offline quebra). O arquivo é cópia REGULAR do `.txt` — symlink para o
+    cache do HF não sobrevive a uma máquina limpa."""
+    r = _roda(amb)
+    assert r.returncode == 0, r.stdout + r.stderr
+    ckpt = amb["root"] / "models" / "ecapa-voxceleb" / "label_encoder.ckpt"
+    assert ckpt.is_file() and not ckpt.is_symlink()
+    assert not list(ckpt.parent.glob("*.tmp*")), "sobrou temporário de nome fixo"
+    assert ckpt.read_bytes() == (amb["root"] / "models" / "ecapa-voxceleb"
+                                 / "label_encoder.txt").read_bytes()
+
+
+def test_derivado_fora_do_lugar_reprova_o_check_e_volta_sem_forca(amb):
+    assert _roda(amb).returncode == 0
+    ckpt = amb["root"] / "models" / "ecapa-voxceleb" / "label_encoder.ckpt"
+    ckpt.chmod(0o644)          # o derivado sai 444 (peso imutável), como os outros
+    ckpt.write_text("lixo\n")
+    r = _roda(amb, "--check")
+    assert r.returncode == 1, r.stdout
+    r = _roda(amb)
+    assert r.returncode == 1 and "divergente" in r.stdout, r.stdout
+    assert ckpt.read_text() == "lixo\n", "sobrescreveu sem --forca"
+    assert _roda(amb, "--forca").returncode == 0
+    assert ckpt.read_bytes() == (amb["root"] / "models" / "ecapa-voxceleb"
+                                 / "label_encoder.txt").read_bytes()
 
 
 def test_app_nao_baixa_modelo_no_boot():
@@ -148,8 +187,10 @@ def test_app_nao_baixa_modelo_no_boot():
         assert "savedir=" in chamada, "`from_hparams` sem `savedir` (baixa p/ o cache do usuário)"
 
 
-#: gerado pelo speechbrain no primeiro load (não é baixável nem versionado)
-GERADOS = {"label_encoder.ckpt"}
+#: fora do manifesto e do git: nada. Os `.ckpt` saem do índice pelo `.gitignore`
+#: (são materializados pelo script) e o `label_encoder.ckpt` ENTRA no manifesto
+#: como derivado — deixou de ser "gerado no primeiro load" (#598).
+GERADOS: set[str] = set()
 
 
 def test_manifesto_lista_todos_os_pesos_do_repo():

@@ -16,19 +16,28 @@ Artefatos ao lado:
   5,0 % de EER em 1 s).
 - `sha256sums.txt` — sha256 de cada arquivo de peso/artefato. Divergência é ERRO.
   Os `.ckpt` NÃO estão no git (83 MB de um só): quem os materializa é o script,
-  conferindo o sha256. `label_encoder.ckpt` é gerado pelo speechbrain no primeiro
-  load a partir do `label_encoder.txt` e por isso não entra no manifesto.
+  conferindo o sha256. `label_encoder.ckpt` é DERIVADO do `label_encoder.txt`
+  (cópia byte a byte, mesmo sha256) e TAMBÉM está no manifesto: o `Pretrainer` do
+  speechbrain busca `<savedir>/label_encoder.ckpt` no load e, sem ele, cai no Hub
+  — mesmo com `savedir` e `source` locais (offline quebra, #598).
 
 ## Como materializar
 
 ```sh
-./tools/baixa_modelos.sh          # baixa só o que falta e confere o resto
-./tools/baixa_modelos.sh --check  # não baixa: só verifica (é o que o teste roda)
-./tools/baixa_modelos.sh --forca  # rebaixa o que estiver divergente
+./tools/baixa_modelos.sh          # baixa só o que falta (e deriva o label_encoder)
+./tools/baixa_modelos.sh --check  # não baixa: só verifica — FALHA se faltar algo
+./tools/baixa_modelos.sh --forca  # rebaixa/refaz o que estiver divergente
 ```
 
 A coorte não é baixável (é gerada): se o `.npy` faltar, o script diz o comando —
-`tools/coorte_asnorm.py`, que precisa do venv da bancada (`speechbrain`).
+`tools/coorte_asnorm.py`, que precisa do venv da bancada (`speechbrain`). O
+`label_encoder.ckpt`, por outro lado, o próprio script gera: é `cp` do
+`label_encoder.txt` versionado (sem rede), com o sha256 conferido depois.
+
+Quem chama o extrator (app e `tools/bakeoff/`) passa `source` **e** `savedir` no
+diretório acima: é o par que mantém o load fora do cache do HuggingFace. A célula
+`tests/test_ecapa_offline.py` roda o load com `HF_HOME` vazio e
+`HF_HUB_OFFLINE=1` de propósito.
 
 ## Contrato de ambiente (quem lê é o app)
 

@@ -2,3 +2,4 @@ repo=huggingface.co/speechbrain/spkrec-ecapa-voxceleb
 revisao=0f99f2d0ebe89ac095bcc5903c4dd8f72b367286
 baixado_em=2026-10-28
 via=tools/baixa_modelos.sh
+derivados=label_encoder.ckpt é cópia do label_encoder.txt (mesmo sha256); quem materializa é tools/baixa_modelos.sh
