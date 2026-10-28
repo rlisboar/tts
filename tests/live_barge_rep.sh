@@ -57,9 +57,12 @@ RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # medida da máquina, não do produto.
 CARGA_LIMITE=$(sysctl -n hw.ncpu 2>/dev/null | awk '{print $1 * 0.5}')
 CARGA_AGORA=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')
+# `CARGA_FORCA=1` roda mesmo com a máquina carregada (diagnóstico; o veredito
+# continua sendo o do regime folgado). Imprime a carga junto.
+[ "${CARGA_FORCA:-0}" = "1" ] && CARGA_LIMITE=""
 if [ -n "$CARGA_LIMITE" ] && [ -n "$CARGA_AGORA" ] && \
    [ "$(awk -v a="$CARGA_AGORA" -v b="$CARGA_LIMITE" 'BEGIN{print (a > b) ? 1 : 0}')" = "1" ]; then
-    echo "! carga $CARGA_AGORA acima de $CARGA_LIMITE (0,5/núcleo): rodada INCONCLUSIVA" >&2
+    echo "! carga $CARGA_AGORA acima de $CARGA_LIMITE (0,5/núcleo): rodada INCONCLUSIVA (CARGA_FORCA=1 fura)" >&2
     exit 2
 fi
 PY="$RAIZ/.venv-mlx/bin/python"
@@ -126,7 +129,10 @@ SUF = str(os.getpid())
 # `misto` também ganha conteúdo próprio: a amostra de voz do repo entrega
 # JANELAS no meio de palavra (o harness pula o ataque), o whisper devolve
 # fragmento ("E aí", "Amem") e o resultado mede a sorte do corte, não o motor.
-ESTIMULOS = {"comando": "Para, para, espera um pouco.",
+# o comando é repetido no COMEÇO e no FIM: a janela que o STT recebe pode ser só
+# a cauda do trecho (o suspeito abre depois do ataque), e "um pouco" sozinho não
+# tem palavra de corte
+ESTIMULOS = {"comando": "Para, para, espera um pouco, para.",
              "backchannel": "Uhum, sim.",
              "fim": "O dia está bonito hoje.",
              "misto": "Amanhã eu preciso resolver umas coisas na cidade."}
@@ -171,8 +177,14 @@ class Stub(BaseHTTPRequestHandler):
 # Com 25 s de resposta o cliente fica com dezenas de segundos na fila, o backlog
 # do motor infla junto e o "último segundo" real demora ~20 s para chegar (e a
 # fila ainda oscila por underrun). ~5 s põem o fim ao alcance em segundos.
+# resposta CURTA por bloco: com 25 s de fala o cliente fica com dezenas de
+# segundos na fila, cada iteração leva minutos e o `garante_turno` estourava o
+# teto esperando o turno anterior terminar de gerar (#547). Meio do playback
+# ainda é alcançável com ~10 s — e o `fim` precisa de menos.
 if BLOCO == "fim":
     Stub.FRASES = Stub.FRASES[:1]
+elif BLOCO in ("comando", "backchannel", "misto"):
+    Stub.FRASES = Stub.FRASES[:2]
 
 
 def porta_livre():
@@ -349,6 +361,15 @@ try:
                     // é a ENTRADA do `fim_de_resposta`, e é nela (não no relógio
                     // do cliente) que o bloco `fim` tem de se orientar
                     if (m.type === "stats" && m.playback) window.__playback = m.playback;
+                    // nível do MIC (dBFS do último frame): é como se sabe que os
+                    // frames da injeção ANTERIOR ainda estão em voo (hipótese 2)
+                    if (m.type === "stats" && m.mic) {
+                        window.__mic = m.mic;
+                        // PICO do nível do mic na iteração: é a prova de que os
+                        // frames da injeção CHEGARAM (hipótese 1/2 do PM)
+                        window.__micPico = Math.max(window.__micPico ?? -120,
+                                                    m.mic.dbfs ?? -120);
+                    }
                     // e o ESTÁGIO do pipeline: com ele ocupado o `interrupted` é do
                     // pipeline, não do handler — o onset precisa de ambos ociosos
                     if (m.type === "stats" && m.turno) window.__turno = m.turno;
@@ -394,10 +415,33 @@ try:
                 return False
 
         def garante_turno():
-            """Injeta um turno e espera o áudio — o barge precisa de playback ATIVO."""
+            """Injeta um turno e espera o áudio — o barge precisa de playback ATIVO.
+
+            O ESTÍMULO DO BLOCO, e curto (1 s): antes usava a amostra de voz
+            inteira (3 s) e o áudio dela ficava no buffer do turno, então o STT da
+            suspeita transcrevia o RABO DA AMOSTRA ("E aí") em vez do comando —
+            e os frames da injeção de medição chegavam atrasados, clumpeados, na
+            carona dos 3 s anteriores (#547, hipótese 2 do PM)."""
+            # o PIPELINE tem de estar livre: injetar com o turno anterior no STT
+            # virava um turno de 64 ms sem áudio e o teto de 90 s estourava
+            # (medido: `prewarm_em_curso` e um `speech_end` vazio a cada 4 s)
+            limite_s = time.monotonic() + 25
+            while time.monotonic() < limite_s:
+                if pg.evaluate("() => ((window.__turno||{}).stage)") in ("idle", None):
+                    break
+                pg.wait_for_timeout(100)
             n0 = audio_n()
-            injeta()
-            return espera_audio(n0)
+            injeta(estimulo, segundos=2.0)
+            ok = espera_audio(n0, timeout=60000)
+            # e o MIC tem de estar quieto: frames do turno anterior ainda em voo
+            # fariam a fala de medição dividir o buffer com eles
+            limite = time.monotonic() + 6
+            while time.monotonic() < limite:
+                dbfs = pg.evaluate("() => ((window.__mic||{}).dbfs)")
+                if dbfs is None or dbfs < -45:
+                    break
+                pg.wait_for_timeout(60)
+            return ok
 
         resultados = []
         # 1º turno da sessão: sem ele não há áudio para interromper
@@ -465,13 +509,21 @@ try:
                     # turno NOVO e espera `ocioso` + `janela`.
                     #   `comando`/`backchannel`/`misto`: MEIO do playback (restante alto)
                     #   `fim`: ÚLTIMO segundo (restante ≤ 2,2 s)
-                    pg.evaluate("() => { try { lxCancelaPlayback(); } catch (e) {} }")
-                    pg.wait_for_timeout(400)
-                    if not garante_turno():
+                    # REUSO: se o turno anterior ainda está TOCANDO com fila
+                    # suficiente, não gasta outro (cada turno novo custa STT+TTS
+                    # e, sob carga, o teto de espera do áudio estourava)
+                    tem_fila = pg.evaluate(
+                        "() => (LX.ativos.length > 0) && (((window.__playback||{}).restante_ms)||0) >= 6000")
+                    if not tem_fila:
+                        pg.evaluate("() => { try { lxCancelaPlayback(); } catch (e) {} }")
+                        pg.wait_for_timeout(400)
+                    if not tem_fila and not garante_turno():
                         resultados.append({"i": i, "ok": False, "motivo": "sem áudio",
                                            "assinatura": {}})
                         print(f"  [{i}/{REP}] ✖ sem áudio do servidor — tail:\n{tail(6)}")
                         continue
+                    if tem_fila:
+                        pg.wait_for_timeout(300)
                     pg.evaluate("() => { window.__ev = []; }")
                     pg.wait_for_function(
                         "() => window.__ev.some(e => e.tipo === 'turn_complete')",
@@ -479,8 +531,9 @@ try:
                     # stats saem ~1/s: sem esta espera o laço decide com o retrato
                     # ANTERIOR (medido: `ocioso` e 24 s de backlog do turno velho)
                     pg.wait_for_timeout(1300)
-                    limite = time.monotonic() + 45
+                    limite = time.monotonic() + 60
                     curva = []
+                    motivo_saida = "timeout"
                     while time.monotonic() < limite:
                         r = pg.evaluate(
                             "() => { const p = window.__playback || {};"
@@ -502,11 +555,16 @@ try:
                             (0 < restante <= 2200) if BLOCO == "fim"
                             else restante >= 6000)
                         if pronto:
+                            motivo_saida = "ok"
                             break
+                        # backlog transitório em 0 não serve: o cliente ainda tem
+                        # fila. Só sai por timeout (o veredito diz o motivo)
                         if r and restante == 0 and r[2] == "ocioso" and r[3] == "idle":
-                            break               # playback acabou: vira turno novo
+                            motivo_saida = "backlog 0"
+                            break
                         pg.wait_for_timeout(200)
-                    print(f"  [{i}/{REP}] antes do onset [restante, janela, estado, estágio]: {curva[-6:]}")
+                    print(f"  [{i}/{REP}] antes do onset ({motivo_saida}) "
+                          f"[restante, janela, estado, estágio]: {curva[-6:]}")
                 else:
                     pg.wait_for_function(
                         "(m) => { const c = LX.ctxPlay; if (!c) return false;"
@@ -523,7 +581,7 @@ try:
             cortes0 = pg.evaluate("() => (window.__cortes || []).length")
             # índice das DECISÕES: correlação exata com ESTA injeção
             decisoes0 = pg.evaluate("() => (window.__decisoes || []).length")
-            pg.evaluate("() => { window.__inj = performance.now(); }")
+            pg.evaluate("() => { window.__inj = performance.now(); window.__micPico = -120; }")
             # a injeção de MEDIÇÃO usa o ESTÍMULO DO BLOCO (#547). No bloco
             # `backchannel` ele é CURTO (<=0,6 s) — a intenção é justamente NÃO
             # cortar — e no `fim` também é curto: a fala do ÚLTIMO segundo é uma
@@ -531,6 +589,10 @@ try:
             # `garante_turno` continua usando a amostra de voz.
             injeta(estimulo, segundos=(0.6 if BLOCO == "backchannel"
                                        else (1.2 if BLOCO == "fim" else None)))
+            print(f"  [{i}/{REP}] pico do mic na injeção: "
+                  f"{pg.evaluate('() => Math.round(window.__micPico ?? -120)')} dBFS"
+                  f" · limiar {pg.evaluate('() => (window.__motor||{}).limiar_dbfs')}"
+                  f" · barge_ativos {pg.evaluate('() => (window.__motor||{}).barge_ativos')}")
             fim_resp = False
             respondida = False
             if BLOCO == "fim":

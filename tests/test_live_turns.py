@@ -1652,3 +1652,36 @@ def test_api_sinaliza_egress_do_filtro_modelo(monkeypatch):
     assert app._settings_vista(req)["modelo_egress"] == "dsh_local"
     monkeypatch.setitem(app._settings, "live_barge_filtros", {"modelo": {"on": False}})
     assert app._settings_vista(req)["modelo_egress"] is None
+
+
+def test_palavras_corte_com_lista_vazia_usa_a_interna(monkeypatch):
+    """#547: a lista VAZIA (o default) caía no `get` com a chave existindo e a
+    lista interna nunca era usada — `palavras_corte` não casava NADA."""
+    import app
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    monkeypatch.setitem(app._settings, "live_barge_filtros",
+                        {"palavras_corte": {"on": True, "palavras": []}})
+    tipo, _p, _m, filtro = app._live_avalia_filtros(sess, "espera um pouco", 600, {})
+    assert (tipo, filtro) == ("interrupcao", "palavras_corte")
+
+
+def test_palavra_corte_vale_em_qualquer_posicao(monkeypatch):
+    """O eco do assistente pode vir na frente: "e aí, para" tem de cortar."""
+    import app
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    monkeypatch.setitem(app._settings, "live_barge_filtros", {})
+    tipo, _p, _m, filtro = app._live_avalia_filtros(
+        sess, "olá, meu nome é valentina e aí, para", 900, {})
+    assert (tipo, filtro) == ("interrupcao", "palavras_corte")
+
+
+def test_lista_cadastrada_substitui_a_interna(monkeypatch):
+    """Lista do dono não vazia: só ela vale ("olá" não está na interna)."""
+    import app
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    filtros = {"palavras_corte": {"on": True, "palavras": ["olá"]}}
+    monkeypatch.setitem(app._settings, "live_barge_filtros", filtros)
+    tipo, _p, _m, filtro = app._live_avalia_filtros(sess, "olá", 400, filtros)
+    assert (tipo, filtro) == ("interrupcao", "palavras_corte")
+    tipo, _p, _m, filtro = app._live_avalia_filtros(sess, "espera", 400, filtros)
+    assert filtro != "palavras_corte", "com lista cadastrada a interna não vale"

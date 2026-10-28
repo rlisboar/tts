@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -986,6 +987,11 @@ class TurnEngine:
             self._barge_frames = 0
             return []
 
+        if self._debug and self._onset_frames == 0 and self._barge_frames == 0:
+            print(f"[ABERTURA] ativo={self._playback_ativo()} speaking={self._speaking}"
+                  f" frames={self._playback_frames} restante={self._playback_restante}"
+                  f" turno_aberto={self._turno_aberto} dbfs={dbfs:.1f} prob={prob:.2f}",
+                  file=sys.stderr, flush=True)
         if self._playback_ativo():
             voz = (self._voz(dbfs, prob, self.limiar_energia_dbfs)
                    or self._degrau_sobre_eco(dbfs, prob))
