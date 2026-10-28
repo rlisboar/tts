@@ -2016,6 +2016,30 @@
   #lxHoldAviso[hidden] { display: none; }
   .lx-log-mini.e-erro { color: var(--err); }
   .lx-log-mini.e-ok { color: var(--ok); }
+  /* #502 (adendo): painel de filtros da interrupção — recolhido por padrão para o
+     OBS não empurrar a conversa para fora da tela. Travado no modo `imediata`,
+     onde os filtros não decidem nada (a opacidade diz isso sem sumir com o texto). */
+  .lx-filtros { border: 1px solid var(--border-soft); border-radius: 10px;
+                background: var(--surface); padding: 8px 12px; margin-top: 10px; }
+  .lx-filtros > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .lx-filtros > summary:hover { color: var(--text); }
+  .lx-filtros[open] > summary { margin-bottom: 6px; }
+  .lx-filtro { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center;
+               padding: 5px 0; border-top: 1px dashed var(--border-soft); font-size: 12px; }
+  .lx-filtro:first-of-type { border-top: 0; }
+  .lx-dica { color: var(--faint); font-size: 11.5px; }
+  .lx-num { width: 82px; }
+  .lx-chips-edit { display: flex; flex-wrap: wrap; gap: 5px; flex-basis: 100%; }
+  .lx-chips-edit:empty::after { content: "nenhuma palavra"; color: var(--faint); font-size: 11.5px; }
+  .lx-chipw { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px;
+              border: 1px solid var(--border-soft); border-radius: 99px;
+              padding: 1px 3px 1px 9px; background: var(--elevated); }
+  .lx-chipw button { border: 0; background: none; color: var(--muted); cursor: pointer;
+                     font-size: 13px; line-height: 1; padding: 0 4px; }
+  .lx-chipw button:hover { color: var(--err); }
+  .lx-add { display: flex; gap: 6px; flex-basis: 100%; }
+  .lx-add input { max-width: 240px; }
+  .lx-filtros.travado .lx-filtro, .lx-filtros.travado .row { opacity: .5; }
 
   /* OBS-3 (#120): o painel ocupa a PRÓPRIA linha mesmo quando o mount cai dentro
      de um flex (toolbar/actions). Colado ao lado do botão ele ficava espremido em
@@ -2574,14 +2598,90 @@
             <div class="field-group"><span>Interrupção</span>
               <select id="lxInterrupcao" aria-label="Modo de interrupção"
                       style="max-width:190px"
-                      title="Inteligente (padrão): abaixa o volume, ouve o que você disse e só corta se for interrupção de verdade — &quot;uhum&quot;/tosse não cortam. Imediata: corta no primeiro som, como antes. Só com comando: só &quot;para&quot;/&quot;espera&quot;/pergunta cortam.">
+                      title="Inteligente (padrão): abaixa o volume, ouve o que você disse e decide pelos filtros abaixo — &quot;uhum&quot;/tosse não cortam. Imediata: corta no primeiro som, como antes (os filtros não decidem nada).">
                 <option value="inteligente">Inteligente</option>
                 <option value="imediata">Imediata</option>
-                <option value="so_comando">Só com comando</option>
               </select></div>
             <span style="flex:1"></span>
             <button id="lxLimpar" class="ghost small" type="button">Limpar</button>
           </div>
+          <!-- #502 (adendo do dono): os filtros da interrupção inteligente. Cada um
+               LIGA/DESLIGA separado, com o número editável e a lista de palavras em
+               chips. Semântica do servidor: filtro de CORTE desligado não corta por
+               aquele motivo; filtro de CONTINUAR desligado não protege (o caso cai no
+               seguinte). Recolhido por padrão: o painel é longo e o Live já tem o OBS. -->
+          <details class="lx-filtros" id="lxFiltros">
+            <summary>Filtros da interrupção <span class="hint" id="lxFiltrosResumo"></span></summary>
+            <p class="hint" id="lxFiltrosDica">
+              ordem de avaliação: palavras de corte &gt; eco &gt; backchannel &gt; ruído &gt;
+              pergunta &gt; frase longa &gt; fala sustentada &gt; quando nenhum decide.
+            </p>
+            <div class="lx-filtro" data-filtro="palavras_corte">
+              <label class="check"><input type="checkbox" id="lxLiga_palavras_corte">
+                <b>palavras de corte</b></label>
+              <span class="lx-dica">corto no instante em que escuto uma delas</span>
+              <div class="lx-chips-edit" id="lxChips_palavras_corte" role="list" aria-label="palavras de corte"></div>
+              <div class="lx-add">
+                <input type="text" id="lxNova_palavras_corte" maxlength="40" autocomplete="off"
+                       placeholder="nova palavra + Enter" aria-label="nova palavra de corte">
+                <button type="button" class="ghost small" data-add="palavras_corte">+</button>
+              </div>
+            </div>
+            <div class="lx-filtro" data-filtro="pergunta">
+              <label class="check"><input type="checkbox" id="lxLiga_pergunta"><b>pergunta</b></label>
+              <span class="lx-dica">corto quando o que você disse é pergunta</span>
+            </div>
+            <div class="lx-filtro" data-filtro="frase_longa">
+              <label class="check"><input type="checkbox" id="lxLiga_frase_longa"><b>frase longa</b></label>
+              <span class="lx-dica">corto com</span>
+              <input type="number" id="lxNum_frase_longa" min="1" max="20" step="1" class="lx-num"
+                     aria-label="mínimo de palavras da frase longa">
+              <span class="lx-dica">palavras ou mais</span>
+            </div>
+            <div class="lx-filtro" data-filtro="fala_sustentada">
+              <label class="check"><input type="checkbox" id="lxLiga_fala_sustentada"><b>fala sustentada</b></label>
+              <span class="lx-dica">corto com</span>
+              <input type="number" id="lxNum_fala_sustentada" min="400" max="5000" step="100" class="lx-num"
+                     aria-label="duração mínima da fala sustentada em ms">
+              <span class="lx-dica">ms falando por cima, mesmo sem o STT responder</span>
+            </div>
+            <div class="lx-filtro" data-filtro="backchannel">
+              <label class="check"><input type="checkbox" id="lxLiga_backchannel"><b>backchannel</b></label>
+              <span class="lx-dica">CONTINUO quando escuto uma destas</span>
+              <div class="lx-chips-edit" id="lxChips_backchannel" role="list" aria-label="palavras de backchannel"></div>
+              <div class="lx-add">
+                <input type="text" id="lxNova_backchannel" maxlength="40" autocomplete="off"
+                       placeholder="nova palavra + Enter" aria-label="nova palavra de backchannel">
+                <button type="button" class="ghost small" data-add="backchannel">+</button>
+              </div>
+            </div>
+            <div class="lx-filtro" data-filtro="ruido">
+              <label class="check"><input type="checkbox" id="lxLiga_ruido"><b>ruído</b></label>
+              <span class="lx-dica">CONTINUO em tosse, riso e transcript vazio</span>
+            </div>
+            <div class="lx-filtro" data-filtro="eco">
+              <label class="check"><input type="checkbox" id="lxLiga_eco"><b>eco do próprio TTS</b></label>
+              <span class="lx-dica">CONTINUO quando o que voltou é a minha própria fala</span>
+            </div>
+            <div class="lx-filtro" data-filtro="fim_de_resposta">
+              <label class="check"><input type="checkbox" id="lxLiga_fim_de_resposta"><b>fim de resposta</b></label>
+              <span class="lx-dica">deixo terminar (anoto sua fala) quando faltam</span>
+              <input type="number" id="lxNum_fim_de_resposta" min="0" max="3000" step="50" class="lx-num"
+                     aria-label="faltando quanto de resposta, em ms, deixa terminar">
+              <span class="lx-dica">ms ou menos</span>
+            </div>
+            <div class="lx-filtro" data-filtro="__sem_decisao">
+              <label for="lxSemDecisao"><b>quando nenhum filtro decide</b></label>
+              <select id="lxSemDecisao" aria-label="quando nenhum filtro decide">
+                <option value="continua">continuo falando</option>
+                <option value="corta">corto a resposta</option>
+              </select>
+            </div>
+            <div class="row" style="gap:10px; align-items:center; margin-top:8px">
+              <button type="button" class="ghost small" id="lxFiltrosPadrao">↺ restaurar padrões</button>
+              <span class="hint" id="lxFiltrosStatus" role="status" aria-live="polite"></span>
+            </div>
+          </details>
           <div class="lx-obs">
             <div class="lx-meters">
               <div class="lx-meter">
@@ -6697,6 +6797,8 @@ async function loadSettings() {
       LX.interrupcao = s.live_interrupcao;
       lxPintaInterrupcao();
     }
+    // #502 (adendo): os filtros vêm do servidor; o que faltar cai no padrão
+    lxFiltrosAplica(s.live_barge_filtros, s.live_barge_sem_decisao);
     // ANTES de escrever o effort: o select nasce vazio, e `value=` num select sem
     // options não pega — o liga() é quem o popula (lista completa) e dispara a
     // descoberta; o valor salvo é aplicado logo abaixo e a descoberta o preserva
@@ -6981,6 +7083,8 @@ $("cfgSave").onclick = async () => {
       speech_queue: !!$("speechQueue")?.checked,
       speech_queue_gap_s: parseFloat($("speechQueueGap")?.value) || 0,
       live_interrupcao: lxModoInterrupcao(),   // #502: o "Salvar" daqui também o leva
+      live_barge_filtros: lxClona(LX.filtros || LX_FILTROS_PADRAO),
+      live_barge_sem_decisao: LX.semDecisao || LX_SEM_DECISAO_PADRAO,
       ...ctl,
     };
     const precAntes = (LAST_SETTINGS || {}).omni_precision;
@@ -7672,7 +7776,11 @@ const LX = { ws: null, estado: "desligado", ctxCap: null, noCap: null, stream: n
              substituida: false,   // #244: o servidor fechou ESTA por takeover do id
              // #502: ganho do duck, marca de abaixado + prazo do teto de 2 s e o
              // modo escolhido nesta tela (null = vale o das settings)
-             duck: null, abaixado: false, duckT: 0, interrupcao: null };
+             duck: null, abaixado: false, duckT: 0, interrupcao: null,
+             // #502 (adendo): estado local dos filtros, o "sem decisão" e o corpo
+             // acumulado do POST parcial (debounce)
+             filtros: null, semDecisao: "continua", pendenteBarge: null, bargeT: 0,
+             filtrosStatusT: 0 };
 
 // #244 (contrato aditivo do #222): motivo único do ramo `session_substituida` —
 // a mesma frase no `case "error"` e no `onclose` (o close chega logo atrás).
@@ -8174,8 +8282,10 @@ function lxObsPara() {
    `live_interrupcao` (settings) escolhe o comportamento: em `inteligente` e
    `so_comando` a fala por cima NÃO corta mais localmente (#225) — abaixa e
    espera; só `imediata` mantém o corte no `speech_start`. */
-const LX_MODOS_INTERRUPCAO = ["inteligente", "imediata", "so_comando"];
-const LX_MODO_ROTULO = { inteligente: "Inteligente", imediata: "Imediata", so_comando: "Só com comando" };
+// `so_comando` saiu do enum no adendo do dono: virou preset de filtros. Um
+// settings antigo que ainda traga o valor cai no padrão por não estar na lista.
+const LX_MODOS_INTERRUPCAO = ["inteligente", "imediata"];
+const LX_MODO_ROTULO = { inteligente: "Inteligente", imediata: "Imediata" };
 const LX_DUCK_DB = -18, LX_DUCK_MS = 50, LX_RETOMA_MS = 150, LX_DUCK_TETO_MS = 2000;
 
 // Modo VIGENTE: o escolhido nesta sessão de tela vence o das settings; settings
@@ -8189,6 +8299,7 @@ function lxModoInterrupcao() {
 function lxPintaInterrupcao() {
   const el = $("lxInterrupcao");
   if (el) el.value = lxModoInterrupcao();
+  lxFiltrosModo();   // no modo `imediata` os filtros não decidem nada
 }
 
 // Grava o modo no servidor (settings.live_interrupcao). A tela obedece o modo
@@ -8212,6 +8323,207 @@ function lxDefineInterrupcao(modo) {
     })
     .catch(e => lxLogEvento("⚠ não consegui gravar o modo (" + e.message
                           + ") — vale só nesta tela", "e-erro"));
+}
+
+/* ───── Filtros da interrupção (#502, adendo do dono) ────────────────────────
+   Schema do servidor (comentário de task_d93ddd0c): `on` por filtro, `palavras`
+   (≤100 itens, ≤40 chars, minúsculas e sem acento), `min_palavras` 1–20,
+   `min_ms` 400–5000, `restante_ms` 0–3000 e `live_barge_sem_decisao`
+   continua|corta. A tela é ESPELHO: não classifica nada — edita, normaliza e
+   manda o PARCIAL (mandar `{pergunta:{on:false}}` não pode zerar o resto). */
+const LX_FILTROS_PADRAO = {
+  palavras_corte: { on: true, palavras: ["para", "pare", "espera", "peraí", "pera", "calma", "chega", "não", "stop", "wait", "hold on"] },
+  pergunta: { on: true },
+  frase_longa: { on: true, min_palavras: 3 },
+  fala_sustentada: { on: true, min_ms: 1200 },
+  backchannel: { on: true, palavras: ["uhum", "aham", "hum", "sim", "sei", "ok", "tá", "certo", "entendi", "isso", "claro", "beleza", "legal", "nossa", "mhm", "yeah", "right"] },
+  ruido: { on: true },
+  eco: { on: true },
+  fim_de_resposta: { on: true, restante_ms: 1000 },
+};
+const LX_SEM_DECISAO_PADRAO = "continua";
+const LX_MAX_PALAVRAS = 100, LX_MAX_PALAVRA_CHARS = 40;
+
+function lxClona(o) { return JSON.parse(JSON.stringify(o)); }
+function lxClampNum(v, lo, hi, def) {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+}
+// palavra inteira comparável: minúscula, sem acento, espaço único, ≤40 chars
+function lxPalavraNormaliza(txt) {
+  return String(txt || "").trim().replace(/\s+/g, " ")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().slice(0, LX_MAX_PALAVRA_CHARS);
+}
+
+function lxFiltroCfg(nome, v) {
+  const padrao = LX_FILTROS_PADRAO[nome];
+  const cfg = { on: v && v.on !== undefined ? !!v.on : padrao.on };
+  if (padrao.palavras) {
+    cfg.palavras = [];
+    for (const p of (Array.isArray(v && v.palavras) ? v.palavras : padrao.palavras)) {
+      const n = lxPalavraNormaliza(p);
+      if (n && !cfg.palavras.includes(n) && cfg.palavras.length < LX_MAX_PALAVRAS) cfg.palavras.push(n);
+    }
+  }
+  if (padrao.min_palavras !== undefined) cfg.min_palavras = lxClampNum(v && v.min_palavras, 1, 20, padrao.min_palavras);
+  if (padrao.min_ms !== undefined) cfg.min_ms = lxClampNum(v && v.min_ms, 400, 5000, padrao.min_ms);
+  if (padrao.restante_ms !== undefined) cfg.restante_ms = lxClampNum(v && v.restante_ms, 0, 3000, padrao.restante_ms);
+  return cfg;
+}
+
+// Aplica o que veio do servidor (ou os padrões) no estado local. Campo faltando
+// ou inválido cai no padrão DAQUELE campo — nunca fica `undefined` na tela.
+function lxFiltrosAplica(dados, semDecisao) {
+  const d = (dados && typeof dados === "object") ? dados : {};
+  LX.filtros = {};
+  for (const nome of Object.keys(LX_FILTROS_PADRAO)) LX.filtros[nome] = lxFiltroCfg(nome, d[nome]);
+  LX.semDecisao = ["continua", "corta"].includes(semDecisao) ? semDecisao : LX_SEM_DECISAO_PADRAO;
+  lxFiltrosRender();
+  lxFiltrosModo();
+}
+
+function lxFiltrosRender() {
+  if (!LX.filtros) return;
+  for (const [nome, cfg] of Object.entries(LX.filtros)) {
+    const liga = $("lxLiga_" + nome);
+    if (liga) liga.checked = !!cfg.on;
+    const num = { frase_longa: "lxNum_frase_longa", fala_sustentada: "lxNum_fala_sustentada",
+                  fim_de_resposta: "lxNum_fim_de_resposta" }[nome];
+    if (num && $(num)) {
+      const campo = Object.keys(cfg).find(k => k !== "on" && k !== "palavras");
+      if (campo) $(num).value = cfg[campo];
+    }
+    const alvo = $("lxChips_" + nome);
+    if (alvo && cfg.palavras) {
+      alvo.textContent = "";
+      for (const p of cfg.palavras) {
+        const chip = document.createElement("span");
+        chip.className = "lx-chipw"; chip.setAttribute("role", "listitem");
+        const txt = document.createElement("span"); txt.textContent = p;
+        const x = document.createElement("button");
+        x.type = "button"; x.textContent = "×"; x.dataset.tirar = nome; x.dataset.palavra = p;
+        x.title = "tirar “" + p + "”"; x.setAttribute("aria-label", "tirar " + p);
+        chip.appendChild(txt); chip.appendChild(x); alvo.appendChild(chip);
+      }
+    }
+  }
+  if ($("lxSemDecisao")) $("lxSemDecisao").value = LX.semDecisao || LX_SEM_DECISAO_PADRAO;
+  const ligados = Object.values(LX.filtros).filter(c => c.on).length;
+  if ($("lxFiltrosResumo"))
+    $("lxFiltrosResumo").textContent = "· " + ligados + " de " + Object.keys(LX.filtros).length + " ligados"
+      + " · sem decisão: " + (LX.semDecisao === "corta" ? "corta" : "continua");
+}
+
+/* No modo `imediata` o motor corta no primeiro som e os filtros não decidem nada:
+   deixá-los editáveis sem dizer isso faria a pessoa achar que mudou algo. */
+function lxFiltrosModo() {
+  const p = $("lxFiltros");
+  if (!p) return;
+  const travado = lxModoInterrupcao() === "imediata";
+  p.classList.toggle("travado", travado);
+  for (const el of p.querySelectorAll("input, select, button"))
+    if (el.id !== "lxFiltrosPadrao") el.disabled = travado;
+  if ($("lxFiltrosDica"))
+    $("lxFiltrosDica").textContent = travado
+      ? "modo Imediata: o motor corta no primeiro som, os filtros não decidem nada (troque para Inteligente para usá-los)."
+      : "ordem de avaliação: palavras de corte > eco > backchannel > ruído > pergunta > frase longa > fala sustentada > quando nenhum decide.";
+}
+
+function lxFiltrosStatus(msg, erro) {
+  const el = $("lxFiltrosStatus");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.style.color = erro ? "var(--err)" : "var(--muted)";
+  clearTimeout(LX.filtrosStatusT);
+  if (msg) LX.filtrosStatusT = setTimeout(() => { el.textContent = ""; }, 4000);
+}
+
+/* POST com MERGE PARCIAL: só o caminho mexido vai no corpo; alterações seguidas
+   dentro de 350 ms viram UM corpo (as chaves se somam, os campos não se apagam).
+   A resposta é conferida campo a campo — servidor que não conhece a chave, ou que
+   normaliza para outro valor, aparece na tela em vez de mentir "salvo". */
+function lxSalvaBarge(corpo) {
+  if (!corpo) return;
+  // merge de UM nível em `filtros`: `Object.assign` cru perderia o `palavras` de
+  // um patch anterior quando o seguinte tocasse o `on` do MESMO filtro
+  const pend = LX.pendenteBarge || {};
+  const filtros = pend.live_barge_filtros || {};
+  for (const [nome, cfg] of Object.entries(corpo.live_barge_filtros || {}))
+    filtros[nome] = Object.assign(filtros[nome] || {}, cfg);
+  if (corpo.live_barge_filtros) pend.live_barge_filtros = filtros;
+  if (corpo.live_barge_sem_decisao) pend.live_barge_sem_decisao = corpo.live_barge_sem_decisao;
+  LX.pendenteBarge = pend;
+  clearTimeout(LX.bargeT);
+  LX.bargeT = setTimeout(lxEnviaBarge, 350);
+}
+
+async function lxEnviaBarge() {
+  const corpo = LX.pendenteBarge; LX.pendenteBarge = null; LX.bargeT = 0;
+  if (!corpo) return;
+  try {
+    const r = await api("/api/settings", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo) });
+    const divergiu = [];
+    const devolvido = (r || {}).live_barge_filtros;
+    if (corpo.live_barge_filtros) {
+      if (!devolvido) divergiu.push("live_barge_filtros (o servidor não conhece)");
+      else for (const [nome, cfg] of Object.entries(corpo.live_barge_filtros)) {
+        const atual = devolvido[nome] || {};
+        for (const [campo, valor] of Object.entries(cfg))
+          if (JSON.stringify(valor) !== JSON.stringify(atual[campo])) divergiu.push(nome + "." + campo);
+      }
+    }
+    if (corpo.live_barge_sem_decisao && (r || {}).live_barge_sem_decisao !== corpo.live_barge_sem_decisao)
+      divergiu.push("live_barge_sem_decisao" + ((r || {}).live_barge_sem_decisao ? "" : " (o servidor não conhece)"));
+    if (divergiu.length) lxFiltrosStatus("⚠ o servidor não guardou: " + divergiu.join(", "), true);
+    else lxFiltrosStatus("filtros salvos ✔");
+  } catch (e) {
+    lxFiltrosStatus("⚠ não consegui salvar (" + e.message + ")", true);
+  }
+}
+
+function lxFiltroMuda(nome, campo, valor) {
+  const cfg = LX.filtros[nome];
+  if (!cfg) return;
+  cfg[campo] = valor;
+  lxSalvaBarge({ live_barge_filtros: { [nome]: { [campo]: valor } } });
+  lxFiltrosRender();
+}
+
+function lxPalavraAdiciona(nome, bruta) {
+  const cfg = LX.filtros[nome];
+  if (!cfg) return;
+  const p = lxPalavraNormaliza(bruta);
+  if (!p) return;
+  if (cfg.palavras.includes(p)) { lxFiltrosStatus("“" + p + "” já está na lista", true); return; }
+  if (cfg.palavras.length >= LX_MAX_PALAVRAS) {
+    lxFiltrosStatus("teto de " + LX_MAX_PALAVRAS + " palavras", true); return;
+  }
+  cfg.palavras.push(p);
+  const patch = { palavras: cfg.palavras.slice() };
+  // cadastrar palavra num filtro desligado é sinal de que se quer usá-lo
+  if (!cfg.on) { cfg.on = true; patch.on = true; }
+  lxSalvaBarge({ live_barge_filtros: { [nome]: patch } });
+  lxFiltrosRender();
+  lxFiltrosStatus("“" + p + "” cadastrada");
+}
+
+function lxPalavraTira(nome, palavra) {
+  const cfg = LX.filtros[nome];
+  if (!cfg) return;
+  cfg.palavras = cfg.palavras.filter(x => x !== palavra);
+  lxSalvaBarge({ live_barge_filtros: { [nome]: { palavras: cfg.palavras.slice() } } });
+  lxFiltrosRender();
+}
+
+function lxRestauraPadroes() {
+  LX.filtros = lxClona(LX_FILTROS_PADRAO);
+  LX.semDecisao = LX_SEM_DECISAO_PADRAO;
+  lxFiltrosRender();
+  lxSalvaBarge({ live_barge_filtros: lxClona(LX_FILTROS_PADRAO),
+                 live_barge_sem_decisao: LX_SEM_DECISAO_PADRAO });
+  lxLogEvento("⚙ filtros da interrupção restaurados no padrão");
+  lxFiltrosStatus("padrões restaurados");
 }
 
 function lxPintaDuck() {
@@ -8373,6 +8685,7 @@ function lxRecebe(ev) {
     // toda decisão do classificador vai para o log com tipo, texto e tempo
     case "barge_decisao":
                            lxLogEvento("🧠 decisão: " + (m.tipo || "?")
+                                     + (m.filtro ? " · filtro " + m.filtro : "")
                                      + (m.texto ? " · “" + m.texto + "”" : "")
                                      + (m.fala_ms != null ? " · " + m.fala_ms + " ms de voz" : "")
                                      + (m.decisao_ms != null ? " · decidido em " + m.decisao_ms + " ms" : ""),
@@ -8517,6 +8830,54 @@ if ($("lxPtt")) $("lxPtt").onchange = () => lxHoldRender();
 // #502: o seletor de interrupção grava na hora (settings) — não passa pelo "Salvar"
 // de Configurações, que é de outra tela e de outro assunto.
 if ($("lxInterrupcao")) $("lxInterrupcao").onchange = () => lxDefineInterrupcao($("lxInterrupcao").value);
+/* #502 (adendo): filtros — cada controle manda SÓ o seu caminho (merge parcial).
+   Painel sem estado carregado nasce com os padrões do schema. */
+if (!LX.filtros) lxFiltrosAplica();
+lxFiltrosModo();
+for (const nome of Object.keys(LX_FILTROS_PADRAO)) {
+  const liga = $("lxLiga_" + nome);
+  if (liga) liga.onchange = () => {
+    lxFiltroMuda(nome, "on", liga.checked);
+    lxLogEvento((liga.checked ? "⚙ liguei" : "⚙ desliguei") + " o filtro " + nome);
+  };
+  const num = { frase_longa: ["lxNum_frase_longa", "min_palavras", 1, 20],
+                fala_sustentada: ["lxNum_fala_sustentada", "min_ms", 400, 5000],
+                fim_de_resposta: ["lxNum_fim_de_resposta", "restante_ms", 0, 3000] }[nome];
+  if (num && $(num[0])) $(num[0]).onchange = () => {
+    const v = lxClampNum($(num[0]).value, num[2], num[3], LX_FILTROS_PADRAO[nome][num[1]]);
+    $(num[0]).value = v;
+    lxFiltroMuda(nome, num[1], v);
+  };
+  const nova = $("lxNova_" + nome);
+  if (nova) {
+    nova.onkeydown = e => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      lxPalavraAdiciona(nome, nova.value);
+      nova.value = "";
+    };
+  }
+  const chips = $("lxChips_" + nome);
+  if (chips) chips.onclick = e => {
+    const b = e.target.closest("button[data-tirar]");
+    if (b) lxPalavraTira(b.dataset.tirar, b.dataset.palavra);
+  };
+}
+for (const b of document.querySelectorAll("[data-add]")) {
+  b.onclick = () => {
+    const campo = $("lxNova_" + b.dataset.add);
+    if (!campo) return;
+    lxPalavraAdiciona(b.dataset.add, campo.value);
+    campo.value = "";
+    campo.focus();
+  };
+}
+if ($("lxSemDecisao")) $("lxSemDecisao").onchange = () => {
+  LX.semDecisao = $("lxSemDecisao").value === "corta" ? "corta" : "continua";
+  lxFiltrosRender();
+  lxSalvaBarge({ live_barge_sem_decisao: LX.semDecisao });
+};
+if ($("lxFiltrosPadrao")) $("lxFiltrosPadrao").onclick = () => lxRestauraPadroes();
 if ($("lxPttBtn")) {
   // fallback "segurar para falar": solta -> `end_of_speech` (o servidor fecha o
   // turno sem depender do VAD automático)

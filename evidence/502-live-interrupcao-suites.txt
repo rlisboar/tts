@@ -1,52 +1,68 @@
 502 — LIVE UI da interrupção inteligente: medições da suíte e das mordidas
 
-Task #502 (contrato do servidor no card irmão #501). Suíte nova:
-`tests/live_interrupcao_ui.sh` (estágio `navegador`). Todo número abaixo saiu do
+Task #502 (contrato do servidor no card irmão #501), já com o ADENDO DO DONO:
+seletor só Inteligente/Imediata, painel de filtros (um toggle por filtro, números
+editáveis, chips em `palavras_corte`/`backchannel`, "quando nenhum decide" e
+restaurar padrões) e POST com MERGE PARCIAL.
+
+Suíte: `tests/live_interrupcao_ui.sh` (estágio `navegador`). Todo número saiu do
 app rodando em porta livre com stub de chat, mic falso do Chromium e o volume
-medido no ANALISADOR DA SAÍDA (o mesmo do painel OBS), não só no ganho.
+medido no ANALISADOR DA SAÍDA (o mesmo do painel OBS), não só no ganho. O launcher
+ENVOLVE `_apply_settings` para servir `live_interrupcao`, `live_barge_filtros` e
+`live_barge_sem_decisao` (ainda não existem no app; são do #501), valida, faz o
+merge e GRAVA O CORPO de cada POST — é assim que o parcial é conferido.
 
-== 1) Rodada verde (antes das mordidas) ==
-  seletor: {'valor': 'inteligente', 'opcoes': ['inteligente', 'imediata', 'so_comando'], ...}
-  speech_start/inteligente: ganho 1.000 -> 0.2 em 49.1 ms · RMS 0.0691 -> 0.0087 · fila 1
+== 1) Rodada verde ==
+  seletor: opcoes ['inteligente', 'imediata'] · título explica os dois e os filtros
+  painel: 8 toggles, 3 números, 2 editores de chips, sem_decisao=continua,
+    restaurar padrões presente, recolhido por padrão, listas padrão 11 e 17
+  speech_start/inteligente: ganho 1.000 -> 0.2 em 53.8 ms · RMS 0.0690 -> 0.0087 · fila 1
   teto de 2 s: ganho voltou a 1.000 · aviso no log=True
-  barge_suspeito/retoma: duck em 48.2 ms · retoma em 150.5 ms · log "↩ continuei — era backchannel" · fila 1
-  log da decisão: backchannel · “uhum” · 380 ms de voz · decidido em 240 ms
+  barge_suspeito/retoma: duck em 49.5 ms · retoma em 147.6 ms · log "↩ continuei — era backchannel" · fila 1
+  log da decisão: backchannel · filtro backchannel · “uhum” · 380 ms de voz · decidido em 240 ms
   interrupted: fila 0 · ganho 1.000
-  modo pelo seletor: {'lx': 'imediata', 'sel': 'imediata'}
-  speech_start/imediata: fila 0 · ganho 1.000
-  speech_start/so_comando: fila 1
-  gravado no servidor: imediata · avisou desconhecido: False
-  modo depois do reload: imediata
-  valor inválido no servidor: {'sel': 'inteligente', 'lx': 'inteligente'}
-  ✔ OK — duck ≤50 ms sem cortar a fila, retoma ~150 ms, corte no interrupted,
-    teto de 2 s devolvendo o volume e o modo imediata preservando o corte da #225
+  modo imediata: fila 0 (corte preservado) · painel travado com dica
+  toggle pergunta off -> {'pergunta': {'on': False}}   (o corpo levou SÓ ele)
+  número frase_longa -> {'frase_longa': {'min_palavras': 9}}
+  clamp de 99 -> 20
+  palavra "  BASTA " -> 'basta' na lista e filtro religado
+  duplicata: lista continua com 12 itens · palavra de 50 chars vira 40 · × remove
+  dois patches em 350 ms -> {'min_palavras': 7, 'on': False} no MESMO corpo e no servidor
+  sem_decisao -> corta (chave própria) · resumo do painel mostra "sem decisão: corta"
+  restaurar padrões -> sem_decisao=continua, pergunta.on=True, min_palavras=3, "basta" fora
+  reload: modo imediata E os filtros voltam do servidor (sem=continua, pergunta=True, min=3, 11 chips)
+  valor inválido no servidor -> tela cai no padrão (inteligente)
+  ✔ OK
 
-O bloco 8 é a ida-e-volta pelas settings: `live_interrupcao` ainda não existe no
-`_apply_settings` (é do #501), então o launcher da suíte ENVOLVE a função e serve a
-chave. Sem o stub, o POST da tela não teria como ser lido de volta e o teste
-passaria a mentir "gravado".
-
-Raiz quadrada média 0.0691 -> 0.0087 = razão 0.126, exatamente os -18 dB.
+Raiz quadrada média 0.0690 -> 0.0087 = razão 0.126, exatamente os -18 dB.
 
 == 2) MORDIDA A — tira o duck do `barge_suspeito` (`case "barge_suspeito": break;`) ==
-  barge_suspeito/retoma: duck em None ms · retoma em 7 ms · fila 1
-  ✖ FALHOU
-    · barge_suspeito não abaixou em ≤50 ms (medido None ms)
+  barge_suspeito/retoma: duck em None ms · retoma em 7 ms
+  ✖ FALHOU · barge_suspeito não abaixou em ≤50 ms (medido None ms)
 
 == 3) MORDIDA B — inverte a condição do modo em `speech_start` (`===` -> `!==`) ==
   ✖ FALHOU
     · speech_start no modo inteligente CORTOU a fila (devia só abaixar)
     · duck não desceu a -18 dB em ≤50 ms (medido None ms)
-    · chip de volume abaixado não apareceu
-    · o teto de 2 s não avisa no log
+    · chip de volume abaixado não apareceu · o teto de 2 s não avisa no log
     · modo imediata não cortou no speech_start (a #225 se perdeu)
-    · modo so_comando cortou no speech_start (devia abaixar e esperar)
 
 == 3b) MORDIDA C — desliga o load do modo em `loadSettings` ==
-  modo depois do reload: inteligente
-  valor inválido no servidor: {'sel': 'inteligente', 'lx': None}
+  ✖ FALHOU · o modo gravado não voltou no load (select='inteligente')
+
+== 3c) MORDIDA D — manda o objeto de filtros INTEIRO no lugar do parcial ==
   ✖ FALHOU
-    · o modo gravado não voltou no load (select='inteligente')
+    · falta de merge parcial: o POST levou os 8 filtros
+    · número não mandou só o próprio campo
+    · restaurar padrões não voltou o sem_decisao · os filtros não voltaram do load
+
+== 3d) MORDIDA E — merge RASO no acúmulo do debounce (Object.assign cru) ==
+  ✖ FALHOU
+    · o patch do 'on' apagou o número: {'on': False}
+    · o servidor não recebeu os dois campos juntos: {'on': False, 'min_palavras': 20}
+
+== 3e) MORDIDA F — sem a trava do painel no modo `imediata` ==
+  ✖ FALHOU · painel de filtros não travou no modo imediata
 
 == 4) Estágio `navegador` inteiro, com a suíte nova ==
   ok admin_ui_flow 17s · ok cfg_sujo_e_erros 9s · ok dsh_ui 16s · ok hash_deep_link 13s
@@ -58,23 +74,26 @@ Raiz quadrada média 0.0691 -> 0.0087 = razão 0.126, exatamente os -18 dB.
   FALHA live_barge_rep 90s · FALHA live_dsh_fallback 78s · FALHA live_ui 90s
   FALHA live_ws 0s · o resto ok
 
-  Ou seja: os vermelhos de teto/`live_dsh_fallback` são de ANTES desta entrega.
-  Todos os que estouram 90 s (rc=142) estão parados na trava de modelo do
-  `serial.sh` — o teto do runner é o mesmo 90 s que eles gastam esperando, e
-  `live_dsh_fallback` segura a trava por ~78 s e falha por conta própria.
+  Os vermelhos de teto/`live_dsh_fallback` são de ANTES desta entrega. Todos os que
+  estouram 90 s (rc=142) estão parados na trava de modelo do `serial.sh` — o teto do
+  runner é o mesmo 90 s que eles gastam esperando, e `live_dsh_fallback` segura a
+  trava por ~78 s e falha por conta própria.
 
 == 5) Sem regressão nas suítes vizinhas (rodadas isoladas) ==
-  ./tests/live_ui.sh      -> ✔ OK — turno real pela UI, corte do barge-in medido
-  BASE=:7860 ./tests/mobile_layout.sh
-                          -> ✔ mobile: nenhum elemento fora da viewport (390 e 360 px)
-  pytest tests/test_run_sh.py -> 6 passed (a suíte nova está no estágio `navegador`)
+  ./tests/live_ui.sh -> ✔ OK — turno real pela UI, corte do barge-in medido
+  BASE=:7860 ./tests/mobile_layout.sh -> ✔ nada fora da viewport em 390 e 360 px
+  BASE=:7860 ./tests/a11y_teclado.sh -> ✔ PTT, trap, atalhos, abas e anúncios
+  pytest tests/test_run_sh.py -> 6 passed (a suíte está no estágio `navegador`)
+  Painel ABERTO em 390 e 360 px: nenhum elemento fora da viewport (medido à parte,
+    porque a suíte de mobile olha o estado recolhido)
 
 == 6) App real (:7860, instância do dono, somente leitura) ==
   ganho durante o duck: 0.1258925348520279 (1/10^(18/20) exato)
   chip "volume abaixado" visível: True · seletor em `inteligente`
+  painel: "basta" cadastrada, "nossa" removida do backchannel, min_palavras 5
   erros de JS (pageerror / console error): nenhum
   requisições falhas: apenas as 5 sondas de porta do controlador
   (127.0.0.1:7861..7865 `/mode`, preexistentes quando não há controlador)
 
-Captura: `502-live-interrupcao-duck.png` (seletor, chip aceso e as linhas de
-decisão/retoma no log de eventos).
+Capturas: `502-live-interrupcao-duck.png` (chip aceso e log de decisão/retoma) e
+`502-live-filtros-painel.png` (painel aberto com chips, números e restaurar padrões).
