@@ -103,3 +103,38 @@ como `false` no relatório.
 ./.venv-mlx/bin/python tools/bakeoff/ruido_bakeoff.py --familias ventoinha \
     --snrs 5,10 --limite 4 --candidatos atual,rnnoise,dfnet3,dfnet3onnx
 ```
+
+
+## Critério de aceite do PM: o PRODUTO, não a identidade
+
+A equivalência de 10,3 dB não bastava; o PM fixou o critério no resultado: Δ de
+OVRL ≤ 0,05 e Δ de timbre ≤ 0,01 contra o caminho original, mesmos cenários.
+
+**Resultado: timbre passa, OVRL ainda não.** Ventoinha 5 e 10 dB, 4 amostras:
+
+| métrica | original (média) | DSP próprio (média) | Δ |
+|---|---|---|---|
+| DNSMOS OVRL | 3,140 | 3,012 | **−0,128 (falha)** |
+| similaridade de timbre | 0,9705 | 0,9653 | −0,005 (passa) |
+
+Por célula o próprio DSP ganha em 2 de 8 e fica perto em 5; a diferença se
+concentra numa amostra (OVRL 2,66 × 3,24 na mesma entrada).
+
+### O que a perseguição rendeu
+
+O critério mandou apertar a recorrência do `erb_norm` — e ela estava errada mesmo.
+Fui à fonte (`libDF/src/lib.rs`): o original é `estado = x·(1−α) + estado·α` e
+`out = (x − estado)/40`, com estado inicial `linspace(−60, −90)` e `α = 0,99`
+(confirmado em `get_norm_alpha`). O `unit_norm` inicializa em
+`linspace(1e−3, 1e−4)`, não geometricamente como eu tinha suposto.
+
+Com isso a equivalência foi de **10,3 dB para 13–27 dB** de SI-SDR contra o
+original (4 amostras: 16,0 / 21,5 / 13,0 / 17,1). A ordem dos coeficientes do
+filtro profundo também foi conferida (a invertida dá 15,5 dB contra 16,5).
+
+### Leitura honesta de onde estamos
+
+O que sobrou não é mais a normalização: é a diferença entre o grafo ONNX e o
+modelo torch (precisão numérica e o que o export congela) e o instante em que ele
+é avaliado. Fechar o 0,128 exige ou aceitar o número, ou trocar a comparação de
+base. **Não declarei aceito.**

@@ -74,22 +74,29 @@ def erb_db(mag2: np.ndarray, fb: np.ndarray) -> np.ndarray:
 
 
 def erb_norm(x: np.ndarray, estado: np.ndarray, alpha: float = ALPHA) -> np.ndarray:
-    """Centraliza a banda em dB numa média exponencial (SUBTRAI, não divide).
+    """Centralização por média exponencial e escala fixa, como no `libdf`.
 
-    As features ERB chegam em dB; o `libdf` devolve valores perto de zero (média
-    medida 0,0008), o que só fecha com subtração. `x` é [T, bandas] e o estado tem
-    uma entrada por banda, então a recorrência anda no tempo."""
+    Recorrência EXATA do original (`band_mean_norm_erb`): o estado é atualizado
+    primeiro (`x·(1−α) + estado·α`), a saída é `(x − estado)/40`. O 40 é constante
+    no código de lá, não um parâmetro. As features ERB chegam em dB e o estado
+    inicial é `linspace(−60, −90, bandas)`; sem isso a normalização desloca a
+    entrada da rede e ela super-atenuou (OVRL 0,69 abaixo, timbre 0,10 abaixo)."""
     saida = np.empty_like(x)
     for t in range(x.shape[0]):
         estado *= alpha
         estado += (1 - alpha) * x[t]
-        saida[t] = x[t] - estado
+        saida[t] = (x[t] - estado) / 40.0
     return saida
 
 
+def erb_norm_init(bandas: int) -> np.ndarray:
+    """Estado inicial do `erb_norm`: `linspace(−60, −90)`, como o `MEAN_NORM_INIT`."""
+    return np.linspace(-60.0, -90.0, bandas)
+
+
 def unit_norm_init(bins: int) -> np.ndarray:
-    """Estado inicial do `unit_norm`: 1e-3 · 0,7^i (como o libdf)."""
-    return 1e-3 * 0.7 ** np.arange(bins)
+    """Estado inicial do `unit_norm`: `linspace(1e-3, 1e-4)`, como o `UNIT_NORM_INIT`."""
+    return np.linspace(1e-3, 1e-4, bins)
 
 
 def unit_norm(x: np.ndarray, estado: np.ndarray, alpha: float = ALPHA) -> np.ndarray:

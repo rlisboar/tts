@@ -79,11 +79,20 @@ def cand_dfnet(x, sr):
     ent, sai = tmp / "in.wav", tmp / "out.wav"
     sf.write(str(ent), x, sr, subtype="PCM_16")
     t = time.perf_counter()
+    # mesmo reamostrador do candidato ONNX (scipy): sem isso a comparação mede a
+    # diferença entre dois resamplers, não entre os dois DSPs
+    import scipy.signal as ss
+
+    ent48 = tmp / "in48.wav"
+    sf.write(str(ent48), ss.resample_poly(x, 48000, sr).astype(np.float32), 48000,
+             subtype="PCM_16")
     subprocess.run([str(VENV_DF), "-c",
-                    "import sys;from df.enhance import enhance,init_df,load_audio,save_audio;"
-                    "m,st,_=init_df();sr=st.sr() if callable(st.sr) else st.sr;"
-                    "a,_=load_audio(sys.argv[1],sr=sr);save_audio(sys.argv[2], enhance(m,st,a), sr)",
-                    str(ent), str(sai)], capture_output=True)
+                    "import sys;import soundfile as sf;import torch;"
+                    "from df.enhance import enhance,init_df;"
+                    "m,st,_=init_df();a,_=sf.read(sys.argv[1],dtype='float32');"
+                    "y=enhance(m,st,torch.from_numpy(a)[None]).squeeze(0).numpy();"
+                    "sf.write(sys.argv[2],y,48000,subtype='PCM_16')",
+                    str(ent48), str(sai)], capture_output=True)
     y, sr2 = sf.read(str(sai), dtype="float32")
     if sr2 != sr:
         import scipy.signal as ss

@@ -505,7 +505,7 @@ _SETTINGS_DEFAULTS = {
     # de voz do dono; `rigor_far` ("1"/"0,1") troca o limiar pelo alvo de FAR —
     # vazio usa 0,44, o limiar do R4 (`evidence/532`; 0,35 passa voz parecida).
     # `separacao` é OPCIONAL e desligada por default: custa ~1 s e 1,16 GB.
-    "live_so_minha_voz": {"on": False, "perfil": "", "rigor_far": "",
+    "live_so_minha_voz": {"on": False, "perfil": "", "rigor_far": "1",
                           "separacao": False},
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
@@ -4421,7 +4421,7 @@ def _apply_settings(payload: dict):
                     atual[k] = str(v or "").strip()[:60]
                 elif k == "rigor_far":
                     v = str(v or "").strip().replace(",", ".")
-                    atual[k] = v if v in ("1", "0.1") else ""
+                    atual[k] = v if v in ("1", "0.1") else "1"   # vazio = default
             _settings["live_so_minha_voz"] = atual
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
@@ -8467,15 +8467,20 @@ def _speaker_cohorte(modelo: str) -> list:
     return vecs
 
 
-def _speaker_asnorm(emb, vecs_perfil: list, modelo: str) -> tuple[float, str]:
+def _speaker_asnorm(emb, vecs_perfil: list, modelo: str,
+                    alvo: str | None = None) -> tuple[float, str]:
     """(escore, modo). Sem coorte ou sem alvo de FAR, devolve o cosseno CRU.
 
     Com alvo, normaliza pelo top-10 da coorte de impostores: `(s - mu) / sd`. É a
     normalização que fez o ECAPA sair de 1,6 % para 0,19 % de EER no R2 — e é
-    específica do modelo."""
+    específica do modelo.
+
+    `alvo` explícito vale para quem tem critério PRÓPRIO (o portão do Live usa o
+    `rigor_far` do bloco, não o setting global de cadastro) — #533."""
     centroide = _speaker_centroide(vecs_perfil)
     cru = _cos_sim(emb, centroide)
-    alvo = str(_settings.get("speaker_far_alvo") or "").strip()
+    alvo = (str(_settings.get("speaker_far_alvo") or "").strip()
+            if alvo is None else str(alvo or "").strip())
     coorte = _speaker_cohorte(modelo) if alvo else []
     if not alvo or not coorte:
         return cru, "cru"
@@ -8570,13 +8575,17 @@ def _speaker_anticlone() -> dict:
 # Protocolo do R4 (`evidence/532`): ECAPA em janela de 1 s, passo de 0,25 s,
 # **2 janelas seguidas** acima do limiar e piso de energia (0,15 do p90). Falso
 # turno medido: 0 em 10 min; custo 17 ms por janela com o modelo carregado — daí
-# o PREWARM por sessão. O limiar default é 0,44 (0,35 passa voz parecida,
-# `evidence/521`); `rigor_far` troca pelo alvo de FAR quando o dono quiser.
+# o PREWARM por sessão.
+# LIMIAR: o escore é o ECAPA **AS-normalizado** com a mesma coorte do I3 e limiar
+# por alvo de FAR (`rigor_far`, default "1" ≈ 2,43 para o ecapa:v1, o mesmo número
+# do cadastro). O 0,44 CRU é só QUEDA, quando não há coorte/alvo ou a normalização
+# não pegou (0,35 cru passa voz parecida, `evidence/521`).
 _VOZ_JANELA_S = 1.0
 _VOZ_PASSO_S = 0.25
 _VOZ_CONFIRMACOES = 2
 _VOZ_PISO_ENERGIA = 0.15
-_VOZ_LIMIAR_PADRAO = 0.44
+_VOZ_LIMIAR_PADRAO = 0.44         # queda CRU (sem coorte): nunca é o caminho feliz
+_VOZ_RIGOR_PADRAO = "1"           # FAR alvo, o mesmo default do cadastro (#521)
 
 
 def _live_voz_ligado() -> dict | None:
@@ -8598,6 +8607,19 @@ def _live_voz_perfil(cfg: dict) -> tuple[str, dict] | None:
         return None                       # escolhido e sumiu: não troca de voz sozinho
     primeiro = next(iter(perfis))
     return primeiro, perfis[primeiro]
+
+
+def _voz_limiar(modelo: str, rigor: str) -> tuple[float, str]:
+    """(limiar, modo) do portão do Live.
+
+    Caminho FELIZ: AS-norm com a coorte do modelo e o limiar por FAR alvo
+    (`_SPEAKER_LIMIAR_FAR`, o mesmo do cadastro — 2,43 no FAR 1 % para o
+    ecapa:v1). Queda: 0,44 no escore CRU quando não há coorte ou alvo."""
+    if rigor and _speaker_cohorte(modelo):
+        lim = _SPEAKER_LIMIAR_FAR.get(modelo, {}).get(rigor)
+        if lim is not None:
+            return float(lim), "asnorm"
+    return _VOZ_LIMIAR_PADRAO, "cru"
 
 
 def _voz_do_dono(pcm16: bytes) -> dict:
@@ -8642,9 +8664,8 @@ def _voz_do_dono(pcm16: bytes) -> dict:
     rms = np.array([float(np.sqrt((a[i:i + quadro] ** 2).mean()))
                     for i in range(0, max(quadro, a.size - quadro), quadro)] or [0.0])
     piso = float(np.percentile(rms, 90)) * _VOZ_PISO_ENERGIA if rms.size else 0.0
-    lim, _modo = _speaker_limiar(modelo)
-    if not _settings.get("speaker_far_alvo"):
-        lim = _VOZ_LIMIAR_PADRAO         # default do R4 (o cru 0,6 é do gate de enroll)
+    lim, modo_lim = _voz_limiar(modelo, str(cfg.get("rigor_far") or _VOZ_RIGOR_PADRAO))
+    alvo_norm = str(cfg.get("rigor_far") or _VOZ_RIGOR_PADRAO) if modo_lim == "asnorm" else ""
     confirmacoes, scores = 0, []
     necessarias = 1 if a.size < int(16000 * (_VOZ_JANELA_S * 1.75)) else _VOZ_CONFIRMACOES
     for ini in range(0, max(1, a.size - janela + 1), passo):
@@ -8667,7 +8688,11 @@ def _voz_do_dono(pcm16: bytes) -> dict:
             tmp.unlink(missing_ok=True)
         if not emb:
             break                         # extrator indisponível: fail-open
-        score, _modo_esc = _speaker_asnorm(emb, vecs, modelo)
+        score, modo_esc = _speaker_asnorm(emb, vecs, modelo, alvo=alvo_norm)
+        if modo_esc != "asnorm":
+            # a normalização não pegou (coorte ilegível): compara no CRU com a
+            # queda — escore normalizado contra limiar cru erraria por muito
+            lim, modo_lim = _VOZ_LIMIAR_PADRAO, "cru"
         scores.append(score)
         if score >= lim:
             confirmacoes += 1
@@ -8676,7 +8701,8 @@ def _voz_do_dono(pcm16: bytes) -> dict:
     if not scores:
         return _fora("nenhuma janela com voz")
     ok = confirmacoes >= necessarias
-    return {"ok": ok, "estado": "ok" if ok else "recusado",
+    return {"ok": ok, "estado": "ok" if ok else "recusado", "limiar": round(lim, 3),
+            "escore": modo_lim,
             "janelas": len(scores), "score": round(max(scores), 3),
             "latencia_ms": int((time.monotonic() - t0) * 1000),
             "motivo": "" if ok else f"outra voz (melhor {max(scores):.2f} < {lim:.2f})"}

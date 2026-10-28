@@ -76,7 +76,7 @@ def limpa(audio: np.ndarray, atenuacao_db: float | None = None) -> np.ndarray:
     spec = dfn_dsp.stft(x, janela)
     pot = np.abs(spec) ** 2
     erb = dfn_dsp.erb_db(pot, c["params"]["erb_fb"])
-    feat_erb = dfn_dsp.erb_norm(erb, np.full(erb.shape[1], 1e-3))
+    feat_erb = dfn_dsp.erb_norm(erb, dfn_dsp.erb_norm_init(erb.shape[1]))
     feat_spec = dfn_dsp.unit_norm(spec[:, : c["nb_df"]],
                                   dfn_dsp.unit_norm_init(min(c["nb_df"], spec.shape[1])))
 
