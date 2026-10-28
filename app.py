@@ -9087,6 +9087,28 @@ def speaker_profiles():
             for n, p in sorted(perfis.items())]
 
 
+@app.delete("/api/speaker/{name}/pendente")
+def speaker_pendente_descarta(request: Request, name: str):
+    """Joga fora o recadastro PARCIAL e deixa o perfil como estava (admin, #534).
+
+    Sem TTL: dado do dono não some por relógio (decisão do PM). O perfil segue
+    autenticando pelo extrator antigo com os vetores dele intactos — só o espaço
+    novo em construção sai."""
+    _exige_admin(request)
+    with _speaker_lock:
+        perfis = _speaker_load()
+        p = perfis.get(name)
+        if p is None:
+            raise HTTPException(404, "Perfil não encontrado")
+        if p.pop("pendente", None) is None:
+            raise HTTPException(404, "Este perfil não tem recadastro em andamento")
+        p["updated"] = time.time()
+        _speaker_save(perfis)
+        em_uso = _speaker_modelo_do_perfil(p)
+        amostras = len(p.get("vecs") or [])
+    return {"ok": True, "name": name, "em_uso": em_uso, "samples": amostras}
+
+
 @app.delete("/api/speaker/{name}")
 def speaker_delete(request: Request, name: str):
     _exige_admin(request)
@@ -12148,3 +12170,4 @@ async def _historico_operacao(request, call_next):
 
 # UI estática (registrada por último para não engolir /api/* e /v1/*)
 app.mount("/", StaticFiles(directory=BASE / "static", html=True), name="static")
+# sentinela-isolamento-49800-1793224211

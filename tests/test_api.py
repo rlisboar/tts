@@ -6752,3 +6752,32 @@ def test_separa_alvo_usa_o_extrator_DO_PERFIL_e_nao_o_efetivo(monkeypatch):
     assert escolhido.read_bytes() == b"a", f"escolheu o fluxo errado: {info}"
     assert set(pedidos) == {app.SPEAKER_MODELO_LEGADO}, pedidos
     assert info["escores"][0] > info["escores"][1]
+
+
+def test_descartar_recadastro_parcial_mantem_o_legado(client, auth, monkeypatch):
+    """Descartar o parcial não toca no que autentica (#534): 200, pendente some.
+
+    Sem TTL de propósito — quem joga fora é o dono. `use` não pode (é escrita)."""
+    _perfil_legado_com_ecapa(monkeypatch)
+    client.post("/api/speaker/enroll", headers=auth, data={"name": "eu"},
+                files={"audio": ("v.wav", b"x", "audio/wav")})
+    assert STORE["eu"]["pendente"]["vecs"], "o parcial nem foi criado"
+    r = client.delete("/api/speaker/eu/pendente", headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["em_uso"] == app.SPEAKER_MODELO_LEGADO
+    assert r.json()["samples"] == 2, "as amostras do legado não podem sair junto"
+    assert "pendente" not in STORE["eu"]
+    assert STORE["eu"]["modelo"] == app.SPEAKER_MODELO_LEGADO
+    # sem parcial em andamento, 404 claro; perfil inexistente, 404
+    assert client.delete("/api/speaker/eu/pendente", headers=auth).status_code == 404
+    assert client.delete("/api/speaker/ninguem/pendente", headers=auth).status_code == 404
+    # chave de uso não descarta (é escrita)
+    segredo = app._apikeys["keys"][0]["secret"]
+    client.post("/api/speaker/enroll", headers=auth, data={"name": "eu"},
+                files={"audio": ("v.wav", b"x", "audio/wav")})
+    app._apikeys["keys"][0]["role"] = "use"
+    try:
+        r = client.delete("/api/speaker/eu/pendente", headers={"X-API-Key": segredo})
+        assert r.status_code == 403
+    finally:
+        app._apikeys["keys"][0]["role"] = "admin"

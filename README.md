@@ -297,6 +297,7 @@ aparelho da LAN cadastra a própria voz); apagar o perfil (`DELETE
 |---|---|
 | `GET /api/speaker/profiles` | `name`, `samples`, `updated`, `modelo`, `precisa_recadastrar`, `pendente` |
 | `POST /api/speaker/check` | `speaker`, `sim`, `limiar`, `modo` e `passaria` do áudio enviado (diagnóstico pela MESMA régua do gate) |
+| `DELETE /api/speaker/{name}/pendente` | joga fora o recadastro PARCIAL (admin); o perfil e os vetores antigos ficam |
 
 O `check` existe para calibrar sem depender do gate ligado: ele pontua pelo
 centróide das amostras, com o extrator do perfil, e devolve o veredito do
