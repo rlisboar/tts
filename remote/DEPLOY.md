@@ -200,7 +200,7 @@ O script faz o ciclo inteiro offline-quando-possível e só muda o servidor com
 ./remote/deploy.sh recon    [host]              # read-only: units, portas, venv, sha256, gpu
 ./remote/deploy.sh compare  [host]              # sha256 do repo × o que está no ar (rc=1 se difere)
 ./remote/deploy.sh deploy   [host] --apply      # backup → scp → ast.parse → restart → smoke
-./remote/deploy.sh rollback [host] --apply      # volta o último server.py.bak-* e reinicia
+./remote/deploy.sh rollback [host] --apply      # volta o PAR do último server.py.bak-* e reinicia
 ./remote/deploy.sh smoke    [host]              # /health 200 com "auth" + 401 sem chave
 ```
 
@@ -208,16 +208,20 @@ O script faz o ciclo inteiro offline-quando-possível e só muda o servidor com
 
 - **sem diff, sem restart**: igual ao repo → não reinicia (restart recarrega os
   modelos na VRAM, não é de graça);
-- **backup antes de subir** (`server.py.bak-<data>`) e `ast.parse` nos **dois**
-  arquivos que sobem (`server.py` e `auth_policy.py`) — sintaxe reprovada **para
-  antes do restart** (`[PARA] sintaxe reprovada`, nada é reiniciado) e o rev vai
-  para `.rev` (`-dirty` se o arquivo tinha WIP), que o `/health` publica;
+- **backup do PAR antes de subir** (`server.py.bak-<data>` + `auth_policy.py.bak-<data>`,
+  mesmo stamp) e `ast.parse` nos **dois** arquivos que sobem (`server.py` e
+  `auth_policy.py`) — sintaxe reprovada **para antes do restart**
+  (`[PARA] sintaxe reprovada`, nada é reiniciado) e o rev vai para `.rev`
+  (`-dirty` se o arquivo tinha WIP), que o `/health` publica;
 - **árvore suja avisa**: o que sobe é o arquivo da árvore, não o commit — o aviso
   mostra o que está sujo para ninguém achar que subiu o commit do `rev`;
 - **smoke vermelho desfaz sozinho** (#345): o rev novo já está no disco e rodando,
   então sair e deixar assim é servidor quebrado esperando alguém digitar outro
-  comando. O script volta **aquele** backup, reinicia e repete o smoke; se o smoke
-  do rollback também falhar, diz em destaque (`✖ REVERTIDO PARA …, MAS O SMOKE DO
+  comando. O script volta **aquele** backup, reinicia e repete o smoke; a volta é
+  do PAR (`server.py` + `auth_policy.py` do MESMO stamp) — se o `auth_policy.py`
+  não existia antes, ele é removido, senão o rollback deixaria `server.py` velho
+  com `auth_policy.py` novo, estado que nunca existiu (#494). Se o smoke do
+  rollback também falhar, diz em destaque (`✖ REVERTIDO PARA …, MAS O SMOKE DO
   ROLLBACK TAMBÉM FALHOU`) em vez de mascarar com o erro original. As dependências
   do venv não voltam sozinhas — é do dono, se o rev novo mexeu nelas;
 - **nada de segredo na saída**: `Environment=` sai com o valor redigido
@@ -458,9 +462,13 @@ o fingerprint `codigo` continua só no `/api/build`. Com isso o histórico disti
 commit, sem chave.
 
 `remote/health_probe.sh` roda **no mini** (LaunchAgent `StartInterval 120`, ver
-`install`) e, a cada rodada: `/health` na LAN e no público (200 + `"ok"`), e
+`install`) e, a cada rodada: `/health` na LAN e no público (200 + `"ok"`),
 `/api/voices` **sem chave** no público, que tem de dar **401** — 200 ali é o
-invariante do túnel furado (destino loopback ⇒ auth no-op). Depois de
+invariante do túnel furado (destino loopback ⇒ auth no-op) — e o `/ready` do
+conector na porta local de métricas (`127.0.0.1:20242`), que tem de dar 200: com
+o conector caído o público ainda responde 200 por um tempo (cache/DNS) e a LAN
+não enxerga o conector, então sem essa linha a queda **parcial** passava verde
+(`TTS_PROBE_CONECTOR=0` desliga). Depois de
 `TTS_PROBE_FALHAS` falhas consecutivas (padrão 3, ~6 min) ele grava
 `~/Library/Logs/tts-health-ALERTA.txt` (0600) e tenta uma notificação do macOS; a
 primeira rodada boa zera o contador e apaga a flag.

@@ -84,3 +84,18 @@ Atenção a dois detalhes de medição:
   mantém a suíte verde.
 
 Gate: `task_b91d2003` (veredito APROVADO, com a ressalva da mordida composta).
+
+## #494 — rollback do `deploy.sh` voltava só o `server.py`
+
+O deploy copia DOIS arquivos (`server.py` + `auth_policy.py`): o rollback tem de
+cobrir o mesmo conjunto. Sabotagem de uma linha (voltar o `cp -a '$bak' server.py`
+e largar o par) deixa as três células vermelhas — medido:
+
+| Sabotagem | Resultado |
+|---|---|
+| `restaurar_par` copia só o `server.py` | `test_rollback_automatico_volta_o_auth_policy_junto` **FAILED**, `test_rollback_automatico_remove_o_auth_policy_que_nao_existia` **FAILED** e `test_rollback_manual_volta_o_par` **FAILED** (3/3) |
+
+A célula do `auth_policy.py` AUSENTE antes do deploy é a que pega o caso sutil: a
+volta é **remover** o arquivo (deixar o novo seria, de novo, um estado que nunca
+existiu). Mordida medida com `git stash push -- remote/deploy.sh` e `git stash
+pop` — o `.pyc` não entra na conta porque o script é shell.

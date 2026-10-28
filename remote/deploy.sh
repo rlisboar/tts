@@ -8,7 +8,7 @@
 #   ./remote/deploy.sh compare  [host]                 # sha256 repo × no ar (sem imprimir segredo)
 #   ./remote/deploy.sh smoke    [host]                 # pós-deploy: /health 200, 401 sem chave
 #   ./remote/deploy.sh deploy   [host] --apply         # backup + scp + ast.parse + restart + smoke
-#   ./remote/deploy.sh rollback [host] --apply         # volta o último .bak-* e reinicia
+#   ./remote/deploy.sh rollback [host] --apply         # volta o PAR do último .bak-* e reinicia
 #
 # `--service voxtral|omni|all` (padrão: all) limita a um servidor. `host` também
 # vem de $TTS_REMOTE_HOST. Portas/units/pastas saem de $*_REMOTE_* (ver DEPLOY.md
@@ -128,6 +128,26 @@ diff_do_servico() { # $1 = serviço; mostra o que o `deploy` mudaria
       print -r -- "$remoto" | diff -u -L "no-ar/$alvo" -L "repo/$alvo" - "$local_arq" | tail -n +3 | sed 's/^/    /' || true
     fi
   done
+}
+
+# O deploy copia um PAR (`server.py` + o `auth_policy.py` que ele importa) e a
+# volta tem de cobrir EXATAMENTE esse conjunto: restaurar só o `server.py` deixava
+# `server.py` velho com `auth_policy.py` novo — estado que nunca existiu, e ainda
+# anunciado como "REVERTIDO" no log (#494). O backup é do par, com o MESMO stamp;
+# `auth_policy.py.bak-<stamp>` ausente = o arquivo não existia antes do deploy, e
+# aí a volta é REMOVÊ-LO (e não deixar um arquivo que nunca esteve lá).
+backup_do_par() { # $1 = serviço; imprime o stamp usado
+  local stamp
+  stamp="$(distante 'date +%F-%H%M%S' | tr -d '[:space:]')"
+  [ -n "$stamp" ] || stamp="$(date +%F-%H%M%S)"
+  distante "cd '$(servico_dir "$1")' && cp -a server.py 'server.py.bak-$stamp' && if [ -e '$COMPARTILHADO' ]; then cp -a '$COMPARTILHADO' '$COMPARTILHADO.bak-$stamp'; fi" >/dev/null
+  print -r -- "$stamp"
+}
+
+restaurar_par() { # $1 = serviço, $2 = stamp; volta o par e reinicia
+  local dir unit
+  dir="$(servico_dir "$1")"; unit="$(servico_unit "$1")"
+  distante "cd '$dir' && cp -a 'server.py.bak-$2' server.py && if [ -e '$COMPARTILHADO.bak-$2' ]; then cp -a '$COMPARTILHADO.bak-$2' '$COMPARTILHADO'; else rm -f '$COMPARTILHADO'; fi && systemctl restart '$unit'"
 }
 
 smoke_do_servico() { # $1 = serviço; 0 = passou
@@ -259,8 +279,9 @@ for s in "${SERVICOS[@]}"; do
         print -r -- "  nada a fazer (sem diff) — restart recarrega modelo, então não reinicia"
         continue
       fi
-      bak="$(distante "cd '$(servico_dir "$s")' && cp -a server.py \"server.py.bak-\$(date +%F-%H%M%S)\" && ls -1t server.py.bak-* | head -1" | tr -d '[:space:]')"
-      print -r -- "  backup: $bak"
+      stamp="$(backup_do_par "$s")"
+      bak="server.py.bak-$stamp"
+      print -r -- "  backup: $bak (+ $COMPARTILHADO.bak-$stamp, se existia)"
       "${SCP[@]}" "$(servico_arquivo "$s")" "$HOST:$(servico_dir "$s")/server.py"
       "${SCP[@]}" "$RAIZ/$COMPARTILHADO" "$HOST:$(servico_dir "$s")/$COMPARTILHADO"
       print -r -- "  copiado (server.py + $COMPARTILHADO)"
@@ -288,12 +309,12 @@ for s in "${SERVICOS[@]}"; do
       falhas=1
       print -r -- ""
       print -r -- "== SMOKE VERMELHO em $s — revertendo sozinho para o backup deste deploy"
-      if [ -z "$bak" ]; then
-        print -r -- "  [PARA] não capturei o nome do backup — reverta à mão em $(servico_dir "$s") (server.py.bak-*)"
+      if [ -z "$stamp" ]; then
+        print -r -- "  [PARA] não capturei o backup — reverta à mão em $(servico_dir "$s") (server.py.bak-* + auth_policy.py.bak-*)"
         continue
       fi
-      distante "cd '$(servico_dir "$s")' && cp -a '$bak' server.py && systemctl restart '$(servico_unit "$s")'" | sed 's/^/  /'
-      print -r -- "  voltado para $bak — smoke do rollback:"
+      restaurar_par "$s" "$stamp" | sed 's/^/  /'
+      print -r -- "  voltado para $bak (+ $COMPARTILHADO.bak-$stamp) — smoke do rollback:"
       if smoke_do_servico "$s"; then
         print -r -- "  ✔ REVERTIDO para $bak (smoke do rollback passou)"
       else
@@ -307,12 +328,13 @@ for s in "${SERVICOS[@]}"; do
         print -r -- "  [aviso] nenhum server.py.bak-* em $(servico_dir "$s")"
         continue
       fi
-      print -r -- "  volta $ultimo"
+      stamp="${${ultimo:t}#server.py.bak-}"
+      print -r -- "  volta $ultimo (+ $COMPARTILHADO.bak-$stamp, se existia)"
       if [ "$APPLY" = 0 ]; then
         print -r -- "  (dry-run: rode com --apply para restaurar e reiniciar)"
         continue
       fi
-      distante "cd '$(servico_dir "$s")' && cp -a '$ultimo' server.py && systemctl restart '$(servico_unit "$s")'"
+      restaurar_par "$s" "$stamp"
       print -r -- "  restaurado e $(servico_unit "$s") reiniciado — smoke:"
       smoke_do_servico "$s" || falhas=1
       ;;

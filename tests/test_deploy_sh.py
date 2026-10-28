@@ -340,6 +340,52 @@ def test_deploy_verde_nao_dispara_rollback(amb):
     assert _log(amb, "restart") == [UNIT_VOXTRAL]
 
 
+# --- #494: o deploy copia DOIS arquivos (server.py + auth_policy.py) e a volta
+# tem de cobrir o mesmo conjunto. Antes, o rollback (automático e manual) só
+# restaurava o server.py e deixava o auth_policy.py NOVO: árvore que nunca
+# existiu, anunciada como "REVERTIDO" no log.
+def test_rollback_automatico_volta_o_auth_policy_junto(amb):
+    (_servidor(amb) / "server.py").write_text("# velho\n")
+    (_servidor(amb) / "auth_policy.py").write_text("# politica velha\n")
+    amb["T_CURL_CODE_POR_RESTART"] = "1"        # 1 restart = quebrado; 2 = revertido
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode == 1, _saida(r)
+    assert (_servidor(amb) / "server.py").read_text() == "# velho\n"
+    assert (_servidor(amb) / "auth_policy.py").read_text() == "# politica velha\n", \
+        "o auth_policy.py do repo ficou no servidor: estado misto com 'REVERTIDO' no log"
+    assert "auth_policy.py.bak-" in r.stdout
+
+
+def test_rollback_automatico_remove_o_auth_policy_que_nao_existia(amb):
+    """`auth_policy.py` ausente antes do deploy: voltar é REMOVÊ-LO (deixar o novo
+    seria, de novo, um estado que nunca existiu)."""
+    (_servidor(amb) / "server.py").write_text("# velho\n")
+    (_servidor(amb) / "auth_policy.py").unlink()
+    amb["T_CURL_CODE_POR_RESTART"] = "1"
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode == 1, _saida(r)
+    assert not (_servidor(amb) / "auth_policy.py").exists()
+    assert (_servidor(amb) / "server.py").read_text() == "# velho\n"
+
+
+def test_rollback_manual_volta_o_par(amb):
+    (_servidor(amb) / "server.py").write_text("# velho\n")
+    (_servidor(amb) / "auth_policy.py").write_text("# politica velha\n")
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    # alguém editou a política NO SERVIDOR depois do deploy
+    (_servidor(amb) / "auth_policy.py").write_text("# politica mexida depois\n")
+
+    r = _run(amb, "rollback", "--apply", "--service", "voxtral")
+
+    assert r.returncode == 0, _saida(r)
+    assert (_servidor(amb) / "server.py").read_text() == "# velho\n"
+    assert (_servidor(amb) / "auth_policy.py").read_text() == "# politica velha\n"
+
+
 def test_service_limita_o_alvo_e_rollback_restaura(amb):
     (_servidor(amb, "omni") / "server.py").write_text("# omni velho\n")
     r = _run(amb, "deploy", "--apply", "--service", "omni")
