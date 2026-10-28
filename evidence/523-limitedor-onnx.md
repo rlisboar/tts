@@ -93,8 +93,10 @@ como `false` no relatório.
 - **Dereverb**: o gancho existe e devolve `None`; falta o modelo (WPE).
 - **Separação de música**: o caminho chama o Demucs se estiver instalado, e ele
   não está — a etapa está ligada por código, não medida.
-- Worker isolado: o ONNX é CPU puro, então não precisa; se o Demucs entrar (torch),
-  ele passa a precisar.
+- Worker isolado: **proposto NÃO isolar** — o ONNX é CPU puro, sem Metal e sem
+  torch, então não tem o segfault que justifica worker no resto do app, e isolar
+  custa +1 `Popen` e IPC por amostra sem proteger de nada hoje. Se o Demucs entrar
+  (torch), ele passa a precisar.
 
 ## Reprodução
 
