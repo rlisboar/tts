@@ -290,6 +290,26 @@ CI. `test_app_nao_baixa_modelo_no_boot` e `test_manifesto_lista_todos_os_pesos`
 cobrem o contrato do card por leitura (o boot não chama o downloader; peso sem
 sha256 no manifesto reprova).
 
+## #526-bis — separador offline a partir de `models/`
+
+O separador NÃO usa `from_hparams` (é `torch.load` do arquivo local), então o que
+o prende ao disco são o caminho e o manifesto. As células fecham a rede de
+propósito: `HF_HOME` vazio, `HF_HUB_OFFLINE=1` e `TTS_MODELOS_URL` apontando para
+uma porta morta. `.pyc` removido com `tests/limpa_bytecode.sh tools/bakeoff/separa.py`
+antes de cada linha.
+
+| Sabotagem | Resultado |
+|---|---|
+| `MODELOS` volta ao `/tmp/tts-bakeoff/vendf/mf2_ss` (efêmero, sem os pesos) | `test_carrega_offline_com_hfhome_vazio` **FAILED** |
+| `disponivel()` sem olhar o arquivo (sempre `True`) | `test_sem_os_pesos_a_disponibilidade_cai_e_a_mensagem_diz_o_script` **FAILED** |
+| editar um byte de `separa_vend/mf2_ss/fsmn.py` | `test_codigo_vendorizado_e_o_da_revisao_fixada` **FAILED** |
+| `import funasr` num arquivo vendorizado | `test_vendor_nao_puxa_pacote_alem_de_torch_einops_rotary` **FAILED** |
+
+O pin tem prova própria fora destas células: `pip install --dry-run
+--ignore-installed -c requirements.lock einops rotary_embedding_torch` resolve
+`einops-0.8.2`/`rotary-embedding-torch-0.9.1` e mantém `torch-2.12.1` — nenhum
+torch/transformers/mlx se move (medido em 2026-10-28).
+
 ## #547 — cadeia de interrupção: as DUAS direções
 
 A cadeia tem extremos opostos e cada sabotagem só morde por um lado. A receita
