@@ -354,6 +354,15 @@ _SETTINGS_DEFAULTS = {
     "chunk_max_chars": 140,
     "speed": 1.0,              # velocidade da fala (UI + API); nativa do modelo (preserva o tom)
     "auto_cleanup": False,     # apaga áudios gerados automaticamente
+    # #501/#502 — interrupção do Live: `inteligente` (decide pelo conteúdo),
+    # `imediata` (o comportamento antigo, corta no limiar) ou `so_comando`.
+    "live_interrupcao": "inteligente",
+    # cadeia de filtros do barge (merge PARCIAL por filtro: mandar um item não
+    # apaga os outros). `modelo` começa desligado até a medição do qa (#509).
+    "live_barge_filtros": {},
+    # o que fazer quando a janela decide sem transcript útil
+    "live_barge_sem_decisao": "continua",
+
     "auto_cleanup_minutes": 15,
     # teto de QUANTIDADE de áudios em outputs/ (0 = sem teto). Vale mesmo com
     # `auto_cleanup` desligado: é proteção do diretório, não preferência (#430)
@@ -3850,6 +3859,45 @@ def _voice_path(v) -> Path | None:
     return p if p.exists() else None
 
 
+_LIVE_INTERRUPCAO_MODOS = ("inteligente", "imediata", "so_comando")
+# Ordem da cadeia (#501): o modelo é o 5º e só é consultado quando os rápidos não
+# decidiram. O vocabulário vem FECHADO daqui para o `settings.json` não virar
+# contrato aberto.
+_LIVE_BARGE_FILTROS = ("palavras_corte", "eco", "backchannel", "ruido", "modelo",
+                       "pergunta", "frase_longa", "fala_sustentada", "fim_de_resposta")
+_LIVE_MAX_PALAVRAS = 100
+_LIVE_MAX_PALAVRA_CHARS = 40
+
+
+def _normaliza_filtro_barge(nome: str, cfg) -> dict:
+    """Sanitiza o item de um filtro: `on` booleano e os campos numéricos/listas do
+    vocabulário. Chave desconhecida dentro do filtro é descartada (não vira
+    contrato) e ausência de campo mantém o que o motor já usa."""
+    if not isinstance(cfg, dict):
+        return {"on": True}
+    fora: dict = {"on": bool(cfg.get("on", True))}
+    if "palavras" in cfg:
+        palavras = cfg["palavras"]
+        if isinstance(palavras, str):
+            palavras = [p for p in palavras.replace(",", " ").split() if p]
+        if isinstance(palavras, list):
+            fora["palavras"] = [str(p).strip()[: _LIVE_MAX_PALAVRA_CHARS]
+                                for p in palavras[: _LIVE_MAX_PALAVRAS] if str(p).strip()]
+    if "min_palavras" in cfg:
+        fora["min_palavras"] = int(_clamp(cfg["min_palavras"], 1, 20, 3))
+    if "min_ms" in cfg:
+        fora["min_ms"] = int(_clamp(cfg["min_ms"], 150, 5000, 1200))
+    if "restante_ms" in cfg:
+        fora["restante_ms"] = int(_clamp(cfg["restante_ms"], 200, 5000, 1000))
+    if nome == "modelo":
+        fora["provedor"] = ("dsh" if str(cfg.get("provedor") or "local").lower() == "dsh"
+                            else "local")
+        fora["limiar"] = _clamp(cfg.get("limiar"), 0.05, 0.95, 0.5)
+        fora["timeout_ms"] = int(_clamp(cfg.get("timeout_ms"), 100, 3000, 400))
+        fora["on"] = bool(cfg.get("on", False))     # #509: começa DESLIGADO
+    return fora
+
+
 def _apply_settings(payload: dict):
     # (o "antes" dos campos do dsh é do `update_settings` desde o #282: os efeitos
     # ficaram para depois do commit e é lá que a comparação acontece)
@@ -3872,6 +3920,23 @@ def _apply_settings(payload: dict):
         _settings["speed"] = _clamp(payload["speed"], 0.25, 4.0, 1.0)
     if "auto_cleanup" in payload:
         _settings["auto_cleanup"] = bool(payload["auto_cleanup"])
+    if "live_interrupcao" in payload:
+        v = str(payload["live_interrupcao"] or "").strip().lower()
+        _settings["live_interrupcao"] = (v if v in _LIVE_INTERRUPCAO_MODOS
+                                         else "inteligente")
+    if "live_barge_sem_decisao" in payload:
+        v = str(payload["live_barge_sem_decisao"] or "").strip().lower()
+        _settings["live_barge_sem_decisao"] = (v if v in ("continua", "interrompe")
+                                               else "continua")
+    if "live_barge_filtros" in payload:
+        alvo = payload["live_barge_filtros"]
+        if isinstance(alvo, dict):
+            # MERGE parcial: o item manda no próprio filtro e não toca nos outros
+            atual = dict(_settings.get("live_barge_filtros") or {})
+            for nome, cfg in alvo.items():
+                if nome in _LIVE_BARGE_FILTROS:
+                    atual[nome] = _normaliza_filtro_barge(nome, cfg)
+            _settings["live_barge_filtros"] = atual
     if "auto_cleanup_minutes" in payload:
         _settings["auto_cleanup_minutes"] = int(_clamp(payload["auto_cleanup_minutes"], 1, 1440, 15))
     if "auto_cleanup_max_outputs" in payload:
@@ -8974,6 +9039,11 @@ def _live_engine_novo(sess: dict):
             # ~barge_ms + rampa do envelope era fixo e não dava para encurtar). O
             # `get`: dublês de teste montam `vad` só com `prefix_ms`/`silence_ms`.
             barge_in_ms=sess["vad"].get("barge_ms") or _LIVE_BARGE_MS_PADRAO,
+            # #501: modo de interrupção do settings (clamp já feito em
+            # `_apply_settings`; o `get` protege dublês de teste)
+            interrupcao=str(_settings.get("live_interrupcao") or "inteligente"),
+            barge_decisao_ms=int(_clamp(_settings.get("live_barge_decisao_ms"), 200,
+                                        2000, 700)),
             # #167: janela de barge colada ao turno. LIGADA por default desde o
             # #216 (medição da COMBINAÇÃO; ver Config.barge_janela_turno):
             # desligável com `TTS_LIVE_BARGE_JANELA_TURNO=0` para A/B.
