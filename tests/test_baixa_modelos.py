@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import re
 import http.server
 import shutil
 import subprocess
@@ -36,7 +37,17 @@ PESOS = (("models/ecapa-voxceleb/hyperparams.yaml", *_ECAPA),
          ("models/dfn3-onnx/deepfilter.onnx",
           "soniqo/DeepFilterNet3-ONNX", "63d8ba442ba900143c468b798e94a04009b2f0c9"),
          ("models/dfn3-onnx/config.json",
-          "soniqo/DeepFilterNet3-ONNX", "63d8ba442ba900143c468b798e94a04009b2f0c9"))
+          "soniqo/DeepFilterNet3-ONNX", "63d8ba442ba900143c468b798e94a04009b2f0c9"),
+         # `repo` = "url": o script baixa da URL literal (o wheel do PyPI); o espelho
+         # local substitui a URL no manifesto
+         ("models/dnsmos/speechmos-0.0.1.1-py3-none-any.whl", "url", "-"))
+#: membros extraídos do wheel (DERIVADOS `zip:`) e o nome deles dentro do pacote
+WHEEL_MEMBROS = ("speechmos/dnsmos_models/sig_bak_ovr.onnx",
+                 "speechmos/dnsmos_models/model_v8.onnx")
+
+
+def _sha_bytes(dados: bytes) -> str:
+    return hashlib.sha256(dados).hexdigest()
 
 
 def _sha(p: Path) -> str:
@@ -65,10 +76,30 @@ class _Espelho:
 def amb(tmp_path: Path):
     """Root com o script + `models/` (vazio) + manifesto dos arquivos pequenos."""
     (tmp_path / "tools").mkdir()
-    shutil.copy(SCRIPT, tmp_path / "tools" / "baixa_modelos.sh")
+    espelho = _Espelho(tmp_path / "origem")
+    # o script é a fonte das URLs: a cópia aponta a URL `url:` do wheel para o
+    # espelho local (nada de PyPI no CI)
+    copia = (tmp_path / "tools" / "baixa_modelos.sh")
+    copia.write_text(re.sub(
+        r"url:https://files\.pythonhosted\.org/\S+",
+        lambda m: f"url:{espelho.url}/url/{m.group(0).rsplit('/', 1)[-1]}",
+        SCRIPT.read_text()))
     (tmp_path / "models").mkdir()
     linhas = []
     for rel, repo, rev in PESOS:
+        if repo == "url":
+            origem = tmp_path / "origem" / "url"
+            origem.mkdir(parents=True, exist_ok=True)
+            fake = origem / Path(rel).name
+            if fake.suffix == ".whl":       # wheel de mentira, mas ZIP de verdade
+                import zipfile
+                with zipfile.ZipFile(fake, "w") as z:
+                    for membro in WHEEL_MEMBROS:
+                        z.writestr(membro, f"conteudo de {membro}\n" * 20)
+            else:
+                fake.write_bytes(f"conteudo de {rel}\n".encode() * 20)
+            linhas.append(f"{_sha(fake)}  {rel}")
+            continue
         origem = tmp_path / "origem" / repo / "resolve" / rev
         origem.mkdir(parents=True, exist_ok=True)
         fake = origem / Path(rel).name
@@ -77,6 +108,10 @@ def amb(tmp_path: Path):
     # o `label_encoder.ckpt` é DERIVADO do `.txt` (mesmo sha256) e não é baixável
     txt = tmp_path / "origem" / _ECAPA[0] / "resolve" / _ECAPA[1] / "label_encoder.txt"
     linhas.append(f"{_sha(txt)}  models/ecapa-voxceleb/label_encoder.ckpt")
+    # os membros do wheel são DERIVADOS dele (`zip:`) — mesmo sha256 dos membros
+    with __import__("zipfile").ZipFile(tmp_path / "origem" / "url" / Path(PESOS[-1][0]).name) as z:
+        for membro in WHEEL_MEMBROS:
+            linhas.append(f"{_sha_bytes(z.read(membro))}  models/dnsmos/{Path(membro).name}")
     # a coorte é gerada: entra no manifesto mas não é baixável (repo "-")
     coorte_fake = tmp_path / "origem" / "coorte.npy"
     coorte_fake.write_bytes(b"\x93NUMPY falso")
@@ -84,7 +119,6 @@ def amb(tmp_path: Path):
     (tmp_path / "models" / "sha256sums.txt").write_text("\n".join(linhas) + "\n")
     # a coorte já está no lugar (é gerada): o teste da ausência a apaga
     shutil.copy(coorte_fake, tmp_path / "models" / "asnorm-coorte-ecapa.npy")
-    espelho = _Espelho(tmp_path / "origem")
     yield {"root": tmp_path, "espelho": espelho}
     espelho.fecha()
 

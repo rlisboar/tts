@@ -37,7 +37,8 @@ while [ $# -gt 0 ]; do
 done
 
 # arquivo → origem (repo HF + revisão). Gerado localmente fica com "-".
-# Formato: caminho|repo|revisao
+# Formato: caminho|repo|revisao — ou `repo` = `url:<absoluta>` para artefato que
+# não vive num repo HF (o wheel do PyPI é o caso: o sha256 do manifesto é a prova).
 FONTES=(
   "models/ecapa-voxceleb/hyperparams.yaml|speechbrain/spkrec-ecapa-voxceleb|0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
   "models/ecapa-voxceleb/embedding_model.ckpt|speechbrain/spkrec-ecapa-voxceleb|0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
@@ -47,15 +48,19 @@ FONTES=(
   "models/mossformer2-ss-16k/last_best_checkpoint.pt|alibabasglab/MossFormer2_SS_16K|407cb030cd66340918ebb6c8cc63b18f8592cdbe"
   "models/dfn3-onnx/deepfilter.onnx|soniqo/DeepFilterNet3-ONNX|63d8ba442ba900143c468b798e94a04009b2f0c9"
   "models/dfn3-onnx/config.json|soniqo/DeepFilterNet3-ONNX|63d8ba442ba900143c468b798e94a04009b2f0c9"
+  "models/dnsmos/speechmos-0.0.1.1-py3-none-any.whl|url:https://files.pythonhosted.org/packages/30/0e/08369f3574447acfe78a7678f9a5e2b9c6629888be25a5e2407d616a6c02/speechmos-0.0.1.1-py3-none-any.whl|-"
   "models/asnorm-coorte-ecapa.npy|-|-"
 )
 # Arquivos DERIVADOS de outro arquivo versionado (não vêm da internet): o script
 # copia e confere o sha256. `label_encoder.ckpt` é um deles porque o `Pretrainer`
 # do speechbrain busca `<savedir>/label_encoder.ckpt` no load e, ausente, cai no
 # Hub — mesmo com `savedir` (medido: `LocalEntryNotFoundError` offline, #598).
-# Formato: caminho|origem local
+# Formato: caminho|origem local — ou `zip:<arquivo já materializado>#<membro>` para
+# o que vem empacotado (o ONNX do DNSMOS vive dentro do wheel do `speechmos`).
 DERIVADOS=(
   "models/ecapa-voxceleb/label_encoder.ckpt|models/ecapa-voxceleb/label_encoder.txt"
+  "models/dnsmos/sig_bak_ovr.onnx|zip:models/dnsmos/speechmos-0.0.1.1-py3-none-any.whl#speechmos/dnsmos_models/sig_bak_ovr.onnx"
+  "models/dnsmos/model_v8.onnx|zip:models/dnsmos/speechmos-0.0.1.1-py3-none-any.whl#speechmos/dnsmos_models/model_v8.onnx"
 )
 
 # portátil: o job do CI é Linux (`sha256sum`), a máquina de trabalho é macOS
@@ -99,7 +104,11 @@ for linha in "${FONTES[@]}"; do
     falhas=1; continue
   fi
   mkdir -p "${arq:h}"
-  url="$BASE_URL/$repo/resolve/$rev/${arq:t}"
+  if [[ "$repo" == url:* ]]; then
+    url="${repo#url:}"
+  else
+    url="$BASE_URL/$repo/resolve/$rev/${arq:t}"
+  fi
   print -r -- "  baixando ${arq:t} de $repo@${rev[1,8]}…"
   if ! curl -fsSL --retry 2 -o "$arq.$TMP_SUF" "$url"; then
     print -r -- "  [FALHA] download de $arq falhou"; rm -f "$arq.$TMP_SUF"; falhas=1; continue
@@ -129,12 +138,25 @@ for linha in "${DERIVADOS[@]}"; do
     print -r -- "          (derivado: use --forca para refazer de $origem)"
     falhas=1; continue
   fi
-  if [ ! -f "$origem" ]; then
+  local zip="" membro=""
+  if [[ "$origem" == zip:* ]]; then
+    local dentro="${origem#zip:}"
+    zip="${dentro%%#*}"; membro="${dentro#*#}"
+    if [ ! -f "$zip" ]; then
+      print -r -- "  [FALHA] $arq falta e o pacote ($zip) também"; falhas=1; continue
+    fi
+  elif [ ! -f "$origem" ]; then
     print -r -- "  [FALHA] $arq falta e a origem ($origem) também"; falhas=1; continue
   fi
   if [ "$CHECK" = 1 ]; then faltando+=("$arq"); continue; fi
-  print -r -- "  derivando ${arq:t} de ${origem:t}"
-  if ! cp "$origem" "$arq.$TMP_SUF" || ! chmod 444 "$arq.$TMP_SUF"; then
+  if [ -n "$zip" ]; then
+    print -r -- "  extraindo ${arq:t} de ${zip:t}"
+    unzip -p "$zip" "$membro" > "$arq.$TMP_SUF" 2>/dev/null
+  else
+    print -r -- "  derivando ${arq:t} de ${origem:t}"
+    cp "$origem" "$arq.$TMP_SUF"
+  fi
+  if [ ! -s "$arq.$TMP_SUF" ] || ! chmod 444 "$arq.$TMP_SUF"; then
     print -r -- "  [FALHA] não consegui derivar $arq"; rm -f "$arq.$TMP_SUF"; falhas=1; continue
   fi
   atual="$(sha_de "$arq.$TMP_SUF")"

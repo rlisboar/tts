@@ -1,0 +1,42 @@
+DNSMOS P.835 (ONNX) — modelos de qualidade de fala
+==================================================
+
+Obra: DNSMOS P.835 (Microsoft — DNS Challenge). Os grafo vêm do pacote `speechmos`
+0.0.1.1 (Microsoft), arquivo `speechmos-0.0.1.1-py3-none-any.whl`, publicado em
+https://pypi.org/project/speechmos/0.0.1.1/ (sha256 do wheel em `FONTE.txt`).
+
+Licença: MIT — Copyright (c) Microsoft Corporation. Texto integral no LICENSE do
+pacote (transcrito abaixo) e em https://opensource.org/licenses/MIT
+
+Arquivos extraídos do wheel, sem modificação:
+- `sig_bak_ovr.onnx` — P.835 (SIG/BAK/OVRL); é o que dá o `ovrl` da prévia
+- `model_v8.onnx` — P.808 (`p808_mos`); o cálculo dele pede `librosa` para o
+  mel-espectrograma, e o OVRL NÃO precisa
+
+A calibração (`polyfit`) do pacote é do próprio pacote, não deste diretório: quem
+executar deve aplicar a mesma do `speechmos.dnsmos` (não personalizada). Nenhuma
+dependência nova entra no app — a execução é por `onnxruntime`, que já está no
+runtime.
+
+------------------------------------------------------------------------------
+MIT License
+
+Copyright (c) Microsoft Corporation.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

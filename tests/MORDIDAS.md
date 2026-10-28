@@ -290,6 +290,19 @@ CI. `test_app_nao_baixa_modelo_no_boot` e `test_manifesto_lista_todos_os_pesos`
 cobrem o contrato do card por leitura (o boot não chama o downloader; peso sem
 sha256 no manifesto reprova).
 
+## #649 — DNSMOS offline em `models/dnsmos`
+
+| Sabotagem | Resultado |
+|---|---|
+| `sig_bak_ovr.onnx` trocado por arquivo que não é ONNX | `test_ovrl_roda_offline_com_hfhome_vazio` **FAILED** (`INVALID_PROTOBUF`) |
+| membro extraído do wheel entra no índice (`git add -f`) | `test_artefato_fica_fora_do_git` **FAILED** |
+| `NOTICE` sem o texto MIT | `test_modelos_sao_regulares_e_a_licenca_esta_ao_lado` **FAILED** |
+
+O caso do DNSMOS tem uma volta a mais que os outros: o artefato vem EMPACOTADO (o
+wheel do `speechmos`), então o script tem dois modos novos — `url:` no `FONTES` e
+`zip:` no `DERIVADOS` — e o teste do script monta um wheel-ZIP de mentira, com o
+espelho local substituindo a URL do PyPI.
+
 ## #622 — grafo do DFN3 offline em `models/`
 
 | Sabotagem | Resultado |

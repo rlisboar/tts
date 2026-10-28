@@ -63,3 +63,6 @@ models/**/*.pt
 # artefato baixado pelo script (grafo + config): ver models/dfn3-onnx/NOTICE
 models/dfn3-onnx/deepfilter.onnx
 models/dfn3-onnx/config.json
+# pacote + modelos do DNSMOS (extraídos do wheel pelo script): ver models/dnsmos/NOTICE
+models/dnsmos/*.whl
+models/dnsmos/*.onnx

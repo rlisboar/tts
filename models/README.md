@@ -9,6 +9,7 @@ ausente nunca derruba o servidor, mas também nunca é buscado sozinho.
 | `ecapa-voxceleb/` | extrator de locutor (identidade de voz, #521/#525) | Apache-2.0 (código) / CC BY 4.0 (pesos) — ver `NOTICE` |
 | `mossformer2-ss-16k/` | separação de dois locutores (alvo × concorrente, #532/#526-bis) | Apache-2.0 (código vendorizado em `tools/separa_vend/` e pesos) — ver `NOTICE` |
 | `dfn3-onnx/` | redução de ruído da limpeza de amostra (#523, grafo ONNX — sem `df`/torch) | MIT — ver `NOTICE` |
+| `dnsmos/` | métrica de qualidade (DNSMOS P.835) da prévia da limpeza (#649, ONNX — sem `speechmos`) | MIT (Microsoft) — ver `NOTICE` |
 
 Artefatos ao lado:
 - `asnorm-coorte-ecapa.npy` / `.json` — coorte de impostores do AS-norm do ECAPA,
@@ -39,6 +40,12 @@ A coorte não é baixável (é gerada): se o `.npy` faltar, o script diz o coman
 `label_encoder.ckpt`, por outro lado, o próprio script gera: é `cp` do
 `label_encoder.txt` versionado (sem rede), com o sha256 conferido depois.
 
+Os dois ONNX do DNSMOS vêm DENTRO do wheel do `speechmos` (é a proveniência): o
+script baixa o wheel, confere o sha256 e extrai `sig_bak_ovr.onnx` (OVRL) e
+`model_v8.onnx` (P.808) — o pacote em si não entra no runtime, quem executa é
+`onnxruntime`. O cálculo do P.808 pede `librosa` (já presente, sem pino próprio); o
+OVRL não pede.
+
 Quem chama o extrator (app e `tools/bakeoff/`) passa `source` **e** `savedir` no
 diretório acima: é o par que mantém o load fora do cache do HuggingFace. A célula
 `tests/test_ecapa_offline.py` roda o load com `HF_HOME` vazio e
@@ -52,6 +59,7 @@ diretório acima: é o par que mantém o load fora do cache do HuggingFace. A c�
 | `TTS_ASNORM_COORTE` | `models/asnorm-coorte-ecapa.npy` |
 | `TTS_SEPARA_MODELO_DIR` | `models/mossformer2-ss-16k` |
 | `TTS_DFN3_DIR` | `models/dfn3-onnx` |
+| `TTS_DNSMOS_DIR` | `models/dnsmos` |
 
 O separador (`last_best_checkpoint.pt`, 670 MB) segue o mesmo contrato do ECAPA:
 sha256 no manifesto, `.pt` fora do git, e quem materializa é o script. O código da

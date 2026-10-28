@@ -28,9 +28,15 @@ def _voz(tmp_path, monkeypatch, nome="v1") -> pathlib.Path:
     vd.mkdir(exist_ok=True)
     monkeypatch.setattr(app, "VOICES_DIR", vd)
     p = vd / f"{nome}.wav"
+    # Sinal HARMÔNICO com envelope silábico, não senoide pura: a limpeza agora usa
+    # o DFN3 de verdade (o grafo está em `models/dfn3-onnx`, #622) e um tom puro é
+    # tratado como ruído estacionário — ele sai 54 dB abaixo e a guarda de nível
+    # (mais de 20 dB) recusa, escondendo o caminho que o teste quer medir.
     t = np.arange(24000) / 24000.0
-    sf.write(str(p), (0.2 * np.sin(2 * np.pi * 180 * t)).astype(np.float32), 24000,
-             subtype="PCM_16")
+    env = 0.5 + 0.5 * np.sin(2 * np.pi * 3.5 * t)
+    amostra = 0.15 * env * (np.sin(2 * np.pi * 180 * t) + 0.5 * np.sin(2 * np.pi * 360 * t)
+                            + 0.3 * np.sin(2 * np.pi * 540 * t) + 0.2 * np.sin(2 * np.pi * 900 * t))
+    sf.write(str(p), amostra.astype(np.float32), 24000, subtype="PCM_16")
     (vd / f"{nome}.json").write_text('{"id": "%s", "name": "Teste"}' % nome)
     return p
 

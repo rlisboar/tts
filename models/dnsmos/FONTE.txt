@@ -1,0 +1,9 @@
+pacote=speechmos
+versao=0.0.1.1
+fonte=https://pypi.org/project/speechmos/0.0.1.1/
+wheel=speechmos-0.0.1.1-py3-none-any.whl (sha256 abaixo)
+licenca=MIT (Copyright (c) Microsoft Corporation)
+extraidos=speechmos/dnsmos_models/sig_bak_ovr.onnx e speechmos/dnsmos_models/model_v8.onnx
+baixado_em=2026-10-28
+via=tools/baixa_modelos.sh (url do wheel no PyPI + extração dos dois membros)
+obs=sem pino novo: onnxruntime já é do runtime; o OVRL não precisa de librosa
