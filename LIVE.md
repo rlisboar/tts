@@ -93,6 +93,22 @@ desliga justamente porque lá ele está desligado por escolha do dono.
 BOTÃO, sem heurístico de VAD; `stats.motor.hold_to_talk_sugerido` é o aviso de que vale
 ligá-lo (sobe quando `taxa_falso_barge_in` passa do limite).
 
+### Interrupção inteligente (#501) — `barge_suspeito` → `barge_decisao`
+
+Em vez de cortar no limiar de energia, o onset durante o playback emite
+`barge_suspeito{turn}` e o cliente só ABAIXA o volume. O servidor segue ouvindo até
+`speech_end` ou `barge_decisao_ms` (700 ms) e decide pelo conteúdo com a cadeia de
+`live_barge_filtros`, na ordem palavras_corte > eco > backchannel > ruido > modelo >
+pergunta > frase_longa > fala_sustentada > sem_decisão. `interrupcao` emite
+`barge_decisao` + `barge_in` + `speech_start` (corta, como antes); backchannel,
+ruído e eco emitem `barge_retoma` e a resposta CONTINUA — o backchannel não entra no
+histórico. `stats.motor.barge` publica o tipo, o p50 e os timeouts do filtro
+`modelo`.
+
+`interrupcao` em settings escolhe o modo: `inteligente` (default), `imediata` (o
+comportamento antigo) ou `so_comando`. `smoke_barge_intencao.py` mede a matriz; com
+`imediata` o backchannel reprova de propósito (corta 100 %).
+
 Corte do playback no ONSET (#225): o cliente corta o áudio do assistente ao receber
 `speech_start` **se ainda tiver fila** (`LX.ativos`), e não só no `interrupted`. A
 janela de playback do servidor é uma ESTIMATIVA do que o cliente ainda vai tocar;
