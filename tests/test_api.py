@@ -6540,9 +6540,9 @@ def test_transcribe_com_speaker_alvo_usa_o_fluxo_do_perfil(client, auth, monkeyp
     monkeypatch.setattr(separa_voz, "motivo", lambda: "")
     visto = {}
 
-    def _separa(wav, vecs):
+    def _separa(wav, vecs, modelo):
         visto["wav"] = wav
-        assert vecs == [[1.0, 0.0]]
+        assert vecs == [[1.0, 0.0]] and modelo
         novo = Path(str(wav) + ".alvo.wav")
         novo.write_bytes(b"alvo")
         return novo, {"escores": [0.9, 0.1], "escolhido": 0,
@@ -6664,3 +6664,51 @@ def test_motivo_de_fechamento_substituida_vence_vencida_e_fechar_tem_codigo():
     assert "ociosa" not in texto, "o texto não pode mentir dizendo que ficou ociosa"
     assert app._live_motivo_fechamento(
         {"vencida": False, "substituida": False, "fechar": False}) is None
+
+
+def test_cos_sim_levanta_para_dimensoes_diferentes():
+    """Dimensão diferente é BUG de extrator, não ruído — tem de levantar.
+
+    O `zip` truncava: ECAPA (192-d) contra centróide do Resemblyzer (256-d) dava
+    0,055 para a MESMA fala, calado (#534)."""
+    with pytest.raises(ValueError, match="dimensões diferentes"):
+        app._cos_sim([1.0, 0.0], [1.0, 0.0, 0.0])
+
+
+def test_separa_alvo_usa_o_extrator_DO_PERFIL_e_nao_o_efetivo(monkeypatch):
+    """Perfil legado (256-d) com o ECAPA disponível tem de pontuar pelo LEGADO.
+
+    Pontuando pelo efetivo, o vetor do ECAPA (192-d) era comparado com o centróide
+    do Resemblyzer e a escolha do fluxo virava sorte (hoje, com o `_cos_sim`
+    estrito, vira `falhou`). Os perfis do dono são todos legados."""
+    import separa_voz
+
+    perfis = {"eu": {"vecs": [[1.0, 0.0] + [0.0] * 254], "modelo": app.SPEAKER_MODELO_LEGADO}}
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
+    monkeypatch.setattr(separa_voz, "disponivel", lambda: True)
+    monkeypatch.setattr(separa_voz, "motivo", lambda: "")
+    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: True)   # ECAPA ligado
+    pedidos = []
+
+    def _emb(p, modelo=None):
+        pedidos.append(modelo)
+        # fluxo a = voz do perfil no espaço LEGADO; fluxo b = o concorrente
+        return [1.0, 0.0] + [0.0] * 254 if str(p).endswith("a.wav") else [0.0, 1.0] + [0.0] * 254
+
+    monkeypatch.setattr(app, "_speaker_embed", _emb)
+
+    def _separa(wav, dir_saida):
+        dir_s = Path(dir_saida)
+        dir_s.mkdir(exist_ok=True)
+        a, b = dir_s / "a.wav", dir_s / "b.wav"
+        a.write_bytes(b"a")
+        b.write_bytes(b"b")
+        return [a, b]
+
+    monkeypatch.setattr(separa_voz, "separa", _separa)
+    escolhido, info = separa_voz.separa_alvo(Path("mix.wav"), perfis["eu"]["vecs"],
+                                             app.SPEAKER_MODELO_LEGADO)
+    assert escolhido.read_bytes() == b"a", f"escolheu o fluxo errado: {info}"
+    assert set(pedidos) == {app.SPEAKER_MODELO_LEGADO}, pedidos
+    assert info["escores"][0] > info["escores"][1]

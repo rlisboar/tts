@@ -167,13 +167,15 @@ def _le_ate_resposta(proc: subprocess.Popen, ident: int) -> str:
             return linha
 
 
-def separa_alvo(wav: Path, vecs: list) -> tuple[Path, dict]:
+def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
     """Fluxo do ALVO e o que foi descartado.
 
-    `vecs` são as amostras do perfil; o escolhido é o fluxo de maior cosseno contra
-    o centróide delas (o R2 mostrou o centróide vencendo o máximo). Devolve o caminho
-    do fluxo escolhido e `{"trechos": 1, "ms": <duração do descartado>}`, além dos
-    escores para o log/observabilidade."""
+    `vecs` são as amostras do perfil e `modelo` é o extrator QUE AS GEROU — os dois
+    andam juntos: pontuar perfil do Resemblyzer com o ECAPA dava 0,055 para a mesma
+    fala (dimensões 256 x 192, e o `zip` truncava calado). O escolhido é o fluxo de
+    maior cosseno contra o centróide (o R2 mostrou o centróide vencendo o máximo).
+    Devolve o caminho do fluxo escolhido e `{"trechos": 1, "ms": <duração>}` do
+    descartado, além dos escores para o log/observabilidade."""
     import app                       # só para reusar o extrator já carregado
 
     with tempfile.TemporaryDirectory(prefix="separa-") as pastinha:
@@ -182,7 +184,7 @@ def separa_alvo(wav: Path, vecs: list) -> tuple[Path, dict]:
         centroide = app._speaker_centroide(vecs)
         escores = []
         for f in fluxos:
-            emb = app._speaker_embed(f, app._speaker_modelo_efetivo())
+            emb = app._speaker_embed(f, modelo)
             escores.append(app._cos_sim(emb, centroide) if emb else -1.0)
         escolhido = max(range(len(fluxos)), key=lambda i: escores[i])
         alvo = dir_saida / f"alvo{escolhido}.wav"
