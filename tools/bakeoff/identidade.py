@@ -95,11 +95,19 @@ def _le(p: Path) -> np.ndarray:
 
 
 def _recorta(x: np.ndarray, dur: float, semente: int) -> np.ndarray:
+    """Recorte de `dur` segundos — REPETINDO a fala quando ela é mais curta.
+
+    Zerofill enganava: as falas do corpus têm ~3 s, então o "8 s" era 3 s de fala
+    com 5 s de silêncio e o embedding ia para o silêncio (o WeSpeaker caía de 14 %
+    em 1 s para 47 % em 8 s por isso). Repetir mantém a duração e o conteúdo."""
     n = int(dur * comum.SR)
-    if x.size <= n:
-        return np.pad(x, (0, n - x.size))
-    ini = np.random.default_rng(semente).integers(0, x.size - n)
-    return x[ini: ini + n]
+    if x.size == n:
+        return x
+    if x.size > n:
+        ini = np.random.default_rng(semente).integers(0, x.size - n)
+        return x[ini: ini + n]
+    voltas = int(np.ceil(n / max(1, x.size)))
+    return np.tile(x, voltas)[:n]
 
 
 def _por_locutor() -> dict[str, list[Path]]:

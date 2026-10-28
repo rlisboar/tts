@@ -1,43 +1,54 @@
 # Bake-off de identidade de voz — PARCIAL (#521)
 
-Estado: **em andamento**. Este arquivo existe para o número já medido não ficar
-só no terminal; a versão final sai com todos os candidatos, AS-norm, cadastro
-1×3×5, cruzamento de canal e o limiar calibrado.
+Estado: **em andamento**. Registro do que já está medido e do que ainda falta.
 
-## O que já está medido (LibriSpeech dev-clean, 20 locutores, CPU do M3)
+## Bug de corpus encontrado e corrigido (muda os números)
 
-Protocolo: cadastro k ∈ {1,5} amostras (centróide), teste no restante, recortes de
-1/2/3/8 s, escore cosseno. Corpus em `/tmp/tts-bakeoff` com manifesto sha256.
+As falas do corpus têm ~3 s, e o protocolo pedia recortes de 1/2/3/**8** s: o
+recorte menor que o pedido era completado com ZEROS, e o "8 s" virava 3 s de fala
+com 5 s de silêncio. Efeito medido: o WeSpeaker caía de 14 % de EER em 1 s para
+**47 % em 8 s**. Corrigido repetindo a fala (`_recorta`), e a partir daí os dois
+modelos voltam a melhorar com a duração — que é o esperado.
 
-| modelo | EER 1 s (k=1) | EER 1 s (k=5) | EER 8 s (k=5) | FAR de clone @FAR1% (cadastro 3 s) |
-|---|---|---|---|---|
-| Resemblyzer (hoje no app) | 10,2 % | **3,5 %** | 2,1 % | 4,2 % |
-| WeSpeaker ResNet34 | 24,1 % | 14,4 % | 47,4 % | 8,3 % |
-| WeSpeaker ResNet221 | 31,4 % | a medir | a medir | a medir |
+Antes de achar isso testei e descartei como causa: CMVN por utterance, `dither`
+0/1, `snip_edges` true/false, janela deslizante de 100–400 frames, poda de
+silêncio e normalização de volume. Também comparei o frontend de fbank com o do
+`torchaudio.compliance.kaldi` (14,0 % x 14,6 %): o frontend não era o problema.
 
-## Achado que precisa de investigação antes de concluir
+## Números correntes (LibriSpeech dev-clean, 20 locutores, CPU do M3)
 
-**O WeSpeaker piora quando o trecho é MAIOR** (14 % em 1 s → 47 % em 8 s), enquanto
-o Resemblyzer melhora (10 % → 2 %). Piora com duração e escore médio de clone
-(0,394) abaixo do impostor (0,425) são sintoma de pré-processamento errado, não de
-modelo ruim.
+Cadastro de 5 amostras, centróide, escore cosseno, recortes de 1–8 s:
 
-Testado sem efeito: CMVN por utterance (idêntico), `dither` 0/1, `snip_edges`
-true/false, janela deslizante de 100–400 frames (melhor 300, ainda 16 %).
-Testado com efeito: escala de entrada — ×32768 (14,6 %) contra ×1 (49 %), então a
-escala está certa.
+| modelo | EER 1 s | EER 2 s | EER 3 s | EER 8 s | FAR de clone @FAR1% |
+|---|---|---|---|---|---|
+| Resemblyzer (hoje no app) | 3,5 % | 1,8 % | **1,6 %** | 1,8 % | **0 %** |
+| WeSpeaker ResNet34 | 17,5 % | 10,9 % | 10,7 % | 12,3 % | **0 %** |
 
-Suspeita principal: a exportação ONNX (input `feats` (B,T,80)) espera estatística
-de normalização do treino, não por-utterance. Próximo passo é rodar o **mesmo
-corpus** pelo pipeline oficial do WeSpeaker (speakerlab) e comparar; se o número
-oficial for bom com o mesmo ONNX, o defeito é meu, não do modelo.
+Com cadastro de 1 amostra (o caso realista de quem acabou de gravar): Resemblyzer
+8,0 % e WeSpeaker 24,1 % de EER em 1 s, FRR@1% de 32,1 % e 87,6 %.
+
+## O número que mais importa: clone do próprio app
+
+24 clones de 8 locutores, gerados pelo app com a voz de referência do próprio
+locutor, comparados contra o cadastro dele no limiar calibrado para FAR 1 %:
+
+- **Resemblyzer: 0 % de aceitação** (escore médio do clone 0,578 contra 0,542 de
+  impostor — o clone fica acima da média, mas abaixo do limiar 0,664)
+- **WeSpeaker: 0 %** (clone 0,346 contra impostor 0,383 — o clone fica ABAIXO da
+  média dos impostores)
+
+Leitura: hoje um clone do próprio app **não passa** como o dono no limiar de FAR
+1 %. É bom para anti-fraude e ruim para quem espera que a voz clonada sirva de
+credencial — a decisão é de produto e depende do R3 (#76d13f93).
 
 ## Ressalvas
 
-- Ruído é sintético (ventoinha/babble/música gerados em `tools/bakeoff/ruido.py`),
-  não a ventoinha do dono.
-- EER com 20 locutores é ruidoso; a versão final usa o conjunto maior.
-- Corpus é leitura (LibriSpeech); fala espontânea tende a ser mais difícil.
+- Ruído é sintético (ventoinha gerada em `tools/bakeoff/ruido.py`), não a do dono.
+- 20 locutores: EER ruidoso; a versão final usa o conjunto maior.
+- LibriSpeech é leitura de audiolivro; fala espontânea é mais difícil.
+- Faltam CAM++ e ERes2NetV2 (só existe checkpoint torch no HF, exige `funasr`) e
+  ECAPA (SpeechBrain); sem eles o veredito de "melhor modelo" ainda não fecha.
+- AS-norm e cadastro por máximo ainda não entraram na tabela.
 
 ## Reprodução
 
