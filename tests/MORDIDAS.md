@@ -216,18 +216,24 @@ printf '{"enabled": true, "keys": [{"id": "fake1", "name": "dono-fake",
   > "$WT/.apikeys.json"
 printf 'sk-fake-123456\n' > "$WT/.apikey"
 REAL=$(shasum -a 256 .apikey .apikeys.json)
+VOZES=$(ls -lT voices | shasum -a 256)     # `voices/` é LINK: escrita cairia no real
 # SABOTAGEM: os caminhos de chave deixam de ir por ambiente (vazio = default)
 sed -i '' 's/"TTS_APIKEYS_PATH": str(chaves)/"TTS_APIKEYS_PATH": ""/;
            s/"TTS_LEGACY_APIKEY_PATH": str(legado)/"TTS_LEGACY_APIKEY_PATH": ""/' \
   "$WT/tests/live_ws.sh"
 (cd "$WT" && ./tests/live_ws.sh); echo "rc=$?"
 [ "$REAL" = "$(shasum -a 256 .apikey .apikeys.json)" ] && echo "REAL INTOCADO"
+[ "$VOZES" = "$(ls -lT voices | shasum -a 256)" ] && echo "VOICES INTOCADO"
 git worktree remove --force "$WT"
 ```
 
 | Sabotagem | Resultado |
 |---|---|
-| `"TTS_APIKEYS_PATH": ""` e `"TTS_LEGACY_APIKEY_PATH": ""` | `✘ a chave criada NÃO caiu no arquivo sintético: isolamento furado`, o sintético muda e recebe `probe-live-ws`, e o sha256 do arquivo real fica **idêntico** |
+| `"TTS_APIKEYS_PATH": ""` e `"TTS_LEGACY_APIKEY_PATH": ""` | `✘ a chave criada NÃO caiu no arquivo sintético: isolamento furado`, o sintético muda e recebe `probe-live-ws`, e os sha256/a listagem de `voices` do real ficam **idênticos** |
+
+O `voices/` é link para o diretório do dono porque a fala de teste vem de lá: a
+célula também cobra que a listagem não mude (o Live materializa preset em
+`voices/` quando a voz não tem amostra — com link, escrita cairia no real).
 
 Duas armadilhas medidas: (1) sabotar **apagando** as linhas com `sed` remove
 junto o `env.update({` e o arquivo quebra com `IndentationError` — use a forma
