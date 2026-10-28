@@ -253,7 +253,9 @@ def test_aquecimento_estourado_rearma_e_volta_a_decidir(tmp_path, monkeypatch):
     assert inc.aquece(espera_s=0.05) is False      # estourou
     assert inc.ativo is False
     assert inc.decide("x", "mas e o preço?") is None
-    assert _espera(lambda: inc.tenta_em_s == 0.0), "o cooldown não pode ser eterno"
+    # `tenta_em_s` é arredondado (mostra no `stats`): espera o relógio real
+    assert _espera(lambda: time.monotonic() >= inc._tenta_em + 0.02), \
+        "o cooldown não pode ser eterno"
     live_intencao.WORKER = _stub(tmp_path)         # agora sobe na hora
     assert inc.aquece(espera_s=10) is True, "o 2º aquecimento tinha de re-armar"
     assert inc.ativo is True

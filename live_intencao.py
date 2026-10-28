@@ -40,6 +40,13 @@ TIMEOUT_MS = int(os.environ.get("TTS_INTENCAO_TIMEOUT_MS", "400"))
 #: abaixo disto a probabilidade é "não sei" e o chamador fica com a regra
 LIMIAR = float(os.environ.get("TTS_INTENCAO_LIMIAR", "0.5"))
 
+#: COOLDOWN entre tentativas depois de falha (#595): sem isto, um aquecimento que
+#: estourou o prazo fazia o próximo turno tentar de novo imediatamente (e outro
+#: modelo de 2 GB subindo a cada 400 ms de turno). Dobra até o teto; zera no
+#: primeiro `pronto`.
+FALHA_ESPERA_S = float(os.environ.get("TTS_INTENCAO_ESPERA_S", "5"))
+FALHA_ESPERA_MAX_S = 120.0
+
 
 class Intencao:
     """Ponte com o filho. Idempotente no `fecha`; `decide` nunca levanta."""
@@ -53,20 +60,34 @@ class Intencao:
         self._lock = threading.Lock()
         self._morto = False
         self.erro = ""
+        self._falhas = 0
+        self._tenta_em = 0.0              # monotonic: antes disso não sobe de novo
 
     # -- ciclo de vida ----------------------------------------------------
-    def aquece(self, espera_s: float = 30.0) -> bool:
-        """Sobe o filho e espera o `pronto`. False = sem modelo; `decide` dá None."""
+    def aquece(self, espera_s: float = 30.0, forcar: bool = False) -> bool:
+        """Sobe o filho e espera o `pronto`. False = sem modelo; `decide` dá None.
+
+        RE-ARMA (#595): `_morto` é marca de INSTANTE, não sentença. Filho vivo
+        devolve True; filho morto/ausente sobe de novo — mas só depois do
+        cooldown (`_tenta_em`), senão cada turno paga um `Popen` que falha.
+        `forcar=True` ignora o cooldown (o dono ligando o filtro na tela)."""
         with self._lock:
-            if self._proc is not None or self._morto:
-                return self._proc is not None
+            if self._proc is not None:
+                if self._proc.poll() is None:
+                    return True
+                self._proc = None             # cadáver: limpa e cai no re-arme
+            if not forcar and time.monotonic() < self._tenta_em:
+                return False
+            self._morto = False
+            while not self._fila.empty():     # sobras do filho anterior
+                self._fila.get_nowait()
             try:
                 self._proc = subprocess.Popen(
                     [self._py, str(WORKER)], cwd=str(BASE), text=True,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL, bufsize=1, start_new_session=True)
-            except OSError as exc:
-                self._morto, self.erro = True, f"não subiu ({exc})"
+            except Exception as exc:      # noqa: BLE001 — OSError e o que mais vier
+                self._falhou(f"não subiu ({type(exc).__name__}: {exc})")
                 return False
             threading.Thread(target=self._ler, args=(self._proc,), daemon=True).start()
         try:
@@ -77,6 +98,8 @@ class Intencao:
         if aviso.get("tipo") != "pronto":
             self._caiu("protocolo inesperado no aquecimento")
             return False
+        self._falhas, self._tenta_em, self._morto = 0, 0.0, False
+        self.erro = ""
         return True
 
     def fecha(self) -> None:
@@ -99,7 +122,23 @@ class Intencao:
 
     @property
     def ativo(self) -> bool:
-        return self._proc is not None and not self._morto
+        """O filho está VIVO agora (`poll`), não o que a última falha disse.
+
+        Antes era `_proc is not None and not _morto` e `_morto` nunca limpava: um
+        aquecimento estourado deixava `ativo` False e `decide` None para SEMPRE
+        na sessão (#595)."""
+        proc = self._proc
+        return proc is not None and proc.poll() is None
+
+    @property
+    def morto(self) -> bool:
+        """Última tentativa falhou (para o `stats`; não impede novo `aquece`)."""
+        return self._morto
+
+    @property
+    def tenta_em_s(self) -> float:
+        """Segundos até a próxima tentativa (0 = livre)."""
+        return max(0.0, round(self._tenta_em - time.monotonic(), 1))
 
     # -- decisão ----------------------------------------------------------
     def decide(self, ref_assistente: str, fala_usuario: str, idioma: str = "") -> dict | None:
@@ -150,11 +189,28 @@ class Intencao:
                 self._fila.put(json.loads(linha))
             except Exception:  # noqa: BLE001
                 continue
-        self._caiu("EOF no protocolo")
+        # só o DONO do `_proc` pode derrubar: o leitor do filho anterior termina
+        # depois do re-arme e, sem esta guarda, matava a referência do novo (#595)
+        if self._proc is proc:
+            self._caiu("EOF no protocolo")
+
+    def _falhou(self, motivo: str) -> None:
+        """Falha com COOLDOWN exponencial (5 s, 10 s, 20 s … teto 120 s)."""
+        self._falhas += 1
+        self._tenta_em = time.monotonic() + min(
+            FALHA_ESPERA_MAX_S, FALHA_ESPERA_S * (2 ** (self._falhas - 1)))
+        self.erro = motivo
 
     def _caiu(self, motivo: str) -> None:
+        """O filho morreu/calou: derruba o cadáver e arma o cooldown."""
+        proc, self._proc = self._proc, None
+        self._falhou(motivo)
         self._morto = True
-        self.erro = motivo
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:       # noqa: BLE001 — já morreu
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -244,13 +300,42 @@ def solta() -> None:
         _refs = max(0, _refs - 1)
 
 
+def _rearma(inc: "Intencao | None") -> None:
+    """Tenta ressuscitar o worker EM SEGUNDO PLANO (o turno não espera 3 s).
+
+    Só depois do cooldown do próprio `aquece`, e uma tentativa por vez."""
+    global _aquecendo
+    if inc is None or inc.ativo:
+        return
+    with _trava:
+        if _aquecendo:
+            return
+        _aquecendo = True
+
+    def _roda():
+        global _aquecendo, _ultima
+        try:
+            inc.aquece()
+        finally:
+            with _trava:
+                _aquecendo = False
+                _ultima = time.monotonic()
+    threading.Thread(target=_roda, name="intencao-rearma", daemon=True).start()
+
+
 def decide_compartilhado(ref: str, fala: str, idioma: str = "") -> dict | None:
-    """`decide` no worker único, atualizando o relógio do TTL."""
+    """`decide` no worker único, atualizando o relógio do TTL.
+
+    Morto e fora do cooldown, o re-arme sai em thread: a próxima fala já pode ser
+    decidida pelo modelo em vez de esperar o worker subir (#595)."""
     global _ultima
     with _trava:
         inc = _unico
         _ultima = time.monotonic()
     if inc is None:
+        return None
+    if not inc.ativo:
+        _rearma(inc)
         return None
     return inc.decide(ref, fala, idioma)
 
@@ -263,7 +348,10 @@ def estado() -> dict:
         ocioso = round(time.monotonic() - _ultima, 1) if _ultima else None
     vivo = bool(inc and inc.ativo)
     return {"vivo": vivo, "refs": refs, "ttl_s": TTL_S, "ocioso_s": ocioso,
-            "rss_mb": _rss_mb(inc._proc.pid) if vivo else 0.0}
+            "rss_mb": _rss_mb(inc._proc.pid) if vivo else 0.0,
+            # #595: por que está fora e quando volta a tentar (diagnóstico)
+            "erro": (inc.erro if inc is not None else ""),
+            "tenta_em_s": (inc.tenta_em_s if inc is not None else 0.0)}
 
 
 def fecha_tudo() -> None:

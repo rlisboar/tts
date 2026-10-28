@@ -3723,6 +3723,11 @@ def _live_encerra_todas(motivo: str = "shutdown") -> int:
             _live_solta_slot(sess, motivo)
         except Exception:  # noqa: BLE001
             pass
+    try:
+        import live_intencao
+        live_intencao.fecha_tudo()        # #595: worker do modelo não sobrevive ao app
+    except Exception:                     # noqa: BLE001
+        pass
     return len(sessoes)
 
 
@@ -10567,19 +10572,29 @@ def _live_modelo_decide(sess: dict, texto: str, fala_ms: int, eco_txt: str,
         pass                              # dublê injetado manda nos dois casos
     cli = None
     if decide is None:
-        # classificador real (audio-ml): `Intencao.decide(ref, fala) -> dict|None`
-        cli = sess.get("intencao")
-        if cli is None:
-            try:
-                import live_intencao
-                cli = sess["intencao"] = live_intencao.Intencao(
-                    timeout_ms=int(cfg.get("timeout_ms") or 400))
-            except Exception as exc:      # noqa: BLE001 — sem classificador, segue
-                _live_log_kv("barge_modelo_indisponivel", sess=sess["id"],
-                             erro=str(exc)[:100])
-                return None, None
+        # classificador real (audio-ml): UM worker por processo do app (#595 —
+        # antes cada sessão instanciava o seu: ~2,2 GB de RSS cada e ninguém
+        # fechava). `pega()` conta a referência; o `solta()` sai no fechamento da
+        # sessão e o `fecha_tudo()` no shutdown. `aquece` aqui é barato quando o
+        # worker está vivo e respeita o cooldown quando ele morreu.
+        try:
+            import live_intencao
+            if not sess.get("intencao_ref"):
+                sess["intencao"] = live_intencao.pega()
+                sess["intencao_ref"] = True
+            cli = sess["intencao"]
+        except Exception as exc:          # noqa: BLE001 — sem classificador, segue
+            _live_log_kv("barge_modelo_indisponivel", sess=sess["id"],
+                         erro=str(exc)[:100])
+            return None, None
         if not cli.aquece(espera_s=5.0):
             return None, None
+        # `timeout_ms` do settings é POR CHAMADA: o worker é compartilhado, então
+        # o prazo entra na instância antes de decidir (#595/#510)
+        try:
+            cli._timeout = max(0.05, float(cfg.get("timeout_ms") or 400) / 1000.0)
+        except (TypeError, ValueError):
+            pass
     limite = float(cfg.get("limiar") or 0.5)
     t0 = time.monotonic()
     try:
@@ -11019,6 +11034,14 @@ def _live_solta_slot(sess: dict, motivo: str) -> None:
         try:
             pipe.cancel()
         except Exception:                 # noqa: BLE001 — cancelar é best-effort
+            pass
+    if sess.pop("intencao_ref", False):
+        # devolve a referência do classificador compartilhado (#595): o worker
+        # único só fecha quando a última sessão sai (ou pelo TTL)
+        try:
+            import live_intencao
+            live_intencao.solta()
+        except Exception:                 # noqa: BLE001 — fechar é best-effort
             pass
     with _live_lock:
         if _live_sessions.get(sess["id"]) is sess:
