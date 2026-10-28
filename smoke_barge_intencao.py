@@ -30,7 +30,8 @@ from live_turns import classifica_barge
 
 BACKCHANNEL = ["uhum", "aham", "hum", "hmm", "sim", "sei", "ok", "tá", "certo",
                "entendi", "isso", "claro", "beleza", "legal", "nossa", "mhm",
-               "yeah", "right", "aham sim", "sim sim", "uhum uhum", "certo isso"]
+               "yeah", "right", "ã", "é", "ahn", "aham sim", "sim sim",
+               "uhum uhum", "certo isso"]
 COMANDO = ["para", "pare", "espera", "peraí", "pera", "calma", "chega", "não",
            "stop", "wait", "hold on", "para aí", "espera um pouco", "chega disso",
            "não, para", "calma calma", "para para", "espera, espera", "pare aí",
@@ -41,7 +42,7 @@ PERGUNTA = ["qual o prazo?", "quando sai?", "onde está?", "por que assim?",
             "o prazo de entrega é sexta-feira?", "e o outro relatório?",
             "me diz o valor", "quero o resumo de ontem", "muda para o outro arquivo",
             "abre a pasta de saída", "faz de novo", "mostra o resultado"]
-RUIDO = ["", "", "hm", "ã", "é", "ahn"]
+RUIDO = ["", "", "pff", "", "tss", ""]   # `hm`/`ã`/`é`/`ahn` são backchannel
 ECO = ["então o dia está bonito hoje", "o dia está bonito",
        "quer que eu conte mais alguma coisa?", "claro, o dia está bonito hoje",
        "mais alguma coisa", "que eu conte mais alguma coisa"]
@@ -49,8 +50,8 @@ ECO = ["então o dia está bonito hoje", "o dia está bonito",
 # do #301 compara palavras, e uma paráfrase cairia em `frase_longa` e cortaria)
 REF = "então o dia está bonito hoje. Quer que eu conte mais alguma coisa?"
 
-ESPERADO = {"backchannel": "nao_corta", "comando": "corta", "pergunta": "corta",
-            "ruido": "nao_corta", "eco": "nao_corta"}
+ESPERADO = {"backchannel": "backchannel", "comando": "corta", "pergunta": "corta",
+            "ruido": "ruido", "eco": "eco"}
 
 
 def decide(texto: str, ms: int) -> str:
@@ -67,7 +68,9 @@ def decide(texto: str, ms: int) -> str:
          "fala_sustentada": {"on": False}, "eco": {"on": False}} if modo == "so_comando" else {})
     app._settings["live_barge_sem_decisao"] = "continua"
     tipo, _p, _m, _f = app._live_avalia_filtros(sess, texto, ms, {})
-    return "corta" if tipo == "interrupcao" else "nao_corta"
+    # devolve o TIPO (não só corta/não corta): com a regra sabotada para "sempre
+    # interrupção", o backchannel vira `sem_decisao` e o grupo tem de REPROVAR
+    return "corta" if tipo == "interrupcao" else tipo
 
 
 def _latencia_do_comando(n: int = 6) -> list[int]:
@@ -133,7 +136,9 @@ def main(argv: list[str]) -> int:
                "pergunta": PERGUNTA, "ruido": RUIDO, "eco": ECO}
     piso = {"backchannel": 0.90, "ruido": 0.90, "comando": 0.95,
             "pergunta": 0.95, "eco": 1.00}
-    dur = {"backchannel": 300, "comando": 350, "pergunta": 500, "ruido": 180,
+    # `ruido` abaixo de 200 ms de propósito: acima disso o `stt_vazio` (falha
+    # segura) corta, e o grupo de ruído deixaria de medir o que mede
+    dur = {"backchannel": 300, "comando": 350, "pergunta": 500, "ruido": 150,
            "eco": 600}
     falhou = False
     for nome, casos in corpora.items():

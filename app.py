@@ -7079,6 +7079,57 @@ def _vad_load():
     return _vad_model
 
 
+def _vad_fala_s(audio_path: Path) -> float | None:
+    """Segundos de FALA pelo Silero (None = VAD indisponível, fail-open).
+
+    Duração de fala, não de arquivo: um cadastro de 8 s com 2 s de voz e 6 s de
+    silêncio não serve para biometria (#525)."""
+    global _vad_erro
+    try:
+        import torch
+        from silero_vad import get_speech_timestamps
+        audio = _wav_to_mono16k(audio_path)
+        with _vad_lock:
+            speech = get_speech_timestamps(torch.from_numpy(audio), _vad_load(),
+                                           sampling_rate=16000, threshold=0.6,
+                                           speech_pad_ms=100)
+        _vad_erro = ""
+        return sum((t["end"] - t["start"]) for t in speech) / 16000
+    except Exception as exc:  # noqa: BLE001 — Silero indisponível não bloqueia
+        msg = f"{type(exc).__name__}: {exc}"
+        if msg != _vad_erro:
+            print(f"[vad] {msg[:160]} — fail-open, o trecho segue como fala", flush=True)
+        _vad_erro = msg
+        return None
+
+
+def _snr_estimado(audio_path: Path) -> float | None:
+    """SNR estimado em dB (None = não deu para medir).
+
+    Piso de ruído = percentil 10 das potências por quadro; fala = percentil 95.
+    A distância entre os dois é o que separa "gravei na ventoinha" de "gravei na
+    sala" — o R2 mediu ruído a 5 dB degradando todos os modelos (#525)."""
+    try:
+        import numpy as np
+        import soundfile as sf
+
+        a, sr = sf.read(str(audio_path), dtype="float32")
+        if a.ndim > 1:
+            a = a.mean(axis=1)
+        quadro = max(1, int(0.02 * sr))
+        n = a.size // quadro
+        if n < 5:
+            return None
+        pot = np.square(a[: n * quadro]).reshape(n, quadro).mean(axis=1)
+        ruido = float(np.percentile(pot, 10)) or 1e-12
+        fala = float(np.percentile(pot, 95))
+        if fala <= 0:
+            return None
+        return round(10 * float(np.log10(fala / ruido)), 1)
+    except Exception:  # noqa: BLE001 — sem medida, não bloqueia
+        return None
+
+
 def _vad_tem_fala(audio_path: Path, minimo_s: float = 0.3) -> bool:
     """Silero VAD: True se o wav tem fala de verdade (não ruído).
 
@@ -8085,21 +8136,74 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
     return out
 
 
+#: qualidade do cadastro, derivada dos números do R2 (#525)
+SPEAKER_MIN_FALA_S = 3.0      # 1 s é o caso do barge, não do cadastro
+SPEAKER_MIN_SNR_DB = 10.0     # ventoinha a 5 dB degrada todos os modelos
+SPEAKER_MIN_AMOSTRAS = 3      # abaixo disso o EER multiplica (~5x com 1 amostra)
+
+
+def _speaker_avalia_amostra(tmp: Path, emb: list | None, vecs: list, modelo: str) -> list[str]:
+    """Problemas da amostra que vai entrar (vazio = serve para cadastro).
+
+    Três réguas: FALA mínima (VAD, não duração de arquivo), SNR e CONSISTÊNCIA
+    com as amostras já guardadas — a voz trocada/ruidosa é descartada pelo escore
+    médio contra as outras, comparado ao limiar de FAR 1 %."""
+    faltas = []
+    fala = _vad_fala_s(tmp)
+    if fala is not None and fala < SPEAKER_MIN_FALA_S:
+        faltas.append(f"fala curta: {fala:.1f}s de voz (mínimo "
+                      f"{SPEAKER_MIN_FALA_S:.0f}s — pausas não contam)")
+    snr = _snr_estimado(tmp)
+    if snr is not None and snr < SPEAKER_MIN_SNR_DB:
+        faltas.append(f"ruído alto: SNR {snr:.0f} dB (mínimo "
+                      f"{SPEAKER_MIN_SNR_DB:.0f} dB) — grave num ambiente quieto")
+    if emb and len(vecs) >= 2:
+        lim, _modo = _speaker_limiar(modelo)
+        centroide = _speaker_centroide(vecs)
+        media = _cos_sim(emb, centroide)
+        if media < lim:
+            faltas.append(f"amostra destoa das outras ({media:.2f} < {lim:.2f}) — "
+                          f"outra pessoa ou outra qualidade de áudio?")
+    return faltas
+
+
+def _speaker_avalia(tmp: Path, vecs_antes: list) -> tuple[list | None, list[str]]:
+    """(embedding, problemas) — o corpo bloqueante do enroll, para a threadpool."""
+    modelo = SPEAKER_MODELO_ATUAL
+    emb = _speaker_embed(tmp, modelo)
+    if not emb:
+        return None, []
+    return emb, _speaker_avalia_amostra(tmp, emb, vecs_antes, modelo)
+
+
 @app.post("/api/speaker/enroll")
-async def speaker_enroll(name: str = Form(...), audio: UploadFile = None):
-    """Cadastra/atualiza um perfil de voz com o áudio enviado (8–30 s de fala)."""
+async def speaker_enroll(name: str = Form(...),
+                         audio: UploadFile = None, forcar: bool = False):
+    """Cadastra/atualiza um perfil de voz com o áudio enviado (8–30 s de fala).
+
+    Roda FORA do event loop (`run_in_threadpool`): VAD, SNR e o extrator são CPU e
+    seguram o servidor inteiro enquanto rodam (#525). `forcar` aceita a amostra
+    mesmo com problema, devolvendo os motivos em `problemas`."""
+    from starlette.concurrency import run_in_threadpool
+
     nome = (name or "").strip()[:40]
     if not nome:
         raise HTTPException(400, "Nome do perfil obrigatório")
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
+    with _speaker_lock:
+        _perfis_antes = _speaker_load()
+    vecs_antes = list((_perfis_antes.get(nome) or {}).get("vecs") or [])
     tmp = _save_audio_upload(audio, ".voz")
     try:
-        emb = _speaker_embed(tmp)
+        emb, problemas = await run_in_threadpool(_speaker_avalia, tmp, vecs_antes)
     finally:
         tmp.unlink(missing_ok=True)
     if not emb:
         raise HTTPException(400, "Não deu para extrair a voz — grave 8s+ falando")
+    if problemas and not forcar:
+        raise HTTPException(400, "Amostra recusada: " + "; ".join(problemas)
+                            + ". Use `forcar=true` para entrar assim mesmo.")
     with _speaker_lock:
         perfis = _speaker_load()
         p = perfis.get(nome, {"vecs": [], "updated": 0})
@@ -8113,8 +8217,12 @@ async def speaker_enroll(name: str = Form(...), audio: UploadFile = None):
         p["updated"] = time.time()
         perfis[nome] = p
         _speaker_save(perfis)
+    faltam = max(0, SPEAKER_MIN_AMOSTRAS - len(p["vecs"]))
     return {"ok": True, "name": nome, "samples": len(p["vecs"]),
-            "modelo": SPEAKER_MODELO_ATUAL}
+            "modelo": SPEAKER_MODELO_ATUAL, "problemas": problemas,
+            # cadastro incompleto é AVISO, não erro: dá para ir gravando
+            "completo": faltam == 0,
+            "faltando": [f"mais {faltam} amostra(s)"] if faltam else []}
 
 
 @app.get("/api/speaker/profiles")
@@ -9638,11 +9746,14 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
         if restante is not None and restante <= int(
                 (filtros.get("fim_de_resposta") or {}).get("restante_ms", 1000)):
             return "ruido", None, None, "fim_de_resposta"
-    # 4) backchannel
+    # 4) backchannel — também pela REGRA pura (fonte única): o `on` e a lista só
+    # decidem se ele pode valer. Com a regra sabotada para "sempre interrupção",
+    # o smoke REPROVA aqui (#503).
     if ligado("backchannel") and palavras:
         permitidas = {str(x).lower() for x in
                       (filtros.get("backchannel") or {}).get("palavras", _BACKCHANNEL)}
-        if len(palavras) <= 2 and all(x in permitidas for x in palavras):
+        if (len(palavras) <= 2 and all(x in permitidas for x in palavras)
+                and classifica_barge(texto, fala_ms, ref_eco="") == "backchannel"):
             return "backchannel", None, None, "backchannel"
     # 4) ruído — SÓ com evidência positiva: o STT voltou vazio, mas o VAD já
     # confirmou voz no trecho, então vazio é falha do STT, não silêncio. Cortar é
@@ -9884,10 +9995,11 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
             tipo, p_cortar, modelo_ms, filtro = _live_avalia_filtros(
                 sess, texto, fala_ms, filtros)
             if filtro == "fim_de_resposta":
-                # a fala não pode sumir: entra no pendente, com marca no log
-                sess["fila"].put(("json", {"type": "turno_pendente",
-                                           "fim_de_resposta": True,
-                                           "texto": (texto or "")[:200]}))
+                # a fala não pode sumir: entra no PENDENTE de verdade (mesma
+                # máquina do #126, com buffer e contadores) e o turno abre quando
+                # o playback acabar — antes só saía um JSON ao cliente (#569)
+                _live_guarda_pendente(sess, audio, barge_in=True)
+                sess["fim_de_resposta"] = True
     except Exception as exc:              # noqa: BLE001 — decisão nunca derruba o turno
         _live_log_kv("barge_decisao_erro", sess=sess["id"], erro=str(exc)[:120])
         tipo = str(_settings.get("live_barge_sem_decisao") or "continua")

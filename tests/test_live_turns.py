@@ -1286,3 +1286,34 @@ def test_comando_corta_antes_de_qualquer_filtro():
                "backchannel": {"palavras": ["basta"]}}   # mesma palavra nos dois
     tipo, _p, _m, f = app._live_avalia_filtros(sess, "basta", 300, filtros)
     assert (tipo, f) == ("interrupcao", "palavras_corte")
+
+
+def test_fim_de_resposta_guarda_a_fala_no_pendente():
+    """#569: a fala no último segundo entra no PENDENTE (não só num JSON)."""
+    import queue
+    import threading
+
+    import app
+
+    app._settings["live_barge_filtros"] = {}
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None,
+            "cancelado": threading.Event(), "turno": 1, "fila": queue.Queue(),
+            "engine": None}
+    motor, rel = _motor_inteligente()
+    sess["engine"] = motor
+    _abrir_por_barge(motor, rel)
+    sess["barge_suspeito"] = {"audio": b"\x01\x00" * 800}   # suspeita aberta
+    motor._playback_restante = 2                     # ~128 ms: cai no fim_de_resposta
+    monkeypatch_ok = app._live_transcreve_trecho
+    try:
+        app._live_transcreve_trecho = lambda *a, **k: "fala no fim"
+        app._live_decide_barge(sess, b"\x01\x00" * 800, 400)
+    finally:
+        app._live_transcreve_trecho = monkeypatch_ok
+    assert sess.get("turno_pendente"), "o pendente tem de ter o áudio da fala"
+    assert sess.get("fim_de_resposta") is True
+    # e o evento sai com os contadores do #126
+    tipos = []
+    while not sess["fila"].empty():
+        tipos.append(sess["fila"].get()[1]["type"])
+    assert "turno_pendente" in tipos

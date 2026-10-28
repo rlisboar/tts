@@ -87,7 +87,7 @@ para pare parar espera esperar perai pera calma chega chega_ai nao n pare_ai
 stop wait hold hold_on holdon hang_on quiet silence enough cancel cancela
 """.split())
 _BACKCHANNEL = frozenset("""
-uhum aham hum hmm hm mm sim sei ok okay ta tá certo certinho entendi entendido isso
+uhum aham hum hmm hm mm ahn aha a e eh sim sei ok okay ta tá certo certinho entendi entendido isso
 claro beleza legal nossa mhm yeah yep right sure humhum uhum ah ahh oh
 """.split())
 _PERGUNTA = frozenset("""
