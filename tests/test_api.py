@@ -5563,6 +5563,63 @@ def test_live_ws_stats_esquema_e_cadencia(ws_client, live_limpo, monkeypatch):
     assert tms[1] - tms[0] >= 20                            # espaçados, não em rajada
 
 
+def test_live_ws_hold_abre_e_fecha_no_botao_sem_derrubar_o_ws(ws_client, live_limpo,
+                                                            monkeypatch):
+    """#417/#506: `{"type":"hold"}` do cliente vira `set_hold` no motor REAL.
+
+    O ramo já derrubou o WS (`_abrir_turno` com histórico vazio) e, apagado, nada
+    em `pytest tests/` acusava — só a suíte de browser, que roda no estágio
+    `instancia`. Aqui o motor é o de verdade (`live_turns`), com a sessão recém
+    aberta e SEM frame nenhum: `hold:true` tem de ligar o modo e manter o socket
+    de pé, `hold:false` desligar. Os dois lados de `dados.get("on")` são
+    exercitados — trocar por literal reprova.
+    """
+    import live_turns
+
+    monkeypatch.setattr(app, "_live_turns_mod", live_turns)
+    monkeypatch.setattr(app, "_LIVE_STATS_MS", 30)      # `live_limpo` deixa 0 (sem stats)
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        assert _setup_ok(ws)["type"] == "ready"
+        sess = list(app._live_sessions.values())[0]
+
+        # o `speech_start` com `detalhe: "hold"` é o EVENTO do motor chegando no
+        # cliente: sem o despacho de `_live_trata_eventos` ele não sai
+        assert _hold_no_stats(ws, sess, True, evento="speech_start") is True
+        assert _hold_no_stats(ws, sess, False) is False
+        # socket vivo depois dos dois comandos: `error` de fechamento reprova
+        ws.send_bytes(b"\x00\x01" * 1600)
+        assert _ate(ws, {"stats"})["type"] == "stats"
+
+
+def _hold_no_stats(ws, sess, ligado: bool, prazo: float = 3.0, evento: str | None = None):
+    """Manda o comando e devolve `stats.motor.hold_to_talk` (espera virar `ligado`).
+
+    Com `evento`, exige antes um frame daquele tipo (o evento do motor tem de ter
+    sido DESPACHADO, não só aplicado no estado)."""
+    ws.send_json({"type": "hold", "on": ligado})
+    fim = time.monotonic() + prazo
+    visto = False
+    while time.monotonic() < fim:
+        m = _recv(ws, max(0.5, fim - time.monotonic()))
+        if m is None:
+            break
+        if m.get("bytes"):
+            continue
+        ev = _json.loads(m["text"])
+        assert ev["type"] != "error", ev
+        if evento and ev["type"] == evento:
+            assert ev.get("detalhe") == "hold", ev
+            visto = True
+        if ev["type"] == "stats" and ev["motor"]["hold_to_talk"] is ligado:
+            if evento and not visto:
+                continue                       # o evento ainda não chegou
+            return ev["motor"]["hold_to_talk"]
+    mot = sess.get("engine")
+    estado = mot.estatisticas() if mot is not None else None
+    raise AssertionError(f"`hold: {ligado}` não chegou no motor"
+                         f"{f' nem disparou {evento}' if evento else ''}: {estado}")
+
+
 class _EngFake:
     """Mínimo que o `_live_stats` consulta no motor (limiares vigentes + contadores)."""
 
