@@ -512,6 +512,46 @@ try:
             for k, v in fora.items():
                 cobrar(final.get(k) == v, f"campo {k} não voltou ao original ({final.get(k)!r} != {v!r})")
 
+        # ─── 8) valor salvo que NÃO serve: a tela também não o troca pelo resolvedor ─
+        # (o ramo `else` do `bin_esperado`: com valor quebrado o cenário normaliza e o
+        # esperado vira o absoluto. Aqui, sem reiniciar, cobra-se o invariante nos
+        # dois sentidos — a tela NUNCA escreve o resolvido no `value`, seja qual for
+        # o que está salvo)
+        QUEBRADO = "/nao/existe/dsh"
+        # a descoberta é DUBLADA aqui: com o bin quebrado salvo ela falharia e não
+        # mandaria `r.bin` — sem isso a célula não distingue "tela não mexe" de
+        # "nada a mexer". O caminho real já é coberto nas fases 3/4.
+        pg.route("**/api/chat/dsh/models", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"bin": DSH_BIN, "models": [{"id": "m1", "model": "dsflash",
+                                                         "label": "ds", "isDefault": True,
+                                                         "provider": "probe"}],
+                             "efforts": ["off"], "current": {}, "default_model": "dsflash"})))
+        post_settings({"chat_dsh_bin": QUEBRADO})
+        pg.reload(wait_until="domcontentloaded")
+        pg.evaluate("() => showView('config', { tab: 'rede' })")
+        pg.wait_for_selector("#chatDshBin", state="attached", timeout=20000)
+        pg.select_option("#chatBackend", "dsh")     # é o que dispara a descoberta
+        pg.wait_for_timeout(2000)      # a descoberta tenta e falha (bin não existe)
+        quebrado = pg.evaluate("() => document.getElementById('chatDshBin').value")
+        print(f"  valor salvo quebrado: {quebrado!r} · status: "
+              f"{(pg.text_content('#chatDshStatus') or '')[:50]!r}")
+        cobrar(quebrado == QUEBRADO, f"a tela reescreveu o valor salvo quebrado ({quebrado!r})")
+        # volta o binário bom: o valor passa a ser o ABSOLUTO (o que o cenário
+        # normalizado gravaria) e o placeholder volta a mostrar o resolvido — que
+        # coincide com ele aqui, então o que se cobra é o valor, não a diferença
+        post_settings({"chat_dsh_bin": DSH_BIN})
+        pg.reload(wait_until="domcontentloaded")
+        pg.evaluate("() => showView('config', { tab: 'rede' })")
+        pg.select_option("#chatBackend", "dsh")
+        pg.wait_for_function(
+            "() => (document.getElementById('chatDshBin') || {}).placeholder?.includes('resolvido:')",
+            timeout=60000)
+        bom = pg.evaluate("() => document.getElementById('chatDshBin').value")
+        print(f"  valor salvo absoluto: {bom!r} (esperado {DSH_BIN!r})")
+        cobrar(bom == DSH_BIN, f"com valor absoluto salvo a tela mudou o valor ({bom!r})")
+        post_settings({"chat_dsh_bin": orig_tocado["chat_dsh_bin"]})
+
         print(f"  pageerror: {erros} · console.error de script: {cons}")
         cobrar(not erros, f"pageerror: {erros}")
         cobrar(not cons, f"console.error de script: {cons}")
