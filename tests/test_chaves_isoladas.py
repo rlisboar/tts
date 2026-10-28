@@ -87,10 +87,11 @@ def test_rodada_filha_nao_muda_o_hash_do_arquivo_do_dono():
         "a rodada do filho mexeu no estado do dono — o isolamento do conftest caiu?")
 
 
-# --- #535: `import app` reescrevia o `.apikey` do dono (mtime novo, conteúdo igual)
+# --- #535/#601: `import app` não escreve o espelho legado do dono
 # A suíte roda com `TTS_*` de caminho neutralizados; a rodada de suítes `.sh` não
-# tem esse conftest. O espelho legado era escrito SEMPRE, então todo import mexia
-# no arquivo do dono. Agora ele só grava quando o conteúdo muda.
+# tem esse conftest. O espelho era escrito SEMPRE (todo import mexia no arquivo do
+# dono); depois do #601 nem na instalação nova ele é criado — a materialização é a
+# primeira escrita explícita ou `POST /api/apikeys/persistir`.
 def test_import_nao_reescreve_o_legado_quando_o_conteudo_e_o_mesmo(tmp_path):
     env = {**os.environ, "TTS_APIKEYS_PATH": str(tmp_path / "apikeys.json"),
            "TTS_LEGACY_APIKEY_PATH": str(tmp_path / "apikey"),
@@ -101,10 +102,14 @@ def test_import_nao_reescreve_o_legado_quando_o_conteudo_e_o_mesmo(tmp_path):
     import_ = [sys.executable, "-c", "import app"]
     subprocess.run(import_, cwd=str(BASE), env=env, check=True, capture_output=True)
     legado = tmp_path / "apikey"
-    assert legado.exists() and legado.read_text().strip(), "o legado nem foi criado"
+    # instalação nova: o import gerou a chave padrão na RAM e NÃO a materializou
+    assert not legado.exists() and not (tmp_path / "apikeys.json").exists()
+    # com o espelho já gravado, importar (2×) não pode tocar no arquivo
+    legado.write_text("sk-sintetica\n")
     antes = legado.stat().st_mtime_ns
-    subprocess.run(import_, cwd=str(BASE), env=env, check=True, capture_output=True)
-    assert legado.stat().st_mtime_ns == antes, "o 2º import reescreveu o mesmo conteúdo"
+    for _ in range(2):
+        subprocess.run(import_, cwd=str(BASE), env=env, check=True, capture_output=True)
+    assert legado.stat().st_mtime_ns == antes, "o import reescreveu o espelho"
 
 
 # --- #593: `import app` NÃO grava o `settings.json` (nem para materializar default)
@@ -155,6 +160,42 @@ def test_espelho_legado_e_reparado_mesmo_com_arquivo_fora_do_utf8(tmp_path, monk
         {"id": "a", "name": "pytest", "secret": "sk-nova", "role": "admin"}]})
     app._sync_legacy_apikey_file()
     assert legado.read_text().strip() == "sk-nova", "o espelho não foi reparado"
+
+
+# --- #601: o import também não grava os arquivos de CHAVE --------------------
+# Mesma família do #593 (`_save_settings` no import). O launcher importa antes de
+# reapontar `TTS_APIKEYS_PATH`, então importar não pode reescrever `.apikey` (o
+# espelho) nem migrar `.apikeys.json` — a migração fica na RAM até a 1ª escrita
+# explícita (criar/rotacionar/apagar chave) ou `POST /api/apikeys/persistir`.
+def test_import_nao_grava_arquivos_de_chave(tmp_path):
+    """.apikeys.json vazio + .apikey presente: o import migra, mas NÃO grava.
+
+    Esse estado é o que mais disparava escrita (a migração salvava os dois
+    arquivos). Depois do import os dois têm de estar idênticos em bytes, sha256 e
+    mtime — e a chave lida do `.apikey` tem de autenticar mesmo sem ir ao disco."""
+    apikeys = tmp_path / "apikeys.json"
+    apikeys.write_text('{"enabled": true, "keys": []}')
+    legado = tmp_path / "apikey"
+    legado.write_text("sk-legado-sintetica\n")
+    antes = {p.name: (_hash(p), p.stat().st_mtime_ns, p.read_bytes())
+             for p in (apikeys, legado)}
+    env = {**os.environ, "TTS_APIKEYS_PATH": str(apikeys),
+           "TTS_LEGACY_APIKEY_PATH": str(legado),
+           "TTS_SETTINGS_PATH": str(tmp_path / "settings.json"),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    for var in ("TTS_ROD_API_KEY", "TTS_ADMIN_KEY"):
+        env.pop(var, None)
+    subprocess.run([sys.executable, "-c", "import app"], cwd=str(BASE), env=env,
+                   check=True, capture_output=True)
+    for p in (apikeys, legado):
+        assert (_hash(p), p.stat().st_mtime_ns, p.read_bytes()) == antes[p.name], \
+            f"o import reescreveu {p.name}"
+    # a migração VALE na RAM: sem isso "não gravar" seria "não migrar"
+    autentica = subprocess.run(
+        [sys.executable, "-c",
+         "import app; print(app._key_is_valid('sk-legado-sintetica'))"],
+        cwd=str(BASE), env=env, check=True, capture_output=True, text=True)
+    assert autentica.stdout.strip() == "True"
 
 
 # --- #535: a guarda NOMEIA quem escreveu no arquivo do dono ───────────────────

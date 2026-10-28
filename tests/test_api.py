@@ -2395,6 +2395,41 @@ def test_speaker_settings_validam(client, auth):
     client.post("/api/settings", headers=auth, json={"speaker_gate": "off"})
 
 
+def test_speaker_far_alvo_so_aceita_os_alvos_calibrados_e_sai_no_get(client, auth):
+    """O FAR alvo é lista fechada (1 % e 0,1 %), normalizada e VISÍVEL no GET.
+
+    O seletor na tela entra no #528; enquanto ele não existe, quem liga é o POST —
+    e o GET tem de devolver o valor para a tela saber que o modo normalizado está
+    ativo (`speaker_threshold` deixa de decidir)."""
+    r = client.post("/api/settings", headers=auth, json={"speaker_far_alvo": "0,1"})
+    assert r.status_code == 200 and r.json()["speaker_far_alvo"] == "0.1"
+    assert client.get("/api/settings", headers=auth).json()["speaker_far_alvo"] == "0.1"
+    # fora da calibração não vira "quase": limpa e volta ao escore cru
+    client.post("/api/settings", headers=auth, json={"speaker_far_alvo": "5"})
+    assert client.get("/api/settings", headers=auth).json()["speaker_far_alvo"] == ""
+    client.post("/api/settings", headers=auth, json={"speaker_far_alvo": ""})
+
+
+def test_speaker_anticlone_desligado_nao_muda_a_resposta(monkeypatch):
+    """GANCHO do anti-clone (#525): desligado (default) nem o campo aparece.
+
+    O R3 ainda não mediu marca d'água/detector; um campo inerte por padrão faria a
+    resposta prometer o que não existe."""
+    perfis = {"eu": {"vecs": [[1.0, 0.0]], "modelo": app._speaker_modelo_efetivo()}}
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
+    monkeypatch.setitem(app._settings, "speaker_gate", "label")
+    monkeypatch.setitem(app._settings, "speaker_anticlone", False)
+    sem = app._speaker_gate_ok(Path("x.wav"))
+    assert sem.get("speaker") == "eu" and "anticlone" not in sem
+    # LIGADO: avisa que está pendente e NÃO mexe no veredito
+    monkeypatch.setitem(app._settings, "speaker_anticlone", True)
+    com = app._speaker_gate_ok(Path("x.wav"))
+    assert com["anticlone"] == "pendente"
+    assert {k: v for k, v in com.items() if k != "anticlone"} == sem
+
+
 def test_status_expoe_caminho_do_vad(client, auth, monkeypatch):
     """/api/status publica o caminho do VAD que está vivo: None enquanto não
     carregou e "onnx"/"torch-jit" depois. Sem isto o fallback para o torch só
@@ -3900,6 +3935,29 @@ def test_apikeys_enabled_desligar_avisa_sem_409(client, chave_unica):
     r = client.post("/api/apikeys/enabled", headers=chave_unica, json={"enabled": True})
     assert r.status_code == 200 and not r.json().get("avisos")
     assert r.json()["auth_active"] is True
+
+
+def test_apikeys_persistir_materializa_o_que_so_esta_na_ram(client, auth):
+    """O import não grava (#601); esta rota é a escrita explícita sem mudar nada.
+
+    Cobre o buraco deixado por "import não grava": quem subiu com `.apikey`/env (ou
+    numa instalação nova, com a chave padrão só na RAM) materializa em disco para a
+    chave sobreviver ao restart e o `run.sh` reencontrar o espelho."""
+    app.APIKEYS_PATH.unlink(missing_ok=True)
+    r = client.post("/api/apikeys/persistir", headers=auth)
+    assert r.status_code == 200, r.text
+    assert app.APIKEYS_PATH.exists() and app.LEGACY_APIKEY_PATH.exists()
+    assert r.json()["keys"] == len(app._apikeys.get("keys") or [])
+    # o espelho é a 1ª chave gerenciada, como em qualquer gravação
+    assert app.LEGACY_APIKEY_PATH.read_text().strip() == app._apikeys["keys"][0]["secret"]
+    # e a chave de USO não materializa (é escrita elevada)
+    uso = {"X-API-Key": app._apikeys["keys"][0]["secret"]}
+    app._apikeys["keys"][0]["role"] = "use"
+    app.APIKEYS_PATH.unlink()
+    try:
+        assert client.post("/api/apikeys/persistir", headers=uso).status_code == 403
+    finally:
+        app._apikeys["keys"][0]["role"] = "admin"
 
 
 # ---------------------------------------------------------------------------

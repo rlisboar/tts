@@ -489,7 +489,12 @@ _SETTINGS_DEFAULTS = {
     "speaker_threshold": 0.6,         # rigor CRU (escore cosseno 0.35–0.9)
     # alvo de FAR em %: "1" ou "0,1"; vazio = usa `speaker_threshold` cru. Com alvo
     # o escore é normalizado (AS-norm) e o limiar vem da calibração do R2 (#525)
+    # O seletor na tela entra junto do #528; até lá vale por `POST /api/settings`.
     "speaker_far_alvo": "",
+    # Anti-clone (#525): GANCHO do gate, DESLIGADO por decisão do PM — o R3 ainda
+    # não foi medido. Ligado, `_speaker_gate_ok` acrescenta `anticlone` na resposta
+    # (hoje "pendente") sem mudar veredito; desligado, nem o campo aparece.
+    "speaker_anticlone": False,
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
     # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
@@ -737,7 +742,15 @@ def _save_apikeys():
 
 
 def _load_apikeys():
-    """Carrega .apikeys.json; migra .apikey/env; gera chave padrão se vazio."""
+    """Carrega .apikeys.json; migra .apikey/env; gera chave padrão se vazio.
+
+    NÃO GRAVA NADA no import (#601): o espelho `.apikey` e a migração do legado
+    ficam só na RAM e são persistidos pela primeira operação EXPLÍCITA de chave
+    (criar/rotacionar/apagar) ou por `POST /api/apikeys/persistir`. Antes o import
+    reescrevia `.apikey` (e o `.apikeys.json` na migração) em todo processo que só
+    importava o app — inclusive launcher ANTES de reapontar `TTS_APIKEYS_PATH`.
+    Única exceção: arquivo CORROMPIDO é renomeado para `.apikeys.json.corrupt`,
+    porque preservar a evidência antes de gerar chave nova é o ponto."""
     global _apikeys
     keys = []
     enabled = True
@@ -792,13 +805,11 @@ def _load_apikeys():
                 "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             })
         _apikeys = {"enabled": True, "keys": keys}
-        _save_apikeys()
         return
 
     _apikeys = {"enabled": enabled, "keys": keys}
-    # se veio só do arquivo antigo sem .apikeys, já salvamos acima; se veio do
-    # .apikeys.json, só sincroniza .apikey p/ run.sh
-    _sync_legacy_apikey_file()
+    # o espelho `.apikey` (que o `run.sh` lê no boot) e a migração só vão ao disco
+    # na próxima escrita — `_save_apikeys` chama `_sync_legacy_apikey_file`.
 
 
 def _auth_enabled() -> bool:
@@ -2285,6 +2296,23 @@ def set_apikeys_enabled(request: Request, payload: dict):
     return corpo
 
 
+@app.post("/api/apikeys/persistir")
+def persistir_apikeys(request: Request):
+    """Materializa em disco o estado de chaves que está na RAM (admin).
+
+    O import não grava (#601): migração de `.apikey`, espelho do legado e chave
+    padrão de instalação nova existem só em memória até uma escrita explícita. Esta
+    rota é a escrita explícita sem mudar nada — quem quer o arquivo em disco (ou
+    quem subiu só com env/`TTS_ROD_API_KEY` e quer o espelho do `run.sh`) chama
+    aqui. Também é o que o boot confere para não perder a chave no restart."""
+    _exige_admin(request)
+    with _apikeys_lock:
+        _save_apikeys()
+        total = len(_apikeys.get("keys") or [])
+    return {"ok": True, "keys": total, "path": str(APIKEYS_PATH),
+            "legado": str(LEGACY_APIKEY_PATH)}
+
+
 @app.get("/api/backends")
 def api_backends():
     """Catálogo de backends TTS disponíveis (atalhos da UI + metadados)."""
@@ -3589,6 +3617,15 @@ async def _lifespan(_app):
     botão: sem isto, matar o app deixava worker, Live e dsh para trás.
     """
     _jobs_hist_carrega()
+    # A chave padrão (ou a migrada de `.apikey`/env) existe só na RAM porque o
+    # import não grava (#601). Aqui o servidor está DE PÉ e o launcher já reapontou
+    # os caminhos, então é o lugar de materializar — e só quando não há arquivo:
+    # boot com `.apikeys.json` existente não reescreve nada.
+    if not APIKEYS_PATH.exists():
+        try:
+            _save_apikeys()
+        except Exception as exc:  # noqa: BLE001 — sem arquivo o app ainda autentica
+            print(f"[apikeys] não materializei a chave no boot: {exc}", flush=True)
     # DEPOIS do uvicorn: `install_signal_handlers()` dele roda no serve e
     # sobrescreveria um handler posto no import. Aqui o nosso fica POR CIMA e
     # encaminha para o dele (guardado em `_RASTRO_DE_SINAL`), preservando o
@@ -4172,6 +4209,11 @@ def _apply_settings(payload: dict):
     if "speaker_far_alvo" in payload:
         v = str(payload["speaker_far_alvo"] or "").strip().replace(",", ".")
         _settings["speaker_far_alvo"] = v if v in ("1", "0.1") else ""
+    if "speaker_anticlone" in payload:
+        # booleano por aceitação explícita: "false"/"0"/"" desligam de verdade
+        v = payload["speaker_anticlone"]
+        _settings["speaker_anticlone"] = (v if isinstance(v, bool)
+                                          else str(v).strip().lower() in ("1", "true", "on"))
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
             _settings[chave] = str(payload[chave] or "").strip()[:120]
@@ -8264,7 +8306,21 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
     if gate == "label" and autorizado:
         out["speaker"] = melhor
         out["speaker_sim"] = round(sim, 3)
+    # GANCHO anti-clone (#525/#522): com o setting DESLIGADO (default) nada muda —
+    # nem campo na resposta. O R3 ainda não foi medido, então ligar hoje só diria
+    # "pendente"; o detector entra é aqui.
+    if _settings.get("speaker_anticlone"):
+        out.update(_speaker_anticlone())
     return out
+
+
+def _speaker_anticlone() -> dict:
+    """Resultado do anti-clone no gate ({} = nada a dizer).
+
+    Enquanto o R3 não medir marca d'água/detector não há veredito a dar: devolve
+    `pendente` em vez de inventar aprovação. Quando o detector existir ele entra
+    como campo aditivo e o `enforce` passa a rejeitar clone."""
+    return {"anticlone": "pendente"}
 
 
 #: qualidade do cadastro, derivada dos números do R2 (#525)

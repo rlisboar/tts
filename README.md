@@ -342,6 +342,18 @@ medida para aquele extrator; sem a coorte disponível volta ao escore cru.
 `speaker_escore_modo: "asnorm"` na resposta avisa que o número é normalizado —
 ele não se compara com o cru.
 
+O `speaker_far_alvo` **ainda não tem seletor na tela** (entra com o #528): hoje
+liga-se por `POST /api/settings` (`{"speaker_far_alvo": "1"}`; `""` volta ao
+escore cru) e o `GET /api/settings` devolve o valor justamente para a tela saber
+que o modo normalizado está ativo — enquanto ele estiver preenchido, o
+`speaker_threshold` cru deixa de decidir.
+
+**Anti-clone** (`speaker_anticlone`, default `false`): o gancho existe no gate e
+está DESLIGADO — o bake-off do R3 ainda não mediu marca d'água nem detector
+sintético, e ligar hoje não mudaria veredito. Ligado, a resposta do gate ganha
+`anticlone: "pendente"`; desligado, nem o campo aparece. Quando o detector
+existir, é esse campo que passa a rejeitar clone em `enforce` e avisar em `label`.
+
 ## API compatível com OpenAI
 
 `POST /v1/audio/speech` — mesmo contrato da OpenAI; funciona com o SDK oficial

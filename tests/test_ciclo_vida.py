@@ -173,6 +173,26 @@ def test_lifespan_faz_teardown_no_encerramento(isolado, monkeypatch):
     assert chamadas == ["lifespan"], chamadas
 
 
+def test_boot_materializa_a_chave_que_so_estava_na_ram(isolado, tmp_path, monkeypatch):
+    """O import não grava (#601); o servidor DE PÉ materializa a chave da RAM.
+
+    Sem isto, instalação nova (ou que subiu só com `.apikey`/env) perderia a chave
+    padrão no restart: ela existiria apenas no processo e o `run.sh` não acharia o
+    espelho. Com arquivo já em disco, o boot NÃO reescreve."""
+    monkeypatch.setattr(app, "APIKEYS_PATH", tmp_path / ".apikeys.json")
+    monkeypatch.setattr(app, "LEGACY_APIKEY_PATH", tmp_path / ".apikey")
+    assert not app.APIKEYS_PATH.exists()
+    with TestClient(app.app) as cliente:
+        cliente.get("/health")
+    assert app.APIKEYS_PATH.exists(), "o boot não materializou a chave da RAM"
+    assert app.LEGACY_APIKEY_PATH.read_text().strip() == app._apikeys["keys"][0]["secret"]
+    # 2º boot com o arquivo no lugar: nada é reescrito
+    antes = app.APIKEYS_PATH.stat().st_mtime_ns
+    with TestClient(app.app) as cliente:
+        cliente.get("/health")
+    assert app.APIKEYS_PATH.stat().st_mtime_ns == antes
+
+
 # ----------------------------------------------------------------- histórico
 
 def test_job_em_voo_vira_error_com_motivo_depois_do_restart(isolado):
