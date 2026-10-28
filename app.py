@@ -9392,6 +9392,174 @@ def _live_descarrega_pendente(sess: dict) -> None:
             _live_acorda_pendente(sess)
 
 
+def _live_transcreve_trecho(sess: dict, audio: bytes) -> str:
+    """Transcreve o trecho suspeito pelo MESMO STT do turno (o da sessão)."""
+    if not audio:
+        return ""
+    pipe = sess.get("pipe")
+    stt = getattr(pipe, "_stt", None)
+    if stt is None:
+        return ""
+    idioma = getattr(pipe, "language", None)
+    try:
+        return (stt(audio, idioma) or "").strip()
+    except Exception as exc:              # noqa: BLE001
+        _live_log_kv("barge_stt_erro", sess=sess["id"], erro=str(exc)[:100])
+        return ""
+
+
+def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
+                         filtros: dict) -> tuple[str, float | None, int | None]:
+    """Roda a cadeia NA ORDEM do card e devolve (tipo, p_cortar, modelo_ms).
+
+    Cada filtro só age se estiver `on`. `modelo` é o único assíncrono e o único
+    que devolve `p_cortar`; sem classificador ligado ele é pulado. Quem chega ao
+    fim sem decisão usa `live_barge_sem_decisao`."""
+    from live_turns import _BACKCHANNEL, _COMANDO_PARAR, _PERGUNTA, _palavras
+    palavras = _palavras(texto)
+    eco_txt = sess.get("ultimo_assistente") or ""
+
+    def ligado(nome: str, padrao: bool = True) -> bool:
+        cfg = filtros.get(nome)
+        return padrao if cfg is None else bool(cfg.get("on", padrao))
+
+    # 1) palavras de corte — a lista do settings manda (cadastrável pelo dono)
+    if ligado("palavras_corte") and palavras:
+        lista = {str(x).lower() for x in
+                 (filtros.get("palavras_corte") or {}).get("palavras", _COMANDO_PARAR)}
+        if palavras[0] in lista or palavras[-1] in lista:
+            return "interrupcao", None, None
+    # 2) eco
+    if ligado("eco") and eco_txt:
+        from live_pipeline import _parece_eco
+        if _parece_eco(texto, eco_txt):
+            return "eco", None, None
+    # 3) backchannel
+    if ligado("backchannel") and palavras:
+        permitidas = {str(x).lower() for x in
+                      (filtros.get("backchannel") or {}).get("palavras", _BACKCHANNEL)}
+        if len(palavras) <= 2 and all(x in permitidas for x in palavras):
+            return "backchannel", None, None
+    # 4) ruído
+    if ligado("ruido") and not palavras:
+        return "ruido", None, None
+    # 5) MODELO (assíncrono, #509) — só quando os rápidos não decidiram
+    cfg_modelo = filtros.get("modelo") or {}
+    if cfg_modelo.get("on"):
+        tipo, p = _live_modelo_decide(sess, texto, fala_ms, eco_txt, cfg_modelo)
+        if tipo is not None:
+            return tipo, p, None
+    # 6) pergunta
+    if ligado("pergunta") and ("?" in (texto or "") or any(x in _PERGUNTA for x in palavras)):
+        return "interrupcao", None, None
+    # 7) frase longa
+    minimo = int((filtros.get("frase_longa") or {}).get("min_palavras", 3))
+    if ligado("frase_longa") and len(palavras) >= minimo:
+        return "interrupcao", None, None
+    # 8) fala sustentada (chegou aqui sem texto útil)
+    min_ms = int((filtros.get("fala_sustentada") or {}).get("min_ms", 1200))
+    if ligado("fala_sustentada") and fala_ms >= min_ms:
+        return "interrupcao", None, None
+    # 9) sem decisão
+    sem = str(_settings.get("live_barge_sem_decisao") or "continua")
+    return ("interrupcao" if sem == "interrompe" else "ruido"), None, None
+
+
+def _live_modelo_decide(sess: dict, texto: str, fala_ms: int, eco_txt: str,
+                        cfg: dict) -> tuple[str | None, float | None]:
+    """Slot do filtro `modelo` (#509). Sem classificador instalado devolve
+    `(None, None)` e a cadeia segue — nunca segura o turno."""
+    decide = globals().get("_live_classificador_barge")
+    if decide is None:
+        return None, None
+    limite = float(cfg.get("limiar") or 0.5)
+    t0 = time.monotonic()
+    try:
+        p = decide(texto, fala_ms, ref_eco=eco_txt)
+    except Exception as exc:              # noqa: BLE001 — timeout/erro segue adiante
+        _live_log_kv("barge_modelo_erro", sess=sess["id"], erro=str(exc)[:100])
+        return None, None
+    ms = int((time.monotonic() - t0) * 1000)
+    st = sess.setdefault("barge_stats", {"tipos": {}, "decisoes": [], "modelo": []})
+    st["modelo"].append(ms)
+    if p is None:
+        return None, None
+    return ("interrupcao" if p >= limite else "backchannel"), float(p)
+
+
+def _live_suspeita_barge(sess: dict, ev) -> None:
+    """Onset durante o playback, sem decisão ainda (#501).
+
+    Guarda o áudio e arma o PRAZO: quem não chegar a `speech_end` (fala que não
+    fechou, STT rápido demais para a janela) decide pelo que tiver. O timer é
+    cancelado se o `speech_end` chegar antes."""
+    sess["barge_suspeito"] = {"audio": bytes(getattr(ev, "audio", b"") or b""),
+                              "t": time.monotonic()}
+    motor = sess.get("engine")
+    prazo = getattr(getattr(motor, "config", None), "barge_decisao_ms", 700) / 1000.0
+    can = threading.Timer(prazo, lambda: _live_decide_barge(
+        sess, b"", int(getattr(ev, "fala_ms", 0) or 0), por_prazo=True))
+    can.daemon = True
+    sess["barge_timer"] = can
+    can.start()
+
+
+def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
+                       por_prazo: bool = False) -> None:
+    """Decide a suspeita pelo CONTEÚDO e emite o desfecho (#501).
+
+    Segue a ordem do card: fala longa corta sem esperar STT; depois um filtro por
+    vez; `sem_decisao` decide quando nada decidiu. Timeout/erro do filtro `modelo`
+    caem no próximo. Sempre emite `barge_decisao` com o tipo."""
+    sus = sess.pop("barge_suspeito", None)
+    if sus is None:
+        return
+    can = sess.pop("barge_timer", None)
+    if can is not None and not por_prazo:
+        can.cancel()
+    motor = sess.get("engine")
+    filtros = _settings.get("live_barge_filtros") or {}
+    audio = audio_cru or sus.get("audio") or b""
+    t0 = time.monotonic()
+    tipo = "ruido"
+    texto, p_cortar, modelo_ms = "", None, None
+    try:
+        if fala_ms >= 1200 and (filtros.get("fala_sustentada") or {}).get("on", True):
+            tipo = "interrupcao"
+        else:
+            texto = _live_transcreve_trecho(sess, audio)
+            tipo, p_cortar, modelo_ms = _live_avalia_filtros(sess, texto, fala_ms, filtros)
+    except Exception as exc:              # noqa: BLE001 — decisão nunca derruba o turno
+        _live_log_kv("barge_decisao_erro", sess=sess["id"], erro=str(exc)[:120])
+        tipo = str(_settings.get("live_barge_sem_decisao") or "continua")
+        tipo = "interrupcao" if tipo == "interrompe" else "ruido"
+    decisao_ms = int((time.monotonic() - t0) * 1000)
+    # o modo `imediata`/`so_comando` já filtrou; aqui só o desfecho
+    eventos = []
+    if motor is not None:
+        eventos = motor.decidir_barge(tipo, texto=texto, fala_ms=fala_ms,
+                                      decisao_ms=decisao_ms, p_cortar=p_cortar,
+                                      modelo_ms=modelo_ms)
+    _live_log_kv("barge_decisao", sess=sess["id"], tipo=tipo, fala_ms=fala_ms,
+                 decisao_ms=decisao_ms, texto=(texto or "")[:80])
+    if tipo == "interrupcao":
+        _live_cancela(sess, forcar=True)
+    if eventos:
+        _live_trata_eventos(sess, eventos)
+    elif tipo != "interrupcao" and sess.get("turno"):
+        pass                               # retomada: a resposta segue
+    _live_conta_barge(sess, tipo, decisao_ms, modelo_ms)
+
+
+def _live_conta_barge(sess: dict, tipo: str, decisao_ms: int,
+                      modelo_ms: int | None) -> None:
+    st = sess.setdefault("barge_stats", {"tipos": {}, "decisoes": [], "modelo": []})
+    st["tipos"][tipo] = st["tipos"].get(tipo, 0) + 1
+    st["decisoes"].append(decisao_ms)
+    if modelo_ms is not None:
+        st["modelo"].append(modelo_ms)
+
+
 def _live_trata_eventos(sess: dict, eventos) -> None:
     """Traduz a FSM (speech_start | speech_end | barge_in) para o protocolo.
 
@@ -9413,7 +9581,11 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
             continue
         _live_envia_json(sess, dados)
         _live_marca_prov(sess, getattr(ev, "prob", 0.0))
-        if ev.tipo == "barge_in":
+        if ev.tipo == "barge_suspeito":
+            # #501: só avisa o cliente (duck). O corte vem na decisão.
+            _live_log_kv("barge_suspeito", sess=sess["id"], t_ms=ev.t_ms)
+            _live_suspeita_barge(sess, ev)
+        elif ev.tipo == "barge_in":
             _live_log_kv("barge_in", sess=sess["id"], t_ms=ev.t_ms)
             # `forcar`: o barge do motor é prova de interrupção (o evento chega
             # antes de qualquer áudio no fio; ver `_live_cancela`)
@@ -9427,6 +9599,12 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
                          curto=getattr(ev, "curto", None),
                          barge_falso=getattr(ev, "barge_falso", None),
                          detalhe=getattr(ev, "detalhe", None))
+            if sess.get("barge_suspeito"):
+                # o trecho suspeito acabou: decide AGORA pelo conteúdo, antes de
+                # abrir qualquer turno
+                _live_decide_barge(sess, _live_audio_cru(sess, ev),
+                                   int(getattr(ev, "fala_ms", 0) or 0))
+                continue
             _live_stage(sess, "stt")
             sess["t_decisao_ms"] = int(getattr(ev, "t_decisao_ms", 0) or 0)
             # #315: relógio da DECISÃO. O alvo do épico é "fim-de-fala → 1º áudio",

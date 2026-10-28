@@ -1103,3 +1103,32 @@ def test_eco_classifica_como_eco_antes_do_conteudo():
     ref = "então o dia está bonito hoje"
     assert lt.classifica_barge("o dia esta bonito", 600, ref_eco=ref) == "eco"
     assert lt.classifica_barge("qual o prazo", 600, ref_eco=ref) == "interrupcao"
+
+
+def test_filtros_do_settings_mudam_o_desfecho():
+    """A cadeia lê `live_barge_filtros`: desligar o backchannel faz "uhum" cortar."""
+    import app
+
+    def decide(texto, fala_ms, filtros, eco="", sem="continua"):
+        sess = {"id": "s", "ultimo_assistente": eco, "pipe": None}
+        app._settings["live_barge_filtros"] = filtros
+        app._settings["live_barge_sem_decisao"] = sem
+        return app._live_avalia_filtros(sess, texto, fala_ms, filtros)[0]
+
+    assert decide("uhum", 300, {}) == "backchannel"
+    # sem o backchannel, "uhum" não é comando: cai no `sem_decisao` (continua)
+    assert decide("uhum", 300, {"backchannel": {"on": False}}) == "ruido"
+    # desligada a lista, "para" deixa de cortar (é o efeito do filtro)
+    assert decide("para", 300, {"palavras_corte": {"on": False}}) == "ruido"
+    # palavra cadastrada pelo dono vale mesmo fora da lista de fábrica
+    assert decide("basta", 300, {"palavras_corte": {"palavras": ["basta"]}}) == "interrupcao"
+    # ruído desligado + sem decisão "interrompe": corta em vez de seguir
+    assert decide("", 200, {"ruido": {"on": False}}, sem="interrompe") == "interrupcao"
+
+
+def test_filtro_modelo_ausente_nao_segura_a_cadeia():
+    import app
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    tipo, p, _ms = app._live_avalia_filtros(
+        sess, "qual o prazo", 300, {"modelo": {"on": True}})
+    assert tipo == "interrupcao" and p is None      # sem classificador, segue adiante
