@@ -270,6 +270,9 @@ def test_cancel_orfao_reabre_sessao_e_nao_vaza_chunk_tardio(monkeypatch):
             caixa["texto"] = "".join(c.stream("primeiro", "t1"))
         th = threading.Thread(target=correr)
         th.start()
+        # 0,12 s é CALIBRADO com o fake (cancel no meio do primeiro chunk). Tentar
+        # trocar por espera do 1º delta PIOROU: o cancel passava a chegar depois e o
+        # turno settleava sozinho em vez de reabrir a sessão.
         time.sleep(0.12)
         t0 = time.perf_counter()
         c.cancel("t1")
@@ -277,7 +280,7 @@ def test_cancel_orfao_reabre_sessao_e_nao_vaza_chunk_tardio(monkeypatch):
         assert not th.is_alive()
         assert time.perf_counter() - t0 < 1.0, "não pode esperar o prompt órfão settlear"
         assert "TARDIO-IGNORADO" not in caixa["texto"]
-        time.sleep(1.8)                       # o chunk tardio da sessão velha chega aqui
+        time.sleep(2.5)                       # o chunk tardio da sessão velha chega aqui
         assert "TARDIO-IGNORADO" not in "".join(c.stream("segundo", "t2"))
         assert any("sessão será reaberta" in l for l in logs)
         assert len([l for l in logs if "SESSAO" in l]) >= 2
