@@ -2354,17 +2354,39 @@ def test_settings_chave_de_uso_nao_muda_conexao_externa(client, auth, chave_de_u
         "remote_base_url": "http://rtx:8000/v1", "remote_tts": True,
         "remote_tts_url": "http://rtx:8000", "model": "outro/modelo",
         "chat_api_key": "sk-nova-chave", "speed": 2.5, "pre_prompt": "cabeçalho",
+        # limpeza APAGA arquivo do dono: `use` não decide (#543)
+        "auto_cleanup": True, "auto_cleanup_minutes": 7,
+        "auto_cleanup_max_outputs": 1,
     })
     assert r.status_code == 200, r.text
     body = r.json()
     assert set(body["admin_ignored"]) == {
-        "remote_base_url", "remote_tts", "remote_tts_url", "model", "chat_api_key"}
+        "remote_base_url", "remote_tts", "remote_tts_url", "model", "chat_api_key",
+        "auto_cleanup", "auto_cleanup_minutes", "auto_cleanup_max_outputs"}
     # o que é de uso passou e foi persistido
     assert body["speed"] == 2.5 and body["pre_prompt"] == "cabeçalho"
     assert app._settings["speed"] == 2.5
-    # as conexões ficaram intactas (não é 403: a UI manda um blob único no Salvar)
-    for k in ("remote_base_url", "remote_tts", "remote_tts_url", "model", "chat_api_key"):
+    # as conexões e a limpeza ficaram intactas (não é 403: a UI manda blob único)
+    for k in ("remote_base_url", "remote_tts", "remote_tts_url", "model",
+              "chat_api_key", "auto_cleanup", "auto_cleanup_minutes",
+              "auto_cleanup_max_outputs"):
         assert app._settings[k] == antes[k], k
+
+
+def test_settings_admin_muda_a_limpeza_do_outputs(client, auth):
+    """Admin manda teto 1 e os três campos de limpeza passam (#543).
+
+    É o dano que motivou o campo ser admin: uma chave `use` remota levando
+    `auto_cleanup_max_outputs: 1` apagaria tudo menos um do diretório do dono."""
+    antes = dict(app._settings)
+    body = client.post("/api/settings", headers=auth, json={
+        "auto_cleanup": True, "auto_cleanup_minutes": 3,
+        "auto_cleanup_max_outputs": 1}).json()
+    assert body.get("admin_ignored") == []
+    assert (app._settings["auto_cleanup"], app._settings["auto_cleanup_minutes"],
+            app._settings["auto_cleanup_max_outputs"]) == (True, 3, 1)
+    for k in ("auto_cleanup", "auto_cleanup_minutes", "auto_cleanup_max_outputs"):
+        app._settings[k] = antes[k]
 
 
 def test_settings_admin_e_loopback_aplicam_tudo(client, auth):
