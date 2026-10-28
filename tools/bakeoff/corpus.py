@@ -34,7 +34,7 @@ import comum  # noqa: E402
 import ruido  # noqa: E402
 
 SEMENTE = 20261028
-MAX_LOCUTORES = 12
+MAX_LOCUTORES = 40
 MIN_FALAS, MAX_FALAS = 6, 10          # por locutor
 DURO_MIN_S, DURO_MAX_S = 1.0, 8.0     # as durações do aceite
 SNRS = (0, 5, 10, 20)

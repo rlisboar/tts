@@ -203,24 +203,44 @@ def _centroide(vs: list[np.ndarray], modo: str) -> np.ndarray:
     return m / (np.linalg.norm(m) or 1e-9)
 
 
-def _scores(m: dict, cadastro: dict, testes: dict, modo: str) -> tuple[list, list]:
+def _cohorte(m, dados: dict, fora: set[str], limite: int = 999) -> list[np.ndarray]:
+    """Embs de locutores FORA do ensaio, para o AS-norm (coorte de impostores)."""
+    embs = []
+    for loc in sorted(set(dados) - fora)[:limite]:
+        for p in dados[loc][:2]:
+            embs.append(m.emb(_recorta(_le(p), 3.0, 7)))
+    return embs
+
+
+def _scores(m: dict, cadastro: dict, testes: dict, modo: str,
+            cohorte: list[np.ndarray] | None = None) -> tuple[list, list]:
     pos, neg = [], []
     centros = {loc: _centroide([m.emb(x) for x in amostras], modo)
                for loc, amostras in cadastro.items()}
+    coh = np.stack(cohorte) if cohorte else None
     for loc, amostras in testes.items():
         for x in amostras:
             e = m.emb(x)
-            for outro, c in centros.items():
-                (pos if outro == loc else neg).append(float(e @ c))
+            brutos = {outro: float(e @ c) for outro, c in centros.items()}
+            if coh is not None:
+                # AS-norm: normaliza pelo top-k da coorte para ESTA fala
+                s_coh = coh @ e
+                top = np.sort(s_coh)[-min(50, s_coh.size):]
+                mu, sd = float(top.mean()), float(top.std()) + 1e-6
+                brutos = {k: (v - mu) / sd for k, v in brutos.items()}
+            for outro, v in brutos.items():
+                (pos if outro == loc else neg).append(v)
     return pos, neg
 
 
 def roda(modelo: str, k_cadastro: int, modo: str, ruidos: tuple[str, ...],
-         limite_locutores: int = 8) -> dict:
+         limite_locutores: int = 8, asnorm: bool = False) -> dict:
     m = ADAPTADORES[modelo]()
     dados = _por_locutor()
     locutores = sorted(dados)[:limite_locutores]
-    saida = {"modelo": modelo, "k": k_cadastro, "modo": modo, "por_duracao": {},
+    cohorte = _cohorte(m, dados, set(locutores)) if asnorm else None
+    saida = {"modelo": modelo, "k": k_cadastro, "modo": modo, "asnorm": asnorm,
+             "por_duracao": {},
              "latencia_ms": [], "rss_mb": 0.0}
     for dur in DURACOES:
         cadastro, testes = {}, {}
@@ -232,7 +252,7 @@ def roda(modelo: str, k_cadastro: int, modo: str, ruidos: tuple[str, ...],
             testes[loc] = corte[k_cadastro:]
         # limpo
         t0 = time.perf_counter()
-        pos, neg = _scores(m, cadastro, testes, modo)
+        pos, neg = _scores(m, cadastro, testes, modo, cohorte)
         saida["latencia_ms"].append(round(1000 * (time.perf_counter() - t0) /
                                           max(1, len(pos) + len(neg)), 2))
         saida["por_duracao"][f"{dur:g}s_limpo"] = metricas.resumo(pos, neg)
@@ -244,14 +264,14 @@ def roda(modelo: str, k_cadastro: int, modo: str, ruidos: tuple[str, ...],
                 cad_r = cadastro
                 test_r = {loc: [_com_ruido(x, fam, snr, j) for j, x in enumerate(v)]
                           for loc, v in testes.items()}
-                pos, neg = _scores(m, cad_r, test_r, modo)
+                pos, neg = _scores(m, cad_r, test_r, modo, cohorte)
                 saida["por_duracao"][f"{dur:g}s_{fam}_{snr}dB"] = metricas.resumo(pos, neg)
-    saida["clone"] = _clones(m, dados, locutores, k_cadastro, modo)
+    saida["clone"] = _clones(m, dados, locutores, k_cadastro, modo, cohorte)
     saida["rss_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6, 1)
     return saida
 
 
-def _clones(m, dados, locutores, k: int, modo: str) -> dict:
+def _clones(m, dados, locutores, k: int, modo: str, cohorte=None) -> dict:
     """FAR de CLONE: cópia sintética do próprio locutor contra o cadastro dele."""
     clones = {}
     for p in sorted(comum.CLONE.glob("*_*.wav")):
@@ -270,7 +290,7 @@ def _clones(m, dados, locutores, k: int, modo: str) -> dict:
         # limiar calibrado nos IMPOSTORES do mesmo protocolo (FAR alvo)
         cad_r = {loc: [_recorta(x, dur_ref, i) for i, x in enumerate(v)]
                  for loc, v in cadastro.items()}
-        pos, neg = _scores(m, cad_r, testes, modo)
+        pos, neg = _scores(m, cad_r, testes, modo, cohorte)
         centros = {loc: _centroide([m.emb(_recorta(x, dur_ref, i))
                                     for i, x in enumerate(v)], modo)
                    for loc, v in cadastro.items()}
@@ -294,6 +314,7 @@ def main() -> int:
     ap.add_argument("--ruidos", default="ventoinha,babble,musica")
     ap.add_argument("--locutores", type=int, default=8)
     ap.add_argument("--clones", action="store_true")
+    ap.add_argument("--asnorm", action="store_true")
     a = ap.parse_args()
     comum.garante()
     ruidos = tuple(x for x in a.ruidos.split(",") if x)
@@ -301,9 +322,9 @@ def main() -> int:
         for k in (int(x) for x in a.k.split(",")):
             for modo in a.modos.split(","):
                 t0 = time.perf_counter()
-                r = roda(modelo, k, modo, ruidos, a.locutores)
+                r = roda(modelo, k, modo, ruidos, a.locutores, a.asnorm)
                 r["segundos"] = round(time.perf_counter() - t0, 1)
-                destino = comum.RESULTADOS / f"identidade_{modelo}_k{k}_{modo}.json"
+                destino = comum.RESULTADOS / f"identidade_{modelo}_k{k}_{modo}{'_asnorm' if a.asnorm else ''}.json"
                 destino.write_text(json.dumps(r, indent=1))
                 limpo = r["por_duracao"]["1s_limpo"]
                 print(f"{modelo} k={k} {modo}: EER 1s {limpo['eer']:.2f}% | "
