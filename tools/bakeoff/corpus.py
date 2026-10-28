@@ -80,11 +80,22 @@ def publico() -> int:
         alvo = rng.randint(MIN_FALAS, MAX_FALAS)
         escolhidas = rng.sample(falas, min(alvo, len(falas)))
         for i, arq in enumerate(escolhidas):
+            # a transcrição vem do `.trans.txt` da MESMA pasta: é o que dá WER
+            txt = arq.parent / f"{loc.name}-{arq.parent.name}.trans.txt"
+            texto = ""
+            if txt.exists():
+                for ln in txt.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if ln.startswith(arq.stem + " "):
+                        texto = ln[len(arq.stem) + 1:].strip()
+                        break
             x = _le_16k(arq)
             dur = rng.uniform(DURO_MIN_S, min(DURO_MAX_S, x.size / comum.SR))
             ini = rng.randint(0, max(0, x.size - int(dur * comum.SR)))
             x = x[ini: ini + int(dur * comum.SR)]
-            _grava(comum.FALA / f"pub_{loc.name}_{i:02d}.wav", x)
+            # o nome leva o ID original: é o que amarra áudio e transcrição
+            destino = comum.FALA / f"pub_{loc.name}_{arq.stem}.wav"
+            _grava(destino, x)
+            destino.with_suffix(".txt").write_text(texto)
             feitos += 1
     print(f"falas públicas: {feitos} de {MAX_LOCUTORES} locutores")
     return feitos

@@ -144,9 +144,7 @@ def main() -> int:
     from resemblyzer import VoiceEncoder, preprocess_wav
 
     enc = VoiceEncoder("cpu")
-    refs = {}
-    for txt in (comum.FALA).glob("*.txt"):
-        refs[txt.stem] = txt.read_text().strip()
+    refs = {t.stem: t.read_text().strip() for t in comum.FALA.glob("*.txt")}
 
     resultados = {}
     for fam in a.familias.split(","):
@@ -161,13 +159,16 @@ def main() -> int:
                     y, seg, _ = CANDIDATOS[nome](sujo, comum.SR)
                     e_y = enc.embed_utterance(preprocess_wav(y, source_sr=comum.SR))
                     m = _dnsmos(y, comum.SR)
+                    texto_ref = refs.get(mist.name.split("__")[0], "")
                     linhas.append({"arq": mist.name, "cand": nome,
                                    "sig": m.get("sig_mos"), "bak": m.get("bak_mos"),
                                    "ovrl": m.get("ovrl_mos"),
                                    "similaridade": float(np.dot(e_ref, e_y)),
+                                   "wer": _wer(texto_ref, y, comum.SR),
                                    "rtf": seg / (sujo.size / comum.SR)})
                     print(f"{chave} {nome} {i}: ovrl={m.get('ovrl_mos')} "
-                          f"sim={linhas[-1]['similaridade']:.3f} rtf={linhas[-1]['rtf']:.3f}",
+                          f"sim={linhas[-1]['similaridade']:.3f} wer={linhas[-1]['wer']:.2f} "
+                          f"rtf={linhas[-1]['rtf']:.3f}",
                           flush=True)
             resultados[chave] = linhas
     destino = comum.RESULTADOS / "ruido.json"

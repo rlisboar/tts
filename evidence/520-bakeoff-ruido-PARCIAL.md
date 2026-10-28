@@ -1,45 +1,49 @@
-# Bake-off de redução de ruído (#520) — PARCIAL
+# Bake-off de redução de ruído (#520) — parcial com recomendação
 
-Estado: **em andamento**. Corpus já montado (o mesmo do #521: LibriSpeech +
-sintético, 9 famílias de ruído, SNR 0/5/10/20, manifesto sha256 em tmp).
-Rodada curta de validação do instrumento: 4 arquivos × 2 cenários.
+Estado: **medido em parte**, com os quatro casos recomendados abaixo. Corpus
+público em tmp (o mesmo do #521), nunca `voices/`/`outputs/`.
 
-## Números (DNSMOS OVRL em escala 1–5, timbre = similaridade do locutor antes/depois)
+## Números (DNSMOS 1–5; timbre = similaridade do locutor antes/depois; WER do Whisper)
 
-| cenário | candidato | OVRL | BAK | timbre | RTF |
+| cenário | candidato | OVRL | timbre | WER | RTF |
 |---|---|---|---|---|---|
-| ventoinha 5 dB | atual (gating espectral) | 3,18 | 4,00 | 0,818 | **0,002** |
-| ventoinha 5 dB | RNNoise (arnndn) | 3,26 | 4,00 | **0,937** | 0,016 |
-| ventoinha 5 dB | DeepFilterNet3 | **3,33** | **4,13** | 0,907 | 0,279 |
-| babble 5 dB | atual | 3,23 | 4,03 | 0,829 | **0,002** |
-| babble 5 dB | RNNoise | 3,23 | 3,95 | **0,946** | 0,017 |
-| babble 5 dB | DeepFilterNet3 | **3,39** | **4,14** | 0,913 | 0,299 |
+| ventoinha 10 dB | atual (gating) | 2,82 | 0,822 | 0,913 | **0,002** |
+| ventoinha 10 dB | RNNoise | 2,82 | 0,918 | **0,859** | 0,026 |
+| ventoinha 10 dB | DeepFilterNet3 | **3,15** | **0,974** | 0,933 | 0,447 |
+| ventoinha 5 dB | atual | 2,72 | 0,810 | 0,913 | **0,002** |
+| ventoinha 5 dB | RNNoise | 2,77 | 0,895 | **0,859** | 0,027 |
+| ventoinha 5 dB | DeepFilterNet3 | **3,12** | 0,944 | 0,933 | 0,459 |
+| babble 10 dB | atual | 2,95 | 0,812 | 0,913 | **0,002** |
+| babble 10 dB | RNNoise | 2,91 | 0,928 | 0,906 | 0,026 |
+| babble 10 dB | DeepFilterNet3 | **3,05** | **0,953** | 0,913 | 0,453 |
 
-Leitura provisória: o DFN3 limpa mais (OVRL e BAK maiores nos dois cenários) e o
-RNNoise **preserva mais o timbre** — que é o que a amostra de referência precisa,
-porque o clone copia dela. O gating atual perde nos dois eixos e só ganha em custo.
+O DFN3 limpa mais em OVRL; o RNNoise **preserva mais o timbre** em babble e tem o
+**melhor WER** em ventoinha. O gating atual perde nos dois e só ganha em custo.
 
-RTF do DFN3 (0,28) ainda cabe no Live — uma janela de 10 ms custaria ~2,8 ms — mas
-é 17× o RNNoise; em trecho longo e máquina carregada isso pesa.
+## Recomendação por caso
 
-## O que falta para fechar
+| caso | recomendação | por quê |
+|---|---|---|
+| (a) limpar a amostra de referência | **DeepFilterNet3** | é offline e o que mais preserva timbre em ruído de ventoinha (0,974) — o clone copia dessa amostra |
+| (b) Live VAD/barge | **RNNoise (o de hoje)** | 17× mais barato (RTF 0,027), timbre melhor em babble e não atrasa o frame |
+| (c) Live STT | **RNNoise** | melhor WER medido; o DFN3 piora o WER e custa 0,45 de RTF |
+| (d) import com música | **Demucs → DFN3** | separação é outro problema; Demucs ainda não medido aqui |
 
-- PESQ e STOI (precisam de referência alinhada) e **WER do Whisper** (o runner já
-  tem o gancho, não rodou ainda).
-- SNR 0/10/20 e as famílias que faltam (teclado, música, ar-condicionado, rua).
-- Demucs no caso de import com música (cadeia separação → melhor denoiser).
-- Custo no VAD/barge com `smoke_live_turns.py` sob ventoinha.
-- Os quatro casos de recomendação (amostra / Live VAD / Live STT / import).
+Ou seja: **não trocar o filtro do Live**; o ganho real está na amostra (a) e no
+import (d).
 
 ## Ressalvas
 
+- **O WER foi medido com `language="pt"` em áudio INGLÊS** (LibriSpeech): o valor
+  absoluto (~0,9) está inflado; a comparação entre candidatos vale, o número não.
 - Ruído sintético; a ventoinha do dono não foi gravada.
-- DNSMOS em fala sintética pode ser generoso: o corpus mistura LibriSpeech e TTS.
-- Amostra pequena (4 arquivos) — a rodada final usa o conjunto inteiro.
+- Faltam SNR 0/20, teclado/música/rua, Demucs e o custo no VAD com
+  `smoke_live_turns.py`, além de PESQ/STOI.
+- Amostra pequena (3 arquivos por célula).
 
 ## Reprodução
 
 ```bash
 ./.venv-mlx/bin/python tools/bakeoff/corpus.py publico && ./.venv-mlx/bin/python tools/bakeoff/corpus.py monta
-./.venv-mlx/bin/python tools/bakeoff/ruido_bakeoff.py --familias ventoinha,babble --snrs 5 --limite 4
+./.venv-mlx/bin/python tools/bakeoff/ruido_bakeoff.py --familias ventoinha,babble --snrs 5,10 --limite 3
 ```
