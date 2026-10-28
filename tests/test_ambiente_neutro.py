@@ -134,3 +134,81 @@ def test_o_arquivo_hostil_chegou_no_app():
         f"o arquivo hostil não foi o copiado: SETTINGS_PATH={app.SETTINGS_PATH} "
         f"QA206_SETTINGS={os.environ.get('QA206_SETTINGS')}")
     assert app._settings.get(ARQ_CAMPO) == valor, "o campo hostil não chegou no app"
+
+# ---------------------------------------------------------------------------
+# #461: os CAMINHOS DE ESTADO também por ambiente.
+#
+# O vetor ARQUIVO acima é resolvido pelo conftest (cópia + monkeypatch), mas
+# script de shell não tem conftest: sem override ele escreve no `.apikeys.json`
+# e no `settings.json` do dono (raiz do #292/#298/#435/#437). Aqui a prova é de
+# IMPORT — a variável tem de decidir a constante antes de qualquer rota existir —
+# e o controle é o oposto: sem a variável, o caminho é exatamente o de hoje.
+# ---------------------------------------------------------------------------
+
+_VARS_CAMINHO = {
+    "TTS_APIKEYS_PATH": "APIKEYS_PATH",
+    "TTS_LEGACY_APIKEY_PATH": "LEGACY_APIKEY_PATH",
+    "TTS_SETTINGS_PATH": "SETTINGS_PATH",
+    "TTS_SPEAKER_PATH": "SPEAKER_PATH",
+    "TTS_VOICES_DIR": "VOICES_DIR",
+    "TTS_OUTPUTS_DIR": "OUTPUTS_DIR",
+    "TTS_JOBS_HIST_PATH": "_JOBS_HIST_PATH",
+}
+# os caminhos de hoje, sem nenhuma variável (é o que o default tem de continuar)
+_PADROES = {
+    "APIKEYS_PATH": ".apikeys.json",
+    "LEGACY_APIKEY_PATH": ".apikey",
+    "SETTINGS_PATH": "settings.json",
+    "SPEAKER_PATH": ".speaker-profiles.json",
+    "VOICES_DIR": "voices",
+    "OUTPUTS_DIR": "outputs",
+    "_JOBS_HIST_PATH": "state/jobs-history.json",
+}
+
+
+def _sem_vars_de_caminho() -> dict:
+    return {k: v for k, v in os.environ.items() if k not in _VARS_CAMINHO}
+
+
+def test_caminhos_de_estado_sem_variavel_ficam_no_default():
+    """Controle: sem as variáveis, cada constante aponta para o caminho de hoje."""
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "import app;"
+         + ";".join(f"print(app.{c})" for c in _VARS_CAMINHO.values())],
+        cwd=str(BASE), env=_sem_vars_de_caminho(), capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-2000:]
+    obtido = r.stdout.strip().splitlines()
+    assert obtido == [str(BASE / _PADROES[c]) for c in _VARS_CAMINHO.values()]
+    base_real = BASE.resolve()
+    for linha in obtido:                  # relativo herdaria o CWD de quem chama
+        assert Path(linha).is_absolute() and base_real in Path(linha).parents
+
+
+def test_caminhos_de_estado_respeitam_a_variavel_no_import(tmp_path):
+    """Com as variáveis, o import já nasce apontado para elas (e o pai existe)."""
+    env = _sem_vars_de_caminho()
+    for var in _VARS_CAMINHO:
+        env[var] = str(tmp_path / var.lower() / "arquivo.json")
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "import app;"
+         + ";".join(f"print(app.{c})" for c in _VARS_CAMINHO.values())],
+        cwd=str(BASE), env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert r.stdout.strip().splitlines() == [env[v] for v in _VARS_CAMINHO]
+    # o pai de cada alvo tem de existir: `write_json_atomic` grava tmp ao lado
+    for var in _VARS_CAMINHO:
+        assert (tmp_path / var.lower()).is_dir(), f"{var}: o pai não foi criado"
+
+
+def test_variavel_vazia_cai_no_default(tmp_path):
+    """Variável exportada e VAZIA (caso de `VAR= cmd`) não vira `Path('')`."""
+    env = _sem_vars_de_caminho()
+    for var in _VARS_CAMINHO:
+        env[var] = "   "
+    r = subprocess.run(
+        [sys.executable, "-c", "import app; print(app.APIKEYS_PATH, app.VOICES_DIR)"],
+        cwd=str(BASE), env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert r.stdout.split() == [str(BASE / ".apikeys.json"), str(BASE / "voices")]

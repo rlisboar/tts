@@ -168,14 +168,31 @@ from common import (GANHO_AVISO_DB, LUFS_ALVO, NATIVE_SPEED_FAMILIES, OMNI_ALIAS
                     write_wav_concat as _write_wav_concat)
 import metrics_hist as _metrics
 
+def _caminho_estado_env(nome: str, padrao: Path) -> Path:
+    """Caminho de estado com override por ambiente (#461); vazio = o de sempre.
+
+    Toda suíte/script que quer estado próprio montava launcher
+    (`python -c "import app; app.X = …"`) ou monkeypatch e, quando esquecia,
+    escrevia no arquivo REAL do dono (#292/#298/#435/#437). Com a variável de
+    ambiente, isolar é uma linha de `env`. O default não muda sem ela.
+    """
+    bruto = (os.environ.get(nome) or "").strip()
+    if not bruto:
+        return padrao
+    return Path(bruto).expanduser()
+
+
 BASE = Path(__file__).resolve().parent
-VOICES_DIR = BASE / "voices"
-OUTPUTS_DIR = BASE / "outputs"
-APIKEYS_PATH = BASE / ".apikeys.json"
-SPEAKER_PATH = BASE / ".speaker-profiles.json"   # embeddings de voz (fora do git)
-LEGACY_APIKEY_PATH = BASE / ".apikey"
-VOICES_DIR.mkdir(exist_ok=True)
-OUTPUTS_DIR.mkdir(exist_ok=True)
+VOICES_DIR = _caminho_estado_env("TTS_VOICES_DIR", BASE / "voices")
+OUTPUTS_DIR = _caminho_estado_env("TTS_OUTPUTS_DIR", BASE / "outputs")
+APIKEYS_PATH = _caminho_estado_env("TTS_APIKEYS_PATH", BASE / ".apikeys.json")
+# embeddings de voz (fora do git)
+SPEAKER_PATH = _caminho_estado_env("TTS_SPEAKER_PATH", BASE / ".speaker-profiles.json")
+LEGACY_APIKEY_PATH = _caminho_estado_env("TTS_LEGACY_APIKEY_PATH", BASE / ".apikey")
+VOICES_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+for _p in (APIKEYS_PATH, SPEAKER_PATH, LEGACY_APIKEY_PATH):
+    _p.parent.mkdir(parents=True, exist_ok=True)   # `write_json_atomic` exige o pai
 
 # ---------------------------------------------------------------------------
 # Limpeza de boot dos diretórios de job (outputs/.job-*)
@@ -327,7 +344,8 @@ DESIGN_VOICE_ID = "__design__"
 # Configurações padrão editáveis no dashboard (persistem em settings.json e
 # valem para UI e API; parâmetro explícito na requisição sempre sobrepõe)
 # ---------------------------------------------------------------------------
-SETTINGS_PATH = BASE / "settings.json"
+SETTINGS_PATH = _caminho_estado_env("TTS_SETTINGS_PATH", BASE / "settings.json")
+SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
 _SETTINGS_DEFAULTS = {
     "model": MODEL_ID,         # atalho (omnivoice, qwen3-0.6b…) ou id/dir MLX
     "pre_prompt": "",          # texto falado antes de toda geração
@@ -2642,7 +2660,7 @@ def _dsh_log(msg: str, tag: str = "chat-dsh") -> None:
 def _chat_dsh_novo(cfg: dict) -> "dsh_client.DshClient":
     return _DshComSlot(
         bin=cfg["bin"], profile=cfg["profile"], model=cfg["model"],
-        effort=cfg["effort"], cwd=BASE / "outputs" / ".dsh-cwd",
+        effort=cfg["effort"], cwd=OUTPUTS_DIR / ".dsh-cwd",
         primeiro_delta_timeout=_CHAT_DSH_PRIMEIRO_DELTA_S,
         on_log=lambda m: _dsh_log(m))
 
@@ -5254,7 +5272,9 @@ def _evict_jobs():
 # ---------------------------------------------------------------------------
 # Em `state/`, NÃO em `outputs/`: a limpeza de boot varre `outputs/.job-*` e o
 # padrão casaria com `.jobs-history.json` — o histórico morreria antes de ser lido.
-_JOBS_HIST_PATH = BASE / "state" / "jobs-history.json"
+_JOBS_HIST_PATH = _caminho_estado_env("TTS_JOBS_HIST_PATH",
+                                      BASE / "state" / "jobs-history.json")
+_JOBS_HIST_PATH.parent.mkdir(parents=True, exist_ok=True)
 _JOBS_HIST_CAMPOS = ("status", "pieces", "total", "progress", "output", "error")
 _MOTIVO_REINICIO = "reinício do servidor — job em voo não sobrevive (as peças já geradas podem continuar no disco)"
 
@@ -9418,7 +9438,7 @@ def _live_pipe_novo(sess: dict):
                 cfg = _chat_dsh_cfg()
                 dsh = _DshComSlot(
                     bin=cfg["bin"], profile=cfg["profile"], model=cfg["model"],
-                    effort=cfg["effort"], cwd=BASE / "outputs" / ".dsh-cwd",
+                    effort=cfg["effort"], cwd=OUTPUTS_DIR / ".dsh-cwd",
                     on_log=lambda m: _dsh_log(m, "live-dsh"))
             except _DshSemSlot as exc:
                 # teto GLOBAL: a sessão nasce e segue no openai, mas DIZ isso (#287)

@@ -6,8 +6,8 @@
 # como PERGUNTA — avisa o preço e oferece forçar ou cancelar; forçar repete com
 # `?forcar=1`. Também cobra o aviso permanente de "LAN aberta" e o selo de papel.
 #
-# Servidor PRÓPRIO em porta livre e arquivo de chaves PRÓPRIO (`APIKEYS_PATH` em
-# /tmp): o `.apikeys.json` do dono não é tocado e a instância dele não precisa
+# Servidor PRÓPRIO em porta livre e arquivo de chaves PRÓPRIO (`TTS_APIKEYS_PATH`
+# em /tmp, lido no import — #461): o `.apikeys.json` do dono não é tocado e a instância dele não precisa
 # escutar em 0.0.0.0 (o roteiro é todo por loopback, que é admin por definição).
 #
 #   ./tests/ultima_chave_ui.sh
@@ -35,17 +35,14 @@ def porta_livre():
 porta = porta_livre()
 apikeys = pathlib.Path(f"/tmp/apikeys_teste-{SUF}.json")
 log = pathlib.Path(f"/tmp/ultima_chave-{porta}.log")
-# o launcher troca o ARQUIVO de chaves antes de servir: isolamento total
-_launcher = f'''
-import pathlib, app
-app.APIKEYS_PATH = pathlib.Path({str(apikeys)!r})
-app._load_apikeys()
-import uvicorn
-uvicorn.run(app.app, host="127.0.0.1", port={porta}, log_level="warning")
-'''
-proc = subprocess.Popen([str(RAIZ / ".venv-mlx" / "bin" / "python"), "-c", _launcher],
-                        cwd=str(RAIZ), stdout=log.open("w"), stderr=subprocess.STDOUT,
-                        start_new_session=True)
+# isolamento por AMBIENTE (#461): `TTS_APIKEYS_PATH` é lido no import do app, então
+# não precisa de launcher com monkeypatch — o arquivo do dono nem é aberto
+env_proc = {**os.environ, "TTS_APIKEYS_PATH": str(apikeys)}
+proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app",
+                         "--host", "127.0.0.1", "--port", str(porta),
+                         "--log-level", "warning"],
+                        cwd=str(RAIZ), env=env_proc, stdout=log.open("w"),
+                        stderr=subprocess.STDOUT, start_new_session=True)
 base = f"http://127.0.0.1:{porta}"
 
 def espera_servidor():

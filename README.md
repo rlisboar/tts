@@ -814,6 +814,21 @@ BASE=http://127.0.0.1:7860 ./tests/run_sh.sh instancia   # exige app de pé (./r
 ./.venv-mlx/bin/python smoke_live_turns.py                     # precisa de voices/
 ```
 
+### Estado isolado por ambiente (#461)
+
+Os caminhos de estado têm override por variável de ambiente, **lidos no import**:
+`TTS_APIKEYS_PATH`, `TTS_LEGACY_APIKEY_PATH`, `TTS_SETTINGS_PATH`,
+`TTS_SPEAKER_PATH`, `TTS_VOICES_DIR`, `TTS_OUTPUTS_DIR`, `TTS_JOBS_HIST_PATH`.
+Variável ausente (ou vazia) = o caminho de sempre, ao lado do `app.py`; nada muda
+para quem não exporta nada. É o que deixa uma suíte ou um experimento isolarem
+tudo sem launcher de monkeypatch — e sem escrever no `.apikeys.json` nem no
+`settings.json` do dono:
+
+```bash
+TTS_APIKEYS_PATH=/tmp/apikeys.json TTS_OUTPUTS_DIR=/tmp/saidas \
+  ./.venv-mlx/bin/python -m uvicorn app:app --port 7999
+```
+
 Pre-commit opcional (lint + pytest antes de cada commit):
 
 ```bash
