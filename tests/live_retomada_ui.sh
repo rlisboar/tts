@@ -19,7 +19,7 @@
 #   · `session_substituida` NÃO retoma (outra conexão é a dona do id) e o motivo
 #     fica;
 #   · depois de LX_RETOMA_MAX tentativas (4 conexões contando a do clique) a tela
-    para e pede o clique, sem laço infinito.
+#     para e pede o clique, sem laço infinito.
 #
 # Instância isolada em tmp (nada do dono), microfone falso do Chromium.
 #
