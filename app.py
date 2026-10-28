@@ -9489,7 +9489,14 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
         from live_pipeline import _parece_eco
         if _parece_eco(texto, eco_txt):
             return "eco", None, None, "eco"
-    # 3) backchannel
+    # 3) fim_de_resposta — perto do fim, deixar terminar vence backchannel/ruído
+    if ligado("fim_de_resposta"):
+        motor = sess.get("engine")
+        restante = motor.playback_restante_ms() if motor is not None else None
+        if restante is not None and restante <= int(
+                (filtros.get("fim_de_resposta") or {}).get("restante_ms", 1000)):
+            return "ruido", None, None, "fim_de_resposta"
+    # 4) backchannel
     if ligado("backchannel") and palavras:
         permitidas = {str(x).lower() for x in
                       (filtros.get("backchannel") or {}).get("palavras", _BACKCHANNEL)}
@@ -9508,28 +9515,20 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
         tipo, p = _live_modelo_decide(sess, texto, fala_ms, eco_txt, cfg_modelo)
         if tipo is not None:
             return tipo, p, None, "modelo"
-    # 6) pergunta — a REGRA pura decide o resto (pergunta, frase longa, backchannel)
-    # e o filtro `on` só vale para o que ele governa; sem isto a cadeia
-    # reimplementava a classificação e o teste da função não protegia nada (#503)
+    # 6) pergunta / 7) frase longa / 8) fala sustentada — TODAS vêm da regra pura
+    # (`classifica_barge`), fonte ÚNICA: a cadeia não reimplementa mais nada aqui
+    # (#503). O `on` de cada filtro só decide SE aquele motivo pode cortar.
     tipo_puro = classifica_barge(texto, fala_ms, ref_eco=eco_txt)
     if tipo_puro == "interrupcao":
-        if any(x in _PERGUNTA for x in palavras) or "?" in (texto or ""):
+        if "?" in (texto or "") or any(x in _PERGUNTA for x in palavras):
             if ligado("pergunta"):
                 return "interrupcao", None, None, "pergunta"
+        elif fala_ms >= int((filtros.get("fala_sustentada") or {}).get("min_ms", 1200)):
+            if ligado("fala_sustentada"):
+                return "interrupcao", None, None, "fala_sustentada"
         elif len(palavras) >= int((filtros.get("frase_longa") or {}).get("min_palavras", 3)):
             if ligado("frase_longa"):
                 return "interrupcao", None, None, "frase_longa"
-    # 6b) pergunta
-    if ligado("pergunta") and ("?" in (texto or "") or any(x in _PERGUNTA for x in palavras)):
-        return "interrupcao", None, None, "pergunta"
-    # 7) frase longa
-    minimo = int((filtros.get("frase_longa") or {}).get("min_palavras", 3))
-    if ligado("frase_longa") and len(palavras) >= minimo:
-        return "interrupcao", None, None, "frase_longa"
-    # 8) fala sustentada (chegou aqui sem texto útil)
-    min_ms = int((filtros.get("fala_sustentada") or {}).get("min_ms", 1200))
-    if ligado("fala_sustentada") and fala_ms >= min_ms:
-        return "interrupcao", None, None, "fala_sustentada", "palavras_corte"
     # 9) sem decisão
     sem = str(_settings.get("live_barge_sem_decisao") or "continua")
     return (("interrupcao" if sem == "interrompe" else "ruido"), None, None,
@@ -9736,23 +9735,17 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
     try:
         # ADENDO: perto do fim da resposta a fala vira turno pendente em vez de
         # cortar o restinho — cortar ali só encurta a frase sem ganhar nada
-        restante = 10 ** 9
-        if motor is not None and (filtros.get("fim_de_resposta") or {}).get("on", True):
-            restante = motor.playback_restante_ms()
-        limite_fim = int((filtros.get("fim_de_resposta") or {}).get("restante_ms", 1000))
-        if restante <= limite_fim:
-            tipo, filtro = "ruido", "fim_de_resposta"
-            # a fala não pode sumir: entra no pendente, com marca no log
-            texto = _live_transcreve_trecho(sess, audio)
-            sess["fila"].put(("json", {"type": "turno_pendente",
-                                       "fim_de_resposta": True,
-                                       "texto": texto[:200]}))
-        elif fala_ms >= 1200 and (filtros.get("fala_sustentada") or {}).get("on", True):
+        if fala_ms >= 1200 and (filtros.get("fala_sustentada") or {}).get("on", True):
             tipo, filtro = "interrupcao", "fala_sustentada"
         else:
             texto = _live_transcreve_trecho(sess, audio)
             tipo, p_cortar, modelo_ms, filtro = _live_avalia_filtros(
                 sess, texto, fala_ms, filtros)
+            if filtro == "fim_de_resposta":
+                # a fala não pode sumir: entra no pendente, com marca no log
+                sess["fila"].put(("json", {"type": "turno_pendente",
+                                           "fim_de_resposta": True,
+                                           "texto": (texto or "")[:200]}))
     except Exception as exc:              # noqa: BLE001 — decisão nunca derruba o turno
         _live_log_kv("barge_decisao_erro", sess=sess["id"], erro=str(exc)[:120])
         tipo = str(_settings.get("live_barge_sem_decisao") or "continua")

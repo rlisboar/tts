@@ -1259,3 +1259,30 @@ def test_stt_lento_decide_dentro_do_teto_de_2s(monkeypatch):
     while sess.get("barge_suspeito") and time.monotonic() - t0 < 2.0:
         time.sleep(0.01)
     assert not sess.get("barge_suspeito"), "passou de 2 s sem decidir"
+
+
+def test_paridade_entre_cadeia_e_classifica_barge():
+    """#503: a cadeia NÃO reimplementa a regra — mesma decisão da função pura.
+
+    Só divergem onde um filtro está desligado, que é o que o `on` governa."""
+    import app
+
+    casos = [("para", 300), ("uhum", 250), ("", 250), ("quando sai?", 400),
+             ("o dia ta bonito", 700), ("algo longo aqui", 1400)]
+    for texto, ms in casos:
+        puro = lt.classifica_barge(texto, ms)
+        sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+        tipo, _p, _m, _f = app._live_avalia_filtros(sess, texto, ms, {})
+        esperado = "interrupcao" if puro == "interrupcao" else puro
+        if not texto.strip() and ms >= 200:
+            esperado = "interrupcao"     # falha segura do `stt_vazio` (#503)
+        assert tipo == esperado, (texto, ms, puro, tipo)
+
+
+def test_comando_corta_antes_de_qualquer_filtro():
+    import app
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    filtros = {"palavras_corte": {"palavras": ["basta"]},
+               "backchannel": {"palavras": ["basta"]}}   # mesma palavra nos dois
+    tipo, _p, _m, f = app._live_avalia_filtros(sess, "basta", 300, filtros)
+    assert (tipo, f) == ("interrupcao", "palavras_corte")

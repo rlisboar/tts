@@ -98,8 +98,10 @@ ligá-lo (sobe quando `taxa_falso_barge_in` passa do limite).
 Em vez de cortar no limiar de energia, o onset durante o playback emite
 `barge_suspeito{turn}` e o cliente só ABAIXA o volume. O servidor segue ouvindo até
 `speech_end` ou `barge_decisao_ms` (700 ms) e decide pelo conteúdo com a cadeia de
-`live_barge_filtros`, na ordem palavras_corte > eco > backchannel > ruido > modelo >
-pergunta > frase_longa > fala_sustentada > sem_decisão. `interrupcao` emite
+`live_barge_filtros`, na ordem palavras_corte > eco > fim_de_resposta > backchannel >
+ruido > modelo > pergunta > frase_longa > fala_sustentada > sem_decisão. Comando
+sempre corta (primeiro elo); `fim_de_resposta` (menos de `restante_ms` de playback)
+deixa a resposta terminar e ANOTA a fala num `turno_pendente`, para ela não se perder. `interrupcao` emite
 `barge_decisao` + `barge_in` + `speech_start` (corta, como antes); backchannel,
 ruído e eco emitem `barge_retoma` e a resposta CONTINUA — o backchannel não entra no
 histórico. `stats.motor.barge` publica o tipo, o p50 e os timeouts do filtro
