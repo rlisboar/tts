@@ -105,6 +105,10 @@ ruído e eco emitem `barge_retoma` e a resposta CONTINUA — o backchannel não 
 histórico. `stats.motor.barge` publica o tipo, o p50 e os timeouts do filtro
 `modelo`.
 
+`live_barge_sem_decisao` decide o fim da cadeia: **`continua`** (a resposta segue) ou
+**`interrompe`** (corta). O valor `corta` é ALIAS aceito pelo servidor e gravado
+como `interrompe` — a tela usa esse nome; qualquer outro valor cai em `continua`.
+
 `interrupcao` em settings escolhe o modo: `inteligente` (default), `imediata` (o
 comportamento antigo) ou `so_comando`. `smoke_barge_intencao.py` mede a matriz; com
 `imediata` o backchannel reprova de propósito (corta 100 %).

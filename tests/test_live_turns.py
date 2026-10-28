@@ -1161,3 +1161,17 @@ def test_barge_decisao_traz_o_filtro_que_decidiu():
     _abrir_por_barge(motor, rel)
     ev = motor.decidir_barge("interrupcao", "para", 300, 0, filtro="palavras_corte")
     assert ev[0].to_json()["filtro"] == "palavras_corte"
+
+
+def test_sem_decisao_aceita_o_alias_corta_e_grava_canonico():
+    """`corta` (nome da tela) tem de virar `interrompe`, e a cadeia o respeita."""
+    import app
+
+    app._apply_settings({"live_barge_sem_decisao": "corta"})
+    assert app._settings["live_barge_sem_decisao"] == "interrompe"
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    # `ruido` desligado para a cadeia CHEGAR ao `sem_decisao`
+    tipo, _p, _m, filtro = app._live_avalia_filtros(sess, "", 200, {"ruido": {"on": False}})
+    assert (tipo, filtro) == ("interrupcao", "sem_decisao")
+    app._apply_settings({"live_barge_sem_decisao": "lixo"})
+    assert app._settings["live_barge_sem_decisao"] == "continua"

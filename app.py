@@ -3860,6 +3860,9 @@ def _voice_path(v) -> Path | None:
 
 
 _LIVE_INTERRUPCAO_MODOS = ("inteligente", "imediata", "so_comando")
+# canônico é continua|interrompe; `corta` é o nome que a tela usa (#501)
+_LIVE_SEM_DECISAO_ALIAS = {"corta": "interrompe", "cortar": "interrompe",
+                           "continua": "continua", "continuar": "continua"}
 # Ordem da cadeia (#501): o modelo é o 5º e só é consultado quando os rápidos não
 # decidiram. O vocabulário vem FECHADO daqui para o `settings.json` não virar
 # contrato aberto.
@@ -3926,6 +3929,10 @@ def _apply_settings(payload: dict):
                                          else "inteligente")
     if "live_barge_sem_decisao" in payload:
         v = str(payload["live_barge_sem_decisao"] or "").strip().lower()
+        # `corta` é ALIAS aceito (a tela usa esse nome) e é gravado canônico:
+        # guardar `corta` fazia a cadeia comparar `== "interrompe"` e cair em
+        # `continua` em silêncio
+        v = _LIVE_SEM_DECISAO_ALIAS.get(v, v)
         _settings["live_barge_sem_decisao"] = (v if v in ("continua", "interrompe")
                                                else "continua")
     if "live_barge_filtros" in payload:
