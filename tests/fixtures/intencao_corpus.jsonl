@@ -1,0 +1,70 @@
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "mas e o preço?", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "espera, volta um pouco", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "e a documentação, como fica?", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "não, o prazo é outro", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "calma, tem um detalhe", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "deixa eu falar uma coisa", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "você pulou a parte do imposto", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "peraí, isso está errado", "idioma": "pt", "esperado": "cortar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "e se o cliente recusar?", "idioma": "pt", "esperado": "cortar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "quantas etapas mesmo?", "idioma": "pt", "esperado": "cortar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "mas quem aprova no fim?", "idioma": "pt", "esperado": "cortar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "espera que eu anoto", "idioma": "pt", "esperado": "cortar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "não é bem assim", "idioma": "pt", "esperado": "cortar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "pode parar um instante", "idioma": "pt", "esperado": "cortar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "e o custo disso?", "idioma": "pt", "esperado": "cortar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "corrige, são quatro etapas", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "me fala do segundo passo", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "volta no começo", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "não, espera o áudio terminar de carregar", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "mas e o frete, muda o quê?", "idioma": "pt", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "what about the price?", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "wait, go back a bit", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "who approves at the end?", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "no, the deadline is different", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "hold on, there is a detail", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "let me say something first", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "you skipped the tax part", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "that is wrong, actually", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "how many steps again?", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "stop for a second", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "and the cost of that?", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "fix it, there are four steps", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "start over please", "idioma": "en", "esperado": "cortar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "can you repeat the second one?", "idioma": "en", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "hmm, wait", "idioma": "pt", "esperado": "cortar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "sim, sim, continua", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "uhum", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "ok", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "sei", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "tá", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "certo", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "entendi", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "isso", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "claro", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "beleza", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "legal", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "nossa", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "aham", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "hum", "idioma": "pt", "esperado": "continuar"}
+{"ref": "o prazo de entrega é sexta-feira e o frete sai por transportadora", "fala": "entendi, obrigado", "idioma": "pt", "esperado": "continuar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "ok, pode seguir", "idioma": "pt", "esperado": "continuar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "certo, faz sentido", "idioma": "pt", "esperado": "continuar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "ahã, sei como é", "idioma": "pt", "esperado": "continuar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "beleza, tranquilo", "idioma": "pt", "esperado": "continuar"}
+{"ref": "vou explicar o fluxo de aprovação em três etapas, começando pelo pedido", "fala": "isso mesmo", "idioma": "pt", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "mhm", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "yeah", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "right", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "okay", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "sure", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "got it", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "makes sense", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "go on", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "fair enough", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "i see", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "cool", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "alright", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "mm-hmm", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "nice, keep going", "idioma": "en", "esperado": "continuar"}
+{"ref": "the deadline is friday and shipping goes by carrier", "fala": "sure, that helps", "idioma": "en", "esperado": "continuar"}
