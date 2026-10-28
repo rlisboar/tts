@@ -231,6 +231,7 @@ try:
                      chips: [...p.querySelectorAll('.lx-chips-edit')].map(c => c.id),
                      sem: (document.getElementById('lxSemDecisao') || {}).value,
                      padrao: !!document.getElementById('lxFiltrosPadrao'),
+                     preset: !!document.getElementById('lxFiltrosPreset'),
                      recolhido: !p.open,
                      palavras_corte: LX.filtros.palavras_corte.palavras.length,
                      backchannel: LX.filtros.backchannel.palavras.length,
@@ -259,6 +260,7 @@ try:
             cobrar(len(painel["chips"]) == 2, f"editores de chips faltando: {painel['chips']}")
             cobrar(painel["sem"] == "continua", f"sem_decisao não nasce em 'continua': {painel['sem']}")
             cobrar(painel["padrao"], "botão de restaurar padrões ausente")
+            cobrar(painel["preset"], "preset 'só com comando' ausente")
             cobrar(painel["recolhido"], "painel deveria nascer recolhido")
             cobrar(painel["palavras_corte"] > 0 and painel["backchannel"] > 0,
                    "listas padrão não vieram preenchidas")
@@ -604,6 +606,28 @@ try:
         print("  modelo de volta no load:", de_volta)
         cobrar(de_volta, "o ajuste não voltou quando o servidor passou a servir o campo")
         pg.evaluate("() => { document.getElementById('lxFiltros').open = true; }")   # o reload fecha o details
+
+        # ─── PRESET `so_comando` (o modo que saiu do enum): só palavra corta ──
+        limpa_posts()
+        pg.evaluate("() => document.getElementById('lxFiltrosPreset').click()")
+        pg.wait_for_timeout(800)
+        corpo = posts()[-1] if posts() else {}
+        filtros_preset = corpo.get("live_barge_filtros") or {}
+        print("  preset só-com-comando ->",
+              {k: v.get("on") for k, v in filtros_preset.items()}, "· sem_decisao:", corpo.get("live_barge_sem_decisao"))
+        for corte in ("pergunta", "frase_longa", "fala_sustentada", "modelo"):
+            cobrar(filtros_preset.get(corte, {}).get("on") is False, f"o preset deixou o corte {corte} ligado")
+        cobrar(filtros_preset.get("palavras_corte", {}).get("on") is True,
+               "o preset desligou o único corte que devia sobrar (palavras_corte)")
+        for continua in ("backchannel", "ruido", "eco", "fim_de_resposta"):
+            cobrar(filtros_preset.get(continua, {}).get("on") is True, f"o preset desligou o filtro {continua}")
+        cobrar(corpo.get("live_barge_sem_decisao") == "continua", "o preset não deixou o 'sem decisão' em continuar")
+        servido_preset = (settings().get("live_barge_filtros") or {})
+        cobrar(servido_preset.get("pergunta", {}).get("on") is False
+               and servido_preset.get("palavras_corte", {}).get("on") is True,
+               f"o preset não chegou ao servidor: {servido_preset}")
+        cobrar(len(servido_preset.get("palavras_corte", {}).get("palavras") or []) > 0,
+               "o preset apagou as palavras cadastradas")
 
         # sem decisão
         limpa_posts()

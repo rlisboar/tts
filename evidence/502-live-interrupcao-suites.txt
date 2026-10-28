@@ -19,7 +19,8 @@ que as chaves ficam no `settings.json` do dono nos padrões (não existe
 == 1) Rodada verde ==
   seletor: opcoes ['inteligente', 'imediata'] · título explica os dois e os filtros
   painel: 9 toggles (o `modelo` incluso e FEATURE-DETECTADO), 5 números,
-    2 editores de chips, sem_decisao=continua, restaurar padrões, recolhido por padrão,
+    2 editores de chips, sem_decisao=continua, preset "só com comando", restaurar padrões,
+    recolhido por padrão,
     listas padrão 11 e 17 · modelo nasce DESLIGADO, provedor local, limiar 0.5, timeout 400,
     aviso de egress escondido
   speech_start/inteligente: ganho 1.000 -> 0.2 em 53.8 ms · RMS 0.0690 -> 0.0087 · fila 1
@@ -34,6 +35,9 @@ que as chaves ficam no `settings.json` do dono nos padrões (não existe
   palavra "  BASTA " -> 'basta' na lista e filtro religado
   duplicata: lista continua com 12 itens · palavra de 50 chars vira 40 · × remove
   dois patches em 350 ms -> {'min_palavras': 7, 'on': False} no MESMO corpo e no servidor
+  PRESET "só com comando" -> {'palavras_corte': True, 'pergunta': False, 'frase_longa': False,
+    'fala_sustentada': False, 'backchannel': True, 'ruido': True, 'eco': True,
+    'modelo': False, 'fim_de_resposta': True} · sem_decisao continua · palavras preservadas
   sem_decisao -> interrompe (chave própria) · resumo mostra "sem decisão: corta"
     `interrompe` é o valor que o motor lê (`"interrupcao" if tipo == "interrompe"`);
     o `corta` do adendo é aceito na LEITURA e convertido
@@ -78,6 +82,10 @@ Raiz quadrada média 0.0690 -> 0.0087 = razão 0.126, exatamente os -18 dB.
 
 == 3e) MORDIDA F — sem a trava do painel no modo `imediata` ==
   ✖ FALHOU · painel de filtros não travou no modo imediata
+
+== 3g) MORDIDA H — preset sem desligar os filtros de corte ==
+  ✖ FALHOU · o preset deixou o corte pergunta/frase_longa/fala_sustentada ligado
+    · o preset não chegou ao servidor
 
 == 3f) MORDIDA G — sem o feature-detect (linha sempre visível) e sem o aviso de egress ==
   ✖ FALHOU

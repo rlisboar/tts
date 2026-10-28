@@ -285,7 +285,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `375-F5-ns-rnnoise.md` | #375 | 2026-10-22 | 375/F5 — NS do navegador + RNNoise: o filtro custa precisão do STT |
 | `440-rastro-sinal-mascara.txt` | #440 | 2026-10-22 | == ANTES da máscara (vazava) == |
 | `442-rnnoise-vad-x-stt.md` | #442 | 2026-10-22 | 442 — decisão do default do RNNoise: o filtro serve ao VAD, não ao STT |
-| `502-live-filtros-modelo.png` | #502 | — | (imagem) |
+| `502-live-filtros-modelo.png` | #502 | 2026-10-27 | (imagem) |
 | `502-live-filtros-painel.png` | #502 | 2026-10-27 | (imagem) |
 | `502-live-interrupcao-duck.png` | #502 | 2026-10-27 | (imagem) |
 | `502-live-interrupcao-suites.txt` | #502 | 2026-10-27 | 502 — LIVE UI da interrupção inteligente: medições da suíte e das mordidas |

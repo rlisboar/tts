@@ -2700,6 +2700,10 @@
               </select>
             </div>
             <div class="row" style="gap:10px; align-items:center; margin-top:8px">
+              <!-- `so_comando` saiu do enum no adendo e virou PRESET: só as palavras
+                   de corte cortam, o resto continua. -->
+              <button type="button" class="ghost small" id="lxFiltrosPreset"
+                      title="só as palavras cadastradas cortam — backchannel, ruído e eco seguem protegidos">só com comando (preset)</button>
               <button type="button" class="ghost small" id="lxFiltrosPadrao">↺ restaurar padrões</button>
               <span class="hint" id="lxFiltrosStatus" role="status" aria-live="polite"></span>
             </div>
@@ -8498,7 +8502,7 @@ function lxFiltrosModo() {
   const travado = lxModoInterrupcao() === "imediata";
   p.classList.toggle("travado", travado);
   for (const el of p.querySelectorAll("input, select, button"))
-    if (el.id !== "lxFiltrosPadrao") el.disabled = travado;
+    if (el.id !== "lxFiltrosPadrao" && el.id !== "lxFiltrosPreset") el.disabled = travado;
   if ($("lxFiltrosDica"))
     $("lxFiltrosDica").textContent = travado
       ? "modo Imediata: o motor corta no primeiro som, os filtros não decidem nada (troque para Inteligente para usá-los)."
@@ -8600,6 +8604,24 @@ function lxPalavraTira(nome, palavra) {
   cfg.palavras = cfg.palavras.filter(x => x !== palavra);
   lxSalvaBarge({ live_barge_filtros: { [nome]: { palavras: cfg.palavras.slice() } } });
   lxFiltrosRender();
+}
+
+/* `so_comando` do enum antigo, agora como PRESET de filtros: desliga todo filtro
+   de CORTE menos o das palavras cadastradas e mantém os de CONTINUAR. Quem quiser
+   "só o comando corta" chega aqui em um clique, sem apagar palavra nenhuma. */
+function lxAplicaPresetSoComando() {
+  const visivel = lxFiltrosModeloVisivel();
+  lxFiltrosAplica();                                  // parte dos padrões
+  lxFiltrosModeloVisivel(visivel);
+  for (const f of ["pergunta", "frase_longa", "fala_sustentada", "modelo"])
+    LX.filtros[f].on = false;
+  LX.filtros.palavras_corte.on = true;                // o ÚNICO corte que sobra
+  LX.semDecisao = LX_SEM_DECISAO_PADRAO;              // e o resto continua falando
+  lxFiltrosRender();
+  lxSalvaBarge({ live_barge_filtros: lxFiltrosPayload(),
+                 live_barge_sem_decisao: LX_SEM_DECISAO_PADRAO });
+  lxLogEvento("⚙ preset 'só com comando' — corte só pelas palavras cadastradas");
+  lxFiltrosStatus("preset 'só com comando' aplicado");
 }
 
 function lxRestauraPadroes() {
@@ -8972,6 +8994,7 @@ if ($("lxSemDecisao")) $("lxSemDecisao").onchange = () => {
   lxSalvaBarge({ live_barge_sem_decisao: LX.semDecisao });
 };
 if ($("lxFiltrosPadrao")) $("lxFiltrosPadrao").onclick = () => lxRestauraPadroes();
+if ($("lxFiltrosPreset")) $("lxFiltrosPreset").onclick = () => lxAplicaPresetSoComando();
 if ($("lxPttBtn")) {
   // fallback "segurar para falar": solta -> `end_of_speech` (o servidor fecha o
   // turno sem depender do VAD automático)
