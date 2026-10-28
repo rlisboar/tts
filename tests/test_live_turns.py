@@ -1189,3 +1189,44 @@ def test_sem_decisao_aceita_o_alias_corta_e_grava_canonico():
     assert (tipo, filtro) == ("interrupcao", "sem_decisao")
     app._apply_settings({"live_barge_sem_decisao": "lixo"})
     assert app._settings["live_barge_sem_decisao"] == "continua"
+
+
+def test_provedor_local_nao_chama_o_dsh_nem_como_fallback(monkeypatch):
+    """#509 egress: `local` tem de decidir sem NENHUMA chamada remota."""
+    import app
+
+    chamadas = {"dsh": 0, "llm": 0}
+    monkeypatch.setattr(app, "_chat_llm_dsh", lambda *a, **k: chamadas.__setitem__(
+        "dsh", chamadas["dsh"] + 1) or "1.0")
+    monkeypatch.setattr(app, "_chat_llm", lambda *a, **k: chamadas.__setitem__(
+        "llm", chamadas["llm"] + 1) or "0.0")
+
+    def explode(*a, **k):
+        raise AssertionError("o dsh foi chamado em `local`")
+
+    monkeypatch.setattr(app, "_chat_llm", explode)
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    app._settings["live_barge_filtros"] = {"modelo": {"on": True, "provedor": "local"}}
+    tipo, p, _m, filtro = app._live_avalia_filtros(sess, "qual o prazo", 300,
+                                                   app._settings["live_barge_filtros"])
+    assert filtro != "modelo" or p is not None
+    assert chamadas["llm"] == 0, "`local` não pode passar pelo LLM do chat"
+
+
+def test_provedor_dsh_chama_o_llm_do_chat(monkeypatch):
+    import app
+
+    monkeypatch.setattr(app, "_chat_llm", lambda *a, **k: "0.9")
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    tipo, p = app._live_modelo_dsh(sess, "para", "", {"limiar": 0.5})
+    assert tipo == "interrupcao" and p == 0.9
+
+
+def test_defaults_tem_os_nove_filtros_com_modelo_desligado():
+    import app
+
+    f = app._SETTINGS_DEFAULTS["live_barge_filtros"]
+    assert set(f) == {"palavras_corte", "eco", "backchannel", "ruido", "modelo",
+                      "pergunta", "frase_longa", "fala_sustentada", "fim_de_resposta"}
+    assert f["modelo"] == {"on": False, "provedor": "local", "limiar": 0.5,
+                           "timeout_ms": 400}

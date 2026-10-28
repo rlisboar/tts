@@ -358,8 +358,19 @@ _SETTINGS_DEFAULTS = {
     # `imediata` (o comportamento antigo, corta no limiar) ou `so_comando`.
     "live_interrupcao": "inteligente",
     # cadeia de filtros do barge (merge PARCIAL por filtro: mandar um item não
-    # apaga os outros). `modelo` começa desligado até a medição do qa (#509).
-    "live_barge_filtros": {},
+    # apaga os outros). Semeada COMPLETA para a tela e a API lerem a mesma forma;
+    # `modelo` começa desligado e local até a medição do qa (#509).
+    "live_barge_filtros": {
+        "palavras_corte": {"on": True, "palavras": []},
+        "eco": {"on": True},
+        "backchannel": {"on": True, "palavras": []},
+        "ruido": {"on": True},
+        "modelo": {"on": False, "provedor": "local", "limiar": 0.5, "timeout_ms": 400},
+        "pergunta": {"on": True},
+        "frase_longa": {"on": True, "min_palavras": 3},
+        "fala_sustentada": {"on": True, "min_ms": 1200},
+        "fim_de_resposta": {"on": True, "restante_ms": 1000},
+    },
     # o que fazer quando a janela decide sem transcript útil
     "live_barge_sem_decisao": "continua",
 
@@ -9477,11 +9488,51 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
             "sem_decisao")
 
 
+_PROMPT_MODELO = (
+    "Classifique se a fala abaixo INTERROMPE um assistente que está falando. "
+    "Responda só com um número de 0 a 1 (probabilidade de interromper). "
+    "Comandos de parar, perguntas e frases com conteúdo têm prob alta; "
+    "'uhum', 'sim', tosse e eco do próprio assistente, prob baixa.\n"
+    "Assistente estava falando: {ref}\nFala: {fala}")
+
+
+def _live_modelo_dsh(sess: dict, texto: str, eco_txt: str,
+                     cfg: dict) -> tuple[str | None, float | None]:
+    """`provedor=dsh`: mesma pergunta, pelo LLM do chat (sai da máquina)."""
+    import re as _re
+    if not texto:
+        return None, None
+    t0 = time.monotonic()
+    try:
+        bruto = _chat_llm([
+            {"role": "system", "content": "Responda só o número."},
+            {"role": "user", "content": _PROMPT_MODELO.format(ref=eco_txt[:400], fala=texto[:400])},
+        ])
+    except Exception as exc:              # noqa: BLE001 — erro segue a cadeia
+        _live_log_kv("barge_modelo_erro", sess=sess["id"], provedor="dsh",
+                     erro=str(exc)[:100])
+        return None, None
+    m = _re.search(r"([01](?:[.,]\d+)?)", str(bruto or ""))
+    if not m:
+        return None, None
+    p = float(m.group(1).replace(",", "."))
+    ms = int((time.monotonic() - t0) * 1000)
+    sess.setdefault("barge_stats", {"tipos": {}, "decisoes": [], "modelo": []})["modelo"].append(ms)
+    return ("interrupcao" if p >= float(cfg.get("limiar") or 0.5) else "backchannel"), p
+
+
 def _live_modelo_decide(sess: dict, texto: str, fala_ms: int, eco_txt: str,
                         cfg: dict) -> tuple[str | None, float | None]:
     """Slot do filtro `modelo` (#509). Sem classificador instalado devolve
     `(None, None)` e a cadeia segue — nunca segura o turno."""
     decide = globals().get("_live_classificador_barge")
+    # EGRESS (#509): `provedor=local` NUNCA sai da máquina — não usa o dsh nem
+    # como fallback. Só `provedor=dsh` chama remoto, e aí é o LLM da conversa.
+    provedor = "dsh" if str(cfg.get("provedor") or "local").lower() == "dsh" else "local"
+    if provedor == "dsh" and decide is None:
+        return _live_modelo_dsh(sess, texto, eco_txt, cfg)
+    if decide is not None and provedor == "dsh":
+        pass                              # dublê injetado manda nos dois casos
     cli = None
     if decide is None:
         # classificador real (audio-ml): `Intencao.decide(ref, fala) -> dict|None`
