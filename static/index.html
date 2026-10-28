@@ -8147,6 +8147,11 @@ const LX = { ws: null, estado: "desligado", ctxCap: null, noCap: null, stream: n
              fonte: null, hpCap: null, gainCap: null, mudoCap: null,
              ctxPlay: null, ativos: [], proximo: 0, ptt: false, erro: false,
              substituida: false,   // #244: o servidor fechou ESTA por takeover do id
+             // #616: motivo JÁ EXPLICADO pelo servidor (substituída / expirou /
+             // servidor cheio). O `onclose` e o ramo genérico não repintam por
+             // cima dele. `sid` é o id que o `ready` trouxe (base da retomada) e
+             // `retoma` conta as tentativas automáticas.
+             explicado: "", sid: "", conectando: false, retoma: 0, retomaT: 0, fim: "",
              // #502: ganho do duck, marca de abaixado + prazo do teto de 2 s e o
              // modo escolhido nesta tela (null = vale o das settings)
              duck: null, abaixado: false, duckT: 0, interrupcao: null,
@@ -8158,6 +8163,12 @@ const LX = { ws: null, estado: "desligado", ctxCap: null, noCap: null, stream: n
 // #244 (contrato aditivo do #222): motivo único do ramo `session_substituida` —
 // a mesma frase no `case "error"` e no `onclose` (o close chega logo atrás).
 const LX_SUBSTITUIDA = "esta aba foi substituída por outra conexão com o mesmo session_id";
+// #616: os dois motivos em que o SERVIDOR fecha a sessão e o dono pode continuar.
+// `session_ttl` = ociosa (o servidor renova o visto a cada frame: só expira se a
+// captura PAROU); `busy` = nenhum slot livre. Nos dois a tela RETOMA sozinha.
+const LX_TTL = "sessão expirou por inatividade (5 min sem áudio)";
+const LX_BUSY = "servidor sem vaga de sessão (máximo de sessões simultâneas)";
+const LX_RETOMA_MAX = 3;
 
 /* OBS-2 (#119): instrumentação do cliente — contadores, medidores, latências e
    log de eventos. É o painel que teria diagnosticado o #117 na hora: frames do
@@ -8237,10 +8248,19 @@ function lxEnviaBin(int16) {
   if (LX.ws && LX.ws.readyState === WebSocket.OPEN) { LX.obs.env++; LX.ws.send(int16.buffer); }
 }
 
-async function lxwsConectar() {
-  lxEstado("conectando", "abrindo sessão…");
+async function lxwsConectar(opts) {
+  // `retomada` (#616): reabertura automática depois de `session_ttl`/`busy` —
+  // mantém o `sid` (o servidor retoma o histórico) e NÃO zera o contador de
+  // tentativas. Clique manual no Ligar entra sem `opts` e começa sessão nova.
+  const retomada = !!(opts && opts.retomada);
+  if (LX.conectando) return;
+  LX.conectando = true;
+  if (!retomada) { LX.sid = ""; LX.retoma = 0; clearTimeout(LX.retomaT); LX.retomaT = 0; }
+  lxEstado("conectando", retomada ? "retomando a sessão…" : "abrindo sessão…");
   LX.erro = false;
   LX.substituida = false;      // #244: o aviso de substituição é DA SESSÃO que caiu
+  LX.explicado = "";           // o motivo é da sessão que caiu, não desta
+  LX.fim = "";
   // contadores zeram POR SESSÃO (o painel descreve a sessão corrente)
   LX.obs = { env: 0, rec: 0, stats: null, lat: null, latHist: [], raf: 0, tick: 0,
              bufs: {}, picos: {}, ws: "abrindo…", pendente: false, pendenteTrechos: 0,
@@ -8262,6 +8282,7 @@ async function lxwsConectar() {
       if (!t || !t.ticket) throw new Error("resposta sem ticket");
       q = "?ticket=" + encodeURIComponent(t.ticket);
     } catch (e) {
+      LX.conectando = false;
       lxEstado("erro", "✖ não consegui ticket (" + e.message + ") — clico de novo para tentar");
       return;                       // sem degradar para chave na URL
     }
@@ -8269,13 +8290,18 @@ async function lxwsConectar() {
   let ws;
   // #478: oferece a versão do protocolo; servidor antigo ignora e negocia vazio
   try { ws = new WebSocket(lxWsUrl() + q, "tts-live.v1"); }
-  catch (e) { lxEstado("erro", "✖ URL de WebSocket inválida: " + e.message); return; }
+  catch (e) { LX.conectando = false; lxEstado("erro", "✖ URL de WebSocket inválida: " + e.message); return; }
   LX.ws = ws;
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => { lxObsWs("conectado"); lxSetup(); lxCaptura().catch(e => lxEstado("erro", "✖ mic: " + e.message)); };
+  ws.onopen = () => {
+    LX.conectando = false;
+    lxObsWs("conectado"); lxSetup();
+    lxCaptura().catch(e => lxEstado("erro", "✖ mic: " + e.message));
+  };
   ws.onmessage = ev => lxRecebe(ev);
   ws.onerror = () => { LX.erro = true; lxObsWs("erro de conexão", true); };
   ws.onclose = ev => {
+    LX.conectando = false;
     LX.ws = null; lxParaCaptura(); lxCancelaPlayback();
     LX.obs.dshFallback = null;   // aviso é DA SESSÃO: morre com ela (#150)
     lxAvisaDsh();
@@ -8284,7 +8310,12 @@ async function lxwsConectar() {
     // falso), então sem esta precedência o motivo real morreria aqui como "sessão
     // encerrada". A substituição vem ANTES de `LX.erro`: é causa conhecida e
     // precisa; "WebSocket caiu" seria diagnóstico pior para o mesmo close.
-    if (LX.substituida) lxEstado("desligado", LX_SUBSTITUIDA);
+    // #616: motivo JÁ EXPLICADO pelo servidor (substituída/expirou/cheio) vem
+    // antes de tudo — senão o ramo genérico apaga o que a pessoa precisa ler.
+    if (LX.fim) lxEstado("erro", LX.fim);
+    else if (LX.retomaT) lxEstado("conectando", "retomando a sessão (" + LX.retoma + "/" + LX_RETOMA_MAX + ")…");
+    else if (LX.explicado) lxEstado("desligado", LX.explicado);
+    else if (LX.substituida) lxEstado("desligado", LX_SUBSTITUIDA);
     else if (LX.erro) lxEstado("erro", "✖ WebSocket caiu — /api/live/ws está no ar? (código " + ev.code + ")");
     else lxEstado("desligado", "sessão encerrada");
   };
@@ -8293,6 +8324,8 @@ async function lxwsConectar() {
 function lxSetup() {
   lxEnviaJSON({
     type: "setup",
+    // #616: com `sid` o servidor RETOMA o histórico em vez de abrir sessão nova
+    session_id: LX.sid || null,
     voice_id: $("lxVoz") ? ($("lxVoz").value || null) : null,
     system_instruction: null,
     vad: { silence_ms: parseInt($("lxSilencio")?.value, 10) || 600, prefix_ms: 100,
@@ -8378,7 +8411,11 @@ async function lxCaptura() {
   lxObsInicia(ctx, stream);
   lxPintaFiltroLive();
   lxLogEvento("mic: supressão de ventoinha ligada · " + $("lxFiltro").textContent);
-  if (LX.estado !== "erro") lxEstado("ouvindo", "🎙 fale — interrompo falando por cima");
+  // #616: a captura é ASSÍNCRONA e pode terminar com a sessão já morta (busy,
+  // TTL, substituição). Sem esta guarda ela pintava "ouvindo" por cima do motivo
+  // e o dono achava que estava tudo bem enquanto falava para um socket fechado.
+  if (LX.estado !== "erro" && LX.ws && LX.ws.readyState === WebSocket.OPEN)
+    lxEstado("ouvindo", "🎙 fale — interrompo falando por cima");
 }
 
 function lxParaCaptura() {
@@ -9103,7 +9140,9 @@ function lxRecebe(ev) {
     // `ready` só sai de "conectando": com o teto decidido no REGISTRO, o servidor
       // pode mandar `error{busy}` ANTES do ready — e aí o motivo que o erro já
       // pintou não pode ser sobrescrito por um "ouvindo" otimista (#192).
-      case "ready":          if (LX.estado === "conectando") lxEstado("ouvindo", "🎙 sessão pronta — fale");
+      case "ready":          if (m.session_id) LX.sid = String(m.session_id);
+                           LX.retoma = 0;      // #616: sessão de pé, tentativas zeram
+                           if (LX.estado === "conectando") lxEstado("ouvindo", "🎙 sessão pronta — fale");
                            lxLogEvento("sessão pronta (saída " + ((m.audio || {}).sr || "?") + " Hz)"); break;
     // `prewarm`: informativo (pipeline pré-aquecido). NÃO é turno: não mexe no
     // estado, só na linha de status — se mexesse, um prewarm no meio da fala
@@ -9260,6 +9299,7 @@ function lxRecebe(ev) {
         // O close é LIMPO (1000), então `LX.erro` fica falso e o `onclose` pintaria
         // "sessão encerrada" por cima: a flag preserva o motivo real até lá.
         LX.substituida = true;
+        LX.explicado = LX_SUBSTITUIDA;
         lxQuebraLinha("lxIA");
         const msgSub = "✖ " + (m.message || "outra conexão assumiu este session_id")
                      + " [session_substituida]";
@@ -9267,15 +9307,28 @@ function lxRecebe(ev) {
         lxLogEvento(msgSub, "e-erro");
         // o servidor já fechou: a sessão NÃO segue viva — o botão volta a "Ligar"
         lxEstado("desligado", LX_SUBSTITUIDA);
+      } else if (m.code === "session_ttl" || m.code === "busy") {
+        // #616: o SERVIDOR já fechou (TTL ocioso) ou recusou a vaga — a sessão
+        // NÃO está viva, então "fale de novo" mentiria. O motivo fica preso em
+        // `LX.explicado` (o `onclose` chega logo atrás) e a tela RETOMA sozinha:
+        // sem isso o dono fala para o nada com o mic já parado.
+        const motivo = m.code === "busy" ? LX_BUSY : LX_TTL;
+        LX.explicado = motivo;
+        lxQuebraLinha("lxIA");
+        const msgQueda = "✖ " + (m.message || motivo) + " [" + m.code + "]";
+        lxLinha("lxIA", "lx-erro", msgQueda);
+        lxLogEvento(msgQueda, "e-erro");
+        lxRetomar(m.code);
       } else {
         // erro de pipeline/sessão (ex.: provedor de conversa fora): a sessão
         // segue viva. Além do hint, linha visível na coluna IA — o hint some no
         // evento seguinte e o usuário ficava sem saber por que ele não responde (#117)
+        // #616: com motivo já explicado (queda), o genérico NÃO repinta por cima.
         lxQuebraLinha("lxIA");
         const msgErro = "✖ " + (m.message || m.detail || "erro na sessão") + (m.code ? " [" + m.code + "]" : "");
         lxLinha("lxIA", "lx-erro", msgErro);
         lxLogEvento(msgErro, "e-erro");
-        lxEstado("erro", "sessão viva — fale de novo para tentar");
+        if (!LX.explicado) lxEstado("erro", "sessão viva — fale de novo para tentar");
       }
       break;
   }
@@ -9297,7 +9350,28 @@ async function lxAoAbrir() {
 }
 
 if ($("lxLigar")) $("lxLigar").onclick = () => { if (LX.ws) lxDesligar(); else lxwsConectar(); };
+// #616: retoma a sessão depois de uma queda que o servidor explicou. Contagem
+// limitada: `busy` costuma precisar de mais tempo (slot ocupado) e o TTL é quase
+// imediato (o servidor já liberou a sessão). Manual no Ligar zera a contagem.
+function lxRetomar(codigo) {
+  clearTimeout(LX.retomaT);
+  if (LX.retoma >= LX_RETOMA_MAX) {
+    // desistiu: mensagem FINAL (o `onclose` da última tentativa não pode trocá-la
+    // por "sessão encerrada")
+    LX.fim = "✖ não consegui retomar depois de " + LX_RETOMA_MAX + " tentativas — clique em Ligar";
+    lxEstado("erro", LX.fim);
+    return;
+  }
+  LX.retoma++;
+  const espera = codigo === "busy" ? 1500 : 250;
+  lxEstado("conectando", "retomando a sessão (" + LX.retoma + "/" + LX_RETOMA_MAX + ")…");
+  LX.retomaT = setTimeout(() => { LX.retomaT = 0; lxwsConectar({ retomada: true }); }, espera);
+}
+
 function lxDesligar() {
+  // desligar no botão cancela retomada pendente e começa sessão NOVA na próxima
+  // (sem `sid`, sem contagem velha)
+  clearTimeout(LX.retomaT); LX.retomaT = 0; LX.retoma = 0; LX.sid = ""; LX.explicado = "";
   lxCancelaPlayback();
   if (LX.ws) { const w = LX.ws; LX.ws = null; try { w.close(1000, "cliente desligou"); } catch (e) {} }
   lxParaCaptura();
