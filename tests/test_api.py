@@ -1348,6 +1348,76 @@ def test_status_aceita_lan_em_porta_diferente_da_padrao(client, auth, monkeypatc
     assert d["tunnel_destino"] == "192.168.15.48"
 
 
+# --- #496: o conector é casado pelo token do próprio plist e o túnel tem de ser
+# casado pelo NOSSO agente: qualquer `ssh -R` da máquina que viesse antes na lista
+# fazia o status dizer "túnel rodando" com destino/porta de outro serviço.
+def _plist_do_tunel(monkeypatch, tmp_path, host="eu@vps", porta="7860"):
+    """Plist do NOSSO túnel com ProgramArguments de verdade (o `_agentes_fake`
+    grava `<plist/>` vazio, que é o caso "sem individualização")."""
+    _agentes_fake(tmp_path, monkeypatch)
+    app._tunnel_plist().write_text(
+        "<plist><dict><key>ProgramArguments</key><array>"
+        "<string>/bin/zsh</string><string>/h/.tts-studio/tunnel.sh</string>"
+        f"<string>{host}</string><string>{porta}</string>"
+        "</array></dict></plist>")
+
+
+def test_status_nao_confunde_com_outro_tunel_antes_na_lista(client, auth, monkeypatch, tmp_path):
+    """Outro `ssh -R` (openwebui) primeiro na lista: o status tem de ler o do TTS,
+    não o primeiro que aparecer."""
+    _plist_do_tunel(monkeypatch, tmp_path)
+    monkeypatch.setattr(app, "_cf_launchd_loaded", lambda: False)
+    _conector_fake(monkeypatch, rodando=False)
+    _ps_fake(monkeypatch, [
+        "  111 /usr/bin/ssh -N -R 127.0.0.1:8080:127.0.0.1:8080 eu@vps",
+        "  222 /usr/bin/ssh -N -R 127.0.0.1:7860:192.168.15.48:7860 eu@vps",
+    ])
+    d = client.get("/api/tunnel/status", headers=auth).json()
+    assert d["tunnel_running"] is True
+    assert d["tunnel_destino"] == "192.168.15.48", "leu o túnel de OUTRO serviço"
+    assert d["destino_e_lan"] is True
+
+
+def test_status_nao_mente_verde_com_apenas_o_tunel_alheio(client, auth, monkeypatch, tmp_path):
+    """Só o túnel do outro serviço está de pé: o do TTS está PARADO (antes o
+    status dizia rodando com o destino alheio)."""
+    _plist_do_tunel(monkeypatch, tmp_path)
+    monkeypatch.setattr(app, "_cf_launchd_loaded", lambda: False)
+    _conector_fake(monkeypatch, rodando=False)
+    _ps_fake(monkeypatch, [
+        "  111 /usr/bin/ssh -N -R 127.0.0.1:8080:127.0.0.1:8080 eu@vps",
+    ])
+    d = client.get("/api/tunnel/status", headers=auth).json()
+    assert d["tunnel_running"] is False and d["tunnel_destino"] == ""
+
+
+def test_status_aceita_a_porta_do_plist_e_recusa_a_de_outro(client, auth, monkeypatch, tmp_path):
+    """A porta remota do plist é o que individualiza: mesma VPS, portas diferentes."""
+    _plist_do_tunel(monkeypatch, tmp_path, porta="9876")
+    monkeypatch.setattr(app, "_cf_launchd_loaded", lambda: False)
+    _conector_fake(monkeypatch, rodando=False)
+    _ps_fake(monkeypatch, [
+        "  111 /usr/bin/ssh -N -R 127.0.0.1:7860:10.1.2.3:7860 eu@vps",
+        "  222 /usr/bin/ssh -N -R 127.0.0.1:9876:192.168.15.48:7860 eu@vps",
+    ])
+    d = client.get("/api/tunnel/status", headers=auth).json()
+    assert d["tunnel_destino"] == "192.168.15.48"
+
+
+def test_status_sem_plist_legivel_prefere_a_chave_do_tts(client, auth, monkeypatch, tmp_path):
+    """Sem ProgramArguments (instalação antiga), a chave `-i …/tts_tunnel` do
+    nosso script desempata; sem nada disso, aceitar é melhor que ficar cego."""
+    _agentes_fake(tmp_path, monkeypatch)          # plist vazio
+    monkeypatch.setattr(app, "_cf_launchd_loaded", lambda: False)
+    _conector_fake(monkeypatch, rodando=False)
+    _ps_fake(monkeypatch, [
+        "  111 /usr/bin/ssh -N -R 127.0.0.1:8080:127.0.0.1:8080 -i /h/.ssh/outra eu@vps",
+        "  222 /usr/bin/ssh -N -R 127.0.0.1:7860:192.168.15.48:7860 -i /h/.ssh/tts_tunnel eu@vps",
+    ])
+    d = client.get("/api/tunnel/status", headers=auth).json()
+    assert d["tunnel_destino"] == "192.168.15.48"
+
+
 def test_conector_nao_confunde_com_outro_cloudflared_da_maquina(client, auth, monkeypatch, tmp_path):
     """Conector do openwebui no ar NÃO pode fazer o do TTS parecer rodando."""
     _agentes_fake(tmp_path, monkeypatch)
@@ -2793,6 +2863,89 @@ def test_outputs_meta_corrompido_e_pulado(client, auth, tmp_path, monkeypatch):
     r = client.get("/api/outputs", headers=auth)
     assert r.headers["X-Total-Count"] == "4"         # o quebrado conta no total…
     assert [o["id"] for o in r.json()] == ["out0002", "out0001", "out0000"]
+
+
+# ---------------------------------------------------------------------------
+# Teto de QUANTIDADE em outputs/ (#430): o tempo sozinho não segura o diretório
+# (3.074 `.wav` acumulados com `auto_cleanup` desligado, o default). A poda é por
+# EXCESSO — os recentes ficam — e o que está em `_jobs` nunca sai.
+# ---------------------------------------------------------------------------
+
+def _saidas_para_poda(tmp_path, monkeypatch, quantos=6, jobs=()):
+    d = _outputs_falsos(tmp_path, monkeypatch, quantos=quantos)
+    base = 1_700_000_000.0
+    for i in range(quantos):
+        oid = f"out{i:04d}"
+        (d / f"{oid}.wav").write_bytes(b"RIFF" + b"\x00" * 32)
+        os.utime(d / f"{oid}.wav", (base + i * 60, base + i * 60))
+        jd = d / f".job-{oid}"
+        jd.mkdir()
+        (jd / "0.wav").write_bytes(b"RIFF")
+    monkeypatch.setattr(app, "_jobs", {jid: {"status": "done"} for jid in jobs})
+    return d
+
+
+def test_poda_por_quantidade_tira_os_antigos_e_preserva_job(tmp_path, monkeypatch):
+    """Teto 3 com 6 saídas: saem as mais antigas, menos a que está em `_jobs`.
+
+    O protegido conta no teto (o diretório tem de voltar ao tamanho pedido), mas
+    ele mesmo nunca sai — quem paga a conta são os não protegidos seguintes."""
+    d = _saidas_para_poda(tmp_path, monkeypatch, quantos=6, jobs=("out0000",))
+    assert app._poda_outputs_por_quantidade(3) == 3
+    ficaram = sorted(p.stem for p in d.glob("*.json"))
+    assert ficaram == ["out0000", "out0004", "out0005"]
+    for oid in ("out0001", "out0002", "out0003"):       # par e trechos saem juntos
+        assert not (d / f"{oid}.wav").exists() and not (d / f"{oid}.json").exists()
+        assert not (d / f".job-{oid}").exists()
+    assert (d / ".job-out0005").is_dir()                # recente intocado
+
+
+def test_poda_desligada_com_teto_zero_e_sem_excesso(tmp_path, monkeypatch):
+    d = _saidas_para_poda(tmp_path, monkeypatch, quantos=4)
+    assert app._poda_outputs_por_quantidade(0) == 0
+    assert len(list(d.glob("*.json"))) == 4
+    assert app._poda_outputs_por_quantidade(4) == 0     # no teto exato, nada sai
+    assert len(list(d.glob("*.json"))) == 4
+    assert app._poda_outputs_por_quantidade(100) == 0
+
+
+def test_poda_conta_e_remove_wav_sem_meta(tmp_path, monkeypatch):
+    """Sobra antiga sem `.json` (invisível na listagem) também ocupa lugar e sai."""
+    d = _saidas_para_poda(tmp_path, monkeypatch, quantos=2)
+    for i in range(3):
+        (d / f"t{i}.wav").write_bytes(b"RIFF" + b"\x00" * 32)
+        os.utime(d / f"t{i}.wav", (1_600_000_000.0 + i, 1_600_000_000.0 + i))
+    assert app._poda_outputs_por_quantidade(3) == 2      # 5 candidatos, teto 3
+    assert sorted(p.name for p in d.glob("t*.wav")) == ["t2.wav"]
+    assert sorted(p.stem for p in d.glob("out*.wav")) == ["out0000", "out0001"]
+
+
+def test_poda_respeita_o_teto_da_setting(client, auth, tmp_path, monkeypatch):
+    """O teto vem da setting e a listagem reflete a poda."""
+    _saidas_para_poda(tmp_path, monkeypatch, quantos=5)
+    monkeypatch.setitem(app._settings, "auto_cleanup_max_outputs", 2)
+    assert app._poda_outputs_por_quantidade() == 3
+    assert [o["id"] for o in client.get("/api/outputs", headers=auth).json()] == \
+        ["out0004", "out0003"]
+
+
+def test_setting_do_teto_valida_os_limites(client, auth):
+    """0 desliga; valor absurdo/ilegível não vira teto inválido."""
+    def _teto(valor):
+        r = client.post("/api/settings", headers=auth,
+                        json={"auto_cleanup_max_outputs": valor})
+        assert r.status_code == 200, r.text
+        return r.json()["auto_cleanup_max_outputs"]
+
+    try:
+        assert _teto(0) == 0                    # 0 desliga de verdade
+        assert _teto(-5) == 0                   # negativo cai no piso
+        assert _teto(999_999) == 100_000        # teto do absurdo
+        assert _teto("nao-numero") == 500       # ilegível volta ao default
+        assert _teto(250) == 250
+    finally:
+        client.post("/api/settings", headers=auth,
+                    json={"auto_cleanup_max_outputs": 500})
 
 
 # ---------------------------------------------------------------------------

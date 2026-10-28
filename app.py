@@ -337,6 +337,9 @@ _SETTINGS_DEFAULTS = {
     "speed": 1.0,              # velocidade da fala (UI + API); nativa do modelo (preserva o tom)
     "auto_cleanup": False,     # apaga áudios gerados automaticamente
     "auto_cleanup_minutes": 15,
+    # teto de QUANTIDADE de áudios em outputs/ (0 = sem teto). Vale mesmo com
+    # `auto_cleanup` desligado: é proteção do diretório, não preferência (#430)
+    "auto_cleanup_max_outputs": 500,
     # OmniVoice — controles de geração (defaults = os da lib)
     "omni_num_steps": 16,             # passos de unmasking (4–64); 16 rápido, 32 qualidade
     # #315: passos do 2º chunk do LIVE (o 1º tem teto próprio, 12). Do 3º em diante
@@ -3118,14 +3121,74 @@ def _ps_comandos() -> list[str]:
         return []
 
 
+def _args_do_tunel_no_plist() -> tuple[str, str]:
+    """`(host, porta)` do ProgramArguments do NOSSO LaunchAgent do túnel.
+
+    É o que individualiza o `-R` do TTS entre os túneis da máquina: sem isso,
+    qualquer `ssh -R` que apareça antes na lista de processos fazia o status
+    dizer "túnel rodando" com o destino e a porta de OUTRO serviço (#496)."""
+    try:
+        texto = _tunnel_plist().read_text(errors="replace")
+    except OSError:
+        return "", ""
+    args = re.findall(r"<string>([^<]*)</string>", texto)
+    for i, arg in enumerate(args):
+        if not arg.endswith("tunnel.sh"):
+            continue
+        resto = [a.strip() for a in args[i + 1:]]
+        host = resto[0] if resto else ""
+        porta = resto[1] if len(resto) > 1 and resto[1].isdigit() else ""
+        return host, porta
+    return "", ""
+
+
+def _candidato_do_tunel(partes_ps: list[str]) -> tuple[str, str] | None:
+    """`(destino, porta_remota)` do `-R 127.0.0.1:<porta>:<destino>:<porta>`."""
+    for pedaco in partes_ps:
+        if not pedaco.startswith("127.0.0.1:"):
+            continue
+        partes = pedaco.split(":")
+        if len(partes) < 4:
+            continue
+        return partes[2], partes[1]
+    return None
+
+
+def _usa_a_chave_do_tts(partes_ps: list[str]) -> bool:
+    """A linha do `ps` carrega `-i …/tts_tunnel` (a chave que o `tunnel.sh` usa)?"""
+    for i, pedaco in enumerate(partes_ps[:-1]):
+        if pedaco == "-i" and partes_ps[i + 1].rsplit("/", 1)[-1] == "tts_tunnel":
+            return True
+    return False
+
+
+def _resumo_do_tunel(destino: str, porta: str) -> dict:
+    try:
+        ip = __import__("ipaddress").ip_address(destino)
+        e_lan = ip.is_private and not ip.is_loopback
+    except ValueError:
+        e_lan = False
+    return {"rodando": True, "destino": destino, "destino_e_lan": bool(e_lan),
+            "porta_vps": porta}
+
+
 def _destino_do_tunel() -> dict:
     """Destino do túnel SSH reverso que ESTE app serve, lido do processo.
 
     `-R 127.0.0.1:<porta>:<destino>:<porta>`: o `127.0.0.1` é o lado da VPS, o
     destino é o que decide a auth (por loopback a API entra sem chave). Antes da
     #346 o status casava o literal `ssh .*-R 127.0.0.1:7860` — não via o destino e
-    quebrava com porta diferente da padrão.
+    quebrava com porta diferente da padrão. Casar QUALQUER `ssh -R` da máquina,
+    porém, fazia o status mentir verde com o destino de OUTRO túnel quando ele
+    viesse antes na lista (#496): a linha tem de ser a do nosso agente.
+
+    A individualização vem do NOSSO plist (`host` e porta remota do
+    ProgramArguments). Sem plist legível — instalação antiga/cópia do script — a
+    ordem de preferência é a chave `tts_tunnel` e, no fim, aceitar (o status fica
+    cego se recusar tudo, e cego é pior que o falso verde que existia).
     """
+    host_alvo, porta_alvo = _args_do_tunel_no_plist()
+    por_chave = generico = None
     for linha in _ps_comandos():
         partes_ps = linha.split()
         # executável é `partes_ps[1]` (o `ps -Ao pid=,command=` põe o pid antes):
@@ -3134,21 +3197,21 @@ def _destino_do_tunel() -> dict:
             continue
         if "-R" not in partes_ps:
             continue
-        for pedaco in partes_ps:
-            if not pedaco.startswith("127.0.0.1:"):
-                continue
-            partes = pedaco.split(":")
-            if len(partes) < 4:
-                continue
-            destino = partes[2]
-            e_lan = False
-            try:
-                ip = __import__("ipaddress").ip_address(destino)
-                e_lan = ip.is_private and not ip.is_loopback
-            except ValueError:
-                e_lan = False
-            return {"rodando": True, "destino": destino, "destino_e_lan": bool(e_lan),
-                    "porta_vps": partes[1]}
+        candidato = _candidato_do_tunel(partes_ps)
+        if candidato is None:
+            continue
+        if porta_alvo and candidato[1] != porta_alvo:
+            continue
+        if host_alvo and host_alvo not in partes_ps:
+            continue
+        if host_alvo or porta_alvo:
+            return _resumo_do_tunel(*candidato)     # casa o nosso plist: é o nosso
+        if _usa_a_chave_do_tts(partes_ps):
+            por_chave = por_chave or candidato
+        else:
+            generico = generico or candidato
+    if por_chave or generico:
+        return _resumo_do_tunel(*(por_chave or generico))
     return {"rodando": False, "destino": "", "destino_e_lan": False, "porta_vps": ""}
 
 
@@ -3793,6 +3856,10 @@ def _apply_settings(payload: dict):
         _settings["auto_cleanup"] = bool(payload["auto_cleanup"])
     if "auto_cleanup_minutes" in payload:
         _settings["auto_cleanup_minutes"] = int(_clamp(payload["auto_cleanup_minutes"], 1, 1440, 15))
+    if "auto_cleanup_max_outputs" in payload:
+        # 0 = sem teto de quantidade; teto alto o bastante para não ser surpresa
+        _settings["auto_cleanup_max_outputs"] = int(
+            _clamp(payload["auto_cleanup_max_outputs"], 0, 100000, 500))
     if "omni_num_steps" in payload:
         _settings["omni_num_steps"] = int(_clamp(payload["omni_num_steps"], 4, 64, 16))
     if "live_num_steps" in payload:
@@ -6190,6 +6257,14 @@ def _auto_cleanup_once():
         removidos += 1
     # Temporários de uploads podem sobreviver a timeout/crash. Limpa somente
     # arquivos conhecidos e antigos, nunca outputs finais.
+    return removidos + _limpa_temporarios()
+
+
+def _limpa_temporarios() -> int:
+    """Remove uploads/temporários órfãos (mais velhos que 6 h).
+
+    Roda mesmo com `auto_cleanup` desligado: eles nunca são histórico."""
+    removidos = 0
     temp_cutoff = time.time() - 6 * 3600
     for pattern in (".stt-*", ".pstt-*", ".voz-*", ".vozchk-*", ".up-*", ".rep-*"):
         for tmp in OUTPUTS_DIR.glob(pattern):
@@ -6202,22 +6277,75 @@ def _auto_cleanup_once():
     return removidos
 
 
+def _poda_outputs_por_quantidade(teto: int | None = None) -> int:
+    """Apaga os áudios MAIS ANTIGOS que passam do teto de quantidade (#430).
+
+    O tempo sozinho não segura o diretório: com `auto_cleanup` desligado (o
+    default) `outputs/` chegou a 3.528 `.wav` — e a maioria sem `.json`, sobra de
+    gerações antigas que nem aparecem na listagem. Aqui o corte é por EXCESSO
+    (os recentes sempre ficam) sobre TODO `.wav` do diretório, com ou sem meta, e
+    o que está em `_jobs` (job ativo ou ainda na janela do histórico) nunca sai,
+    senão o trecho sumiria debaixo de quem está ouvindo. `teto` 0/negativo = desliga.
+
+    Cada candidato é um id: sai o `.wav`, o `.json` par e o diretório de trechos.
+    Temporários de upload (`.algo`) têm função própria e não entram na conta.
+    """
+    if teto is None:
+        teto = int(_settings.get("auto_cleanup_max_outputs") or 0)
+    if teto <= 0 or not OUTPUTS_DIR.exists():
+        return 0
+    # um candidato por id: o `.wav` responde pela idade; diretório de trechos
+    # órfão (sem `.wav`) entra pela própria idade para não ficar para sempre
+    idades: dict[str, float] = {}
+    for wav in OUTPUTS_DIR.glob("*.wav"):
+        if wav.name.startswith("."):
+            continue               # temporário com sufixo .wav
+        try:
+            idades[wav.stem] = wav.stat().st_mtime
+        except OSError:            # sumiu entre o glob e o stat: não conta
+            pass
+    for d in OUTPUTS_DIR.glob(".job-*"):
+        oid = d.name[len(".job-"):]
+        if oid in idades or not d.is_dir():
+            continue
+        try:
+            idades[oid] = d.stat().st_mtime
+        except OSError:
+            pass
+    for meta in OUTPUTS_DIR.glob("*.json"):      # meta sem áudio também ocupa lugar
+        if meta.stem not in idades:
+            try:
+                idades[meta.stem] = meta.stat().st_mtime
+            except OSError:
+                pass
+    excesso = len(idades) - teto
+    if excesso <= 0:
+        return 0
+    removidos = 0
+    for oid, _mtime in sorted(idades.items(), key=lambda par: par[1]):
+        if removidos >= excesso:
+            break
+        if oid in _jobs:           # job ativo ou ainda no histórico: preserva
+            continue
+        for nome in (f"{oid}.wav", f"{oid}.json"):
+            (OUTPUTS_DIR / nome).unlink(missing_ok=True)
+        shutil.rmtree(OUTPUTS_DIR / f".job-{oid}", ignore_errors=True)
+        removidos += 1
+    return removidos
+
+
 def _auto_cleanup_loop():
     while True:
         time.sleep(60)
         try:
             if _settings["auto_cleanup"]:
-                _auto_cleanup_once()
+                _auto_cleanup_once()      # por tempo (já inclui os temporários)
             else:
                 # Mesmo com histórico permanente, temporários órfãos devem sair.
-                temp_cutoff = time.time() - 6 * 3600
-                for pattern in (".stt-*", ".pstt-*", ".voz-*", ".vozchk-*", ".up-*", ".rep-*"):
-                    for tmp in OUTPUTS_DIR.glob(pattern):
-                        try:
-                            if tmp.is_file() and tmp.stat().st_mtime < temp_cutoff:
-                                tmp.unlink(missing_ok=True)
-                        except OSError:
-                            pass
+                _limpa_temporarios()
+            # o teto de quantidade não depende de `auto_cleanup`: é proteção do
+            # diretório, não preferência de retenção — 0 desliga (#430)
+            _poda_outputs_por_quantidade()
         except Exception:  # noqa: BLE001
             pass
 

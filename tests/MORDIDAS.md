@@ -161,3 +161,19 @@ Os controles (`test_sintaxe_do_par_ok_quando_os_dois_parseiam`,
 `script_proprio` copia `remote/` com um git PRÓPRIO: editar `auth_policy.py` na
 árvore compartilhada por vários agentes mexeria no repo de todo mundo, e sem o
 git próprio o `rev` do `.rev` nem existiria.
+
+## #496 — `_destino_do_tunel` casava qualquer `ssh -R` da máquina
+
+Outro túnel (openwebui) antes na lista de processos fazia o status dizer "túnel
+rodando" com destino/porta alheios — verde com o do TTS parado. A célula nova
+individualiza pelo NOSSO plist (host + porta remota do ProgramArguments).
+
+| Sabotagem | Resultado |
+|---|---|
+| largar o filtro de host/porta (`if False: continue`) | `test_status_nao_confunde_com_outro_tunel_antes_na_lista` **FAILED**, `test_status_nao_mente_verde_com_apenas_o_tunel_alheio` **FAILED** e `test_status_aceita_a_porta_do_plist_e_recusa_a_de_outro` **FAILED** (3/3) |
+
+`test_status_sem_plist_legivel_prefere_a_chave_do_tts` é o caminho de degradação
+(instalação antiga sem ProgramArguments): a chave `-i …/tts_tunnel` desempata e,
+sem nada disso, aceitar é melhor que ficar cego. Cuidado medido aqui: a primeira
+rodada de sabotagem passou por `.pyc` velho — a regra da #238 vale também para
+este arquivo grande (`PYTHONDONTWRITEBYTECODE=1` na medição).
