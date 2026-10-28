@@ -2139,13 +2139,20 @@ def test_extrator_nao_e_carregado_no_boot(tmp_path):
            "PYTHONDONTWRITEBYTECODE": "1"}
     for var in ("TTS_ROD_API_KEY", "TTS_ADMIN_KEY"):
         env.pop(var, None)
+    # além dos encoders, os MÓDULOS: um `import torch`/`speechbrain`/`resemblyzer`
+    # no boot (sem instanciar nada) passaria pela checagem de `None` e já custaria
+    # a carga da lib (#638)
     saida = __import__("subprocess").run(
         [sys.executable, "-c",
-         "import app; app._speaker_modelo_efetivo();"
-         "print(app._speaker_ecapa_enc is None, app._speaker_encoder is None)"],
+         "import sys, app; app._speaker_modelo_efetivo();"
+         "print(app._speaker_ecapa_enc is None, app._speaker_encoder is None,"
+         "      'torch' in sys.modules, 'speechbrain' in sys.modules,"
+         "      'resemblyzer' in sys.modules)"],
         cwd=str(Path(__file__).resolve().parent.parent), env=env, check=True,
         capture_output=True, text=True)
-    assert saida.stdout.split() == ["True", "True"], "algum encoder carregou no boot"
+    assert saida.stdout.split() == ["True", "True", "False", "False", "False"], (
+        f"boot tocou no extrator: {saida.stdout.split()} "
+        f"(encoders None, None e torch/speechbrain/resemblyzer fora de sys.modules)")
 
 
 def _enc_falso():
@@ -2213,7 +2220,7 @@ def test_speaker_ttl_respeita_o_ambiente(tmp_path):
     assert saida.stdout.strip() == "42.0"
 
 
-def test_speaker_fallback_avisa_uma_vez_e_aparece_no_get(tmp_path, monkeypatch, caplog,
+def test_speaker_fallback_avisa_uma_vez_e_aparece_no_get(tmp_path, monkeypatch, capsys,
                                                         client, auth):
     """Sem pesos, a queda para o Resemblyzer AVISA (log 1×) e sai no GET (#606).
 
@@ -2226,8 +2233,11 @@ def test_speaker_fallback_avisa_uma_vez_e_aparece_no_get(tmp_path, monkeypatch, 
     assert app._speaker_modelo_efetivo() == app.SPEAKER_MODELO_LEGADO
     assert app._speaker_modelo_efetivo() == app.SPEAKER_MODELO_LEGADO   # 2ª: cala
     assert app._speaker_fallback_avisado is True
-    # o aviso vai UMA vez ao stderr (não polui `-q`, e não se repete por amostra)
-    assert sum("usando o extrator legado" in r.message for r in caplog.records) <= 1
+    # o aviso é `print` no STDERR — por isso `capsys` (o `caplog` não vê `print`,
+    # e era o furo que deixava a célula verde com o aviso apagado, #638). Exatamente
+    # UMA linha, apesar de duas chamadas: a guarda é o que segura o ruído.
+    linhas = [ln for ln in capsys.readouterr().err.splitlines() if "extrator legado" in ln]
+    assert len(linhas) == 1, f"aviso saiu {len(linhas)}x (esperado 1): {linhas}"
     # e o estado é VISÍVEL por fora, acionável: GET de settings e /api/status
     s = client.get("/api/settings", headers=auth).json()
     assert s["extrator_efetivo"] == app.SPEAKER_MODELO_LEGADO
