@@ -74,10 +74,15 @@ como `false` no relatório.
 
 ## O que ainda falta
 
-- **Conferir o import do pacote `df` na `.venv-mlx`** — no `venv312` ele quebra em
-  `torchaudio.backend`, que sumiu nas versões novas (mesmo atrito do WeSpeaker em
-  `evidence/521`). Sem isso o motor `dfn3` não liga em produção e a cadeia fica no
-  gating.
+- **O pacote `df` não existe na `.venv-mlx`** (`ModuleNotFoundError`): nem
+  instalado nem em `requirements.txt` (o `onnxruntime` está). Hoje a cadeia cai no
+  gating em produção e o relatório diz `motor: gating`. Dois caminhos:
+  (a) instalar `deepfilternet` — arrasta torch/torchaudio inteiros, e no
+  `venv312` ele já quebra em `torchaudio.backend` (mesmo atrito do WeSpeaker em
+  `evidence/521`); (b) **vendorizar só o DSP** (STFT, ERB, normalização, filtro e
+  síntese, ~700 linhas do `df` sob Apache-2.0/MIT) e ficar com numpy +
+  onnxruntime, sem torch. (b) é o certo para o app e é o próximo passo; o
+  `dfn_onnx.py` de hoje importa o `df` justamente porque ainda não foi portado.
 - **DNSMOS antes/depois no retorno**: depende de um modelo ONNX que ainda não está
   instalado; hoje o relatório traz a similaridade de timbre, não o OVRL.
 - **Dereverb**: o gancho existe e devolve `None`; falta o modelo (WPE).
