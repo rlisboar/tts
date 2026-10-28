@@ -8437,7 +8437,11 @@ def _live_stats(sess: dict) -> dict:
         "mic": {"frames": sess.get("st_frames", 0), "bytes": sess.get("st_bytes", 0),
                 "desde_ultimo_ms": (int((agora - ultimo) * 1000) if ultimo else None),
                 "dbfs": sess.get("st_dbfs"), "prob": sess.get("st_prob")},
-        "motor": {"estado": _live_estado_motor(sess), **limiares},
+        "motor": {"estado": _live_estado_motor(sess), **limiares,
+                  # #501: desfecho da interrupção inteligente e p50 do filtro
+                  # `modelo` (timeouts contados à parte — são o sinal de que o
+                  # classificador não está dando conta da máquina)
+                  "barge": _live_stats_barge(sess)},
         "rnnoise": _live_stats_rnnoise(sess),
         "turno": {"stage": sess.get("st_stage", "idle"),
                   "ms": (int((agora - ini) * 1000) if ini else 0),
@@ -9478,6 +9482,8 @@ def _live_modelo_decide(sess: dict, texto: str, fala_ms: int, eco_txt: str,
         p = decide(texto, fala_ms, ref_eco=eco_txt)
     except Exception as exc:              # noqa: BLE001 — timeout/erro segue adiante
         _live_log_kv("barge_modelo_erro", sess=sess["id"], erro=str(exc)[:100])
+        st = sess.setdefault("barge_stats", {"tipos": {}, "decisoes": [], "modelo": []})
+        st["modelo_timeouts"] = int(st.get("modelo_timeouts") or 0) + 1
         return None, None
     ms = int((time.monotonic() - t0) * 1000)
     st = sess.setdefault("barge_stats", {"tipos": {}, "decisoes": [], "modelo": []})
@@ -9485,6 +9491,21 @@ def _live_modelo_decide(sess: dict, texto: str, fala_ms: int, eco_txt: str,
     if p is None:
         return None, None
     return ("interrupcao" if p >= limite else "backchannel"), float(p)
+
+
+def _live_stats_barge(sess: dict) -> dict:
+    """Contadores da decisão de barge (#501): tipos, p50 da decisão e do modelo."""
+    st = sess.get("barge_stats") or {}
+    dec = sorted(st.get("decisoes") or [])
+    mod = sorted(st.get("modelo") or [])
+
+    def p50(v):
+        return v[len(v) // 2] if v else None
+
+    return {"tipos": dict(st.get("tipos") or {}), "decisoes": len(dec),
+            "decisao_p50_ms": p50(dec), "modelo": len(mod),
+            "modelo_p50_ms": p50(mod),
+            "modelo_timeouts": int(st.get("modelo_timeouts") or 0)}
 
 
 def _live_suspeita_barge(sess: dict, ev) -> None:
