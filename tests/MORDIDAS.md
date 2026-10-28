@@ -370,3 +370,23 @@ Mordida do `fim`: voltar o default de `fim_de_resposta.restante_ms` para 1000
 reprova — a regra passa a disparar depois do fim do áudio, quando a janela de
 barge já fechou. O cenário tem de injetar na janela (turno `ocioso` + playback
 ABERTO); sem essa preparação a fala entra no turno em voo e não vira barge.
+
+## #533 — portão "só a minha voz" (smoke com o corpus do R4)
+
+Duas mordidas no `smoke_so_minha_voz.py` (corpus `/tmp/tts-bakeoff/fala`, do
+`tools/bakeoff/corpus.py publico`). Alvo do card: ≤1 turno falso em 10 min só com
+a 2ª voz. Medido em 2026-10-28, carga ~5:
+
+| Sabotagem | Resultado |
+|---|---|
+| `SEM_PORTAO=1` (portão aceita tudo) | terceiro **96 turnos falsos** em 2 min → REPROVADO |
+| `CONFIRMACOES=1` (uma janela só) | terceiro **48 turnos falsos** em 10 min → REPROVADO |
+
+Com o portão como está: terceiro **0** turnos falsos em 10 min, cobertura do dono
+90,5 %, latência p50 36 ms (piso 50). O `misto` (dono + terceiro a 5 dB +
+ventoinha, SEM a separação) fica em ~40 % de cobertura com piso próprio (35) — é o
+pior caso do portão, e o motivo de a separação existir.
+
+`LIMIAR=` troca o limiar em uso: no corpora do R4 o FAR 1 % (2,434) custa caro
+(57 % de cobertura); 1,8 fica no joelho (90 % com 0 falso). O número fica impresso
+em toda rodada para o PM decidir.
