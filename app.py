@@ -652,7 +652,17 @@ def _sync_legacy_apikey_file():
     try:
         keys = _apikeys.get("keys") or []
         if keys:
-            LEGACY_APIKEY_PATH.write_text(keys[0]["secret"] + "\n")
+            novo = keys[0]["secret"] + "\n"
+            # Grava só quando MUDA: `_load_apikeys()` roda no import deste módulo
+            # (l.~1071), então todo processo que importava o app reescrevia o
+            # `.apikey` — mtime novo com conteúdo velho, e o arquivo do dono
+            # aparecia "mexido" a cada rodada de suíte (#535).
+            try:
+                atual = LEGACY_APIKEY_PATH.read_text()
+            except OSError:
+                atual = None
+            if atual != novo:
+                LEGACY_APIKEY_PATH.write_text(novo)
             try:
                 os.chmod(LEGACY_APIKEY_PATH, 0o600)
             except Exception:  # noqa: BLE001

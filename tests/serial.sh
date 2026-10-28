@@ -14,6 +14,11 @@
 # ESCAPES: TTS_SERIAL=0 desliga a trava; TTS_SERIAL_ESPERA=Ns ajusta o timeout de
 # espera; TTS_SERIAL_TTL=Ns ajusta quando um lock ÓRFÃO (suíte morta por SIGKILL)
 # pode ser roubado — além do TTL, um lock cujo PID já morreu é roubado na hora.
+#
+# TETO DEPOIS DA TRAVA (#535): o runner arma um teto de FILA largo e exporta
+# `TTS_TETO_POS_TRAVA`; aqui o alarme é trocado pelo teto REAL no instante em que
+# a trava é obtida. Sem isso, os 90 s do teto eram gastos esperando na fila com
+# `-j 3` e a suíte morria antes de trabalhar (medido: 4 suítes por SIGALRM).
 _TRAVA_DIR="${TTS_SERIAL_LOCK:-/tmp/tts-rod-modelo.lock}"
 
 # mtime portátil (BSD/macOS e GNU/Linux). A ORDEM importa e não dá para usar
@@ -27,14 +32,37 @@ else                                             # BSD/macOS
   _serial_mtime() { stat -f %m "$1" 2>/dev/null || echo 0; }
 fi
 
+# Watchdog do teto de trabalho: só existe se o runner pediu (TTS_TETO_POS_TRAVA).
+_teto_armar() {
+  [ -n "${TTS_TETO_POS_TRAVA:-}" ] || return 0
+  (
+    sleep "$TTS_TETO_POS_TRAVA"
+    kill -ALRM $$
+    # O bash ADIA trap enquanto um filho em foreground roda: suíte que trabalha
+    # dentro de UM python longo só veria o alarme quando ele terminasse — e aí o
+    # teto não vale nada. Derruba os filhos diretos (o trabalho) para o `wait`
+    # voltar e o trap rodar; o TERM no próprio shell é a rede de segurança.
+    sleep 2
+    for filho in $(pgrep -P $$ 2>/dev/null); do kill -TERM "$filho" 2>/dev/null; done
+    sleep 2
+    kill -TERM $$ 2>/dev/null
+  ) &
+  _TETO_PID=$!
+}
+_teto_matar() {
+  [ -n "${_TETO_PID:-}" ] && kill "$_TETO_PID" 2>/dev/null
+  _TETO_PID=""
+}
+
 serial_pega() {
-  [ "${TTS_SERIAL:-1}" = "0" ] && return 0
+  if [ "${TTS_SERIAL:-1}" = "0" ]; then _teto_armar; return 0; fi
   local espera="${TTS_SERIAL_ESPERA:-1800}" t0=$SECONDS pid idade dono avisou=""
   local eu; eu="$(basename "${1:-$0}")"
   while :; do
     if mkdir "$_TRAVA_DIR" 2>/dev/null; then
       echo "$$" > "$_TRAVA_DIR/pid"
       echo "$eu" > "$_TRAVA_DIR/qual"
+      _teto_armar      # a partir daqui o relógio é o do TRABALHO
       return 0
     fi
     pid="$(cat "$_TRAVA_DIR/pid" 2>/dev/null || true)"
@@ -73,5 +101,17 @@ serial_solta() {
   return 0
 }
 
-trap 'serial_solta; exit 130' INT TERM
-trap 'serial_solta' EXIT
+# O teto estourado depois da trava tem mensagem própria (a suíte está trabalhando,
+# não esperando): sem ela o SIGALRM parece pendura da fila — e o texto tem de
+# distinguir os dois, senão o operador procura contenção onde não tem.
+_serial_alarme() {
+  if [ "$(cat "$_TRAVA_DIR/pid" 2>/dev/null || true)" = "$$" ]; then
+    echo "  [serial] teto de ${TTS_TETO_POS_TRAVA:-?}s estourado DEPOIS da trava (trabalho, não fila)"
+  else
+    echo "  [serial] teto de FILA estourado esperando a trava"
+  fi
+  exit 1
+}
+trap '_serial_alarme' ALRM
+trap 'serial_solta; _teto_matar; exit 130' INT TERM
+trap 'serial_solta; _teto_matar' EXIT

@@ -11,11 +11,13 @@
 #
 #   ./tests/dsh_ui.sh
 #
-# Servidor PRÓPRIO (porta livre) e stub de chat por env, mas o settings.json é o
-# do DONO (não é versionado): a suíte normaliza o que precisa para o cenário e
-# devolve TUDO que tocou no fim, campo a campo — senão sobra de suíte vira
-# "escolha do dono" para quem ler depois. Já aconteceu: `chat_dsh_bin` regrediu de
-# caminho absoluto para o literal `dsh` (que depende de PATH no env do filho).
+# Servidor PRÓPRIO (porta livre), stub de chat por env e settings em CÓPIA no
+# /tmp (#535): a suíte normaliza o que precisa para o cenário e devolve TUDO que
+# tocou no fim, campo a campo — senão sobra de suíte vira "escolha do dono" para
+# quem ler depois (já aconteceu: `chat_dsh_bin` regrediu de caminho absoluto para
+# o literal `dsh`, que depende de PATH no env do filho). A cópia existe porque o
+# POST /api/settings grava, e gravar no arquivo do dono mexia no mtime dele a cada
+# rodada do gate — o cenário continua real porque a cópia é o arquivo DELE.
 set -euo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -78,9 +80,15 @@ porta = porta_livre()
 # SEM TTS_CHAT_DSH_*: o env TEM PRECEDÊNCIA sobre o settings (por desenho, #112) e
 # com ele o campo `chat_dsh_bin` da tela vira decorativo — foi o que escondeu o
 # caminho de erro na 1ª versão deste teste.
+SETTINGS_TESTE = pathlib.Path("/tmp") / f"dsh_ui_settings_{SUF}.json"
+SETTINGS_TESTE.write_text((RAIZ / "settings.json").read_text())     # cópia do dono
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        "TTS_CHAT_MODEL": "stub-dsh-ui", "DSH_UI_PORT": str(porta),
-       "ORT_DISABLE_TELEMETRY": "1"}
+       "TTS_SETTINGS_PATH": str(SETTINGS_TESTE), "ORT_DISABLE_TELEMETRY": "1",
+       # espelho legado de `_save_apikeys`: sem esta variável a rodada tocava o
+       # `.apikey` do dono (mesmo conteúdo, mtime novo) — #535
+       "TTS_APIKEYS_PATH": str(SETTINGS_TESTE.with_name(f"dsh_ui_apikeys_{SUF}.json")),
+       "TTS_LEGACY_APIKEY_PATH": str(SETTINGS_TESTE.with_name(f"dsh_ui_apikey_{SUF}"))}
 log = pathlib.Path("/tmp") / f"dsh_ui_servidor_{SUF}.log"
 _launcher = '''
 import os, uvicorn, app

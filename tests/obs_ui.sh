@@ -65,7 +65,14 @@ if not wav_entrada: raise SystemExit("sem voices/*.wav para alimentar o mic fals
 
 # ─── servidor próprio ────────────────────────────────────────────────────────
 porta = porta_livre()
+# Estado do dono em CÓPIA/tmp (#535): o app grava settings e espelha o `.apikey`.
+ESTADO = pathlib.Path("/tmp") / f"obs_ui_estado_{SUF}"
+ESTADO.mkdir(exist_ok=True)
+(ESTADO / "settings.json").write_text((RAIZ / "settings.json").read_text())
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
+       "TTS_SETTINGS_PATH": str(ESTADO / "settings.json"),
+       "TTS_APIKEYS_PATH": str(ESTADO / "apikeys.json"),
+       "TTS_LEGACY_APIKEY_PATH": str(ESTADO / "apikey"),
        "TTS_CHAT_MODEL": "stub-obs", "OBS_UI_PORT": str(porta),
        # pinado: env > settings — o dono pode ter deixado `chat_backend: "dsh"` (#143)
        # …e o do LIVE junto, que tem variável própria e não é governado por esta (#195)

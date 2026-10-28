@@ -9,7 +9,10 @@ divergir, o teste cai.
 """
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import threading
 from pathlib import Path
 
 AQUI = Path(__file__).resolve().parent
@@ -78,3 +81,84 @@ def test_runner_isola_log_e_tem_teto_portatil():
     # `timeout` do coreutils NÃO existe no macOS: o teto é do perl
     assert re.search(r"perl -e 'alarm shift", fonte)
     assert re.search(r"^\s*(?:TETO|_com_teto)", fonte, re.M)
+
+
+# ───────────────────────────── execução: BASE e teto (#535) ──────────────────
+# Os testes acima são estáticos. Os de baixo RODAM o runner com suítes-sonda de
+# `tests/fixtures/run_sh/` (via `SUITES=`), sem tocar nas listas reais. Precisam de
+# bash + perl (a mesma dependência do `rapido`).
+
+SONDAS = AQUI / "fixtures" / "run_sh"
+
+
+def _rodar(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    base = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp")}
+    base.update(env or {})
+    return subprocess.run(["bash", str(RUNNER), *args], cwd=str(AQUI.parent),
+                          capture_output=True, text=True, timeout=120,
+                          env={**base, "TTS_SERIAL_ESPERA": "60"})
+
+
+def _sonda_saida(tmp_path: Path) -> str:
+    p = tmp_path / "sonda.txt"
+    return str(p)
+
+
+def test_navegador_nao_exporta_base_nem_os_escapes_do_dono(tmp_path):
+    """#535: o estágio `navegador` é auto-contido e NÃO pode encostar no app do
+    dono. Com BASE exportado, `admin_ui_flow`/`cfg_sujo_e_erros` deixavam de subir
+    a própria instância e escreviam no `settings.json` dele."""
+    saida = _sonda_saida(tmp_path)
+    r = _rodar("navegador", env={"SUITES": str(SONDAS / "sonda_env.sh"),
+                                 "SONDA_SAIDA": saida,
+                                 "BASE": "http://127.0.0.1:7860",
+                                 "ADMIN_UI_NO_DONO": "", "NO_DONO": ""})
+    assert r.returncode == 0, r.stdout + r.stderr
+    texto = Path(saida).read_text()
+    assert "BASE=[<vazio>]" in texto, texto
+    assert "ADMIN_UI_NO_DONO=[<vazio>]" in texto and "NO_DONO=[<vazio>]" in texto, texto
+
+
+def test_instancia_exporta_base_e_liga_os_escapes_no_7860(tmp_path):
+    """O outro lado: em `instancia` o alvo É o app de pé — BASE e escapes valem
+    (o `TTS_RUN_SH_PULA_PRECHECK` evita precisar do app só para o teste)."""
+    saida = _sonda_saida(tmp_path)
+    r = _rodar("instancia", env={"SUITES": str(SONDAS / "sonda_env.sh"),
+                                 "SONDA_SAIDA": saida,
+                                 "BASE": "http://127.0.0.1:7860",
+                                 "ADMIN_UI_NO_DONO": "", "NO_DONO": "",
+                                 "TTS_RUN_SH_PULA_PRECHECK": "1"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    texto = Path(saida).read_text()
+    assert "BASE=[http://127.0.0.1:7860]" in texto, texto
+    assert "ADMIN_UI_NO_DONO=[1]" in texto and "NO_DONO=[1]" in texto, texto
+
+
+def test_suite_que_dorme_alem_do_teto_reprova_pelo_alarme(tmp_path):
+    """Mordida do teto de TRABALHO: 6 s de sono com teto de 2 s tem de reprovar."""
+    r = _rodar("rapido", env={"SUITES": str(SONDAS / "trava_lenta.sh"),
+                              "TETO_S": "2", "SONDA_SONO": "6",
+                              "TTS_SERIAL_LOCK": str(tmp_path / "lock")})
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "FALHA" in r.stdout and "trava_lenta" in r.stdout
+    assert "estourado DEPOIS da trava" in r.stdout, r.stdout
+
+
+def test_tempo_esperando_a_trava_nao_come_o_teto(tmp_path):
+    """O defeito medido: com o teto contado da largada, a fila da trava matava a
+    suíte antes de ela trabalhar. Presa a trava por 3 s, 0,5 s de trabalho com
+    teto de 2 s tem de passar."""
+    trava = tmp_path / "lock"
+    trava.mkdir()
+    dono = subprocess.Popen(["sleep", "30"])
+    (trava / "pid").write_text(str(dono.pid))
+    (trava / "qual").write_text("dona-de-teste")
+    threading.Timer(3.0, lambda: subprocess.run(["rm", "-rf", str(trava)])).start()
+    try:
+        r = _rodar("rapido", env={"SUITES": str(SONDAS / "trava_curta.sh"),
+                                  "TETO_S": "2",
+                                  "TTS_SERIAL_LOCK": str(trava)})
+    finally:
+        dono.kill()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "ok" in r.stdout and "trava_curta" in r.stdout

@@ -37,7 +37,13 @@ apikeys = pathlib.Path(f"/tmp/apikeys_teste-{SUF}.json")
 log = pathlib.Path(f"/tmp/ultima_chave-{porta}.log")
 # isolamento por AMBIENTE (#461): `TTS_APIKEYS_PATH` é lido no import do app, então
 # não precisa de launcher com monkeypatch — o arquivo do dono nem é aberto
-env_proc = {**os.environ, "TTS_APIKEYS_PATH": str(apikeys)}
+# o `.apikey` legado também: `_save_apikeys` espelha nele e, sem a variável, o
+# espelho caía no arquivo do dono (#535)
+_SETTINGS = pathlib.Path(f"/tmp/settings_teste-{SUF}.json")
+_SETTINGS.write_text((RAIZ / "settings.json").read_text())
+env_proc = {**os.environ, "TTS_APIKEYS_PATH": str(apikeys),
+            "TTS_LEGACY_APIKEY_PATH": str(pathlib.Path(f"/tmp/apikey_teste-{SUF}")),
+            "TTS_SETTINGS_PATH": str(_SETTINGS)}
 proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app",
                          "--host", "127.0.0.1", "--port", str(porta),
                          "--log-level", "warning"],

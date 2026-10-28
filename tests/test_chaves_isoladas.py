@@ -17,6 +17,7 @@ Duas pontas, no formato do repo (controle + contraprova):
    arquivo do dono antes/depois — sem o isolamento o hash muda.
 """
 import hashlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -84,3 +85,23 @@ def test_rodada_filha_nao_muda_o_hash_do_arquivo_do_dono():
     assert r.returncode == 0, r.stdout[-1500:]
     assert _hashes_do_dono() == antes, (
         "a rodada do filho mexeu no estado do dono — o isolamento do conftest caiu?")
+
+
+# --- #535: `import app` reescrevia o `.apikey` do dono (mtime novo, conteúdo igual)
+# A suíte roda com `TTS_*` de caminho neutralizados; a rodada de suítes `.sh` não
+# tem esse conftest. O espelho legado era escrito SEMPRE, então todo import mexia
+# no arquivo do dono. Agora ele só grava quando o conteúdo muda.
+def test_import_nao_reescreve_o_legado_quando_o_conteudo_e_o_mesmo(tmp_path):
+    env = {**os.environ, "TTS_APIKEYS_PATH": str(tmp_path / "apikeys.json"),
+           "TTS_LEGACY_APIKEY_PATH": str(tmp_path / "apikey"),
+           "TTS_SETTINGS_PATH": str(tmp_path / "settings.json"),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    for var in ("TTS_ROD_API_KEY", "TTS_ADMIN_KEY"):
+        env.pop(var, None)
+    import_ = [sys.executable, "-c", "import app"]
+    subprocess.run(import_, cwd=str(BASE), env=env, check=True, capture_output=True)
+    legado = tmp_path / "apikey"
+    assert legado.exists() and legado.read_text().strip(), "o legado nem foi criado"
+    antes = legado.stat().st_mtime_ns
+    subprocess.run(import_, cwd=str(BASE), env=env, check=True, capture_output=True)
+    assert legado.stat().st_mtime_ns == antes, "o 2º import reescreveu o mesmo conteúdo"

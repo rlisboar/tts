@@ -41,7 +41,13 @@ def porta_livre():
         s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
 
 porta = porta_livre()
-env = {**os.environ, "LIVE_UI_PORT": str(porta)}
+# settings em CÓPIA (#535): o boot/save do app não pode mexer no arquivo do dono
+_SETTINGS = pathlib.Path(f"/tmp/hash_deep_settings-{porta}.json")
+_SETTINGS.write_text((RAIZ / "settings.json").read_text())
+env = {**os.environ, "LIVE_UI_PORT": str(porta), "TTS_SETTINGS_PATH": str(_SETTINGS),
+       # espelho legado de `_save_apikeys` (#535)
+       "TTS_APIKEYS_PATH": f"/tmp/hash_deep_apikeys_{porta}.json",
+       "TTS_LEGACY_APIKEY_PATH": f"/tmp/hash_deep_apikey_{porta}"}
 log = pathlib.Path(os.environ.get("HASH_DEEP_LOG")
                    or f"/tmp/hash_deep_link_servidor-{porta}.log")
 _launcher = '''

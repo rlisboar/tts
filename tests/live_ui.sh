@@ -105,7 +105,14 @@ for w in sorted(pathlib.Path("voices").glob("*.wav")):
 if not wav_entrada: raise SystemExit("sem voices/*.wav para alimentar o mic falso")
 
 # ─── servidor próprio com TTS_CHAT_* (settings do dono intocado) ─────────────
+# Estado do dono em CÓPIA/tmp (#535): settings sai do arquivo DELE, mas grava na cópia
+_ESTADO = pathlib.Path(f"/tmp/live_ui_estado_{porta}")
+_ESTADO.mkdir(exist_ok=True)
+(_ESTADO / "settings.json").write_text((RAIZ / "settings.json").read_text())
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1", "TTS_CHAT_MODEL": "stub-live",
+       "TTS_SETTINGS_PATH": str(_ESTADO / "settings.json"),
+       "TTS_APIKEYS_PATH": str(_ESTADO / "apikeys.json"),
+       "TTS_LEGACY_APIKEY_PATH": str(_ESTADO / "apikey"),
        # BACKEND PINADO: sem isto a suíte fica refém do settings.json do dono —
        # com `chat_backend: "dsh"` ela deixaria o stub e falaria com o harness (#143).
        # O do LIVE também: ele MANDA sobre `chat_backend_live` e o pin da Conversa

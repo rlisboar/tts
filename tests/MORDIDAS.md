@@ -239,3 +239,23 @@ Duas armadilhas medidas: (1) sabotar **apagando** as linhas com `sed` remove
 junto o `env.update({` e o arquivo quebra com `IndentationError` — use a forma
 "vazio = default"; (2) o worktree precisa dos links de `.venv-mlx` e `voices/`
 (sem eles a suíte não sobe ou não acha fala de teste).
+
+## #535 — runner: `navegador` no app do dono e teto comido pela fila
+
+Duas sabotagens no runner, uma célula cada (as sondas vivem em
+`tests/fixtures/run_sh/` e entram por `SUITES=`, sem tocar nas listas reais):
+
+| Sabotagem | Resultado |
+|---|---|
+| `navegador` deixa de dar `unset BASE …` (volta a exportar `:7860` + escapes) | `test_navegador_nao_exporta_base_nem_os_escapes_do_dono` **FAILED** |
+| o runner volta a armar o teto do WORK antes da trava (`if false`, sem `TTS_TETO_POS_TRAVA`) | `test_tempo_esperando_a_trava_nao_come_o_teto` **FAILED** |
+| `serial_pega` deixa de armar o teto ao obter a trava | `test_suite_que_dorme_alem_do_teto_reprova_pelo_alarme` **FAILED** |
+
+Controles: `test_instancia_exporta_base_e_liga_os_escapes_no_7860` (o outro lado do
+BASE) passa nos dois sentidos.
+
+Achado de medição que virou código: **o bash adia o trap de ALRM enquanto um filho
+em foreground roda**. Suíte que trabalha dentro de UM `python` longo (as do Live)
+só veria o alarme quando ele terminasse — a primeira versão do watchdog não matava
+nada e o `live_barge_rep` passou de 9 min. O watchdog agora derruba os filhos
+diretos e só então o shell: é o que faz o teto valer para essas suítes.

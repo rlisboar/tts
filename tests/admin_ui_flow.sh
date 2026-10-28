@@ -76,20 +76,24 @@ if [ -z "$BASE_ORIGINAL" ]; then
   SET="$(mktemp -t settings-adminui.XXXXXX 2>/dev/null || echo "/tmp/settings-adminui.$$")"
   rm -f "$APK" "$SET"      # o mktemp cria vazio; o app gera a chave padrão sozinho
   LOG="$(mktemp -t adminui-servidor.XXXXXX 2>/dev/null || echo "/tmp/adminui-servidor.$$")"
+  # `.apikey` (legado) também é espelho de `_save_apikeys`: sem isto a rodada
+  # reescrevia o arquivo do DONO mesmo com `APIKEYS_PATH` em /tmp (#535).
+  LEG="$(mktemp -t apikey-adminui.XXXXXX 2>/dev/null || echo "/tmp/apikey-adminui.$$")"
   "$PY" -c "
 import pathlib, sys, uvicorn, app
 app.APIKEYS_PATH = pathlib.Path(sys.argv[1])
 # `_settings` já veio do arquivo do dono no import; o CAMINHO passa a apontar para
 # o tmp, então todo save da rodada grava lá (o arquivo dele não é tocado)
 app.SETTINGS_PATH = pathlib.Path(sys.argv[2])
+app.LEGACY_APIKEY_PATH = pathlib.Path(sys.argv[4])
 app._load_apikeys()
 uvicorn.run(app.app, host='0.0.0.0', port=int(sys.argv[3]), log_level='warning')
-" "$APK" "$SET" "$PORTA" > "$LOG" 2>&1 &
+" "$APK" "$SET" "$PORTA" "$LEG" > "$LOG" 2>&1 &
   SERVIDOR_PID=$!
   BASE="http://127.0.0.1:$PORTA"
   limpa_servidor() {
     [ -n "$SERVIDOR_PID" ] && kill "$SERVIDOR_PID" 2>/dev/null || true
-    rm -f "$APK" "$SET"
+    rm -f "$APK" "$SET" "$LEG"
   }
   # o trap ÚNICO entra mais abaixo (`trap encerra`): dois traps se sobrescrevem
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
