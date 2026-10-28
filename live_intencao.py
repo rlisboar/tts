@@ -117,12 +117,22 @@ class Intencao:
             except Exception as exc:  # noqa: BLE001
                 self._caiu(f"escrita falhou ({type(exc).__name__})")
                 return None
-        try:
-            r = self._fila.get(timeout=self._timeout)
-        except queue.Empty:
-            return None                       # prazo estourado: o chamador decide
-        if r.get("id") != n:
-            return None                       # resposta fora de ordem: descarta
+        # espera a PRÓPRIA resposta: com dois chamadores na mesma fila, quem
+        # colhe um `id` alheio devolve ao início e continua esperando até o prazo
+        limite = time.monotonic() + self._timeout
+        r = None
+        while True:
+            restante = limite - time.monotonic()
+            if restante <= 0:
+                return None                   # prazo estourado: o chamador decide
+            try:
+                item = self._fila.get(timeout=restante)
+            except queue.Empty:
+                return None
+            if item.get("id") == n:
+                r = item
+                break
+            self._fila.put(item)              # resposta de outro chamador: devolve
         if r.get("erro"):
             self.erro = str(r["erro"])
             return None
