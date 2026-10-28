@@ -268,6 +268,33 @@ def test_o_defeito_do_atributo_ainda_morde(tmp_path):
 
 
 
+# --- #621: suíte que MUTA arquivo versionado tem de mutar uma CÓPIA -------------
+def test_live_lock_freeze_muta_uma_copia_e_deixa_a_arvore_intacta(tmp_path):
+    """A suíte reverte o `app.py` para medir a mordida. Feito na árvore
+    COMPARTILHADA, o arquivo fica revertido por ~12 s — e um commit de terceiro
+    commita a reversão (suspeita nº 1 dos "códigos que sumiram", #573).
+
+    Aqui: sha256 e mtime do `app.py` da árvore principal idênticos, a suíte diz em
+    qual CÓPIA rodou e não sobra diretório de trabalho."""
+    def _impressao(arq: Path) -> tuple[str, int]:
+        import hashlib
+        return (hashlib.sha256(arq.read_bytes()).hexdigest(), arq.stat().st_mtime_ns)
+
+    alvo = AQUI.parent / "app.py"
+    copia_txt = tmp_path / "copia.txt"
+    antes = _impressao(alvo)
+    r = _rodar("rapido", env={"SUITES": str(AQUI / "live_lock_freeze.sh"),
+                              "MORDIDA": "1", "FREEZE_SONO": "0.15",
+                              "TETO_S": "300", "SONDA_SAIDA": str(copia_txt),
+                              "TTS_SERIAL_LOCK": str(tmp_path / "lock")})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _impressao(alvo) == antes, "a suíte mexeu no app.py da árvore principal"
+    assert copia_txt.is_file(), "a suíte não registrou a cópia de trabalho"
+    copia = copia_txt.read_text().strip()
+    assert not copia.startswith(str(AQUI.parent)), f"mutou a árvore: {copia}"
+    assert not Path(copia).exists(), "a cópia de trabalho ficou para trás"
+
+
 # --- #592: o teto pós-trava precisa VALER, dizer a verdade e não vazar ---------
 def test_rotulo_do_estouro_e_trabalho_e_nao_fila(tmp_path):
     """O rótulo era decidido por "sou eu o pid da trava?"; com a trava mexida por

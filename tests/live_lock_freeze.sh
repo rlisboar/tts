@@ -87,11 +87,13 @@
 # `test_busy_e_mandado_fora_do_live_lock` fica vermelho (é o esperado): se uma
 # suíte rodar no meio, nomeie isso em vez de atribuir ao gate.
 #
-# A ÁRVORE É COMPARTILHADA e a rodada revertida (~20 s) deixa o `app.py` REVERTIDO
-# para quem olhar nesse instante: outra suíte que rodar ali vê o invariante vermelho,
-# e um `git commit` de terceiro commitaria a forma revertida. O `restaura` do trap
-# devolve o arquivo em qualquer saída (inclusive Ctrl-C) e confere o md5 — a janela
-# é curta e o aviso sai no fim, mas não rode o `MORDIDA=1` "junto" com um commit.
+# TUDO RODA NUMA CÓPIA (#621). A árvore é COMPARTILHADA: mutar o `app.py` nela deixa
+# a forma revertida visível por ~12 s, outra suíte vê o invariante vermelho e um
+# `git commit` de terceiro pode commitar a reversão — é a suspeita nº 1 dos
+# incidentes de "código que sumiu da árvore" (#573). A cópia é feita com os arquivos
+# RASTREADOS (o WIP do working tree entra, é ele que se quer medir), sem `evidence/`,
+# com `.venv-mlx`/`voices`/`models` por symlink e estado do DONO em tmp: nem o
+# `app.py` nem `settings.json`/`.apikey*` da árvore principal são tocados.
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -107,6 +109,30 @@ source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
 
 cd "$RAIZ" || exit 1
 
+# ── cópia de trabalho (#621) ──────────────────────────────────────────────────
+# Fora o `evidence/` (peso morto para a medida): são 5,8 MB. O que a medida precisa
+# da árvore de verdade continua acessível por symlink; `outputs/` nasce vazio na
+# cópia e as chaves/settings vão para tmp (abaixo, no `ambiente` do servidor).
+ARVORE="${FREEZE_ARVORE:-}"
+if [ -z "$ARVORE" ]; then
+  ARVORE="$(mktemp -d "${TMPDIR:-/tmp}/freeze-arvore.XXXXXX")" || exit 1
+  if ! git ls-files -z -- ':!:evidence' | tar -c --null -T - -f - 2>/dev/null \
+       | tar -xf - -C "$ARVORE" 2>/dev/null; then
+    echo "✖ não consegui copiar a árvore para $ARVORE" >&2; rm -rf "$ARVORE"; exit 1
+  fi
+  ln -s "$RAIZ/.venv-mlx" "$ARVORE/.venv-mlx"
+  ln -s "$RAIZ/voices" "$ARVORE/voices"
+  ln -s "$RAIZ/models" "$ARVORE/models"
+  mkdir -p "$ARVORE/outputs"
+  _limpa_arvore() { [ -n "${ARVORE:-}" ] && rm -rf "$ARVORE"; }
+  trap '_limpa_arvore' EXIT
+fi
+echo "· árvore de trabalho (cópia): $ARVORE"
+# `SONDA_SAIDA` (convenção das sondas): o teste lê o caminho da cópia — o runner só
+# mostra stdout de suíte vermelha, e aqui o verde é o esperado.
+[ -n "${SONDA_SAIDA:-}" ] && printf '%s\n' "$ARVORE" > "$SONDA_SAIDA"
+cd "$ARVORE" || exit 1
+
 # ---------------------------------------------------------------------------
 # MORDIDA (MORDIDA=1): as DUAS rodadas num comando só, com o app.py devolvido ao
 # estado do fix no fim. Sem isto o script prova só que o estado ATUAL não congela;
@@ -118,7 +144,7 @@ cd "$RAIZ" || exit 1
 # (acima); os filhos rodam com `TTS_SERIAL=0`.
 # ---------------------------------------------------------------------------
 if [ "${MORDIDA:-0}" != "0" ]; then
-  APP="$RAIZ/app.py"
+  APP="$ARVORE/app.py"
   BAK="$(mktemp -t freeze-app.XXXXXX)"
   md5_de() { md5 -q "$1" 2>/dev/null || md5sum "$1" | cut -d' ' -f1; }
   ANTES="$(md5_de "$APP")"
@@ -161,7 +187,7 @@ PYM
     if mordida_patch restore 2>/dev/null; then
       :
     else
-      echo "  ⚠ o bloco do `busy` mudou durante a mordida — restaurando pela cópia"
+      echo "  ⚠ o bloco do `busy` mudou durante a mordida — restaurando pelo backup"
       cp "$BAK" "$APP"
     fi
     rm -f "$BAK"
@@ -175,11 +201,11 @@ PYM
   }
   # `_teto_matar`: este trap SOBRESCREVE o do `serial.sh` e o vigia do teto
   # sobreviveria ao shell, matando por teto alheio quem herdasse o PID (#592).
-  trap 'restaura; serial_solta; _teto_matar' EXIT
+  trap 'restaura; serial_solta; _teto_matar; _limpa_arvore' EXIT
   trap 'exit 130' INT TERM
 
   echo "══ MORDIDA 1/2 — app.py COMO ESTÁ (o fix): tem de sair 0"
-  TTS_SERIAL=0 MORDIDA=0 "$EU"; rc_fix=$?
+  FREEZE_ARVORE="$ARVORE" TTS_SERIAL=0 MORDIDA=0 "$EU"; rc_fix=$?
   echo "══ MORDIDA 1/2 — saiu $rc_fix"
   echo
   echo "══ REVERTENDO a linha do fix"
@@ -188,7 +214,7 @@ PYM
   fi
   echo
   echo "══ MORDIDA 2/2 — app.py REVERTIDO: tem de sair 1 (a cena A tem de congelar)"
-  TTS_SERIAL=0 MORDIDA=0 "$EU"; rc_rev=$?
+  FREEZE_ARVORE="$ARVORE" TTS_SERIAL=0 MORDIDA=0 "$EU"; rc_rev=$?
   echo "══ MORDIDA 2/2 — saiu $rc_rev"
   echo
   restaura
@@ -210,7 +236,7 @@ fi
 import base64, json, os, pathlib, shutil, socket, subprocess, sys, tempfile, time
 import urllib.request
 
-RAIZ = pathlib.Path.cwd()
+RAIZ = pathlib.Path(os.environ.get("FREEZE_ARVORE") or pathlib.Path.cwd())
 PY = sys.executable
 SONO = float(os.environ.get("FREEZE_SONO", "0.5"))   # janela do send "pendurado"
 FATOR = 25.0                                         # limiar relativo ao ocioso
@@ -324,7 +350,13 @@ def cena(preso):
                                                      sono=SONO, espera_c=ESPERA_C,
                                                      porta=porta))
     ambiente = {**os.environ, "TTS_LIVE_MAX_SESSIONS": "1",   # N=1: a 2ª conexão leva busy
-                "TTS_CHAT_BACKEND": "openai", "TTS_CHAT_BACKEND_LIVE": "openai"}
+                "TTS_CHAT_BACKEND": "openai", "TTS_CHAT_BACKEND_LIVE": "openai",
+                # estado do DONO fora: o servidor escreve settings/chaves e áudio
+                "TTS_SETTINGS_PATH": str(tmp / "settings.json"),
+                "TTS_APIKEYS_PATH": str(tmp / "apikeys.json"),
+                "TTS_LEGACY_APIKEY_PATH": str(tmp / "apikey"),
+                "TTS_OUTPUTS_DIR": str(tmp / "outputs"),
+                "TTS_SPEAKER_PATH": str(tmp / "perfis.json")}
     logf = open(logp, "w")
     proc = subprocess.Popen([PY, str(tmp / "servidor.py")], env=ambiente,
                             stdout=logf, stderr=subprocess.STDOUT)

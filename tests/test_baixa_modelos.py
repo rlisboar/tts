@@ -110,6 +110,7 @@ def test_segunda_rodada_nao_rebaixa(amb):
 def test_divergencia_e_erro_e_forca_rebaixa(amb):
     assert _roda(amb).returncode == 0
     alvo = amb["root"] / "models" / "ecapa-voxceleb" / "hyperparams.yaml"
+    alvo.chmod(0o644)      # o script baixa 444 (peso imutável), como os do repo
     alvo.write_text("peso trocado\n")
 
     r = _roda(amb)

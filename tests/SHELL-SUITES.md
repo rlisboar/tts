@@ -35,6 +35,14 @@ Suíte pesada (UI/Live) tem teto PRÓPRIO na tabela `_teto_da_suite` do runner �
 90 s ela morria trabalhando (medido 93 s e 423 s com a máquina carregada, #592).
 `TETO_S=…` do operador vence a tabela, para depurar.
 
+Suíte que MUTA arquivo versionado para medir roda numa CÓPIA da árvore (arquivos
+rastreados num diretório em tmp, com `.venv-mlx`/`voices`/`models` por symlink e
+estado do dono em tmp): `live_lock_freeze` reverte o `app.py` e, sem isso, deixava
+a forma revertida visível por ~12 s na árvore compartilhada (#573/#621). A célula
+`test_live_lock_freeze_muta_uma_copia_e_deixa_a_arvore_intacta` cobra sha256+mtime
+do `app.py` da árvore. Hoje é a ÚNICA que muta arquivo versionado; as demais
+escrevem só em tmp (as de `instancia` tocam `voices/` de propósito, e limpam).
+
 **O teto conta do TRABALHO, não da fila** (#535): suíte que pede a trava de modelo
 pega `TETO_FILA_S` (900 s) enquanto espera no `serial_pega` e troca pelo `TETO_S`
 real no instante em que obtém a trava — com `-j 3` e oito suítes de modelo, o tempo

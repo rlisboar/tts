@@ -290,6 +290,16 @@ CI. `test_app_nao_baixa_modelo_no_boot` e `test_manifesto_lista_todos_os_pesos`
 cobrem o contrato do card por leitura (o boot não chama o downloader; peso sem
 sha256 no manifesto reprova).
 
+## #621 — medir mutando o `app.py` sem sujar a árvore compartilhada
+
+| Sabotagem | Resultado |
+|---|---|
+| suíte volta a mutar `$RAIZ/app.py` (versão anterior à cópia) | `test_live_lock_freeze_muta_uma_copia_e_deixa_a_arvore_intacta` **FAILED** ("a suíte mexeu no app.py da árvore principal") |
+
+A célula cobra sha256 **e** mtime: a versão antiga restaurava o conteúdo, então só
+o mtime denuncia — e é justamente ele que faz o `cp`-de-volta parecer intacto para
+quem olha o `git status`.
+
 ## #592 — teto pós-trava: rótulo, escada e rc do trap
 
 Três defeitos, três mordidas. A célula do filho surdo cobra o PID MORTO: só a

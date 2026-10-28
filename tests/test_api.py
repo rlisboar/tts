@@ -2200,10 +2200,11 @@ def test_speaker_ecapa_e_liberado_por_ociosidade_e_recarrega(tmp_path, monkeypat
     assert [round(v, 3) for v in vetor] == [0.6, 0.8]
 
 
-def test_speaker_ttl_respeita_o_ambiente():
+def test_speaker_ttl_respeita_o_ambiente(tmp_path):
     """`TTS_SPEAKER_TTL_S` muda o TTL (o dono devolve a RAM quando quiser)."""
     env = {**os.environ, "TTS_SPEAKER_TTL_S": "42",
-           "TTS_SETTINGS_PATH": "/tmp/tts-606-settings.json",
+           # caminho POR EXECUÇÃO: antes era literal fixo (classe #12)
+           "TTS_SETTINGS_PATH": str(tmp_path / "settings.json"),
            "PYTHONDONTWRITEBYTECODE": "1"}
     saida = __import__("subprocess").run(
         [sys.executable, "-c", "import app; print(app._SPEAKER_TTL_S)"],
