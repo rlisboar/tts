@@ -392,8 +392,10 @@ def _outputs_do_dono_intocado():
     guarda reprova a rodada se um artefato NOSSO reaparecer no diretório real.
 
     O que é do dono e não nosso (o app vivo gerando áudio, a poda periódica dele)
-    entra como aviso, não como falha: só a assinatura da suíte — `t<hash10>.wav`
-    sem `.json` — reprova.
+    entra como aviso, não como falha. Reprovam só as DUAS assinaturas do próprio
+    código sob teste: `t<hash10>.wav` (o job falso do `speech_queue_bypass`) e
+    `.live-<thread>-<ns>.wav` (o temporário do STT do Live, #554/#571 — ele sai no
+    `finally`, mas thread abandonada no fecho da sessão nem sempre chega lá).
     """
     import re
 
@@ -404,7 +406,8 @@ def _outputs_do_dono_intocado():
     yield
     novos = _retrato_outputs(alvo) - antes
     sumidos = antes - _retrato_outputs(alvo)
-    nossos = sorted(n for n in novos if re.fullmatch(r"t[0-9a-f]{10}\.wav", n))
+    nossos = sorted(n for n in novos
+                    if re.fullmatch(r"(t[0-9a-f]{10}|\.live-\d+-\d+)\.wav", n))
     outros = sorted(novos - set(nossos))
     if sumidos or outros:
         print(f"\n[outputs] o diretório real mudou por fora da suíte: "
