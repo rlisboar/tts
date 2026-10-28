@@ -296,12 +296,13 @@ aparelho da LAN cadastra a própria voz); apagar o perfil (`DELETE
 | Rota | O que devolve |
 |---|---|
 | `GET /api/speaker/profiles` | `name`, `samples`, `updated`, `modelo`, `precisa_recadastrar` |
-| `POST /api/speaker/check` | `speaker`, `sim`, `limiar`, `modo` e `autorizado` do áudio enviado (diagnóstico pela MESMA régua do gate) |
+| `POST /api/speaker/check` | `speaker`, `sim`, `limiar`, `modo` e `passaria` do áudio enviado (diagnóstico pela MESMA régua do gate) |
 
 O `check` existe para calibrar sem depender do gate ligado: ele pontua pelo
 centróide das amostras, com o extrator do perfil, e devolve o veredito do
-servidor (`autorizado`) junto do limiar e do modo efetivos — com `modo:
-"asnorm"` o `sim` é normalizado e não se compara com o rigor cru.
+servidor (`passaria`; `autorizado` é o nome anterior, ainda publicado) junto do
+limiar e do modo efetivos — com `modo: "asnorm"` o `sim` é normalizado e não se
+compara com o rigor cru.
 
 Cada perfil guarda o **extrator** que o gerou (`modelo`; ausente = Resemblyzer
 legado). Perfil de outro extrator continua autenticando — `precisa_recadastrar`

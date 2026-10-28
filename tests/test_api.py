@@ -2186,12 +2186,15 @@ def test_speaker_check_pontua_como_o_gate_e_diz_o_veredito(client, auth, monkeyp
     corpo = r.json()
     assert corpo["speaker"] == "eu"
     assert abs(corpo["sim"] - 0.707) < 1e-2, "pontuou pelo máximo, não pelo centróide"
-    assert corpo["limiar"] == 0.75 and corpo["modo"] == "cru" and corpo["autorizado"] is False
+    assert corpo["limiar"] == 0.75 and corpo["modo"] == "cru" and corpo["passaria"] is False
+    # `autorizado` é o nome anterior do MESMO veredito e segue saindo (a tela lê os
+    # dois por feature-detect; nada de quebrar cliente velho)
+    assert corpo["autorizado"] is False
     # abaixo do rigor o veredito do servidor acompanha (nada de conta na tela)
     monkeypatch.setitem(app._settings, "speaker_threshold", 0.6)
     corpo = client.post("/api/speaker/check", headers=auth,
                         files={"audio": ("a.wav", b"x", "audio/wav")}).json()
-    assert corpo["autorizado"] is True
+    assert corpo["passaria"] is True and corpo["autorizado"] is True
 
 
 def test_speaker_enroll_troca_de_extrator_zera_vetores_incompativeis(

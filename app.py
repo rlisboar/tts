@@ -7923,7 +7923,11 @@ SPEAKER_MODELO_ATUAL = "ecapa:v1"
 #: um `.pt` que nunca existiu e o extrator vencedor não ligava em lugar nenhum (#599).
 _SPEAKER_MODELO_DIR = _caminho_estado_env("TTS_SPEAKER_MODELO_DIR",
                                           BASE / "models" / "ecapa-voxceleb")
-_SPEAKER_ARQ_OBRIG = ("hyperparams.yaml", "embedding_model.ckpt", "mean_var_norm_emb.ckpt")
+#: `label_encoder.ckpt` entra na lista (#598): sem ele o `Pretrainer` busca o
+#: arquivo no Hub e o load falha offline — a disponibilidade dizia True e o
+#: embedding voltava None, calado.
+_SPEAKER_ARQ_OBRIG = ("hyperparams.yaml", "embedding_model.ckpt",
+                      "mean_var_norm_emb.ckpt", "label_encoder.ckpt")
 _speaker_lock = threading.Lock()
 _speaker_enc_lock = threading.Lock()   # só a criação do encoder
 _speaker_encoder = None      # VoiceEncoder (legado) carregado sob demanda
@@ -8383,10 +8387,10 @@ async def speaker_check(audio: UploadFile = None):
     """Diagnóstico: quem é a voz do áudio e a similaridade — a MESMA régua do gate.
 
     Usa `_speaker_pontua` (centróide das amostras, escore do extrator do perfil) e
-    devolve o limiar e o modo que o gate aplicaria, além de `autorizado`. Antes
-    pontuava pelo MÁXIMO das amostras e devolvia só `sim`: a tela concluía
+    devolve o limiar e o modo que o gate aplicaria, além do veredito `passaria`.
+    Antes pontuava pelo MÁXIMO das amostras e devolvia só `sim`: a tela concluía
     "passa/não passa" com um número de outra escala e o teste de perfil podia
-    contrariar o gate (#525)."""
+    contrariar o gate (#525/#590)."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
     tmp = _save_audio_upload(audio, ".vozchk")
@@ -8400,10 +8404,13 @@ async def speaker_check(audio: UploadFile = None):
     modelo = (_speaker_modelo_do_perfil(perfis[melhor]) if melhor
               else _speaker_modelo_efetivo())
     limiar, modo_limiar = _speaker_limiar(modelo)
+    passa = bool(melhor and sim is not None and sim >= limiar)
     return {"speaker": melhor, "sim": round(sim or 0.0, 3),
             "limiar": round(limiar, 3), "modo": modo_limiar,
-            # veredito do servidor: com `asnorm` o `sim` não se compara ao rigor cru
-            "autorizado": bool(melhor and sim is not None and sim >= limiar)}
+            # veredito do servidor: com `asnorm` o `sim` não se compara ao rigor cru.
+            # `passaria` é o contrato decidido no #590; `autorizado` é o nome anterior
+            # (a tela já lê os dois por feature-detect) e fica enquanto houver cliente
+            "passaria": passa, "autorizado": passa}
 
 
 @app.post("/api/transcribe")
@@ -9883,7 +9890,8 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
     Cada filtro só age se estiver `on`. `modelo` é o único assíncrono e o único
     que devolve `p_cortar`; sem classificador ligado ele é pulado. Quem chega ao
     fim sem decisão usa `live_barge_sem_decisao`."""
-    from live_turns import (_BACKCHANNEL, _COMANDO_PARAR, _PERGUNTA, _palavras,
+    from live_turns import (_BACKCHANNEL, _COMANDO_PARAR, _PERGUNTA, _RUIDO_ONO,
+                            _palavras,
                             classifica_barge)
     palavras = _palavras(texto)
     eco_txt = sess.get("ultimo_assistente") or ""
@@ -9946,6 +9954,16 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
         elif len(palavras) >= int((filtros.get("frase_longa") or {}).get("min_palavras", 3)):
             if ligado("frase_longa"):
                 return "interrupcao", None, None, "frase_longa"
+        elif (palavras and not all(p in _RUIDO_ONO for p in palavras)
+              and (ligado("pergunta") or ligado("frase_longa") or ligado("fala_sustentada"))):
+            # conteúdo PRÓPRIO curto ("tchau", "obrigado", "beleza mano"): a regra
+            # pura já disse interrupção e nenhum dos três motivos acima se aplica.
+            # Sem esta saída a decisão caía no `sem_decisao` (default `continua`) e
+            # uma fala de 1–2 palavras com conteúdo NUNCA cortava — a fonte única
+            # era anulada no último passo (#547). O `elif` deixa o modo
+            # `so_comando` (os três desligados) com o comportamento dele: só
+            # palavras de comando cortam.
+            return "interrupcao", None, None, "conteudo"
     # 9) sem decisão
     sem = str(_settings.get("live_barge_sem_decisao") or "continua")
     return (("interrupcao" if sem == "interrompe" else "ruido"), None, None,
