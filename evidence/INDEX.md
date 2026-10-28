@@ -302,6 +302,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `585-perfil-precisa-recadastrar.png` | #585 | 2026-10-28 | (imagem) |
 | `585-recusa-motivo-forcar.png` | #585 | 2026-10-28 | (imagem) |
 | `590-testar-veredito.txt` | #590 | 2026-10-28 | "Testar" do perfil (#590): o veredito vem do SERVIDOR e o slider se rotula no modo normalizado |
+| `657-marca-dagua.txt` | #657 | — | 657 — marca d'água AudioSeal: custo por segundo e carga (2026-10-28) |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |

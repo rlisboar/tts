@@ -55,3 +55,35 @@ import (d).
 ./.venv-mlx/bin/python tools/bakeoff/corpus.py publico && ./.venv-mlx/bin/python tools/bakeoff/corpus.py monta
 ./.venv-mlx/bin/python tools/bakeoff/ruido_bakeoff.py --familias ventoinha,babble --snrs 5,10 --limite 3
 ```
+
+---
+
+# WER em pt-BR (ressalva do gate #529) — decide o I2
+
+O R1 mediu WER em inglês; o produto é pt-BR. Fala em pt com a frase conhecida
+(referência exata), ruído do R1, SNR fixo, 6 falantes por célula. Carga da máquina
+no momento: **loadavg 4,92** — RTF aqui é de máquina ocupada, não de produção.
+
+**WER (menor é melhor):**
+
+| cenário | cru | RNNoise | DFN3 |
+|---|---|---|---|
+| ventoinha 5 dB | 0,600 | **0,533** | 0,622 |
+| ventoinha 10 dB | 0,600 | **0,556** | 0,589 |
+| babble 5 dB | 0,667 | **0,533** | 0,667 |
+| babble 10 dB | 0,711 | **0,622** | 0,689 |
+
+RTF: RNNoise 0,015–0,017; DFN3 0,062–0,104.
+
+**RNNoise ganha nas quatro células**, por 0,03 a 0,14 de WER, e é 4–6× mais barato.
+O DFN3 **não melhora o WER em pt** em nenhuma célula — empata no babble 5 dB e
+piora no resto contra o cru. É o mesmo sentido do achado em inglês, agora com
+número.
+
+Consequência para o I2: **o filtro que fica ANTES do STT é o RNNoise**. O DFN3
+segue sendo o certo para a AMOSTRA (preserva timbre, que é o que o clone copia),
+não para o reconhecedor.
+
+Ressalva do corpus: as vozes pt são sintéticas do sistema e o WER absoluto é alto
+(0,53 no melhor caso); a comparação relativa é o que vale, e o mesmo texto é usado
+nos três candidatos.
