@@ -324,6 +324,15 @@ extrator novo. `/api/status` traz o mesmo em `extrator_locutor`. O modelo é
 carregado no **primeiro uso** de identidade, nunca no boot: sem peso no boot, o
 `/health` sobe mesmo numa instalação sem os pesos.
 
+**Ociosidade**: o encoder é solto depois de `TTS_SPEAKER_TTL_S` segundos sem uso
+(default 600 = 10 min; `0` solta na primeira checagem) e a próxima consulta
+recarrega — o veredito não muda, só se paga o load de novo. A checagem roda a cada
+5 s e `/api/status` mostra `extrator_carregado` e `extrator_ttl_s`. Sobre a
+memória, o número honesto: o objeto morre na hora (conferido por `weakref`), mas o
+alocador só devolve parte — medido **561 → 463 MB** com o pedido explícito de
+pressão ao alocador; o resto é arena do `torch` e só sai encerrando o processo.
+Sem o pedido ao alocador, o RSS **não** caía (548 → 557 MB).
+
 ### Modos do gate
 
 `speaker_gate` em Configurações → Rede & memória, seção *Tradução / STT ·

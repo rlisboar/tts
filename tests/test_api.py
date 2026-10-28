@@ -2148,6 +2148,70 @@ def test_extrator_nao_e_carregado_no_boot(tmp_path):
     assert saida.stdout.split() == ["True", "True"], "algum encoder carregou no boot"
 
 
+def _enc_falso():
+    """Encoder de mentira com a forma que o código usa."""
+    class _Enc:
+        def encode_batch(self, _t):
+            return types.SimpleNamespace(squeeze=lambda: types.SimpleNamespace(
+                numpy=lambda: np.array([3.0, 4.0])))
+    return _Enc()
+
+
+class _SemGrad:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+
+def test_speaker_ecapa_e_liberado_por_ociosidade_e_recarrega(tmp_path, monkeypatch,
+                                                             client, auth):
+    """Passado o TTL, o encoder é SOLTO (~460 MB) e a próxima consulta recarrega.
+
+    Mesma política do classificador do #507 (#612). O veredito não muda com o
+    reload: é o mesmo modelo, só caro."""
+    relogio = [1000.0]
+    monkeypatch.setattr(app, "_SPEAKER_TTL_S", 600.0)
+    monkeypatch.setattr(app.time, "monotonic", lambda: relogio[0])
+    monkeypatch.setattr(app, "_wav_to_mono16k", lambda p: np.ones(32000, dtype=np.float32))
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(
+        from_numpy=lambda x: x, no_grad=_SemGrad))
+    cargas = []
+
+    def _carrega():                    # substitui o load real, inclusive o estado
+        cargas.append(1)
+        app._speaker_ecapa_enc = _enc_falso()
+        app._speaker_ultimo_uso = app.time.monotonic()
+        return app._speaker_ecapa_enc
+
+    monkeypatch.setattr(app, "_speaker_encoder_ecapa", _carrega)
+    app._speaker_embed_ecapa(Path("x.wav"))          # carrega (1)
+    assert len(cargas) == 1 and app._speaker_ecapa_enc is not None
+    app._speaker_vigia_passo()
+    assert app._speaker_ecapa_enc is not None, "sem ociosidade não pode liberar"
+
+    relogio[0] += 601.0                              # passou do TTL
+    assert app._speaker_vigia_passo() is True
+    assert app._speaker_ecapa_enc is None, "o encoder ficou carregado depois do TTL"
+    # e a próxima consulta recarrega e devolve o MESMO vetor
+    vetor = app._speaker_embed_ecapa(Path("x.wav"))
+    assert len(cargas) == 2, "não recarregou depois de liberar"
+    assert [round(v, 3) for v in vetor] == [0.6, 0.8]
+
+
+def test_speaker_ttl_respeita_o_ambiente():
+    """`TTS_SPEAKER_TTL_S` muda o TTL (o dono devolve a RAM quando quiser)."""
+    env = {**os.environ, "TTS_SPEAKER_TTL_S": "42",
+           "TTS_SETTINGS_PATH": "/tmp/tts-606-settings.json",
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    saida = __import__("subprocess").run(
+        [sys.executable, "-c", "import app; print(app._SPEAKER_TTL_S)"],
+        cwd=str(Path(__file__).resolve().parent.parent), env=env, check=True,
+        capture_output=True, text=True)
+    assert saida.stdout.strip() == "42.0"
+
+
 def test_speaker_fallback_avisa_uma_vez_e_aparece_no_get(tmp_path, monkeypatch, caplog,
                                                         client, auth):
     """Sem pesos, a queda para o Resemblyzer AVISA (log 1×) e sai no GET (#606).

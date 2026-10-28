@@ -7,6 +7,7 @@ Tudo local: nenhum áudio ou texto sai da máquina.
 
 import asyncio
 import concurrent.futures
+import gc
 import hashlib
 import json
 import logging
@@ -2239,6 +2240,10 @@ def status():
     # mesmo papel do `vad_backend`: o fallback tem de ser provado por fora, não
     # descoberto no stderr.
     st["extrator_locutor"] = _speaker_modelo_efetivo()
+    # O encoder é carregado sob demanda e liberado por ociosidade (#612): estado e
+    # TTL vigente ficam visíveis, senão o unload só se prova por RSS.
+    st["extrator_carregado"] = _speaker_ecapa_enc is not None
+    st["extrator_ttl_s"] = _SPEAKER_TTL_S
     # Tamanho do dict do rate limiter (buckets = identidade × path normalizado) e o
     # teto: era invisível e só aparecia como memória crescendo em caixa exposta.
     st["live_sessions"] = len(_live_sessions)
@@ -8191,6 +8196,12 @@ _speaker_enc_lock = threading.Lock()   # só a criação do encoder
 _speaker_encoder = None      # VoiceEncoder (legado) carregado sob demanda
 _speaker_ecapa_enc = None    # EncoderClassifier (ECAPA) carregado sob demanda
 _speaker_fallback_avisado = False   # o aviso de fallback sai UMA vez por processo
+#: TTL de ociosidade do ECAPA (env): devolve os ~460 MB medidos no #526. Mesma
+#: política do classificador do #507 — carga sob demanda e unload por TTL (#612).
+_SPEAKER_TTL_S = float(os.environ.get("TTS_SPEAKER_TTL_S", "600"))
+_SPEAKER_VIGIA_S = 5.0       # cadência do vigia (custo: um `sleep` por vez)
+_speaker_ultimo_uso = 0.0
+_speaker_vigia: threading.Thread | None = None
 
 
 def _speaker_ecapa_motivo() -> str:
@@ -8276,8 +8287,8 @@ def _speaker_encoder_ecapa():
     `source`/`savedir` no diretório LOCAL: com os pesos materializados o load não
     depende de rede (`pretrained_path` no `hyperparams.yaml` é id de HF e só é
     consultado se faltar arquivo). Mesmo lock do outro encoder — dois carregamentos
-    simultâneos dobravam a RAM."""
-    global _speaker_ecapa_enc
+    simultâneos dobravam a RAM. Marca o uso e sobe o vigia de ociosidade (#612)."""
+    global _speaker_ecapa_enc, _speaker_ultimo_uso
     if _speaker_ecapa_enc is None:
         with _speaker_enc_lock:
             if _speaker_ecapa_enc is None:
@@ -8287,7 +8298,92 @@ def _speaker_encoder_ecapa():
                     source=str(_SPEAKER_MODELO_DIR),
                     savedir=str(_SPEAKER_MODELO_DIR),
                     run_opts={"device": "cpu"})
+                _speaker_ultimo_uso = time.monotonic()
+                _speaker_vigia_sobe()
+    _speaker_ultimo_uso = time.monotonic()
     return _speaker_ecapa_enc
+
+
+def _libera_arena() -> None:
+    """Pede ao ALOCADOR que devolva páginas livres (best effort, sem dependência).
+
+    `gc.collect()` sozinho não devolve RSS: o objeto morre e a arena fica. Medido
+    aqui: sem isto, 548 MB de pico continuavam 557 MB depois de liberar; com o
+    pedido ao alocador, ~100 MB voltam na hora. O resto é arena do próprio torch e
+    só sai encerrando o processo — por isso o unload é por OCIOSIDADE, não uma
+    promessa de devolver tudo.
+
+    macOS: `malloc_zone_pressure_relief`; glibc: `malloc_trim`. Quem não existir,
+    simplesmente não é chamado."""
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL(None)
+    except OSError:               # sem libc à mão: fica só o gc
+        return
+    for nome, args in (("malloc_zone_pressure_relief", (None, 0)),
+                       ("malloc_trim", (0,))):
+        fn = getattr(libc, nome, None)
+        if fn is None:
+            continue
+        try:
+            fn(*args)
+        except Exception:  # noqa: BLE001 — assinatura diferente não pode quebrar
+            pass
+
+
+def _speaker_ecapa_libera() -> None:
+    """Solta o encoder ECAPA e devolve a RAM que dá (pico de ~490 MB, #526).
+
+    O encoder é referência de módulo; soltar = `None` + coleta + pedido ao
+    alocador. Quem estiver DENTRO de um embedding segue com a referência local que
+    já pegou, e a próxima consulta recarrega — o gate não muda de decisão por
+    causa disso, só paga o load de novo."""
+    global _speaker_ecapa_enc
+    with _speaker_enc_lock:
+        enc, _speaker_ecapa_enc = _speaker_ecapa_enc, None
+    if enc is None:
+        return
+    del enc
+    gc.collect()
+    gc.collect()                  # 2ª passada: finalizadores podem soltar mais
+    try:                          # cache do torch (CPU/MPS) não devolve sozinho
+        import torch
+
+        cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
+        if callable(cache):
+            cache()
+    except Exception:  # noqa: BLE001 — sem torch carregado não há cache a soltar
+        pass
+    _libera_arena()
+    print("[speaker] extrator ECAPA liberado por ociosidade", flush=True)
+
+
+def _speaker_vigia_passo() -> bool:
+    """Uma checagem do TTL: True = liberou agora. Separado do laço para testar."""
+    if _speaker_ecapa_enc is None:
+        return False
+    if time.monotonic() - _speaker_ultimo_uso <= _SPEAKER_TTL_S:
+        return False
+    _speaker_ecapa_libera()
+    return True
+
+
+def _speaker_vigia_ecapa() -> None:
+    """Vigia do TTL: enquanto houver encoder, confere a cada `_SPEAKER_VIGIA_S`."""
+    while _speaker_ecapa_enc is not None:
+        time.sleep(_SPEAKER_VIGIA_S)
+        _speaker_vigia_passo()
+
+
+def _speaker_vigia_sobe() -> None:
+    """Sobe UM vigia (thread daemon) se ainda não houver."""
+    global _speaker_vigia
+    if _speaker_vigia is not None and _speaker_vigia.is_alive():
+        return
+    _speaker_vigia = threading.Thread(target=_speaker_vigia_ecapa, name="speaker-ttl",
+                                      daemon=True)
+    _speaker_vigia.start()
 
 
 def _speaker_embed_ecapa(wav_path: Path) -> list[float] | None:
