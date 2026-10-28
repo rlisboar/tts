@@ -18,7 +18,8 @@ dependências são `torch` (o do lock) e `einops`/`rotary_embedding_torch`.
 
 Uso:
     import separa
-    sep = separa.carrega()            # baixa/vendoriza na 1ª vez
+    if separa.disponivel():           # sem os pesos, o app cai na seleção por janela
+        sep = separa.carrega()        # materializa pelo script se faltar e carrega
     fluxos = separa.separa(sep, mistura)
     alvo = separa.escolhe(fluxos, ref_do_dono, eca)
 """
