@@ -452,8 +452,9 @@ def _outputs_do_dono_intocado():
     O que é do dono e não nosso (o app vivo gerando áudio, a poda periódica dele)
     entra como aviso, não como falha. Reprovam só as DUAS assinaturas do próprio
     código sob teste: `t<hash10>.wav` (o job falso do `speech_queue_bypass`) e
-    `.live-<thread>-<ns>.wav` (o temporário do STT do Live, #554/#571 — ele sai no
-    `finally`, mas thread abandonada no fecho da sessão nem sempre chega lá).
+    `.live-<thread>-<ns>.wav` (temporário antigo do STT do Live: desde o #571 ele
+    mora no TMPDIR do sistema, e a assinatura fica para as rodadas com código
+    anterior e para quem voltar a gravar ali).
     """
     import re
 

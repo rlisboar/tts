@@ -28,6 +28,7 @@ import json
 import os
 import pathlib
 import re
+import tempfile
 import threading
 import time
 import wave
@@ -1301,7 +1302,13 @@ def _stt_app(pcm16_le_16k: bytes, language: str | None,
     diferente de ruído qualquer e não pode sair indistinguível de "não ouvi".
     """
     import app
-    destino = app.OUTPUTS_DIR / f".live-{threading.get_ident()}-{time.time_ns()}.wav"
+    # TMPDIR do sistema, não `outputs/` (#571): o diretório do dono é HISTÓRICO e
+    # um temporário ali dependia de o `finally` sempre rodar — com thread daemon
+    # morta no fim do processo o arquivo ficava para sempre (26 medidos). Aqui o
+    # arquivo nem aparece no diretório de ninguém.
+    _fd, _nome = tempfile.mkstemp(prefix="tts-live-stt-", suffix=".wav")
+    os.close(_fd)                       # será reaberto pelo `wave` logo abaixo
+    destino = pathlib.Path(_nome)
     try:
         with wave.open(str(destino), "wb") as w:
             w.setnchannels(1)
