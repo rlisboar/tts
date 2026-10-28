@@ -3217,7 +3217,8 @@
             uma vai melhorando a outra; a 1ª <b>não</b> fecha o cadastro.</p>
         </div>
         <div class="row2" style="gap:8px; margin-top:6px">
-          <input type="text" id="spName" placeholder="nome do perfil (ex.: você)" style="flex:1; min-width:120px">
+          <input type="text" id="spName" placeholder="nome do perfil (ex.: você)" maxlength="40"
+                 title="até 40 caracteres (o servidor trunca além disso)" style="flex:1; min-width:120px">
           <button type="button" id="spEnroll" class="small">🎙 Gravar amostra (8s)</button>
           <button type="button" id="spTest" class="small">🔍 Testar</button>
         </div>
@@ -7181,11 +7182,18 @@ async function spEnviaAmostra(nome, blob, forcar) {
   const n = Number(r.samples) || 0;
   const faltam = Number(r.samples) >= SP_MIN_AMOSTRAS ? 0 : Math.max(0, SP_MIN_AMOSTRAS - n);
   st.textContent = "";
+  // o servidor trunca o nome em 40: mostrar o nome REAL (o `maxlength` cobre o
+  // digitar, mas nome vindo de fora/paste longo não pode virar outro em silêncio)
+  const nomeSrv = r.name || nome;
+  if (nomeSrv !== nome) {
+    if ($("spName")) $("spName").value = nomeSrv;
+    st.textContent = `nome do perfil ajustado para "${nomeSrv}" (limite de 40 caracteres)`;
+  }
   if (r.completo) {
-    $("spProgresso").textContent = `✔ "${nome}": ${n} amostra(s) — perfil completo` +
+    $("spProgresso").textContent = `✔ "${nomeSrv}": ${n} amostra(s) — perfil completo` +
       (n < SP_ALVO_AMOSTRAS ? ` (até ${SP_ALVO_AMOSTRAS} fica mais estável)` : "");
   } else {
-    $("spProgresso").textContent = `"${nome}": amostra ${n} registrada — ` +
+    $("spProgresso").textContent = `"${nomeSrv}": amostra ${n} registrada — ` +
       `${(r.faltando || []).join(", ") || `mais ${faltam} amostra(s)`}` +
       ` (o perfil só fica pronto com ${SP_MIN_AMOSTRAS})`;
   }
@@ -7194,7 +7202,7 @@ async function spEnviaAmostra(nome, blob, forcar) {
     $("spProgresso").textContent += ` · ⚠ aceito assim mesmo: ${r.problemas.join("; ")}`;
   }
   if (btn) btn.textContent = r.completo ? "＋ Gravar outra amostra (8s)" : "🎙 Gravar próxima (8s)";
-  toast(r.completo ? `Voz "${nome}" cadastrada` : `Amostra ${n}/${SP_MIN_AMOSTRAS} de "${nome}"`);
+  toast(r.completo ? `Voz "${nomeSrv}" cadastrada` : `Amostra ${n}/${SP_MIN_AMOSTRAS} de "${nomeSrv}"`);
   refreshSpProfiles();
   if (!r.completo) $("spDica").hidden = false;
 }

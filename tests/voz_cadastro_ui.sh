@@ -8,7 +8,9 @@
 #     a MESMA gravação — sem obrigar a regravar para descobrir o critério;
 #   · guiar as amostras pelo que o SERVIDOR responde (`samples`/`faltando`/`completo`),
 #     sem tratar a 1ª como fim do cadastro;
-#   · mostrar `modelo` e `precisa_recadastrar` por perfil e oferecer a regravação.
+#   · mostrar `modelo` e `precisa_recadastrar` por perfil e oferecer a regravação;
+#   · limitar o nome aos 40 do servidor, respeitar o teto de 5 amostras e mandar
+#     401 para a barra de chave (nunca para o texto de microfone).
 #
 # Áudio real, sem dublê da rota: microfone FALSO do Chromium tocando fixtures
 # VERSIONADAS e o servidor de verdade decidindo (VAD, SNR, extrator). O que se mede
@@ -22,7 +24,7 @@
 # Estado próprio (#461/#541): TTS_SPEAKER_PATH/OUTPUTS/SETTINGS/APIKEYS em tmp —
 # o `.speaker-profiles.json` e o `outputs/` do dono não são tocados. Diretório da
 # rodada morre no verde; fica na vermelha; as sobras de rodadas mortas são
-# recolhidas por idade (#562).
+# recolhidas por idade (#562) — 1 h, a rodada vermelha morre rápido.
 #
 #   ./tests/voz_cadastro_ui.sh        # instância própria, porta livre
 set -euo pipefail
@@ -50,7 +52,7 @@ def porta_livre():
 
 for _velho in pathlib.Path("/tmp").glob("voz_cadastro_*"):
     try:
-        if time.time() - _velho.stat().st_mtime > 7200:
+        if time.time() - _velho.stat().st_mtime > 3600:
             shutil.rmtree(_velho) if _velho.is_dir() else _velho.unlink()
     except Exception:
         pass
@@ -163,6 +165,8 @@ try:
         cobrar("3 amostras" in dica, "a dica não diz que o perfil precisa de 3 amostras")
         cobrar(pg.is_visible("#spDica"), "a dica não está visível antes da gravação")
         cobrar(not pg.is_visible("#spForcar"), "o box de 'usar assim mesmo' nasce visível")
+        cobrar(pg.get_attribute("#spName", "maxlength") == "40",
+               "o campo do nome não limita aos 40 caracteres que o servidor aceita")
 
         # ── 1) amostra RUIM: motivo na tela + "usar assim mesmo" sem regravar ─
         pg.fill("#spName", "perfil-curto")
@@ -260,6 +264,56 @@ try:
             cobrar(pg.input_value("#spName") == "perfil-antigo",
                    f"regravar não preencheu o perfil ({pg.input_value('#spName')!r})")
         cobrar(not erros, "erros de JS: " + "; ".join(erros[:3]))
+
+        # ── 4) perfil no TETO de 5 amostras: rótulo cheio e atalho `＋` ───────
+        # (semeado, sem gravar: o cap em si é do servidor — `vecs[-5:]` —, o que se
+        # cobra aqui é a tela não prometer "mais para o mínimo" num perfil cheio)
+        d = json.loads(SPEAKER.read_text())
+        # o modelo do perfil semeado tem de ser o EFETIVO desta instalação (com os
+        # pesos do #526 presentes ele é `ecapa:v1`; sem, `resemblyzer:v1`) — senão o
+        # chip sai marcado para recadastro e o atalho vira "regravar"
+        vivo = (d.get("perfil-curto") or {}).get("modelo") or "resemblyzer:v1"
+        d["perfil-cheio"] = {"vecs": [[0.0] * 256] * 5, "updated": 1.0, "modelo": vivo}
+        SPEAKER.write_text(json.dumps(d))
+        pg.reload(wait_until="domcontentloaded")
+        pg.click('.nav-item[data-view="config"]')
+        pg.click('[data-stab="rede"]')
+        esperar(lambda: pg.wait_for_selector('[data-mais="perfil-cheio"]', timeout=20000),
+                "o perfil no teto aparecer na lista")
+        cheio = pg.query_selector('[data-mais="perfil-cheio"]')
+        cobrar(cheio is not None, "o perfil no teto não ganhou o atalho de gravar mais")
+        print(f"  perfil no teto: título {(cheio.get_attribute('title') if cheio else None)!r}")
+        if cheio:
+            cobrar("5" in (pg.text_content('[data-nome="perfil-cheio"]') or ""),
+                   "a contagem do perfil no teto não aparece")
+            cobrar("para o mínimo" not in (cheio.get_attribute("title") or ""),
+                   "o atalho ainda promete 'para o mínimo' com 5 amostras "
+                   f"({cheio.get_attribute('title')!r})")
+            cheio.click()
+            pg.wait_for_timeout(150)
+            cobrar(pg.input_value("#spName") == "perfil-cheio",
+                   f"o atalho do teto não preencheu o nome ({pg.input_value('#spName')!r})")
+        cobrar(not erros, "erros de JS: " + "; ".join(erros[:3]))
+        ctx.close(); b.close()
+
+        # ── 5) 401 no cadastro: barra de chave, não texto de microfone ────────
+        b, ctx, pg, erros = abre_cadastro(pw, FIX / "voz_fala_5s_16k.wav")
+        pg.evaluate("() => { const o = window.spGravar; window.spGravar = (s, st) => o(1, st); }")
+        pg.route("**/api/speaker/enroll", lambda route: route.fulfill(
+            status=401, content_type="application/json",
+            body=json.dumps({"detail": "chave da API inválida (probe)"})))
+        pg.fill("#spName", "perfil-401")
+        pg.click("#spEnroll")
+        esperar(lambda: pg.wait_for_function(
+            "() => (document.getElementById('toast').textContent || '').includes('inválida')",
+            timeout=30000), "o 401 ser mostrado")
+        corrida = (pg.text_content("#toast") or "").strip()
+        print(f"  401: toast {corrida[:80]!r}")
+        cobrar("inválida" in corrida, f"o texto do servidor não apareceu no 401 ({corrida[:80]!r})")
+        cobrar("microfone" not in corrida.lower(), f"o 401 foi contado como falha de mic ({corrida[:80]!r})")
+        cobrar("flex" in (pg.get_attribute("#keyBar", "style") or ""),
+               "o 401 não abriu a barra de chave")
+        cobrar(not erros, "erros de JS: " + "; ".join(erros[:3]))
         ctx.close(); b.close()
 
 except BaseException as exc:          # exceção no meio: também guarda a rodada
@@ -286,5 +340,6 @@ except Exception: pass
 try: shutil.rmtree(DIR)             # verde não deixa diretório para trás
 except Exception: pass
 print("✔ OK — dica antes de gravar, motivo da recusa, 'usar assim mesmo' sem regravar, "
-      "guia até a 3ª amostra e regravação do perfil antigo")
+      "guia até a 3ª amostra, regravação do perfil antigo, teto de 5 com atalho e 401 "
+      "na barra de chave")
 PYEOF
