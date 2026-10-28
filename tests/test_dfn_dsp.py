@@ -69,7 +69,12 @@ def test_filtro_profundo_aplica_o_coeficiente_central():
 
 
 def _sem_modelo() -> bool:
-    return not Path("/tmp/tts-bakeoff/modelos/dfn3-onnx/deepfilter.onnx").is_file()
+    """Respeita `BAKEOFF_DIR` (o default é `/tmp/tts-bakeoff`, a bancada) em vez de
+    cravar o caminho — o #243 põe `/tmp/tts-bakeoff` na lista de compartilhados por
+    desenho, mas o teste não deve depender do literal."""
+    import comum
+
+    return not (comum.BASE / "modelos" / "dfn3-onnx" / "deepfilter.onnx").is_file()
 
 
 @pytest.mark.skipif(_sem_modelo(), reason="modelo ONNX do DFN3 ausente (baixado pelo bake-off)")
