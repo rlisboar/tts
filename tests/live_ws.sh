@@ -21,11 +21,23 @@
 # durante o playback → `interrupted` e o áudio para de chegar; (5) sessão
 # fechando limpa.
 #
-# MEDINDO À MÃO (script de trace, curl, playwright avulso): a chave de API que você
-# cria é estado DO DONO e fica no `.apikeys.json` dele. Use nome com prefixo que a
-# limpeza reconhece — `teste-ui-*`, `probe-papel*`, `probe-adota*` (o
-# `admin_ui_flow.sh` varre esses com mais de 2 min na abertura) — e apague no fim.
-# Nome fora do padrão (ex.: `trace-speed-191`) fica para sempre, e o dono vê na tela.
+# ESTADO ISOLADO (#463): além do provedor e do `settings.json`, a rodada não encosta
+# em NADA do dono — chaves (`.apikeys.json` + `.apikey` legado), `outputs/` e o
+# histórico de jobs vão para `/tmp` por `TTS_*_PATH` (#461) e saem no fim, com log
+# preservado só em rodada vermelha. A chave do dono só é LIDA no modo servidor
+# externo (`BASE=…`), e mesmo aí a suíte não escreve nela.
+#
+# MEDINDO À MÃO (script de trace, curl, playwright avulso, sem este isolamento): a
+# chave de API que você cria é estado DO DONO. Use nome com prefixo que a limpeza
+# reconhece — `teste-ui-*`, `probe-papel*`, `probe-adota*` (o `admin_ui_flow.sh`
+# varre esses com mais de 2 min na abertura) — e apague no fim. Nome fora do padrão
+# (ex.: `trace-speed-191`) fica para sempre, e o dono vê na tela.
+#
+# O contador de `underrun` (#492) também é sensível à carga: com outras suítes
+# rodando junto o TTS não acompanha o tempo real e 1 ou 2 vãos passam do limite.
+# Antes de acusar regressão, confira com a máquina parada e compare com o commit
+# anterior — com carga, a versão antiga piora igual (medido no #463: 4 vãos em 11
+# chunks contra 1 em 8 aqui).
 #
 # O alvo de 1500 ms vale para ESTE cenário (stub local): com o provedor de chat
 # REMOTO do dono o 1º token sozinho custa segundos e o alvo não cabe — quem medir
@@ -45,7 +57,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
 export BASE="${BASE:-}"          # vazio = o driver sobe o próprio servidor
 
 "$PY" - "$@" <<'PY'
-import asyncio, json, os, pathlib, socket, subprocess, sys, threading, time, urllib.request
+import asyncio, json, os, pathlib, shutil, socket, subprocess, sys, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import numpy as np
@@ -54,8 +66,26 @@ import soundfile as sf
 BASE = os.environ.get("BASE", "").rstrip("/")
 RAIZ = pathlib.Path.cwd()
 MODO = os.environ.get("LIVE_LLM", "stub")
-CHAVE = pathlib.Path(".apikey").read_text().strip()
-H = {"X-API-Key": CHAVE}
+#: conteúdo do `.apikeys.json` do dono no INÍCIO (leitura apenas): é a régua da
+#: mordida — se a escrita da rodada cair nele, o isolamento furou (#463).
+try:
+    DONO_CHAVES = pathlib.Path(".apikeys.json").read_text()
+except OSError:
+    DONO_CHAVES = ""
+
+#: chave usada no HTTP/WS. No servidor PRÓPRIO é a SEMENTE do arquivo sintético —
+#: a chave do dono nem é lida. Só com um servidor EXTERNO (`BASE=…`) a chave real
+#: entra, porque aí quem autentica é a instalação dele (#463).
+CHAVE = ""
+H: dict = {}
+
+
+def define_chave(chave):
+    """Fixa a chave da rodada (a do arquivo sintético ou, no modo externo, a real)."""
+    global CHAVE
+    CHAVE = chave
+    H.clear()
+    H["X-API-Key"] = chave
 ALVO_MS = 1500
 # Backend do Live desta rodada (o env do chamador manda; sem ele, stub). O alvo de
 # 1,5 s é do cenário STUB (#173): com o Live no harness dsh, o 1º token DELE domina
@@ -71,6 +101,7 @@ falhas, avisos = [], []
 LOG = None
 CHAVES = None
 LEGADO = None
+SAIDAS = None
 
 
 def ok(msg):
@@ -167,6 +198,25 @@ def limpa_sobras(manter_log=False):
     for sobra in ((() if manter_log else (LOG,)) + (CHAVES, LEGADO)):
         try: sobra.unlink()
         except Exception: pass
+    if SAIDAS:
+        try: shutil.rmtree(SAIDAS, ignore_errors=True)
+        except Exception: pass
+
+
+def _chave_do_dono() -> str:
+    """Chave da instalação já de pé (só leitura): `.apikey`, senão a 1ª do arquivo."""
+    try:
+        return pathlib.Path(".apikey").read_text().strip()
+    except OSError:
+        pass
+    try:
+        dados = json.loads(pathlib.Path(".apikeys.json").read_text())
+        for k in dados.get("keys") or []:
+            if (k.get("secret") or "").strip():
+                return k["secret"].strip()
+    except Exception:            # noqa: BLE001 — sem chave: loopback ainda passa
+        pass
+    return ""
 
 
 def porta_livre():
@@ -199,11 +249,11 @@ def sobe_servidor(porta, stub_porta):
            "TTS_CHAT_MODEL": "stub-live"}
     global LOG
     log = LOG = pathlib.Path("/tmp") / f"live_ws_servidor_{porta}.log"
-    # ARQUIVO DE CHAVES PRÓPRIO (#435): a suíte cria chave para conectar e, sem isto,
-    # a gravação caía no `.apikeys.json` do dono (o conftest não alcança shell). O
-    # launcher troca os DOIS caminhos ANTES de servir — o `.apikey` legado inclusive,
-    # porque `_save_apikeys` espelha nele — e o arquivo nasce com uma chave, não
-    # vazio (vazio faria `_load_apikeys` gerar uma e gravar por conta própria).
+    # ARQUIVO DE CHAVES PRÓPRIO (#435/#463): a suíte cria chave para conectar e, sem
+    # isto, a gravação caía no `.apikeys.json` do dono (o conftest não alcança shell).
+    # Os DOIS caminhos vão por AMBIENTE (#461) — o `.apikey` legado inclusive, porque
+    # `_save_apikeys` espelha nele — e o arquivo nasce com uma chave, não vazio
+    # (vazio faria `_load_apikeys` gerar uma e gravar por conta própria).
     chaves = pathlib.Path("/tmp") / f"live_ws_apikeys_{porta}.json"
     legado = chaves.with_suffix(".apikey")
     semente = "sk-teste-" + os.urandom(8).hex()
@@ -211,18 +261,20 @@ def sobe_servidor(porta, stub_porta):
         {"id": "sessao-legado", "name": "smoke", "secret": semente,
          "created_at": "2026-01-01 00:00:00", "role": None}]}))
     legado.write_text(semente + "\n")
-    global CHAVES, LEGADO
+    global CHAVES, LEGADO, SAIDAS
     CHAVES, LEGADO = chaves, legado
-    launcher = (
-        "import pathlib\n"
-        "import app\n"
-        f"app.APIKEYS_PATH = pathlib.Path({str(chaves)!r})\n"
-        f"app.LEGACY_APIKEY_PATH = pathlib.Path({str(legado)!r})\n"
-        "app._load_apikeys()\n"
-        "import uvicorn\n"
-        f"uvicorn.run(app.app, host='127.0.0.1', port={porta}, log_level='warning')\n")
+    define_chave(semente)          # quem conecta é a chave DESTE arquivo
+    # saídas e histórico também saem do diretório do dono (#463): a síntese grava
+    # `.job-*`/`.wav` e o histórico de jobs é estado — nada disso é nosso
+    SAIDAS = pathlib.Path("/tmp") / f"live_ws_saidas_{porta}"
+    SAIDAS.mkdir(parents=True, exist_ok=True)
+    env.update({"TTS_APIKEYS_PATH": str(chaves),
+                "TTS_LEGACY_APIKEY_PATH": str(legado),
+                "TTS_OUTPUTS_DIR": str(SAIDAS),
+                "TTS_JOBS_HIST_PATH": str(SAIDAS / "jobs-history.json")})
     proc = subprocess.Popen(
-        [str(RAIZ / ".venv-mlx" / "bin" / "python"), "-c", launcher],
+        [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1",
+         "--port", str(porta), "--log-level", "warning"],
         cwd=str(RAIZ), env=env, stdout=log.open("w"), stderr=subprocess.STDOUT,
         start_new_session=True)
     for _ in range(300):                      # até 60 s
@@ -338,13 +390,17 @@ async def espera_ocioso(ws, limite=6.0):
 
 
 async def principal():
+    global BASE
     import websockets
 
     print("Live — smoke do ciclo completo (tasks #93/#104)")
     guarda_do_settings()
+    # Servidor EXTERNO: a chave é a do dono (leitura apenas). No servidor próprio
+    # quem define a chave é o `sobe_servidor`, com o arquivo sintético.
+    if BASE:
+        define_chave(_chave_do_dono())
     voz, pcm = fala_de_teste()
 
-    global BASE
     servidor, stub_porta = None, None
     if MODO != "config":
         stub_porta = sobe_stub()
@@ -378,6 +434,20 @@ async def principal():
                 return
             ok(f"handshake: ready (sessão {pronto.get('session_id')}, "
                f"áudio {pronto.get('audio', {}).get('format')}@{pronto.get('audio', {}).get('sr')}Hz)")
+
+            # 1.1) isolamento da ESCRITA (#463): a chave criada aqui tem de cair no
+            # arquivo sintético, nunca no do dono. É a mordida do card: apontar de
+            # volta para o caminho real faz este bloco reprovar.
+            if CHAVES is not None:
+                criada = http_post("/api/apikeys",
+                                   {"name": "probe-live-ws", "role": "use"}
+                                   )["key"]["secret"]
+                if criada in CHAVES.read_text():
+                    ok("chave da rodada gravada no arquivo sintético (dono intocado)")
+                else:
+                    falha("a chave criada NÃO caiu no arquivo sintético: isolamento furado")
+                if DONO_CHAVES and criada in DONO_CHAVES:
+                    falha("a chave de teste vazou para o .apikeys.json do dono")
 
             # 1.5) espera o pre-warm: antes dele o 1º turno paga a compilação dos
             # kernels dos modelos (medido: 7,3 s de 1º áudio contra 0,7 s depois)
@@ -558,5 +628,9 @@ async def principal():
         print(f"({len(avisos)} aviso(s))")
 
 
-asyncio.run(principal())
+try:
+    asyncio.run(principal())
+except BaseException:                 # crash do driver (ex.: TypeError) também
+    limpa_sobras(manter_log=True)     # tem de limpar: o log fica, o resto não
+    raise
 PY
