@@ -8994,7 +8994,14 @@ async def speaker_enroll(name: str = Form(...),
 
     Roda FORA do event loop (`run_in_threadpool`): VAD, SNR e o extrator são CPU e
     seguram o servidor inteiro enquanto rodam (#525). `forcar` aceita a amostra
-    mesmo com problema, devolvendo os motivos em `problemas`."""
+    mesmo com problema, devolvendo os motivos em `problemas`.
+
+    Perfil de OUTRO extrator: gravar aqui É O RECADASTRO (decisão do PM no #534).
+    As amostras novas vão para `pendente` (no espaço do extrator atual), a
+    consistência só se compara com as do MESMO espaço, e o perfil continua
+    autenticando pelo antigo até o novo ter o mínimo — então ele passa a valer e o
+    `precisa_recadastrar` cai. Sem isso a primeira amostra zerava o perfil antigo e
+    uma comparação entre espaços (192 x 256) estourava."""
     from starlette.concurrency import run_in_threadpool
 
     nome = (name or "").strip()[:40]
@@ -9002,9 +9009,16 @@ async def speaker_enroll(name: str = Form(...),
         raise HTTPException(400, "Nome do perfil obrigatório")
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
+    efetivo = _speaker_modelo_efetivo()
     with _speaker_lock:
         _perfis_antes = _speaker_load()
-    vecs_antes = list((_perfis_antes.get(nome) or {}).get("vecs") or [])
+    _antes = _perfis_antes.get(nome) or {}
+    legado = _speaker_modelo_do_perfil(_antes) if _antes else efetivo
+    _pend = _antes.get("pendente") or {}
+    if legado == efetivo:
+        vecs_antes = list(_antes.get("vecs") or [])
+    else:      # só as do espaço novo contam para a consistência
+        vecs_antes = list(_pend.get("vecs") or []) if _pend.get("modelo") == efetivo else []
     tmp = _save_audio_upload(audio, ".voz")
     try:
         emb, problemas = await run_in_threadpool(_speaker_avalia, tmp, vecs_antes)
@@ -9018,19 +9032,37 @@ async def speaker_enroll(name: str = Form(...),
     with _speaker_lock:
         perfis = _speaker_load()
         p = perfis.get(nome, {"vecs": [], "updated": 0})
-        # perfil de OUTRO extrator não acumula vetor incompatível: começa do zero
-        # no atual (o `modelo` é o que diz a que espaço aquele vetor pertence)
-        vecs = ([] if _speaker_modelo_do_perfil(p) != _speaker_modelo_efetivo()
-                else list(p.get("vecs") or []))
-        vecs.append(emb)
-        p["vecs"] = vecs[-SPEAKER_MAX_SAMPLES:]
-        p["modelo"] = _speaker_modelo_efetivo()
+        if legado == efetivo:
+            # mesmo espaço: acumula normalmente e o perfil fica no extrator atual
+            vecs = list(p.get("vecs") or [])
+            vecs.append(emb)
+            p["vecs"] = vecs[-SPEAKER_MAX_SAMPLES:]
+            p["modelo"] = efetivo
+            p.pop("pendente", None)
+            recadastrando = False
+        else:
+            # RECADASTRO: as amostras do espaço novo ficam separadas e o perfil
+            # SEGUE no antigo (o gate não perde o dono no meio do caminho)
+            pend = dict(p.get("pendente") or {})
+            vecs = list(pend.get("vecs") or []) if pend.get("modelo") == efetivo else []
+            vecs.append(emb)
+            p["pendente"] = {"modelo": efetivo, "vecs": vecs[-SPEAKER_MAX_SAMPLES:]}
+            recadastrando = True
+            if len(p["pendente"]["vecs"]) >= SPEAKER_MIN_AMOSTRAS:
+                # mínimo atingido: o espaço novo passa a valer e o antigo sai
+                p["vecs"] = p["pendente"]["vecs"]
+                p["modelo"] = efetivo
+                p.pop("pendente", None)
+                recadastrando = False
         p["updated"] = time.time()
         perfis[nome] = p
         _speaker_save(perfis)
-    faltam = max(0, SPEAKER_MIN_AMOSTRAS - len(p["vecs"]))
-    return {"ok": True, "name": nome, "samples": len(p["vecs"]),
-            "modelo": _speaker_modelo_efetivo(), "problemas": problemas,
+        n = len(p["vecs"]) if "pendente" not in p else len(p["pendente"]["vecs"])
+        em_uso = _speaker_modelo_do_perfil(p)
+    faltam = max(0, SPEAKER_MIN_AMOSTRAS - n)
+    return {"ok": True, "name": nome, "samples": n,
+            "modelo": efetivo, "em_uso": em_uso, "recadastro": recadastrando,
+            "problemas": problemas,
             # cadastro incompleto é AVISO, não erro: dá para ir gravando
             "completo": faltam == 0,
             "faltando": [f"mais {faltam} amostra(s)"] if faltam else []}
@@ -9044,9 +9076,14 @@ def speaker_profiles():
              "updated": p.get("updated", 0),
              "modelo": _speaker_modelo_do_perfil(p),
              # perfil de outro extrator segue autenticando, mas o dono precisa saber
-             # que ele sai daqui a um recadastro (a UI oferece a gravação de novo)
+             # que ele sai daqui a um recadastro (a UI oferece a gravação de novo).
+             # `pendente` é o recadastro EM ANDAMENTO: quantas amostras do extrator
+             # novo já entraram (a tela guia até o mínimo e o antigo segue valendo)
              "precisa_recadastrar":
-                 _speaker_modelo_do_perfil(p) != _speaker_modelo_efetivo()}
+                 _speaker_modelo_do_perfil(p) != _speaker_modelo_efetivo(),
+             "pendente": ({"modelo": p["pendente"].get("modelo"),
+                           "samples": len(p["pendente"].get("vecs") or [])}
+                          if p.get("pendente") else None)}
             for n, p in sorted(perfis.items())]
 
 
@@ -12111,4 +12148,3 @@ async def _historico_operacao(request, call_next):
 
 # UI estática (registrada por último para não engolir /api/* e /v1/*)
 app.mount("/", StaticFiles(directory=BASE / "static", html=True), name="static")
-# sentinela-isolamento-77717-1793222829

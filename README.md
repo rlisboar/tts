@@ -295,7 +295,7 @@ aparelho da LAN cadastra a própria voz); apagar o perfil (`DELETE
 
 | Rota | O que devolve |
 |---|---|
-| `GET /api/speaker/profiles` | `name`, `samples`, `updated`, `modelo`, `precisa_recadastrar` |
+| `GET /api/speaker/profiles` | `name`, `samples`, `updated`, `modelo`, `precisa_recadastrar`, `pendente` |
 | `POST /api/speaker/check` | `speaker`, `sim`, `limiar`, `modo` e `passaria` do áudio enviado (diagnóstico pela MESMA régua do gate) |
 
 O `check` existe para calibrar sem depender do gate ligado: ele pontua pelo
@@ -314,6 +314,14 @@ os `.ckpt` do SpeechBrain. Sem isso o app fica no Resemblyzer e não baixa nada 
 runtime — quem materializa os pesos é `./tools/baixa_modelos.sh` (manifesto de
 sha256 e licenças em `models/`). Perfil novo no extrator novo começa do zero, sem
 misturar vetores de espaços diferentes.
+
+**Gravar amostra num perfil de outro extrator É o recadastro**: as amostras novas
+entram em `pendente` (espaço do extrator atual), a consistência só se compara com
+as do MESMO espaço e o perfil **segue autenticando pelo antigo** até o novo ter o
+mínimo de 3 — aí o novo passa a valer, o antigo sai e `precisa_recadastrar` vira
+falso. Enquanto isso, `pendente` diz quantas já entraram (a tela guia o resto) e a
+resposta do `enroll` traz `recadastro: true` e `em_uso` (o extrator que autentica).
+Nenhuma rota de `enroll`/`check` mistura os dois espaços.
 
 O fallback **não é silencioso**: na primeira vez que a instalação precisa do
 extrator sai uma linha no stderr dizendo o motivo (`pesos ausentes em … — rode

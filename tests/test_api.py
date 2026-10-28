@@ -2334,20 +2334,60 @@ def test_speaker_check_pontua_como_o_gate_e_diz_o_veredito(client, auth, monkeyp
     assert corpo["passaria"] is True and corpo["autorizado"] is True
 
 
-def test_speaker_enroll_troca_de_extrator_zera_vetores_incompativeis(
-        client, auth, monkeypatch):
-    """Enrolar no extrator ATUAL substitui os vetores do extrator antigo."""
+STORE: dict = {}
+
+
+def _perfil_legado_com_ecapa(monkeypatch):
+    """Perfil do extrator ANTIGO e o ECAPA disponível, com o dublê de dimensões."""
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".voz": Path("f.wav"))
-    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [0.5, 0.5])
-    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: True)   # depois do R2
-    store = {"eu": {"vecs": [[1.0, 0.0], [0.9, 0.1]], "updated": 0}}   # legado
-    monkeypatch.setattr(app, "_speaker_load", lambda: store)
+    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: True)
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None:
+                        [0.5, 0.5] if modelo == app.SPEAKER_MODELO_ATUAL
+                        else [0.5, 0.5] + [0.0] * 254)
+    STORE.clear()
+    STORE["eu"] = {"vecs": [[1.0, 0.0] + [0.0] * 254, [0.9, 0.1] + [0.0] * 254],
+                   "modelo": app.SPEAKER_MODELO_LEGADO, "updated": 0}
+    monkeypatch.setattr(app, "_speaker_load", lambda: STORE)
     monkeypatch.setattr(app, "_speaker_save", lambda p: None)
+
+
+def test_speaker_enroll_em_perfil_legado_recadastra_sem_500(client, auth, monkeypatch):
+    """Gravar num perfil LEGADO com o ECAPA ligado é o RECADASTRO (#534).
+
+    O perfil segue autenticando pelo extrator antigo enquanto o novo não tem o
+    mínimo — a amostra vai para `pendente`, e nada compara 192 x 256 (era 500)."""
+    _perfil_legado_com_ecapa(monkeypatch)
     r = client.post("/api/speaker/enroll", headers=auth,
                     data={"name": "eu"}, files={"audio": ("v.wav", b"x", "audio/wav")})
-    assert r.status_code == 200 and r.json()["samples"] == 1
-    assert store["eu"]["modelo"] == app._speaker_modelo_efetivo()
-    assert store["eu"]["vecs"] == [[0.5, 0.5]], "vetor do extrator antigo ficou junto"
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert corpo["samples"] == 1 and corpo["completo"] is False and corpo["recadastro"] is True
+    assert corpo["em_uso"] == app.SPEAKER_MODELO_LEGADO, "o perfil perdeu o extrator que autentica"
+    p = STORE["eu"]
+    assert p["modelo"] == app.SPEAKER_MODELO_LEGADO and len(p["vecs"]) == 2, "legado foi zerado"
+    assert p["pendente"]["modelo"] == app.SPEAKER_MODELO_ATUAL
+    assert len(p["pendente"]["vecs"]) == 1
+    # no 3º do espaço novo o recadastro conclui: o ECAPA passa a valer e o antigo sai
+    for _ in range(2):
+        corpo = client.post("/api/speaker/enroll", headers=auth,
+                            data={"name": "eu"},
+                            files={"audio": ("v.wav", b"x", "audio/wav")}).json()
+    assert corpo["completo"] is True and corpo["recadastro"] is False
+    assert "pendente" not in STORE["eu"]
+    assert STORE["eu"]["modelo"] == app.SPEAKER_MODELO_ATUAL and len(STORE["eu"]["vecs"]) == 3
+    # e o perfil sai da lista como completo, sem `precisa_recadastrar`
+    lista = client.get("/api/speaker/profiles", headers=auth).json()
+    assert lista[0]["modelo"] == app.SPEAKER_MODELO_ATUAL
+    assert lista[0]["precisa_recadastrar"] is False and lista[0]["pendente"] is None
+
+
+def test_speaker_check_em_perfil_legado_com_ecapa_nao_estoura(client, auth, monkeypatch):
+    """O diagnóstico do "Testar" também não pode comparar espaços diferentes."""
+    _perfil_legado_com_ecapa(monkeypatch)
+    r = client.post("/api/speaker/check", headers=auth,
+                    files={"audio": ("a.wav", b"x", "audio/wav")})
+    assert r.status_code == 200, r.text
+    assert r.json()["modo"] == "cru" and r.json()["passaria"] in (True, False)
 
 
 def _coorte_falsa(monkeypatch, vecs):
