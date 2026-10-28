@@ -6588,7 +6588,7 @@ def test_transcribe_com_speaker_alvo_usa_o_fluxo_do_perfil(client, auth, monkeyp
         return novo, {"escores": [0.9, 0.1], "escolhido": 0,
                       "descartados": {"trechos": 1, "ms": 2100}}
 
-    monkeypatch.setattr(separa_voz, "separa_alvo", _sepa := _separa)
+    monkeypatch.setattr(separa_voz, "separa_alvo", _separa)
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
     def _transcreve(p, language=None, allow_remote=True):
         visto["stt"] = p
@@ -6825,7 +6825,10 @@ def test_denoise_sucesso_diz_que_o_dnsmos_nao_foi_medido(client, auth, voices_tm
     monkeypatch.setattr(app, "_denoise_audio",
                         lambda a, sr, s: np.asarray(a, dtype=np.float32))
     monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: 0.99)
+    # "indisponivel" é ausência de MODELO (#655): com os ONNX instalados, uma
+    # falha de execução passa a sair como "erro" — o duble simula ausência.
     monkeypatch.setattr(app, "_dnsmos", lambda a, sr: None)
+    monkeypatch.setattr(app, "_dnsmos_disponivel", lambda: False)
     corpo = client.post("/api/voices/limpa00001/denoise", headers=auth).json()
     assert corpo["recusado"] is False and corpo["ok"] is True
     assert corpo["limpeza"]["dnsmos_antes"] is None

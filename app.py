@@ -1934,22 +1934,77 @@ def _cosseno(a, b) -> float:
     return float(x @ y / (nx * ny))
 
 
-def _dnsmos(audio, sr: int) -> dict | None:
-    """DNSMOS P.835 do trecho. None quando o pacote não está instalado.
+#: DNSMOS P.835 offline (MIT, Microsoft) materializado pelo infra em `models/dnsmos`.
+#: Executado por `onnxruntime` — o pacote `speechmos` NÃO é dependência (#655).
+_DNSMOS_DIR = _caminho_estado_env("TTS_DNSMOS_DIR", BASE / "models" / "dnsmos")
+_dnsmos_sessoes: dict = {}
+DNSMOS_SR = 16000
+_DNSMOS_TRECHO_S = 9.01        # janela que o modelo espera, do código de referência
 
-    O número vai no relatório para o dono ver o que a limpeza fez — e é ele que a
-    prévia A/B da tela mostra. Importado sob demanda: quem não instalou o
-    `speechmos` continua limpo, só sem o número."""
+
+def _dnsmos_disponivel() -> bool:
+    return (_DNSMOS_DIR / "sig_bak_ovr.onnx").is_file() and \
+        (_DNSMOS_DIR / "model_v8.onnx").is_file()
+
+
+def _dnsmos_sessao(nome: str):
+    """Sessão ONNX por arquivo, carregada uma vez e cacheada."""
+    if nome not in _dnsmos_sessoes:
+        import onnxruntime as ort
+
+        _dnsmos_sessoes[nome] = ort.InferenceSession(
+            str(_DNSMOS_DIR / nome), providers=["CPUExecutionProvider"])
+    return _dnsmos_sessoes[nome]
+
+
+def _dnsmos(audio, sr: int) -> dict | None:
+    """DNSMOS P.835 do trecho: `{ovrl, sig, bak, p808}`. None se faltar modelo.
+
+    Reimplementa o `speechmos` (mesmo modelo, mesmo pré-processamento, mesmos
+    polinômios de correção) sem o pacote: o infra materializou os ONNX em
+    `models/dnsmos` justamente para o número existir offline (#655). O áudio é
+    reamostrado para 16 kHz e repetido até completar a janela de 9,01 s; a nota
+    final é a média dos trechos de 1 s, como no original."""
     import numpy as np
 
-    try:
-        from speechmos import dnsmos
-    except Exception:  # noqa: BLE001
+    if not _dnsmos_disponivel():
         return None
     try:
-        r = dnsmos.run(np.asarray(audio, dtype=np.float32), sr=sr)
-        return {k: round(float(v), 3) for k, v in r.items()}
-    except Exception:  # noqa: BLE001
+        import librosa
+
+        x = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if sr != DNSMOS_SR:
+            x = librosa.resample(x, orig_sr=sr, target_sr=DNSMOS_SR)
+        if not x.size or not np.isfinite(x).all():
+            return None
+        pico = float(np.abs(x).max())
+        if pico > 1.0:                     # a entrada do modelo é [-1, 1]
+            x = x / pico
+        n = int(_DNSMOS_TRECHO_S * DNSMOS_SR)
+        while x.size < n:
+            x = np.append(x, x)
+        saltos = int(np.floor(x.size / DNSMOS_SR) - _DNSMOS_TRECHO_S) + 1
+        sig, bak, ovr, p808 = [], [], [], []
+        prim = _dnsmos_sessao("sig_bak_ovr.onnx")
+        v8 = _dnsmos_sessao("model_v8.onnx")
+        for i in range(saltos):
+            trecho = x[i * DNSMOS_SR: i * DNSMOS_SR + n]
+            if trecho.size < n:
+                continue
+            mel = librosa.feature.melspectrogram(
+                y=trecho[:-160], sr=DNSMOS_SR, n_fft=321, hop_length=160, n_mels=120)
+            mel = (librosa.power_to_db(mel, ref=np.max) + 40) / 40
+            p808.append(float(v8.run(None, {"input_1": mel.T.astype("float32")[None]})[0][0][0]))
+            cru = prim.run(None, {"input_1": trecho.astype("float32")[None]})[0][0]
+            sig.append(float(np.poly1d([-0.08397278, 1.22083953, 0.0052439])(cru[0])))
+            bak.append(float(np.poly1d([-0.13166888, 1.60915514, -0.39604546])(cru[1])))
+            ovr.append(float(np.poly1d([-0.06766283, 1.11546468, 0.04602535])(cru[2])))
+        if not ovr:
+            return None
+        return {"ovrl": round(float(np.mean(ovr)), 3), "sig": round(float(np.mean(sig)), 3),
+                "bak": round(float(np.mean(bak)), 3), "p808": round(float(np.mean(p808)), 3)}
+    except Exception as erro:  # noqa: BLE001
+        print(f"[voice] DNSMOS falhou ({erro}) — segue sem a nota", flush=True)
         return None
 
 
@@ -4673,14 +4728,15 @@ def _guarda_original(voice_id: str) -> None:
 
 
 def _com_dnsmos_motivo(relatorio: dict) -> dict:
-    """Marca o DNSMOS como NÃO MEDIDO quando não há pacote (#523).
+    """Marca o DNSMOS como NÃO MEDIDO só quando os modelos faltam (#523, #655).
 
-    O `speechmos` não está no `requirements.txt` (sem pino novo por ora, decisão do
-    PM), então os dois campos vêm `null` — mas `null` sozinho a tela lê como "0" e
-    mostra nota mínima. `dnsmos_motivo: "indisponivel"` diz para escrever "não
-    medido"; quando o pacote entrar, ele some."""
+    Sem os ONNX, os dois campos vêm `null` — e `null` sozinho a tela lê como "0",
+    mostrando nota mínima. `dnsmos_motivo: "indisponivel"` manda escrever "não
+    medido". Com os modelos instalados (o caminho normal agora) o motivo não sai,
+    e uma falha de execução aparece como `erro` em vez de se passar por ausência."""
     if relatorio.get("dnsmos_antes") is None and relatorio.get("dnsmos_depois") is None:
-        relatorio["dnsmos_motivo"] = "indisponivel"
+        relatorio["dnsmos_motivo"] = ("indisponivel" if not _dnsmos_disponivel()
+                                      else "erro")
     return relatorio
 
 

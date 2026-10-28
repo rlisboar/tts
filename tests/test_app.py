@@ -1238,6 +1238,31 @@ def test_recusa_devolve_o_original_de_verdade_com_musica_ligada(monkeypatch):
     assert vistos[0] == pytest.approx(round(float(np.sqrt(np.mean(x ** 2))), 4))
 
 
+def test_dnsmos_offline_discrimina_limpo_de_ruidoso():
+    """O DNSMOS roda pelos ONNX de `models/dnsmos`, sem o pacote `speechmos` (#655).
+
+    Pula se o peso não estiver instalado (ele fica fora do git)."""
+    if not app._dnsmos_disponivel():
+        pytest.skip("modelos do DNSMOS ausentes")
+    x = _fala_suja(11.0)
+    limpo = app._dnsmos(x, 24000)                  # também reamostra de 24 k
+    ruidoso = app._dnsmos((x + np.random.default_rng(3).normal(0, 0.06, x.size)).astype(np.float32), 24000)
+    assert limpo and ruidoso, "o modelo instalado tem de produzir nota"
+    assert set(limpo) >= {"ovrl", "sig", "bak", "p808"}
+    assert limpo["ovrl"] > ruidoso["ovrl"], "ruído tem de derrubar o OVRL"
+
+
+def test_dnsmos_ausente_vira_none_e_motivo_indisponivel(monkeypatch, tmp_path):
+    monkeypatch.setattr(app, "_DNSMOS_DIR", tmp_path)
+    assert app._dnsmos(_fala_suja(1.0), 24000) is None
+    rel = app._com_dnsmos_motivo({"dnsmos_antes": None, "dnsmos_depois": None})
+    assert rel["dnsmos_motivo"] == "indisponivel"
+    # com o modelo fora, falha de execução não se passa por ausência
+    monkeypatch.setattr(app, "_dnsmos_disponivel", lambda: True)
+    rel = app._com_dnsmos_motivo({"dnsmos_antes": None, "dnsmos_depois": None})
+    assert rel["dnsmos_motivo"] == "erro"
+
+
 def test_relatorio_traz_dnsmos_antes_e_depois(monkeypatch):
     """O dono precisa ver o que ganhou e o que a voz custou, e o motor usado."""
     x = _fala_suja(1.0)
