@@ -412,9 +412,12 @@ def _registro_limpo_entre_testes():
 
     Antes, o job de um teste sobrava para o próximo e o espiao (`tests/_espiao.py`)
     falava em ~metade da suíte (667 linhas em 1332 testes, medido no #505): com
-    ruído constante, vazamento NOVO não se distinguia de acúmulo conhecido. Aqui
-    também se espera o pre-warm do dsh que esteja em voo — sem o join, o cliente
-    aterrissa no pool DEPOIS do teste que o pediu, e a conta cairia no seguinte.
+    ruído constante, vazamento NOVO não se distinguia de acúmulo conhecido.
+
+    O espiao classifica desde o #582: `live`/`dsh` são ALARME (registry), `jobs` é
+    só ESTADO e só sai quando o número muda. O pre-warm do dsh em voo é aterrissado
+    ANTES do relatório (`pytest_runtest_makereport` no espiao), senão o cliente cai
+    no pool depois do teste que o pediu e a conta vai para o vizinho.
 
     Este fixture zera no SETUP; a limpeza final é do espiao, que reporta antes de
     zerar. Quem mover isso para cá (fixture teardown) cega o espiao para
