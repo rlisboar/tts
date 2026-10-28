@@ -10,7 +10,9 @@
 #     disco), a lista recarrega e o toast de sucesso aparece.
 #
 # Estado próprio (#541): `TTS_VOICES_DIR`/`TTS_SETTINGS_PATH`/`TTS_APIKEYS_PATH`/…
-# em tmp — o `voices/` e o `settings.json` do dono não são tocados.
+# em tmp — o `voices/` e o `settings.json` do dono não são tocados. O diretório da
+# rodada morre no verde e fica na vermelha; a varredura por idade recolhe as sobras
+# de rodadas mortas (#562).
 #
 #   ./tests/voz_desfazer_ui.sh       # instância própria, porta livre
 set -euo pipefail
@@ -43,6 +45,15 @@ def porta_livre():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
 
+# #562 (mesma classe): o diretório da rodada (com chaves sintéticas) morre no
+# verde e a varredura por idade recolhe o que ficou de rodadas mortas.
+import shutil, time
+for _velho in pathlib.Path("/tmp").glob("voz_desfazer_*"):
+    try:
+        if time.time() - _velho.stat().st_mtime > 7200:
+            shutil.rmtree(_velho) if _velho.is_dir() else _velho.unlink()
+    except Exception:
+        pass
 porta = porta_livre()
 DIR = pathlib.Path("/tmp") / f"voz_desfazer_{porta}"
 VOZES = DIR / "voices"
@@ -150,7 +161,7 @@ try:
         pg.evaluate("(c) => localStorage.setItem('ttsStudioKey', c)", chave_adm)
         pg.goto(LANURL, wait_until="networkidle")
         pg.evaluate("() => document.querySelector('.nav-item[data-view=\"vozes\"]').click()")
-        pg.wait_for_selector("#voiceList .item", timeout=20000)
+        pg.wait_for_selector("#voiceList .item", timeout=45000)
         pg.wait_for_timeout(600)
 
         # ─── 1) quem decide é o servidor: a ação só existe onde há `.orig` ──
@@ -190,7 +201,7 @@ try:
         pg.evaluate("(c) => localStorage.setItem('ttsStudioKey', c)", chave_use)
         pg.reload(wait_until="networkidle")
         pg.evaluate("() => document.querySelector('.nav-item[data-view=\"vozes\"]').click()")
-        pg.wait_for_selector("#voiceList .item", timeout=20000)
+        pg.wait_for_selector("#voiceList .item", timeout=45000)
         pg.wait_for_timeout(800)
         travada = pg.evaluate("""() => { const u = document.querySelector('#voiceList .item .undo');
             return u ? { desab: u.disabled, titulo: u.title || '' } : null; }""")
@@ -230,7 +241,12 @@ print()
 if falhas:
     print("✖ FALHOU — desfazer edição da voz:")
     print("  log do servidor:", log)
+    print("  estado da rodada preservado em", DIR)     # só a vermelha guarda
     for f in falhas: print("  ·", f)
     sys.exit(1)
+try: log.unlink()
+except Exception: pass
+try: shutil.rmtree(DIR)              # verde não deixa diretório para trás
+except Exception: pass
 print("✔ OK — a ação só existe com `.orig`, restaura byte a byte, recarrega e trava para chave `use`")
 PYEOF

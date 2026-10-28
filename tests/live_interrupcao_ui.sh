@@ -32,6 +32,9 @@
 # imprime sha256 e mtime dos dois ANTES e DEPOIS e reprova se mudarem, para a rodada
 # nunca mais mexer no estado dele (antes era ele quem ganhava `live_barge_*` e podia
 # ficar com o Live em `dsh`, mandando texto para fora sem o dono ter escolhido).
+# O diretório da rodada (chaves sintéticas dentro) morre no VERDE e fica na VERMELHA
+# para leitura; na abertura, uma varredura por idade recolhe o que rodadas mortas
+# deixaram (#562 — antes ficavam 117 dirs e 57 `.jsonl` no /tmp até no verde).
 #
 # O volume é medido no ANALISADOR DA SAÍDA (o mesmo do painel OBS), não só no
 # ganho: prova atenuação de áudio de verdade, não um número solto.
@@ -86,6 +89,17 @@ threading.Thread(target=HTTPServer(("127.0.0.1", stub_porta), Stub).serve_foreve
 # `settings.json` do DONO (e o dono num rev com o #509 sairia falando por `dsh`,
 # ou seja, com o texto do trecho indo para fora durante a rodada). Todos os
 # caminhos de estado vão para tmp — o arquivo do dono nem é aberto.
+# #562: o diretório da rodada (chaves sintéticas dentro) e o gravador de POSTs
+# ficavam no /tmp até no verde — 117 dirs e 57 jsonl acumulados. Agora tudo mora
+# em DIR_TMP e o verde apaga; a varredura por IDADE recolhe o que ficou de
+# rodadas mortas, sem tocar em rodada viva (que acabou de criar o diretório).
+import shutil, tempfile
+for _velho in pathlib.Path("/tmp").glob("live_interrupcao_*"):
+    try:
+        if time.time() - _velho.stat().st_mtime > 7200:      # 2 h
+            shutil.rmtree(_velho) if _velho.is_dir() else _velho.unlink()
+    except Exception:
+        pass
 porta = porta_livre()
 DIR_TMP = pathlib.Path("/tmp") / f"live_interrupcao_{porta}"
 (DIR_TMP / "voices").mkdir(parents=True, exist_ok=True)
@@ -121,7 +135,7 @@ env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        "TTS_CHAT_BACKEND": "openai",
        "TTS_CHAT_BACKEND_LIVE": os.environ.get("TTS_CHAT_BACKEND_LIVE") or "openai",
        "LIVE_INT_PORT": str(porta), "ORT_DISABLE_TELEMETRY": "1",
-       "LIVE_INT_POSTS": str(pathlib.Path("/tmp") / f"live_interrupcao_posts-{porta}.jsonl")}
+       "LIVE_INT_POSTS": str(DIR_TMP / "posts.jsonl")}
 log = pathlib.Path("/tmp") / f"live_interrupcao_servidor-{porta}.log"
 # STUB DO LADO DO SERVIDOR para o que ainda não existe no app: `live_interrupcao`,
 # `live_barge_filtros` e `live_barge_sem_decisao` (são do card irmão, #501).
@@ -850,9 +864,12 @@ print()
 if falhas:
     print("✖ FALHOU — contrato do cliente da interrupção inteligente:")
     print("  log do servidor da rodada em", log)
+    print("  estado da rodada preservado em", DIR_TMP)   # só a vermelha guarda
     for f in falhas: print("  ·", f)
     sys.exit(1)
 try: log.unlink()
+except Exception: pass
+try: shutil.rmtree(DIR_TMP)          # verde não deixa diretório nem jsonl
 except Exception: pass
 print("✔ OK — duck ≤50 ms sem cortar a fila, retoma ~150 ms, corte no interrupted,"
       " teto de 2 s devolvendo o volume e o modo imediata preservando o corte da #225")
