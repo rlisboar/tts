@@ -65,7 +65,7 @@ COMPARTILHADOS = {
 # placeholder (o trace do app, #370, deixou de ser arquivo único justamente por
 # isso) — o sufixo não é literal, é gerado em runtime.
 TOKEN_POR_EXECUCAO = re.compile(
-    r"\$\$|\$RUN|\$\{RUN\}|\$SUF|\$T\b|XXXXXX|\{os\.getpid\(\)\}|\{porta\}|\{SUF\}|"
+    r"\$\$|\$RUN|\$\{RUN\}|\$SUF|\$T\b|\$PORTA|XXXXXX|\{os\.getpid\(\)\}|\{porta\}|\{SUF\}|"
     r"process\.pid|\$\{process\.pid\}|<pid>|\*|mktemp|os\.environ")
 LITERAL = re.compile(r"/tmp/([A-Za-z0-9._-]+)")
 

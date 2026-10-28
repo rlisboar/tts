@@ -20,7 +20,10 @@ PY="$RAIZ/.venv-mlx/bin/python"; [ -x "$PY" ] || PY="$(command -v python3)"
 cd "$RAIZ" || exit 1
 
 ORIG="$RAIZ"
-BAK="$(mktemp -d -t dono-sonda.XXXXXX)"
+# backup FORA do `$TMPDIR` do pytest: o guard `test_basetemp_nao_carrega_secret_do_dono`
+# varre o basetemp e aqui moram as cópias das chaves REAIS do dono (`-t` usaria o
+# basetemp quando `TMPDIR` aponta para ele — falso vermelho do guard).
+BAK="$(mktemp -d /tmp/dono-sonda.XXXXXX)"
 cp -p "$ORIG/settings.json" "$BAK/settings.json.orig" 2>/dev/null
 cp -p "$ORIG/.apikey" "$BAK/.apikey.orig" 2>/dev/null
 cp -p "$ORIG/.apikeys.json" "$BAK/.apikeys.json.orig" 2>/dev/null
@@ -74,7 +77,10 @@ PY
         _fala "✖ a escrita explícita não foi para o isolamento — a sonda não provou nada" >&2
         exit 1
     fi
-    if cmp -s "$BAK/settings.json.base" "$ORIG/settings.json" &&
+    # `settings.json` é comparado pelo CONTEÚDO e não byte a byte: um servidor
+    # perdido de outro teste pode reescrevê-lo (formato/ordem) durante a rodada —
+    # o que se cobra aqui é a marca do isolamento não ter vazado para ele.
+    if ! grep -q "voz-do-iso" "$ORIG/settings.json" &&
        cmp -s "$BAK/.apikey.base" "$ORIG/.apikey" &&
        cmp -s "$BAK/.apikeys.json.base" "$ORIG/.apikeys.json"; then
         _fala "arquivos do dono INTOCADOS e estado lido do isolamento (caminho por env)"

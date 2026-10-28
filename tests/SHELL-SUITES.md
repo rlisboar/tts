@@ -22,7 +22,7 @@ rodavam no app do DONO **com escrita liberada** — uma rodada reescreveu o
 
 `instancia` fica fora do hook de propósito: exige modelo carregado e ninguém deve
 subir app por commit. Quando o estágio é chamado sem app, o runner falha uma vez,
-com o motivo, em vez de produzir nove vermelhos mentirosos.
+com o motivo, em vez de produzir sete vermelhos mentirosos.
 
 ## Regra de paralelismo e de log
 
@@ -70,10 +70,10 @@ vermelho (antes a divergência voltava calada).
 - `navegador`: `dsh_ui`, `hash_deep_link`, `live_dsh_fallback`, `live_barge_rep`,
   `live_ui`, `live_interrupcao_ui`, `obs_ui`, `live_ws`, `ultima_chave_ui`,
   `admin_ui_flow`, `cfg_sujo_e_erros`, `voz_desfazer_ui`, `voz_cadastro_ui`,
-  `voz_check_ui`, `voz_far_alvo_ui`, `live_retomada_ui`.
-- `instancia`: `a11y_teclado`, `conversa_429`, `key_storage_repro`, `live_hold_ui`,
-  `mic_erro_ui`, `mobile_layout`, `onboarding_atalhos`, `ui_repouso`,
+  `voz_check_ui`, `voz_far_alvo_ui`, `live_retomada_ui`, `onboarding_atalhos`,
   `xss_frontend_repro`.
+- `instancia`: `a11y_teclado`, `conversa_429`, `key_storage_repro`, `live_hold_ui`,
+  `mic_erro_ui`, `mobile_layout`, `ui_repouso`.
 
 `admin_ui_flow` e `cfg_sujo_e_erros` **não** estão em `instancia`: as duas sobem o
 próprio servidor com estado em tmp (#437/#466) e ficaram auto-contidas.

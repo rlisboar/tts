@@ -6450,6 +6450,10 @@ def synthesize(request: Request, payload: dict):
     na RAM e no disco, com um job que nem rodou.
     """
     text = (payload.get("text") or "").strip()
+    # vazio é 400 ANTES do `pre_prompt`: com o prefixo, um pedido sem texto virava
+    # o próprio pre_prompt e voltava 200 com job (o teste do 400 caía).
+    if not text:
+        raise HTTPException(400, "Texto vazio")
     if _settings["pre_prompt"]:
         text = f"{_settings['pre_prompt']} {text}".strip()
     language = (payload.get("language") or _settings["language"]).lower()
@@ -6464,8 +6468,6 @@ def synthesize(request: Request, payload: dict):
     family = be["family"]
     be_meta = be.get("meta") or {}
     omni = _resolve_omni(payload, family=family)
-    if not text:
-        raise HTTPException(400, "Texto vazio")
     if len(text) > 5000:
         raise HTTPException(400, "Texto longo demais (máx. 5000 caracteres)")
     # preset internos (sem sample) ou design
@@ -7687,7 +7689,10 @@ def _aplica_speaker_alvo(tmp: Path, alvo: str) -> tuple[Path, dict]:
         return tmp, {"separacao": "indisponivel", "separacao_motivo": separa_voz.motivo()}
     try:
         with _gen_lock:                      # Metal: sem geração local em paralelo
-            novo, info = separa_voz.separa_alvo(tmp, perfil["vecs"])
+            # o extrator é o DO PERFIL, não o efetivo: perfil legado tem vetor
+            # 256-d e o ECAPA devolve 192-d (#534)
+            novo, info = separa_voz.separa_alvo(
+                tmp, perfil["vecs"], _speaker_modelo_do_perfil(perfil))
     except Exception as exc:  # noqa: BLE001 — o STT não cai por causa do filtro
         print(f"[separa] falhou para '{alvo}': {exc}", flush=True)
         return tmp, {"separacao": "falhou", "separacao_motivo": str(exc)[:160]}
@@ -8515,7 +8520,17 @@ def _speaker_embed_ecapa(wav_path: Path) -> list[float] | None:
 
 
 def _cos_sim(a, b) -> float:
+    """Cosseno entre dois vetores — e ERRO se as dimensões não casarem.
+
+    O `zip` engolia a diferença: comparar um vetor do ECAPA (192-d) com um centróide
+    do Resemblyzer (256-d) devolvia 0,055 em vez de ~1,0 para a MESMA fala, sem
+    aviso. Dimensão diferente é sempre bug de extrator, nunca ruído (#534).
+    """
     import math
+
+    if len(a) != len(b):
+        raise ValueError(f"dimensões diferentes no cosseno: {len(a)} x {len(b)} "
+                         f"(extrator trocado sem trocar o vetor?)")
     num = sum(x * y for x, y in zip(a, b))
     da = math.sqrt(sum(x * x for x in a))
     db = math.sqrt(sum(x * x for x in b))
@@ -10575,7 +10590,7 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
     que devolve `p_cortar`; sem classificador ligado ele é pulado. Quem chega ao
     fim sem decisão usa `live_barge_sem_decisao`."""
     from live_turns import (_BACKCHANNEL, _COMANDO_PARAR, _PERGUNTA, _RUIDO_ONO,
-                            _palavras,
+                            _palavras, _sem_acento,
                             classifica_barge)
     palavras = _palavras(texto)
     eco_txt = sess.get("ultimo_assistente") or ""
@@ -10584,11 +10599,22 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
         cfg = filtros.get(nome)
         return padrao if cfg is None else bool(cfg.get("on", padrao))
 
-    # 1) palavras de corte — a lista do settings manda (cadastrável pelo dono)
+    # 1) palavras de corte — a lista do settings manda (cadastrável pelo dono).
+    # DOIS detalhes que matavam o elo (#547):
+    # · lista VAZIA (o default) caía no `get` com a chave existindo, então a lista
+    #   interna `_COMANDO_PARAR` NUNCA era usada e `palavras_corte` não casava
+    #   nada — nenhuma decisão saía por aqui, era tudo `frase_longa`/`conteudo`;
+    # · a palavra valia só na 1ª/última posição: com o eco do assistente na
+    #   frente do trecho ("...e aí, para") o comando ficava no meio e passava
+    #   batido. A lista de comando é curta e distintiva — vale em QUALQUER
+    #   posição (decisão do PM, hipótese 3 do card).
     if ligado("palavras_corte") and palavras:
-        lista = {str(x).lower() for x in
-                 (filtros.get("palavras_corte") or {}).get("palavras", _COMANDO_PARAR)}
-        if palavras[0] in lista or palavras[-1] in lista:
+        cadastradas = (filtros.get("palavras_corte") or {}).get("palavras") or []
+        # a lista entra na MESMA normalização do texto (sem acento, minúscula):
+        # cadastrar "não"/"olá" com acento nunca casaria com a fala normalizada
+        lista = {_sem_acento(str(x).lower()).strip()
+                 for x in (cadastradas or _COMANDO_PARAR)}
+        if any(p in lista for p in palavras):
             return "interrupcao", None, None, "palavras_corte"
     # 2) eco
     if ligado("eco") and eco_txt:

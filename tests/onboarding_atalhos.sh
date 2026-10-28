@@ -11,21 +11,64 @@
 #   5. conferência cruzada: cada atalho que o app de fato tem está listado, e
 #      nenhuma tecla listada é inventada (a lista vem do fonte).
 #
-#   ./tests/onboarding_atalhos.sh          # app precisa estar de pé em :7860
-#   BASE=http://127.0.0.1:7860 ./tests/onboarding_atalhos.sh
+# INSTÂNCIA PRÓPRIA e estado em tmp (#634): um crash no meio sujava o histórico
+# e o `voices/` do dono. Agora o app é da rodada (porta livre, tudo em /tmp) e o
+# diretório morre no fim, verde ou vermelho — a suíte é auto-contida, como as do
+# estágio `navegador`. `BASE` do operador continua valendo se quiser apontar
+# para um app já de pé.
 #
-# Chromium headless. Usa um contexto limpo (o `localStorage` do dono não manda),
-# mas a geração de verdade grava um output no histórico dele — o trap apaga o
-# que a rodada criar.
+#   ./tests/onboarding_atalhos.sh          # sobe o próprio servidor
 set -euo pipefail
 
-BASE="${BASE:-http://127.0.0.1:7860}"
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$RAIZ/.venv-mlx/bin/python"
 [ -x "$PY" ] || PY="$(command -v python3)"
-
 command -v curl >/dev/null || { echo "curl não encontrado"; exit 1; }
-curl -sf -m 5 -o /dev/null "$BASE/" || { echo "✖ app não respondeu em $BASE — rode ./run.sh primeiro" >&2; exit 1; }
+
+source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
+
+PORTA="$("$PY" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+DIR="/tmp/onboarding_ui_$PORTA"
+PROPRIO=0
+if [ -z "${BASE:-}" ]; then
+  PROPRIO=1
+  mkdir -p "$DIR/voices" "$DIR/outputs" "$DIR/state"
+  echo '{}' > "$DIR/settings.json"
+  export TTS_SETTINGS_PATH="$DIR/settings.json" TTS_VOICES_DIR="$DIR/voices" \
+         TTS_OUTPUTS_DIR="$DIR/outputs" TTS_METRICS_DIR="$DIR/state" \
+         TTS_APIKEYS_PATH="$DIR/apikeys.json" TTS_LEGACY_APIKEY_PATH="$DIR/apikey" \
+         TTS_SPEAKER_PATH="$DIR/speaker.json" TTS_JOBS_HIST_PATH="$DIR/jobs.json" \
+         ORT_DISABLE_TELEMETRY=1 ONB_PORTA="$PORTA"
+  "$PY" -c 'import os, uvicorn, app
+uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["ONB_PORTA"]))' \
+    > "$DIR/servidor.log" 2>&1 &
+  SRV=$!
+  BASE="http://127.0.0.1:$PORTA"
+fi
+for _ in $(seq 1 300); do
+  curl -sf -m 2 -o /dev/null "$BASE/health" && break
+  if [ "$PROPRIO" = 1 ] && ! kill -0 "$SRV" 2>/dev/null; then
+    echo "✖ servidor da rodada morreu na subida (log $DIR/servidor.log)" >&2
+    exit 1
+  fi
+  sleep 0.2
+done
+curl -sf -m 5 -o /dev/null "$BASE/" || { echo "✖ app não respondeu em $BASE" >&2; exit 1; }
+
+# instância própria precisa de uma voz: sem voz o Gerar nem tenta (a fase 3
+# cobraria "seletor vazio"). WAV sintético, fora do voices/ do dono.
+if [ "$PROPRIO" = 1 ]; then
+  "$PY" - "$DIR/voices" <<'PYVOZ'
+import json, sys, wave
+from pathlib import Path
+vozes = Path(sys.argv[1])
+with wave.open(str(vozes / "sonda.wav"), "wb") as w:
+    w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+    w.writeframes(b"\x00\x00" * 16000)
+(vozes / "sonda.json").write_text(json.dumps(
+    {"id": "sonda", "name": "sonda", "created_at": "2024-01-01 00:00:00", "duration": 1.0}))
+PYVOZ
+fi
 
 # ESTA é suíte de `instancia` que ESCREVE: a prova gera fala de verdade e o job
 # fica no histórico do app alvo. Ids vistos antes servem de linha de base; o trap
@@ -46,7 +89,15 @@ for i in itens:
     done
   return 0
 }
-trap 'limpa_outputs' EXIT INT TERM
+encerra() {
+  limpa_outputs || true
+  [ "${PROPRIO:-0}" = 1 ] && kill "$SRV" 2>/dev/null
+  rm -rf "${DIR:-/nonexistent}"
+  return 0
+}
+# `_teto_matar`: o trap SOBRESCREVE o do `serial.sh`; sem isto o vigia do
+# teto sobrevive ao shell e manda ALRM num PID que pode ter sido reusado (#592).
+trap 'encerra; _teto_matar' EXIT INT TERM
 
 BASE="$BASE" "$PY" - <<'PYEOF'
 import os, re, sys
