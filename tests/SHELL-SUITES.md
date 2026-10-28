@@ -53,7 +53,8 @@ na fila matava a suíte antes de ela rodar. Quem quer a trava chama
   modelo), `live_lock_freeze` (efeito do `await` com `_live_lock` presa — #209/#215).
 - `navegador`: `dsh_ui`, `hash_deep_link`, `live_dsh_fallback`, `live_barge_rep`,
   `live_ui`, `live_interrupcao_ui`, `obs_ui`, `live_ws`, `ultima_chave_ui`,
-  `admin_ui_flow`, `cfg_sujo_e_erros`, `voz_desfazer_ui`, `voz_cadastro_ui`.
+  `admin_ui_flow`, `cfg_sujo_e_erros`, `voz_desfazer_ui`, `voz_cadastro_ui`,
+  `voz_check_ui`.
 - `instancia`: `a11y_teclado`, `admin_ui_flow`, `cfg_sujo_e_erros`, `conversa_429`,
   `key_storage_repro`, `live_hold_ui`, `mic_erro_ui`, `mobile_layout`,
   `onboarding_atalhos`, `ui_repouso`, `xss_frontend_repro`.
