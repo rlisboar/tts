@@ -291,9 +291,10 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `502-live-interrupcao-suites.txt` | #502 | 2026-10-28 | 502 — LIVE UI da interrupção inteligente: medições da suíte e das mordidas |
 | `520-bakeoff-ruido-PARCIAL.md` | #520 | 2026-10-28 | Bake-off de redução de ruído (#520) — parcial com recomendação |
 | `521-bakeoff-identidade.md` | #521 | 2026-10-28 | Bake-off de identidade de voz (#521) — veredito |
-| `522-anticlone.md` | #522 | — | Anti-clone (#522) — marca d'água medida; AASIST reprovado como portão solo |
+| `522-anticlone.md` | #522 | 2026-10-28 | Anti-clone (#522) — marca d'água medida; AASIST reprovado como portão solo |
 | `523-limitedor-onnx.md` | #523 | 2026-10-28 | Limpar amostra pelo DFN3 em ONNX (#523) — medição refeita |
 | `532-bakeoff-locutor-alvo.md` | #532 | 2026-10-28 | Locutor-alvo (#532) — bake-off: seleção por janela × separação |
+| `534-separacao-alvo.txt` | #534 | — | 534 — rodada REAL do filtro `speaker_alvo` (VOZ-I6), 2026-10-28 |
 | `563-dsh-fallback-prewarm.txt` | #563 | 2026-10-28 | 563 — `live_dsh_fallback.sh`: espera o pre-warm antes de mandar áudio |
 | `585-cadastro-dica.png` | #585 | 2026-10-28 | (imagem) |
 | `585-estados.txt` | #585 | 2026-10-28 | Estados da tela do cadastro de voz (#585) — instância isolada, microfone falso do |

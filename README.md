@@ -333,6 +333,40 @@ alocador só devolve parte — medido **561 → 463 MB** com o pedido explícito
 pressão ao alocador; o resto é arena do `torch` e só sai encerrando o processo.
 Sem o pedido ao alocador, o RSS **não** caía (548 → 557 MB).
 
+### Transcrever só a voz de um perfil (`speaker_alvo`)
+
+Fala de terceiro **sobreposta** não é ruído: nenhum denoiser tira, e seleção por
+janela apaga a fala do dono junto. Com o parâmetro `speaker_alvo` (nome de perfil)
+o áudio é **separado** em dois fluxos (MossFormer2_SS_16K, offline, 670 MB) e o STT
+recebe só o fluxo mais próximo do centróide do perfil — o outro é descartado.
+
+```sh
+curl -X POST -H "X-API-Key: $KEY" -F "audio=@fala.webm" -F "speaker_alvo=eu" \
+     $BASE/api/transcribe
+# → {"text": "...", "separacao": "ok", "segmentos_descartados": {"trechos": 1, "ms": 2100}}
+```
+
+| Onde | Como |
+|---|---|
+| `/api/transcribe`, `/api/translate-speech`, `/api/modify-speech` | campo de formulário `speaker_alvo` |
+| `/v1/audio/transcriptions` | campo de formulário `speaker_alvo` (extensão; sem ele o contrato OpenAI é o de sempre) |
+
+Sem o parâmetro **nada muda** — nem campo na resposta. Com ele:
+
+- perfil inexistente ou sem amostras → `400` ("Perfil de voz 'x' não existe");
+- sem os pesos do separador → transcreve o áudio ORIGINAL e diz
+  `separacao: "indisponivel"` com `separacao_motivo` acionável (o modelo é
+  opcional: não pode derrubar o STT). Falha em tempo de execução sai igual, com
+  `separacao: "falhou"`;
+- sucesso → `separacao: "ok"` e `segmentos_descartados` (o fluxo do concorrente).
+  `separacao_escores` mostra os dois escores do seletor, para diagnosticar.
+
+Chave `use` pode usar. O modelo roda em **processo filho** e em MPS, com a trava de
+Metal segurada no pai (nada de geração local em paralelo); ociosidade de 10 min
+(`TTS_SEPARA_TTL_S`) fecha o filho, e ele também morre no shutdown. Medido com o
+corpus do R4: vazamento de terceiro cai de 6,0 % para 3,6 % (SIR 0) e de 3,6 % para
+2,4 % (SIR 5), com o WER caindo junto — `evidence/534-separacao-alvo.txt`.
+
 ### Modos do gate
 
 `speaker_gate` em Configurações → Rede & memória, seção *Tradução / STT ·
@@ -900,7 +934,7 @@ navegador.
 # deriva (mesma fonte do estágio `estatica` do CI). Doc com cópia à mão já deixou
 # `live_rnnoise.py` fora do gate (#288/#389).
 ./.venv-mlx/bin/python tests/_pyflakes_gate.py
-# (21 alvos explícitos hoje; `tests/*.py` é glob e não conta —
+# (24 alvos explícitos hoje; `tests/*.py` é glob e não conta —
 #  ao acrescentar módulo ao hook, atualize aqui: um teste compara)
 # o linter é o ruff (conjunto `F` = o mesmo do pyflakes que ele substituiu), config
 # no `pyproject.toml`. `# noqa` VALE: import que só existe para virar fixture de

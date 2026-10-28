@@ -6503,3 +6503,128 @@ def test_binario_do_fake_acp_sobrevive_ao_teardown_do_teste(dsh_fake_bin, dsh_li
     assert r.returncode == 0, r.stderr[-200:]
     # o diretório de sessão do pytest NÃO é o `tmp_path` deste teste
     assert "/test_binario_do_fake_acp" not in str(caminho), str(caminho)
+
+
+# --- VOZ-I6 (#534): transcrever só a voz do perfil `speaker_alvo` --------------
+# O caminho é separar (MossFormer2 em worker/MPS) e ficar com o fluxo mais próximo
+# do centróide do perfil. Aqui o separador é STUB: o teste é do filtro e do
+# contrato, não do modelo (que tem rodada real própria no card).
+def _perfil_alvo(monkeypatch, nome="eu", vec=[1.0, 0.0]):
+    perfis = {nome: {"vecs": [vec], "modelo": app._speaker_modelo_efetivo()}}
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
+    return perfis
+
+
+def test_transcribe_com_speaker_alvo_usa_o_fluxo_do_perfil(client, auth, monkeypatch):
+    """Com o parâmetro, o STT recebe o ARQUIVO SEPARADO e a resposta diz o que caiu."""
+    _perfil_alvo(monkeypatch)
+    import separa_voz
+
+    monkeypatch.setattr(separa_voz, "disponivel", lambda: True)
+    monkeypatch.setattr(separa_voz, "motivo", lambda: "")
+    visto = {}
+
+    def _separa(wav, vecs):
+        visto["wav"] = wav
+        assert vecs == [[1.0, 0.0]]
+        novo = Path(str(wav) + ".alvo.wav")
+        novo.write_bytes(b"alvo")
+        return novo, {"escores": [0.9, 0.1], "escolhido": 0,
+                      "descartados": {"trechos": 1, "ms": 2100}}
+
+    monkeypatch.setattr(separa_voz, "separa_alvo", _sepa := _separa)
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
+    def _transcreve(p, language=None, allow_remote=True):
+        visto["stt"] = p
+        return {"text": "só o alvo", "language": "pt", "segments": []}
+
+    monkeypatch.setattr(app, "_transcribe", _transcreve)
+    r = client.post("/api/transcribe", headers=auth, data={"speaker_alvo": "eu"},
+                    files={"audio": ("a.wav", b"x", "audio/wav")})
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert corpo["text"] == "só o alvo" and corpo["separacao"] == "ok"
+    assert corpo["segmentos_descartados"] == {"trechos": 1, "ms": 2100}
+    assert str(visto["stt"]).endswith(".alvo.wav"), "o STT não recebeu o fluxo separado"
+
+
+def test_transcribe_sem_speaker_alvo_nao_mexe_no_contrato(client, auth, monkeypatch):
+    """Sem o parâmetro: nenhuma chamada ao separador e nenhum campo novo."""
+    import separa_voz
+
+    def _explode(*_a, **_k):
+        raise AssertionError("não devia separar sem speaker_alvo")
+
+    monkeypatch.setattr(separa_voz, "separa_alvo", _explode)
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+                        {"text": "oi", "language": "pt", "segments": []})
+    corpo = client.post("/api/transcribe", headers=auth,
+                        files={"audio": ("a.wav", b"x", "audio/wav")}).json()
+    assert corpo["text"] == "oi"
+    assert not {"separacao", "segmentos_descartados"} & set(corpo)
+
+
+def test_speaker_alvo_inexistente_e_400(client, auth, monkeypatch):
+    """Nome errado não pode passar calado (transcreveria o áudio inteiro)."""
+    _perfil_alvo(monkeypatch)
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
+    r = client.post("/api/transcribe", headers=auth, data={"speaker_alvo": "ninguem"},
+                    files={"audio": ("a.wav", b"x", "audio/wav")})
+    assert r.status_code == 400 and "não existe" in r.json()["detail"]
+
+
+def test_sem_separador_o_transcript_sai_normal_com_aviso(client, auth, monkeypatch):
+    """Sem os pesos: transcreve o original e diz `separacao: indisponivel`."""
+    _perfil_alvo(monkeypatch)
+    import separa_voz
+
+    monkeypatch.setattr(separa_voz, "disponivel", lambda: False)
+    monkeypatch.setattr(separa_voz, "motivo", lambda: "pesos ausentes em /x")
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+                        {"text": "original", "language": "pt", "segments": []})
+    corpo = client.post("/api/transcribe", headers=auth, data={"speaker_alvo": "eu"},
+                        files={"audio": ("a.wav", b"x", "audio/wav")}).json()
+    assert corpo["text"] == "original" and corpo["separacao"] == "indisponivel"
+    assert "pesos ausentes" in corpo["separacao_motivo"]
+
+
+def test_v1_transcriptions_aceita_speaker_alvo_como_extensao(client, auth, monkeypatch):
+    """A extensão entra no `/v1/audio/transcriptions` sem quebrar o contrato OpenAI."""
+    _perfil_alvo(monkeypatch)
+    import separa_voz
+
+    monkeypatch.setattr(separa_voz, "disponivel", lambda: True)
+    monkeypatch.setattr(separa_voz, "separa_alvo",
+                        lambda wav, vecs: (Path(str(wav) + ".a.wav"), {"escores": [1.0, 0.0]}))
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+                        {"text": "so alvo", "language": "pt", "segments": []})
+    r = client.post("/v1/audio/transcriptions", headers=auth, data={"speaker_alvo": "eu"},
+                    files={"file": ("a.wav", b"x", "audio/wav")})
+    assert r.status_code == 200 and r.json()["text"] == "so alvo"
+    # resposta simples segue no formato OpenAI (sem campo extra)
+    assert r.json() == {"text": "so alvo"}
+
+
+def test_speaker_alvo_aceita_chave_de_uso(client, auth, monkeypatch):
+    """Chave `use` pode pedir o filtro (é transcrição, não administração)."""
+    _perfil_alvo(monkeypatch)
+    import separa_voz
+
+    monkeypatch.setattr(separa_voz, "disponivel", lambda: False)
+    monkeypatch.setattr(separa_voz, "motivo", lambda: "x")
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+                        {"text": "oi", "language": "pt", "segments": []})
+    segredo = app._apikeys["keys"][0]["secret"]
+    app._apikeys["keys"][0]["role"] = "use"
+    try:
+        r = client.post("/api/transcribe", headers={"X-API-Key": segredo},
+                        data={"speaker_alvo": "eu"},
+                        files={"audio": ("a.wav", b"x", "audio/wav")})
+    finally:
+        app._apikeys["keys"][0]["role"] = "admin"
+    assert r.status_code == 200, r.text

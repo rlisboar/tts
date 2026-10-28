@@ -1,0 +1,20 @@
+#534 — rodada REAL do filtro `speaker_alvo` (VOZ-I6), 2026-10-28
+Corpus do R4 (LibriSpeech dev-clean público), alvo=1272, concorrente=1462, inglês.
+Caminho exercitado: GET do perfil sintético -> separa_voz.separa_alvo (worker MPS,
+MossFormer2_SS_16K) -> escolha pelo centróide do ECAPA -> Whisper do app.
+Vazamento = fração de palavra de terceiro (tools/bakeoff/metricas.vazamento).
+
+SIR 0 dB (sobreposição total)
+  MISTURA   vazamento=6.0%  wer=0.667
+  escores dos fluxos: [0.892, 0.098] -> escolhido 0
+  SEPARADO  vazamento=3.6%  wer=0.619
+
+SIR 5 dB
+  MISTURA   vazamento=3.6%  wer=0.619
+  escores dos fluxos: [0.902, 0.083] -> escolhido 0
+  SEPARADO  vazamento=2.4%  wer=0.595
+
+Meta do card (vazamento ≤2–8%): as duas células fecham, com o WER caindo junto.
+O seletor separou os dois fluxos com folga (0,89-0,90 x 0,08-0,10), que é o que o
+ECAPA precisa entregar — escolher fluxo é bem mais fácil do que decidir "é ele".
+Custo: carga do filho 1,0-1,3 s + aquecimento 0,75-0,94 s, uma vez por processo.

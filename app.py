@@ -507,7 +507,7 @@ _SETTINGS_DEFAULTS = {
     # vazio usa 0,44, o limiar do R4 (`evidence/532`; 0,35 passa voz parecida).
     # `separacao` é OPCIONAL e desligada por default: custa ~1 s e 1,16 GB.
     "live_so_minha_voz": {"on": False, "perfil": "", "rigor_far": "1",
-                          "separacao": False},
+                          "limiar": 0.0, "separacao": False},
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
     # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
@@ -1934,6 +1934,25 @@ def _cosseno(a, b) -> float:
     return float(x @ y / (nx * ny))
 
 
+def _dnsmos(audio, sr: int) -> dict | None:
+    """DNSMOS P.835 do trecho. None quando o pacote não está instalado.
+
+    O número vai no relatório para o dono ver o que a limpeza fez — e é ele que a
+    prévia A/B da tela mostra. Importado sob demanda: quem não instalou o
+    `speechmos` continua limpo, só sem o número."""
+    import numpy as np
+
+    try:
+        from speechmos import dnsmos
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        r = dnsmos.run(np.asarray(audio, dtype=np.float32), sr=sr)
+        return {k: round(float(v), 3) for k, v in r.items()}
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _guarda_timbre(antes, depois, sr: int) -> float | None:
     """Similaridade do locutor antes x depois. None se o extrator não carregar.
 
@@ -1970,7 +1989,8 @@ def _denoise_para_referencia(audio, sr: int, strength: float):
 
     antes = np.asarray(audio, dtype=np.float32)
     relatorio = {"motor": "gating", "timbre": None, "recusado_por": None,
-                 "musica": False, "dereverb": False}
+                 "musica": False, "dereverb": False,
+                 "dnsmos_antes": None, "dnsmos_depois": None}
     # etapas opcionais, nesta ordem: música -> dereverb -> denoise
     if _settings.get("voice_limpar_musica"):
         sem_musica = _separa_musica(antes, sr)
@@ -1997,6 +2017,10 @@ def _denoise_para_referencia(audio, sr: int, strength: float):
               f"{rms_depois:.4f}) — mantendo a amostra sem limpeza", flush=True)
         relatorio["recusado_por"] = "nivel"
         return antes, True, relatorio
+
+    # medidas antes/depois: o dono vê o que ganhou e o que a voz custou
+    relatorio["dnsmos_antes"] = _dnsmos(antes, sr)
+    relatorio["dnsmos_depois"] = _dnsmos(limpo, sr)
 
     # guarda de timbre: só faz sentido depois que a limpeza produziu áudio
     timbre = _guarda_timbre(antes, limpo, sr)
@@ -3787,6 +3811,12 @@ def _encerra_tudo(motivo: str = "shutdown") -> dict:
         feito["live"] = _live_encerra_todas(motivo)
         feito["dsh"] = _chat_dsh_fecha_pool()
         feito["workers"] = _jobs_mata_workers()
+        try:                      # filho do separador (#534): senão fica órfão com 670 MB
+            import separa_voz
+
+            separa_voz.fecha()
+        except Exception:         # noqa: BLE001 — encerrar é best-effort
+            pass
         _jobs_hist_salva()
         feito["hist"] = True
         print(f"[shutdown] {motivo}: {feito['live']} sessão(ões) Live, "
@@ -4451,6 +4481,8 @@ def _apply_settings(payload: dict):
                                 else str(v).strip().lower() in ("1", "true", "on"))
                 elif k == "perfil":
                     atual[k] = str(v or "").strip()[:60]
+                elif k == "limiar":
+                    atual[k] = _clamp(v, 0.0, 9.9, 0.0)   # 0 = usa a tabela de FAR
                 elif k == "rigor_far":
                     v = str(v or "").strip().replace(",", ".")
                     atual[k] = v if v in ("1", "0.1") else "1"   # vazio = default
@@ -7625,6 +7657,48 @@ def _transcribe_parakeet(audio_path: Path) -> dict:
                           "text": (s.text or "").strip()} for s in (r.sentences or [])]}
 
 
+def _aplica_speaker_alvo(tmp: Path, alvo: str) -> tuple[Path, dict]:
+    """Extrai a voz do perfil `alvo` do áudio antes do STT (VOZ-I6, #534).
+
+    Devolve (wav a transcrever, campos para a resposta). SEM o parâmetro devolve
+    `tmp` e `{}` — o contrato fica idêntico ao de antes. Com o parâmetro:
+
+    - perfil inexistente/vazio → 400 (nome errado em silêncio transcreveria o áudio
+      inteiro e o cliente acharia que filtrou);
+    - separador fora → segue com o áudio ORIGINAL e diz `separacao: "indisponivel"`
+      (o motor existe no R4, mas o peso é opcional: não pode derrubar o STT);
+    - sucesso → `separacao: "ok"` e `segmentos_descartados` (o fluxo do concorrente).
+
+    A separação roda em processo filho e em MPS, então o pai segura `_gen_lock`: é a
+    mesma exclusividade que a geração local usa para o Metal.
+    """
+    alvo = (alvo or "").strip()
+    if not alvo:
+        return tmp, {}
+    with _speaker_lock:
+        perfis = _speaker_load()
+    perfil = perfis.get(alvo) or {}
+    if not (perfil.get("vecs") or []):
+        raise HTTPException(400, f"Perfil de voz '{alvo}' não existe (veja "
+                                 f"GET /api/speaker/profiles)")
+    import separa_voz
+
+    if not separa_voz.disponivel():
+        return tmp, {"separacao": "indisponivel", "separacao_motivo": separa_voz.motivo()}
+    try:
+        with _gen_lock:                      # Metal: sem geração local em paralelo
+            novo, info = separa_voz.separa_alvo(tmp, perfil["vecs"])
+    except Exception as exc:  # noqa: BLE001 — o STT não cai por causa do filtro
+        print(f"[separa] falhou para '{alvo}': {exc}", flush=True)
+        return tmp, {"separacao": "falhou", "separacao_motivo": str(exc)[:160]}
+    campos = {"separacao": "ok"}
+    if info.get("descartados"):
+        campos["segmentos_descartados"] = info["descartados"]
+    if info.get("escores"):
+        campos["separacao_escores"] = info["escores"]
+    return novo, campos
+
+
 def _stt_ok(r: dict, text: str, forcar: bool = False):
     """Aceita só transcrição que pareça fala real (rejeita ruído/alucinação).
 
@@ -8413,16 +8487,16 @@ def _speaker_vigia_sobe() -> None:
     _speaker_vigia.start()
 
 
-def _speaker_embed_ecapa(wav_path: Path) -> list[float] | None:
-    """Embedding normalizado (L2) do ECAPA — mesma pontuação do R2 (#521).
+def _speaker_embed_ecapa_x(x) -> list[float] | None:
+    """Embedding de um sinal JÁ em memória (float32 16 kHz) — sem arquivo.
 
-    O R2 normalizou os vetores para comparar por cosseno; sem isso a norma varia
-    por gravação e o centróide perde o sentido."""
+    O portão do Live chama uma vez por janela: gravar/ler um wav por janela
+    custava mais que os 17 ms do encoder e estourava o piso de latência do
+    card (#533). Mesmo cálculo e mesma normalização L2 do caminho por arquivo."""
     try:
         import numpy as np
         import torch
 
-        x = _wav_to_mono16k(wav_path)   # 16 kHz mono, mono já é o esperado aqui
         if x.size < 16000 * 0.6:        # mesmo piso do caminho legado
             return None
         enc = _speaker_encoder_ecapa()
@@ -8430,9 +8504,14 @@ def _speaker_embed_ecapa(wav_path: Path) -> list[float] | None:
             e = np.asarray(enc.encode_batch(torch.from_numpy(x)[None]).squeeze().numpy(),
                            dtype=np.float64)
         return [float(v) for v in e / (float(np.linalg.norm(e)) or 1e-9)]
-    except Exception as e:  # noqa: BLE001 — sem o gate não derruba o STT
-        print(f"[speaker] embedding ECAPA falhou: {e}", flush=True)
+    except Exception as exc:  # noqa: BLE001 — sem o gate não derruba o STT
+        print(f"[speaker] embedding ECAPA falhou: {exc}", flush=True)
         return None
+
+
+def _speaker_embed_ecapa(wav_path: Path) -> list[float] | None:
+    """Embedding do arquivo (caminho de cadastro/identificação)."""
+    return _speaker_embed_ecapa_x(_wav_to_mono16k(wav_path))
 
 
 def _cos_sim(a, b) -> float:
@@ -8732,12 +8811,14 @@ def _live_voz_perfil(cfg: dict) -> tuple[str, dict] | None:
     return primeiro, perfis[primeiro]
 
 
-def _voz_limiar(modelo: str, rigor: str) -> tuple[float, str]:
+def _voz_limiar(modelo: str, rigor: str, fixo: float = 0.0) -> tuple[float, str]:
     """(limiar, modo) do portão do Live.
 
-    Caminho FELIZ: AS-norm com a coorte do modelo e o limiar por FAR alvo
-    (`_SPEAKER_LIMIAR_FAR`, o mesmo do cadastro — 2,43 no FAR 1 % para o
-    ecapa:v1). Queda: 0,44 no escore CRU quando não há coorte ou alvo."""
+    Ordem: `limiar` explícito do bloco (no espaço do escore em uso) > AS-norm com
+    a coorte e o limiar por FAR (`_SPEAKER_LIMIAR_FAR`, o do cadastro) > 0,44 CRU
+    quando não há coorte/alvo."""
+    if fixo and fixo > 0:
+        return float(fixo), ("asnorm" if (rigor and _speaker_cohorte(modelo)) else "cru")
     if rigor and _speaker_cohorte(modelo):
         lim = _SPEAKER_LIMIAR_FAR.get(modelo, {}).get(rigor)
         if lim is not None:
@@ -8787,28 +8868,36 @@ def _voz_do_dono(pcm16: bytes) -> dict:
     rms = np.array([float(np.sqrt((a[i:i + quadro] ** 2).mean()))
                     for i in range(0, max(quadro, a.size - quadro), quadro)] or [0.0])
     piso = float(np.percentile(rms, 90)) * _VOZ_PISO_ENERGIA if rms.size else 0.0
-    lim, modo_lim = _voz_limiar(modelo, str(cfg.get("rigor_far") or _VOZ_RIGOR_PADRAO))
+    lim, modo_lim = _voz_limiar(modelo, str(cfg.get("rigor_far") or _VOZ_RIGOR_PADRAO),
+                                float(cfg.get("limiar") or 0.0))
     alvo_norm = str(cfg.get("rigor_far") or _VOZ_RIGOR_PADRAO) if modo_lim == "asnorm" else ""
     confirmacoes, scores = 0, []
-    necessarias = 1 if a.size < int(16000 * (_VOZ_JANELA_S * 1.75)) else _VOZ_CONFIRMACOES
+    # 2 confirmações assim que cabem 2 janelas (1,25 s); abaixo disso, 1 — a fala
+    # de 1 s num barge curto não tem como confirmar duas vezes (#533)
+    necessarias = (1 if a.size < int(16000 * (_VOZ_JANELA_S + _VOZ_PASSO_S))
+                   else _VOZ_CONFIRMACOES)
     for ini in range(0, max(1, a.size - janela + 1), passo):
         trecho = a[ini:ini + janela]
         if trecho.size < janela:
             break
         if float(np.sqrt((trecho ** 2).mean())) < piso and piso > 0:
             continue                      # só ruído de fundo nesta janela
-        _fd, nome_tmp = tempfile.mkstemp(prefix="tts-voz-", suffix=".wav")
-        os.close(_fd)
-        tmp = Path(nome_tmp)
-        try:
-            with wave.open(str(tmp), "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(16000)
-                w.writeframes((np.clip(trecho, -1, 1) * 32767).astype("<i2").tobytes())
-            emb = _speaker_embed(tmp, modelo)
-        finally:
-            tmp.unlink(missing_ok=True)
+        if modelo == SPEAKER_MODELO_ATUAL:
+            # sem arquivo (#533): o gate chama por janela e o I/O dominava os 17 ms
+            emb = _speaker_embed_ecapa_x(trecho)
+        else:                             # extrator legado: só sabe ler caminho
+            _fd, nome_tmp = tempfile.mkstemp(prefix="tts-voz-", suffix=".wav")
+            os.close(_fd)
+            tmp = Path(nome_tmp)
+            try:
+                with wave.open(str(tmp), "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(16000)
+                    w.writeframes((np.clip(trecho, -1, 1) * 32767).astype("<i2").tobytes())
+                emb = _speaker_embed(tmp, modelo)
+            finally:
+                tmp.unlink(missing_ok=True)
         if not emb:
             break                         # extrator indisponível: fail-open
         score, modo_esc = _speaker_asnorm(emb, vecs, modelo, alvo=alvo_norm)
@@ -8990,18 +9079,27 @@ async def speaker_check(audio: UploadFile = None):
 
 @app.post("/api/transcribe")
 def transcribe_audio(response: Response, audio: UploadFile = None,
-                     source_lang: str = Form("auto")):
+                     source_lang: str = Form("auto"), speaker_alvo: str = Form("")):
     """Transcrição pura (sem tradução/TTS): áudio -> texto + segmentos. Usa o
-    Whisper local ou remoto, conforme as configurações de modelos remotos."""
+    Whisper local ou remoto, conforme as configurações de modelos remotos.
+
+    `speaker_alvo` (nome de perfil, opcional): separa o áudio e transcreve SÓ a voz
+    daquele perfil (#534). Sem o parâmetro o contrato é o de sempre."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
     aviso = {}
     tmp = _save_audio_upload(audio)
+    extra_alvo: dict = {}
     try:
         gate = _speaker_gate_ok(tmp)
         if gate.get("rejected"):
             return {"rejected": True, "reason": gate["reason"], "text": ""}
-        r = _transcribe(tmp, language=(source_lang or "auto").lower())
+        tmp_stt, extra_alvo = _aplica_speaker_alvo(tmp, speaker_alvo)
+        try:
+            r = _transcribe(tmp_stt, language=(source_lang or "auto").lower())
+        finally:
+            if tmp_stt != tmp:
+                tmp_stt.unlink(missing_ok=True)
     finally:
         tmp.unlink(missing_ok=True)
     # remoto caiu e o local assumiu: o cliente PRECISA saber (senão "vazio" e
@@ -9029,12 +9127,13 @@ def transcribe_audio(response: Response, audio: UploadFile = None,
         # se compara com o `speaker_threshold` cru (#525)
         if gate.get("speaker_escore_modo"):
             out["speaker_escore_modo"] = gate["speaker_escore_modo"]
+    out.update(extra_alvo)          # `separacao`/`segmentos_descartados` quando pedido
     return out
 
 
 def _preparar_fala_para_voz(audio: UploadFile, voice_id: str, source_lang: str,
                             emotion_mode: str, instruct: str, msg_voz_design: str,
-                            com_gate: bool = False) -> dict:
+                            com_gate: bool = False, speaker_alvo: str = "") -> dict:
     """Pipeline comum do tradutor e do modificador de fala.
 
     Valida a voz (gravada, padrão ou por descrição), aplica o gate de locutor,
@@ -9068,8 +9167,11 @@ def _preparar_fala_para_voz(audio: UploadFile, voice_id: str, source_lang: str,
         tmp.unlink(missing_ok=True)
         return {"resposta": {"rejected": True, "reason": gate["reason"], "source_text": ""}}
     emo_label, emo_pitch, emo_speed, emo_err = "", "", 1.0, None
+    extra_alvo: dict = {}
+    tmp_stt: Path = tmp
     try:
-        r = _transcribe(tmp, language=exp)
+        tmp_stt, extra_alvo = _aplica_speaker_alvo(tmp, speaker_alvo)
+        r = _transcribe(tmp_stt, language=exp)
         src_text = (r.get("text") or "").strip()
         src_lang = (r.get("language") or "").strip().lower()
         ok, motivo = _stt_ok(r, src_text)
@@ -9084,8 +9186,10 @@ def _preparar_fala_para_voz(audio: UploadFile, voice_id: str, source_lang: str,
         # captura de emoção (precisa do áudio ainda em disco)
         modo = (emotion_mode or "off").lower()
         if modo in ("light", "accurate"):
-            emo_label, emo_pitch, emo_speed, emo_err = _emotion_instruct(tmp, src_text, modo)
+            emo_label, emo_pitch, emo_speed, emo_err = _emotion_instruct(tmp_stt, src_text, modo)
     finally:
+        if tmp_stt != tmp:
+            tmp_stt.unlink(missing_ok=True)
         tmp.unlink(missing_ok=True)
 
     emotivo = bool(emo_label) and emo_label != "neutro"
@@ -9115,13 +9219,14 @@ def _preparar_fala_para_voz(audio: UploadFile, voice_id: str, source_lang: str,
     return {"vid": vid, "vpath": vpath, "gate": gate, "src_text": src_text,
             "src_lang": src_lang, "lang": lang, "omni": omni,
             "emotion": emo_label if emotivo else None,
-            "emo_show": emo_show, "emo_err": emo_err}
+            "emo_show": emo_show, "emo_err": emo_err, "alvo": extra_alvo}
 
 
 @app.post("/api/translate-speech")
 def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
                      voice_id: str = Form(""), source_lang: str = Form("auto"),
-                     emotion_mode: str = Form("off"), instruct: str = Form("")):
+                     emotion_mode: str = Form("off"), instruct: str = Form(""),
+                     speaker_alvo: str = Form("")):
     """fala (áudio) -> transcreve -> traduz -> dispara TTS na voz; devolve textos + job_id.
 
     O áudio passa pelo mesmo teto do STT: 30 min (`TETO_STT_S`), acima disso 413."""
@@ -9131,7 +9236,7 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
     tgt = (target_lang or "en").lower()
     p = _preparar_fala_para_voz(audio, voice_id, source_lang, emotion_mode, instruct,
                                 "Voice design vazio — descreva a voz p/ o tradutor",
-                                com_gate=True)
+                                com_gate=True, speaker_alvo=speaker_alvo)
     if "resposta" in p:
         return p["resposta"]
     src_text, src_lang, gate = p["src_text"], p["src_lang"], p["gate"]
@@ -9150,20 +9255,22 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
             **({"speaker": gate["speaker"]} if gate.get("speaker") else {}),
             # idem: o modo do escore vai junto (AS-norm não se compara com o cru)
             **({"speaker_escore_modo": gate["speaker_escore_modo"]}
-               if gate.get("speaker_escore_modo") else {})}
+               if gate.get("speaker_escore_modo") else {}),
+            **p["alvo"]}
 
 
 @app.post("/api/modify-speech")
 def modify_speech(audio: UploadFile = None, voice_id: str = Form(""),
                   source_lang: str = Form("auto"), emotion_mode: str = Form("off"),
-                  instruct: str = Form("")):
+                  instruct: str = Form(""), speaker_alvo: str = Form("")):
     """MODIFICADOR: fala -> transcreve -> TTS na voz escolhida, SEM traduzir (mesma
     língua, mesmas palavras). Igual ao tradutor, mas sem o passo do LLM."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
     _jobs_capacity_check()      # antes do STT: recusa cedo, não em segundos
     p = _preparar_fala_para_voz(audio, voice_id, source_lang, emotion_mode, instruct,
-                                "Voice design vazio — descreva a voz")
+                                "Voice design vazio — descreva a voz",
+                                speaker_alvo=speaker_alvo)
     if "resposta" in p:
         return p["resposta"]
     src_text = p["src_text"]
@@ -9175,7 +9282,7 @@ def modify_speech(audio: UploadFile = None, voice_id: str = Form(""),
                                                 lang, p["omni"]), daemon=True).start()
     return {"job_id": job_id, "source_text": src_text, "source_lang": p["src_lang"],
             "translation": out_text, "target_lang": lang,
-            "emotion": p["emo_show"], "emotion_error": p["emo_err"]}
+            "emotion": p["emo_show"], "emotion_error": p["emo_err"], **p["alvo"]}
 
 
 # ---------------------------------------------------------------------------
@@ -11768,7 +11875,8 @@ def _segs_to_vtt(segs) -> str:
     return "WEBVTT\n\n" + body
 
 
-def _openai_stt(file, language, response_format, translate, response=None):
+def _openai_stt(file, language, response_format, translate, response=None,
+                speaker_alvo=""):
     """STT OpenAI-compatível: áudio -> texto (+ segmentos). translate=True traduz p/ inglês.
 
     `response` é a resposta injetada pela rota: o aviso de fallback do remoto vai no
@@ -11777,8 +11885,14 @@ def _openai_stt(file, language, response_format, translate, response=None):
     if file is None:
         raise HTTPException(400, "Campo 'file' obrigatório")
     tmp = _save_audio_upload(file)
+    extra_alvo: dict = {}
     try:
-        r = _transcribe(tmp, language=(language or "auto").lower())
+        tmp_stt, extra_alvo = _aplica_speaker_alvo(tmp, speaker_alvo)
+        try:
+            r = _transcribe(tmp_stt, language=(language or "auto").lower())
+        finally:
+            if tmp_stt != tmp:
+                tmp_stt.unlink(missing_ok=True)
     finally:
         tmp.unlink(missing_ok=True)
     text = (r.get("text") or "").strip()
@@ -11807,7 +11921,7 @@ def _openai_stt(file, language, response_format, translate, response=None):
         return {"task": "translate" if translate else "transcribe", "language": lang,
                 "duration": round(dur, 3), "text": text,
                 "segments": [{"id": i, "start": s["start"], "end": s["end"], "text": s["text"]}
-                             for i, s in enumerate(segs)]}
+                             for i, s in enumerate(segs)], **extra_alvo}
     return {"text": text}
 
 
@@ -11815,9 +11929,13 @@ def _openai_stt(file, language, response_format, translate, response=None):
 def openai_transcriptions(response: Response, file: UploadFile = File(...),
                           model: str = Form("whisper-1"), language: str = Form(None),
                           prompt: str = Form(None), response_format: str = Form("json"),
-                          temperature: float = Form(0.0)):
-    """STT compatível com OpenAI Whisper. response_format: json|text|srt|verbose_json|vtt."""
-    return _openai_stt(file, language, response_format, translate=False, response=response)
+                          temperature: float = Form(0.0), speaker_alvo: str = Form("")):
+    """STT compatível com OpenAI Whisper. response_format: json|text|srt|verbose_json|vtt.
+
+    `speaker_alvo` é extensão NOSSA (campo de formulário): campo desconhecido não
+    quebra cliente OpenAI, e sem ele o contrato é o de sempre."""
+    return _openai_stt(file, language, response_format, translate=False,
+                       response=response, speaker_alvo=speaker_alvo)
 
 
 @app.post("/v1/audio/translations")

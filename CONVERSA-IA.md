@@ -160,6 +160,12 @@ Com `speaker_gate: label` a transcrição sai normal e etiquetada
 falou. O dono liga e calibra isso em Configurações → Rede & memória; o cadastro
 das amostras e os critérios estão no README, seção *Verificação de locutor*.
 
+Com `speaker_alvo=<perfil>` (opcional) o áudio é separado antes do Whisper e só a
+voz daquele perfil é transcrita — útil com outra pessoa falando junto. A resposta
+ganha `separacao` (`ok`/`indisponivel`/`falhou`) e `segmentos_descartados`; sem os
+pesos do separador o texto sai do áudio original e `separacao` diz por quê. Sem o
+campo, o contrato é o de sempre.
+
 Se o dono calibrar por falso aceite (`speaker_far_alvo`), o `speaker_sim` vem
 **normalizado** e a resposta traz `speaker_escore_modo: "asnorm"`: esse número
 não se compara com o `speaker_threshold` cru (0,35–0,9). Sem o campo, a escala é
