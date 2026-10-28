@@ -3933,11 +3933,33 @@ def _settings_vista(request) -> dict:
     motivo = _speaker_ecapa_motivo()
     if motivo:
         extra["extrator_motivo"] = motivo
+    # EGRESS do filtro `modelo` (#596/F3): a API tem de dizer o que a UI só pinta.
+    # O dsh é processo LOCAL — o trecho sai da máquina só quando a rota dele é
+    # remota; a resposta diz QUAL é o caso, em vez de um "sai da máquina" fixo.
+    cfg_modelo = (_settings.get("live_barge_filtros") or {}).get("modelo") or {}
+    egress = None
+    if cfg_modelo.get("on"):
+        if str(cfg_modelo.get("provedor") or "local").lower() == "dsh":
+            remoto = _dsh_rota_remota()
+            egress = ("dsh_remoto" if remoto else "dsh_local")
+        else:
+            egress = "local"
+    extra["modelo_egress"] = egress
     if not adm:
         for k in _SETTINGS_SECRETS:
             if _settings.get(k):
                 extra[k] = _mascara_setting_secret(_settings[k])
     return extra
+
+
+def _dsh_rota_remota() -> bool:
+    """A rota do dsh configurada sai da máquina? (perfil do `dsh_client`).
+
+    O dsh é processo LOCAL: com perfil local nada sai. Perfil com host/URL
+    explícito, ou backend de chat remoto, é egress."""
+    # O dsh em si é processo LOCAL (`chat_dsh_bin` + `chat_dsh_profile`): nada sai
+    # por ele. O que faz o trecho sair é o BACKEND de chat ser remoto.
+    return str(_settings.get("chat_backend") or "").lower() in ("openai", "remote")
 
 
 def _clamp(value, lo, hi, default):
@@ -10533,22 +10555,51 @@ _PROMPT_MODELO = (
     "Assistente estava falando: {ref}\nFala: {fala}")
 
 
+def _live_modelo_timeout(sess: dict, provedor: str) -> None:
+    """Conta o estouro do filtro `modelo` — separado do p50 (#596).
+
+    Prazo estourado NÃO é decisão: entrava no p50 e mascarava a latência real."""
+    _live_log_kv("barge_modelo_timeout", sess=sess["id"], provedor=provedor)
+    st = sess.setdefault("barge_stats", {"tipos": {}, "decisoes": [], "modelo": []})
+    st["modelo_timeouts"] = int(st.get("modelo_timeouts") or 0) + 1
+
+
 def _live_modelo_dsh(sess: dict, texto: str, eco_txt: str,
                      cfg: dict) -> tuple[str | None, float | None]:
-    """`provedor=dsh`: mesma pergunta, pelo LLM do chat (sai da máquina)."""
+    """`provedor=dsh`: mesma pergunta, pelo LLM do chat.
+
+    PRAZO REAL (#596): `_chat_llm` é bloqueante e `timeout_ms` era ignorado — a 1ª
+    chamada medida levou 2 574 ms com o turno pagando tudo. Agora a chamada roda em
+    thread e o prazo do settings é o TETO: estourou, a cadeia segue (nunca segura o
+    turno). Thread daemon, sem cancelamento: o custo restante é do processo."""
     import re as _re
     if not texto:
         return None, None
+    prazo = max(0.05, float(cfg.get("timeout_ms") or 400) / 1000.0)
+    caixa: dict = {}
+
+    def _roda():
+        try:
+            caixa["bruto"] = _chat_llm([
+                {"role": "system", "content": "Responda só o número."},
+                {"role": "user",
+                 "content": _PROMPT_MODELO.format(ref=eco_txt[:400], fala=texto[:400])},
+            ])
+        except Exception as exc:          # noqa: BLE001 — o erro volta pela caixa
+            caixa["erro"] = exc
+
     t0 = time.monotonic()
-    try:
-        bruto = _chat_llm([
-            {"role": "system", "content": "Responda só o número."},
-            {"role": "user", "content": _PROMPT_MODELO.format(ref=eco_txt[:400], fala=texto[:400])},
-        ])
-    except Exception as exc:              # noqa: BLE001 — erro segue a cadeia
-        _live_log_kv("barge_modelo_erro", sess=sess["id"], provedor="dsh",
-                     erro=str(exc)[:100])
+    th = threading.Thread(target=_roda, daemon=True, name="barge-modelo-dsh")
+    th.start()
+    th.join(prazo)
+    if th.is_alive():
+        _live_modelo_timeout(sess, "dsh")
         return None, None
+    if "erro" in caixa:
+        _live_log_kv("barge_modelo_erro", sess=sess["id"], provedor="dsh",
+                     erro=str(caixa["erro"])[:100])
+        return None, None
+    bruto = caixa.get("bruto")
     m = _re.search(r"([01](?:[.,]\d+)?)", str(bruto or ""))
     if not m:
         return None, None
@@ -11407,6 +11458,18 @@ async def live_ws(ws: WebSocket):
         "st_proximo": 0.0,
     }
     sess["engine"] = _live_engine_novo(sess)
+    # AQUECIMENTO (#596): o card pede o classificador pronto na ABERTURA. Antes o
+    # import+aquece caía no primeiro barge, dentro do laço do WS — 3,4 s medidos
+    # contra um cap de 5 s, e com o `_morto` do #507 podia ser a única tentativa.
+    # Some quando o filtro `modelo` está desligado (não sobe 2 GB à toa).
+    if ((_settings.get("live_barge_filtros") or {}).get("modelo") or {}).get("on"):
+        try:
+            import live_intencao
+
+            sess["intencao"] = live_intencao.pega()
+            sess["intencao_ref"] = True      # `solta()` sai no fechamento
+        except Exception as exc:             # noqa: BLE001 — sem filtro, segue
+            _live_log_kv("barge_modelo_indisponivel", sess=sid, erro=str(exc)[:100])
     _live_log_kv("abre" if not retomado else "resume", sess=sid,
                  voz=sess["voice_id"], retomado=bool(retomado),
                  history=len(sess["history"]), criadas=len(_live_sessions))

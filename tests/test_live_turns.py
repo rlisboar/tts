@@ -1560,3 +1560,95 @@ def test_portao_cai_no_cru_quando_nao_ha_coorte(monkeypatch):
     monkeypatch.setattr(app, "_speaker_cohorte", lambda m: [])
     res = app._voz_do_dono(_pcm(3.0))
     assert res["limiar"] == 0.44 and res["escore"] == "cru"
+
+
+# --------------------------------------------------------------------------
+# #596: filtro `modelo` — os quatro desfechos do aceite
+# --------------------------------------------------------------------------
+def _cfg_modelo(**extra):
+    cfg = {"on": True, "provedor": "local", "limiar": 0.5, "timeout_ms": 400}
+    cfg.update(extra)
+    return cfg
+
+
+def test_modelo_cortar_quando_o_classificador_manda(monkeypatch):
+    import app
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    monkeypatch.setitem(app.__dict__, "_live_classificador_barge",
+                        lambda texto, fala_ms, ref_eco="": 0.9)
+    tipo, p = app._live_modelo_decide(sess, "mas e o preço", 400, "", _cfg_modelo())
+    assert tipo == "interrupcao" and p == 0.9
+
+
+def test_modelo_continuar_quando_o_classificador_manda(monkeypatch):
+    import app
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    monkeypatch.setitem(app.__dict__, "_live_classificador_barge",
+                        lambda texto, fala_ms, ref_eco="": 0.1)
+    tipo, p = app._live_modelo_decide(sess, "uhum, ok", 400, "", _cfg_modelo())
+    assert tipo == "backchannel" and p == 0.1
+
+
+def test_modelo_timeout_do_dsh_cai_no_proximo_filtro(monkeypatch):
+    """Prazo REAL no dsh (#596/F2): `_chat_llm` bloqueante não pode segurar o turno."""
+    import time
+
+    import app
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    monkeypatch.setattr(app, "_chat_llm", lambda *a, **k: (time.sleep(2), "0.9")[1])
+    t0 = time.monotonic()
+    tipo, p = app._live_modelo_decide(sess, "para", 400, "",
+                                      _cfg_modelo(provedor="dsh", timeout_ms=150))
+    assert tipo is None and p is None
+    assert time.monotonic() - t0 < 1.2, "o prazo do settings tem de ser o teto"
+    # e o estouro NÃO entra no p50: vai no contador de timeouts
+    assert sess["barge_stats"]["modelo_timeouts"] == 1
+    assert sess["barge_stats"]["modelo"] == []
+
+
+def test_modelo_erro_do_dsh_volta_none_e_nao_conta_como_decisao(monkeypatch):
+    import app
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+
+    def explode(*a, **k):
+        raise RuntimeError("dsh caiu")
+
+    monkeypatch.setattr(app, "_chat_llm", explode)
+    tipo, p = app._live_modelo_decide(sess, "para", 400, "", _cfg_modelo(provedor="dsh"))
+    assert (tipo, p) == (None, None)
+    assert sess.get("barge_stats", {}).get("modelo_timeouts", 0) == 0
+
+
+def test_modelo_dsh_respeita_o_prazo_quando_responde_no_tempo(monkeypatch):
+    import app
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    monkeypatch.setattr(app, "_chat_llm", lambda *a, **k: "0.8")
+    tipo, p = app._live_modelo_decide(sess, "para", 400, "", _cfg_modelo(provedor="dsh"))
+    assert tipo == "interrupcao" and p == 0.8
+    assert len(sess["barge_stats"]["modelo"]) == 1      # decisão entra no p50
+
+
+def _req_fake():
+    class _C:
+        host = "127.0.0.1"
+    class _R:
+        client = _C()
+        headers: dict = {}
+        url = "http://127.0.0.1/api/settings"
+    return _R()
+
+
+def test_api_sinaliza_egress_do_filtro_modelo(monkeypatch):
+    import app
+    req = _req_fake()
+    monkeypatch.setitem(app._settings, "live_barge_filtros",
+                        {"modelo": {"on": True, "provedor": "local"}})
+    assert app._settings_vista(req)["modelo_egress"] == "local"
+    monkeypatch.setitem(app._settings, "live_barge_filtros",
+                        {"modelo": {"on": True, "provedor": "dsh"}})
+    monkeypatch.setitem(app._settings, "chat_backend", "openai")
+    assert app._settings_vista(req)["modelo_egress"] == "dsh_remoto"
+    monkeypatch.setitem(app._settings, "chat_backend", "dsh")
+    assert app._settings_vista(req)["modelo_egress"] == "dsh_local"
+    monkeypatch.setitem(app._settings, "live_barge_filtros", {"modelo": {"on": False}})
+    assert app._settings_vista(req)["modelo_egress"] is None
