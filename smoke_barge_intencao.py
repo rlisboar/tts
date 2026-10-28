@@ -64,8 +64,37 @@ def decide(texto: str, ms: int) -> str:
         {"pergunta": {"on": False}, "frase_longa": {"on": False},
          "fala_sustentada": {"on": False}, "eco": {"on": False}} if modo == "so_comando" else {})
     app._settings["live_barge_sem_decisao"] = "continua"
-    tipo, _p, _m = app._live_avalia_filtros(sess, texto, ms, {})
+    tipo, _p, _m, _f = app._live_avalia_filtros(sess, texto, ms, {})
     return "corta" if tipo == "interrupcao" else "nao_corta"
+
+
+def _latencia_do_comando(n: int = 12) -> list[int]:
+    """Mede o corte por comando com o STT stubado (passo de 250 ms do handler)."""
+    import threading
+    import time
+
+    import live_turns as lt
+
+    app._settings["live_barge_filtros"] = {"palavras_corte": {"palavras": ["para"]}}
+    tempos = []
+    for _ in range(n):
+        pipe = type("P", (), {"language": "pt"})()
+        pipe._stt = lambda pcm, lang: "para"
+        sess = {"id": "smoke", "ultimo_assistente": "", "pipe": pipe,
+                "cancelado": threading.Event(), "turno": 0}
+        sess["engine"] = lt.TurnEngine(lt.Config(interrupcao="inteligente"),
+                                       scorer=lambda f: 0.95)
+        sess["engine"].set_speaking(True, nivel_dbfs=-20)
+
+        class _Ev:
+            audio = b"\x01\x00" * 1600
+
+        t0 = time.monotonic()
+        app._live_suspeita_barge(sess, _Ev())
+        while sess.get("barge_suspeito") and time.monotonic() - t0 < 2:
+            time.sleep(0.01)
+        tempos.append(round((time.monotonic() - t0) * 1000))
+    return tempos
 
 
 def main(argv: list[str]) -> int:
@@ -89,6 +118,15 @@ def main(argv: list[str]) -> int:
         marca = "✔" if taxa >= piso[nome] else "✘"
         print(f"{marca} {nome:12} {ok}/{len(casos)} = {taxa*100:5.1f}% (piso {piso[nome]*100:.0f}%)")
         falhou |= taxa < piso[nome]
+    # ADENDO: comando cadastrado corta NA HORA (STT em passos de 250 ms), sem
+    # esperar a janela de 700 ms. Piso do card: p50 ≤600 ms.
+    ms_corte = _latencia_do_comando()
+    ms_corte.sort()
+    p50 = ms_corte[len(ms_corte) // 2]
+    marca = "✔" if p50 <= 600 else "✘"
+    print(f"{marca} corte por comando p50 = {p50} ms (pior {ms_corte[-1]} ms, piso 600 ms)")
+    falhou |= p50 > 600
+
     # amostras de intenção: a mesma classificação pura, direto na função
     amostras = [("para", 300), ("uhum", 250), ("", 150), ("qual o prazo?", 400)]
     print("classifica_barge:", [classifica_barge(t, m, REF) for t, m in amostras])

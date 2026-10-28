@@ -407,6 +407,7 @@ class TurnEvent:
     texto: str | None = None
     p_cortar: float | None = None
     modelo_ms: int | None = None
+    filtro: str | None = None       # QUAL filtro decidiu (auditoria do adendo)
 
     def to_json(self) -> dict:
         """Forma de fio do protocolo (o áudio do turno vai em frame binário)."""
@@ -428,6 +429,8 @@ class TurnEvent:
             d["p_cortar"] = round(self.p_cortar, 3)
         if self.modelo_ms is not None:
             d["modelo_ms"] = self.modelo_ms
+        if self.filtro is not None:
+            d["filtro"] = self.filtro
         if self.audio:
             d["audio_bytes"] = len(self.audio)
         return d
@@ -699,6 +702,10 @@ class TurnEngine:
         if self._estado is Estado.OCIOSO:
             return []
         return self._fechar_turno("flush")
+
+    def playback_restante_ms(self) -> int:
+        """Quanto o CLIENTE ainda vai tocar (backlog do último chunk), em ms."""
+        return int(self._playback_restante * FRAME_MS)
 
     def reset(self) -> None:
         self._reset_turno()
@@ -1073,7 +1080,8 @@ class TurnEngine:
 
     def decidir_barge(self, tipo: str, texto: str = "", fala_ms: int = 0,
                       decisao_ms: int = 0, p_cortar: float | None = None,
-                      modelo_ms: int | None = None) -> list[TurnEvent]:
+                      modelo_ms: int | None = None,
+                      filtro: str | None = None) -> list[TurnEvent]:
         """Fecha a SUSPEITA de barge (#501). Chamado pelo handler quando chega o
         `speech_end`, quando a janela de `barge_decisao_ms` estoura, ou direto com
         `tipo` decidido.
@@ -1093,7 +1101,7 @@ class TurnEngine:
         self._suspeito_audio = b""
         decisao = self._evento("barge_decisao", self._t_ms(), self._turno_amostra,
                                b"", texto=texto, tipo_barge=tipo, p_cortar=p_cortar,
-                               modelo_ms=modelo_ms,
+                               modelo_ms=modelo_ms, filtro=filtro,
                                detalhe=f"decisao em {decisao_ms} ms")
         if tipo == "interrupcao":
             if self._estado is Estado.OCIOSO:

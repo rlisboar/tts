@@ -9413,7 +9413,7 @@ def _live_transcreve_trecho(sess: dict, audio: bytes) -> str:
 
 
 def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
-                         filtros: dict) -> tuple[str, float | None, int | None]:
+                         filtros: dict) -> tuple[str, float | None, int | None, str]:
     """Roda a cadeia NA ORDEM do card e devolve (tipo, p_cortar, modelo_ms).
 
     Cada filtro só age se estiver `on`. `modelo` é o único assíncrono e o único
@@ -9432,41 +9432,42 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
         lista = {str(x).lower() for x in
                  (filtros.get("palavras_corte") or {}).get("palavras", _COMANDO_PARAR)}
         if palavras[0] in lista or palavras[-1] in lista:
-            return "interrupcao", None, None
+            return "interrupcao", None, None, "palavras_corte"
     # 2) eco
     if ligado("eco") and eco_txt:
         from live_pipeline import _parece_eco
         if _parece_eco(texto, eco_txt):
-            return "eco", None, None
+            return "eco", None, None, "eco"
     # 3) backchannel
     if ligado("backchannel") and palavras:
         permitidas = {str(x).lower() for x in
                       (filtros.get("backchannel") or {}).get("palavras", _BACKCHANNEL)}
         if len(palavras) <= 2 and all(x in permitidas for x in palavras):
-            return "backchannel", None, None
+            return "backchannel", None, None, "backchannel"
     # 4) ruído
     if ligado("ruido") and not palavras:
-        return "ruido", None, None
+        return "ruido", None, None, "ruido"
     # 5) MODELO (assíncrono, #509) — só quando os rápidos não decidiram
     cfg_modelo = filtros.get("modelo") or {}
     if cfg_modelo.get("on"):
         tipo, p = _live_modelo_decide(sess, texto, fala_ms, eco_txt, cfg_modelo)
         if tipo is not None:
-            return tipo, p, None
+            return tipo, p, None, "modelo"
     # 6) pergunta
     if ligado("pergunta") and ("?" in (texto or "") or any(x in _PERGUNTA for x in palavras)):
-        return "interrupcao", None, None
+        return "interrupcao", None, None, "pergunta"
     # 7) frase longa
     minimo = int((filtros.get("frase_longa") or {}).get("min_palavras", 3))
     if ligado("frase_longa") and len(palavras) >= minimo:
-        return "interrupcao", None, None
+        return "interrupcao", None, None, "frase_longa"
     # 8) fala sustentada (chegou aqui sem texto útil)
     min_ms = int((filtros.get("fala_sustentada") or {}).get("min_ms", 1200))
     if ligado("fala_sustentada") and fala_ms >= min_ms:
-        return "interrupcao", None, None
+        return "interrupcao", None, None, "fala_sustentada", "palavras_corte"
     # 9) sem decisão
     sem = str(_settings.get("live_barge_sem_decisao") or "continua")
-    return ("interrupcao" if sem == "interrompe" else "ruido"), None, None
+    return (("interrupcao" if sem == "interrompe" else "ruido"), None, None,
+            "sem_decisao")
 
 
 def _live_modelo_decide(sess: dict, texto: str, fala_ms: int, eco_txt: str,
@@ -9540,18 +9541,70 @@ def _live_suspeita_barge(sess: dict, ev) -> None:
     can.daemon = True
     sess["barge_timer"] = can
     can.start()
+    # ADENDO: comando cadastrado corta NA HORA. Em vez de esperar a janela
+    # inteira, o trecho é transcrito em passos de `passo_ms` e, se um filtro de
+    # comando disparar, a decisão sai ali (p50 ≤600 ms no smoke de latência).
+    passo = int((_settings.get("live_barge_filtros") or {}).get(
+        "palavras_corte", {}).get("passo_ms", 250))
+    if passo > 0:
+        parar = threading.Event()
+        sess["barge_parar"] = parar
+
+        def _passos():
+            while not parar.wait(passo / 1000.0):
+                if not sess.get("barge_suspeito"):
+                    return
+                _live_decide_barge(sess, b"", int(getattr(ev, "fala_ms", 0) or 0),
+                                   so_comando=True)
+                if not sess.get("barge_suspeito"):
+                    return
+
+        th = threading.Thread(target=_passos, daemon=True)
+        sess["barge_passo_thread"] = th
+        th.start()
 
 
 def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
-                       por_prazo: bool = False) -> None:
+                       por_prazo: bool = False, so_comando: bool = False) -> None:
     """Decide a suspeita pelo CONTEÚDO e emite o desfecho (#501).
 
     Segue a ordem do card: fala longa corta sem esperar STT; depois um filtro por
     vez; `sem_decisao` decide quando nada decidiu. Timeout/erro do filtro `modelo`
     caem no próximo. Sempre emite `barge_decisao` com o tipo."""
+    sus = sess.get("barge_suspeito")
+    if sus is None:
+        return
+    if so_comando:
+        # passo intermediário: só o filtro de COMANDO pode fechar agora
+        audio = audio_cru or sus.get("audio") or b""
+        texto = _live_transcreve_trecho(sess, audio)
+        tipo, _p, _m, filtro = _live_avalia_filtros(
+            sess, texto, fala_ms, {"modelo": {"on": False},
+                                   "pergunta": {"on": False},
+                                   "frase_longa": {"on": False},
+                                   "fala_sustentada": {"on": False}})
+        if filtro not in ("palavras_corte",):
+            return
+        sess.pop("barge_suspeito", None)
+        can = sess.get("barge_timer")
+        if can is not None:
+            can.cancel()
+        eventos = sess.get("engine").decidir_barge(
+            tipo, texto=texto, fala_ms=fala_ms, filtro=filtro) if sess.get("engine") else []
+        _live_log_kv("barge_decisao", sess=sess["id"], tipo=tipo, filtro=filtro,
+                     fala_ms=fala_ms, decisao_ms=0, texto=(texto or "")[:80])
+        if tipo == "interrupcao":
+            _live_cancela(sess, forcar=True)
+        if eventos:
+            _live_trata_eventos(sess, eventos)
+        _live_conta_barge(sess, tipo, 0, None)
+        return
     sus = sess.pop("barge_suspeito", None)
     if sus is None:
         return
+    parar = sess.pop("barge_parar", None)
+    if parar is not None:
+        parar.set()
     can = sess.pop("barge_timer", None)
     if can is not None and not por_prazo:
         can.cancel()
@@ -9559,27 +9612,37 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
     filtros = _settings.get("live_barge_filtros") or {}
     audio = audio_cru or sus.get("audio") or b""
     t0 = time.monotonic()
-    tipo = "ruido"
+    tipo, filtro = "ruido", "sem_decisao"
     texto, p_cortar, modelo_ms = "", None, None
     try:
-        if fala_ms >= 1200 and (filtros.get("fala_sustentada") or {}).get("on", True):
-            tipo = "interrupcao"
+        # ADENDO: perto do fim da resposta a fala vira turno pendente em vez de
+        # cortar o restinho — cortar ali só encurta a frase sem ganhar nada
+        restante = 10 ** 9
+        if motor is not None and (filtros.get("fim_de_resposta") or {}).get("on", True):
+            restante = motor.playback_restante_ms()
+        limite_fim = int((filtros.get("fim_de_resposta") or {}).get("restante_ms", 1000))
+        if restante <= limite_fim:
+            tipo, filtro = "ruido", "fim_de_resposta"
+        elif fala_ms >= 1200 and (filtros.get("fala_sustentada") or {}).get("on", True):
+            tipo, filtro = "interrupcao", "fala_sustentada"
         else:
             texto = _live_transcreve_trecho(sess, audio)
-            tipo, p_cortar, modelo_ms = _live_avalia_filtros(sess, texto, fala_ms, filtros)
+            tipo, p_cortar, modelo_ms, filtro = _live_avalia_filtros(
+                sess, texto, fala_ms, filtros)
     except Exception as exc:              # noqa: BLE001 — decisão nunca derruba o turno
         _live_log_kv("barge_decisao_erro", sess=sess["id"], erro=str(exc)[:120])
         tipo = str(_settings.get("live_barge_sem_decisao") or "continua")
         tipo = "interrupcao" if tipo == "interrompe" else "ruido"
+        filtro = "erro"
     decisao_ms = int((time.monotonic() - t0) * 1000)
     # o modo `imediata`/`so_comando` já filtrou; aqui só o desfecho
     eventos = []
     if motor is not None:
         eventos = motor.decidir_barge(tipo, texto=texto, fala_ms=fala_ms,
                                       decisao_ms=decisao_ms, p_cortar=p_cortar,
-                                      modelo_ms=modelo_ms)
-    _live_log_kv("barge_decisao", sess=sess["id"], tipo=tipo, fala_ms=fala_ms,
-                 decisao_ms=decisao_ms, texto=(texto or "")[:80])
+                                      modelo_ms=modelo_ms, filtro=filtro)
+    _live_log_kv("barge_decisao", sess=sess["id"], tipo=tipo, filtro=filtro,
+                 fala_ms=fala_ms, decisao_ms=decisao_ms, texto=(texto or "")[:80])
     if tipo == "interrupcao":
         _live_cancela(sess, forcar=True)
     if eventos:

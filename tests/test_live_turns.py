@@ -1129,9 +1129,35 @@ def test_filtros_do_settings_mudam_o_desfecho():
 def test_filtro_modelo_ausente_nao_segura_a_cadeia():
     import app
     sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
-    tipo, p, _ms = app._live_avalia_filtros(
+    tipo, p, _ms, _f = app._live_avalia_filtros(
         sess, "qual o prazo", 300, {"modelo": {"on": True}})
     # com classificador instalado ele responde; sem modelo, `p` fica None e a
     # cadeia SEGUE (o filtro nunca segura o turno)
     assert tipo == "interrupcao"
     assert p is None or 0.0 <= p <= 1.0
+
+
+def test_fim_de_resposta_deixa_terminar_em_vez_de_cortar():
+    """Adendo: perto do fim do playback, a fala vira pendente em vez de cortar."""
+    import threading
+
+    import app
+
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None,
+            "cancelado": threading.Event(), "turno": 1}
+    motor, rel = _motor_inteligente()
+    sess["engine"] = motor
+    _abrir_por_barge(motor, rel)
+    motor._playback_restante = 2            # ~128 ms de playback restante
+    app._settings["live_barge_filtros"] = {}
+    app._settings["live_barge_sem_decisao"] = "continua"
+    app._live_decide_barge(sess, b"", 400)
+    assert sess.get("turno") == 1, "não podia abrir turno novo nem cortar"
+    assert not sess["cancelado"].is_set()
+
+
+def test_barge_decisao_traz_o_filtro_que_decidiu():
+    motor, rel = _motor_inteligente()
+    _abrir_por_barge(motor, rel)
+    ev = motor.decidir_barge("interrupcao", "para", 300, 0, filtro="palavras_corte")
+    assert ev[0].to_json()["filtro"] == "palavras_corte"
