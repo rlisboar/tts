@@ -369,7 +369,13 @@ _SETTINGS_DEFAULTS = {
         "pergunta": {"on": True},
         "frase_longa": {"on": True, "min_palavras": 3},
         "fala_sustentada": {"on": True, "min_ms": 1200},
-        "fim_de_resposta": {"on": True, "restante_ms": 1000},
+        # 2000 e não 1000: o backlog do motor corre ~1,1-1,3 s À FRENTE do
+        # cliente (medido: fila real 0 ms com o motor dizendo 1300 ms). Com
+        # 1000 a regra só disparava DEPOIS de o playback acabar, quando a
+        # janela de barge já tinha fechado — e o último segundo nunca
+        # anotava (#547). 2000 é o instante em que ainda há ~0,7 s de áudio
+        # de verdade no alto-falante.
+        "fim_de_resposta": {"on": True, "restante_ms": 2000},
     },
     # o que fazer quando a janela decide sem transcript útil
     "live_barge_sem_decisao": "continua",
@@ -548,16 +554,19 @@ def _save_settings():
         pass
 
 
-# materializa chaves novas (ex.: speech_queue) no arquivo se ainda não existirem
-try:
-    _salvo_keys = set()
-    if SETTINGS_PATH.exists():
-        _salvo_keys = set(json.loads(SETTINGS_PATH.read_text()).keys())
-    if "speech_queue" not in _salvo_keys or "speech_queue_gap_s" not in _salvo_keys:
-        _save_settings()
-except Exception:  # noqa: BLE001
-    pass
-
+# O IMPORT NÃO GRAVA o `settings.json` (#535). Antes, chave default ausente no disco
+# disparava `_save_settings()` aqui: todo processo que só importava o app (suíte,
+# driver, `python -c`, e todo launcher ANTES de reapontar `TTS_SETTINGS_PATH`)
+# reescrevia o arquivo do dono inteiro, no formato canônico e com a ordem trocada —
+# era a escrita sem autor que a guarda vinha acusando.
+#
+# O valor não se perde: o default já está na RAM (`_SETTINGS_DEFAULTS`, mesclado
+# acima) e a PRIMEIRA gravação explícita (POST /api/settings, restore, migração)
+# persiste o arquivo inteiro, já com as chaves novas. Quem quiser o arquivo
+# materializado sem mexer em nada usa `POST /api/settings` vazio.
+# Única exceção: arquivo CORROMPIDO segue sendo renomeado para
+# `settings.json.corrupt` no import (bloco logo acima) — preservar a evidência
+# antes de qualquer escrita é o ponto, e nesse caso o arquivo já está inválido.
 # Textos maiores são gerados em trechos. OmniVoice é masked-diffusion não-AR (sem o
 # problema de EOS do backend antigo), mas dividir permite tocar trecho-a-trecho — a
 # fala começa após o 1º trecho, não no fim.
@@ -661,7 +670,10 @@ def _sync_legacy_apikey_file():
             # `.apikey` — mtime novo com conteúdo velho, e o arquivo do dono
             # aparecia "mexido" a cada rodada de suíte (#535).
             try:
-                atual = LEGACY_APIKEY_PATH.read_text()
+                # `errors="replace"`: `.apikey` editado à mão em latin-1 dava
+                # UnicodeDecodeError, que NÃO é OSError — caía no `except` externo e o
+                # reparo do espelho era pulado em silêncio (antes era sempre reescrito)
+                atual = LEGACY_APIKEY_PATH.read_text(errors="replace")
             except OSError:
                 atual = None
             if atual != novo:
@@ -3921,7 +3933,7 @@ def _normaliza_filtro_barge(nome: str, cfg) -> dict:
     if "passo_ms" in cfg:
         fora["passo_ms"] = int(_clamp(cfg["passo_ms"], 50, 1000, 150))
     if "restante_ms" in cfg:
-        fora["restante_ms"] = int(_clamp(cfg["restante_ms"], 200, 5000, 1000))
+        fora["restante_ms"] = int(_clamp(cfg["restante_ms"], 200, 5000, 2000))
     if nome == "modelo":
         fora["provedor"] = ("dsh" if str(cfg.get("provedor") or "local").lower() == "dsh"
                             else "local")
@@ -9804,7 +9816,7 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
         motor = sess.get("engine")
         restante = motor.playback_restante_ms() if motor is not None else None
         if restante is not None and restante <= int(
-                (filtros.get("fim_de_resposta") or {}).get("restante_ms", 1000)):
+                (filtros.get("fim_de_resposta") or {}).get("restante_ms", 2000)):
             return "ruido", None, None, "fim_de_resposta"
     # 4) backchannel — também pela REGRA pura (fonte única): o `on` e a lista só
     # decidem se ele pode valer. Com a regra sabotada para "sempre interrupção",
@@ -10064,7 +10076,7 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         restante = motor.playback_restante_ms() if motor is not None else None
         perto_do_fim = (restante is not None and (filtros.get("fim_de_resposta") or {}).get(
             "on", True) and restante <= int(
-                (filtros.get("fim_de_resposta") or {}).get("restante_ms", 1000)))
+                (filtros.get("fim_de_resposta") or {}).get("restante_ms", 2000)))
         if (fala_ms >= 1200 and (filtros.get("fala_sustentada") or {}).get("on", True)
                 and not perto_do_fim):
             tipo, filtro = "interrupcao", "fala_sustentada"

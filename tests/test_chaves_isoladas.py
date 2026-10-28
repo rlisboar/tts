@@ -107,6 +107,56 @@ def test_import_nao_reescreve_o_legado_quando_o_conteudo_e_o_mesmo(tmp_path):
     assert legado.stat().st_mtime_ns == antes, "o 2º import reescreveu o mesmo conteúdo"
 
 
+# --- #593: `import app` NÃO grava o `settings.json` (nem para materializar default)
+# O launcher só reaponta `TTS_SETTINGS_PATH` DEPOIS de importar o app; qualquer
+# escrita no import acerta o arquivo do DONO. Faltando chave default no disco, o
+# import mesclava na RAM e chamava `_save_settings()` — reescrevia tudo (ordem
+# canônica, chave de volta ao default) antes de alguém redirecionar o caminho.
+def test_import_nao_grava_settings_que_o_dono_nao_gravou(tmp_path):
+    """Settings sem as chaves default: sha256, mtime e BYTES iguais depois do import.
+
+    Quem persistir o default é a 1ª gravação explícita (POST /api/settings), não o
+    import. `speech_queue`/`speech_queue_gap_s` são o caso real: são exatamente as
+    chaves que disparavam o save."""
+    settings = tmp_path / "settings.json"
+    original = '{"speed": 1.15, "idle_unload_minutes": 3}'
+    settings.write_text(original)
+    assert "speech_queue" not in original
+    antes_hash, antes_mtime = _hash(settings), settings.stat().st_mtime_ns
+    env = {**os.environ, "TTS_APIKEYS_PATH": str(tmp_path / "apikeys.json"),
+           "TTS_LEGACY_APIKEY_PATH": str(tmp_path / "apikey"),
+           "TTS_SETTINGS_PATH": str(settings),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    for var in ("TTS_ROD_API_KEY", "TTS_ADMIN_KEY"):
+        env.pop(var, None)
+    subprocess.run([sys.executable, "-c", "import app"], cwd=str(BASE), env=env,
+                   check=True, capture_output=True)
+    assert settings.read_text() == original, "o import reescreveu o settings do dono"
+    assert _hash(settings) == antes_hash and settings.stat().st_mtime_ns == antes_mtime
+    # o valor não se perde: o default segue VIGENTE na RAM mesmo sem ir ao disco
+    vivo = subprocess.run(
+        [sys.executable, "-c", "import app; print(app._settings['speech_queue'])"],
+        cwd=str(BASE), env=env, check=True, capture_output=True, text=True)
+    assert vivo.stdout.strip() == "True"
+
+
+def test_espelho_legado_e_reparado_mesmo_com_arquivo_fora_do_utf8(tmp_path, monkeypatch):
+    """.apikey editado à mão em latin-1 não pode desligar o reparo em silêncio.
+
+    `read_text()` sem `errors=` levanta `UnicodeDecodeError`, que NÃO é `OSError`:
+    escapava para o `except` externo e o espelho ficava com a chave velha (ou lixo)
+    para sempre. Lido com `errors="replace"`, o conteúdo diverge e ele é reescrito."""
+    import app
+
+    legado = tmp_path / "apikey"
+    legado.write_bytes(b"chave-antiga-\xe7\xe3o\n")     # latin-1, não é UTF-8 válido
+    monkeypatch.setattr(app, "LEGACY_APIKEY_PATH", legado)
+    monkeypatch.setattr(app, "_apikeys", {"enabled": True, "keys": [
+        {"id": "a", "name": "pytest", "secret": "sk-nova", "role": "admin"}]})
+    app._sync_legacy_apikey_file()
+    assert legado.read_text().strip() == "sk-nova", "o espelho não foi reparado"
+
+
 # --- #535: a guarda NOMEIA quem escreveu no arquivo do dono ───────────────────
 # Sem atribuição, "o settings do dono mudou" é fato sem autor (foi o que travou a
 # investigação de 01:24: o qa já rodava isolado e ninguém sabia a origem).
