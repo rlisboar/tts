@@ -74,6 +74,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 RAIZ = pathlib.Path(sys.argv[1])
 REP = int(os.environ.get("REP", "6"))
+PLAYBACK_MIN_MS = int(os.environ.get("PLAYBACK_MIN_MS", "2000"))
+# BLOCO (#547): qual família esta rodada mede. `misto` mantém o diagnóstico antigo.
+BLOCO = (os.environ.get("BLOCO") or "misto").lower()
 LIMIAR = int(os.environ.get("LIMIAR", "6"))
 SUF = str(os.getpid())
 
@@ -238,20 +241,21 @@ try:
 
         INJ_S = float(os.environ.get("INJ_S", "3"))
 
-        def injeta(b64: str | None = None):
-            pg.evaluate("""async ([b64, INJ_S]) => {
+        def injeta(b64: str | None = None, segundos: float | None = None):
+            pg.evaluate("""async ([b64, INJ_S, SEG]) => {
                 const bin = atob(b64); const by = new Uint8Array(bin.length);
                 for (let i = 0; i < bin.length; i++) by[i] = bin.charCodeAt(i);
                 const i16 = new Int16Array(by.buffer);
                 const ini = Math.min(i16.length, 16000 * 0.5);          // pula o ataque
-                const fim = Math.min(i16.length, ini + 16000 * INJ_S);
+                const dur = (typeof SEG !== "undefined" && SEG) ? SEG : INJ_S;
+                const fim = Math.min(i16.length, ini + 16000 * dur);
                 for (let i = ini; i + 1600 <= fim; i += 1600) {
                     if (!LX.ws || LX.ws.readyState !== 1) break;
                     LX.ws.send(i16.slice(i, i + 1600).buffer);
                     await new Promise(r => setTimeout(r, 25));
                 }
                 if (LX.ws && LX.ws.readyState === 1) LX.ws.send(JSON.stringify({ type: "end_of_speech" }));
-            }""", [b64 or fala, INJ_S])
+            }""", [b64 or fala, INJ_S, segundos])
 
         def audio_n():
             return pg.evaluate("() => window.__audio || 0")
@@ -322,6 +326,16 @@ try:
                     print(f"  [{i}/{REP}] ✖ sem áudio do servidor — tail:\n{tail(6)}")
                     continue
             print(f"  [{i}/{REP}] injetando em {time.strftime('%H:%M:%S')} (playback ativo={pg.evaluate('() => LX.ativos.length')})")
+            # INJEÇÃO INEQUÍVOCA (#547): só injeta com >= `PLAYBACK_MIN_MS` de
+            # playback AINDA POR TOCAR. Sem isto a fala podia cair no fim do
+            # chunk e o `fim_de_resposta` (correto) era lido como falha.
+            try:
+                pg.wait_for_function(
+                    "(m) => { const c = LX.ctxPlay; if (!c) return false;"
+                    " return (LX.proximo - c.currentTime) * 1000 >= m; }",
+                    arg=PLAYBACK_MIN_MS, timeout=20000)
+            except Exception:
+                print(f"  [{i}/{REP}] ⚠ sem {PLAYBACK_MIN_MS} ms de playback adiante")
             marco = pg.evaluate("() => window.__ev.length")
             est0 = pg.evaluate("() => ({ estado: LX.estado, ativos: LX.ativos.length, chunks: (LX.obs.stats||{}).playback ? LX.obs.stats.playback.chunks : null })")
             # #225: FILA = o que o cliente ainda vai tocar AGORA (segundos de áudio
@@ -330,14 +344,19 @@ try:
             fila_ms = pg.evaluate("() => { const c = LX.ctxPlay; return c ? Math.max(0, Math.round((LX.proximo - c.currentTime) * 1000)) : 0; }")
             cortes0 = pg.evaluate("() => (window.__cortes || []).length")
             pg.evaluate("() => { window.__inj = performance.now(); }")
-            # a injeção de MEDIÇÃO usa a fala em AMP (o `garante_turno` usa a cheia)
-            injeta(fala_baixa)
+            # a injeção de MEDIÇÃO usa a fala em AMP (o `garante_turno` usa a cheia).
+            # No bloco `backchannel` o estímulo é CURTO (<=0,6 s): a intenção é
+            # justamente NÃO cortar.
+            injeta(fala_baixa, segundos=(0.6 if BLOCO == "backchannel" else None))
             ok = True
             try:
                 pg.wait_for_function("() => window.__ev.some(e => e.tipo === 'interrupted')", timeout=15000)
             except Exception:
                 ok = False
             corte = None
+            fim_resp = pg.evaluate(
+                "() => window.__ev.some(e => e.tipo === 'turno_pendente'"
+                " && e.fim_de_resposta)")
             if ok:
                 corte = pg.evaluate("() => { const t = window.__ev.find(e => e.tipo === 'interrupted'); return t ? Math.round(performance.now() - t.t) : null; }")
             # #225: o corte do playback pode vir do `interrupted` (barge) OU do
@@ -357,7 +376,8 @@ try:
             for s in assin:
                 print("        motor:", {k: s.get(k) for k in ("type", "barge_in", "barge_falso", "curto", "prob", "rms_dbfs", "fala_ms", "t_decisao_ms", "detalhe") if k in s})
             resultados.append({"i": i, "ok": ok, "antes": est0, "eventos": novos, "assinatura": assin,
-                               "fila_ms": fila_ms, "corte_ms": corte_ms})
+                               "fila_ms": fila_ms, "corte_ms": corte_ms,
+                               "fim": bool(fim_resp)})
             if not ok:
                 print(f"        tail do servidor:\n{tail(6)}")
             # deixa assentar antes da próxima (senão a injeção pega o turno anterior)
@@ -396,14 +416,21 @@ try:
     # fecharam sem fala além da janela de confirmação.
     print(f"\n=== MOTOR (cumulativo da rodada): {json.dumps(motor_final, sort_keys=True)}")
     print(f"=== CONTAGEM (cumulativa): {json.dumps(contagem_final, sort_keys=True)}")
-    print(f"\n=== BARGE: {ok_n}/{REP} (limiar {LIMIAR})")
-    if ok_n == 0:
+    # BLOCO (#547): no `backchannel` o acerto é NÃO cortar
+    if BLOCO == "backchannel":
+        acertos = REP - ok_n
+    elif BLOCO == "fim":
+        acertos = sum(1 for r in resultados if r.get("fim"))
+    else:
+        acertos = ok_n
+    print(f"\n=== BLOCO {BLOCO}: {acertos}/{REP} (limiar {LIMIAR})")
+    if BLOCO == "misto" and ok_n == 0:
         print(f"✖ NENHUM barge — não é cauda, é quebrado (log: {log})")
         sys.exit(1)
-    if ok_n < LIMIAR:
-        print(f"✖ REPROVADO: {ok_n}/{REP} abaixo do limiar {LIMIAR} (log: {log})")
+    if acertos < LIMIAR:
+        print(f"✖ REPROVADO: {acertos}/{REP} abaixo do limiar {LIMIAR} (log: {log})")
         sys.exit(1)
-    print(f"✔ APROVADO: {ok_n}/{REP} ≥ {LIMIAR}")
+    print(f"✔ APROVADO: {acertos}/{REP} ≥ {LIMIAR} (bloco {BLOCO})")
 finally:
     try: os.killpg(os.getpgid(proc.pid), 15)
     except Exception: proc.terminate()
