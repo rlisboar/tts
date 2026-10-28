@@ -23,8 +23,10 @@
 # `live_interrupcao`, `live_barge_filtros` e `live_barge_sem_decisao` também ainda
 # não existem no `_apply_settings`: o launcher ENVOLVE a função, valida, faz o merge
 # e GRAVA O CORPO de cada POST — é o que permite cobrar o parcial e a ida-e-volta
-# (POST, GET, reload). O que falta aqui é a validação definitiva do servidor, não o
-# caminho da tela.
+# (POST, GET, reload). Quando o app JÁ conhece as chaves (o #501 entrou), o mesmo
+# launcher só grava os corpos e o teste passa a bater no `_apply_settings` REAL; o
+# preço é que as chaves `live_barge_*` ficam no settings.json do dono com os padrões
+# (o modo é devolvido ao valor lido no início). Não existe `TTS_SETTINGS_PATH` (#461).
 #
 # O volume é medido no ANALISADOR DA SAÍDA (o mesmo do painel OBS), não só no
 # ganho: prova atenuação de áudio de verdade, não um número solto.
@@ -93,9 +95,9 @@ log = pathlib.Path("/tmp") / f"live_interrupcao_servidor-{porta}.log"
 # `{pergunta:{on:false}}` não pode zerar os outros filtros). Validação e clamp
 # aqui são do stub; os definitivos são do `_apply_settings` do #501.
 _launcher = '''
-import json, os, unicodedata, uvicorn, app
+import inspect, json, os, unicodedata, uvicorn, app
 _MODOS = ("inteligente", "imediata", "so_comando")
-_SEM = ("continua", "corta")
+_SEM = ("continua", "interrompe")     # é o que o motor lê (app.py: "interrompe")
 _NUM = {"frase_longa": ("min_palavras", 1, 20), "fala_sustentada": ("min_ms", 400, 5000),
         "fim_de_resposta": ("restante_ms", 0, 3000)}
 _LISTA = ("palavras_corte", "backchannel")
@@ -108,11 +110,12 @@ def _norm(t):
 def _merge_filtros(patch):
     atual = app._settings.setdefault("live_barge_filtros", {})
     for nome, cfg in (patch or {}).items():
-        if nome not in _NUM and nome not in _LISTA and nome not in ("pergunta", "ruido", "eco"):
+        if nome not in _NUM and nome not in _LISTA and nome not in (
+                "pergunta", "ruido", "eco", "modelo"):
             continue
         alvo = atual.setdefault(nome, {})
-        if "on" in cfg:
-            alvo["on"] = bool(cfg["on"])
+        if "on" in cfg or nome == "modelo":     # `modelo` nasce DESLIGADO (#509)
+            alvo["on"] = bool(cfg.get("on", False))
         if nome in _NUM and _NUM[nome][0] in cfg:
             campo, lo, hi = _NUM[nome]
             try: alvo[campo] = min(hi, max(lo, int(cfg[campo])))
@@ -124,21 +127,36 @@ def _merge_filtros(patch):
                 if n and n not in vistos: vistos.append(n)
             alvo["palavras"] = vistos
 
+# O stub só SERVE as chaves se o app ainda não as conhecer (o card irmão #501 pode
+# já ter entrado). O gravador de corpos fica SEMPRE, porque o merge parcial precisa
+# ser conferido nos dois casos.
+_SUPORTE = "live_barge_filtros" in inspect.getsource(app._apply_settings)
 _orig = app._apply_settings
 def _com_modo(payload):
     r = _orig(payload)
     with open(_POSTS, "a") as fh:      # o corpo CRU de cada POST, para o teste
         fh.write(json.dumps(payload) + "\\n")
-    if "live_interrupcao" in payload:
-        v = payload.get("live_interrupcao")
-        app._settings["live_interrupcao"] = v if v in _MODOS else "inteligente"
-    if "live_barge_sem_decisao" in payload:
-        v = payload.get("live_barge_sem_decisao")
-        app._settings["live_barge_sem_decisao"] = v if v in _SEM else "continua"
-    if "live_barge_filtros" in payload:
-        _merge_filtros(payload.get("live_barge_filtros"))
+    if not _SUPORTE:
+        if "live_interrupcao" in payload:
+            v = payload.get("live_interrupcao")
+            app._settings["live_interrupcao"] = v if v in _MODOS else "inteligente"
+        if "live_barge_sem_decisao" in payload:
+            v = payload.get("live_barge_sem_decisao")
+            app._settings["live_barge_sem_decisao"] = v if v in _SEM else "continua"
+        if "live_barge_filtros" in payload:
+            _merge_filtros(payload.get("live_barge_filtros"))
     return r
 app._apply_settings = _com_modo
+
+# escreve direto nas settings, sem validação. Vai INSERIDO na frente das rotas:
+# o mount estático em "/" é anterior e responderia 405 a um POST novo.
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+async def _set(request):
+    app._settings.update(await request.json() or {})
+    return JSONResponse({})
+app.app.router.routes.insert(0, Route("/__set", _set, methods=["POST"]))
+
 uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["LIVE_INT_PORT"]))
 '''
 proc = subprocess.Popen([str(pathlib.Path.cwd() / ".venv-mlx" / "bin" / "python"), "-c", _launcher],
@@ -154,6 +172,10 @@ try:
         try: urllib.request.urlopen(base + "/health", timeout=2).read(); break
         except Exception: time.sleep(0.2)
     print(f"servidor de teste em {base} (stub :{stub_porta})")
+    print("  settings do barge: "
+          + ("o app JÁ conhece as chaves (só o gravador de corpo é do teste)"
+             if "live_barge_filtros" in pathlib.Path("app.py").read_text()
+             else "app antigo — o teste SERVE as chaves"))
     with urllib.request.urlopen(base + "/api/settings", timeout=5) as r:
         modo_inicial = (json.loads(r.read() or b"{}") or {}).get("live_interrupcao")
 
@@ -189,6 +211,10 @@ try:
                    f"tooltip não explica as opções: {sel['titulo']!r}")
 
         # ─── o PAINEL DE FILTROS: um toggle por filtro, números e chips ──────
+        # Baseline determinístico: quando o app conhece as chaves, rodadas
+        # anteriores deixam valores no settings.json real — o painel volta ao
+        # padrão aqui, antes de qualquer medição (o servidor é alinhado no bloco 7).
+        pg.evaluate("() => lxFiltrosAplica()")
         painel = pg.evaluate("""() => {
             const p = document.getElementById('lxFiltros');
             if (!p) return null;
@@ -199,16 +225,19 @@ try:
                      padrao: !!document.getElementById('lxFiltrosPadrao'),
                      recolhido: !p.open,
                      palavras_corte: LX.filtros.palavras_corte.palavras.length,
-                     backchannel: LX.filtros.backchannel.palavras.length };
+                     backchannel: LX.filtros.backchannel.palavras.length,
+                     modelo: LX.filtros.modelo.on };
         }""")
         print(f"  painel de filtros: {painel}")
         cobrar(painel is not None, "painel #lxFiltros não existe")
         if painel:
-            cobrar(len(painel["toggles"]) == 8, f"faltam toggles de filtro: {painel['toggles']}")
+            cobrar(len(painel["toggles"]) == 9, f"faltam toggles de filtro: {painel['toggles']}")
             cobrar(sorted(painel["toggles"]) == sorted(
                 "lxLiga_" + f for f in ("palavras_corte", "pergunta", "frase_longa",
-                                        "fala_sustentada", "backchannel", "ruido", "eco", "fim_de_resposta")),
+                                        "fala_sustentada", "backchannel", "ruido", "eco",
+                                        "modelo", "fim_de_resposta")),
                 f"toggles fora do schema: {painel['toggles']}")
+            cobrar(painel["modelo"] is False, "o filtro modelo deveria nascer DESLIGADO")
             cobrar(len(painel["nums"]) == 3, f"números editáveis faltando: {painel['nums']}")
             cobrar(len(painel["chips"]) == 2, f"editores de chips faltando: {painel['chips']}")
             cobrar(painel["sem"] == "continua", f"sem_decisao não nasce em 'continua': {painel['sem']}")
@@ -488,13 +517,14 @@ try:
 
         # sem decisão
         limpa_posts()
-        pg.select_option("#lxSemDecisao", "corta")
+        pg.select_option("#lxSemDecisao", "interrompe")
         pg.wait_for_timeout(700)
         corpo = posts()[-1] if posts() else {}
         print("  sem_decisao ->", corpo.get("live_barge_sem_decisao"))
-        cobrar(corpo.get("live_barge_sem_decisao") == "corta",
+        cobrar(corpo.get("live_barge_sem_decisao") == "interrompe",
                f"sem_decisao não foi mandado sozinho: {corpo}")
-        cobrar(settings().get("live_barge_sem_decisao") == "corta", "sem_decisao não chegou ao servidor")
+        cobrar(settings().get("live_barge_sem_decisao") == "interrompe",
+               "sem_decisao não chegou ao servidor com o valor que o motor lê")
         cobrar("corta" in pg.evaluate("() => document.getElementById('lxFiltrosResumo').textContent"),
                "resumo do painel não mostra o 'sem decisão'")
 
@@ -559,16 +589,37 @@ try:
         pg.locator('.nav-item[data-view="live"]').click()
         pg.wait_for_function("() => typeof LX === 'object'", timeout=20000)
         pg.wait_for_timeout(900)
+        # e o valor do ADENDO (`corta`) tem de ser entendido como corte na leitura.
+        # Vai pelo `/__set`, sem validação: serve um servidor que fale o vocabulário
+        # do adendo (o de hoje normaliza para `continua`, e aí o alias não apareceria).
+        req = urllib.request.Request(base + "/__set", method="POST",
+                                     data=json.dumps({"live_barge_sem_decisao": "corta"}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5).read()
+        pg.reload(wait_until="networkidle")
+        pg.locator('.nav-item[data-view="live"]').click()
+        pg.wait_for_function("() => typeof LX === 'object'", timeout=20000)
+        pg.wait_for_timeout(900)
+        alias = pg.evaluate("() => document.getElementById('lxSemDecisao').value")
+        print("  'corta' do adendo lido como:", alias)
+        cobrar(alias == "interrompe", f"o valor 'corta' não foi entendido como corte: {alias!r}")
         padrao = pg.evaluate("() => ({ sel: document.getElementById('lxInterrupcao').value, lx: LX.interrupcao })")
         print("  valor inválido no servidor:", padrao)
         cobrar(padrao["sel"] == "inteligente", f"modo inválido não caiu no padrão: {padrao}")
 
         cobrar(not erros, "erros de JS: " + "; ".join(erros[:3]))
 
-        # devolve o modo do dono (o POST grava no settings.json de verdade)
-        if pg.evaluate("() => typeof lxDefineInterrupcao === 'function'"):
+        # devolve o estado do dono: filtros nos PADRÕES e o modo que estava lá
+        # (os dois vão para o settings.json de verdade; sem isto o arquivo ficaria
+        # com o `corta` do teste de alias, que o motor não lê)
+        try:
+            pg.evaluate("() => lxRestauraPadroes()")
+            pg.wait_for_timeout(600)
             pg.evaluate("(m) => lxDefineInterrupcao(m)", modo_inicial or "inteligente")
-            pg.wait_for_timeout(400)
+            pg.wait_for_timeout(600)
+            print("  devolvido ao dono:", modo_servidor(), "·", settings().get("live_barge_sem_decisao"))
+        except Exception as e:
+            print("  ⚠ não consegui devolver o estado do dono:", e)
         try: pg.evaluate("() => lxDesligar()")
         except Exception: pass
         b.close()

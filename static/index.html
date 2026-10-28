@@ -2663,6 +2663,10 @@
               <label class="check"><input type="checkbox" id="lxLiga_eco"><b>eco do próprio TTS</b></label>
               <span class="lx-dica">CONTINUO quando o que voltou é a minha própria fala</span>
             </div>
+            <div class="lx-filtro" data-filtro="modelo">
+              <label class="check"><input type="checkbox" id="lxLiga_modelo"><b>modelo (LLM)</b></label>
+              <span class="lx-dica">decido pelo conteúdo — entra só quando os rápidos não decidem; ainda desligado até a medição</span>
+            </div>
             <div class="lx-filtro" data-filtro="fim_de_resposta">
               <label class="check"><input type="checkbox" id="lxLiga_fim_de_resposta"><b>fim de resposta</b></label>
               <span class="lx-dica">deixo terminar (anoto sua fala) quando faltam</span>
@@ -2674,7 +2678,7 @@
               <label for="lxSemDecisao"><b>quando nenhum filtro decide</b></label>
               <select id="lxSemDecisao" aria-label="quando nenhum filtro decide">
                 <option value="continua">continuo falando</option>
-                <option value="corta">corto a resposta</option>
+                <option value="interrompe">corto a resposta</option>
               </select>
             </div>
             <div class="row" style="gap:10px; align-items:center; margin-top:8px">
@@ -8339,9 +8343,12 @@ const LX_FILTROS_PADRAO = {
   backchannel: { on: true, palavras: ["uhum", "aham", "hum", "sim", "sei", "ok", "tá", "certo", "entendi", "isso", "claro", "beleza", "legal", "nossa", "mhm", "yeah", "right"] },
   ruido: { on: true },
   eco: { on: true },
+  modelo: { on: false },   // decide pelo conteúdo (LLM); o servidor também nasce false
   fim_de_resposta: { on: true, restante_ms: 1000 },
 };
-const LX_SEM_DECISAO_PADRAO = "continua";
+// O motor lê `interrompe` como corte (app.py: `"interrupcao" if tipo == "interrompe"`);
+// aceitar `corta` na leitura cobre o vocabulário do adendo, que é outro.
+const LX_SEM_DECISAO_PADRAO = "continua", LX_SEM_DECISAO_CORTA = "interrompe";
 const LX_MAX_PALAVRAS = 100, LX_MAX_PALAVRA_CHARS = 40;
 
 function lxClona(o) { return JSON.parse(JSON.stringify(o)); }
@@ -8377,7 +8384,8 @@ function lxFiltrosAplica(dados, semDecisao) {
   const d = (dados && typeof dados === "object") ? dados : {};
   LX.filtros = {};
   for (const nome of Object.keys(LX_FILTROS_PADRAO)) LX.filtros[nome] = lxFiltroCfg(nome, d[nome]);
-  LX.semDecisao = ["continua", "corta"].includes(semDecisao) ? semDecisao : LX_SEM_DECISAO_PADRAO;
+  LX.semDecisao = (semDecisao === "corta" || semDecisao === LX_SEM_DECISAO_CORTA)
+    ? LX_SEM_DECISAO_CORTA : LX_SEM_DECISAO_PADRAO;
   lxFiltrosRender();
   lxFiltrosModo();
 }
@@ -8411,7 +8419,7 @@ function lxFiltrosRender() {
   const ligados = Object.values(LX.filtros).filter(c => c.on).length;
   if ($("lxFiltrosResumo"))
     $("lxFiltrosResumo").textContent = "· " + ligados + " de " + Object.keys(LX.filtros).length + " ligados"
-      + " · sem decisão: " + (LX.semDecisao === "corta" ? "corta" : "continua");
+      + " · sem decisão: " + (LX.semDecisao === LX_SEM_DECISAO_CORTA ? "corta" : "continua");
 }
 
 /* No modo `imediata` o motor corta no primeiro som e os filtros não decidem nada:
@@ -8473,8 +8481,13 @@ async function lxEnviaBarge() {
           if (JSON.stringify(valor) !== JSON.stringify(atual[campo])) divergiu.push(nome + "." + campo);
       }
     }
-    if (corpo.live_barge_sem_decisao && (r || {}).live_barge_sem_decisao !== corpo.live_barge_sem_decisao)
-      divergiu.push("live_barge_sem_decisao" + ((r || {}).live_barge_sem_decisao ? "" : " (o servidor não conhece)"));
+    {
+      const semDevolvido = (r || {}).live_barge_sem_decisao;
+      const mesmo = semDevolvido === corpo.live_barge_sem_decisao
+        || (corpo.live_barge_sem_decisao === LX_SEM_DECISAO_CORTA && semDevolvido === "corta");
+      if (corpo.live_barge_sem_decisao && !mesmo)
+        divergiu.push("live_barge_sem_decisao" + (semDevolvido ? "" : " (o servidor não conhece)"));
+    }
     if (divergiu.length) lxFiltrosStatus("⚠ o servidor não guardou: " + divergiu.join(", "), true);
     else lxFiltrosStatus("filtros salvos ✔");
   } catch (e) {
@@ -8517,10 +8530,8 @@ function lxPalavraTira(nome, palavra) {
 }
 
 function lxRestauraPadroes() {
-  LX.filtros = lxClona(LX_FILTROS_PADRAO);
-  LX.semDecisao = LX_SEM_DECISAO_PADRAO;
-  lxFiltrosRender();
-  lxSalvaBarge({ live_barge_filtros: lxClona(LX_FILTROS_PADRAO),
+  lxFiltrosAplica();          // passa pelos defaults normalizados e clampados
+  lxSalvaBarge({ live_barge_filtros: lxClona(LX.filtros),
                  live_barge_sem_decisao: LX_SEM_DECISAO_PADRAO });
   lxLogEvento("⚙ filtros da interrupção restaurados no padrão");
   lxFiltrosStatus("padrões restaurados");
@@ -8873,7 +8884,8 @@ for (const b of document.querySelectorAll("[data-add]")) {
   };
 }
 if ($("lxSemDecisao")) $("lxSemDecisao").onchange = () => {
-  LX.semDecisao = $("lxSemDecisao").value === "corta" ? "corta" : "continua";
+  LX.semDecisao = $("lxSemDecisao").value === LX_SEM_DECISAO_CORTA
+    ? LX_SEM_DECISAO_CORTA : LX_SEM_DECISAO_PADRAO;
   lxFiltrosRender();
   lxSalvaBarge({ live_barge_sem_decisao: LX.semDecisao });
 };

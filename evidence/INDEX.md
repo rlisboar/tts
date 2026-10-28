@@ -254,7 +254,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `243-mordidas.sh` | #243 | 2026-10-01 | !/bin/zsh |
 | `243-mordidas.txt` | #243 | 2026-10-01 | == 1 — 202-gate.sh perde o RUN (backup de settings volta a ser global) |
 | `243-varredura-tmp.txt` | #243 | 2026-10-01 | VARREDURA DA CASA — CAMINHO FIXO EM /tmp (classe #12/#83/#224/#240) — task #243 |
-| `244-live-substituida-status.png` | #244 | 2026-10-21 | (imagem) |
+| `244-live-substituida-status.png` | #244 | 2026-10-27 | (imagem) |
 | `244-live-substituida.png` | #244 | 2026-10-27 | (imagem) |
 | `244-live_ui.txt` | #244 | 2026-10-02 | Exception occurred during processing of request from ('127.0.0.1', 54047) |
 | `244-mordida-A.txt` | #244 | 2026-10-02 | servidor de teste em http://127.0.0.1:63347 (stub :63346) |
@@ -285,7 +285,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `375-F5-ns-rnnoise.md` | #375 | 2026-10-22 | 375/F5 — NS do navegador + RNNoise: o filtro custa precisão do STT |
 | `440-rastro-sinal-mascara.txt` | #440 | 2026-10-22 | == ANTES da máscara (vazava) == |
 | `442-rnnoise-vad-x-stt.md` | #442 | 2026-10-22 | 442 — decisão do default do RNNoise: o filtro serve ao VAD, não ao STT |
-| `502-live-filtros-painel.png` | #502 | — | (imagem) |
+| `502-live-filtros-painel.png` | #502 | 2026-10-27 | (imagem) |
 | `502-live-interrupcao-duck.png` | #502 | 2026-10-27 | (imagem) |
 | `502-live-interrupcao-suites.txt` | #502 | 2026-10-27 | 502 — LIVE UI da interrupção inteligente: medições da suíte e das mordidas |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |

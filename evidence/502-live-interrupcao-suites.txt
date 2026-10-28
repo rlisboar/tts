@@ -7,15 +7,20 @@ restaurar padrões) e POST com MERGE PARCIAL.
 
 Suíte: `tests/live_interrupcao_ui.sh` (estágio `navegador`). Todo número saiu do
 app rodando em porta livre com stub de chat, mic falso do Chromium e o volume
-medido no ANALISADOR DA SAÍDA (o mesmo do painel OBS), não só no ganho. O launcher
-ENVOLVE `_apply_settings` para servir `live_interrupcao`, `live_barge_filtros` e
-`live_barge_sem_decisao` (ainda não existem no app; são do #501), valida, faz o
-merge e GRAVA O CORPO de cada POST — é assim que o parcial é conferido.
+medido no ANALISADOR DA SAÍDA (o mesmo do painel OBS), não só no ganho.
+
+As chaves do barge já entraram no `app.py` (#501, commit 9188349) no meio da
+entrega: o launcher serve as chaves SÓ se o app não as conhecer e, de todo jeito,
+GRAVA O CORPO de cada POST — é assim que o parcial é conferido. Na rodada registrada
+o app já conhecia, então o caminho exercitado é o `_apply_settings` REAL; o preço é
+que as chaves ficam no `settings.json` do dono nos padrões (não existe
+`TTS_SETTINGS_PATH`, #461), e o modo é devolvido ao valor lido no início.
 
 == 1) Rodada verde ==
   seletor: opcoes ['inteligente', 'imediata'] · título explica os dois e os filtros
-  painel: 8 toggles, 3 números, 2 editores de chips, sem_decisao=continua,
-    restaurar padrões presente, recolhido por padrão, listas padrão 11 e 17
+  painel: 9 toggles (o `modelo` do servidor incluso, nascendo DESLIGADO), 3 números,
+    2 editores de chips, sem_decisao=continua, restaurar padrões, recolhido por padrão,
+    listas padrão 11 e 17
   speech_start/inteligente: ganho 1.000 -> 0.2 em 53.8 ms · RMS 0.0690 -> 0.0087 · fila 1
   teto de 2 s: ganho voltou a 1.000 · aviso no log=True
   barge_suspeito/retoma: duck em 49.5 ms · retoma em 147.6 ms · log "↩ continuei — era backchannel" · fila 1
@@ -28,11 +33,15 @@ merge e GRAVA O CORPO de cada POST — é assim que o parcial é conferido.
   palavra "  BASTA " -> 'basta' na lista e filtro religado
   duplicata: lista continua com 12 itens · palavra de 50 chars vira 40 · × remove
   dois patches em 350 ms -> {'min_palavras': 7, 'on': False} no MESMO corpo e no servidor
-  sem_decisao -> corta (chave própria) · resumo do painel mostra "sem decisão: corta"
+  sem_decisao -> interrompe (chave própria) · resumo mostra "sem decisão: corta"
+    `interrompe` é o valor que o motor lê (`"interrupcao" if tipo == "interrompe"`);
+    o `corta` do adendo é aceito na LEITURA e convertido
   restaurar padrões -> sem_decisao=continua, pergunta.on=True, min_palavras=3, "basta" fora
   reload: modo imediata E os filtros voltam do servidor (sem=continua, pergunta=True, min=3, 11 chips)
   valor inválido no servidor -> tela cai no padrão (inteligente)
-  ✔ OK
+  filtros e sem_decisao devolvidos ao dono no fim (modo volta ao valor lido)
+  ✔ OK — três rodadas SEGUIDAS verdes (a suíte é reexecutável: o baseline do painel
+    é reposto no início e o estado é devolvido no fim)
 
 Raiz quadrada média 0.0690 -> 0.0087 = razão 0.126, exatamente os -18 dB.
 
@@ -84,13 +93,14 @@ Raiz quadrada média 0.0690 -> 0.0087 = razão 0.126, exatamente os -18 dB.
   BASE=:7860 ./tests/mobile_layout.sh -> ✔ nada fora da viewport em 390 e 360 px
   BASE=:7860 ./tests/a11y_teclado.sh -> ✔ PTT, trap, atalhos, abas e anúncios
   pytest tests/test_run_sh.py -> 6 passed (a suíte está no estágio `navegador`)
-  Painel ABERTO em 390 e 360 px: nenhum elemento fora da viewport (medido à parte,
-    porque a suíte de mobile olha o estado recolhido)
+  Painel ABERTO em 390, 360 e 320 px: nenhum elemento fora da viewport (medido à
+    parte, porque a suíte de mobile olha o estado recolhido)
 
 == 6) App real (:7860, instância do dono, somente leitura) ==
   ganho durante o duck: 0.1258925348520279 (1/10^(18/20) exato)
   chip "volume abaixado" visível: True · seletor em `inteligente`
   painel: "basta" cadastrada, "nossa" removida do backchannel, min_palavras 5
+  (a captura é anterior ao 9º filtro: `modelo` ainda não aparece nela)
   erros de JS (pageerror / console error): nenhum
   requisições falhas: apenas as 5 sondas de porta do controlador
   (127.0.0.1:7861..7865 `/mode`, preexistentes quando não há controlador)
