@@ -18,6 +18,7 @@ import threading
 import time
 import types
 import warnings
+import weakref
 import wave
 import zipfile
 from collections import deque
@@ -2195,12 +2196,16 @@ def test_speaker_ecapa_e_liberado_por_ociosidade_e_recarrega(tmp_path, monkeypat
     monkeypatch.setattr(app, "_speaker_encoder_ecapa", _carrega)
     app._speaker_embed_ecapa(Path("x.wav"))          # carrega (1)
     assert len(cargas) == 1 and app._speaker_ecapa_enc is not None
+    # referência FRACA: o que tem de morrer é o OBJETO, não só o global do módulo
+    # (regressão que deixa o encoder preso em outro lugar passava sem isto, #627)
+    fraco = weakref.ref(app._speaker_ecapa_enc)
     app._speaker_vigia_passo()
     assert app._speaker_ecapa_enc is not None, "sem ociosidade não pode liberar"
 
     relogio[0] += 601.0                              # passou do TTL
     assert app._speaker_vigia_passo() is True
     assert app._speaker_ecapa_enc is None, "o encoder ficou carregado depois do TTL"
+    assert fraco() is None, "a referência sumiu mas o encoder CONTINUA vivo (preso)"
     # e a próxima consulta recarrega e devolve o MESMO vetor
     vetor = app._speaker_embed_ecapa(Path("x.wav"))
     assert len(cargas) == 2, "não recarregou depois de liberar"
