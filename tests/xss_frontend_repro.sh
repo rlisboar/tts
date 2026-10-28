@@ -31,31 +31,48 @@
 # (`innerHTML` cru) para provar que os payloads são mesmo XSS — sem isso, "não
 # executou" poderia ser só um payload fraco.
 #
-#   ./tests/xss_frontend_repro.sh            # app precisa estar de pé em :7860
-#   BASE=http://127.0.0.1:7860 ./tests/xss_frontend_repro.sh
-#   ./tests/xss_frontend_repro.sh --keep     # deixa as vozes de teste p/ inspeção
-#   ./tests/xss_frontend_repro.sh --cleanup  # compatibilidade (limpar é o PADRÃO)
+# INSTÂNCIA PRÓPRIA e estado em tmp (#634): o `voices/` do dono é insubstituível
+# e limpar depois não bastava — um crash no meio deixava meta órfã lá (foi o #410).
+# Agora o import, as três vozes de teste e os outputs vivem num diretório da
+# rodada, que morre no fim (verde ou vermelho).
 #
-# As vozes de teste saem SEMPRE no fim (trap EXIT), inclusive em rodada vermelha:
-# antes a limpeza era opt-in e só no caminho verde, então uma falha deixava meta
-# sem `.wav` no `voices/` do DONO — voz órfã que 404a, vira a primeira opção do
-# seletor e derruba a suíte seguinte com `Errno 2` (falso vermelho na casa toda).
+#   ./tests/xss_frontend_repro.sh            # sobe o próprio servidor, porta livre
+#   ./tests/xss_frontend_repro.sh --keep     # deixa o diretório da rodada p/ inspeção
+#   ./tests/xss_frontend_repro.sh --cleanup  # compatibilidade (limpar é o PADRÃO)
 set -euo pipefail
 
-BASE="${BASE:-http://127.0.0.1:7860}"
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$RAIZ/.venv-mlx/bin/python"
+# `BASE` do operador continua valendo (contra um app já de pé); sem ele, instância
+# própria — o padrão do estágio `navegador`.
+PORTA="$("$PY" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+DIR="/tmp/xss_repro_$PORTA"
+PROPRIO=0
+if [ -z "${BASE:-}" ]; then
+  PROPRIO=1
+  mkdir -p "$DIR/voices" "$DIR/outputs" "$DIR/state"
+  echo '{}' > "$DIR/settings.json"
+  export TTS_SETTINGS_PATH="$DIR/settings.json" TTS_VOICES_DIR="$DIR/voices" \
+         TTS_OUTPUTS_DIR="$DIR/outputs" TTS_METRICS_DIR="$DIR/state" \
+         TTS_APIKEYS_PATH="$DIR/apikeys.json" TTS_LEGACY_APIKEY_PATH="$DIR/apikey" \
+         TTS_SPEAKER_PATH="$DIR/speaker.json" TTS_JOBS_HIST_PATH="$DIR/jobs.json" \
+         ORT_DISABLE_TELEMETRY=1 XSS_PORTA="$PORTA"
+  "$PY" -c 'import os, uvicorn, app
+uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["XSS_PORTA"]))' \
+    > "$DIR/servidor.log" 2>&1 &
+  SRV=$!
+  BASE="http://127.0.0.1:$PORTA"
+fi
+VOZES="${TTS_VOICES_DIR:-$RAIZ/voices}"
 # sufixo por execução: duas rodadas simultâneas usavam os MESMOS nomes e a
 # limpeza de uma apagava os arquivos da outra (falso vermelho, não regressão).
 SUF="$$"
-# Restos de rodadas que não limparam acumulariam para sempre (agora que a limpeza
-# é por sufixo). Varre o que é ANTIGO por mtime: uma rodada viva criou há
-# segundos, então não é tocada — a distinção é o tempo, não o nome.
-# `|| true` porque a suíte roda com `set -e`: qualquer falha do find (permissão,
-# sandbox) derrubaria a rodada inteira antes de medir. Com `-delete` e nenhum
-# match o find já sai 0 — o `|| true` é rede, não remendo de exit code.
-find "$RAIZ/voices" -maxdepth 1 \( -name 'xssprobe*' -o -name 'xssvirt*' -o -name 'xssmanual*' \) \
-  -mmin +2 -delete 2>/dev/null || true
+# sobras de rodadas mortas em /tmp (mesma varredura por idade das outras suítes)
+for _v in /tmp/xss_repro_*; do
+  [ -d "$_v" ] || continue
+  [ "$_v" = "$DIR" ] && continue
+  [ -n "$(find "$_v" -maxdepth 0 -mmin +60 2>/dev/null)" ] && rm -rf "$_v"
+done
 STEM="xssprobe-$SUF"
 STEM_V="xssvirt-$SUF"
 STEM_M="xssmanual-$SUF"   # meta escrito À MÃO: id hostil que não passa pelo import
@@ -71,10 +88,15 @@ done
 command -v curl >/dev/null || { echo "curl não encontrado"; exit 1; }
 if [ ! -x "$PY" ]; then PY="$(command -v python3)"; fi
 
-if ! curl -sf -m 5 -o /dev/null "$BASE/"; then
-  echo "✖ app não respondeu em $BASE — rode ./run.sh primeiro" >&2
-  exit 1
-fi
+for _ in $(seq 1 300); do
+  curl -sf -m 2 -o /dev/null "$BASE/health" && break
+  if [ "$PROPRIO" = 1 ] && ! kill -0 "$SRV" 2>/dev/null; then
+    echo "✖ servidor da rodada morreu na subida (log $DIR/servidor.log)" >&2
+    exit 1
+  fi
+  sleep 0.2
+done
+curl -sf -m 5 -o /dev/null "$BASE/" || { echo "✖ app não respondeu em $BASE" >&2; exit 1; }
 
 # mktemp em /var/folders pode falhar sob sandbox (workspace-write) — nesse caso
 # o diretório temporário vai para dentro do próprio repo.
@@ -87,9 +109,9 @@ fi
 # LISTA do que ESTA execução pode criar (não glob por prefixo frouxo): só estes
 # nomes — os três stems desta rodada, json e wav — são candidatos à remoção.
 CRIADOS=(
-  "$RAIZ/voices/$STEM.json" "$RAIZ/voices/$STEM.wav"
-  "$RAIZ/voices/$STEM_V.json" "$RAIZ/voices/$STEM_V.wav"
-  "$RAIZ/voices/$STEM_M.json" "$RAIZ/voices/$STEM_M.wav"
+  "$VOZES/$STEM.json" "$VOZES/$STEM.wav"
+  "$VOZES/$STEM_V.json" "$VOZES/$STEM_V.wav"
+  "$VOZES/$STEM_M.json" "$VOZES/$STEM_M.wav"
 )
 limpa_vozes() {
   [ "$MANTER" = "1" ] && return 0
@@ -98,14 +120,25 @@ limpa_vozes() {
   # trap não aborta antes do `rm -rf $TMP` (sob `set -e` o status MANDA no trap)
   for f in "${CRIADOS[@]}"; do rm -f "$f"; done
 }
-trap 'limpa_vozes; rm -rf "$TMP"' EXIT
+encerra() {
+  limpa_vozes
+  rm -rf "$TMP"
+  # espera o servidor sair antes de apagar: ele grava estado ao encerrar e
+  # recriaria o diretório depois do `rm -rf`
+  if [ "${PROPRIO:-0}" = 1 ]; then
+    kill "$SRV" 2>/dev/null || true
+    for _ in $(seq 1 50); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
+  fi
+  [ "$MANTER" = "1" ] || rm -rf "$DIR"
+}
+trap 'encerra' EXIT
 
 # ── 1. payload ────────────────────────────────────────────────────────────
-"$PY" - "$TMP" "$STEM" "$STEM_V" "$STEM_M" "$RAIZ" "$NOME_M" <<'PYEOF'
+"$PY" - "$TMP" "$STEM" "$STEM_V" "$STEM_M" "$VOZES" "$NOME_M" <<'PYEOF'
 import json, sys, wave, zipfile
 from pathlib import Path
 
-tmp, stem, stem_v, stem_m, raiz = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], Path(sys.argv[5])
+tmp, stem, stem_v, stem_m, vozes = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], Path(sys.argv[5])
 with wave.open(str(tmp / f"{stem}.wav"), "wb") as w:
     w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
     w.writeframes(b"\x00\x00" * 8000)          # 0.5 s — o import não checa duração
@@ -144,7 +177,7 @@ with zipfile.ZipFile(tmp / "payload.zip", "w") as z:
 # (o teste passava mesmo revertendo o escape). Meta escrito à mão = caso real
 # (voz antiga/feita na mão, que o #33 tolera).
 payload_m = '<img src=x onerror="window.__xssM=(window.__xssM||0)+1">'
-(raiz / f"voices/{stem_m}.json").write_text(json.dumps({
+(vozes / f"{stem_m}.json").write_text(json.dumps({
     "id": payload_m,
     "name": sys.argv[6],
     "created_at": "2024-03-03 03:03:03",
@@ -356,5 +389,5 @@ PYEOF
 if [ "$MANTER" = "1" ]; then
   echo "· --keep: deixando voices/$STEM.{json,wav} e voices/${STEM}_V.json + ${STEM}_M.json p/ inspeção"
 else
-  echo "· vozes de teste removidas de voices/ no fim (o trap também cobre rodada vermelha)"
+  echo "· diretório da rodada removido no fim (o trap também cobre rodada vermelha)"
 fi
