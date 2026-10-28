@@ -143,6 +143,28 @@ Formatos aceitos: webm, mp4/m4a, mp3, ogg, flac, wav. O servidor decodifica,
 denoiseia (ffmpeg afftdn) e valida com Silero VAD antes do Whisper — ruído
 puro devolve texto vazio.
 
+**Rejeitado também é `200`.** Todo "nada para transcrever" vem no MESMO formato,
+com `text: ""` e o motivo em `reason` — não é erro de transporte, o cliente
+apenas ignora o turno e segue ouvindo:
+
+```json
+{"rejected": true, "reason": "não ouviu fala", "text": ""}
+```
+
+Além de ruído (`não ouviu fala`, `curto demais`, `sem palavras`, `alucinação
+comum`), o motivo pode ser voz não autorizada (`speaker_gate: enforce`), áudio
+curto para identificar o locutor ou idioma de entrada diferente do pedido.
+`reason` é texto curto: mostre-o se quiser, mas decida pelo `rejected`.
+Com `speaker_gate: label` a transcrição sai normal e etiquetada
+(`{"speaker": "eu", "speaker_sim": 0.71, ...}`); `off` (default) não olha quem
+falou. O dono liga e calibra isso em Configurações → Rede & memória; o cadastro
+das amostras e os critérios estão no README, seção *Verificação de locutor*.
+
+Se o dono calibrar por falso aceite (`speaker_far_alvo`), o `speaker_sim` vem
+**normalizado** e a resposta traz `speaker_escore_modo: "asnorm"`: esse número
+não se compara com o `speaker_threshold` cru (0,35–0,9). Sem o campo, a escala é
+a crua.
+
 ## Síntese com a voz do agente
 
 ```sh

@@ -50,6 +50,9 @@ class _EngCompleto:
                 "turno_assistente_aberto": True, "hold_to_talk": False,
                 "hold_to_talk_sugerido": False}
 
+    def playback_restante_ms(self):
+        return 1200     # `stats.playback.restante_ms` (entrada do `fim_de_resposta`)
+
 
 class _Ws:
     def __init__(self) -> None:

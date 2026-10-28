@@ -2023,6 +2023,32 @@ def test_speaker_enforce_rejeita_e_aceita(client, auth, monkeypatch):
     app._settings["speaker_threshold"] = 0.75
 
 
+def test_transcribe_avisa_a_escala_do_escore_quando_o_limiar_e_asnorm(client, auth, monkeypatch):
+    """Com FAR alvo o escore é AS-normalizado e a resposta diz o modo.
+
+    Sem este campo o cliente (e o "Testar" da tela) comparava um número
+    normalizado com o `speaker_threshold` cru — 2,4 contra 0,60 (#525)."""
+    perfis = {"eu": {"vecs": [[1.0, 0.0]], "modelo": app._speaker_modelo_efetivo()}}
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+                        {"text": "pode mandar o texto", "language": "pt", "segments": []})
+    monkeypatch.setitem(app._settings, "speaker_gate", "label")
+    monkeypatch.setattr(app, "_speaker_limiar", lambda m: (0.5, "asnorm"))
+    r = client.post("/api/transcribe", headers=auth, data={"source_lang": "pt"},
+                    files={"audio": ("a.wav", b"x", "audio/wav")})
+    corpo = r.json()
+    assert corpo["speaker"] == "eu", corpo
+    assert corpo["speaker_escore_modo"] == "asnorm"
+    # no caminho CRU o campo não aparece: ali o número se compara com o rigor direto
+    monkeypatch.setattr(app, "_speaker_limiar", lambda m: (0.6, "cru"))
+    r = client.post("/api/transcribe", headers=auth, data={"source_lang": "pt"},
+                    files={"audio": ("a.wav", b"x", "audio/wav")})
+    assert "speaker_escore_modo" not in r.json()
+
+
 def test_speaker_perfil_de_outro_extrator_autentica_e_pede_recadastro(
         client, auth, monkeypatch):
     """Perfil gravado pelo extrator ANTIGO segue valendo, marcado para recadastro.
@@ -2067,6 +2093,31 @@ def test_speaker_escore_usa_centroide_e_nao_o_maximo(monkeypatch):
     monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
     _nome, sim, houve, _modo = app._speaker_pontua(Path("x.wav"), perfis)
     assert houve and abs(sim - 0.7071) < 1e-3
+
+
+def test_speaker_check_pontua_como_o_gate_e_diz_o_veredito(client, auth, monkeypatch):
+    """O "Testar" tem de reproduzir o gate: centróide, limiar e modo efetivos.
+
+    Antes pontuava pelo MÁXIMO das amostras e devolvia só `sim`: com
+    `[[1,0],[0,1]]` e a voz em `[1,0]` o máximo dá 1,0 (passa) e o centróide
+    0,707 (reprova com rigor 0,75) — a tela dizia "✅ passa" e o gate barrava."""
+    perfis = {"eu": {"vecs": [[1.0, 0.0], [0.0, 1.0]],
+                     "modelo": app._speaker_modelo_efetivo()}}
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".vozchk": Path("f.wav"))
+    monkeypatch.setitem(app._settings, "speaker_threshold", 0.75)
+    r = client.post("/api/speaker/check", headers=auth,
+                    files={"audio": ("a.wav", b"x", "audio/wav")})
+    corpo = r.json()
+    assert corpo["speaker"] == "eu"
+    assert abs(corpo["sim"] - 0.707) < 1e-2, "pontuou pelo máximo, não pelo centróide"
+    assert corpo["limiar"] == 0.75 and corpo["modo"] == "cru" and corpo["autorizado"] is False
+    # abaixo do rigor o veredito do servidor acompanha (nada de conta na tela)
+    monkeypatch.setitem(app._settings, "speaker_threshold", 0.6)
+    corpo = client.post("/api/speaker/check", headers=auth,
+                        files={"audio": ("a.wav", b"x", "audio/wav")}).json()
+    assert corpo["autorizado"] is True
 
 
 def test_speaker_enroll_troca_de_extrator_zera_vetores_incompativeis(
@@ -5887,6 +5938,9 @@ class _EngFake:
         # `_live_stats` que voltasse a ler uma porta só passaria em silêncio.
         return {"barge_in": 2, "barge_in_com_turno_aberto": 3, "barge_in_falso": 1}
 
+    def playback_restante_ms(self):
+        return 850          # o `stats` publica: é a entrada da regra do `fim_de_resposta`
+
 
 def test_live_stats_erro_provedor_e_limiares_no_payload(monkeypatch):
     """Último erro da sessão (código + estágio + idade), estado do provedor de
@@ -5938,6 +5992,9 @@ class _EngJanela:
 
     def estatisticas(self):
         return {"barge_in": 0, "barge_in_com_turno_aberto": 0, "barge_in_falso": 0}
+
+    def playback_restante_ms(self):
+        return None      # sem playback conhecido: o `stats` publica `restante_ms: null`
 
 
 class _FilaFake:

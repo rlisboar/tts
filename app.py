@@ -8202,7 +8202,8 @@ def _speaker_avalia(tmp: Path, vecs_antes: list) -> tuple[list | None, list[str]
 @app.post("/api/speaker/enroll")
 async def speaker_enroll(name: str = Form(...),
                          audio: UploadFile = None, forcar: bool = False):
-    """Cadastra/atualiza um perfil de voz com o áudio enviado (8–30 s de fala).
+    """Cadastra/atualiza um perfil de voz com o áudio enviado (3 s+ de FALA; 8–30 s
+    de gravação é o confortável).
 
     Roda FORA do event loop (`run_in_threadpool`): VAD, SNR e o extrator são CPU e
     seguram o servidor inteiro enquanto rodam (#525). `forcar` aceita a amostra
@@ -8275,23 +8276,30 @@ def speaker_delete(request: Request, name: str):
 
 @app.post("/api/speaker/check")
 async def speaker_check(audio: UploadFile = None):
-    """Diagnóstico: quem é a voz do áudio e a similaridade (sem gate)."""
+    """Diagnóstico: quem é a voz do áudio e a similaridade — a MESMA régua do gate.
+
+    Usa `_speaker_pontua` (centróide das amostras, escore do extrator do perfil) e
+    devolve o limiar e o modo que o gate aplicaria, além de `autorizado`. Antes
+    pontuava pelo MÁXIMO das amostras e devolvia só `sim`: a tela concluía
+    "passa/não passa" com um número de outra escala e o teste de perfil podia
+    contrariar o gate (#525)."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
     tmp = _save_audio_upload(audio, ".vozchk")
     try:
-        emb = _speaker_embed(tmp)
+        perfis = _speaker_load()
+        melhor, sim, houve_emb, _modo_escore = _speaker_pontua(tmp, perfis)
     finally:
         tmp.unlink(missing_ok=True)
-    if not emb:
+    if not houve_emb:
         raise HTTPException(400, "Áudio curto demais p/ identificar (grave 8s+)")
-    melhor, sim = None, 0.0
-    for nome, p in _speaker_load().items():
-        for vec in p.get("vecs", []):
-            s = _cos_sim(emb, vec)
-            if s > sim:
-                melhor, sim = nome, s
-    return {"speaker": melhor, "sim": round(sim, 3)}
+    modelo = (_speaker_modelo_do_perfil(perfis[melhor]) if melhor
+              else _speaker_modelo_efetivo())
+    limiar, modo_limiar = _speaker_limiar(modelo)
+    return {"speaker": melhor, "sim": round(sim or 0.0, 3),
+            "limiar": round(limiar, 3), "modo": modo_limiar,
+            # veredito do servidor: com `asnorm` o `sim` não se compara ao rigor cru
+            "autorizado": bool(melhor and sim is not None and sim >= limiar)}
 
 
 @app.post("/api/transcribe")
@@ -8331,6 +8339,10 @@ def transcribe_audio(response: Response, audio: UploadFile = None,
     if gate.get("speaker"):
         out["speaker"] = gate["speaker"]
         out["speaker_sim"] = gate.get("speaker_sim")
+        # escala do número junto do número: com FAR alvo o escore é AS-norm e não
+        # se compara com o `speaker_threshold` cru (#525)
+        if gate.get("speaker_escore_modo"):
+            out["speaker_escore_modo"] = gate["speaker_escore_modo"]
     return out
 
 
@@ -8449,7 +8461,10 @@ def translate_speech(audio: UploadFile = None, target_lang: str = Form("en"),
     return {"job_id": job_id, "source_text": src_text, "source_lang": src_lang,
             "translation": translation, "target_lang": tgt,
             "emotion": p["emo_show"], "emotion_error": p["emo_err"],
-            **({"speaker": gate["speaker"]} if gate.get("speaker") else {})}
+            **({"speaker": gate["speaker"]} if gate.get("speaker") else {}),
+            # idem: o modo do escore vai junto (AS-norm não se compara com o cru)
+            **({"speaker_escore_modo": gate["speaker_escore_modo"]}
+               if gate.get("speaker_escore_modo") else {})}
 
 
 @app.post("/api/modify-speech")
@@ -8763,7 +8778,16 @@ def _live_stats(sess: dict) -> dict:
                      "fila_bytes": getattr(sess.get("fila"), "bytes", 0),
                      "fila_itens": _live_fila_itens(sess),
                      "fila_descartados": getattr(sess.get("fila"), "descartados", 0),
-                     "underruns": sess.get("st_underruns", 0)},
+                     "underruns": sess.get("st_underruns", 0),
+                     # #547: é a ENTRADA da regra do `fim_de_resposta` (o que o
+                     # motor acha que o cliente ainda vai tocar). Sem ele no stats a
+                     # decisão "cortar x anotar" não se explica por fora.
+                     "restante_ms": (sess["engine"].playback_restante_ms()
+                                     if sess.get("engine") is not None else None),
+                     # a JANELA é o que ARMA o barge: com ela fechada o onset vira
+                     # turno novo mesmo com backlog — é o par do `restante_ms`
+                     "janela": (sess["engine"].estatisticas().get("playback_ativo")
+                                if sess.get("engine") is not None else None)},
         "sessao": {"idade_s": int(time.time() - sess["criada"]),
                    "ocioso_ms": int((agora - sess["visto"]) * 1000),
                    "ttl_s": _LIVE_TTL_S, "criadas": len(_live_sessions),
@@ -9519,9 +9543,12 @@ def _live_pendente_zera_contadores(sess: dict) -> None:
 
     Eles descrevem o pendente ATUAL: consumido (ou descartado pelo `cancel`), o
     próximo `turno_pendente` começa a contar do zero em vez de herdar o acúmulo
-    do anterior."""
+    do anterior. O `fim_de_resposta` é do pendente também (é o que diz à tela que
+    a fala nasceu no último segundo): zerado junto, senão o próximo herda o
+    rótulo do anterior."""
     sess["pendentes_trechos"] = 0
     sess["pendentes_descartados_ms"] = 0
+    sess["fim_de_resposta"] = False
 
 
 _pend_lock_cria = threading.Lock()
@@ -9555,7 +9582,8 @@ def _live_prewarm_pendente(sess: dict) -> bool:
     return ate is not None and not sess.get("prewarm_ok") and time.monotonic() < ate
 
 
-def _live_guarda_pendente(sess: dict, pcm: bytes, barge_in: bool) -> None:
+def _live_guarda_pendente(sess: dict, pcm: bytes, barge_in: bool,
+                          fim_de_resposta: bool = False) -> None:
     """Acumula o trecho no ÚNICO pendente, para abrir quando o pipeline liberar.
 
     CONCATENA os pedaços (#126, ajuste do PM): a pessoa costuma completar a
@@ -9565,7 +9593,11 @@ def _live_guarda_pendente(sess: dict, pcm: bytes, barge_in: bool) -> None:
     corte foi de 20 ms ou de 20 s, e o cliente só podia adivinhar.
     O flag de barge-in é pegajoso: qualquer pedaço nascido no playback mantém a
     checagem de eco no turno pendente (transcript que casa com a própria fala
-    não vira resposta)."""
+    não vira resposta).
+
+    `fim_de_resposta` marca a fala que nasceu no ÚLTIMO segundo: ela não corta a
+    resposta e vai ser respondida depois. O campo sai no evento (a tela lê) e no
+    log — sem ele o caminho era indistinguível de "pipeline ocupado" (#569)."""
     if not pcm:
         return
     with _live_pend_lock(sess):                   # #208: contra o observador
@@ -9582,19 +9614,24 @@ def _live_guarda_pendente(sess: dict, pcm: bytes, barge_in: bool) -> None:
         sess["turno_pendente"] = novo
         if barge_in:
             sess["turno_pendente_barge"] = True   # pegajoso: eco-check segue valendo
+        if fim_de_resposta:
+            sess["fim_de_resposta"] = True
         # os contadores do evento são LIDOS AQUI, ainda no lock: fora dele o
         # observador pode zerá-los (o `pop` zera, #221) entre o incremento e a
         # leitura, e o evento sairia com `trechos = 0`
         trechos = sess["pendentes_trechos"]
         descartados_ms = sess.get("pendentes_descartados_ms", 0)
         barge = bool(sess.get("turno_pendente_barge"))
+        fim = bool(sess.get("fim_de_resposta"))
     _live_log_kv("turno_pendente", sess=sess["id"], bytes=len(novo), trechos=trechos,
-                 truncado=truncado, descartados_ms=descartados_ms, barge=barge)
+                 truncado=truncado, descartados_ms=descartados_ms, barge=barge,
+                 fim_de_resposta=fim)
     # protocolo aditivo: "anotei, respondo já" — o turno em si vem na sequência
     # (speech_start/turn_complete quando o pipeline liberar)
     _live_envia_json(sess, {"type": "turno_pendente", "buffer_bytes": len(novo),
                             "trechos": trechos, "descartados_ms": descartados_ms,
-                            "barge_in": barge, "truncado": truncado})
+                            "barge_in": barge, "truncado": truncado,
+                            "fim_de_resposta": fim})
     _live_acorda_pendente(sess)
 
 
@@ -9915,6 +9952,9 @@ def _live_suspeita_barge(sess: dict, ev) -> None:
     cancelado se o `speech_end` chegar antes."""
     sess["barge_suspeito"] = {"audio": bytes(getattr(ev, "audio", b"") or b""),
                               "t": time.monotonic()}
+    # zera o marcador da janela incremental: sem isto a suspeita NOVA herdava a
+    # posição da anterior e a 1ª passada já nascia no fim do buffer (#547)
+    sess["barge_cru_ate"] = 0
     motor = sess.get("engine")
     prazo = getattr(getattr(motor, "config", None), "barge_decisao_ms", 700) / 1000.0
     can = threading.Timer(prazo, lambda: _live_decide_barge(
@@ -9963,7 +10003,13 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         return
     if so_comando:
         # passo intermediário: só o filtro de COMANDO pode fechar agora
-        audio = audio_cru or sus.get("audio") or b""
+        # O áudio tem de ser o ACUMULADO da suspeita, não o retrato do onset: o
+        # evento `barge_suspeito` congela o pré-roll e a fala continua chegando
+        # depois. Lendo só o retrato, `barge_cru_ate` já nascia no fim do buffer
+        # na 1ª passada e todas as seguintes reliam o mesmo rabo (#547).
+        motor_sus = sess.get("engine")
+        audio = ((motor_sus.audio_suspeito() if motor_sus is not None else b"")
+                 or audio_cru or sus.get("audio") or b"")
         # INCREMENTAL: só a janela NOVA desde a última passada (+0,2 s de
         # sobreposição para não cortar palavra no meio). Re-transcrever o trecho
         # inteiro a cada passo fazia o custo crescer durante a fala.
@@ -10010,8 +10056,17 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
     texto, p_cortar, modelo_ms = "", None, None
     try:
         # ADENDO: perto do fim da resposta a fala vira turno pendente em vez de
-        # cortar o restinho — cortar ali só encurta a frase sem ganhar nada
-        if fala_ms >= 1200 and (filtros.get("fala_sustentada") or {}).get("on", True):
+        # cortar o restinho — cortar ali só encurta a frase sem ganhar nada.
+        # A FALA LONGA atalha o STT, mas não pode atalhar o `fim_de_resposta`: ele
+        # vem ANTES do `fala_sustentada` na precedência do PM (#503) e, com o
+        # atalho na frente, o último segundo nunca chegava ao pendente — 3 s de
+        # fala no fim cortavam a resposta em vez de anotar (#547).
+        restante = motor.playback_restante_ms() if motor is not None else None
+        perto_do_fim = (restante is not None and (filtros.get("fim_de_resposta") or {}).get(
+            "on", True) and restante <= int(
+                (filtros.get("fim_de_resposta") or {}).get("restante_ms", 1000)))
+        if (fala_ms >= 1200 and (filtros.get("fala_sustentada") or {}).get("on", True)
+                and not perto_do_fim):
             tipo, filtro = "interrupcao", "fala_sustentada"
         else:
             texto = _live_transcreve_trecho(sess, audio)
@@ -10020,9 +10075,11 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
             if filtro == "fim_de_resposta":
                 # a fala não pode sumir: entra no PENDENTE de verdade (mesma
                 # máquina do #126, com buffer e contadores) e o turno abre quando
-                # o playback acabar — antes só saía um JSON ao cliente (#569)
-                _live_guarda_pendente(sess, audio, barge_in=True)
-                sess["fim_de_resposta"] = True
+                # o playback acabar — antes só saía um JSON ao cliente (#569).
+                # O `fim_de_resposta=True` põe o motivo no evento: sem ele o
+                # caminho era indistinguível de "pipeline ocupado".
+                _live_guarda_pendente(sess, audio, barge_in=True,
+                                      fim_de_resposta=True)
     except Exception as exc:              # noqa: BLE001 — decisão nunca derruba o turno
         _live_log_kv("barge_decisao_erro", sess=sess["id"], erro=str(exc)[:120])
         tipo = str(_settings.get("live_barge_sem_decisao") or "continua")
@@ -10036,7 +10093,10 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
                                       decisao_ms=decisao_ms, p_cortar=p_cortar,
                                       modelo_ms=modelo_ms, filtro=filtro)
     _live_log_kv("barge_decisao", sess=sess["id"], tipo=tipo, filtro=filtro,
-                 fala_ms=fala_ms, decisao_ms=decisao_ms, texto=(texto or "")[:80])
+                 fala_ms=fala_ms, decisao_ms=decisao_ms, texto=(texto or "")[:80],
+                 # `restante` é o que separa "cortar" de "anotar" (fim_de_resposta):
+                 # sem ele no log a decisão não se explica pelo estado do playback
+                 restante_ms=restante)
     if tipo == "interrupcao":
         _live_cancela(sess, forcar=True)
     if eventos:

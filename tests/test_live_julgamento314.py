@@ -170,6 +170,9 @@ class _EngHold:
                 "hold_to_talk_sugerido": True, "barge_in": 6,
                 "barge_in_com_turno_aberto": 0, "barge_in_falso": 4}
 
+    def playback_restante_ms(self):
+        return 0        # `stats.playback.restante_ms` (entrada do `fim_de_resposta`)
+
 
 def test_stats_publica_o_aviso_de_hold():
     """O fallback documentado em LIVE.md chega ao cliente pelo `stats`."""

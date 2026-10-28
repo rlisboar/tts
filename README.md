@@ -256,6 +256,89 @@ Aceita o **OmniVoice ID** (código, ex.: `pt`, `en`, `es`, `fr`, `de`, `it`) ou
 mapeados para o código (`português`/`portuguese` → `pt`). Lista completa de 646
 idiomas no repositório do OmniVoice.
 
+## Verificação de locutor (biometria de voz)
+
+Dá para exigir que só **vozes cadastradas** sejam transcritas — o STT deixa de
+aceitar qualquer pessoa que fale perto do microfone. É opcional e vem desligado.
+
+O cadastro é por perfil (um nome, N amostras). Uma amostra só entra se passar
+por três réguas, medidas no servidor:
+
+| Régua | Mínimo | Por quê |
+|---|---|---|
+| fala (VAD) | 3 s de **voz** | pausa longa não conta: 8 s de arquivo com 1,2 s de fala não serve |
+| SNR | 10 dB | ventoinha a 5 dB degrada todos os extratores |
+| consistência | limiar do FAR 1 % | a amostra que destoa das anteriores é outra pessoa/outro mic |
+
+Abaixo do mínimo a rota **recusa com `400`** e diz o motivo em `detail`:
+
+```sh
+curl -X POST -H "X-API-Key: $KEY" -F "name=eu" -F "audio=@amostra.webm" \
+     $BASE/api/speaker/enroll
+# 400 {"detail":"Amostra recusada: fala curta: 1,2s de voz (mínimo 3s — pausas não
+#      contam). Use `forcar=true` para entrar assim mesmo."}
+
+# aceitar assim mesmo — os motivos voltam em `problemas`
+curl -X POST -H "X-API-Key: $KEY" -F "name=eu" -F "audio=@amostra.webm" \
+     "$BASE/api/speaker/enroll?forcar=true"
+```
+
+`forcar` aceita QUALQUER amostra com embedding; só áudio de onde não sai
+embedding nenhum continua 400.
+
+O cadastro precisa de **3 amostras** (o alvo é 5 — a média de várias estabiliza
+o timbre). Amostra a menos não é erro: o `200` traz `samples`, `completo` e
+`faltando`, e a tela vai guiando a gravação — a primeira amostra **não** fecha o
+perfil. `POST /api/speaker/enroll` e `/api/speaker/check` são de **uso** (um
+aparelho da LAN cadastra a própria voz); apagar o perfil (`DELETE
+/api/speaker/{name}`) é admin.
+
+| Rota | O que devolve |
+|---|---|
+| `GET /api/speaker/profiles` | `name`, `samples`, `updated`, `modelo`, `precisa_recadastrar` |
+| `POST /api/speaker/check` | `speaker`, `sim`, `limiar`, `modo` e `autorizado` do áudio enviado (diagnóstico pela MESMA régua do gate) |
+
+O `check` existe para calibrar sem depender do gate ligado: ele pontua pelo
+centróide das amostras, com o extrator do perfil, e devolve o veredito do
+servidor (`autorizado`) junto do limiar e do modo efetivos — com `modo:
+"asnorm"` o `sim` é normalizado e não se compara com o rigor cru.
+
+Cada perfil guarda o **extrator** que o gerou (`modelo`; ausente = Resemblyzer
+legado). Perfil de outro extrator continua autenticando — `precisa_recadastrar`
+só avisa que ele sai do ar no próximo recadastro, e o `enforce` nunca tranca o
+dono numa atualização. O extrator atual é o ECAPA (vencedor do bake-off), usado
+quando o `speechbrain` está instalado **e** os pesos existem em
+`tools/bakeoff/ecapa_voxceleb.pt`; sem eles o app fica no Resemblyzer e não baixa
+nada em runtime (os pesos vêm do script do `models/`). Perfil novo no extrator
+novo começa do zero, sem misturar vetores de espaços diferentes.
+
+### Modos do gate
+
+`speaker_gate` em Configurações → Rede & memória, seção *Tradução / STT ·
+memória* (ou `POST /api/settings`):
+
+| Modo | Efeito |
+|---|---|
+| `off` (default) | transcreve todos, sem olhar quem falou |
+| `enforce` | só voz de perfil com escore acima do limiar; o resto volta rejeitado |
+| `label` | transcreve todos e etiqueta o locutor (`speaker`, `speaker_sim`) |
+
+O gate vale para `/api/transcribe` e para a Conversa (ditado). Rejeitado sai como
+`200` com `{"rejected": true, "reason": "voz não autorizada (melhor: … 0,48 <
+0,60)", "text": ""}` — para o cliente é o mesmo caminho de "ruído, siga
+ouvindo", nada de erro de transporte. Sem perfil cadastrado o gate fica inerte;
+com o arquivo de perfis **ilegível** o `enforce` falha **fechado** (rejeita e
+diz por quê) e o `label` segue etiquetando sem o campo.
+
+Rigor: `speaker_threshold` (0,35–0,9; default 0,60) é o escore cosseno cru — a
+sua voz costuma dar 0,65–0,85 e outra pessoa 0,40–0,55, então o default rejeita
+intruso sem derrubar você resfriado ou longe do microfone. Para calibrar por
+**falso aceite** em vez de no dedo, `speaker_far_alvo` (`"1"` = 1 %, `"0,1"` =
+0,1 %) usa o escore normalizado (AS-norm) contra uma coorte e o limiar da tabela
+medida para aquele extrator; sem a coorte disponível volta ao escore cru.
+`speaker_escore_modo: "asnorm"` na resposta avisa que o número é normalizado —
+ele não se compara com o cru.
+
 ## API compatível com OpenAI
 
 `POST /v1/audio/speech` — mesmo contrato da OpenAI; funciona com o SDK oficial
