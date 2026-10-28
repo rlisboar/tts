@@ -2153,6 +2153,67 @@ def test_speaker_setting_do_far_alvo_aceita_so_os_alvos(monkeypatch):
         del limpo
 
 
+def _enroll(client, auth, monkeypatch, store, emb=None, nome="eu", forcar=False):
+    monkeypatch.setattr(app, "_save_audio_upload",
+                        lambda up, prefix=".voz": Path("falso.wav"))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: list(emb or [1.0, 0.0]))
+    monkeypatch.setattr(app, "_speaker_load", lambda: store)
+    monkeypatch.setattr(app, "_speaker_save", lambda p: None)
+    url = "/api/speaker/enroll" + ("?forcar=true" if forcar else "")
+    return client.post(url, headers=auth, data={"name": nome},
+                       files={"audio": ("a.wav", b"x", "audio/wav")})
+
+
+def test_speaker_cadastro_recusa_fala_curta_e_ruido(client, auth, monkeypatch):
+    """Fala curta e ruído alto são recusados DIZENDO o motivo (#525).
+
+    Duração de FALA pelo VAD, não de arquivo — e a amostra só entra com
+    `forcar=true`, devolvendo os problemas para o dono ver."""
+    store = {}
+    monkeypatch.setattr(app, "_vad_fala_s", lambda p: 1.2)
+    monkeypatch.setattr(app, "_snr_estimado", lambda p: 25.0)
+    r = _enroll(client, auth, monkeypatch, store)
+    assert r.status_code == 400 and "fala curta" in r.json()["detail"]
+    assert store == {} or not store.get("eu")
+
+    monkeypatch.setattr(app, "_vad_fala_s", lambda p: 5.0)
+    monkeypatch.setattr(app, "_snr_estimado", lambda p: 4.0)
+    r = _enroll(client, auth, monkeypatch, store)
+    assert r.status_code == 400 and "ruído" in r.json()["detail"]
+
+    r = _enroll(client, auth, monkeypatch, store, forcar=True)
+    assert r.status_code == 200, r.text
+    assert r.json()["problemas"], "forçar tem de devolver os problemas"
+
+
+def test_speaker_cadastro_recusa_amostra_que_destoa(client, auth, monkeypatch):
+    """Amostra cuja média contra o centróide fica abaixo do limiar não entra."""
+    store = {"eu": {"vecs": [[1.0, 0.0], [0.98, 0.2]],
+                    "modelo": app.SPEAKER_MODELO_ATUAL}}
+    monkeypatch.setattr(app, "_vad_fala_s", lambda p: 5.0)
+    monkeypatch.setattr(app, "_snr_estimado", lambda p: 30.0)
+    monkeypatch.setitem(app._settings, "speaker_threshold", 0.6)
+    r = _enroll(client, auth, monkeypatch, store, emb=[0.1, 0.99])   # ~0,2 < 0,6
+    assert r.status_code == 400 and "destoa" in r.json()["detail"]
+    r = _enroll(client, auth, monkeypatch, store, emb=[0.1, 0.99], forcar=True)
+    assert r.status_code == 200 and r.json()["samples"] == 3
+
+
+def test_speaker_cadastro_diz_quantas_amostras_faltam(client, auth, monkeypatch):
+    """Menos de 3 amostras não é erro: é cadastro INCOMPLETO, com o que falta."""
+    store = {}
+    monkeypatch.setattr(app, "_vad_fala_s", lambda p: 5.0)
+    monkeypatch.setattr(app, "_snr_estimado", lambda p: 30.0)
+    r = _enroll(client, auth, monkeypatch, store)
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert corpo["completo"] is False and corpo["faltando"] == ["mais 2 amostra(s)"]
+    r = _enroll(client, auth, monkeypatch, store, emb=[0.99, 0.05])
+    assert r.json()["faltando"] == ["mais 1 amostra(s)"]
+    r = _enroll(client, auth, monkeypatch, store, emb=[0.98, 0.1])
+    assert r.json()["completo"] is True and r.json()["faltando"] == []
+
+
 def test_speaker_enroll_lista_e_apaga(client, auth, monkeypatch):
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".voz": Path("falso.wav"))
     monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [0.5, 0.5])
