@@ -11,13 +11,13 @@
 #
 #   ./tests/dsh_ui.sh
 #
-# Servidor PRÓPRIO (porta livre), stub de chat por env e settings em CÓPIA no
-# /tmp (#535): a suíte normaliza o que precisa para o cenário e devolve TUDO que
-# tocou no fim, campo a campo — senão sobra de suíte vira "escolha do dono" para
-# quem ler depois (já aconteceu: `chat_dsh_bin` regrediu de caminho absoluto para
-# o literal `dsh`, que depende de PATH no env do filho). A cópia existe porque o
-# POST /api/settings grava, e gravar no arquivo do dono mexia no mtime dele a cada
-# rodada do gate — o cenário continua real porque a cópia é o arquivo DELE.
+# Servidor PRÓPRIO (porta livre), stub de chat por env e ESTADO PRÓPRIO (#608):
+# `TTS_SETTINGS_PATH`/`TTS_APIKEYS_PATH`/`TTS_LEGACY_APIKEY_PATH`/`OUTPUTS`/
+# `VOICES`/`SPEAKER`/`JOBS_HIST` e o diretório de métricas vão para um tmp da
+# rodada — NADA é lido nem escrito no estado do dono. O papel de "valor guardado"
+# é um `settings.json` SINTÉTICO com `chat_dsh_bin: dsh` (o caso do #604), então o
+# cenário não depende da config real; o restauro no fim devolve esse baseline.
+# O diretório da rodada morre no verde e sobras de rodada morta caem por idade.
 set -euo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,7 +46,7 @@ trap cleanup_dsh EXIT
 # binário do dsh é resolvido no PATH do servidor.
 cd "$RAIZ"
 "$PY" - "$RAIZ" <<'PYEOF'
-import json, os, pathlib, shutil, socket, subprocess, sys, threading, time, urllib.request
+import json, os, pathlib, shutil, socket, subprocess, sys, threading, time, traceback, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 RAIZ = pathlib.Path(sys.argv[1])
@@ -66,6 +66,15 @@ def porta_livre():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
 
+# Sobras de rodadas mortas (a verde apaga o diretório dela no fim): mesma varredura
+# por idade das suítes de Live (#562/#608). 1 h é folgado para depurar uma vermelha.
+for _velho in pathlib.Path("/tmp").glob("dsh_ui_*"):
+    try:
+        if time.time() - _velho.stat().st_mtime > 3600:
+            shutil.rmtree(_velho) if _velho.is_dir() else _velho.unlink()
+    except Exception:
+        pass
+
 stub_porta = porta_livre()
 threading.Thread(target=HTTPServer(("127.0.0.1", stub_porta), Stub).serve_forever, daemon=True).start()
 
@@ -80,18 +89,38 @@ porta = porta_livre()
 # SEM TTS_CHAT_DSH_*: o env TEM PRECEDÊNCIA sobre o settings (por desenho, #112) e
 # com ele o campo `chat_dsh_bin` da tela vira decorativo — foi o que escondeu o
 # caminho de erro na 1ª versão deste teste.
-SETTINGS_TESTE = pathlib.Path("/tmp") / f"dsh_ui_settings_{SUF}.json"
-SETTINGS_TESTE.write_text((RAIZ / "settings.json").read_text())     # cópia do dono
+#
+# Estado PRÓPRIO (#608): nada do dono. Todos os caminhos de estado vão para um
+# diretório da rodada (sufixo pela porta, paralelo-seguro) e o papel de "valor
+# guardado pelo dono" é um `settings.json` SINTÉTICO — antes a suíte copiava o
+# arquivo DELE e devolvia tudo no fim, então a rodada dependia do conteúdo real e
+# o mínimo deslize ficava gravado.
+DIR = pathlib.Path("/tmp") / f"dsh_ui_{porta}"
+for _sub in ("outputs", "voices", "state"):
+    (DIR / _sub).mkdir(parents=True, exist_ok=True)
+SETTINGS_TESTE = DIR / "settings.json"
+SETTINGS_TESTE.write_text(json.dumps({
+    "chat_backend": "openai", "chat_backend_live": "",
+    "chat_dsh_bin": "dsh",            # o caso do gate: nome curto, resolvido no PATH
+    "chat_dsh_profile": PROFILE, "chat_dsh_effort": "off",
+    "speaker_threshold": 0.6,
+}))
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        "TTS_CHAT_MODEL": "stub-dsh-ui", "DSH_UI_PORT": str(porta),
        "TTS_SETTINGS_PATH": str(SETTINGS_TESTE), "ORT_DISABLE_TELEMETRY": "1",
-       # espelho legado de `_save_apikeys`: sem esta variável a rodada tocava o
-       # `.apikey` do dono (mesmo conteúdo, mtime novo) — #535
-       "TTS_APIKEYS_PATH": str(SETTINGS_TESTE.with_name(f"dsh_ui_apikeys_{SUF}.json")),
-       "TTS_LEGACY_APIKEY_PATH": str(SETTINGS_TESTE.with_name(f"dsh_ui_apikey_{SUF}"))}
-log = pathlib.Path("/tmp") / f"dsh_ui_servidor_{SUF}.log"
+       "TTS_APIKEYS_PATH": str(DIR / "apikeys.json"),
+       "TTS_LEGACY_APIKEY_PATH": str(DIR / "apikey"),
+       "TTS_OUTPUTS_DIR": str(DIR / "outputs"), "TTS_VOICES_DIR": str(DIR / "voices"),
+       "TTS_SPEAKER_PATH": str(DIR / "speaker.json"),
+       "TTS_JOBS_HIST_PATH": str(DIR / "jobs.json")}
+log = DIR / "servidor.log"
+# `metrics_hist.DIR` é fixo em `BASE/state/metrics` (não tem env): repontado ANTES
+# do `import app`, que só usa o módulo por atributo. Sem isso toda rodada escreve
+# no `state/metrics` da árvore real.
 _launcher = '''
-import os, uvicorn, app
+import os, pathlib, metrics_hist
+metrics_hist.DIR = pathlib.Path(os.environ["TTS_OUTPUTS_DIR"]).parent / "state"
+import uvicorn, app
 uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["DSH_UI_PORT"]))
 '''
 proc = subprocess.Popen([str(RAIZ / ".venv-mlx" / "bin" / "python"), "-c", _launcher],
@@ -112,12 +141,14 @@ try:
         return json.loads(urllib.request.urlopen(r, timeout=20).read())
 
     # ─── cenário: normaliza o que NÃO serve e guarda o ORIGINAL para o fim ────
-    # O settings é o do dono: tudo que a suíte toca (normalização + fluxo da tela)
-    # volta no fim pelo valor original — inclusive quando o original é vazio ou um
-    # caminho que só funciona no PATH dele. `chat_dsh_bin` e `chat_dsh_profile`
-    # ficaram de fora do restauro antigo e a suíte deixava o valor NORMALIZADO no
-    # arquivo (absoluto → `dsh`), que é o que este bloco conserta.
+    # O baseline é o `settings.json` SINTÉTICO da rodada (#608): a suíte fixa de
+    # propósito o caso do gate (`chat_dsh_bin: "dsh"`, nome curto) e nada do arquivo
+    # do dono entra na conta. O restauro no fim continua sendo cobrado — agora ele
+    # devolve o BASELINE, o que também prova que a tela sabe salvar valores nas duas
+    # direções.
     orig = json.loads(urllib.request.urlopen(base + "/api/settings", timeout=10).read())
+    cobrar(orig.get("chat_dsh_bin") == "dsh",
+           f"o baseline sintético não foi respeitado no boot: {orig.get('chat_dsh_bin')!r}")
     CAMPOS_TOCADOS = ("chat_backend", "chat_backend_live", "chat_dsh_bin",
                       "chat_dsh_profile", "chat_dsh_model", "chat_dsh_effort")
     orig_tocado = {k: orig.get(k, "") for k in CAMPOS_TOCADOS}
@@ -435,7 +466,8 @@ try:
         cobrar((json.loads(urllib.request.urlopen(base + "/api/settings", timeout=10).read())
                 .get("chat_backend_live") or "") == "dsh", "servidor não guardou o backend próprio do Live")
 
-        # ─── 7) devolve ao dono TUDO que a suíte tocou (o settings é dele) ────
+        # ─── 7) devolve o BASELINE de tudo que a suíte tocou (o cenário volta
+        # limpo, sem depender de nada do dono) ────
         # Primeiro pela TELA, para exercitar o caminho do Salvar nos campos que o
         # form cobre…
         corpo_save.clear()
@@ -464,8 +496,8 @@ try:
         for k in CAMPOS_TOCADOS:
             atual = conf.get(k)
             cobrar((atual if atual is not None else "") == esperado[k],
-                   f"campo {k} ficou {atual!r} (original {orig_tocado[k]!r})")
-        print("  devolvido ao dono:", {k: esperado[k] for k in
+                   f"campo {k} ficou {atual!r} (baseline {orig_tocado[k]!r})")
+        print("  devolvido ao baseline:", {k: esperado[k] for k in
               ("chat_dsh_bin", "chat_dsh_profile", "chat_dsh_model")})
 
         # Rede de segurança: o Salvar manda o BLOB INTEIRO da tela, então um campo
@@ -487,14 +519,24 @@ try:
         cobrar(not erros, f"pageerror: {erros}")
         cobrar(not cons, f"console.error de script: {cons}")
         b.close()
+except BaseException as exc:          # exceção no meio: também guarda a rodada
+    if not isinstance(exc, SystemExit):
+        falhas.append(f"{type(exc).__name__}: {exc}")
+        traceback.print_exc()
 finally:
     try: os.killpg(os.getpgid(proc.pid), 15)
     except Exception: proc.terminate()
+    try: proc.wait(timeout=10)
+    except Exception:
+        try: proc.kill()
+        except Exception: pass
 
 if falhas:
     print("\n✖ FALHAS:")
+    print("  estado da rodada:", DIR)      # só a vermelha guarda (cai na varredura por idade)
     for f in falhas: print("  -", f)
     sys.exit(1)
+shutil.rmtree(DIR, ignore_errors=True)  # verde não deixa diretório em /tmp
 print("\n✔ OK — escolha de backend de IA (endpoint+chave x dsh) com modelo/effort,"
       " backend próprio do Live com herança visível, erro visível e payload completo.")
 PYEOF
