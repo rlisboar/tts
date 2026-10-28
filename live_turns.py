@@ -90,6 +90,8 @@ _BACKCHANNEL = frozenset("""
 uhum aham hum hmm hm mm ahn aha a e eh sim sei ok okay ta tá certo certinho entendi entendido isso
 claro beleza legal nossa mhm yeah yep right sure humhum uhum ah ahh oh
 """.split())
+# onomatopeias/ruído escrito: NÃO são conteúdo próprio (não cortam sozinhas)
+_RUIDO_ONO = frozenset("pff tss psst shh zzz".split())
 _PERGUNTA = frozenset("""
 que o_que qual quais quando onde como quem quanto quantos porque por_que
 cadê cade what why how when where who which
@@ -625,11 +627,16 @@ class TurnEngine:
             # chunk e um onset ali virava turno novo (medido: falha exatamente
             # depois de `turn_complete`, com o cliente ainda com áudio na fila).
             # ACUMULA (o backlog é a soma dos chunks) e escoa em tempo real.
+            # A cauda NÃO entra por chunk (#547): somada a cada envio ela inflava o
+            # backlog em `cauda_ms` por chunk — 40 chunks numa resposta de 25 s
+            # davam ~8 s de fantasma, e o `fim_de_resposta` (que lê este número)
+            # disparava segundos ANTES do fim real (medido: cliente com fila 0 e o
+            # motor dizendo 7,4 s). A cauda real já é coberta no `set_speaking(False)`
+            # abaixo, que arma `_frames_playback` (900 ms) sobre o que restar.
             self._playback_restante = min(
                 self.config._frames_audio_max,
                 self._playback_restante
-                + int(math.ceil(float(duracao_ms) / FRAME_MS))
-                + self.config._frames_cauda)
+                + int(math.ceil(float(duracao_ms) / FRAME_MS)))
         if borda_audio:
             palpite = (nivel_dbfs - self.config.eco_perda_inicial_db
                        if nivel_dbfs is not None else self._noise_dbfs + 6.0)
@@ -1082,6 +1089,19 @@ class TurnEngine:
                                     rms_dbfs=dbfs, barge_in=barge,
                                     detalhe="hold" if hold else ("barge_in" if barge else "")))
         return eventos
+
+    def audio_suspeito(self) -> bytes:
+        """Áudio acumulado da suspeita ABERTA (pré-roll + o que já veio depois).
+
+        O evento `barge_suspeito` carrega o áudio do instante do onset, mas ele é
+        um retrato: a fala continua chegando DEPOIS dele e fica no motor. As
+        passadas de comando precisam do acumulado — lendo só o retrato, a janela
+        "incremental" saía do mesmo buffer congelado nas passadas seguintes e a
+        passada 1 (só pré-roll, ~250 ms) não tinha o comando (achado do #547).
+        Vazio quando não há suspeita."""
+        if not self._suspeito:
+            return b""
+        return self._suspeito_audio + b"".join(_pcm16(f) for f in self._turno)
 
     def decidir_barge(self, tipo: str, texto: str = "", fala_ms: int = 0,
                       decisao_ms: int = 0, p_cortar: float | None = None,

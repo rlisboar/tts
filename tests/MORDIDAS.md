@@ -289,3 +289,39 @@ O servidor do teste é um `http.server` local (`TTS_MODELOS_URL`): nada de rede 
 CI. `test_app_nao_baixa_modelo_no_boot` e `test_manifesto_lista_todos_os_pesos`
 cobrem o contrato do card por leitura (o boot não chama o downloader; peso sem
 sha256 no manifesto reprova).
+
+## #547 — cadeia de interrupção: as DUAS direções
+
+A cadeia tem extremos opostos e cada sabotagem só morde por um lado. A receita
+abaixo prova que o `smoke_barge_intencao.py` morde nas duas (medido em
+2026-10-28, `.pyc` removido com `tests/limpa_bytecode.sh live_turns.py` antes de
+cada célula):
+
+| Sabotagem em `live_turns.classifica_barge` | Resultado |
+|---|---|
+| `return "backchannel"` → `return "interrupcao"` ("sempre interrupção") | `backchannel` **0/25** → VEREDITO REPROVADO |
+| `return "interrupcao"` final → `return "backchannel"` ("sempre backchannel") | `curto` **2/20** → VEREDITO REPROVADO |
+
+Por que os corpora existem: `CONTEUDO` (3+ palavras de conteúdo próprio) e
+`CURTO` (1–2 palavras fora da lista de backchannel) são os únicos grupos que
+CHEGAM ao fim da função. `COMANDO`/`PERGUNTA` casam regras anteriores e seguem
+verdes com a regra final sabotada — sem esses dois grupos a última linha da
+função poderia estar morta sem ninguém notar.
+
+Contraprova da cadeia (não da função): `test_cada_filtro_desligado_muda_o_desfecho`
+e `test_paridade_entre_cadeia_e_classifica_barge` cobrem o `on` de cada filtro e a
+paridade passo a passo — a cadeia não reimplementa a regra.
+
+### O que a suíte de áudio (`live_barge_rep.sh`) cobra por bloco
+
+| Bloco | Cenário | Piso |
+|---|---|---|
+| `comando` | "para, para, espera um pouco" no MEIO do playback → corta | 5/6 |
+| `backchannel` | "uhum, sim" no meio → NÃO corta | 5/6 |
+| `fim` | frase no ÚLTIMO segundo → não corta e é respondida depois | 5/6 |
+| `misto` / `imediata` | diagnóstico / modo antigo | 4/6 |
+
+Mordida do `fim`: voltar o default de `fim_de_resposta.restante_ms` para 1000
+reprova — a regra passa a disparar depois do fim do áudio, quando a janela de
+barge já fechou. O cenário tem de injetar na janela (turno `ocioso` + playback
+ABERTO); sem essa preparação a fala entra no turno em voo e não vira barge.

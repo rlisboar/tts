@@ -1108,8 +1108,10 @@ def test_eco_classifica_como_eco_antes_do_conteudo():
 @pytest.mark.parametrize("filtro,texto,filtros,sem,esperado", [
     # desligar o backchannel manda "uhum" ao fim da cadeia (que continua)
     ("backchannel", "uhum", {"backchannel": {"on": False}}, "continua", "ruido"),
-    # desligar a lista tira o corte de "para"
-    ("palavras_corte", "para", {"palavras_corte": {"on": False}}, "continua", "ruido"),
+    # desligar a lista tira o corte de "para" PELA LISTA — a regra pura ainda
+    # conhece a palavra e o último passo (`conteudo`) corta; o motivo é que muda
+    ("palavras_corte", "para", {"palavras_corte": {"on": False}}, "continua",
+     "interrupcao"),
     # desligar a pergunta tira o corte de frase interrogativa
     # 2 palavras: só o filtro de pergunta pega (não cai em frase_longa)
     ("pergunta", "quando sai?", {"pergunta": {"on": False}}, "continua", "ruido"),
@@ -1125,8 +1127,10 @@ def test_cada_filtro_desligado_muda_o_desfecho(filtro, texto, filtros, sem, espe
     sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
     app._settings["live_barge_filtros"] = filtros
     app._settings["live_barge_sem_decisao"] = sem
-    tipo, _p, _m, _f = app._live_avalia_filtros(sess, texto, 300, filtros)
+    tipo, _p, _m, filtro = app._live_avalia_filtros(sess, texto, 300, filtros)
     assert tipo == esperado
+    if filtro == "palavras_corte" and not (filtros.get("palavras_corte") or {}).get("on", True):
+        raise AssertionError("com a lista desligada o motivo não pode ser a lista")
 
 
 def test_palavra_cadastrada_pelo_dono_corta_mesmo_fora_da_lista():
@@ -1175,6 +1179,36 @@ def test_barge_decisao_traz_o_filtro_que_decidiu():
     _abrir_por_barge(motor, rel)
     ev = motor.decidir_barge("interrupcao", "para", 300, 0, filtro="palavras_corte")
     assert ev[0].to_json()["filtro"] == "palavras_corte"
+
+
+def test_fala_longa_no_ultimo_segundo_anota_em_vez_de_cortar():
+    """Precedência do PM (#503): `fim_de_resposta` vem antes de `fala_sustentada`.
+
+    O atalho de fala longa pulava o STT e, com ele, a regra do último segundo:
+    3 s de fala no fim da resposta CORTavam em vez de anotar (#547)."""
+    import queue
+    import threading
+
+    import app
+
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None,
+            "cancelado": threading.Event(), "turno": 1, "fila": queue.Queue(),
+            "engine": None}
+    motor, rel = _motor_inteligente()
+    sess["engine"] = motor
+    _abrir_por_barge(motor, rel)
+    sess["barge_suspeito"] = {"audio": b"\x01\x00" * 800}
+    motor._playback_restante = 2                     # ~0,1 s: último segundo
+    app._settings["live_barge_filtros"] = {}
+    ok = app._live_transcreve_trecho
+    app._live_transcreve_trecho = lambda *a, **k: "o dia está bonito hoje"
+    try:
+        app._live_decide_barge(sess, b"\x01\x00" * 800, 2600)   # fala LONGA
+    finally:
+        app._live_transcreve_trecho = ok
+    assert not sess["cancelado"].is_set(), "3 s no último segundo não podia cortar"
+    assert sess.get("turno_pendente"), "a fala tinha de ser anotada"
+    assert sess.get("fim_de_resposta") is True
 
 
 def test_sem_decisao_aceita_o_alias_corta_e_grava_canonico():
@@ -1240,7 +1274,7 @@ def test_stt_lento_decide_dentro_do_teto_de_2s(monkeypatch):
 
     import app
 
-    def stt_lento(pcm, idioma, prazo_s=0.0):
+    def stt_lento(pcm, idioma, cru=False, prazo_s=0.0):
         time.sleep(3.0)                      # bem acima do prazo de 0,6
         return "para"
 
@@ -1289,7 +1323,11 @@ def test_comando_corta_antes_de_qualquer_filtro():
 
 
 def test_fim_de_resposta_guarda_a_fala_no_pendente():
-    """#569: a fala no último segundo entra no PENDENTE (não só num JSON)."""
+    """#569: a fala no último segundo entra no PENDENTE (não só num JSON).
+
+    A tela usa `buffer_bytes`/`trechos` para dizer o TAMANHO do que ficou
+    retido e `fim_de_resposta` para saber POR QUE — sem os três o log mostrava
+    "fala anotada (0 kB)" e o caminho era indistinguível de "pipeline ocupado"."""
     import queue
     import threading
 
@@ -1312,8 +1350,93 @@ def test_fim_de_resposta_guarda_a_fala_no_pendente():
         app._live_transcreve_trecho = monkeypatch_ok
     assert sess.get("turno_pendente"), "o pendente tem de ter o áudio da fala"
     assert sess.get("fim_de_resposta") is True
-    # e o evento sai com os contadores do #126
-    tipos = []
+    # o evento sai com os contadores do #126 E com o motivo
+    eventos = []
     while not sess["fila"].empty():
-        tipos.append(sess["fila"].get()[1]["type"])
-    assert "turno_pendente" in tipos
+        eventos.append(sess["fila"].get()[1])
+    pend = [e for e in eventos if e.get("type") == "turno_pendente"]
+    assert pend, "o cliente tem de ser avisado de que a fala foi anotada"
+    assert pend[0]["fim_de_resposta"] is True
+    assert pend[0]["buffer_bytes"] > 0 and pend[0]["trechos"] >= 1
+
+
+def test_fim_de_resposta_nao_contamina_o_pendente_seguinte():
+    """O rótulo é do PENDENTE: consumido o turno, o próximo não herda o dele."""
+    import app
+
+    sess = {"id": "s", "fim_de_resposta": True}
+    app._live_pendente_zera_contadores(sess)
+    assert sess["fim_de_resposta"] is False
+
+
+def test_passo_de_comando_transcreve_a_janela_NOVA():
+    """#547: o passo lê o áudio que CRESCE, não o retrato do onset.
+
+    O evento `barge_suspeito` congela o pré-roll; com o passo lendo só ele, a
+    `barge_cru_ate` já nascia no fim do buffer e todas as passadas reliam o
+    mesmo rabo — comando no ataque nunca fechava."""
+    import queue
+    import threading
+
+    import app
+
+    def lista_de_tamanhos(vista):
+        return [len(x) for x in vista]
+
+    app._settings["live_barge_filtros"] = {"palavras_corte": {"palavras": ["para"]}}
+    app._settings["live_barge_sem_decisao"] = "continua"
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None,
+            "cancelado": threading.Event(), "turno": 0, "fila": queue.Queue()}
+    motor, rel = _motor_inteligente()
+    sess["engine"] = motor
+    evs = _abrir_por_barge(motor, rel)      # suspeita aberta no motor
+    sus = [e for e in evs if e.tipo == "barge_suspeito"]
+    sess["barge_suspeito"] = {"audio": sus[0].audio if sus else b"", "t": 0.0}
+    vista = []
+
+    def stt(_sess, pcm, cru=False, prazo_s=0.0):
+        vista.append(pcm)
+        return "para" if len(vista) > 1 else ""
+
+    ok = app._live_transcreve_trecho
+    app._live_transcreve_trecho = stt
+    try:
+        app._live_decide_barge(sess, b"", 300, so_comando=True)   # 1ª: só pré-roll
+        _tocar(motor, rel, _mistura(ECO, _tom(0.3)), 30)          # fala NOVA chega
+        app._live_decide_barge(sess, b"", 300, so_comando=True)   # 2ª: janela nova
+    finally:
+        app._live_transcreve_trecho = ok
+    # a 2ª passada tem de receber áudio que a 1ª NÃO tinha. Lendo o retrato
+    # congelado, a janela "nova" é o rabo do MESMO buffer (sufixo da 1ª)
+    assert len(vista) == 2, lista_de_tamanhos(vista)
+    assert vista[1], "a passada nova veio vazia"
+    assert not vista[0].endswith(vista[1]), (
+        "a 2ª passada transcreveu o rabo do buffer congelado, não a fala nova")
+    assert not sess.get("barge_suspeito"), "o comando tinha de fechar na 2ª passada"
+
+
+def test_comando_nao_morre_no_juiz_de_alucinacao(monkeypatch):
+    """#547: comando de corte passa mesmo com o juiz recusando.
+
+    "para" é 1 palavra — o perfil que o `_stt_ok` recusa por confiança baixa. A
+    cadeia de interrupção JÁ aceitou a palavra (regra 1, antes do juiz); deixar o
+    turno ser descartado por `motivo=stt` fazia o dono cortar a resposta e ficar
+    sem a resposta seguinte (era o `turno_descartado motivo=stt` do card)."""
+    import app
+    import live_pipeline
+
+    monkeypatch.setattr(app, "_transcribe",
+                        lambda *a, **k: {"text": "para", "language": "pt"})
+    monkeypatch.setattr(app, "_stt_ok", lambda *a, **k: (False, "baixa confiança (-1.2)"))
+    julga = {}
+    texto = live_pipeline._stt_app(b"\x01\x00" * 1600, "pt", julga)
+    assert texto == "para"
+    assert "comando" in (julga.get("detalhe") or "")
+    # contraprova: fala sem comando segue recusada e continua marcada como "stt"
+    monkeypatch.setattr(app, "_transcribe",
+                        lambda *a, **k: {"text": "o dia ta bonito", "language": "pt"})
+    julga2 = {}
+    texto2 = live_pipeline._stt_app(b"\x01\x00" * 1600, "pt", julga2)
+    assert texto2 == "o dia ta bonito"      # o texto sai, quem descarta é o turno
+    assert julga2.get("motivo") == "stt"
+    assert "comando" not in (julga2.get("detalhe") or "")

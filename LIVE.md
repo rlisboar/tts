@@ -111,6 +111,17 @@ histórico. `stats.motor.barge` publica o tipo, o p50 e os timeouts do filtro
 **`interrompe`** (corta). O valor `corta` é ALIAS aceito pelo servidor e gravado
 como `interrompe` — a tela usa esse nome; qualquer outro valor cai em `continua`.
 
+`fim_de_resposta` (#569/#547) merece detalhe porque o desenho é fácil de inverter:
+ele vem ANTES de `backchannel`, `ruido`, `pergunta`, `frase_longa` e
+`fala_sustentada` — perto do fim, até fala longa termina e vira pendente — e
+entrega a fala ao `turno_pendente` com `fim_de_resposta: true` no evento (a tela
+usa para dizer POR QUE anotou). `restante_ms` é lido de
+`engine.playback_restante_ms()` e o default é **2000**, não 1000: o backlog do
+motor corre ~1,1–1,3 s à frente do que o cliente de fato tem na fila (medido:
+fila real 0 ms com o motor dizendo 1300 ms). Com 1000 a regra só disparava
+DEPOIS de o áudio acabar, quando a janela de barge já tinha fechado — o último
+segundo nunca anotava nada.
+
 `interrupcao` em settings escolhe o modo: `inteligente` (default), `imediata` (o
 comportamento antigo) ou `so_comando`. `smoke_barge_intencao.py` mede a matriz; com
 `imediata` o backchannel reprova de propósito (corta 100 %).

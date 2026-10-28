@@ -1287,6 +1287,24 @@ def _prewarm_chat() -> None:
         print(f"[live] pre-warm do chat falhou ({type(exc).__name__}) — segue", flush=True)
 
 
+def _casa_comando(texto: str) -> bool:
+    """O transcript é um COMANDO de corte (lista cadastrada ∪ a interna)?
+
+    Mesma regra da cadeia de interrupção (`_live_avalia_filtros`, elo 1): a
+    palavra de comando na PRIMEIRA ou na ÚLTIMA posição. Aqui só serve para o
+    juiz de alucinação não descartar comando (#547)."""
+    import app
+    from live_turns import _COMANDO_PARAR, _palavras
+
+    palavras = _palavras(texto)
+    if not palavras:
+        return False
+    lista = (app._settings.get("live_barge_filtros") or {}).get(
+        "palavras_corte") or {}
+    cadastradas = {str(x).lower() for x in (lista.get("palavras") or _COMANDO_PARAR)}
+    return palavras[0] in cadastradas or palavras[-1] in cadastradas
+
+
 def _stt_app(pcm16_le_16k: bytes, language: str | None,
              julga: dict | None = None) -> str:
     """STT do turno pelo caminho do app (VAD + anti-alucinação inclusos).
@@ -1296,6 +1314,9 @@ def _stt_app(pcm16_le_16k: bytes, language: str | None,
     `compression_ratio`, mínimos — só valia na Conversa; alucinação do Whisper ia
     reta ao LLM. Rejeitado, o texto NÃO entra no turno e `julga["motivo"]` diz por
     quê (`"stt"`), para o cliente e o `stats` verem o descarte.
+
+    Exceção (#547): COMANDO de corte (`_casa_comando`) passa mesmo quando o juiz
+    recusa — ver o comentário no ramo do `_stt_ok`.
 
     Turno que o VAD do próprio `_transcribe` recusa chega aqui como texto vazio
     com `language` vazio (é o formato daquele ramo) e vira motivo `"vad"` — é
@@ -1331,6 +1352,16 @@ def _stt_app(pcm16_le_16k: bytes, language: str | None,
             if julga is not None:
                 julga["motivo"] = "stt"
                 julga["detalhe"] = motivo
+            # COMANDO DE CORTE não morre no juiz (#547): "para", "espera", "chega"
+            # são 1 palavra curta — exatamente o perfil que o `_stt_ok` recusa com
+            # mais frequência — e a cadeia de interrupção JÁ os aceitou como
+            # `palavras_corte` (regra 1, antes de qualquer juiz). Deixar o juiz
+            # descartar transformava comando legítimo em "não ouvi": o dono cortava
+            # a resposta e ficava sem nenhuma resposta depois.
+            if _casa_comando(texto):
+                if julga is not None:
+                    julga["detalhe"] = f"{motivo} (comando, aceito)"
+                return texto
             return texto            # o texto fica no `transcript`; quem descarta é o turno
         return texto
     finally:

@@ -21,6 +21,13 @@ RESULTADOS = BASE / "resultados"
 
 SR = 16000
 
+#: diretório do extrator ECAPA — mesmo contrato do `TTS_SPEAKER_MODELO_DIR` do app e
+#: do `models/README.md`. O `savedir` é o que impede o `from_hparams` de resolver
+#: pelo CACHE do HuggingFace: sem ele o load busca o Hub e quebra em máquina
+#: offline, mesmo com o modelo em `models/` (#598).
+MODELO_ECAPA = Path(os.environ.get("TTS_SPEAKER_MODELO_DIR")
+                    or RAIZ_REPO / "models" / "ecapa-voxceleb")
+
 
 def garante() -> None:
     for d in (FALA, RUIDO, MISTURA, CLONE, RESULTADOS):

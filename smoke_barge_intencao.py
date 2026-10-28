@@ -12,9 +12,14 @@ Corpora (≥20 em cada, pt e en):
   - RUÍDO: transcript vazio/oscilações, que NÃO devem cortar.
   - ECO: trechos literais do assistente, que NÃO devem cortar (regra do #301).
 
-Critério (do aceite do card): backchannel e ruído NÃO cortam em ≥90 %; comando e
-pergunta cortam em ≥95 %; eco não corta em 100 %. Versionado: é o instrumento do
-gate — sem ele a matriz não se reproduz.
+Critério (do aceite do card): backchannel e ruído NÃO cortam em ≥90 %; comando,
+pergunta e conteúdo próprio cortam em ≥95 %; eco não corta em 100 %. Versionado:
+é o instrumento do gate — sem ele a matriz não se reproduz.
+
+Duas MORDIDAS cobradas (#547, receita em `tests/MORDIDAS.md`): trocar o
+`return "interrupcao"` final por `backchannel` reprova o grupo CONTEUDO, e trocar
+o `return "backchannel"` por `interrupcao` reprova o grupo BACKCHANNEL. Uma
+direção sem a outra passaria com metade da regra morta.
 
     ./smoke_barge_intencao.py            # veredito
     ./smoke_barge_intencao.py --verboso  # imprime cada caso errado
@@ -43,6 +48,29 @@ PERGUNTA = ["qual o prazo?", "quando sai?", "onde está?", "por que assim?",
             "me diz o valor", "quero o resumo de ontem", "muda para o outro arquivo",
             "abre a pasta de saída", "faz de novo", "mostra o resultado"]
 RUIDO = ["", "", "pff", "", "tss", ""]   # `hm`/`ã`/`é`/`ahn` são backchannel
+# CONTEÚDO (#547, mordida do PM): fala com conteúdo PRÓPRIO que não é comando nem
+# pergunta e fica abaixo de 1200 ms, então só casa a última regra da
+# `classifica_barge` (3+ palavras fora da lista de backchannel). Concordância
+# longa é o caso típico: o usuário está junto do assistente, mas está FALANDO e
+# corta. Sem este grupo, trocar o `return "interrupcao"` final por `ruido`/
+# `backchannel` passava em todo o resto da matriz.
+CONTEUDO = ["sim, sim, faz sentido isso que você falou", "concordo com você nisso",
+            "é exatamente isso mesmo", "eu já sabia dessa história",
+            "entendi, mas não é bem assim", "pode continuar daí então",
+            "isso me lembra uma coisa", "já vi esse filme antes",
+            "faz sentido o que você disse", "acho que vale a pena",
+            "yeah that makes sense to me", "i already knew about it",
+            "that is exactly the point", "sure, but not quite like that",
+            "go on from there then", "it reminds me of something",
+            "i have seen this before", "that makes sense, keep going",
+            "agreed, that is exactly it", "well, it is not that simple"]
+# CURTO (#547): 1–2 palavras com conteúdo, fora da lista de backchannel — só a
+# ÚLTIMA linha da `classifica_barge` as pega. Mordem o `return "interrupcao"`
+# final, que o grupo CONTEUDO (3+ palavras) não alcança.
+CURTO = ["tchau", "obrigado", "beleza mano", "vamos lá", "combinado então",
+         "isso aí", "pode ser", "claro que sim", "até logo", "já era",
+         "bye", "thanks", "not really", "of course", "see you", "all right",
+         "no way", "for sure", "let us go", "right now"]
 ECO = ["então o dia está bonito hoje", "o dia está bonito",
        "quer que eu conte mais alguma coisa?", "claro, o dia está bonito hoje",
        "mais alguma coisa", "que eu conte mais alguma coisa"]
@@ -51,7 +79,8 @@ ECO = ["então o dia está bonito hoje", "o dia está bonito",
 REF = "então o dia está bonito hoje. Quer que eu conte mais alguma coisa?"
 
 ESPERADO = {"backchannel": "backchannel", "comando": "corta", "pergunta": "corta",
-            "ruido": "ruido", "eco": "eco"}
+            "ruido": "ruido", "eco": "eco", "conteudo": "corta",
+            "curto": "corta"}
 
 
 def decide(texto: str, ms: int) -> str:
@@ -133,13 +162,16 @@ def _latencia_do_comando(n: int = 6) -> list[int]:
 def main(argv: list[str]) -> int:
     verboso = "--verboso" in argv
     corpora = {"backchannel": BACKCHANNEL, "comando": COMANDO,
-               "pergunta": PERGUNTA, "ruido": RUIDO, "eco": ECO}
+               "pergunta": PERGUNTA, "ruido": RUIDO, "eco": ECO,
+               "conteudo": CONTEUDO, "curto": CURTO}
     piso = {"backchannel": 0.90, "ruido": 0.90, "comando": 0.95,
-            "pergunta": 0.95, "eco": 1.00}
+            "pergunta": 0.95, "eco": 1.00, "conteudo": 0.95, "curto": 0.95}
     # `ruido` abaixo de 200 ms de propósito: acima disso o `stt_vazio` (falha
     # segura) corta, e o grupo de ruído deixaria de medir o que mede
+    # `conteudo` abaixo de 1200 ms de propósito: acima disso o `fala_sustentada`
+    # atalha o STT e o grupo deixaria de medir a regra de conteúdo próprio.
     dur = {"backchannel": 300, "comando": 350, "pergunta": 500, "ruido": 150,
-           "eco": 600}
+           "eco": 600, "conteudo": 900, "curto": 700}
     falhou = False
     for nome, casos in corpora.items():
         ok = 0

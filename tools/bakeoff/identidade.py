@@ -124,8 +124,11 @@ class _Ecapa:
     def __init__(self):
         from speechbrain.inference.speaker import EncoderClassifier
 
+        # `source`/`savedir` no DIRETÓRIO local: sem isso o speechbrain resolve
+        # pelo cache do HF e o bake-off não roda offline (#598).
         self.enc = EncoderClassifier.from_hparams(
-            source="speechbrain/spkrec-ecapa-voxceleb", run_opts={"device": "cpu"})
+            source=str(comum.MODELO_ECAPA), savedir=str(comum.MODELO_ECAPA),
+            run_opts={"device": "cpu"})
 
     def emb(self, x: np.ndarray) -> np.ndarray:
         import torch

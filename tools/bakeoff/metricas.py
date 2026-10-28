@@ -102,3 +102,73 @@ def eer_ci(escores_pos, escores_neg) -> list[float]:
 
 def frr_ci(escores_pos, escores_neg, far_alvo: float) -> list[float]:
     return list(_boot(escores_pos, escores_neg, lambda p, q: frr_em_far(p, q, far_alvo)))
+
+
+# ---------------------------------------------------------------- separação (#532)
+
+def si_sdr(est, ref) -> float:
+    """SI-SDR em dB: projeta a estimativa na referência e mede o que sobra fora da
+    projeção. Escala invariante, então ganho arbitrário do separador não conta."""
+    e = np.asarray(est, np.float64)
+    s = np.asarray(ref, np.float64)
+    n = min(e.size, s.size)
+    e, s = e[:n], s[:n]
+    if not n or not np.any(s):
+        return float("nan")
+    alvo = e @ s / (s @ s) * s
+    ruido = e - alvo
+    num, den = np.sum(alvo ** 2), np.sum(ruido ** 2)
+    return float(10 * np.log10((num or 1e-12) / (den or 1e-12)))
+
+
+def si_sdri(est, ref, mistura) -> float:
+    """Melhoria sobre a mistura, em dB. É o número que o card pede: > 0 significa
+    que o separador aproximou do alvo mais do que a própria mistura estava."""
+    return si_sdr(est, ref) - si_sdr(mistura, ref)
+
+
+def alinhamento(hip: list[str], ref: list[str]) -> dict:
+    """Edição mínima com contagem separada de substituição/inserção/deleção.
+
+    WER sozinho esconde o que interessa aqui: palavra de TERCEIRO aparece como
+    substituição ou como inserção, e as duas se cancelam contra uma deleção do
+    alvo. A taxa de inserção isola o vazamento."""
+    m, n = len(hip), len(ref)
+    d = [[0] * (n + 1) for _ in range(m + 1)]
+    op = [[""] * (n + 1) for _ in range(m + 1)]
+    for i in range(1, m + 1):
+        d[i][0], op[i][0] = i, "ins"   # palavra da hipótese sem par na referência
+    for j in range(1, n + 1):
+        d[0][j], op[0][j] = j, "del"   # palavra da referência que sumiu
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            custos = {"c": d[i - 1][j - 1] + (hip[i - 1] != ref[j - 1]),
+                      "ins": d[i - 1][j] + 1, "del": d[i][j - 1] + 1}
+            melhor = min(custos, key=lambda k: custos[k])
+            d[i][j], op[i][j] = custos[melhor], melhor
+    sub = ins = dele = 0
+    i, j = m, n
+    while i or j:
+        o = op[i][j]
+        if o == "c":
+            sub += hip[i - 1] != ref[j - 1]
+            i, j = i - 1, j - 1
+        elif o == "ins":
+            ins += 1
+            i -= 1
+        else:
+            dele += 1
+            j -= 1
+    n_ref = max(n, 1)
+    return {"wer": (sub + ins + dele) / n_ref, "sub": sub, "ins": ins, "del": dele,
+            "n_ref": n}
+
+
+def vazamento(hip: list[str], ref: list[str]) -> float:
+    """Fração das palavras da referência que foram INVADIDAS por palavra alheia.
+
+    Diferente da taxa de inserção pura: normaliza pelo tamanho do enunciado para
+    que 1 palavra de terceiro num enunciado de 100 palavras não pese igual a 1 em
+    10. É a métrica de vazamento do card."""
+    a = alinhamento(hip, ref)
+    return (a["ins"] + 0.5 * a["sub"]) / max(a["n_ref"], 1)
