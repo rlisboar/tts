@@ -1000,6 +1000,11 @@ class TurnEngine:
                 for e in evs:
                     if e.tipo == "barge_in":
                         e.tipo = "barge_suspeito"
+                        # o áudio vai NO EVENTO da suspeita: é dele que o handler
+                        # transcreve. Sem isto o `speech_start` (que é filtrado
+                        # aqui) era o único a carregar áudio e o trecho chegava
+                        # vazio no STT — causa do corte 1/6 (#503)
+                        e.audio = b"".join(_pcm16(f) for f in self._turno)
                         e.detalhe = f"onset durante playback ({self.config.interrupcao})"
                 return evs
             return []

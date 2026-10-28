@@ -112,8 +112,15 @@ def _latencia_do_comando(n: int = 6) -> list[int]:
 
         t0 = time.monotonic()
         app._live_suspeita_barge(sess, _Ev())
-        while sess.get("barge_suspeito") and time.monotonic() - t0 < 6:
-            time.sleep(0.01)
+        # mede até o `interrupted` de VERDADE (não até a suspeita fechar)
+        while time.monotonic() - t0 < 6:
+            try:
+                tipo, obj = sess["fila"].get_nowait()
+            except queue.Empty:
+                time.sleep(0.005)
+                continue
+            if obj.get("type") == "interrupted":
+                break
         tempos.append(round((time.monotonic() - t0) * 1000))
         time.sleep(0.15)                   # respiro: MLX/Metal não gosta de rajada
     tmp.unlink(missing_ok=True)

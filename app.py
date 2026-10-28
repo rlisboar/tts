@@ -3905,6 +3905,8 @@ def _normaliza_filtro_barge(nome: str, cfg) -> dict:
         fora["min_palavras"] = int(_clamp(cfg["min_palavras"], 1, 20, 3))
     if "min_ms" in cfg:
         fora["min_ms"] = int(_clamp(cfg["min_ms"], 150, 5000, 1200))
+    if "passo_ms" in cfg:
+        fora["passo_ms"] = int(_clamp(cfg["passo_ms"], 50, 1000, 150))
     if "restante_ms" in cfg:
         fora["restante_ms"] = int(_clamp(cfg["restante_ms"], 200, 5000, 1000))
     if nome == "modelo":
@@ -9455,7 +9457,8 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
     Cada filtro só age se estiver `on`. `modelo` é o único assíncrono e o único
     que devolve `p_cortar`; sem classificador ligado ele é pulado. Quem chega ao
     fim sem decisão usa `live_barge_sem_decisao`."""
-    from live_turns import _BACKCHANNEL, _COMANDO_PARAR, _PERGUNTA, _palavras
+    from live_turns import (_BACKCHANNEL, _COMANDO_PARAR, _PERGUNTA, _palavras,
+                            classifica_barge)
     palavras = _palavras(texto)
     eco_txt = sess.get("ultimo_assistente") or ""
 
@@ -9480,8 +9483,12 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
                       (filtros.get("backchannel") or {}).get("palavras", _BACKCHANNEL)}
         if len(palavras) <= 2 and all(x in permitidas for x in palavras):
             return "backchannel", None, None, "backchannel"
-    # 4) ruído
+    # 4) ruído — SÓ com evidência positiva: o STT voltou vazio, mas o VAD já
+    # confirmou voz no trecho, então vazio é falha do STT, não silêncio. Cortar é
+    # a falha SEGURA (o dono queria interromper e virava `ruido` calado, #503).
     if ligado("ruido") and not palavras:
+        if fala_ms >= 200:
+            return "interrupcao", None, None, "stt_vazio"
         return "ruido", None, None, "ruido"
     # 5) MODELO (assíncrono, #509) — só quando os rápidos não decidiram
     cfg_modelo = filtros.get("modelo") or {}
@@ -9489,7 +9496,18 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
         tipo, p = _live_modelo_decide(sess, texto, fala_ms, eco_txt, cfg_modelo)
         if tipo is not None:
             return tipo, p, None, "modelo"
-    # 6) pergunta
+    # 6) pergunta — a REGRA pura decide o resto (pergunta, frase longa, backchannel)
+    # e o filtro `on` só vale para o que ele governa; sem isto a cadeia
+    # reimplementava a classificação e o teste da função não protegia nada (#503)
+    tipo_puro = classifica_barge(texto, fala_ms, ref_eco=eco_txt)
+    if tipo_puro == "interrupcao":
+        if any(x in _PERGUNTA for x in palavras) or "?" in (texto or ""):
+            if ligado("pergunta"):
+                return "interrupcao", None, None, "pergunta"
+        elif len(palavras) >= int((filtros.get("frase_longa") or {}).get("min_palavras", 3)):
+            if ligado("frase_longa"):
+                return "interrupcao", None, None, "frase_longa"
+    # 6b) pergunta
     if ligado("pergunta") and ("?" in (texto or "") or any(x in _PERGUNTA for x in palavras)):
         return "interrupcao", None, None, "pergunta"
     # 7) frase longa
@@ -9706,6 +9724,11 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         limite_fim = int((filtros.get("fim_de_resposta") or {}).get("restante_ms", 1000))
         if restante <= limite_fim:
             tipo, filtro = "ruido", "fim_de_resposta"
+            # a fala não pode sumir: entra no pendente, com marca no log
+            texto = _live_transcreve_trecho(sess, audio)
+            sess["fila"].put(("json", {"type": "turno_pendente",
+                                       "fim_de_resposta": True,
+                                       "texto": texto[:200]}))
         elif fala_ms >= 1200 and (filtros.get("fala_sustentada") or {}).get("on", True):
             tipo, filtro = "interrupcao", "fala_sustentada"
         else:
