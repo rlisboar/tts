@@ -28,6 +28,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
@@ -146,4 +147,123 @@ class Intencao:
         self.erro = motivo
 
 
-__all__ = ["Intencao", "LIMIAR", "TIMEOUT_MS"]
+# ---------------------------------------------------------------------------
+# Worker ÚNICO por processo do app, compartilhado pelas sessões Live (#507)
+#
+# O modelo custa ~2 GB de RSS: um por sessão estouraria a máquina com 2–3 sessões.
+# Então: um só, com contagem de sessões que usam o filtro, e fechamento por TTL sem
+# consulta. `pega()`/`solta()` são o contrato do chamador; ele NUNCA instancia
+# `Intencao` direto no caminho da sessão.
+# ---------------------------------------------------------------------------
+
+#: TTL sem consulta nenhuma (env) — o dono pode baixar para devolver RAM
+TTL_S = float(os.environ.get("TTS_INTENCAO_TTL_S", "600"))
+#: cadência do vigia (o custo é um `monotonic` a cada N segundos)
+INTERVALO_VIGIA_S = 5.0
+
+_unico: Intencao | None = None
+_refs = 0
+_ultima = 0.0
+_trava = threading.Lock()
+_janitor: threading.Thread | None = None
+_aquecendo = False
+
+
+def _rss_mb(pid: int) -> float:
+    """RSS do filho em MB (`ps`; portátil no macOS e no Linux)."""
+    try:
+        r = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)],
+                           capture_output=True, text=True)
+        return round(int((r.stdout or "0").strip() or 0) / 1024.0, 1)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _vigia() -> None:
+    """Fecha o worker quando ninguém usa ou o TTL venceu (checa a cada 5 s)."""
+    global _unico, _refs
+    while True:
+        time.sleep(INTERVALO_VIGIA_S)
+        with _trava:
+            inc = _unico
+            if inc is None:
+                return
+            if _aquecendo:            # a carga leva segundos e não é ociosidade
+                continue
+            vencido = _refs <= 0 or (time.monotonic() - _ultima) > TTL_S
+            if vencido:
+                _unico = None
+                _refs = 0
+        if vencido:
+            inc.fecha()
+
+
+def pega() -> Intencao:
+    """Sessão passa a usar o classificador (sobe o worker se preciso)."""
+    global _unico, _refs, _ultima, _janitor  # noqa: PLW0603
+    with _trava:
+        _refs += 1
+        _ultima = time.monotonic()
+        if _unico is None:
+            _unico = Intencao()
+            # vigia novo a cada worker novo: o anterior pode estar saindo e um
+            # `is_alive()` otimista deixaria o worker sem quem o feche
+            _janitor = threading.Thread(target=_vigia, name="intencao-ttl", daemon=True)
+            _janitor.start()
+        inc = _unico
+    if not inc.ativo:
+        global _aquecendo
+        _aquecendo = True
+        try:
+            # segunda tentativa: com outra sessão fechando, o 1º aquecimento pode
+            # bater em memória/Metal e voltar False sem o modelo estar quebrado
+            if not inc.aquece():
+                inc._morto = False
+                inc.aquece()
+        finally:
+            with _trava:
+                _aquecendo = False
+                _ultima = time.monotonic()   # o aquecimento conta como uso
+    return inc
+
+
+def solta() -> None:
+    """A sessão deixou de usar o classificador (fecha quando a última sair)."""
+    global _refs
+    with _trava:
+        _refs = max(0, _refs - 1)
+
+
+def decide_compartilhado(ref: str, fala: str, idioma: str = "") -> dict | None:
+    """`decide` no worker único, atualizando o relógio do TTL."""
+    global _ultima
+    with _trava:
+        inc = _unico
+        _ultima = time.monotonic()
+    if inc is None:
+        return None
+    return inc.decide(ref, fala, idioma)
+
+
+def estado() -> dict:
+    """Para o `stats`: worker vivo/morto e o custo em memória."""
+    with _trava:
+        inc = _unico
+        refs = _refs
+        ocioso = round(time.monotonic() - _ultima, 1) if _ultima else None
+    vivo = bool(inc and inc.ativo)
+    return {"vivo": vivo, "refs": refs, "ttl_s": TTL_S, "ocioso_s": ocioso,
+            "rss_mb": _rss_mb(inc._proc.pid) if vivo else 0.0}
+
+
+def fecha_tudo() -> None:
+    """Encerra o worker único (shutdown do app)."""
+    global _unico, _refs, _janitor
+    with _trava:
+        inc, _unico, _refs, _janitor = _unico, None, 0, None
+    if inc is not None:
+        inc.fecha()
+
+
+__all__ = ["Intencao", "LIMIAR", "TIMEOUT_MS", "TTL_S",
+           "decide_compartilhado", "estado", "fecha_tudo", "pega", "solta"]

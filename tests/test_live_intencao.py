@@ -158,3 +158,90 @@ def test_decide_de_threads_nao_embaralha(quente):
         t.join(20)
     assert saida["a"] and saida["a"]["decisao"] == "cortar"
     assert saida["b"] and saida["b"]["decisao"] == "continuar"
+
+
+# ---------------------------------------------------------------------------
+# Worker ÚNICO por processo (#507, decisão do PM): 2 GB por sessão estouraria
+# ---------------------------------------------------------------------------
+
+def test_duas_sessoes_compartilham_um_unico_worker():
+    live_intencao.fecha_tudo()
+    try:
+        a = live_intencao.pega()
+        b = live_intencao.pega()
+        assert a is b, "abriu worker por sessão"
+        assert a.ativo
+        assert a._proc.pid == b._proc.pid
+        assert live_intencao.estado()["refs"] == 2
+    finally:
+        live_intencao.solta()
+        live_intencao.solta()
+        live_intencao.fecha_tudo()
+
+
+def test_ttl_sem_consulta_fecha_o_worker(monkeypatch):
+    live_intencao.fecha_tudo()
+    monkeypatch.setattr(live_intencao, "TTL_S", 0.1)
+    monkeypatch.setattr(live_intencao, "INTERVALO_VIGIA_S", 0.05)
+    try:
+        inc = live_intencao.pega()
+        for _ in range(100):
+            if inc.ativo:
+                break
+            time.sleep(0.1)
+        assert inc.ativo
+        vistos = []
+        monkeypatch.setattr(inc, "fecha", lambda: vistos.append(1) or inc.__class__.fecha(inc))
+        live_intencao.solta()                      # ninguém usando: TTL vence
+        for _ in range(150):
+            if vistos:
+                break
+            time.sleep(0.1)
+        assert vistos, "o TTL estourou e o `fecha()` não foi chamado"
+        assert live_intencao.estado()["vivo"] is False
+    finally:
+        live_intencao.fecha_tudo()
+
+
+def test_stats_publica_vivo_e_rss():
+    live_intencao.fecha_tudo()
+    try:
+        assert live_intencao.estado()["vivo"] is False
+        live_intencao.pega()
+        e = live_intencao.estado()
+        assert e["vivo"] is True and e["rss_mb"] > 100, e
+    finally:
+        live_intencao.solta()
+        live_intencao.fecha_tudo()
+
+
+def test_decide_nao_chama_nada_de_fora(monkeypatch):
+    """EGRESS: no modo local, a decisão não toca dsh nem API remota."""
+    import app
+
+    chamadas = []
+    monkeypatch.setattr(app, "_use_remote_tts", lambda: chamadas.append("tts") or False)
+    monkeypatch.setattr(app, "_use_remote_translate", lambda: chamadas.append("tr") or False)
+    monkeypatch.setattr(__import__("dsh_client"), "DshClient",
+                        lambda *a, **k: chamadas.append("dsh"))
+    live_intencao.fecha_tudo()
+    try:
+        inc = live_intencao.pega()
+        assert _decide(inc, "o prazo é sexta", "mas e o preço?")
+        inc._proc.kill()                     # local MORTO: ainda assim, nada de fora
+        time.sleep(0.2)
+        assert inc.decide("o prazo é sexta", "mas e o preço?") is None
+        # só o que o LOCAL pode consultar: tts/tradução remotos e o cliente dsh
+        assert chamadas == [], f"chamou backend externo: {chamadas}"
+    finally:
+        live_intencao.fecha_tudo()
+
+
+def test_default_dos_filtros_vem_completo_e_modelo_desligado():
+    """Instalação nova tem de MOSTRAR os filtros; o `modelo` nasce desligado (#509)."""
+    import app
+
+    padrao = app._SETTINGS_DEFAULTS["live_barge_filtros"]
+    assert set(padrao) == set(app._LIVE_BARGE_FILTROS), set(padrao) ^ set(app._LIVE_BARGE_FILTROS)
+    modelo = app._normaliza_filtro_barge("modelo", padrao["modelo"])
+    assert modelo == {"on": False, "provedor": "local", "limiar": 0.5, "timeout_ms": 400}
