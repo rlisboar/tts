@@ -206,8 +206,11 @@ O script faz o ciclo inteiro offline-quando-possível e só muda o servidor com
 
 `--service voxtral|omni|all` limita o alvo (padrão `all`). O que o script garante:
 
-- **sem diff, sem restart**: igual ao repo → não reinicia (restart recarrega os
-  modelos na VRAM, não é de graça);
+- **sem diff, sem restart, MAS com smoke**: igual ao repo → não reinicia (restart
+  recarrega os modelos na VRAM, não é de graça), e o smoke roda de todo jeito:
+  "nada a fazer" é sobre o que o deploy mudaria, não sobre a produção estar boa
+  (caminho "nada a fazer" com `/health` vermelho sai ≠0 sem rollback, porque nada
+  foi reiniciado — #495);
 - **backup do PAR antes de subir** (`server.py.bak-<data>` + `auth_policy.py.bak-<data>`,
   mesmo stamp) e `ast.parse` nos **dois** arquivos que sobem (`server.py` e
   `auth_policy.py`) — sintaxe reprovada **para antes do restart**
@@ -361,6 +364,10 @@ O que ele garante:
   antes de mexer — é o que o `rollback` usa. Re-deploy do MESMO rev **preserva** o
   estado (senão o rollback viraria no-op); deps **não** voltam sozinhas no rollback
   (o freeze fica lá para um `pip install -r` manual, se precisar).
+- **caminho "nada a fazer" também faz smoke**: rev alvo no ar, sem deps novas e
+  código já carregado → não reinicia, mas roda o smoke e **sai ≠0** se ele ficar
+  vermelho (`[PARA] smoke vermelho SEM diff`), sem rollback — nada foi reiniciado,
+  a produção já estava assim (#495). Antes o caminho saía 0 com `[FALHA]` no log;
 - **smoke vermelho depois do restart reverte sozinho** (#345) para o sha do
   `.deploy-mini-estado`, reinicia e repete o smoke; sai ≠0 dizendo que reverteu. Sem
   estado (ou com o estado apontando para o próprio rev que falhou) ele não inventa

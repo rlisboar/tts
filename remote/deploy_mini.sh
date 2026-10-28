@@ -470,8 +470,15 @@ deploy() {
   if [ "$(alvo_no_ar)" = "$ALVO_SHA" ] && [ "$sem_deps_novas" = 1 ] \
      && [ -n "$(codigo_no_ar)" ] && [ "$(codigo_no_ar)" = "$(codigo_esperado "$ALVO_SHA")" ]; then
     print -r -- "  nada a fazer (rev alvo no ar, sem deps novas e código já carregado) — restart recarrega modelo, então não reinicia"
-    POS_DEPLOY=0 REV_ALVO="$ALVO_SHA" smoke
-    return 0
+    # Smoke AQUI também: "nada a fazer" é sobre o que o deploy MUDARIA, não sobre
+    # a produção estar boa. Sem esta linha o caminho saía 0 com `[FALHA]` no log
+    # (produção já quebrada aparecia como deploy verde) — e não há rollback a
+    # fazer, porque nada foi reiniciado (#495).
+    if POS_DEPLOY=0 REV_ALVO="$ALVO_SHA" smoke; then
+      return 0
+    fi
+    print -r -- "  [PARA] smoke vermelho SEM diff — nada foi reiniciado, então não há o que reverter (a produção já estava assim)"
+    return 1
   fi
   print -r -- "  backup do estado atual:"
   # O estado é o alvo do ROLLBACK: num re-deploy do MESMO rev ele não pode ser

@@ -82,7 +82,7 @@ done
 print -r -- "$metodo $url" >> "$T_CURL_LOG"
 codigo=200; corpo=""; arquivo=""
 case "$url" in
-  */health)  corpo='{"ok":true}' ;;
+  */health)  codigo="${T_CURL_HEALTH_CODE:-200}"; corpo='{"ok":true}' ;;
   */api/voices)
       if [ $tem_chave = 1 ]; then codigo="${T_CURL_CHAVE_CODE:-200}"; else codigo="${T_CURL_SEM_CHAVE_CODE:-401}"; fi ;;
   */api/tts/jobs/*/pieces/*) codigo="${T_CURL_PIECE_CODE:-200}"; corpo="RIFF-fake-audio" ;;
@@ -656,6 +656,32 @@ def test_deploy_nao_reinicia_quando_ja_esta_no_ar(amb):
     assert r.returncode == 0, _saida(r)
     assert "nada a fazer" in r.stdout
     assert _log(amb, "launch") == []
+
+
+def test_nada_a_fazer_com_smoke_vermelho_nao_sai_verde(amb):
+    """Caminho "nada a fazer" + produção quebrada: o deploy não mudaria nada, mas
+    sair 0 esconde o `[FALHA]` do smoke. Sem restart não há rollback a fazer — o
+    veredito é ≠0 com o motivo dito (#495)."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    Path(amb["T_LAUNCH_LOG"]).unlink()
+    amb["T_CURL_HEALTH_CODE"] = "502"            # /health vermelho, /api/build segue ok
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode == 1, _saida(r)
+    assert "nada a fazer" in r.stdout
+    assert "[FALHA]" in r.stdout
+    assert "não há o que reverter" in r.stdout
+    assert "[FALHA] LAN /health devolveu 502" in r.stdout
+    assert _log(amb, "launch") == [], "nada a fazer continua sem reiniciar"
+
+
+def test_nada_a_fazer_com_smoke_verde_continua_zero(amb):
+    """Controle: o caminho normal (tudo batendo) tem de continuar saindo 0."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 0, _saida(r)
+    assert "nada a fazer" in r.stdout and "[FALHA]" not in r.stdout
 
 
 def test_deploy_reinicia_quando_o_processo_esta_velho(amb):

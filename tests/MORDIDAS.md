@@ -129,3 +129,20 @@ A célula nova exige o `/ready` em `127.0.0.1:20242` (porta do `--metrics` que o
 `test_conector_cai_na_porta_local_20242` caem (3/3, medido com `git stash`).
 O `test_knob_desliga_a_checagem_do_conector` passa nos dois lados de propósito: é
 controle do `TTS_PROBE_CONECTOR=0`.
+
+## #495 — caminho "nada a fazer" engolia o smoke
+
+`deploy_mini.sh` saía 0 com `[FALHA]` no log e o `deploy.sh` nem rodava smoke sem
+diff: "nada a fazer" era lido como "produção boa". Sabotagem: voltar
+`POS_DEPLOY=0 … smoke; return 0` (mini) e tirar o `smoke_do_servico` do ramo
+`! tem_diff` (`deploy.sh`) —
+
+| Sabotagem | Resultado |
+|---|---|
+| caminho "nada a fazer" volta a sair 0 | `test_nada_a_fazer_com_smoke_vermelho_nao_sai_verde` **FAILED** |
+| `deploy.sh` sem diff deixa de rodar o smoke | `test_deploy_apply_sem_diff_ainda_faz_smoke_e_reprova` **FAILED** |
+
+O controle `test_nada_a_fazer_com_smoke_verde_continua_zero` passa nos dois lados
+de propósito. A célula do mini usa `T_CURL_HEALTH_CODE` (knob novo do shim) e não
+o `/api/build`: o build vermelho tira a condição `-n "$(codigo_no_ar)"` e o
+caminho deixa de ser "nada a fazer" — medido, era um falso alvo.

@@ -19,7 +19,7 @@
 #   • ssh com ControlMaster=no/ControlPath=none — o ~/.ssh/config do dono usa
 #     socket em ~/.ssh/cm, que quebra quando o HOME não é gravável (sandbox/CI);
 #   • `restart` recarrega os modelos na VRAM (dezenas de segundos): sem diff, não
-#     reinicia;
+#     reinicia — mas o smoke roda mesmo sem diff ("nada a fazer" não é "está bom");
 #   • nenhuma chave é impressa: `Environment=` do unit sai com o valor redigido
 #     para <len N> (e o nome, para conferir presença).
 #
@@ -277,6 +277,10 @@ for s in "${SERVICOS[@]}"; do
       fi
       if ! tem_diff "$s"; then
         print -r -- "  nada a fazer (sem diff) — restart recarrega modelo, então não reinicia"
+        # Smoke também aqui: "sem diff" diz que o deploy não mudaria nada, não que
+        # o servidor esteja bom. Antes o caminho saía 0 sem olhar o /health (#495).
+        print -r -- "  smoke (nada a mudar, mas o servidor tem de estar de pé):"
+        smoke_do_servico "$s" || falhas=1
         continue
       fi
       stamp="$(backup_do_par "$s")"

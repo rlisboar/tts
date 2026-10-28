@@ -298,6 +298,20 @@ def test_deploy_apply_sem_diff_nao_reinicia(amb):
     assert "nada a fazer" in _run(amb, "deploy", "--apply").stdout
 
 
+# --- #495: "nada a fazer" é sobre o que o deploy MUDARIA, não sobre o servidor
+# estar bom. O caminho saía 0 sem olhar o /health.
+def test_deploy_apply_sem_diff_ainda_faz_smoke_e_reprova(amb):
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    amb["T_CURL_CODE"] = "502"                  # servidor caído, mas nada a subir
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode == 1, _saida(r)
+    assert "nada a fazer" in r.stdout
+    assert "[FALHA] /health devolveu 502" in r.stdout
+    assert _log(amb, "restart") == [], "restart sem diff continua proibido"
+
+
 # ------------------------------------- rollback AUTOMÁTICO em smoke vermelho (#345)
 
 def test_deploy_com_smoke_vermelho_volta_o_backup_e_reinicia(amb):
