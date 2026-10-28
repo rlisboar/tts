@@ -11161,15 +11161,22 @@ def _live_engine(sess: dict) -> None:
 def _live_motivo_fechamento(sess: dict) -> tuple[str, str] | None:
     """Por que a task de envio deve fechar o socket (None = a sessão segue).
 
-    A ordem importa: `substituida` vence `fechar` (o socket antigo sai pelo
-    motivo REAL — outra conexão assumiu o id — e não como "ocioso")."""
-    if sess["vencida"]:
-        return "session_ttl", f"sessão ociosa por {_LIVE_TTL_S}s"
+    ORDEM (#628): `substituida` vence TODAS — é o motivo REAL (outra conexão
+    assumiu o id) e o cliente precisa saber para NÃO retomar a sessão que já tem
+    dono. Antes `vencida` vinha antes e a substituída-e-vencida saía como
+    `session_ttl`, fazendo a aba antiga reabrir o id da nova.
+
+    `fechar` tem código PRÓPRIO (`session_fechada`): era `session_ttl` com o texto
+    "ociosa", que mente quando quem morreu foi a task de envio por outro motivo.
+    `session_ttl` fica só para o vencimento de verdade (o único em que o cliente
+    DEVE retomar)."""
     if sess.get("substituida"):
         return "session_substituida", ("outra conexão assumiu este session_id; "
                                        "esta foi fechada pelo servidor")
-    if sess.get("fechar"):
+    if sess["vencida"]:
         return "session_ttl", f"sessão ociosa por {_LIVE_TTL_S}s"
+    if sess.get("fechar"):
+        return "session_fechada", "a sessão foi encerrada pelo servidor"
     return None
 
 

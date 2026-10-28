@@ -6628,3 +6628,24 @@ def test_speaker_alvo_aceita_chave_de_uso(client, auth, monkeypatch):
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
     assert r.status_code == 200, r.text
+
+
+def test_motivo_de_fechamento_substituida_vence_vencida_e_fechar_tem_codigo():
+    """#628: ordem e códigos do motivo de fechamento.
+
+    A substituída-e-vencida saía como `session_ttl` e a aba antiga RETOMAVA o id
+    que a nova já era dona. E `fechar` (task de envio morta) dizia "ociosa"."""
+    import app
+
+    sess = {"vencida": True, "substituida": True, "fechar": True}
+    assert app._live_motivo_fechamento(sess)[0] == "session_substituida"
+    sess = {"vencida": False, "substituida": True, "fechar": True}
+    assert app._live_motivo_fechamento(sess)[0] == "session_substituida"
+    sess = {"vencida": True, "substituida": False, "fechar": True}
+    assert app._live_motivo_fechamento(sess)[0] == "session_ttl"
+    sess = {"vencida": False, "substituida": False, "fechar": True}
+    codigo, texto = app._live_motivo_fechamento(sess)
+    assert codigo == "session_fechada"
+    assert "ociosa" not in texto, "o texto não pode mentir dizendo que ficou ociosa"
+    assert app._live_motivo_fechamento(
+        {"vencida": False, "substituida": False, "fechar": False}) is None

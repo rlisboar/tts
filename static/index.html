@@ -8179,7 +8179,21 @@ LX.obs = { env: 0, rec: 0, stats: null, lat: null, latHist: [], raf: 0, tick: 0,
 const LX_ROTULO = { desligado: "desligado", conectando: "conectando…", ouvindo: "ouvindo",
                     pensando: "pensando…", falando: "falando", interrompido: "interrompi", erro: "erro" };
 
+// #629: a linha de status tem UM escritor — e a precedência mora aqui. Motivo de
+// queda explicado pelo servidor (ou desistência da retomada) vence pinturas
+// transitórias: barge ("✋ ouvi você"), prewarm, fala anotada. Sem isso o dono lê
+// "ouvi você…" numa sessão que já morreu e acha que está tudo bem. Só `ouvindo`
+// (sessão de fato de pé) limpa o motivo.
+function lxStatus(msg) {
+  if (LX.fim) msg = LX.fim;
+  else if (LX.retomaT) msg = "retomando a sessão (" + LX.retoma + "/" + LX_RETOMA_MAX + ")…";
+  else if (LX.explicado) msg = LX.explicado;
+  const el = $("lxStatus");
+  if (el) el.textContent = msg;
+}
+
 function lxEstado(novo, msg) {
+  if (novo === "ouvindo") { LX.explicado = ""; LX.fim = ""; }
   LX.estado = novo;
   const b = $("lxEstado"), lig = $("lxLigar");
   if (b) {
@@ -8200,7 +8214,7 @@ function lxEstado(novo, msg) {
   // ele vira captura invisível. A Conversa, ao contrário, pausa ao sair.
   const navLive = document.querySelector('.nav-item[data-view="live"]');
   if (navLive) navLive.classList.toggle("com-mic", !!LX.ws);
-  if (msg != null && $("lxStatus")) $("lxStatus").textContent = msg;
+  if (msg != null) lxStatus(msg);
 }
 
 function lxAppend(id, txt) {
@@ -9157,7 +9171,7 @@ function lxRecebe(ev) {
     // `prewarm`: informativo (pipeline pré-aquecido). NÃO é turno: não mexe no
     // estado, só na linha de status — se mexesse, um prewarm no meio da fala
     // trocaria o estado debaixo do usuário.
-    case "prewarm":        if ($("lxStatus")) $("lxStatus").textContent = "⚡ pipeline pré-aquecido"; break;
+    case "prewarm":        lxStatus("⚡ pipeline pré-aquecido"); break;
     case "speech_start":   // quebra de linha por SESSÃO DE VOZ (#246): cada falar
                            // seu abre linha nova na coluna "você" — antes, só a
                            // coluna da IA quebrava (no turno completo) e os
@@ -9196,7 +9210,7 @@ function lxRecebe(ev) {
                            // 20 ms de 20 s, e o log tinha de adivinhar.
                            LX.obs.pendente = true;
                            LX.obs.pendenteTrechos = m.trechos || 1;
-                           if ($("lxStatus")) $("lxStatus").textContent = "📝 anotei sua fala — respondo logo que terminar a resposta atual";
+                           lxStatus("📝 anotei sua fala — respondo logo que terminar a resposta atual");
                            lxLogEvento("📝 fala anotada (" + Math.round((m.buffer_bytes || 0) / 1024) + " kB"
                                      + (m.trechos > 1 ? ", " + m.trechos + " trechos" : "")
                                      + (m.truncado
@@ -9242,8 +9256,8 @@ function lxRecebe(ev) {
                                                   message: m.message || "motivo não informado" };
                            lxLogEvento("⚠ dsh indisponível — a sessão segue pelo " + (m.fallback || "openai")
                                      + (m.message ? ": " + m.message : ""), "e-erro");
-                           if ($("lxStatus")) $("lxStatus").textContent =
-                             "⚠ o harness não subiu nesta sessão — respondendo pelo " + (m.fallback || "openai");
+                           lxStatus("⚠ o harness não subiu nesta sessão — respondendo pelo "
+                                    + (m.fallback || "openai"));
                            // o selo não pode esperar o próximo `stats` para parar de
                            // dizer "dsh": corrige no mesmo evento (#150, item 3)
                            lxTxt("lxProv", (m.fallback || "openai") + " (fallback do dsh)");
@@ -9304,7 +9318,7 @@ function lxRecebe(ev) {
       if (m.code === "turno_em_curso") {
         // legado (#126): com áudio o servidor ANOTA a fala (`turno_pendente`) em vez
         // de recusar; isso aqui resta só nos caminhos sem áudio — hint neutro
-        if ($("lxStatus")) $("lxStatus").textContent = "⏳ turno em curso — aguarde o fim da resposta";
+        lxStatus("⏳ turno em curso — aguarde o fim da resposta");
       } else if (m.code === "session_substituida") {
         // O close é LIMPO (1000), então `LX.erro` fica falso e o `onclose` pintaria
         // "sessão encerrada" por cima: a flag preserva o motivo real até lá.
@@ -9317,6 +9331,17 @@ function lxRecebe(ev) {
         lxLogEvento(msgSub, "e-erro");
         // o servidor já fechou: a sessão NÃO segue viva — o botão volta a "Ligar"
         lxEstado("desligado", LX_SUBSTITUIDA);
+      } else if (m.code === "session_fechada") {
+        // #628: a sessão foi MORTA pelo servidor por outro motivo (a task de envio
+        // caiu). É tão morta quanto a substituída, mas NÃO se retoma: o motivo não
+        // é ociosidade, e reabrir às cegas reintroduziria o defeito. Antes isto
+        // saía como `session_ttl` e o genérico abaixo pintava "sessão viva".
+        LX.explicado = m.message || "sessão encerrada pelo servidor";
+        lxQuebraLinha("lxIA");
+        const msgFech = "✖ " + LX.explicado + " [session_fechada]";
+        lxLinha("lxIA", "lx-erro", msgFech);
+        lxLogEvento(msgFech, "e-erro");
+        lxEstado("desligado", LX.explicado);
       } else if (m.code === "session_ttl" || m.code === "busy") {
         // #616: o SERVIDOR já fechou (TTL ocioso) ou recusou a vaga — a sessão
         // NÃO está viva, então "fale de novo" mentiria. O motivo fica preso em
