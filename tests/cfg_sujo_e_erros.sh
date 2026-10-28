@@ -37,14 +37,15 @@ if [ -z "$BASE_ORIGINAL" ]; then
   # `.apikey` (legado) também é espelho de `_save_apikeys`: sem isto a rodada
   # reescrevia o arquivo do DONO mesmo com `APIKEYS_PATH` em /tmp (#535).
   LEG="$(mktemp -t apikey-cfgsujo.XXXXXX 2>/dev/null || echo "/tmp/apikey-cfgsujo.$$")"
-  "$PY" -c "
-import pathlib, sys, uvicorn, app
-app.APIKEYS_PATH = pathlib.Path(sys.argv[1])
-app.SETTINGS_PATH = pathlib.Path(sys.argv[2])
-app.LEGACY_APIKEY_PATH = pathlib.Path(sys.argv[4])
+  # ENV **ANTES** do import (#591): o import do app JÁ materializa settings
+  # default e chave; caminho por atributo depois do import escreve no arquivo do
+  # DONO. O env é lido quando o módulo resolve `TTS_*_PATH` (app.py:188-191).
+  TTS_SETTINGS_PATH="$SET" TTS_APIKEYS_PATH="$APK" TTS_LEGACY_APIKEY_PATH="$LEG" \
+  "$PY" - "$PORTA" > "$LOG" 2>&1 <<'PY' &
+import sys, uvicorn, app
 app._load_apikeys()
-uvicorn.run(app.app, host='127.0.0.1', port=int(sys.argv[3]), log_level='warning')
-" "$APK" "$SET" "$PORTA" "$LEG" > "$LOG" 2>&1 &
+uvicorn.run(app.app, host='127.0.0.1', port=int(sys.argv[1]), log_level='warning')
+PY
   SERVIDOR_PID=$!
   BASE="http://127.0.0.1:$PORTA"
   limpa_servidor() {

@@ -173,7 +173,9 @@ PYM
       echo "    medida — o FIX foi devolvido, confira se o hunk dele sobreviveu"
     fi
   }
-  trap 'restaura; serial_solta' EXIT
+  # `_teto_matar`: este trap SOBRESCREVE o do `serial.sh` e o vigia do teto
+  # sobreviveria ao shell, matando por teto alheio quem herdasse o PID (#592).
+  trap 'restaura; serial_solta; _teto_matar' EXIT
   trap 'exit 130' INT TERM
 
   echo "══ MORDIDA 1/2 — app.py COMO ESTÁ (o fix): tem de sair 0"

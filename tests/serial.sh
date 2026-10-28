@@ -33,25 +33,51 @@ else                                             # BSD/macOS
 fi
 
 # Watchdog do teto de trabalho: só existe se o runner pediu (TTS_TETO_POS_TRAVA).
+#
+# O bash ADIA trap enquanto um filho em foreground roda, então o ALRM sozinho não
+# basta: suíte que trabalha dentro de UM `python` longo só veria o alarme quando o
+# python terminasse — e aí o teto não vale nada. Medido (#592): sob carga o python
+# do Playwright pode NÃO morrer no primeiro TERM, o trap nunca roda e a suíte passa
+# de 828 s com teto de 90 s, sem UMA linha de log. Daí a escada, e daí a MENSAGEM
+# sair do vigia (que é outro processo, não é afetado pelo adiamento): ela existe
+# mesmo se o shell nunca mais rodar um trap.
+#
+# A escada vai até KILL: ALRM → TERM nos filhos → (1 s) KILL nos filhos → (2 s)
+# TERM no shell → (2 s) KILL no shell; um teto de 2 s mata em ~6 s. O TERM antes do KILL no shell é o que
+# preserva o trap de EXIT (soltar a trava).
+#
+# `_SERIAL_TRABALHANDO` (#592) é armado aqui e lido no rótulo: adivinhar por "sou
+# eu o pid da trava?" invertia com a trava mexida por concorrência e a mensagem
+# mentia (suíte de 93 s, dona da trava, acusada de estouro de FILA).
+_TETO_MARCA=""
 _teto_armar() {
   [ -n "${TTS_TETO_POS_TRAVA:-}" ] || return 0
+  _SERIAL_TRABALHANDO=1
+  _TETO_MARCA="${TMPDIR:-/tmp}/tts-teto.$$"
+  rm -f "$_TETO_MARCA"
   (
     sleep "$TTS_TETO_POS_TRAVA"
-    kill -ALRM $$
-    # O bash ADIA trap enquanto um filho em foreground roda: suíte que trabalha
-    # dentro de UM python longo só veria o alarme quando ele terminasse — e aí o
-    # teto não vale nada. Derruba os filhos diretos (o trabalho) para o `wait`
-    # voltar e o trap rodar; o TERM no próprio shell é a rede de segurança.
-    sleep 2
+    # o shell pode ter saído sem `_teto_matar` (suíte que sobrescreve o trap EXIT):
+    # aí o vigia só existe para não mandar ALRM num PID que já é de outro.
+    kill -0 $$ 2>/dev/null || exit 0
+    : > "$_TETO_MARCA"          # o trap de ALRM passa a não repetir a mensagem
+    echo "  [serial] teto de ${TTS_TETO_POS_TRAVA}s estourado DEPOIS da trava (trabalho, não fila)"
+    kill -ALRM $$ 2>/dev/null
+    sleep 1
     for filho in $(pgrep -P $$ 2>/dev/null); do kill -TERM "$filho" 2>/dev/null; done
+    sleep 1
+    for filho in $(pgrep -P $$ 2>/dev/null); do kill -KILL "$filho" 2>/dev/null; done
     sleep 2
     kill -TERM $$ 2>/dev/null
+    sleep 2
+    kill -KILL $$ 2>/dev/null
   ) &
   _TETO_PID=$!
 }
 _teto_matar() {
   [ -n "${_TETO_PID:-}" ] && kill "$_TETO_PID" 2>/dev/null
   _TETO_PID=""
+  [ -n "${_TETO_MARCA:-}" ] && rm -f "$_TETO_MARCA"
 }
 
 serial_pega() {
@@ -104,8 +130,13 @@ serial_solta() {
 # O teto estourado depois da trava tem mensagem própria (a suíte está trabalhando,
 # não esperando): sem ela o SIGALRM parece pendura da fila — e o texto tem de
 # distinguir os dois, senão o operador procura contenção onde não tem.
+# Dois caminhos chegam aqui: o vigia (já imprimiu; a marca silencia) e o teto de
+# FILA do runner (ALRM do perl, antes da trava — `_SERIAL_TRABALHANDO` ainda 0).
 _serial_alarme() {
-  if [ "$(cat "$_TRAVA_DIR/pid" 2>/dev/null || true)" = "$$" ]; then
+  if [ -n "${_TETO_MARCA:-}" ] && [ -e "$_TETO_MARCA" ]; then
+    exit 1
+  fi
+  if [ "${_SERIAL_TRABALHANDO:-0}" = 1 ]; then
     echo "  [serial] teto de ${TTS_TETO_POS_TRAVA:-?}s estourado DEPOIS da trava (trabalho, não fila)"
   else
     echo "  [serial] teto de FILA estourado esperando a trava"

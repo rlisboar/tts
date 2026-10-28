@@ -22,14 +22,18 @@ rodavam no app do DONO **com escrita liberada** — uma rodada reescreveu o
 
 `instancia` fica fora do hook de propósito: exige modelo carregado e ninguém deve
 subir app por commit. Quando o estágio é chamado sem app, o runner falha uma vez,
-com o motivo, em vez de produzir 11 vermelhos mentirosos.
+com o motivo, em vez de produzir nove vermelhos mentirosos.
 
 ## Regra de paralelismo e de log
 
 Cada suíte escreve num log próprio dentro de `$DIR` (`mktemp -d`), **nunca** em nome
 fixo de /tmp: duas rodadas simultâneas não truncam o log uma da outra. Cada suíte
-tem teto (`TETO_S`, 90 s) e o teto é portátil — o `timeout` do coreutils não existe
-no macOS, o runner usa `alarm` do perl. Suíte pendurada falha; não prende o gate.
+tem teto (`TETO_S`, 90 s — o default do HOOK) e o teto é portátil: o `timeout` do
+coreutils não existe no macOS, o runner usa `alarm` do perl. Suíte pendurada falha;
+não prende o gate.
+Suíte pesada (UI/Live) tem teto PRÓPRIO na tabela `_teto_da_suite` do runner — com
+90 s ela morria trabalhando (medido 93 s e 423 s com a máquina carregada, #592).
+`TETO_S=…` do operador vence a tabela, para depurar.
 
 **O teto conta do TRABALHO, não da fila** (#535): suíte que pede a trava de modelo
 pega `TETO_FILA_S` (900 s) enquanto espera no `serial_pega` e troca pelo `TETO_S`
@@ -49,15 +53,22 @@ na fila matava a suíte antes de ela rodar. Quem quer a trava chama
 
 ## O que cada estágio tem hoje
 
-- `rapido`: `limpa_bytecode` (invariante do harness), `serial_lock` (trava de
-  modelo), `live_lock_freeze` (efeito do `await` com `_live_lock` presa — #209/#215).
+As listas abaixo são DADO do `tests/test_run_sh.py`: divergir do runner fica
+vermelho (antes a divergência voltava calada).
+
+- `rapido`: `limpa_bytecode` (invariante do harness), `pendurada_probe` (sonda de
+  suíte pendurada), `serial_lock` (trava de modelo), `live_lock_freeze` (efeito do
+  `await` com `_live_lock` presa — #209/#215).
 - `navegador`: `dsh_ui`, `hash_deep_link`, `live_dsh_fallback`, `live_barge_rep`,
   `live_ui`, `live_interrupcao_ui`, `obs_ui`, `live_ws`, `ultima_chave_ui`,
   `admin_ui_flow`, `cfg_sujo_e_erros`, `voz_desfazer_ui`, `voz_cadastro_ui`,
   `voz_check_ui`.
-- `instancia`: `a11y_teclado`, `admin_ui_flow`, `cfg_sujo_e_erros`, `conversa_429`,
-  `key_storage_repro`, `live_hold_ui`, `mic_erro_ui`, `mobile_layout`,
-  `onboarding_atalhos`, `ui_repouso`, `xss_frontend_repro`.
+- `instancia`: `a11y_teclado`, `conversa_429`, `key_storage_repro`, `live_hold_ui`,
+  `mic_erro_ui`, `mobile_layout`, `onboarding_atalhos`, `ui_repouso`,
+  `xss_frontend_repro`.
+
+`admin_ui_flow` e `cfg_sujo_e_erros` **não** estão em `instancia`: as duas sobem o
+próprio servidor com estado em tmp (#437/#466) e ficaram auto-contidas.
 
 ## Dependência de estado conhecida dentro de `instancia`
 

@@ -50,9 +50,21 @@ set -uo pipefail
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RAIZ="$(dirname "$AQUI")"
 # 90 s: o hook HERDA este teto, e 240 s por suíte pendurada prendiam o commit por
-# minutos. Suíte que passa de 90 s de verdade (as de Live ficam perto de 40 s) usa
-# `TETO_S=…` para si; pendurada agora falha rápido em vez de segurar o gate.
-TETO="${TETO_S:-90}"           # segundos de TRABALHO por suíte (depois da trava)
+# minutos. Suíte que passa de 90 s de verdade usa `TETO_S=…` para si; pendurada
+# agora falha rápido em vez de segurar o gate.
+# TETO PRÓPRIO das pesadas (#592): 90 s é o default do HOOK, não serve para suíte
+# de UI/Live — com a máquina carregada elas passam disso trabalhando (medido 93 s
+# e 423 s) e morriam de teto no meio do trabalho. A tabela é o ÚNICO lugar que
+# decide; `TETO_S=…` do operador continua mandando em tudo.
+_teto_da_suite() {
+    case "$(basename "$1")" in
+        admin_ui_flow.sh|live_barge_rep.sh) echo 600 ;;
+        live_ui.sh|live_ws.sh|live_interrupcao_ui.sh|obs_ui.sh) echo 300 ;;
+        voz_cadastro_ui.sh|voz_desfazer_ui.sh|voz_check_ui.sh) echo 300 ;;
+        live_dsh_fallback.sh|conversa_429.sh) echo 240 ;;
+        *) echo 90 ;;
+    esac
+}
 # Teto de FILA: o tempo esperando a trava de modelo não pode comer o teto do
 # trabalho (com -j 3 e 8 suítes de modelo, as últimas morriam no alarme antes de
 # rodar — #535). Quem segura a fila é o `serial_pega` (`TTS_SERIAL_ESPERA`); este
@@ -248,12 +260,15 @@ for nome in "${ALVOS[@]}"; do
             # subir o próprio servidor. Descartar aqui é o que fecha o buraco.
             unset BASE ADMIN_UI_NO_DONO NO_DONO
         fi
+        # teto da suíte: o do operador (`TETO_S`) manda; senão, o default dela
+        # (90 s do hook ou o próprio, tabela `_teto_da_suite`).
+        teto="${TETO_S:-$(_teto_da_suite "$nome")}"
         if _toma_a_trava "$nome"; then
             # teto largo na fila; a suíte troca pelo teto real quando pega a trava
-            export TTS_TETO_POS_TRAVA="$TETO"
+            export TTS_TETO_POS_TRAVA="$teto"
             _com_teto "$TETO_FILA" bash "$(_arquivo_da_suite "$nome")" >"$LOG" 2>&1
         else
-            _com_teto "$TETO" bash "$(_arquivo_da_suite "$nome")" >"$LOG" 2>&1
+            _com_teto "$teto" bash "$(_arquivo_da_suite "$nome")" >"$LOG" 2>&1
         fi
         rc=$?
         # janela DESTA suíte: só dica de autoria, nunca veredito (com `-j 3` a

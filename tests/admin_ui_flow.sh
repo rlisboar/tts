@@ -79,16 +79,16 @@ if [ -z "$BASE_ORIGINAL" ]; then
   # `.apikey` (legado) também é espelho de `_save_apikeys`: sem isto a rodada
   # reescrevia o arquivo do DONO mesmo com `APIKEYS_PATH` em /tmp (#535).
   LEG="$(mktemp -t apikey-adminui.XXXXXX 2>/dev/null || echo "/tmp/apikey-adminui.$$")"
-  "$PY" -c "
-import pathlib, sys, uvicorn, app
-app.APIKEYS_PATH = pathlib.Path(sys.argv[1])
-# `_settings` já veio do arquivo do dono no import; o CAMINHO passa a apontar para
-# o tmp, então todo save da rodada grava lá (o arquivo dele não é tocado)
-app.SETTINGS_PATH = pathlib.Path(sys.argv[2])
-app.LEGACY_APIKEY_PATH = pathlib.Path(sys.argv[4])
+  # ENV **ANTES** do import (#591): `import app` já roda `_save_settings()`
+  # (materializa chave default) e `_load_apikeys()`. Patchear o ATRIBUTO depois do
+  # import deixava essas duas escritas no arquivo do DONO — o caminho tem de estar
+  # no ambiente quando o módulo resolve `TTS_*_PATH` (app.py:188-191).
+  TTS_SETTINGS_PATH="$SET" TTS_APIKEYS_PATH="$APK" TTS_LEGACY_APIKEY_PATH="$LEG" \
+  "$PY" - "$PORTA" > "$LOG" 2>&1 <<'PY' &
+import sys, uvicorn, app
 app._load_apikeys()
-uvicorn.run(app.app, host='0.0.0.0', port=int(sys.argv[3]), log_level='warning')
-" "$APK" "$SET" "$PORTA" "$LEG" > "$LOG" 2>&1 &
+uvicorn.run(app.app, host='0.0.0.0', port=int(sys.argv[1]), log_level='warning')
+PY
   SERVIDOR_PID=$!
   BASE="http://127.0.0.1:$PORTA"
   limpa_servidor() {
@@ -207,6 +207,11 @@ encerra() {
   limpar
   [ -n "${SERVIDOR_PID:-}" ] && { kill "$SERVIDOR_PID" 2>/dev/null || true; }
   [ -n "${APK:-}" ] && rm -f "$APK" "$SET"
+  # Este trap SOBRESCREVE o do `serial.sh`: sem estas duas o vigia do teto
+  # sobrevive ao shell (e manda ALRM num PID que pode ter sido reusado) e a trava
+  # de modelo fica presa até alguém notar o pid morto (#592).
+  serial_solta
+  _teto_matar
   return 0
 }
 # EXIT cobre saída normal E falha (`set -e`); INT/TERM cobrem Ctrl-C e o harness
