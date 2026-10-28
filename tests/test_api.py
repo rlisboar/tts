@@ -2095,6 +2095,80 @@ def test_speaker_escore_usa_centroide_e_nao_o_maximo(monkeypatch):
     assert houve and abs(sim - 0.7071) < 1e-3
 
 
+# --- #599: o extrator vencedor do R2 (ECAPA) precisa LIGAR --------------------
+# O código checava um `tools/bakeoff/ecapa_voxceleb.pt` que nunca existiu, então
+# `_speaker_modelo_efetivo()` devolvia o legado em qualquer instalação e nenhum
+# perfil nascia ECAPA — o AS-norm por FAR ficava inalcançável na prática.
+def test_speaker_ecapa_ok_exige_o_DIRETORIO_do_extrator(tmp_path, monkeypatch):
+    """Liga pelo layout do SpeechBrain (hyperparams + pesos), não por um `.pt`."""
+    monkeypatch.setattr(app, "_SPEAKER_MODELO_DIR", tmp_path)
+    assert app._speaker_ecapa_ok() is False, "diretório vazio não pode ligar o ECAPA"
+    for arq in app._SPEAKER_ARQ_OBRIG:
+        (tmp_path / arq).write_bytes(b"x")
+    assert app._speaker_ecapa_ok() is True
+    (tmp_path / "embedding_model.ckpt").unlink()
+    assert app._speaker_ecapa_ok() is False, "sem os pesos o load falharia em toda amostra"
+
+
+def test_speaker_modelo_dir_respeita_o_ambiente(tmp_path):
+    """`TTS_SPEAKER_MODELO_DIR` é o contrato do `models/README.md` e era ignorado."""
+    env = {**os.environ, "TTS_SPEAKER_MODELO_DIR": str(tmp_path),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    saida = __import__("subprocess").run(
+        [sys.executable, "-c", "import app; print(app._SPEAKER_MODELO_DIR)"],
+        cwd=str(Path(__file__).resolve().parent.parent), env=env, check=True,
+        capture_output=True, text=True)
+    assert saida.stdout.strip() == str(tmp_path)
+
+
+def test_speaker_embed_escolhe_o_extrator_do_modelo_pedido(monkeypatch):
+    """`modelo` decide o extrator: ECAPA só no atual e com os pesos; senão legado."""
+    monkeypatch.setattr(sys, "modules", {**sys.modules})   # isola o import do legado
+    sys.modules["resemblyzer"] = types.SimpleNamespace(
+        VoiceEncoder=lambda: types.SimpleNamespace(embed_utterance=lambda f: [1.0, 0.0]),
+        preprocess_wav=lambda p: np.zeros(16000, dtype=np.float32))
+    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: False)
+    assert app._speaker_embed(Path("x.wav"), app.SPEAKER_MODELO_ATUAL) == [1.0, 0.0]
+
+    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: True)
+    ecapa = []
+    monkeypatch.setattr(app, "_speaker_embed_ecapa", lambda p: ecapa.append(p) or [0.0, 2.0])
+    assert app._speaker_embed(Path("x.wav"), app.SPEAKER_MODELO_ATUAL) == [0.0, 2.0]
+    assert ecapa == [Path("x.wav")], "com os pesos, o modelo atual tem de ir pelo ECAPA"
+    # perfil LEGADO continua pontuado pelo Resemblyzer, mesmo com o ECAPA disponível
+    assert app._speaker_embed(Path("x.wav"), app.SPEAKER_MODELO_LEGADO) == [1.0, 0.0]
+
+
+def test_speaker_embed_ecapa_normaliza_e_respeita_o_piso_de_duracao(monkeypatch):
+    """Vetor L2-normalizado (é cosseno que se compara) e < 0,6 s não gera embedding."""
+    class _T:
+        """Parecido com `torch.Tensor` no mínimo que o código usa: `[None]`, `squeeze()`,
+        `numpy()`. O `squeeze` de verdade devolve (192,), não (1,192) — o fake faz igual."""
+        def __getitem__(self, _i): return self
+        def squeeze(self): return _Achatado()
+        def numpy(self): return np.array([[3.0, 4.0]])
+
+    class _Achatado:
+        def numpy(self): return np.array([3.0, 4.0])
+
+    class _Enc:
+        def encode_batch(self, _t): return _T()
+
+    class _SemGrad:
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+
+    monkeypatch.setitem(sys.modules, "torch",
+                        types.SimpleNamespace(from_numpy=lambda x: x, no_grad=_SemGrad))
+    monkeypatch.setattr(app, "_speaker_encoder_ecapa", lambda: _Enc())
+    monkeypatch.setattr(app, "_wav_to_mono16k", lambda p: np.ones(32000, dtype=np.float32))
+    vetor = app._speaker_embed_ecapa(Path("x.wav"))
+    assert abs(float(np.linalg.norm(vetor)) - 1.0) < 1e-6, "o embedding tem de sair normalizado"
+    assert [round(v, 3) for v in vetor] == [0.6, 0.8]
+    monkeypatch.setattr(app, "_wav_to_mono16k", lambda p: np.ones(8000, dtype=np.float32))
+    assert app._speaker_embed_ecapa(Path("x.wav")) is None
+
+
 def test_speaker_check_pontua_como_o_gate_e_diz_o_veredito(client, auth, monkeypatch):
     """O "Testar" tem de reproduzir o gate: centróide, limiar e modo efetivos.
 

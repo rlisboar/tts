@@ -450,7 +450,9 @@ def _outputs_do_dono_intocado():
     guarda reprova a rodada se um artefato NOSSO reaparecer no diretório real.
 
     O que é do dono e não nosso (o app vivo gerando áudio, a poda periódica dele)
-    entra como aviso, não como falha. Reprovam só as DUAS assinaturas do próprio
+    entra como aviso, não como falha. O AVISO é `print` no teardown: ele só
+    aparece com `-s` (o `pytest.fail` do artefato nosso aparece sempre, então o que
+    reprova não depende de flag). Reprovam só as DUAS assinaturas do próprio
     código sob teste: `t<hash10>.wav` (o job falso do `speech_queue_bypass`) e
     `.live-<thread>-<ns>.wav` (temporário antigo do STT do Live: desde o #571 ele
     mora no TMPDIR do sistema, e a assinatura fica para as rodadas com código

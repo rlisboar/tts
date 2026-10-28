@@ -7917,10 +7917,17 @@ SPEAKER_MODELO_LEGADO = "resemblyzer:v1"
 #: extrator DESEJADO (vencedor do R2, #521). Sem os pesos instalados (#526) o
 #: app não baixa nada em runtime: `_speaker_modelo_efetivo()` cai no legado.
 SPEAKER_MODELO_ATUAL = "ecapa:v1"
-_SPEAKER_PESOS = BASE / "tools" / "bakeoff" / "ecapa_voxceleb.pt"
+#: diretório do extrator (layout do SpeechBrain: `hyperparams.yaml` +
+#: `embedding_model.ckpt`). `TTS_SPEAKER_MODELO_DIR` é o contrato do
+#: `models/README.md` para instalação fora do repo — antes o código apontava para
+#: um `.pt` que nunca existiu e o extrator vencedor não ligava em lugar nenhum (#599).
+_SPEAKER_MODELO_DIR = _caminho_estado_env("TTS_SPEAKER_MODELO_DIR",
+                                          BASE / "models" / "ecapa-voxceleb")
+_SPEAKER_ARQ_OBRIG = ("hyperparams.yaml", "embedding_model.ckpt", "mean_var_norm_emb.ckpt")
 _speaker_lock = threading.Lock()
 _speaker_enc_lock = threading.Lock()   # só a criação do encoder
-_speaker_encoder = None      # VoiceEncoder carregado sob demanda
+_speaker_encoder = None      # VoiceEncoder (legado) carregado sob demanda
+_speaker_ecapa_enc = None    # EncoderClassifier (ECAPA) carregado sob demanda
 
 
 def _speaker_ecapa_ok() -> bool:
@@ -7935,7 +7942,7 @@ def _speaker_ecapa_ok() -> bool:
             return False
     except (ImportError, ValueError):     # pacote quebrado no venv
         return False
-    return _SPEAKER_PESOS.exists()
+    return all((_SPEAKER_MODELO_DIR / a).is_file() for a in _SPEAKER_ARQ_OBRIG)
 
 
 def _speaker_modelo_efetivo() -> str:
@@ -7952,8 +7959,11 @@ def _speaker_embed(wav_path: Path, modelo: str | None = None) -> list[float] | N
     """Embedding do wav 16k mono no extrator `modelo` (default: o atual).
 
     None = lib ausente/áudio curto demais. O `modelo` existe para o gate ainda
-    pontuar perfil antigo depois de uma troca de extrator (#525); hoje os dois
-    valores caem no mesmo Resemblyzer."""
+    pontuar perfil antigo depois de uma troca de extrator (#525): cada perfil é
+    pontuado pelo extrator que o gerou, e os dois NÃO se misturam."""
+    alvo = modelo or _speaker_modelo_efetivo()
+    if alvo == SPEAKER_MODELO_ATUAL and _speaker_ecapa_ok():
+        return _speaker_embed_ecapa(wav_path)
     try:
         from resemblyzer import VoiceEncoder, preprocess_wav
         global _speaker_encoder
@@ -7968,6 +7978,48 @@ def _speaker_embed(wav_path: Path, modelo: str | None = None) -> list[float] | N
         return [float(x) for x in _speaker_encoder.embed_utterance(f32)]
     except Exception as e:  # noqa: BLE001 — sem o gate não derruba o STT
         print(f"[speaker] embedding falhou: {e}", flush=True)
+        return None
+
+
+def _speaker_encoder_ecapa():
+    """EncoderClassifier do ECAPA (192-d), criado UMA vez, em CPU.
+
+    `source`/`savedir` no diretório LOCAL: com os pesos materializados o load não
+    depende de rede (`pretrained_path` no `hyperparams.yaml` é id de HF e só é
+    consultado se faltar arquivo). Mesmo lock do outro encoder — dois carregamentos
+    simultâneos dobravam a RAM."""
+    global _speaker_ecapa_enc
+    if _speaker_ecapa_enc is None:
+        with _speaker_enc_lock:
+            if _speaker_ecapa_enc is None:
+                from speechbrain.inference.speaker import EncoderClassifier
+
+                _speaker_ecapa_enc = EncoderClassifier.from_hparams(
+                    source=str(_SPEAKER_MODELO_DIR),
+                    savedir=str(_SPEAKER_MODELO_DIR),
+                    run_opts={"device": "cpu"})
+    return _speaker_ecapa_enc
+
+
+def _speaker_embed_ecapa(wav_path: Path) -> list[float] | None:
+    """Embedding normalizado (L2) do ECAPA — mesma pontuação do R2 (#521).
+
+    O R2 normalizou os vetores para comparar por cosseno; sem isso a norma varia
+    por gravação e o centróide perde o sentido."""
+    try:
+        import numpy as np
+        import torch
+
+        x = _wav_to_mono16k(wav_path)   # 16 kHz mono, mono já é o esperado aqui
+        if x.size < 16000 * 0.6:        # mesmo piso do caminho legado
+            return None
+        enc = _speaker_encoder_ecapa()
+        with torch.no_grad():
+            e = np.asarray(enc.encode_batch(torch.from_numpy(x)[None]).squeeze().numpy(),
+                           dtype=np.float64)
+        return [float(v) for v in e / (float(np.linalg.norm(e)) or 1e-9)]
+    except Exception as e:  # noqa: BLE001 — sem o gate não derruba o STT
+        print(f"[speaker] embedding ECAPA falhou: {e}", flush=True)
         return None
 
 
@@ -8061,8 +8113,14 @@ _SPEAKER_LIMIAR_FAR = {
     "resemblyzer:v1": {"1": 2.906, "0.1": 3.173},
     "ecapa:v1": {"1": 2.434, "0.1": 3.044},
 }
-_SPEAKER_COHORTE_ARQ = {"resemblyzer:v1": "cohorte_resemblyzer.json",
-                        "ecapa:v1": "cohorte_ecapa.json"}
+#: artefato da coorte por extrator. O do ECAPA é o `.npy` publicado em `models/`
+#: junto dos pesos (o `.json` ao lado é a ficha: modelo, dimensão, corpus) — antes o
+#: código procurava `tools/bakeoff/cohorte_ecapa.json`, que não existe, e o alvo de
+#: FAR nunca ligava (#599)
+_SPEAKER_COHORTE_ARQ = {
+    "resemblyzer:v1": BASE / "tools" / "bakeoff" / "cohorte_resemblyzer.json",
+    "ecapa:v1": BASE / "models" / "asnorm-coorte-ecapa.npy",
+}
 _speaker_cohorte_cache: dict = {}
 
 
@@ -8070,18 +8128,52 @@ def _speaker_cohorte(modelo: str) -> list:
     """Coorte de impostores do modelo (embeddings), vazia se não houver arquivo.
 
     A coorte é POR MODELO: aplicar AS-norm do Resemblyzer num vetor de outro
-    modelo piora em vez de ajudar (o R2 mediu 1,9 % → 5,0 % em 1 s)."""
+    modelo piora em vez de ajudar (o R2 mediu 1,9 % → 5,0 % em 1 s).
+
+    `TTS_ASNORM_COORTE` substitui o artefato do modelo ATUAL (contrato do
+    `models/README.md`), `.npy` ou `.json`. A ficha ao lado do `.npy` (mesmo nome,
+    `.json`) é conferida: rótulo do extrator e dimensão — coorte do extrator errado
+    é pior que nenhuma."""
     if modelo in _speaker_cohorte_cache:
         return _speaker_cohorte_cache[modelo]
-    nome = _SPEAKER_COHORTE_ARQ.get(modelo)
+    caminho = _SPEAKER_COHORTE_ARQ.get(modelo)
+    bruto = (os.environ.get("TTS_ASNORM_COORTE") or "").strip()
+    if bruto and modelo == SPEAKER_MODELO_ATUAL:
+        caminho = Path(bruto).expanduser()
     vecs: list = []
-    if nome:
+    if caminho is not None:
         try:
-            dados = json.loads((BASE / "tools" / "bakeoff" / nome).read_text())
-            if dados.get("modelo") == modelo and isinstance(dados.get("vecs"), list):
-                vecs = [v for v in dados["vecs"] if isinstance(v, list) and v]
+            ficha = {}
+            try:
+                ficha = json.loads(caminho.with_suffix(".json").read_text())
+            except Exception:  # noqa: BLE001 — ficha é conferência, não requisito
+                pass
+            rotulo = str(ficha.get("modelo") or "")
+            # "ecapa:v1" x "models/ecapa-voxceleb": casa pelo nome do extrator
+            if rotulo and rotulo != modelo and modelo.split(":")[0] not in rotulo:
+                raise ValueError(f"coorte de outro modelo ({rotulo})")
+            if caminho.suffix == ".npy":
+                import numpy as np
+
+                matriz = np.load(caminho)
+                if matriz.ndim != 2:
+                    raise ValueError(f"matriz {matriz.shape} (esperado 2-D)")
+                if ficha.get("dimensao") and int(ficha["dimensao"]) != matriz.shape[1]:
+                    raise ValueError(f"dimensão {matriz.shape[1]} x ficha {ficha['dimensao']}")
+                vecs = [[float(x) for x in linha] for linha in matriz]
+            else:
+                dados = json.loads(caminho.read_text())
+                vetores = dados.get("vecs")
+                if not isinstance(vetores, list):     # a ficha usa `vetores` como CONTAGEM
+                    vetores = dados.get("vetores")
+                if not isinstance(vetores, list):
+                    raise ValueError("sem lista de vetores")
+                vecs = [v for v in vetores if isinstance(v, list) and v]
+            if vecs and len({len(v) for v in vecs}) > 1:
+                raise ValueError("vetores de dimensões diferentes")
         except Exception as e:  # noqa: BLE001 — sem coorte cai no escore cru
-            print(f"[speaker] coorte {modelo} ilegível: {e}", flush=True)
+            print(f"[speaker] coorte {modelo} ilegível ({caminho}): {e}", flush=True)
+            vecs = []
     _speaker_cohorte_cache[modelo] = vecs
     return vecs
 
@@ -10062,7 +10154,13 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         can.cancel()
     motor = sess.get("engine")
     filtros = _settings.get("live_barge_filtros") or {}
-    audio = audio_cru or sus.get("audio") or b""
+    # O áudio tem de ser o ACUMULADO: pelo PRAZO (`por_prazo`) o handler só tem o
+    # retrato do onset (pré-roll, ~400 ms) e a fala chegou DEPOIS, no motor. Sem
+    # isto a decisão transcrevia só o pré-roll e saía lixo ("Tchau.", "É isso.")
+    # no lugar do comando — nada casava `palavras_corte` (#547).
+    audio = (audio_cru
+             or (motor.audio_suspeito() if motor is not None else b"")
+             or sus.get("audio") or b"")
     t0 = time.monotonic()
     tipo, filtro = "ruido", "sem_decisao"
     texto, p_cortar, modelo_ms = "", None, None

@@ -133,11 +133,19 @@ def test_coorte_que_falta_nao_e_baixada_e_aponta_o_gerador(amb):
 
 
 def test_app_nao_baixa_modelo_no_boot():
-    """Contrato do card: quem baixa é o script; o boot não."""
+    """Contrato do card: quem baixa é o script; o boot não.
+
+    `from_hparams(` sozinho baixaria do Hub. O app é liberado a usar porque passa
+    `source`/`savedir` no DIRETÓRIO local (`_speaker_embed_ecapa`, #599) e só liga o
+    extrator quando os pesos já estão em disco (`_speaker_ecapa_ok`); o que não pode
+    é chamar com id de repositório cravado."""
     for arq in ("run.sh", "app.py"):
         texto = (REPO / arq).read_text()
         assert "baixa_modelos" not in texto, f"{arq} chama o downloader no boot"
-        assert "from_hparams(" not in texto, f"{arq} carrega o extrator baixando sozinho"
+    for trecho in (REPO / "app.py").read_text().split("from_hparams(")[1:]:
+        chamada = trecho[:200]
+        assert "source=str(" in chamada, "`from_hparams` sem `source` local (baixa do Hub)"
+        assert "savedir=" in chamada, "`from_hparams` sem `savedir` (baixa p/ o cache do usuário)"
 
 
 #: gerado pelo speechbrain no primeiro load (não é baixável nem versionado)

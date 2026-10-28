@@ -306,11 +306,13 @@ servidor (`autorizado`) junto do limiar e do modo efetivos — com `modo:
 Cada perfil guarda o **extrator** que o gerou (`modelo`; ausente = Resemblyzer
 legado). Perfil de outro extrator continua autenticando — `precisa_recadastrar`
 só avisa que ele sai do ar no próximo recadastro, e o `enforce` nunca tranca o
-dono numa atualização. O extrator atual é o ECAPA (vencedor do bake-off), usado
-quando o `speechbrain` está instalado **e** os pesos existem em
-`tools/bakeoff/ecapa_voxceleb.pt`; sem eles o app fica no Resemblyzer e não baixa
-nada em runtime (os pesos vêm do script do `models/`). Perfil novo no extrator
-novo começa do zero, sem misturar vetores de espaços diferentes.
+dono numa atualização. O extrator atual é o ECAPA (vencedor do bake-off, 192-d),
+usado quando o `speechbrain` está instalado **e** o diretório de pesos
+`models/ecapa-voxceleb` (ou o `TTS_SPEAKER_MODELO_DIR`) tem o `hyperparams.yaml` e
+os `.ckpt` do SpeechBrain. Sem isso o app fica no Resemblyzer e não baixa nada em
+runtime — quem materializa os pesos é `./tools/baixa_modelos.sh` (manifesto de
+sha256 e licenças em `models/`). Perfil novo no extrator novo começa do zero, sem
+misturar vetores de espaços diferentes.
 
 ### Modos do gate
 
