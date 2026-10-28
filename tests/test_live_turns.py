@@ -1456,7 +1456,8 @@ def _liga_so_minha_voz(monkeypatch, *a, **k):
     import app
     from pathlib import Path
     monkeypatch.setitem(app._settings, "live_so_minha_voz",
-                        {"on": True, "perfil": "dono", "rigor_far": "", "separacao": False})
+                        {"on": True, "perfil": "dono", "rigor_far": "1",
+                         "separacao": False})
     monkeypatch.setattr(app, "_speaker_load_estado", lambda: ({"dono": _perfil_fake()}, ""))
     monkeypatch.setattr(app, "_speaker_embed", lambda p, m=None: [1.0, 0.0])
     monkeypatch.setattr(app, "_speaker_modelo_do_perfil", lambda p: "fake:v1")
@@ -1530,3 +1531,32 @@ def test_filtro_identidade_nao_corta_o_barge(monkeypatch):
         app._live_transcreve_trecho = ok
     assert not sess["cancelado"].is_set(), "outra voz não podia cortar"
     assert sess["voz_stats"]["recusados"] == 1
+
+
+def test_portao_usa_o_escore_asnorm_com_limiar_por_far(monkeypatch):
+    """Decisão do PM (#533): AS-norm com a coorte do I3 e limiar por FAR.
+
+    O 0,44 CRU é só queda — no caminho normal o limiar é o da tabela de FAR
+    (2,434 no FAR 1 %), e quem decide é o escore NORMALIZADO."""
+    _liga_so_minha_voz(monkeypatch)
+    import app
+    # modelo com entrada na tabela de FAR (o extrator de verdade); o perfil de
+    # teste usa "fake:v1", que não tem linha e cairia na queda
+    monkeypatch.setattr(app, "_speaker_modelo_do_perfil", lambda p: "ecapa:v1")
+    monkeypatch.setattr(app, "_speaker_cohorte", lambda m: [[0.0, 1.0], [0.0, 1.0]])
+    monkeypatch.setattr(app, "_speaker_asnorm",
+                        lambda emb, vecs, m, alvo=None: (3.5, "asnorm"))
+    res = app._voz_do_dono(_pcm(3.0))
+    assert res["ok"] is True
+    assert res["limiar"] == 2.434 and res["escore"] == "asnorm"
+    monkeypatch.setattr(app, "_speaker_asnorm",
+                        lambda emb, vecs, m, alvo=None: (1.9, "asnorm"))
+    assert app._voz_do_dono(_pcm(3.0))["ok"] is False
+
+
+def test_portao_cai_no_cru_quando_nao_ha_coorte(monkeypatch):
+    _liga_so_minha_voz(monkeypatch)
+    import app
+    monkeypatch.setattr(app, "_speaker_cohorte", lambda m: [])
+    res = app._voz_do_dono(_pcm(3.0))
+    assert res["limiar"] == 0.44 and res["escore"] == "cru"
