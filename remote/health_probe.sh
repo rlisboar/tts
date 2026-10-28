@@ -20,6 +20,11 @@
 #     valor (útil no histórico, não vira falha);
 #   • `/api/voices` SEM chave no host público tem de dar **401** — é o teste canônico
 #     do invariante do túnel (200 = destino virou loopback e a auth é no-op).
+#   • `/ready` do CONECTOR na porta local de métricas (`127.0.0.1:20242`, a mesma
+#     que o `cloudflare.sh` instala no `--metrics`): 200 = conector registrado na
+#     borda. Sem esta linha, o conector do TTS caído passava verde enquanto o
+#     público ainda respondia (cache/DNS/outro túnel) — a queda parcial que só
+#     aparece quando o público cai de vez. `TTS_PROBE_CONECTOR=0` desliga.
 #
 # ALERTA: depois de `TTS_PROBE_FALHAS` falhas consecutivas (padrão 3, ~6 min) ele
 # cria `~/Library/Logs/tts-health-ALERTA.txt` e tenta uma notificação do macOS. O
@@ -37,6 +42,7 @@ PORTA="${TTS_PROBE_PORT:-7860}"
 PUBLICO="${TTS_PROBE_PUBLIC:-tts.the-dudes.com}"
 FALHAS_LIMITE="${TTS_PROBE_FALHAS:-3}"
 INTERVALO="${TTS_PROBE_INTERVALO:-120}"
+CONECTOR_PORTA="${TTS_PROBE_CONECTOR_PORTA:-20242}"
 umask 077
 
 _log() { print -r -- "$(date '+%F %T') $*" >> "$LOG" }
@@ -99,6 +105,18 @@ check() {
       401) _log "ok auth(401 sem chave — invariante de pé)" ;;
       200) _log "ALERTA auth(200 sem chave — destino do túnel é LOOPBACK, auth é no-op)"; falhas_pub=1 ;;
       *)   _log "falha auth(http=$auth)"; falhas_pub=1 ;;
+    esac
+  fi
+
+  if [ "${TTS_PROBE_CONECTOR:-1}" = 1 ]; then
+    # Queda PARCIAL: o app está de pé na LAN e o conector que publica cai. O
+    # público pode continuar 200 por um tempo (cache/DNS) e a LAN nunca vê o
+    # conector — só o `/ready` local dele acusa. 200 = registrado na borda.
+    local conector
+    conector="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CONECTOR_PORTA/ready" 2>/dev/null || print -r -- 000)"
+    case "$conector" in
+      200) _log "ok conector(/ready 200 — registrado na borda)" ;;
+      *)   _log "falha conector(/ready http=$conector)"; falhas_pub=1 ;;
     esac
   fi
 

@@ -117,3 +117,15 @@ O `x_gen_seconds` é a medida do handler, e o nome do thread (`mt7b` × `mt`) di
 por qual pool a geração passou — as duas pontas ficam presas. O 14B fica preso
 por um `Event` que só é solto no `finally` (e, no controle negativo, por um
 `Timer` de 0,5 s).
+
+## #499 — probe não via o conector caído (queda parcial verde)
+
+O `/health` público pode continuar 200 por um tempo com o conector do Cloudflare
+caído (cache/DNS) e a LAN nunca enxerga o conector: a queda parcial passava verde.
+A célula nova exige o `/ready` em `127.0.0.1:20242` (porta do `--metrics` que o
+`cloudflare.sh` instala). Sabotagem: tirar o bloco do `curl` do `/ready` —
+`test_conector_sem_ready_e_falha_mesmo_com_lan_e_publico_200`,
+`test_conector_respondendo_nao_e_200_tambem_conta` e
+`test_conector_cai_na_porta_local_20242` caem (3/3, medido com `git stash`).
+O `test_knob_desliga_a_checagem_do_conector` passa nos dois lados de propósito: é
+controle do `TTS_PROBE_CONECTOR=0`.

@@ -36,6 +36,7 @@ done
 print -r -- "$url" >> "$T_CURL_LOG"
 case "$url" in
   *"/api/voices") codigo="${T_AUTH:-401}"; corpo='' ;;
+  http://127.0.0.1:*/ready) codigo="${T_CONECTOR:-200}"; corpo='{"status":"ok"}' ;;
   https://*)      codigo="${T_PUB:-200}"; corpo='{"ok":true,"boot_ts":111,"rev":"abc1234"}' ;;
   http://*)       codigo="${T_LAN:-200}"; corpo='{"ok":true,"boot_ts":111,"rev":"abc1234"}' ;;
   *)              codigo=000; corpo='' ;;
@@ -94,9 +95,39 @@ def test_tudo_ok_nao_alerta_e_zera_contador(amb):
     assert r.returncode == 0, r.stdout + r.stderr
     log = _log(amb)
     assert "ok lan" in log and "ok publico" in log and "ok auth" in log
+    assert "ok conector" in log, "não checou o /ready do conector"
     assert "boot_ts=111" in log and "rev=abc1234" in log, "o histórico tem de guardar boot_ts/rev"
     assert _contador(amb) == 0
     assert not (amb["logs"] / "tts-health-ALERTA.txt").exists()
+
+
+# --- #499: queda PARCIAL. O app de pé na LAN + conector do Cloudflare caído deixa
+# o público 200 por um tempo (cache/DNS) e a LAN não vê o conector; só o /ready
+# local dele acusa. Sem esta checagem a queda parcial passava verde.
+def test_conector_sem_ready_e_falha_mesmo_com_lan_e_publico_200(amb):
+    r = _run(amb, "check", env={"T_CONECTOR": "000"})
+    assert r.returncode == 1, "conector caído passou verde com LAN e público 200"
+    assert "ok lan" in _log(amb) and "ok publico" in _log(amb)
+    assert "falha conector(/ready http=000" in _log(amb)
+    assert _contador(amb) == 1
+
+
+def test_conector_respondendo_nao_e_200_tambem_conta(amb):
+    """503/404 também é conector fora da borda — só 200 é registrado."""
+    assert _run(amb, "check", env={"T_CONECTOR": "503"}).returncode == 1
+    assert "falha conector(/ready http=503)" in _log(amb)
+
+
+def test_conector_cai_na_porta_local_20242(amb):
+    _run(amb, "check")
+    assert any("http://127.0.0.1:20242/ready" in l for l in Path(amb["env"]["T_CURL_LOG"]).read_text().splitlines()), \
+        "a porta de métricas do cloudflared mudou sem ninguém notar"
+
+
+def test_knob_desliga_a_checagem_do_conector(amb):
+    r = _run(amb, "check", env={"T_CONECTOR": "000", "TTS_PROBE_CONECTOR": "0"})
+    assert r.returncode == 0
+    assert "conector" not in _log(amb)
 
 
 def test_alerta_so_na_terceira_falha_consecutiva(amb):
