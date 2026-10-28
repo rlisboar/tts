@@ -18,9 +18,10 @@ que as chaves ficam no `settings.json` do dono nos padrões (não existe
 
 == 1) Rodada verde ==
   seletor: opcoes ['inteligente', 'imediata'] · título explica os dois e os filtros
-  painel: 9 toggles (o `modelo` do servidor incluso, nascendo DESLIGADO), 3 números,
+  painel: 9 toggles (o `modelo` incluso e FEATURE-DETECTADO), 5 números,
     2 editores de chips, sem_decisao=continua, restaurar padrões, recolhido por padrão,
-    listas padrão 11 e 17
+    listas padrão 11 e 17 · modelo nasce DESLIGADO, provedor local, limiar 0.5, timeout 400,
+    aviso de egress escondido
   speech_start/inteligente: ganho 1.000 -> 0.2 em 53.8 ms · RMS 0.0690 -> 0.0087 · fila 1
   teto de 2 s: ganho voltou a 1.000 · aviso no log=True
   barge_suspeito/retoma: duck em 49.5 ms · retoma em 147.6 ms · log "↩ continuei — era backchannel" · fila 1
@@ -38,6 +39,11 @@ que as chaves ficam no `settings.json` do dono nos padrões (não existe
     o `corta` do adendo é aceito na LEITURA e convertido
   restaurar padrões -> sem_decisao=continua, pergunta.on=True, min_palavras=3, "basta" fora
   reload: modo imediata E os filtros voltam do servidor (sem=continua, pergunta=True, min=3, 11 chips)
+  modelo ligado -> {'on': True} (só o campo) · provedor dsh -> {'provedor': 'dsh'} (só o campo)
+  aviso de egress: "⚠ dsh: o texto do trecho transcrito sai da máquina"
+  limiar 0.85 -> 0.95 (teto) no servidor · timeout 9999 -> 3000
+  servidor SEM o campo `modelo` -> linha escondida, status "escondi", payload do
+    restaurar deixa de levar `modelo`; servidor de volta -> linha volta no load
   valor inválido no servidor -> tela cai no padrão (inteligente)
   filtros e sem_decisao devolvidos ao dono no fim (modo volta ao valor lido)
   ✔ OK — três rodadas SEGUIDAS verdes (a suíte é reexecutável: o baseline do painel
@@ -73,6 +79,11 @@ Raiz quadrada média 0.0690 -> 0.0087 = razão 0.126, exatamente os -18 dB.
 == 3e) MORDIDA F — sem a trava do painel no modo `imediata` ==
   ✖ FALHOU · painel de filtros não travou no modo imediata
 
+== 3f) MORDIDA G — sem o feature-detect (linha sempre visível) e sem o aviso de egress ==
+  ✖ FALHOU
+    · aviso de egress não apareceu com dsh: {'visivel': False, 'texto': ''}
+    · o ajuste não sumiu com servidor sem o campo: {'escondido': False, ...}
+
 == 4) Estágio `navegador` inteiro, com a suíte nova ==
   ok admin_ui_flow 17s · ok cfg_sujo_e_erros 9s · ok dsh_ui 16s · ok hash_deep_link 13s
   FALHA live_barge_rep 90s (rc=142) · FALHA live_dsh_fallback 79s (rc=1)
@@ -100,10 +111,14 @@ Raiz quadrada média 0.0690 -> 0.0087 = razão 0.126, exatamente os -18 dB.
   ganho durante o duck: 0.1258925348520279 (1/10^(18/20) exato)
   chip "volume abaixado" visível: True · seletor em `inteligente`
   painel: "basta" cadastrada, "nossa" removida do backchannel, min_palavras 5
-  (a captura é anterior ao 9º filtro: `modelo` ainda não aparece nela)
+  `modelo`: ESCONDIDO neste app (o processo em :7860 é anterior às chaves) — é o
+    feature-detect funcionando no app real
   erros de JS (pageerror / console error): nenhum
   requisições falhas: apenas as 5 sondas de porta do controlador
   (127.0.0.1:7861..7865 `/mode`, preexistentes quando não há controlador)
 
-Capturas: `502-live-interrupcao-duck.png` (chip aceso e log de decisão/retoma) e
-`502-live-filtros-painel.png` (painel aberto com chips, números e restaurar padrões).
+Capturas: `502-live-interrupcao-duck.png` (chip aceso e log de decisão/retoma),
+`502-live-filtros-painel.png` (painel aberto com chips, números e restaurar padrões) e
+`502-live-filtros-modelo.png` (linha do modelo ligada, provedor dsh e o aviso de egress;
+capturada numa instância própria porque o :7860 do dono ainda roda o código antigo e ali
+o filtro aparece escondido — que é o comportamento correto do feature-detect).

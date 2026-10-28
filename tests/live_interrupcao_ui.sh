@@ -116,6 +116,12 @@ def _merge_filtros(patch):
         alvo = atual.setdefault(nome, {})
         if "on" in cfg or nome == "modelo":     # `modelo` nasce DESLIGADO (#509)
             alvo["on"] = bool(cfg.get("on", False))
+        if nome == "modelo":
+            alvo["provedor"] = "dsh" if str(cfg.get("provedor") or "local") == "dsh" else "local"
+            try: alvo["limiar"] = min(0.95, max(0.05, float(cfg.get("limiar", 0.5))))
+            except (TypeError, ValueError): alvo["limiar"] = 0.5
+            try: alvo["timeout_ms"] = min(3000, max(100, int(cfg.get("timeout_ms", 400))))
+            except (TypeError, ValueError): alvo["timeout_ms"] = 400
         if nome in _NUM and _NUM[nome][0] in cfg:
             campo, lo, hi = _NUM[nome]
             try: alvo[campo] = min(hi, max(lo, int(cfg[campo])))
@@ -145,6 +151,8 @@ def _com_modo(payload):
             app._settings["live_barge_sem_decisao"] = v if v in _SEM else "continua"
         if "live_barge_filtros" in payload:
             _merge_filtros(payload.get("live_barge_filtros"))
+    if app._settings.get("__sem_modelo"):     # simula servidor SEM o filtro `modelo`
+        (app._settings.get("live_barge_filtros") or {}).pop("modelo", None)
     return r
 app._apply_settings = _com_modo
 
@@ -226,7 +234,12 @@ try:
                      recolhido: !p.open,
                      palavras_corte: LX.filtros.palavras_corte.palavras.length,
                      backchannel: LX.filtros.backchannel.palavras.length,
-                     modelo: LX.filtros.modelo.on };
+                     modelo: LX.filtros.modelo.on,
+                     modelo_visivel: !document.getElementById('lxFiltroModelo').hidden,
+                     modelo_campos: [document.getElementById('lxProv_modelo').value,
+                                     document.getElementById('lxNum_modelo_limiar').value,
+                                     document.getElementById('lxNum_modelo_timeout').value],
+                     egress: !document.getElementById('lxEgress_modelo').hidden };
         }""")
         print(f"  painel de filtros: {painel}")
         cobrar(painel is not None, "painel #lxFiltros não existe")
@@ -238,7 +251,11 @@ try:
                                         "modelo", "fim_de_resposta")),
                 f"toggles fora do schema: {painel['toggles']}")
             cobrar(painel["modelo"] is False, "o filtro modelo deveria nascer DESLIGADO")
-            cobrar(len(painel["nums"]) == 3, f"números editáveis faltando: {painel['nums']}")
+            cobrar(painel["modelo_visivel"], "o filtro `modelo` não apareceu com o servidor servindo o campo")
+            cobrar(painel["modelo_campos"] == ["local", "0.5", "400"],
+                   f"padrões do modelo errados (provedor/limiar/timeout): {painel['modelo_campos']}")
+            cobrar(not painel["egress"], "aviso de egress apareceu com provedor local")
+            cobrar(len(painel["nums"]) == 5, f"números editáveis faltando: {painel['nums']}")
             cobrar(len(painel["chips"]) == 2, f"editores de chips faltando: {painel['chips']}")
             cobrar(painel["sem"] == "continua", f"sem_decisao não nasce em 'continua': {painel['sem']}")
             cobrar(painel["padrao"], "botão de restaurar padrões ausente")
@@ -433,7 +450,7 @@ try:
 
         # número: manda só o campo dele e o clamp vale
         limpa_posts()
-        pg.evaluate("""() => { const c = document.getElementById('lxNum_frase_longa');
+        pg.evaluate("""() => { const c = document.getElementById('lxNum_frase_longa_min_palavras');
                                 c.value = 9; c.onchange(); }""")
         pg.wait_for_timeout(700)
         corpo = posts()[-1] if posts() else {}
@@ -442,11 +459,11 @@ try:
                f"número não mandou só o próprio campo: {corpo.get('live_barge_filtros')}")
         cobrar((settings().get("live_barge_filtros") or {}).get("frase_longa", {}).get("min_palavras") == 9,
                "min_palavras não chegou ao servidor")
-        pg.evaluate("""() => { const c = document.getElementById('lxNum_frase_longa');
+        pg.evaluate("""() => { const c = document.getElementById('lxNum_frase_longa_min_palavras');
                                 c.value = 99; c.onchange(); }""")
         pg.wait_for_timeout(400)
-        print("  clamp de 99 ->", pg.evaluate("() => document.getElementById('lxNum_frase_longa').value"))
-        cobrar(pg.evaluate("() => document.getElementById('lxNum_frase_longa').value") == "20",
+        print("  clamp de 99 ->", pg.evaluate("() => document.getElementById('lxNum_frase_longa_min_palavras').value"))
+        cobrar(pg.evaluate("() => document.getElementById('lxNum_frase_longa_min_palavras').value") == "20",
                "valor acima do teto não foi limitado a 20")
 
         # palavra nova: normalizada (maiúscula/acento), entra no filtro e o liga
@@ -500,7 +517,7 @@ try:
         # chegaria ao servidor.
         limpa_posts()
         pg.evaluate("""() => {
-            const n = document.getElementById('lxNum_frase_longa');
+            const n = document.getElementById('lxNum_frase_longa_min_palavras');
             n.value = 7; n.onchange();
             const c = document.getElementById('lxLiga_frase_longa');
             c.checked = false; c.onchange();
@@ -514,6 +531,79 @@ try:
         no_srv = (settings().get("live_barge_filtros") or {}).get("frase_longa") or {}
         cobrar(no_srv.get("min_palavras") == 7 and no_srv.get("on") is False,
                f"o servidor não recebeu os dois campos juntos: {no_srv}")
+
+        # ─── o filtro `modelo`: provedor, aviso de egress e prazos ───────────
+        limpa_posts()
+        pg.evaluate("""() => { const c = document.getElementById('lxLiga_modelo');
+                                c.checked = true; c.onchange(); }""")
+        pg.wait_for_timeout(600)
+        corpo = posts()[-1] if posts() else {}
+        print("  modelo ligado ->", (corpo.get("live_barge_filtros") or {}).get("modelo"))
+        cobrar((corpo.get("live_barge_filtros") or {}).get("modelo") == {"on": True},
+               f"ligar o modelo não mandou só o `on`: {corpo.get('live_barge_filtros')}")
+        limpa_posts()
+        pg.select_option("#lxProv_modelo", "dsh")
+        pg.wait_for_timeout(600)
+        corpo = posts()[-1] if posts() else {}
+        egress = pg.evaluate("""() => ({ visivel: !document.getElementById('lxEgress_modelo').hidden,
+                                          texto: document.getElementById('lxEgress_modelo').textContent })""")
+        print("  provedor dsh ->", (corpo.get("live_barge_filtros") or {}).get("modelo"), "· egress:", egress)
+        cobrar((corpo.get("live_barge_filtros") or {}).get("modelo") == {"provedor": "dsh"},
+               f"trocar o provedor não mandou só o `provedor`: {corpo.get('live_barge_filtros')}")
+        cobrar(egress["visivel"] and "sai da máquina" in egress["texto"],
+               f"aviso de egress não apareceu com dsh: {egress}")
+        # limiar é float e tem teto
+        pg.evaluate("""() => { const c = document.getElementById('lxNum_modelo_limiar');
+                                c.value = 0.85; c.onchange(); }""")
+        pg.wait_for_timeout(500)
+        pg.evaluate("""() => { const c = document.getElementById('lxNum_modelo_limiar');
+                                c.value = 3; c.onchange(); }""")
+        pg.wait_for_timeout(500)
+        limiar = pg.evaluate("() => document.getElementById('lxNum_modelo_limiar').value")
+        servido = (settings().get("live_barge_filtros") or {}).get("modelo") or {}
+        print("  limiar 0.85 e depois 3 (teto) ->", limiar, "· no servidor:", servido.get("limiar"))
+        cobrar(limiar == "0.95" and servido.get("limiar") == 0.95,
+               f"limiar não foi clampado/gravado como float: tela={limiar} servidor={servido.get('limiar')}")
+        # timeout: teto de 3000
+        pg.evaluate("""() => { const c = document.getElementById('lxNum_modelo_timeout');
+                                c.value = 9999; c.onchange(); }""")
+        pg.wait_for_timeout(500)
+        cobrar(pg.evaluate("() => document.getElementById('lxNum_modelo_timeout').value") == "3000",
+               "timeout acima do teto não foi limitado a 3000")
+
+        # ─── FEATURE-DETECT: servidor sem o campo `modelo` esconde o ajuste ───
+        pg.evaluate("""() => fetch('/__set', { method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ __sem_modelo: 1 }) })""")
+        pg.wait_for_timeout(300)
+        pg.evaluate("""() => { const c = document.getElementById('lxLiga_modelo');
+                                c.checked = true; c.onchange(); }""")
+        pg.wait_for_timeout(800)
+        oculto = pg.evaluate("""() => ({ escondido: document.getElementById('lxFiltroModelo').hidden,
+                                          status: document.getElementById('lxFiltrosStatus').textContent })""")
+        print("  servidor sem o campo modelo ->", oculto)
+        cobrar(oculto["escondido"], f"o ajuste não sumiu com servidor sem o campo: {oculto}")
+        cobrar("escondi" in oculto["status"], f"a tela não disse que escondeu: {oculto['status']!r}")
+        # e o payload deixa de levar o `modelo`
+        limpa_posts()
+        pg.evaluate("() => document.getElementById('lxFiltrosPadrao').click()")
+        pg.wait_for_timeout(800)
+        corpo = posts()[-1] if posts() else {}
+        print("  payload do restaurar sem o modelo:", "modelo" not in (corpo.get("live_barge_filtros") or {}))
+        cobrar("modelo" not in (corpo.get("live_barge_filtros") or {}),
+               "payload continuou mandando `modelo` com o ajuste escondido")
+        # servidor de volta: o load reexibe
+        pg.evaluate("""() => fetch('/__set', { method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ __sem_modelo: 0 }) })""")
+        pg.reload(wait_until="networkidle")
+        pg.locator('.nav-item[data-view="live"]').click()
+        pg.wait_for_function("() => typeof LX === 'object'", timeout=20000)
+        pg.wait_for_timeout(900)
+        de_volta = pg.evaluate("() => !document.getElementById('lxFiltroModelo').hidden")
+        print("  modelo de volta no load:", de_volta)
+        cobrar(de_volta, "o ajuste não voltou quando o servidor passou a servir o campo")
+        pg.evaluate("() => { document.getElementById('lxFiltros').open = true; }")   # o reload fecha o details
 
         # sem decisão
         limpa_posts()
@@ -573,7 +663,7 @@ try:
         # os filtros também voltam do servidor (não só o modo)
         recarga = pg.evaluate("""() => ({ sem: document.getElementById('lxSemDecisao').value,
             pergunta: document.getElementById('lxLiga_pergunta').checked,
-            min: document.getElementById('lxNum_frase_longa').value,
+            min: document.getElementById('lxNum_frase_longa_min_palavras').value,
             chips: document.querySelectorAll('#lxChips_palavras_corte .lx-chipw').length })""")
         print("  filtros depois do reload:", recarga)
         cobrar(recarga["sem"] == "continua" and recarga["pergunta"] is True and recarga["min"] == "3",
