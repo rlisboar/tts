@@ -284,11 +284,28 @@ def test_rotulo_do_estouro_e_trabalho_e_nao_fila(tmp_path):
 def test_filho_surdo_a_term_ainda_morre_e_deixa_o_motivo(tmp_path):
     """O caso medido (828 s com teto de 90 s, log sem UMA linha): o bash adia o
     trap enquanto o filho em foreground vive, e o ALRM sozinho nunca vira
-    mensagem. O vigia tem de imprimir o motivo e escalar até KILL."""
+    mensagem. O vigia tem de imprimir o motivo E escalar até KILL — a asserção do
+    PID morto é o que cobra a escada; sem ela a célula passaria pelo teto externo
+    do runner mesmo com o filho vivo pendurado."""
+    pid_txt = tmp_path / "filho.pid"
+    t0 = time.time()
     r = _rodar("rapido", env={"SUITES": str(SONDAS / "trava_preso_em_filho.sh"),
+                              "SONDA_SAIDA": str(pid_txt),
                               "TETO_S": "2", "TTS_SERIAL_LOCK": str(tmp_path / "lock")})
+    dur = time.time() - t0
     assert r.returncode != 0, r.stdout
     assert "estourado DEPOIS da trava" in r.stdout, r.stdout
+    assert pid_txt.is_file(), "a sonda não registrou o PID do filho"
+    pid = int(pid_txt.read_text().strip())
+    for _ in range(20):
+        if subprocess.run(["kill", "-0", str(pid)], capture_output=True).returncode != 0:
+            break
+        time.sleep(0.2)
+    else:
+        raise AssertionError(f"o filho surdo {pid} sobreviveu à suíte")
+    # teto de 2 s + escada (~6 s): muito abaixo do teto externo (90 s), então a
+    # morte não veio de fora
+    assert dur < 40, f"a rodada levou {dur:.1f}s — quem matou foi o teto externo"
 
 
 def test_suite_que_sobrescreve_o_trap_exit_limpa_o_vigia(tmp_path):

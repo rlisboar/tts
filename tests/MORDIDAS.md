@@ -290,6 +290,21 @@ CI. `test_app_nao_baixa_modelo_no_boot` e `test_manifesto_lista_todos_os_pesos`
 cobrem o contrato do card por leitura (o boot não chama o downloader; peso sem
 sha256 no manifesto reprova).
 
+## #592 — teto pós-trava: rótulo, escada e rc do trap
+
+Três defeitos, três mordidas. A célula do filho surdo cobra o PID MORTO: só a
+mensagem de teto não prova nada, porque o teto externo do runner também reprova e
+a suíte ficaria pendurada. `.pyc`-safe (é shell): nada de recompilação.
+
+| Sabotagem | Resultado |
+|---|---|
+| rótulo volta a adivinhar por "sou eu o pid do lock?" (sonda troca o `pid`) | `test_rotulo_do_estouro_e_trabalho_e_nao_fila` **FAILED** |
+| escada para no TERM (sem o KILL nos filhos) | `test_filho_surdo_a_term_ainda_morre_e_deixa_o_motivo` **FAILED** (medido: "o filho surdo … sobreviveu à suíte") |
+| `return 0` sai do fim do `_teto_matar` | `test_suite_verde_sem_teto_sai_zero` **FAILED** |
+
+O `return 0` só morde sob `set -e` (é ele que faz o bash ADOTAR o status do trap
+de EXIT); a sonda usa `set -euo pipefail` de propósito, como as suítes.
+
 ## #526-bis — separador offline a partir de `models/`
 
 O separador NÃO usa `from_hparams` (é `torch.load` do arquivo local), então o que
