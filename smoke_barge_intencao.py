@@ -21,6 +21,8 @@ gate — sem ele a matriz não se reproduz.
 """
 from __future__ import annotations
 
+import pathlib
+import queue
 import sys
 
 import app  # noqa: F401 — o `_settings` da cadeia
@@ -68,32 +70,53 @@ def decide(texto: str, ms: int) -> str:
     return "corta" if tipo == "interrupcao" else "nao_corta"
 
 
-def _latencia_do_comando(n: int = 12) -> list[int]:
-    """Mede o corte por comando com o STT stubado (passo de 250 ms do handler)."""
+def _latencia_do_comando(n: int = 6) -> list[int]:
+    """Mede onset→corte com ÁUDIO REAL: wav do repo → VAD e STT reais.
+
+    O trecho é a fala de uma voz do repositório (2,2 s, em tmp via `mkdtemp`) e o
+    comando casado é a palavra que ela de fato transcreve ("olá") — sem texto
+    injetado à mão no caminho. Passo de 150 ms, o default do produto."""
+    import tempfile
     import threading
     import time
 
-    import live_turns as lt
+    import numpy as np
+    import soundfile as sf
+    from scipy.signal import resample_poly
 
-    app._settings["live_barge_filtros"] = {"palavras_corte": {"palavras": ["para"]}}
+    import live_turns as lt
+    from live_pipeline import _stt_app
+
+    voz = sorted(pathlib.Path("voices").glob("*.wav"))[0]
+    a, sr = sf.read(str(voz), dtype="float32")
+    if a.ndim > 1:
+        a = a.mean(axis=1)
+    pcm = (np.clip(resample_poly(a, 16000, int(sr)), -1, 1) * 32767).astype("<i2").tobytes()[:36000]
+    tmp = pathlib.Path(tempfile.mkdtemp()) / "comando.wav"
+    sf.write(str(tmp), np.frombuffer(pcm, dtype="<i2"), 16000, subtype="PCM_16")
+    app._settings["live_barge_filtros"] = {"palavras_corte": {"palavras": ["olá", "ola"],
+                                               "passo_ms": 150}}
     tempos = []
     for _ in range(n):
-        pipe = type("P", (), {"language": "pt"})()
-        pipe._stt = lambda pcm, lang: "para"
+        pipe = type("P", (), {"language": "pt", "cancel": lambda self=None: None,
+                              "ocupado": False})()
+        pipe._stt = lambda pcm, lang: _stt_app(pcm, lang)
         sess = {"id": "smoke", "ultimo_assistente": "", "pipe": pipe,
-                "cancelado": threading.Event(), "turno": 0}
+                "cancelado": threading.Event(), "turno": 0, "fila": queue.Queue()}
         sess["engine"] = lt.TurnEngine(lt.Config(interrupcao="inteligente"),
                                        scorer=lambda f: 0.95)
         sess["engine"].set_speaking(True, nivel_dbfs=-20)
 
         class _Ev:
-            audio = b"\x01\x00" * 1600
+            audio = pcm
 
         t0 = time.monotonic()
         app._live_suspeita_barge(sess, _Ev())
-        while sess.get("barge_suspeito") and time.monotonic() - t0 < 2:
+        while sess.get("barge_suspeito") and time.monotonic() - t0 < 6:
             time.sleep(0.01)
         tempos.append(round((time.monotonic() - t0) * 1000))
+        time.sleep(0.15)                   # respiro: MLX/Metal não gosta de rajada
+    tmp.unlink(missing_ok=True)
     return tempos
 
 
@@ -118,15 +141,17 @@ def main(argv: list[str]) -> int:
         marca = "✔" if taxa >= piso[nome] else "✘"
         print(f"{marca} {nome:12} {ok}/{len(casos)} = {taxa*100:5.1f}% (piso {piso[nome]*100:.0f}%)")
         falhou |= taxa < piso[nome]
-    # ADENDO: comando cadastrado corta NA HORA (STT em passos de 250 ms), sem
-    # esperar a janela de 700 ms. Piso do card: p50 ≤600 ms.
-    ms_corte = _latencia_do_comando()
-    ms_corte.sort()
-    p50 = ms_corte[len(ms_corte) // 2]
-    marca = "✔" if p50 <= 600 else "✘"
-    print(f"{marca} onset→corte do comando p50 = {p50} ms (pior {ms_corte[-1]} ms,"
-          f" piso 600 ms; áudio real no frame, STT stubado)")
-    falhou |= p50 > 600
+    # ADENDO: comando cadastrado corta NA HORA (STT em passos), sem esperar a
+    # janela. Piso do card: p50 ≤600 ms. Roda com `--latencia` (custa ~1 s por
+    # amostra de whisper REAL; sem a flag o smoke fica rápido e só de regra).
+    if "--latencia" in argv:
+        ms_corte = _latencia_do_comando()
+        ms_corte.sort()
+        p50 = ms_corte[len(ms_corte) // 2]
+        marca = "✔" if p50 <= 600 else "✘"
+        print(f"{marca} onset→corte do comando p50 = {p50} ms (pior {ms_corte[-1]} ms,"
+              f" piso 600 ms; áudio real, VAD e STT reais)")
+        falhou |= p50 > 600
 
     # amostras de intenção: a mesma classificação pura, direto na função
     amostras = [("para", 300), ("uhum", 250), ("", 150), ("qual o prazo?", 400)]
