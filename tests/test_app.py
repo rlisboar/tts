@@ -1211,6 +1211,28 @@ def test_musica_roda_antes_do_denoise(monkeypatch):
     assert rel["musica"] is False
 
 
+def test_relatorio_traz_dnsmos_antes_e_depois(monkeypatch):
+    """O dono precisa ver o que ganhou e o que a voz custou, e o motor usado."""
+    x = _fala_suja(1.0)
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setitem(app._settings, "voice_timbre_min", 0.0)
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: None)
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: np.asarray(a, dtype=np.float32) * 0.5)
+    vistos = []
+
+    def fake_mos(audio, sr):
+        vistos.append(round(float(np.sqrt(np.mean(np.asarray(audio) ** 2))), 3))
+        return {"ovrl": 3.0, "sig": 3.0, "bak": 3.0, "p808": 3.0}
+
+    monkeypatch.setattr(app, "_dnsmos", fake_mos)
+    y, recusado, rel = app._denoise_para_referencia(x, 24000, 1.0)
+    assert recusado is False
+    assert rel["dnsmos_antes"] and rel["dnsmos_depois"], "faltou medir antes/depois"
+    assert len(vistos) == 2 and vistos[0] > vistos[1], "antes tem de ser medido no ORIGINAL"
+    assert rel["motor"] == "gating"
+
+
 def test_limpeza_usa_o_dfn3_e_cai_no_gating_sem_modelo(monkeypatch):
     x = _fala_suja(1.0)
     monkeypatch.setitem(app._settings, "voice_limpar_motor", "dfn3")

@@ -253,11 +253,23 @@ def test_aquecimento_estourado_rearma_e_volta_a_decidir(tmp_path, monkeypatch):
     assert inc.aquece(espera_s=0.05) is False      # estourou
     assert inc.ativo is False
     assert inc.decide("x", "mas e o preço?") is None
-    # `tenta_em_s` é arredondado (mostra no `stats`): espera o relógio real
-    assert _espera(lambda: time.monotonic() >= inc._tenta_em + 0.02), \
-        "o cooldown não pode ser eterno"
+    # ESPERA POR CONDIÇÃO, não por relógio. O cadáver do filho que estourou é
+    # derrubado pelo leitor em outra thread e, ao cair, RE-ARMA o cooldown — então
+    # comparar `monotonic()` com `_tenta_em` dispara antes de o estado assentar e
+    # falha na suíte cheia (passa isolado porque não há contenção). A condição é o
+    # estado real: cadáver derrubado E cooldown livre.
+    def _livre() -> bool:
+        return inc._proc is None and inc.tenta_em_s == 0.0
+
     live_intencao.WORKER = _stub(tmp_path)         # agora sobe na hora
-    assert inc.aquece(espera_s=10) is True, "o 2º aquecimento tinha de re-armar"
+    assert _espera(_livre), "o cooldown não pode ser eterno"
+    ok = False
+    for _ in range(5):                             # tolera cooldown re-armado
+        if inc.aquece(espera_s=10):
+            ok = True
+            break
+        assert _espera(_livre), "o cooldown re-armou e não liberou"
+    assert ok, "o 2º aquecimento tinha de re-armar"
     assert inc.ativo is True
     r = inc.decide("o prazo é sexta", "mas e o preço?")
     assert r and r["decisao"] == "cortar", "o filtro tem de decidir de novo"
