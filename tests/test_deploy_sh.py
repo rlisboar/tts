@@ -67,7 +67,7 @@ print -r -- "$origem -> $caminho" >> "$T_SCP_LOG"
 case "${1:-}" in
   restart) print -r -- "${2:-}" >> "$T_RESTART_LOG" ;;
   is-active) print -r -- active ;;
-  show) print -r -- "FragmentPath=${T_FRAGMENT:-/etc/systemd/system/${@[-1]}.d/override.conf}"
+  show) print -r -- "FragmentPath=${T_FRAGMENT-/etc/systemd/system/${@[-1]}.d/override.conf}"
         print -r -- "Environment=OMNI_API_KEY=$T_SEGREDO OMNI_ALLOW_NO_AUTH=0 VOXTRAL_API_KEY=x" ;;
   list-units) print -r -- "omnivoice-tts.service loaded active running OmniVoice" ;;
 esac
@@ -229,6 +229,24 @@ def test_recon_mostra_o_diff_quando_o_unit_divergiu(amb, tmp_path):
     assert "[DIFERENTE]" in r.stdout
     # `-` = está no host e não no repo: é o que a linha versionada ainda não tem
     assert "-Environment=ALGO=1" in r.stdout, "o diff tem de aparecer para dar o que copiar"
+
+
+def test_recon_compara_quando_o_fragmentpath_e_o_do_repo(amb):
+    """#500: `FragmentPath` igual ao caminho versionado caía no "compare à mão"
+    (o `||` do `-z "$frag"`). O diff vale e tem de sair — inclusive o [IGUAL]."""
+    amb["T_FRAGMENT"] = str(REPO / "remote" / "systemd" / UNIT_OMNI)
+    r = _run(amb, "recon", "--service", "omni")
+    assert "compare à mão" not in r.stdout
+    assert "[IGUAL]" in r.stdout, "deixou de comparar o unit do host com o do repo"
+
+
+def test_recon_sem_fragmentpath_diz_indeterminado_e_nao_diferente(amb):
+    """Host que não devolve FragmentPath: sem chute — `[INDETERMINADO]` e o
+    caminho para a comparação manual."""
+    amb["T_FRAGMENT"] = ""
+    r = _run(amb, "recon", "--service", "omni")
+    assert "[INDETERMINADO]" in r.stdout and "compare à mão" in r.stdout
+    assert "[DIFERENTE]" not in r.stdout
 
 
 def test_recon_diz_quando_nao_ha_unit_versionado(amb):

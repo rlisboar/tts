@@ -217,8 +217,12 @@ for s in "${SERVICOS[@]}"; do
       local_unit="$RAIZ/systemd/$(servico_unit "$s")"
       if [ ! -f "$local_unit" ]; then
         print -r -- "  unit versionado: (nenhum em $local_unit)"
-      elif [ -z "$frag" ] || [ "$frag" = "$local_unit" ]; then
-        print -r -- "  unit versionado: [DIFERENTE] o host não devolveu FragmentPath — compare à mão ($local_unit)"
+      elif [ -z "$frag" ]; then
+        # Sem FragmentPath não há o que ler do host: diz que NÃO sabe (e não
+        # "DIFERENTE", que era chute) e manda comparar à mão. O FragmentPath ser
+        # IGUAL ao caminho do repo NÃO é motivo para cair aqui: o diff continua
+        # valendo e antes era ele que se perdia (#500).
+        print -r -- "  unit versionado: [INDETERMINADO] o host não devolveu FragmentPath — compare à mão ($local_unit)"
       else
         if distante "cat '$frag' 2>/dev/null" | diff -q - "$local_unit" >/dev/null 2>&1; then
           print -r -- "  unit versionado: [IGUAL] $local_unit"

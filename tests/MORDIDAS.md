@@ -177,3 +177,18 @@ individualiza pelo NOSSO plist (host + porta remota do ProgramArguments).
 sem nada disso, aceitar é melhor que ficar cego. Cuidado medido aqui: a primeira
 rodada de sabotagem passou por `.pyc` velho — a regra da #238 vale também para
 este arquivo grande (`PYTHONDONTWRITEBYTECODE=1` na medição).
+
+## #500 — recon mandava "compare à mão" com o `FragmentPath` do próprio repo
+
+O `|| [ "$frag" = "$local_unit" ]` jogava no ramo de "não devolveu
+FragmentPath" também quando o host DEVOLVIA o caminho do repo — e aí o diff (e o
+`[IGUAL]`) se perdiam. Sabotagem: devolver a condição com o `||` e o texto
+`[DIFERENTE]` —
+
+| Sabotagem | Resultado |
+|---|---|
+| `elif [ -z "$frag" ] \|\| [ "$frag" = "$local_unit" ]` de volta | `test_recon_compara_quando_o_fragmentpath_e_o_do_repo` **FAILED** |
+| dizer `[DIFERENTE]` quando o host não devolve `FragmentPath` | `test_recon_sem_fragmentpath_diz_indeterminado_e_nao_diferente` **FAILED** |
+
+O shim passou a usar `${T_FRAGMENT-…}` (com `-`, sem `:`): com `:-`, `T_FRAGMENT=""`
+caía no default e o caso "host sem FragmentPath" nem era exercitável.
