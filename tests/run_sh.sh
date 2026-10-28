@@ -19,9 +19,10 @@
 #              REGRA do estágio: LEITURA por padrão. Suíte daqui que ESCREVA no app
 #              alvo (arquivo, setting, chave, item de histórico) precisa de trap de
 #              restauração (`|| true` em cada comando — ver #446), senão suja o
-#              estado do dono quando a rodada falha. Hoje escreve: `xss_frontend_repro`
-#              (vozes) e `onboarding_atalhos` (output do histórico); as outras oito
-#              são somente leitura.
+#              estado do dono quando a rodada falha. Hoje todas são somente leitura.
+#              As duas que escreviam — `xss_frontend_repro` (vozes) e
+#              `onboarding_atalhos` (output do histórico) — subiram para `navegador`
+#              com instância própria e estado em tmp (#634).
 #              Suíte que sobe o PRÓPRIO servidor não fica aqui: vai em `navegador`.
 #
 # Uso:
