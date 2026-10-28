@@ -509,6 +509,21 @@
     padding: 2px 10px; font-size: 12px; color: var(--muted);
   }
   .sp-chip button { min-height: 0; padding: 0 4px; border: 0; background: none; }
+  /* cadastro de voz (#585): dica antes de gravar, recusa com motivo e o que
+     falta por perfil — em faixa própria para não sumir em texto corrido */
+  .sp-dica {
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 6px; background: var(--surface); padding: 6px 10px; margin-top: 6px;
+  }
+  .sp-forcar {
+    border: 1px solid var(--warn-border, var(--border)); border-left: 3px solid var(--warn);
+    border-radius: 6px; background: var(--surface); padding: 6px 10px; margin-top: 6px;
+  }
+  .sp-forcar[hidden] { display: none; }
+  .sp-forcar #spForcarMotivo { color: var(--warn); }
+  .sp-chip.incompleto { color: var(--warn); border-color: var(--warn-border, var(--border)); }
+  .sp-chip.recadastrar { color: var(--err); border-color: var(--err); }
+  .sp-chip .extrator { font-family: var(--mono); font-size: 10px; opacity: .7; }
 
   .cols2 {
     flex: 1; min-height: 0;
@@ -3185,13 +3200,34 @@
         <label class="cfg-label">Rigor <output id="spThrOut">0.60</output>
           <input type="range" id="spThr" min="0.35" max="0.9" step="0.05" value="0.6"></label>
         <p class="hint">Sua voz costuma dar <b>0.65–0.85</b>; outra pessoa, <b>0.40–0.55</b>. Padrão 0.60 — rejeita intrusos sem rejeitar você (resfriado/afastado do mic).</p>
+        <!-- A dica vem ANTES da gravação (#585): o servidor recusa o que não
+             serve para biometria, e descobrir o critério depois de falar 8 s é
+             perder a gravação. Mesmos números do servidor (SPEAKER_MIN_FALA_S /
+             SPEAKER_MIN_SNR_DB / SPEAKER_MIN_AMOSTRAS). -->
+        <div class="sp-dica" id="spDica">
+          <p class="hint" style="margin:0">Cada gravação passa por uma checagem antes de entrar no
+            perfil: <b>mínimo 3 s de FALA</b> (pausa longa não conta) e <b>ruído baixo</b>
+            (SNR ≥ 10 dB — sem ventoinha, música ou TV). Fale contínuo e natural, perto do
+            microfone que você usa.</p>
+          <p class="hint" style="margin:2px 0 0">O perfil precisa de <b>3 amostras</b> (o alvo é 5) —
+            uma vai melhorando a outra; a 1ª <b>não</b> fecha o cadastro.</p>
+        </div>
         <div class="row2" style="gap:8px; margin-top:6px">
           <input type="text" id="spName" placeholder="nome do perfil (ex.: você)" style="flex:1; min-width:120px">
-          <button type="button" id="spEnroll" class="small">🎙 Cadastrar (8s)</button>
+          <button type="button" id="spEnroll" class="small">🎙 Gravar amostra (8s)</button>
           <button type="button" id="spTest" class="small">🔍 Testar</button>
         </div>
-        <p class="hint" id="spStatus" style="margin-top:4px"></p>
-        <p class="hint" style="margin-top:2px">Cadastre <b>3–5 amostras</b> (cliques) p/ o perfil ficar estável — falando em velocidades/distâncias diferentes.</p>
+        <p class="hint" id="spProgresso" role="status" aria-live="polite" style="margin-top:4px"></p>
+        <p class="hint" id="spStatus" style="margin-top:2px"></p>
+        <!-- recusa do servidor (400): o MOTIVO e a saída "usar assim mesmo" —
+             mesma escada do 403, sem obrigar a regravar para descobrir o critério -->
+        <div id="spForcar" class="hint sp-forcar" hidden>
+          <div id="spForcarMotivo" role="alert" style="margin-bottom:4px"></div>
+          <div class="row2" style="gap:6px">
+            <button type="button" id="spForcarBtn" class="small">usar assim mesmo</button>
+            <button type="button" id="spForcarCancela" class="ghost small">descartar e regravar</button>
+          </div>
+        </div>
         <div id="spProfiles" class="hint" style="margin-top:4px"></div>
         <button type="button" class="ghost small" data-goto-audio>🎙 Filtros do microfone e anti-ruído</button>
         <div class="divider"></div>
@@ -6983,17 +7019,37 @@ async function loadSettings() {
 })();
 
 // ── Biometria de voz (perfis autorizados) ──
+//: o cadastro precisa de 3–5 amostras (#525). O número real vem do servidor
+//: (`samples`/`completo`/`faltando`); esta cópia só rotula a lista de perfis.
+const SP_MIN_AMOSTRAS = 3, SP_ALVO_AMOSTRAS = 5;
 async function refreshSpProfiles() {
   const el = $("spProfiles");
   if (!el) return;
   try {
     const lista = await api("/api/speaker/profiles");
     el.innerHTML = lista.length
-      ? "Cadastradas: " + lista.map(p =>
-          `<span class="sp-chip" data-nome="${esc(p.name)}">` +
-          `${esc(p.name)} (${Number(p.samples) || 0}) <button type="button" class="ghost small" ` +
-          `data-del="${esc(p.name)}" title="remover perfil">🗑</button></span>`
-        ).join(" · ")
+      ? "Cadastradas: " + lista.map(p => {
+          const n = Number(p.samples) || 0;
+          // perfil de OUTRO extrator segue autenticando, mas vai sair daqui a um
+          // recadastro — quem decide é o servidor (`precisa_recadastrar`)
+          const classe = p.precisa_recadastrar ? " recadastrar" : n < SP_MIN_AMOSTRAS ? " incompleto" : "";
+          const falta = n < SP_MIN_AMOSTRAS ? ` ${n}/${SP_MIN_AMOSTRAS}` : ` ${n}`;
+          return `<span class="sp-chip${classe}" data-nome="${esc(p.name)}">` +
+            `${esc(p.name)}${falta}` +
+            (p.modelo ? ` <span class="extrator">${esc(p.modelo)}</span>` : "") +
+            (p.precisa_recadastrar
+              ? ` <button type="button" class="ghost small" data-regravar="${esc(p.name)}"` +
+                ` title="perfil do extrator ${esc(p.modelo || "antigo")}: gravar de novo recomeça os` +
+                ` vetores no extrator atual">↻ regravar</button>`
+              : ` <button type="button" class="ghost small" data-mais="${esc(p.name)}"` +
+                ` title="gravar mais ${SP_MIN_AMOSTRAS - n > 0 ? "amostra(s) para o mínimo" : "amostra"}">＋</button>`) +
+            ` <button type="button" class="ghost small" data-del="${esc(p.name)}"` +
+            ` title="remover perfil">🗑</button></span>`;
+        }).join(" · ") +
+        (lista.some(p => p.precisa_recadastrar)
+          ? `<br>↻ os perfis marcados foram feitos por outro extrator: continuam valendo,` +
+            ` mas regrave para ficarem comparáveis com o atual.`
+          : "")
       : "Nenhuma voz cadastrada ainda.";
     // apagar perfil é admin (o DELETE leva `_exige_admin`): mesma régua dos
     // campos e das outras ações elevadas
@@ -7008,6 +7064,16 @@ async function refreshSpProfiles() {
         toast("Perfil removido");
         refreshSpProfiles();
       } catch (e) { toast("✖ " + e.message, 4000); }
+      };
+    });
+    // gravar mais / regravar: o nome preenche o campo e a próxima gravação cai
+    // nesse perfil (é o mesmo POST; o servidor acumula ou recomeça os vetores)
+    el.querySelectorAll("[data-mais], [data-regravar]").forEach(b => {
+      b.onclick = () => {
+        const nome = b.dataset.mais || b.dataset.regravar;
+        if ($("spName")) { $("spName").value = nome; $("spName").dispatchEvent(new Event("input")); }
+        spForcarLimpa();
+        $("spEnroll")?.focus();
       };
     });
   } catch {}
@@ -7038,24 +7104,110 @@ $("spEnroll")?.addEventListener("click", async () => {
   const st = $("spStatus");
   if (!nome) { toast("Dê um nome ao perfil (ex.: você)", 4000); return; }
   if (micIndisponivel()) { toast("Mic: " + micErroTexto(), 6000); obsVozesM.setEstado("✖ mic", "err"); return; }
+  spForcarLimpa();
+  $("spProgresso").textContent = "";
   btn.disabled = true;
   try {
-    st.textContent = "🔴 gravando… fale naturalmente por 8s";
+    $("spDica").hidden = true;      // já vai gravar: a dica deu lugar ao andamento
+    st.textContent = "🔴 gravando… fale sem pausa longa (mín. 3s de voz)";
     const blob = await spGravar(8, st);
-    st.textContent = "analisando timbre…";
-    const fd = new FormData();
-    fd.append("name", nome);
-    fd.append("audio", blob, "voz.webm");
-    const r = await api("/api/speaker/enroll", { method: "POST", body: fd });
-    st.textContent = `✔ ${nome}: ${r.samples} amostra(s)` +
-      (r.samples < 3 ? " — cadastre mais 2–4 amostras p/ estabilizar" : " — salve as configurações");
-    toast(`Voz "${nome}" cadastrada`);
-    refreshSpProfiles();
+    st.textContent = "analisando voz e ruído…";
+    spBlobPendente = blob;
+    await spEnviaAmostra(nome, blob, false);
   } catch (e) {
     st.textContent = "";
-    toast("✖ " + micErroTexto(e), 5000);
+    if (e && e.status === 400) spForcarMostra(e);   // recusa: motivo + saída
+    // 401/403 e o resto NÃO são microfone — `micErroTexto` diria "não consegui
+    // abrir o microfone" e esconderia o motivo do servidor
+    else if (e && e.status) toast("✖ " + e.message, 6000);
+    else {
+      toast("✖ " + micErroTexto(e), 5000);
+      obsVozesM.setEstado("✖ mic", "err");
+    }
   }
   btn.disabled = false;
+});
+
+// Recusa (400) com motivo: mostra o que o servidor disse e oferece seguir assim
+// mesmo (`?forcar=true`) com a MESMA gravação — regravar para descobrir o
+// critério é perder a amostra sem saber por quê.
+//: última gravação recusada, à espera do "usar assim mesmo"
+let spBlobPendente = null;
+function spForcarMostra(e) {
+  const motivo = (e.body && (e.body.detail || e.body.hint)) || e.message || "amostra recusada";
+  $("spForcarMotivo").textContent = "⚠ " + motivo;
+  $("spForcar").hidden = false;
+  $("spForcarBtn").disabled = false;
+  $("spForcarBtn").focus();
+}
+function spForcarLimpa() {
+  const box = $("spForcar");
+  spBlobPendente = null;
+  if (!box) return;
+  box.hidden = true;
+  $("spForcarMotivo").textContent = "";
+}
+
+// Envia UMA amostra. `forcar` repete com `?forcar=true` (o blob vem do box da
+// recusa: nada de regravar). A resposta manda no que mostrar: `samples`,
+// `faltando`, `completo` e os `problemas` aceitos à força.
+async function spEnviaAmostra(nome, blob, forcar) {
+  const st = $("spStatus"), btn = $("spEnroll");
+  const fd = new FormData();
+  fd.append("name", nome);
+  fd.append("audio", blob, "voz.webm");
+  const r = await api("/api/speaker/enroll" + (forcar ? "?forcar=true" : ""),
+                      { method: "POST", body: fd });
+  spForcarLimpa();
+  const n = Number(r.samples) || 0;
+  const faltam = Number(r.samples) >= SP_MIN_AMOSTRAS ? 0 : Math.max(0, SP_MIN_AMOSTRAS - n);
+  st.textContent = "";
+  if (r.completo) {
+    $("spProgresso").textContent = `✔ "${nome}": ${n} amostra(s) — perfil completo` +
+      (n < SP_ALVO_AMOSTRAS ? ` (até ${SP_ALVO_AMOSTRAS} fica mais estável)` : "");
+  } else {
+    $("spProgresso").textContent = `"${nome}": amostra ${n} registrada — ` +
+      `${(r.faltando || []).join(", ") || `mais ${faltam} amostra(s)`}` +
+      ` (o perfil só fica pronto com ${SP_MIN_AMOSTRAS})`;
+  }
+  // entrou à força: o problema não sumiu, a tela tem de continuar dizendo
+  if (r.problemas && r.problemas.length) {
+    $("spProgresso").textContent += ` · ⚠ aceito assim mesmo: ${r.problemas.join("; ")}`;
+  }
+  if (btn) btn.textContent = r.completo ? "＋ Gravar outra amostra (8s)" : "🎙 Gravar próxima (8s)";
+  toast(r.completo ? `Voz "${nome}" cadastrada` : `Amostra ${n}/${SP_MIN_AMOSTRAS} de "${nome}"`);
+  refreshSpProfiles();
+  if (!r.completo) $("spDica").hidden = false;
+}
+
+$("spForcarBtn")?.addEventListener("click", async () => {
+  const nome = ($("spName")?.value || "").trim();
+  if (!nome) { toast("Dê um nome ao perfil (ex.: você)", 4000); return; }
+  if (!spBlobPendente) { spForcarLimpa(); return; }
+  const btn = $("spForcarBtn"), blob = spBlobPendente;
+  btn.disabled = true;
+  $("spStatus").textContent = "enviando assim mesmo…";
+  try {
+    await spEnviaAmostra(nome, blob, true);
+  } catch (e) {
+    $("spStatus").textContent = "";
+    if (e && e.status === 400) spForcarMostra(e);
+    else if (e && e.status) toast("✖ " + e.message, 6000);
+    else toast("✖ " + micErroTexto(e), 5000);
+    btn.disabled = false;
+  }
+});
+$("spForcarCancela")?.addEventListener("click", () => {
+  spForcarLimpa();
+  $("spProgresso").textContent = "";
+  $("spStatus").textContent = "amostra descartada — o botão grava outra";
+  $("spEnroll")?.focus();
+});
+// troca de perfil no campo: o andamento é do OUTRO nome
+$("spName")?.addEventListener("input", () => {
+  $("spProgresso").textContent = "";
+  $("spEnroll").textContent = "🎙 Gravar amostra (8s)";
+  $("spDica").hidden = false;
 });
 
 $("spTest")?.addEventListener("click", async () => {

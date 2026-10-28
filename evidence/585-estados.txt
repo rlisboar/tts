@@ -1,0 +1,65 @@
+Estados da tela do cadastro de voz (#585) — instância isolada, microfone falso do
+Chromium tocando fixtures, servidor real decidindo (TTS_SPEAKER_PATH em tmp).
+Screenshots: 585-cadastro-dica.png, 585-recusa-motivo-forcar.png,
+585-guia-amostras.png, 585-perfil-precisa-recadastrar.png.
+
+── ANTES de gravar (critério na tela) ──
+Cada gravação passa por uma checagem antes de entrar no
+            perfil: mínimo 3 s de FALA (pausa longa não conta) e ruído baixo
+            (SNR ≥ 10 dB — sem ventoinha, música ou TV). Fale contínuo e natural, perto do
+            microfone que você usa.
+          O perfil precisa de 3 amostras (o alvo é 5) —
+            uma vai melhorando a outra; a 1ª não fecha o cadastro.
+Nenhuma voz cadastrada ainda.
+
+── RECUSA do servidor: motivo dito + saídas oferecidas ──
+Cada gravação passa por uma checagem antes de entrar no
+            perfil: mínimo 3 s de FALA (pausa longa não conta) e ruído baixo
+            (SNR ≥ 10 dB — sem ventoinha, música ou TV). Fale contínuo e natural, perto do
+            microfone que você usa.
+          O perfil precisa de 3 amostras (o alvo é 5) —
+            uma vai melhorando a outra; a 1ª não fecha o cadastro.
+⚠ Amostra recusada: fala curta: 0.0s de voz (mínimo 3s — pausas não contam). Use `forcar=true` para entrar assim mesmo.
+Nenhuma voz cadastrada ainda.
+
+── DEPOIS de 'usar assim mesmo': mesma gravação entrou (1/3) e o problema fica dito ──
+Cada gravação passa por uma checagem antes de entrar no
+            perfil: mínimo 3 s de FALA (pausa longa não conta) e ruído baixo
+            (SNR ≥ 10 dB — sem ventoinha, música ou TV). Fale contínuo e natural, perto do
+            microfone que você usa.
+          O perfil precisa de 3 amostras (o alvo é 5) —
+            uma vai melhorando a outra; a 1ª não fecha o cadastro.
+"Dono": amostra 1 registrada — mais 2 amostra(s) (o perfil só fica pronto com 3) · ⚠ aceito assim mesmo: fala curta: 0.0s de voz (mínimo 3s — pausas não contam)
+Cadastradas: Dono 1/3 resemblyzer:v1 ＋ 🗑
+
+── MAIS 2 gravações boas: guia até o mínimo, NÃO fechou no caminho ──
+Cada gravação passa por uma checagem antes de entrar no
+            perfil: mínimo 3 s de FALA (pausa longa não conta) e ruído baixo
+            (SNR ≥ 10 dB — sem ventoinha, música ou TV). Fale contínuo e natural, perto do
+            microfone que você usa.
+          O perfil precisa de 3 amostras (o alvo é 5) —
+            uma vai melhorando a outra; a 1ª não fecha o cadastro.
+✔ "Dono": 3 amostra(s) — perfil completo (até 5 fica mais estável)
+Cadastradas: Dono 3 resemblyzer:v1 ＋ 🗑
+
+── A 3ª fechou o mínimo: 'perfil completo' (e ainda aceita até 5) ──
+Cada gravação passa por uma checagem antes de entrar no
+            perfil: mínimo 3 s de FALA (pausa longa não conta) e ruído baixo
+            (SNR ≥ 10 dB — sem ventoinha, música ou TV). Fale contínuo e natural, perto do
+            microfone que você usa.
+          O perfil precisa de 3 amostras (o alvo é 5) —
+            uma vai melhorando a outra; a 1ª não fecha o cadastro.
+✔ "Dono": 4 amostra(s) — perfil completo (até 5 fica mais estável)
+Cadastradas: Dono 4 resemblyzer:v1 ＋ 🗑
+
+── PERFIL de outro extrator (precisa recadastrar) ──
+Cada gravação passa por uma checagem antes de entrar no
+            perfil: mínimo 3 s de FALA (pausa longa não conta) e ruído baixo
+            (SNR ≥ 10 dB — sem ventoinha, música ou TV). Fale contínuo e natural, perto do
+            microfone que você usa.
+          O perfil precisa de 3 amostras (o alvo é 5) —
+            uma vai melhorando a outra; a 1ª não fecha o cadastro.
+Cadastradas: Dono 4 resemblyzer:v1 ＋ 🗑 · Perfil antigo 1/3 resemblyzer:v0 ↻ regravar 🗑↻ os perfis marcados foram feitos por outro extrator: continuam valendo, mas regrave para ficarem comparáveis com o atual.
+
+── console ──
+pageerror: nenhum
