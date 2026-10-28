@@ -36,8 +36,8 @@
 # O contador de `underrun` (#492) é sensível à carga: com outras suítes rodando
 # junto o TTS não acompanha o tempo real e um vão isolado aparece. O critério é
 # ZERO; a tolerância (1 vão a cada 5 chunks, como aviso) só vale quando a carga
-# por núcleo passa de `LIMITE_CARGA` — e a carga sai escrita na linha, para a
-# exceção ser auditável. A/B no mesmo minuto mostrou a versão anterior deste
+# por núcleo NO PONTO MEDIDO passa de `LIMITE_CARGA` — a da abertura sai junto na
+# mesma linha, para a decisão ser auditável. A/B no mesmo minuto mostrou a versão anterior deste
 # arquivo piorando igual ou mais (4 vãos em 11 chunks contra 1 em 8, no #463).
 #
 # O alvo de 1500 ms vale para ESTE cenário (stub local): com o provedor de chat
@@ -91,6 +91,14 @@ ALVO_MS = 1500
 #: carga por núcleo acima da qual o `underrun` tolera vão (ver 2b): com a máquina
 #: de 18 núcleos parada a 1m dá ~0,1; com o time de agentes rodando passa de 0,5.
 LIMITE_CARGA = 0.5
+#: carga por núcleo na ABERTURA (informativa) — o valor que DECIDE é o do turno
+CARGA_ABERTURA = 0.0
+
+
+def carga_por_nucleo() -> float:
+    """Load average de 1 min por núcleo. Serve só para rotular a decisão: o
+    loadavg já é uma média, então ele sempre fala do último minuto."""
+    return os.getloadavg()[0] / max(1, os.cpu_count() or 1)
 # Backend do Live desta rodada (o env do chamador manda; sem ele, stub). O alvo de
 # 1,5 s é do cenário STUB (#173): com o Live no harness dsh, o 1º token DELE domina
 # e o alvo não cabe — aí o número é AVISO qualificado, não falha.
@@ -397,7 +405,9 @@ async def principal():
     global BASE
     import websockets
 
+    global CARGA_ABERTURA
     print("Live — smoke do ciclo completo (tasks #93/#104)")
+    CARGA_ABERTURA = carga_por_nucleo()
     guarda_do_settings()
     # Servidor EXTERNO: a chave é a do dono (leitura apenas). No servidor próprio
     # quem define a chave é o `sobe_servidor`, com o arquivo sintético.
@@ -546,19 +556,25 @@ async def principal():
                 pb = (stats_ev[-1].get("playback") or {})
                 n_chunks, n_und = pb.get("chunks", 0), pb.get("underruns", 0)
                 novo = n_und - BASE_UND[0]     # delta desde o aquecimento
-                carga = os.getloadavg()[0] / max(1, os.cpu_count() or 1)
+                # A carga que DECIDE é a do ponto medido, não a da abertura: a
+                # pergunta é "a máquina estava disputada DURANTE o turno?". Com a
+                # da abertura, máquina que esfriou no meio continuaria tolerando
+                # regressão. As duas saem na linha para a decisão ser auditável.
+                carga = carga_por_nucleo()
                 limite = max(1, n_chunks // 5) if carga > LIMITE_CARGA else 0
+                rotulo = (f"carga {carga:.2f}/núcleo agora, {CARGA_ABERTURA:.2f} na "
+                          f"abertura")
                 if n_chunks < 5:
                     falha(f"turno curto para medir underrun: {n_chunks} chunk(s), queria ≥5")
                 elif novo == 0:
                     ok(f"playback sem underrun novo em {n_chunks} chunks "
-                       f"(total {n_und}, carga {carga:.2f}/núcleo)")
+                       f"(total {n_und}; {rotulo})")
                 elif novo <= limite:
                     aviso(f"{novo} underrun(s) em {n_chunks} chunks — tolerado por CARGA "
-                          f"{carga:.2f}/núcleo (limite {limite}; buffer vazio)")
+                          f"({rotulo}; limite {limite}; buffer vazio)")
                 else:
-                    porque = (f"carga {carga:.2f}/núcleo, limite {limite}" if limite
-                              else f"máquina folgada, carga {carga:.2f}/núcleo, critério é zero")
+                    porque = (f"{rotulo}, limite {limite}" if limite
+                              else f"máquina folgada ({rotulo}), critério é zero")
                     falha(f"{novo} underrun(s) NOVOS em {n_chunks} chunks ({porque})")
             if primeiro is not None:
                 if primeiro <= ALVO_MS:
