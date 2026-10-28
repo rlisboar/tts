@@ -145,6 +145,14 @@ try:
     print(f"  cenário: bin={orig_tocado['chat_dsh_bin'] or DSH_BIN!r} "
           f"profile={orig_tocado['chat_dsh_profile'] or PROFILE!r} · "
           f"normalizado={normalizar or 'nada'} (backend original: {orig_tocado['chat_backend']!r})")
+    # O valor que a tela TEM de manter é o do cenário: o RESOLVIDO vai só no
+    # placeholder. Quando o valor do dono não serve ele já foi normalizado ACIMA e
+    # o esperado passa a ser o absoluto — a régua é "o resolvido não mexe no que
+    # está salvo", não "o valor é sempre o absoluto". Com `dsh` no PATH é legítimo
+    # guardar o nome curto, e a suíte comparava com `DSH_BIN`: reprovava justamente
+    # a tela que estava certa (#604).
+    bin_esperado = (orig_tocado["chat_dsh_bin"] if _bin_serve(orig_tocado["chat_dsh_bin"])
+                    else DSH_BIN)
 
     # pré-checa o endpoint fora do browser (o teste da UI não deve confundir
     # "endpoint quebrado" com "tela quebrada")
@@ -285,8 +293,10 @@ try:
         ph = pg.evaluate("() => document.getElementById('chatDshBin').placeholder")
         print("  placeholder do binário:", ph)
         cobrar("resolvido:" in ph and DSH_BIN in ph, f"placeholder não mostra o binário resolvido: {ph!r}")
-        cobrar(pg.evaluate("() => document.getElementById('chatDshBin').value") == DSH_BIN,
-               "mostrar o resolvido mexeu no valor salvo")
+        valor_bin = pg.evaluate("() => document.getElementById('chatDshBin').value")
+        print(f"  valor do binário: {valor_bin!r} (esperado {bin_esperado!r})")
+        cobrar(valor_bin == bin_esperado,
+               f"mostrar o resolvido mexeu no valor salvo ({valor_bin!r} != {bin_esperado!r})")
 
         # ─── 3) catálogo do modelo: carrega, mostra progresso, não fica vazio ──
         cat = None
