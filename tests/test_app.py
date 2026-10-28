@@ -1211,6 +1211,33 @@ def test_musica_roda_antes_do_denoise(monkeypatch):
     assert rel["musica"] is False
 
 
+def test_recusa_devolve_o_original_de_verdade_com_musica_ligada(monkeypatch):
+    """Achado P3 do gate: a recusa devolvia o áudio DEPOIS de música/dereverb, e o
+    rótulo é "original". O que volta tem de ser o `audio` cru de entrada."""
+    x = _fala_suja(1.0)
+    marcado = np.asarray(x, dtype=np.float32) * 0.25      # "música" muda o áudio
+    monkeypatch.setitem(app._settings, "voice_limpar_musica", True)
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setitem(app._settings, "voice_timbre_min", 0.80)
+    monkeypatch.setattr(app, "_separa_musica", lambda a, sr: marcado)
+    monkeypatch.setattr(app, "_denoise_audio", lambda a, sr, s: np.asarray(a, np.float32))
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: 0.10)
+    monkeypatch.setattr(app, "_dnsmos", lambda audio, sr: {"ovrl": 1.0})
+    vistos = []
+
+    def fake_mos(audio, sr):
+        vistos.append(round(float(np.sqrt(np.mean(np.asarray(audio) ** 2))), 4))
+        return {"ovrl": 1.0}
+
+    monkeypatch.setattr(app, "_dnsmos", fake_mos)
+    y, recusado, rel = app._denoise_para_referencia(x, 24000, 1.0)
+    assert recusado is True and rel["recusado_por"] == "timbre"
+    assert rel["musica"] is True
+    assert np.allclose(y, x), "a recusa tem de devolver o ORIGINAL, não o pós-música"
+    # e o DNSMOS "antes" também é do original
+    assert vistos[0] == pytest.approx(round(float(np.sqrt(np.mean(x ** 2))), 4))
+
+
 def test_relatorio_traz_dnsmos_antes_e_depois(monkeypatch):
     """O dono precisa ver o que ganhou e o que a voz custou, e o motor usado."""
     x = _fala_suja(1.0)

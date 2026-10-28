@@ -1987,7 +1987,12 @@ def _denoise_para_referencia(audio, sr: int, strength: float):
     """
     import numpy as np
 
-    antes = np.asarray(audio, dtype=np.float32)
+    # `original` NUNCA é tocado: é ele que volta na recusa e é nele que o DNSMOS
+    # "antes" é medido. `antes` é a cópia de trabalho e pode ter passado por
+    # música/dereverb — devolver essa na recusa daria um áudio já mexido com o
+    # rótulo de "original" (achado P3 do gate).
+    original = np.asarray(audio, dtype=np.float32)
+    antes = original
     relatorio = {"motor": "gating", "timbre": None, "recusado_por": None,
                  "musica": False, "dereverb": False,
                  "dnsmos_antes": None, "dnsmos_depois": None}
@@ -2010,20 +2015,20 @@ def _denoise_para_referencia(audio, sr: int, strength: float):
     if limpo is None:
         limpo = _denoise_audio(antes, sr, strength)
 
-    rms_antes = float(np.sqrt(np.mean(antes ** 2)))
+    rms_antes = float(np.sqrt(np.mean(original ** 2)))
     rms_depois = float(np.sqrt(np.mean(limpo ** 2)))
     if rms_antes > 1e-6 and (rms_depois <= 1e-6 or rms_depois < rms_antes / 10.0):
         print(f"[voice] denoise derrubou o nível (rms {rms_antes:.4f} -> "
               f"{rms_depois:.4f}) — mantendo a amostra sem limpeza", flush=True)
         relatorio["recusado_por"] = "nivel"
-        return antes, True, relatorio
+        return original, True, relatorio
 
     # medidas antes/depois: o dono vê o que ganhou e o que a voz custou
-    relatorio["dnsmos_antes"] = _dnsmos(antes, sr)
+    relatorio["dnsmos_antes"] = _dnsmos(original, sr)
     relatorio["dnsmos_depois"] = _dnsmos(limpo, sr)
 
     # guarda de timbre: só faz sentido depois que a limpeza produziu áudio
-    timbre = _guarda_timbre(antes, limpo, sr)
+    timbre = _guarda_timbre(original, limpo, sr)
     relatorio["timbre"] = None if timbre is None else round(timbre, 4)
     if timbre is not None:
         minimo = float(_settings.get("voice_timbre_min", 0.80))
@@ -2031,7 +2036,7 @@ def _denoise_para_referencia(audio, sr: int, strength: float):
             print(f"[voice] limpeza trocou o timbre (similaridade {timbre:.3f} < "
                   f"{minimo:.2f}) — mantendo a amostra sem limpeza", flush=True)
             relatorio["recusado_por"] = "timbre"
-            return antes, True, relatorio
+            return original, True, relatorio
     return limpo, False, relatorio
 
 
@@ -7693,10 +7698,14 @@ def _aplica_speaker_alvo(tmp: Path, alvo: str) -> tuple[Path, dict]:
         return tmp, {}
     with _speaker_lock:
         perfis = _speaker_load()
-    perfil = perfis.get(alvo) or {}
+    if alvo not in perfis:
+        raise HTTPException(400, f"Perfil de voz '{alvo}' não existe "
+                                 f"(veja GET /api/speaker/profiles)")
+    perfil = perfis[alvo]
     if not (perfil.get("vecs") or []):
-        raise HTTPException(400, f"Perfil de voz '{alvo}' não existe (veja "
-                                 f"GET /api/speaker/profiles)")
+        # existe mas sem amostra é outro problema: mandar cadastrar, não "não existe"
+        raise HTTPException(400, f"Perfil de voz '{alvo}' está sem amostras — "
+                                 f"grave com POST /api/speaker/enroll")
     import separa_voz
 
     if not separa_voz.disponivel():
