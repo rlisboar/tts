@@ -318,11 +318,12 @@ cliente perderia status e áudio no meio da fala. `GET /api/status` publica
 áudios **mais antigos** — o que está em job ativo ou ainda no histórico nunca é
 podado. Ele é proteção do diretório, não preferência: vale mesmo com
 `auto_cleanup` desligado (esse é só o corte por TEMPO, `auto_cleanup_minutes`).
-Uma instalação com anos de uso chegou a 3.528 `.wav` (37 MB, a maioria sem `.json`
-e invisível na listagem); com o teto padrão ela voltou a 500 arquivos (14 MB).
-Entram na conta o `.wav`, o `.json` sem áudio e o diretório de trechos órfão
-(`.job-*` sem `.wav`) — os temporários de upload (`.stt-*` etc.) não, porque quem
-os recolhe é a limpeza por idade.
+O motivo é concreto: `outputs/` acumula sozinho (cada geração e cada suíte deixam
+arquivo) e, com o corte só por tempo, instalação com uso longo chega a milhares de
+`.wav` — a maioria sem `.json`, invisível na listagem. Entram na conta o `.wav`, o
+`.json` sem áudio e o diretório de trechos órfão (`.job-*` sem `.wav`); os
+temporários de upload (`.stt-*` etc.) não, porque quem os recolhe é a limpeza por
+idade.
 
 As três settings de limpeza (`auto_cleanup`, `auto_cleanup_minutes` e
 `auto_cleanup_max_outputs`) são **administrativas**: elas apagam arquivo do dono,
