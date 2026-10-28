@@ -43,7 +43,10 @@ def baixa() -> Path:
     PASTA.mkdir(parents=True, exist_ok=True)
     for nome in ARQUIVOS:
         destino = PASTA / nome
-        if not destino.exists() or destino.stat().st_size < 1000:
+        # NÃO usar tamanho como sanidade: o `config.json` tem 370 bytes e, com o
+        # peso instalado em `models/` pelo infra, ele vem 444 — o curl falhava
+        # tentando escrever por cima (erro 56) e a cadeia caía no gating à toa.
+        if not destino.exists() or destino.stat().st_size == 0:
             # o urllib da `.venv-mlx` não tem os CAs do sistema; o curl tem
             subprocess.run(["curl", "-sSL", "-o", str(destino), f"{HF}/{nome}"],
                            check=True)

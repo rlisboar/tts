@@ -117,3 +117,19 @@ def test_caso_discrepante_fica_travado():
     limpo = dfn_onnx.limpa(sujo)
     valor = _si_sdr(limpo, ref)
     assert valor >= 12.0, f"SI-SDR {valor:.1f} dB no caso discrepante (medido 20,7)"
+
+
+def test_baixa_nao_rebaixa_com_arquivo_instalado(tmp_path, monkeypatch):
+    """Com os pesos em `models/` (444, do infra) o `baixa()` não pode tentar
+    escrever por cima: o `config.json` tem 370 bytes e o limiar antigo de 1000
+    mandava rebaixar, o curl falhava (erro 56) e a cadeia caía no gating à toa."""
+    import dfn_onnx
+
+    for nome in ("deepfilter.onnx", "config.json"):
+        (tmp_path / nome).write_bytes(b"x" * 370)
+        (tmp_path / nome).chmod(0o444)
+    monkeypatch.setattr(dfn_onnx, "PASTA", tmp_path)
+    monkeypatch.setattr(dfn_onnx.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("rebaixou")))
+    assert dfn_onnx.baixa() == tmp_path
+    assert (tmp_path / "config.json").read_bytes() == b"x" * 370
