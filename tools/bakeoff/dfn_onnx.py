@@ -1,24 +1,18 @@
-"""DeepFilterNet3 pelo grafo ONNX, sem torch no caminho da inferência.
+"""DeepFilterNet3 pelo grafo ONNX, com DSP próprio em numpy (`dfn_dsp`).
 
-O R1 elegeu o DFN3 para limpar a amostra, mas mediu-o pelo pacote `df` (torch).
-O PM pediu a mesma coisa **via ONNX**, e a medição refeita: um grafo ONNX dispensa
-o binário externo e o torch no processo que atende o pedido.
-
-O repositório `soniqo/DeepFilterNet3-ONNX` (MIT, export verificado do DFN3 v0.5.6 —
-a MESMA versão do pacote instalado aqui) traz só a REDE: o consumidor tem de fazer
-STFT, normalização, aplicação da máscara e do filtro profundo, e síntese. É isso
-que este módulo faz, reusando o DSP do pacote `df` (que é Apache-2.0/MIT) e
-trocando apenas a chamada da rede pelo onnxruntime.
+O R1 elegeu o DFN3 para limpar a amostra, mas mediu-o pelo pacote `df` (torch +
+`libdf`, extensão Rust). O app não pode depender disso (#523): a `.venv-mlx` não
+tem `df` e o `libdf` nem existe em Python puro. Então o grafo ONNX vem do
+`soniqo/DeepFilterNet3-ONNX` (MIT, export verificado do DFN3 v0.5.6) e o DSP em
+volta é nosso, em numpy.
 
 Contrato do grafo (do cartão do repositório):
-    entrada  feat_erb  [1, 1, T, 32]   float32
-    entrada  feat_spec [1, 2, T, 96]   float32
-    saída    erb_mask  [1, 1, T, 32]   float32
+    entrada  feat_erb  [1, 1, T, 32]    float32
+    entrada  feat_spec [1, 2, T, 96]    float32
+    saída    erb_mask  [1, 1, T, 32]    float32
     saída    df_coefs  [1, 5, T, 96, 2] float32
 
-Uso:
-    import dfn_onnx
-    limpo = dfn_onnx.limpa(audio_48k)          # mono float32
+O áudio é 48 kHz dentro do modelo; quem chama passa 48 kHz e recebe 48 kHz.
 """
 
 from __future__ import annotations
@@ -33,9 +27,14 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import comum  # noqa: E402
+import dfn_dsp  # noqa: E402
 
 HF = "https://huggingface.co/soniqo/DeepFilterNet3-ONNX/resolve/main"
-PASTA = comum.BASE / "modelos" / "dfn3-onnx"
+import os
+
+#: `TTS_DFN3_DIR` é o contrato do `models/README.md`; o default é o diretório da
+#: bancada, e o app aponta a env para o `models/` dele antes de importar daqui
+PASTA = Path(os.environ.get("TTS_DFN3_DIR") or comum.BASE / "modelos" / "dfn3-onnx")
 ARQUIVOS = ("deepfilter.onnx", "config.json")
 SR = 48000
 
@@ -53,77 +52,52 @@ def baixa() -> Path:
 
 @lru_cache(maxsize=1)
 def carrega():
-    """Sessão ONNX + estado de DSP. Caro; cacheado por processo."""
+    """Sessão ONNX + parâmetros de DSP. Caro; cacheado por processo."""
     import onnxruntime as ort
-    import torch
-    from df.enhance import init_df
-    from df.modules import erb_fb
-    from df.multiframe import DF
 
     pasta = baixa()
     cfg = json.loads((pasta / "config.json").read_text())
     sess = ort.InferenceSession(str(pasta / "deepfilter.onnx"),
                                 providers=["CPUExecutionProvider"])
-    # o `init_df` também carrega os pesos torch, mas só queremos o DFState (STFT,
-    # ERB e síntese); o modelo dele não é usado aqui
-    _, estado, _ = init_df(log_level="ERROR", log_file=None)
-    df_op = DF(num_freqs=cfg["df_bins"], frame_size=cfg["df_order"],
-               lookahead=cfg["df_lookahead"])
-    erb_inv = erb_fb(estado.erb_widths(), cfg["sample_rate"], inverse=True)
-    return {"sess": sess, "estado": estado, "df_op": df_op, "erb_inv": erb_inv,
-            "nb_df": cfg["df_bins"], "torch": torch}
-
-
-def _enhance_grafo(c, spec, erb_feat, spec_feat):
-    import torch
-
-    sess = c["sess"]
-    entradas = {
-        "feat_erb": np.ascontiguousarray(erb_feat.numpy()),
-        "feat_spec": np.ascontiguousarray(
-            spec_feat.squeeze(1).permute(0, 3, 1, 2).numpy()),
-    }
-    erb_mask, df_coefs = sess.run(None, entradas)
-    mascara = torch.from_numpy(erb_mask).matmul(c["erb_inv"]).unsqueeze(4)
-    spec_m = spec * mascara
-    coefs = torch.from_numpy(df_coefs)
-    spec_e = c["df_op"](spec.clone(), coefs)
-    # acima de nb_df o modelo não filtra: fica a máscara ERB
-    spec_e[..., c["nb_df"]:, :] = spec_m[..., c["nb_df"]:, :]
-    return spec_e
+    return {"sess": sess, "params": dfn_dsp.carrega_params(), "nb_df": cfg["df_bins"]}
 
 
 def limpa(audio: np.ndarray, atenuacao_db: float | None = None) -> np.ndarray:
-    """Limpa ruído de um áudio 48 kHz mono. Devolve float32 do mesmo tamanho."""
-    import torch
-    from df.enhance import df_features
-
-    x = np.asarray(audio, dtype=np.float32)
-    if x.ndim > 1:
-        x = x.mean(axis=1)
-    if x.size < 1024:
+    """Limpa ruído de um áudio 48 kHz mono. Devolve float64 do mesmo tamanho."""
+    x = np.asarray(audio, dtype=np.float64).reshape(-1)
+    if x.size < dfn_dsp.FFT:
         return x
     c = carrega()
-    # mesmo compensa de atraso do `enhance` de referência: o STFT/ISTFT atrasa
-    # n_fft − hop, então preenche n_fft no fim e corta a janela deslocada. Sem
-    # isso a saída sai certa em nível e DESALINHADA (correlação 0,04 com o torch).
-    n_fft, hop = c["estado"].fft_size(), c["estado"].hop_size()
+    janela = c["params"]["janela"]
+
+    # `istft` já compensa o atraso do STFT e devolve exatamente o tamanho da
+    # entrada — preencher/cortar de novo aqui DESALINHAVA (correlação 0,04).
     orig = x.size
-    x = np.pad(x, (0, n_fft))
-    with torch.no_grad():
-        tens = torch.from_numpy(x)[None]
-        spec, erb_feat, spec_feat = df_features(tens, c["estado"], c["nb_df"])
-        spec_e = _enhance_grafo(c, spec, erb_feat, spec_feat)
-        if atenuacao_db:
-            lim = 10 ** (-abs(atenuacao_db) / 20)
-            spec_e = spec * lim + spec_e * (1 - lim)
-        # `synthesis` devolve [canais, amostras]; sem o squeeze o corte por
-        # amostra fatiaria o eixo do canal e sairia vazio
-        saida = np.asarray(c["estado"].synthesis(
-            torch.view_as_complex(spec_e.squeeze(1)).numpy()), dtype=np.float32)
-    saida = saida.reshape(-1)
-    d = n_fft - hop
-    return saida[d: orig + d]
+    spec = dfn_dsp.stft(x, janela)
+    pot = np.abs(spec) ** 2
+    erb = dfn_dsp.erb_db(pot, c["params"]["erb_fb"])
+    feat_erb = dfn_dsp.erb_norm(erb, np.full(erb.shape[1], 1e-3))
+    feat_spec = dfn_dsp.unit_norm(spec[:, : c["nb_df"]],
+                                  dfn_dsp.unit_norm_init(min(c["nb_df"], spec.shape[1])))
+
+    entradas = {
+        "feat_erb": np.ascontiguousarray(feat_erb[None, None].astype(np.float32)),
+        "feat_spec": np.ascontiguousarray(
+            np.stack([feat_spec.real, feat_spec.imag], axis=0)[None].astype(np.float32)),
+    }
+    erb_mask, df_coefs = c["sess"].run(None, entradas)
+
+    mascara = erb_mask[0, 0].astype(np.float64)
+    spec_m = dfn_dsp.aplica_mascara(spec, mascara, c["params"]["erb_inv"])
+    coefs = df_coefs[0][..., 0] + 1j * df_coefs[0][..., 1]   # [ordem, T, nb_df]
+    spec_e = dfn_dsp.filtro_profundo(spec.copy(), coefs)
+    # acima de nb_df o modelo não filtra: fica a máscara ERB
+    spec_e[:, c["nb_df"]:] = spec_m[:, c["nb_df"]:]
+
+    if atenuacao_db:
+        lim = 10 ** (-abs(atenuacao_db) / 20)
+        spec_e = spec * lim + spec_e * (1 - lim)
+    return dfn_dsp.istft(spec_e, janela)[:orig]
 
 
 def _cli() -> int:

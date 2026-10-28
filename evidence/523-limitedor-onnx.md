@@ -74,15 +74,20 @@ como `false` no relatório.
 
 ## O que ainda falta
 
-- **O pacote `df` não existe na `.venv-mlx`** (`ModuleNotFoundError`): nem
+- **RESOLVIDO: o app não usa mais o pacote `df`.** O DSP virou numpy próprio
+  (`dfn_dsp.py`), com o par STFT/ISTFT conferido ida-e-volta (erro relativo 0,0),
+  banco ERB, `unit_norm` e filtro profundo batendo com o original, e um teste de
+  equivalência contra áudio de referência versionado (`tests/test_dfn_dsp.py`,
+  SI-SDR 10,3 dB medido na criação; piso do teste 8 dB). Nenhum pino novo: usa o
+  `onnxruntime` que já estava no `requirements.txt`.
+- **(histórico) o pacote `df` não existia na `.venv-mlx`** (`ModuleNotFoundError`): nem
   instalado nem em `requirements.txt` (o `onnxruntime` está). Hoje a cadeia cai no
   gating em produção e o relatório diz `motor: gating`. Dois caminhos:
   (a) instalar `deepfilternet` — arrasta torch/torchaudio inteiros, e no
   `venv312` ele já quebra em `torchaudio.backend` (mesmo atrito do WeSpeaker em
   `evidence/521`); (b) **vendorizar só o DSP** (STFT, ERB, normalização, filtro e
   síntese, ~700 linhas do `df` sob Apache-2.0/MIT) e ficar com numpy +
-  onnxruntime, sem torch. (b) é o certo para o app e é o próximo passo; o
-  `dfn_onnx.py` de hoje importa o `df` justamente porque ainda não foi portado.
+  onnxruntime, sem torch. (b) foi o caminho feito.
 - **DNSMOS antes/depois no retorno**: depende de um modelo ONNX que ainda não está
   instalado; hoje o relatório traz a similaridade de timbre, não o OVRL.
 - **Dereverb**: o gancho existe e devolve `None`; falta o modelo (WPE).

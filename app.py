@@ -1845,7 +1845,10 @@ def _carrega_modulo_dfn():
     if _modulo_dfn is not None:
         return _modulo_dfn
     import importlib.util
+    import os
 
+    # o módulo resolve o diretório do modelo por env; ele é importado UMA vez
+    os.environ.setdefault("TTS_DFN3_DIR", str(_DFN3_DIR))
     caminho = BASE / "tools" / "bakeoff" / "dfn_onnx.py"
     especificacao = importlib.util.spec_from_file_location("dfn_onnx_app", caminho)
     if especificacao is None or especificacao.loader is None:
