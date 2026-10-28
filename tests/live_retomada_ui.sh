@@ -208,11 +208,11 @@ try:
         # (rede lenta fecha > 250 ms; sem guarda, o `onclose` velho zerava o
         # `LX.ws` novo e derrubava a captura recém-aberta)
         alvo_velho = conns[-1]["rota"]
+        n0 = len(conns)
         alvo_velho.send(json.dumps({"type": "error", "code": "session_ttl",
                                     "message": "sessão ociosa por 300s"}))
-        esperar(lambda: pg.wait_for_function("() => LX.estado === 'ouvindo'", timeout=20000),
-                "a retomada abrir a nova conexão")
-        pg.wait_for_timeout(300)
+        pg.wait_for_timeout(600)      # retomada (250 ms) + folga
+        cobrar(len(conns) == n0 + 1, f"a retomada não abriu conexão nova ({len(conns) - n0})")
         n_antes_atraso = len(conns)
         alvo_velho.close(code=1000)        # close do ANTIGO, já substituído
         pg.wait_for_timeout(900)
