@@ -62,12 +62,11 @@ env = {**os.environ, "TTS_CHAT_BACKEND": "openai", "TTS_CHAT_BACKEND_LIVE": "ope
        "TTS_OUTPUTS_DIR": str(DIR / "outputs"), "TTS_SETTINGS_PATH": str(SETTINGS),
        "TTS_APIKEYS_PATH": str(DIR / "apikeys.json"), "TTS_LEGACY_APIKEY_PATH": str(DIR / "apikey"),
        "TTS_SPEAKER_PATH": str(DIR / "speaker.json"), "TTS_JOBS_HIST_PATH": str(DIR / "jobs.json"),
-       "TTS_VOICES_DIR": str(DIR / "voices"), "VOZ_PORT": str(porta), "ORT_DISABLE_TELEMETRY": "1"}
+       "TTS_VOICES_DIR": str(DIR / "voices"), "TTS_METRICS_DIR": str(DIR / "state"),
+       "VOZ_PORT": str(porta), "ORT_DISABLE_TELEMETRY": "1"}
 log = DIR / "servidor.log"
 _launcher = '''
-import os, pathlib, metrics_hist
-metrics_hist.DIR = pathlib.Path(os.environ["TTS_OUTPUTS_DIR"]).parent / "state"
-import uvicorn, app
+import os, uvicorn, app
 uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["VOZ_PORT"]))
 '''
 proc = subprocess.Popen([sys.executable, "-c", _launcher], cwd=str(pathlib.Path.cwd()), env=env,

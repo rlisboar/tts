@@ -112,15 +112,12 @@ env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        "TTS_LEGACY_APIKEY_PATH": str(DIR / "apikey"),
        "TTS_OUTPUTS_DIR": str(DIR / "outputs"), "TTS_VOICES_DIR": str(DIR / "voices"),
        "TTS_SPEAKER_PATH": str(DIR / "speaker.json"),
-       "TTS_JOBS_HIST_PATH": str(DIR / "jobs.json")}
+       "TTS_JOBS_HIST_PATH": str(DIR / "jobs.json"),
+       "TTS_METRICS_DIR": str(DIR / "state")}
 log = DIR / "servidor.log"
-# `metrics_hist.DIR` é fixo em `BASE/state/metrics` (não tem env): repontado ANTES
-# do `import app`, que só usa o módulo por atributo. Sem isso toda rodada escreve
-# no `state/metrics` da árvore real.
+# `TTS_METRICS_DIR` (#610) tira também o histórico de operação da árvore real.
 _launcher = '''
-import os, pathlib, metrics_hist
-metrics_hist.DIR = pathlib.Path(os.environ["TTS_OUTPUTS_DIR"]).parent / "state"
-import uvicorn, app
+import os, uvicorn, app
 uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["DSH_UI_PORT"]))
 '''
 proc = subprocess.Popen([str(RAIZ / ".venv-mlx" / "bin" / "python"), "-c", _launcher],
