@@ -11,6 +11,11 @@
 # NUNCA são compartilhados: `voices/`, `settings.json`, `.apikey*`, `outputs/` e
 # `state/`. Cada worktree tem os seus, então rodada e app não mexem no estado do dono.
 #
+# Mas CÓPIA (não symlink) de `settings.json`/`.apikey*` é necessária: a suíte lê o
+# arquivo do dono como fixture e sem ele 16 células caem por `FileNotFoundError`
+# (medido no ensaio). Cópia mantém o isolamento — escrever no worktree não encosta
+# no arquivo real — e a rodada nasce com o estado do dono, não com defaults.
+#
 # Uso:
 #   tools/worktrees.sh cria <agente>     # ../tts-rod-wt/<agente> na branch wt/<agente>
 #   tools/worktrees.sh lista
@@ -43,6 +48,10 @@ _liga_o_que_nao_pode_copiar() {
     else
         echo "  ⚠ sem .venv-mlx na raiz — o worktree vai precisar de um venv" >&2
     fi
+    # estado do dono: CÓPIA (ver o porquê no topo). Some se o dono não tiver.
+    for rel in settings.json .apikeys.json .apikey; do
+        [ -f "$RAIZ/$rel" ] && cp -p "$RAIZ/$rel" "$destino/$rel"
+    done
     [ -f "$SUMS" ] || return 0
     while read -r _sha rel; do
         [ -n "${rel:-}" ] || continue
