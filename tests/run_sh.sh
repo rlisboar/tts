@@ -66,7 +66,7 @@ _teto_da_suite() {
     case "$n" in
         admin_ui_flow|live_barge_rep) echo 600 ;;
         live_ui|live_ws|live_interrupcao_ui|obs_ui) echo 300 ;;
-        voz_cadastro_ui|voz_desfazer_ui|voz_check_ui) echo 300 ;;
+        voz_cadastro_ui|voz_desfazer_ui|voz_check_ui|voz_far_alvo_ui) echo 300 ;;
         live_dsh_fallback|conversa_429) echo 240 ;;
         live_lock_freeze) echo 300 ;;   # duas rodadas + cópia; roda no hook
         *) echo 90 ;;
