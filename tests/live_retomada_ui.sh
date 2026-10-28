@@ -155,7 +155,7 @@ try:
         pg.wait_for_selector("#lxLigar", state="visible", timeout=20000)
 
         def estado():
-            return pg.evaluate("() => ({ estado: LX.estado, retoma: LX.retoma,"
+            return pg.evaluate("() => ({ estado: LX.estado, retoma: LX.retoma, explicado: LX.explicado,"
                                " status: document.getElementById('lxStatus').textContent,"
                                " ia: document.getElementById('lxIA').innerText })")
 
@@ -171,13 +171,17 @@ try:
                                     "message": "sessão ociosa por 300s"}))
         # um erro GENÉRICO logo atrás não pode repintar o motivo explicado; o close
         # só vem DEPOIS da leitura, senão o `onclose` mascara o repintado
-        c1["rota"].send(json.dumps({"type": "error", "code": "pipeline",
-                                    "message": "provedor de conversa fora"}))
-        pg.wait_for_timeout(150)
+        # o BARGE repinta a linha ("✋ ouvi você…") e não pode apagar o motivo;
+        # leitura cedo (80 ms) — antes de a retomada (250 ms) concluir e limpar o
+        # motivo legitimamente com "sessão pronta"
+        c1["rota"].send(json.dumps({"type": "speech_start", "turn": 9}))
+        pg.wait_for_timeout(80)
         e0 = estado()
-        print(f"  ttl + erro genérico: estado={e0['estado']!r} · status={e0['status']!r}")
-        cobrar("fale de novo" not in e0["status"],
-               f"o ramo genérico repintou por cima do motivo ({e0['status']!r})")
+        print(f"  ttl + barge: estado={e0['estado']!r} · status={e0['status']!r}")
+        cobrar("ouvi você" not in e0["status"],
+               f"o barge repintou por cima do motivo ({e0['status']!r})")
+        cobrar("inatividade" in e0["status"], f"o motivo sumiu da linha ({e0['status']!r})")
+        cobrar("retomando" in e0["status"], f"a retomada não está anunciada ({e0['status']!r})")
         c1["rota"].close(code=1000)
         pg.wait_for_timeout(150)
         e1 = estado()
@@ -225,6 +229,21 @@ try:
         cobrar(len(conns) == n_antes_atraso, "o close velho disparou outra retomada")
         cobrar(frames_agora > 5, f"a captura parou no close velho ({frames_agora} frames)")
 
+        # ── 1d) `pipeline` morto: mostra o erro e RETOMA (a sessão pode estar viva)
+        n_antes_pipe = len(conns)
+        conns[-1]["rota"].send(json.dumps({"type": "error", "code": "pipeline",
+                                           "message": "RuntimeError: provedor caiu"}))
+        pg.wait_for_timeout(250)
+        ep = estado()
+        print(f"  após pipeline: estado={ep['estado']!r} · status={ep['status']!r}")
+        cobrar("pipeline" in (ep["status"] + ep["ia"]).lower(),
+               f"o erro do pipeline não apareceu ({ep['status']!r})")
+        cobrar("fale de novo" not in ep["status"],
+               f"a tela voltou para 'fale de novo' com o pipeline morto ({ep['status']!r})")
+        esperar(lambda: pg.wait_for_function(
+            "() => LX.estado === 'ouvindo'", timeout=20000), "a retomada do pipeline")
+        cobrar(len(conns) > n_antes_pipe, "o pipeline morto não retomou a sessão")
+
         # ── 2) `session_substituida` NÃO retoma e o motivo fica ──────────────
         n_antes = len(conns)
         conns[-1]["rota"].send(json.dumps({"type": "error", "code": "session_substituida",
@@ -257,6 +276,15 @@ try:
                f"o teto de tentativas não foi respeitado (conexões: {len(conns)}, esperado 4)")
         cobrar("não consegui retomar" in e3["status"], f"a tela não pediu o clique ({e3['status']!r})")
         cobrar(e3["estado"] == "erro", f"o estado não virou erro no teto ({e3['estado']!r})")
+        # o clique prometido na mensagem tem de RETOMAR (com socket vivo ele
+        # desligaria, que é o caminho normal)
+        roteiro["modo"] = "normal"
+        antes_manual = len(conns)
+        cobrar(pg.text_content("#lxLigar").strip().endswith("Ligar"), "o botão não está em 'Ligar'")
+        pg.click("#lxLigar")
+        esperar(lambda: pg.wait_for_function("() => LX.estado === 'ouvindo'", timeout=20000),
+                "o clique retomar a sessão")
+        cobrar(len(conns) == antes_manual + 1, "o clique depois da desistência não reconectou")
 
         cobrar(not erros, "erros de JS: " + "; ".join(erros[:3]))
         b.close()

@@ -460,7 +460,8 @@ try:
         #    tela mostra o motivo e NÃO pinta "WebSocket caiu" (close limpo não é
         #    falha de transporte — `LX.erro` só liga em `onerror`).
         # 2) `error{pipeline}` chega logo DEPOIS do ready com a sessão VIVA: o
-        #    "ouvindo" não pode ficar prometendo fala que não vem.
+        #    "ouvindo" não pode ficar prometendo fala que não vem e o erro fica dito.
+        # Desde o #629 os dois casos RETOMAM sozinhos (busy espera mais).
         r192 = pg.evaluate("""() => {
             const estadoTxt = () => document.getElementById('lxEstado').textContent;
             const status = () => document.getElementById('lxStatus').textContent;
@@ -474,7 +475,7 @@ try:
             lxRecebe({ data: JSON.stringify({ type: 'ready' }) });
             const c = { estado: estadoTxt() };
             lxRecebe({ data: JSON.stringify({ type: 'error', code: 'pipeline', message: 'pipeline não subiu' }) });
-            const d = { estado: estadoTxt(), ia: ia() };
+            const d = { estado: estadoTxt(), ia: ia(), status: status() };
             return { a, b, c, d };
         }""")
         print(f"  error{{busy}} antes do ready → ia={r192['a']['ia'][:46]!r} estado={r192['a']['estado']!r}"
@@ -482,12 +483,25 @@ try:
         print(f"  ready → {r192['c']['estado']!r} · error{{pipeline}} depois dele →"
               f" estado={r192['d']['estado']!r} ia={r192['d']['ia'][:46]!r}")
         cobrar("teto de sessões" in r192["a"]["ia"], f"motivo do busy não aparece na coluna IA: {r192['a']['ia']!r}")
-        cobrar("conectando" not in r192["a"]["estado"], f"erro antes do ready deixou a tela em conectando: {r192['a']['estado']!r}")
+        # #629: com a retomada automática o erro deixa a tela em "conectando" DE
+        # PROPÓSITO — o que não pode é o motivo sumir da linha nem ela prometer fala
+        cobrar("retomando" in r192["a"]["status"], f"o busy não anunciou retomada: {r192['a']['status']!r}")
+        # a linha usa o texto da UI (a coluna IA guarda o texto do servidor)
+        cobrar("sem vaga" in r192["a"]["status"],
+               f"o motivo do busy sumiu da linha: {r192['a']['status']!r}")
+        cobrar("ouvindo" not in r192["a"]["estado"], f"busy prometendo fala: {r192['a']['estado']!r}")
         cobrar("caiu" not in r192["b"]["status"], f"close 1013 limpo virou 'WebSocket caiu': {r192['b']['status']!r}")
+        cobrar("retomando" in r192["b"]["status"], f"o close apagou a retomada: {r192['b']['status']!r}")
         cobrar("ouvindo" in r192["c"]["estado"], f"ready não abriu a sessão: {r192['c']['estado']!r}")
         cobrar("pipeline não subiu" in r192["d"]["ia"], f"motivo do pipeline não aparece na coluna IA: {r192['d']['ia']!r}")
+        # #629: pipeline morto também RETOMA (a sessão pode estar viva) — o que se
+        # cobra é não prometer fala e o motivo aparecer na linha
         cobrar("ouvindo" not in r192["d"]["estado"],
                f"com o pipeline morto a tela segue prometendo fala (estado {r192['d']['estado']!r})")
+        cobrar("pipeline" in r192["d"]["status"].lower(),
+               f"o pipeline morto não foi dito na linha: {r192['d']['status']!r}")
+        # a simulação deixa um reconnect armado; as fases seguintes dirigem o fluxo
+        pg.evaluate("() => { clearTimeout(LX.retomaT); LX.retomaT = 0; LX.retoma = 0; }")
 
         # ─── #244: `error{session_substituida}` — a sessão NÃO segue viva ───────
         # Contrato aditivo do #222: um `setup` com session_id JÁ VIVO faz a conexão

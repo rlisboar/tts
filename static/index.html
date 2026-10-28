@@ -8186,14 +8186,14 @@ const LX_ROTULO = { desligado: "desligado", conectando: "conectando…", ouvindo
 // (sessão de fato de pé) limpa o motivo.
 function lxStatus(msg) {
   if (LX.fim) msg = LX.fim;
-  else if (LX.retomaT) msg = "retomando a sessão (" + LX.retoma + "/" + LX_RETOMA_MAX + ")…";
+  else if (LX.retomaT) msg = (LX.explicado || "sessão caiu")
+    + " — retomando (" + LX.retoma + "/" + LX_RETOMA_MAX + ")…";
   else if (LX.explicado) msg = LX.explicado;
   const el = $("lxStatus");
   if (el) el.textContent = msg;
 }
 
 function lxEstado(novo, msg) {
-  if (novo === "ouvindo") { LX.explicado = ""; LX.fim = ""; }
   LX.estado = novo;
   const b = $("lxEstado"), lig = $("lxLigar");
   if (b) {
@@ -8319,7 +8319,7 @@ async function lxwsConectar(opts) {
   // (close atrasado na rede). Sem esta guarda, o `onclose` velho zerava `LX.ws`
   // — que já era o novo — e derrubava a captura recém-aberta. Só quem ainda é
   // `LX.ws` mexe no estado; o resto só registra no painel.
-  ws.onmessage = ev => { if (LX.ws === ws) lxRecebe(ev); };
+  ws.onmessage = ev => { if (!LX.ws || LX.ws === ws) lxRecebe(ev); };
   ws.onerror = () => { if (LX.ws !== ws) return; LX.erro = true; lxObsWs("erro de conexão", true); };
   ws.onclose = ev => {
     LX.conectando = false;
@@ -9166,6 +9166,10 @@ function lxRecebe(ev) {
       // pintou não pode ser sobrescrito por um "ouvindo" otimista (#192).
       case "ready":          if (m.session_id) LX.sid = String(m.session_id);
                            LX.retoma = 0;      // #616: sessão de pé, tentativas zeram
+                           // o ciclo NOVO limpa o motivo — e só ele: a captura
+                           // (assíncrona) também pinta "ouvindo" e não pode
+                           // apagar o motivo de uma sessão que acabou de morrer
+                           LX.explicado = ""; LX.fim = "";
                            if (LX.estado === "conectando") lxEstado("ouvindo", "🎙 sessão pronta — fale");
                            lxLogEvento("sessão pronta (saída " + ((m.audio || {}).sr || "?") + " Hz)"); break;
     // `prewarm`: informativo (pipeline pré-aquecido). NÃO é turno: não mexe no
@@ -9323,6 +9327,8 @@ function lxRecebe(ev) {
         // O close é LIMPO (1000), então `LX.erro` fica falso e o `onclose` pintaria
         // "sessão encerrada" por cima: a flag preserva o motivo real até lá.
         LX.substituida = true;
+        // terminal: outra conexão é a dona do id — retomada pendente sai de cena
+        clearTimeout(LX.retomaT); LX.retomaT = 0; LX.retoma = 0;
         LX.explicado = LX_SUBSTITUIDA;
         lxQuebraLinha("lxIA");
         const msgSub = "✖ " + (m.message || "outra conexão assumiu este session_id")
@@ -9354,16 +9360,29 @@ function lxRecebe(ev) {
         lxLinha("lxIA", "lx-erro", msgQueda);
         lxLogEvento(msgQueda, "e-erro");
         lxRetomar(m.code);
+      } else if (m.code === "pipeline") {
+        // #629: pipeline morto deixava a tela em "ouvindo" (o barge logo depois
+        // repintava por cima): o dono falava e nada voltava. O turno NÃO vai
+        // acontecer — mostra o erro, marca o motivo e RETOMA (a sessão pode estar
+        // de pé, então a retomada reabre com o mesmo `session_id` em vez de
+        // esperar um close que talvez nunca venha).
+        LX.explicado = "pipeline do Live caiu: " + (m.message || m.detail || "erro");
+        lxQuebraLinha("lxIA");
+        const msgPipe = "✖ " + (m.message || m.detail || "erro no pipeline") + " [pipeline]";
+        lxLinha("lxIA", "lx-erro", msgPipe);
+        lxLogEvento(msgPipe, "e-erro");
+        lxRetomar("pipeline");
       } else {
         // erro de pipeline/sessão (ex.: provedor de conversa fora): a sessão
         // segue viva. Além do hint, linha visível na coluna IA — o hint some no
         // evento seguinte e o usuário ficava sem saber por que ele não responde (#117)
-        // #616: com motivo já explicado (queda), o genérico NÃO repinta por cima.
+        // #616/#629: com motivo explicado (queda) quem manda é ele — a precedência
+        // mora no `lxStatus`, não neste ramo.
         lxQuebraLinha("lxIA");
         const msgErro = "✖ " + (m.message || m.detail || "erro na sessão") + (m.code ? " [" + m.code + "]" : "");
         lxLinha("lxIA", "lx-erro", msgErro);
         lxLogEvento(msgErro, "e-erro");
-        if (!LX.explicado) lxEstado("erro", "sessão viva — fale de novo para tentar");
+        lxEstado("erro", "sessão viva — fale de novo para tentar");
       }
       break;
   }
@@ -9384,7 +9403,13 @@ async function lxAoAbrir() {
   } catch (e) { /* sem lista: a voz padrão do servidor serve */ }
 }
 
-if ($("lxLigar")) $("lxLigar").onclick = () => { if (LX.ws) lxDesligar(); else lxwsConectar(); };
+// #629: com a retomada desistida o clique tem de RETOMAR — a mensagem final
+// promete "clique em Ligar" e, com o socket ainda de pé, o caminho normal
+// desligaria em vez de tentar de novo.
+if ($("lxLigar")) $("lxLigar").onclick = () => {
+  if (LX.fim) { lxRetomaManual(); return; }
+  if (LX.ws) lxDesligar(); else lxwsConectar();
+};
 // #616: retoma a sessão depois de uma queda que o servidor explicou. Contagem
 // limitada: `busy` costuma precisar de mais tempo (slot ocupado) e o TTL é quase
 // imediato (o servidor já liberou a sessão). Manual no Ligar zera a contagem.
@@ -9398,9 +9423,18 @@ function lxRetomar(codigo) {
     return;
   }
   LX.retoma++;
-  const espera = codigo === "busy" ? 1500 : 250;
-  lxEstado("conectando", "retomando a sessão (" + LX.retoma + "/" + LX_RETOMA_MAX + ")…");
+  const espera = codigo === "busy" ? 1500 : codigo === "pipeline" ? 800 : 250;
+  // agenda ANTES de pintar: é `LX.retomaT` que faz o `lxStatus` compor
+  // "motivo — retomando (n/3)" em vez de mostrar só o motivo
   LX.retomaT = setTimeout(() => { LX.retomaT = 0; lxwsConectar({ retomada: true }); }, espera);
+  lxEstado("conectando", "retomando a sessão (" + LX.retoma + "/" + LX_RETOMA_MAX + ")…");
+}
+
+function lxRetomaManual() {
+  LX.fim = ""; LX.explicado = ""; LX.retoma = 0;
+  clearTimeout(LX.retomaT); LX.retomaT = 0;
+  if (LX.ws) { const w = LX.ws; LX.ws = null; try { w.close(1000, "retomar"); } catch (e) {} lxParaCaptura(); }
+  lxwsConectar({ retomada: true });
 }
 
 function lxDesligar() {
