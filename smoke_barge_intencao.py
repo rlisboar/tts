@@ -52,7 +52,10 @@ ESPERADO = {"backchannel": "nao_corta", "comando": "corta", "pergunta": "corta",
 
 
 def decide(texto: str, ms: int) -> str:
-    modo = (app._settings.get("live_interrupcao") or "inteligente")
+    # modo FIXO no default (o `settings.json` do dono é mutável e a rodada tem de
+    # ser reprodutível): `BARGE_MODO=imediata` força a mordida
+    import os
+    modo = os.environ.get("BARGE_MODO") or "inteligente"
     if modo == "imediata":
         return "corta"        # o modo antigo corta no limiar, sem olhar conteúdo
     sess = {"id": "smoke", "ultimo_assistente": REF, "pipe": None}
