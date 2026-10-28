@@ -105,3 +105,24 @@ def test_import_nao_reescreve_o_legado_quando_o_conteudo_e_o_mesmo(tmp_path):
     antes = legado.stat().st_mtime_ns
     subprocess.run(import_, cwd=str(BASE), env=env, check=True, capture_output=True)
     assert legado.stat().st_mtime_ns == antes, "o 2º import reescreveu o mesmo conteúdo"
+
+
+# --- #535: a guarda NOMEIA quem escreveu no arquivo do dono ───────────────────
+# Sem atribuição, "o settings do dono mudou" é fato sem autor (foi o que travou a
+# investigação de 01:24: o qa já rodava isolado e ninguém sabia a origem).
+def test_guarda_nomeia_quem_tocou_o_arquivo_do_dono():
+    import conftest
+
+    import app
+
+    antes = conftest._impressao_do_dono()
+    os.utime(app.BASE / "settings.json")          # mesmo conteúdo, mtime novo
+    conftest._atribuir_escritas(antes, "tests/test_exemplo.py::test_x")
+    assert "tests/test_exemplo.py::test_x escreveu settings.json" in conftest._escritas_no_dono
+
+
+def test_guarda_nao_acusa_quando_nada_muda():
+    import conftest
+
+    antes = conftest._impressao_do_dono()
+    assert conftest._diferencas(antes, conftest._impressao_do_dono()) == []

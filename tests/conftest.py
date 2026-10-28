@@ -192,6 +192,57 @@ def pytest_report_header(config):
           f"{', '.join(_ENV_DO_DONO)}"] if _ENV_DO_DONO else [])
 
 
+# ── quem escreveu no arquivo do DONO? (#535) ────────────────────────────────
+# A sessão isola settings/chaves em tmp; se algo AINDA toca o arquivo real, o dono
+# vê o estado mexido e ninguém sabe de onde veio (foi o que aconteceu no gate de
+# 01:24). Aqui cada teste é cercado por uma impressão digital dos arquivos do dono:
+# mudou, o teste é NOMEADO. `TTS_EXIGE_DONO_INTOCADO=1` transforma o relatório em
+# vermelho (a prova do card usa isso); sem a variável fica só o aviso, porque o app
+# do dono pode estar rodando e gravando ao lado, o que não é regressão nossa.
+_ARQUIVOS_DO_DONO = ("settings.json", ".apikeys.json", ".apikey", ".speaker-profiles.json")
+_escritas_no_dono: list[str] = []
+
+
+def _impressao_do_dono() -> dict[str, tuple[str, int]]:
+    import hashlib
+
+    import app
+
+    saida: dict[str, tuple[str, int]] = {}
+    for nome in _ARQUIVOS_DO_DONO:
+        alvo = app.BASE / nome
+        try:
+            st = alvo.stat()
+            saida[nome] = (hashlib.sha256(alvo.read_bytes()).hexdigest()[:12], st.st_mtime_ns)
+        except OSError:
+            saida[nome] = ("", 0)
+    return saida
+
+
+def _diferencas(antes: dict, depois: dict) -> list[str]:
+    return sorted(n for n in _ARQUIVOS_DO_DONO if antes.get(n) != depois.get(n))
+
+
+def _atribuir_escritas(antes: dict, quem: str) -> None:
+    for nome in _diferencas(antes, _impressao_do_dono()):
+        _escritas_no_dono.append(f"{quem} escreveu {nome}")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Cerca o teste inteiro (setup+call+teardown) e nomeia quem sujou o dono."""
+    try:
+        antes = _impressao_do_dono()
+    except Exception:  # noqa: BLE001 — guarda não pode quebrar a suíte
+        yield
+        return
+    yield
+    try:
+        _atribuir_escritas(antes, f"{item.nodeid}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def pytest_terminal_summary(terminalreporter):
     """Mesmo aviso no RESUMO — aparece também com `-q` (#166)."""
     if os.environ.get("TTS_LIVE_WORKER", "0") != "0":
@@ -206,6 +257,13 @@ def pytest_terminal_summary(terminalreporter):
     terminalreporter.write_line(
         "[worker] caminho LIGADO do worker do Live NÃO correu neste run: "
         "TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q")
+    if _escritas_no_dono:
+        terminalreporter.write_line(
+            f"[dono] {len(_escritas_no_dono)} escrita(s) no estado REAL do dono:")
+        for linha in _escritas_no_dono[:20]:
+            terminalreporter.write_line(f"[dono]   {linha}")
+        if len(_escritas_no_dono) > 20:
+            terminalreporter.write_line(f"[dono]   … +{len(_escritas_no_dono) - 20}")
 
 
 def _rodou_worker_real(terminalreporter) -> bool:

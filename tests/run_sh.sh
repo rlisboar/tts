@@ -129,6 +129,25 @@ _com_teto() {
     perl -e 'alarm shift; exec @ARGV' "$teto" "$@"
 }
 
+# Impressão digital do estado REAL do dono: sha256 + mtime dos arquivos que as
+# suítes já vazaram. Serve para NOMEAR quem escreve — sem isso, "o settings mudou"
+# é fato sem autor (#535). O app do dono pode gravar ao lado: por padrão é aviso;
+# `TTS_EXIGE_DONO_INTOCADO=1` transforma em falha (é o que a prova do card usa).
+_ARQ_DONO=(settings.json .apikeys.json .apikey)
+_impressao_dono() {
+    local a
+    for a in "${_ARQ_DONO[@]}"; do
+        if [ -f "$a" ]; then
+            printf '%s %s %s\n' "$a" "$(/usr/bin/shasum -a 256 "$a" | cut -c1-12)" "$(/usr/bin/stat -f %m "$a")"
+        else
+            printf '%s - -\n' "$a"
+        fi
+    done
+}
+_arquivos_tocados() { # $1 = impressão de antes, $2 = de depois
+    diff <(printf '%s\n' "$1") <(printf '%s\n' "$2") 2>/dev/null | sed -n 's/^> \([^ ]*\).*/\1/p'
+}
+
 declare -a FALHAS=() RODADAS=()
 comeca=$(date +%s)
 
@@ -146,6 +165,7 @@ for nome in "${ALVOS[@]}"; do
         # dentro do `$DIR`. O nome do log é achatado e o caminho real vai no
         # resultado (o relatório lê de lá, sem reconstruir).
         LOG="$DIR/$(printf '%s' "$nome" | tr '/' '_').log"
+        DONO_ANTES="$(_impressao_dono)"
         # `instancia` pressupõe app DE PÉ, mas duas suítes dele recusam o `:7860`
         # (para não escrever no app/arquivo do dono) e ficariam vermelhas por
         # contrato: quando o alvo É o 7860, o runner liga o escape delas — a
@@ -171,6 +191,11 @@ for nome in "${ALVOS[@]}"; do
             _com_teto "$TETO" bash "$(_arquivo_da_suite "$nome")" >"$LOG" 2>&1
         fi
         rc=$?
+        # quem tocou no estado do dono durante ESTA suíte (nomeia o culpado)
+        DONO_DEPOIS="$(_impressao_dono)"
+        for a in $(_arquivos_tocados "$DONO_ANTES" "$DONO_DEPOIS"); do
+            printf '%s escreveu %s\n' "$nome" "$a" >> "$DIR/dono-sujos"
+        done
         echo "$rc $nome $(( $(date +%s) - inicio )) $LOG"
     ) >>"$DIR/resultado" &
 done
@@ -185,14 +210,24 @@ while read -r rc nome dur log; do
     fi
 done < <(sort -k2 "$DIR/resultado")
 
+if [ -s "$DIR/dono-sujos" ]; then
+    echo
+    echo "══ escrita(s) no estado REAL do dono nesta rodada (culpado nomeado):"
+    sort -u "$DIR/dono-sujos" | sed 's/^/  /'
+    if [ "${TTS_EXIGE_DONO_INTOCADO:-0}" = 1 ]; then
+        FALHAS+=("dono-sujos")
+        echo "  ✖ TTS_EXIGE_DONO_INTOCADO=1: suíte do estágio não pode encostar no estado do dono"
+    fi
+fi
+
 echo "--- $estagio: ${#FALHAS[@]} falha(s) de ${#RODADAS[@]} suíte(s) em $(( $(date +%s) - comeca ))s"
 
 if [ "${#FALHAS[@]}" -gt 0 ]; then
     for nome in "${FALHAS[@]}"; do
         log="$(awk -v n="$nome" '$2 == n {print $4; exit}' "$DIR/resultado")"
         echo
-        echo "===== $nome (últimas 30 linhas; log completo em $log) ====="
-        tail -30 "$log"
+        echo "===== $nome (últimas 30 linhas; log completo em ${log:-—}) ====="
+        [ -n "$log" ] && [ -f "$log" ] && tail -30 "$log"
     done
     # o diretório sai do trap: copia o que falhou para um lugar previsível
     destino="${TMPDIR:-/tmp}/suites-sh-falhas.$$"

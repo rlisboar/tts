@@ -259,3 +259,18 @@ em foreground roda**. Suíte que trabalha dentro de UM `python` longo (as do Liv
 só veria o alarme quando ele terminasse — a primeira versão do watchdog não matava
 nada e o `live_barge_rep` passou de 9 min. O watchdog agora derruba os filhos
 diretos e só então o shell: é o que faz o teto valer para essas suítes.
+
+## #535 (achado do PM) — identificação de QUEM escreve no estado do dono
+
+Duas guardas novas, uma por executor, e a sabotagem de cada uma:
+
+| Sabotagem | Resultado |
+|---|---|
+| runner deixa de comparar a impressão digital (`_arquivos_tocados` sem uso) | `test_runner_nomeia_a_suite_que_escreveu_no_estado_do_dono` **FAILED** e `test_knob_exige_dono_intocado_vira_falha` **FAILED** |
+| `_atribuir_escritas` sem efeito (não registra o teste) | `test_guarda_nomeia_quem_tocou_o_arquivo_do_dono` **FAILED** |
+
+O controle `test_suite_que_nao_escreve_nao_aparece` passa de propósito. O hook do
+`conftest` é pós-teste e nomeia pelo `item.nodeid`; a prova de que ele está ARMADO
+é o próprio `[dono] … escreveu settings.json` que aparece no resumo do pytest
+quando algum teste toca o arquivo (visível ao rodar esta suíte). Sem o knob
+`TTS_EXIGE_DONO_INTOCADO=1` é AVISO, porque o app do dono pode gravar ao lado.

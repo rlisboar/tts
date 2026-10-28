@@ -162,3 +162,27 @@ def test_tempo_esperando_a_trava_nao_come_o_teto(tmp_path):
         dono.kill()
     assert r.returncode == 0, r.stdout + r.stderr
     assert "ok" in r.stdout and "trava_curta" in r.stdout
+
+
+# --- #535 (achado do PM): o runner NOMEIA quem escreveu no estado do dono ────
+def test_runner_nomeia_a_suite_que_escreveu_no_estado_do_dono(tmp_path):
+    """Sem atribuição, "o settings mudou" é fato sem autor — foi o que travou a
+    investigação de 01:24. A sonda acrescenta uma linha no `settings.json` real."""
+    r = _rodar("navegador", env={"SUITES": str(SONDAS / "suja_o_dono.sh")})
+    assert "escrita(s) no estado REAL do dono" in r.stdout, r.stdout
+    assert "suja_o_dono.sh escreveu settings.json" in r.stdout, r.stdout
+    # sem o knob é AVISO: a suíte em si passou
+    assert r.returncode == 0, r.stdout
+
+
+def test_knob_exige_dono_intocado_vira_falha(tmp_path):
+    r = _rodar("navegador", env={"SUITES": str(SONDAS / "suja_o_dono.sh"),
+                                 "TTS_EXIGE_DONO_INTOCADO": "1"})
+    assert r.returncode == 1, r.stdout
+
+
+def test_suite_que_nao_escreve_nao_aparece(tmp_path):
+    """Controle: suíte limpa não gera linha nenhuma."""
+    r = _rodar("navegador", env={"SUITES": str(SONDAS / "sonda_env.sh"),
+                                 "SONDA_SAIDA": str(tmp_path / "s.txt")})
+    assert "estado REAL do dono" not in r.stdout, r.stdout
