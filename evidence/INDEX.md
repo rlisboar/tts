@@ -288,7 +288,9 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `502-live-filtros-modelo.png` | #502 | 2026-10-27 | (imagem) |
 | `502-live-filtros-painel.png` | #502 | 2026-10-27 | (imagem) |
 | `502-live-interrupcao-duck.png` | #502 | 2026-10-27 | (imagem) |
-| `502-live-interrupcao-suites.txt` | #502 | 2026-10-27 | 502 — LIVE UI da interrupção inteligente: medições da suíte e das mordidas |
+| `502-live-interrupcao-suites.txt` | #502 | 2026-10-28 | 502 — LIVE UI da interrupção inteligente: medições da suíte e das mordidas |
+| `521-bakeoff-identidade-PARCIAL.md` | #521 | — | Bake-off de identidade de voz — PARCIAL (#521) |
+| `563-dsh-fallback-prewarm.txt` | #563 | — | 563 — `live_dsh_fallback.sh`: espera o pre-warm antes de mandar áudio |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |

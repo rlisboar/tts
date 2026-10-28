@@ -70,10 +70,22 @@ for w in sorted(pathlib.Path("voices").glob("*.wav")):
 if not wav: raise SystemExit("sem voices/*.wav para alimentar o turno")
 
 porta = porta_livre()
+DIR_TMP = pathlib.Path("/tmp") / f"live_dsh_fallback_{SUF}"
+for _d in (DIR_TMP / "voices", DIR_TMP / "outputs"):
+    _d.mkdir(parents=True, exist_ok=True)
+(DIR_TMP / "settings.json").write_text("{}")
 env = {**os.environ,
        "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1", "TTS_CHAT_MODEL": "stub-fallback",
        "TTS_CHAT_BACKEND": "dsh",           # pede o dsh…
        "TTS_CHAT_DSH_BIN": "/bin/false",    # …que morre no handshake
+       # estado próprio (#541): o arquivo do dono não entra na rodada
+       "TTS_SETTINGS_PATH": str(DIR_TMP / "settings.json"),
+       "TTS_APIKEYS_PATH": str(DIR_TMP / "apikeys.json"),
+       "TTS_LEGACY_APIKEY_PATH": str(DIR_TMP / "apikey"),
+       "TTS_VOICES_DIR": str(DIR_TMP / "voices"),
+       "TTS_OUTPUTS_DIR": str(DIR_TMP / "outputs"),
+       "TTS_SPEAKER_PATH": str(DIR_TMP / "speaker.json"),
+       "TTS_JOBS_HIST_PATH": str(DIR_TMP / "jobs.json"),
        "FALLBACK_PORT": str(porta), "ORT_DISABLE_TELEMETRY": "1"}
 log = pathlib.Path("/tmp") / f"live_dsh_fallback_{SUF}.log"
 _launcher = '''
@@ -112,6 +124,47 @@ try:
         pg.locator('.nav-item[data-view="live"]').click()
         pg.locator("#lxLigar").click()
         pg.wait_for_function("() => LX.ws && LX.ws.readyState === 1", timeout=20000)
+
+        # #563: espera o PRE-WARM antes de mandar áudio. Sem isso o 1º turno chega
+        # com os modelos frios, o servidor responde "pipeline ainda aquecendo" e
+        # nenhum áudio sai (rec=0) — o alvo (fallback dsh→openai) nem era
+        # exercitado. Mesma espera do `live_ws.sh`/`live_ui.sh`; o dsh ainda gasta
+        # ~8 s de handshake antes de cair, então o prazo é folgado.
+        pg.evaluate("""() => {
+            window.__prontidao = null; window.__errWs = null;
+            const hook = () => {
+                if (!LX.ws) { setTimeout(hook, 100); return; }
+                LX.ws.addEventListener("message", ev => {
+                    if (typeof ev.data !== "string") return;
+                    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+                    if (m.type === "prewarm") window.__prontidao = m;
+                    if (m.type === "error") window.__errWs = m;
+                });
+            };
+            hook();
+        }""")
+        try:
+            pg.wait_for_function("() => LX.estado === 'ouvindo' || window.__errWs", timeout=30000)
+        except Exception:
+            print("  DIAG:", pg.evaluate("""() => ({ estado: LX.estado,
+                ws: LX.ws && LX.ws.readyState, erro: window.__errWs })"""))
+            raise
+        esperou = pg.evaluate("() => window.__prontidao")
+        if esperou is None:
+            try:
+                pg.wait_for_function("() => window.__prontidao", timeout=180000)
+                esperou = pg.evaluate("() => window.__prontidao")
+            except Exception:
+                print("  ⚠ pre-warm não chegou em 180 s — sigo (o turno paga a carga)")
+        print(f"  pre-warm: {esperou}")
+        if esperou and esperou.get("ok") is False:
+            print("  ⚠ o pre-warm FALHOU:", esperou.get("message"))
+        # O frame `prewarm` sai ANTES de o servidor marcar `prewarm_ok` (o `finally`
+        # de `_live_pipe_start` é um instante depois). Injetando no mesmo tick, o
+        # turno abre na janela e o servidor responde "pipeline ainda aquecendo" —
+        # com áudio, mas sem exercitar o LLM. 400 ms fecham a janela.
+        pg.wait_for_timeout(400)
+        cobrar(esperou is not None, "o pre-warm não chegou — o turno vai pagar a carga fria")
 
         # turno: fala de verdade em quadros de 100 ms (o mesmo caminho do cliente)
         pg.evaluate("""async (pcmB64) => {
@@ -168,6 +221,8 @@ try:
         print(f"  chunks de áudio recebidos: {rec} · texto da IA: {ia[:40]!r}")
         cobrar(rec > 0, f"nenhum áudio voltou pelo fallback (rec={rec})")
         cobrar(ia.strip(), "coluna da IA ficou vazia (fallback não respondeu)")
+        cobrar("aquecendo" not in ia.lower(),
+               f"o turno caiu no aviso de aquecimento em vez do LLM: {ia[:80]!r}")
         cobrar(pg.evaluate("() => LX.obs.dshFallback.fallback") == "openai",
                "fallback registrado no cliente não é openai")
 

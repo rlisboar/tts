@@ -1,0 +1,39 @@
+563 — `live_dsh_fallback.sh`: espera o pre-warm antes de mandar áudio
+
+Task #563 (achado do gate #504). Sintoma medido pelo qa, isolado: `rec=0` e
+`texto da IA: '✖ pipeline ainda aquecendo; o turno segu…'`. A suíte clicava
+`#lxLigar`, esperava só o `readyState` do WS e injetava o áudio na hora — o turno
+abria com os modelos frios, o servidor avisava e nenhum áudio voltava; o alvo da
+suíte (o fallback dsh→openai) nem era exercitado.
+
+CORREÇÃO: depois do WS aberto a suíte espera o `prewarm` com `ok` (o mesmo que
+`live_ws.sh`/`live_ui.sh` fazem), com 180 s de prazo — o dsh ainda gasta ~8 s de
+handshake antes de morrer. Achado extra no caminho: o frame `prewarm` sai um
+instante ANTES de o servidor marcar `prewarm_ok` (o `finally` de
+`_live_pipe_start`), então injetar no mesmo tick abria a janela e o turno caía em
+"pipeline ainda aquecendo" MESMO com o pre-warm ok (medido: `rec=1` com o texto do
+aviso). A suíte passou a assentar 400 ms e a cobrar que o texto NÃO seja o aviso —
+agora o LLM responde.
+
+Também nesta rodada (#541): estado próprio em `/tmp` (`TTS_SETTINGS_PATH`,
+`TTS_APIKEYS_PATH`, `TTS_VOICES_DIR`, `TTS_OUTPUTS_DIR`, `TTS_SPEAKER_PATH`,
+`TTS_JOBS_HIST_PATH`) — o arquivo do dono não entra na rodada.
+
+Antes:
+```
+chunks de áudio recebidos: 0 · texto da IA: '✖ pipeline ainda aquecendo; o turno segu'
+✖ FALHAS: nenhum áudio voltou pelo fallback (rec=0)
+```
+Depois:
+```
+pre-warm: {'type': 'prewarm', 'ok': True}
+chunks de áudio recebidos: 1 · texto da IA: 'Claro, o dia está bonito hoje. '
+✔ OK — dsh morto: sessão segue no openai, aviso persistente na tela, selo corrigido e áudio voltando.
+```
+
+MORDIDA (espera de 1 ms no lugar de 180 s):
+```
+pre-warm: None
+✖ FALHAS:
+  - o pre-warm não chegou — o turno vai pagar a carga fria
+```
