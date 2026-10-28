@@ -250,39 +250,60 @@ def test_cancel_idempotente_e_turno_velho_nao_mata_o_novo(monkeypatch):
 
 def test_cancel_orfao_reabre_sessao_e_nao_vaza_chunk_tardio(monkeypatch):
     """dsh que IGNORA o session/cancel: o iterador sai no prazo, a sessão é
-    reaberta e o chunk tardio da sessão abandonada não entra no turno novo."""
+    reaberta e o chunk tardio da sessão abandonada não entra no turno novo.
+
+    ESPERAS POR CONDIÇÃO (#546): a versão anterior usava `sleep(0.12)` antes do
+    cancel e `sleep(2.5)` depois — sob suíte cheia o boot do fake estoura o
+    orçamento e o cancel chegava antes de qualquer chunk. Agora: evento no 1º
+    chunk, condição no log de reabertura, e a chegada do tardio é aguardada pelo
+    relógio do PRÓPRIO fake (`cancel_ignora`), com diagnóstico no erro."""
     logs = []
     c = cliente(monkeypatch, on_log=logs.append, cancel_espera=0.3, env={
         "FAKE_ACP_MODO": "deltas",
-        # 6 deltas × 0,08 s = 0,48 s de janela. O fake decide se o turno foi
-        # cancelado SÓ quando termina de emitir os deltas, e o `session/cancel`
-        # chega por IPC: com 3 × 0,05 s (0,15 s) a mensagem do cancel podia
-        # chegar DEPOIS dessa decisão, o turno settleava sozinho e a sessão não
-        # era reaberta — o teste caía por corrida, não por comportamento
-        # (medido: falhava com a máquina carregada, passava sozinho).
+        # 6 deltas × 0,08 s = 0,48 s de janela; o fake só decide o cancel quando
+        # termina de emitir (por IPC), então o cancel tem de chegar no MEIO dela
         "FAKE_ACP_CHUNKS": json.dumps(["A", "B", "C", "D", "E", "F"]),
         "FAKE_ACP_CHUNK_DELAY_S": "0.08",
         "FAKE_ACP_CANCEL_IGNORA_S": "1.5",
     })
     caixa = {}
+    primeiro = threading.Event()
+
+    def correr():
+        try:
+            partes = []
+            for pedaco in c.stream("primeiro", "t1"):
+                partes.append(pedaco)
+                primeiro.set()
+            caixa["texto"] = "".join(partes)
+        except Exception as exc:              # noqa: BLE001 — diagnóstico
+            caixa["erro"] = exc
+
     try:
-        def correr():
-            caixa["texto"] = "".join(c.stream("primeiro", "t1"))
         th = threading.Thread(target=correr)
         th.start()
-        # 0,12 s é CALIBRADO com o fake (cancel no meio do primeiro chunk). Tentar
-        # trocar por espera do 1º delta PIOROU: o cancel passava a chegar depois e o
-        # turno settleava sozinho em vez de reabrir a sessão.
-        time.sleep(0.12)
+        assert primeiro.wait(20), ("nenhum chunk em 20 s — o fake travou no boot"
+                                   f" (logs: {logs[-3:]})")
         t0 = time.perf_counter()
         c.cancel("t1")
         th.join(10)
-        assert not th.is_alive()
-        assert time.perf_counter() - t0 < 1.0, "não pode esperar o prompt órfão settlear"
-        assert "TARDIO-IGNORADO" not in caixa["texto"]
-        time.sleep(2.5)                       # o chunk tardio da sessão velha chega aqui
+        assert not th.is_alive(), "o iterador não saiu: o prompt órfão não foi abandonado"
+        decorrido = time.perf_counter() - t0
+        assert decorrido < 1.0, (f"esperou {decorrido:.2f}s o órfão settlear; o prazo"
+                                 f" do cancel é {c._cancel_espera}s")
+        assert "erro" not in caixa, caixa.get("erro")
+        assert "TARDIO-IGNORADO" not in caixa.get("texto", "")
+        # a reabertura é EVENTO do cliente: é ela que prova o caminho do cancel
+        limite = time.monotonic() + 10
+        while time.monotonic() < limite and not any("será reaberta" in l for l in logs):
+            time.sleep(0.02)
+        assert any("será reaberta" in l for l in logs), f"sessão não reaberta (logs: {logs[-3:]})"
+        # o tardio sai `cancel_ignora` (1,5 s) DEPOIS do cancel no relógio do fake:
+        # espera esse relógio (+folga) em vez de um sleep escolhido no escuro
+        alvo = t0 + 1.5 + 0.6
+        while time.perf_counter() < alvo:
+            time.sleep(0.02)
         assert "TARDIO-IGNORADO" not in "".join(c.stream("segundo", "t2"))
-        assert any("sessão será reaberta" in l for l in logs)
         assert len([l for l in logs if "SESSAO" in l]) >= 2
     finally:
         c.close()
