@@ -49,8 +49,10 @@ def _fbank(x: np.ndarray) -> np.ndarray:
     f = knf.OnlineFbank(o)
     f.accept_waveform(comum.SR, (x * 32768).astype(np.int16).tolist())
     f.input_finished()
-    m = np.stack([f.get_frame(i) for i in range(f.num_frames_ready)]).astype(np.float32)
-    return (m - m.mean(0)) / (m.std(0) + 1e-9)
+    # SEM normalizar: os modelos trazem a própria normalização. Dividir pela
+    # variância por utterance custou caro — CAM++ ia a 29,2 % de EER e com o fbank
+    # cru fica em 7,5 %; o WeSpeaker também melhora (10,6 % x 11,6 %).
+    return np.stack([f.get_frame(i) for i in range(f.num_frames_ready)]).astype(np.float32)
 
 
 class _Onnx:
@@ -78,10 +80,34 @@ class _Resemblyzer:
         return e / (np.linalg.norm(e) or 1e-9)
 
 
+class _Campplus:
+    """3D-Speaker CAM++ (192-d). O `forward` começa com `permute`: quer FBANK (B,T,80).
+
+    Carregado pelo módulo do funasr, sem `AutoModel` — que na 3.12/3.14 quebra o
+    registry inteiro por módulos ausentes no wheel."""
+
+    CACHE = Path.home() / ".cache/modelscope/models/iic--speech_campplus_sv_zh-cn_16k-common/snapshots/master/campplus_cn_common.bin"
+
+    def __init__(self):
+        import torch
+        from funasr.models.campplus.model import CAMPPlus
+
+        self.torch = torch
+        self.m = CAMPPlus(feat_dim=80, embedding_size=192)
+        self.m.load_state_dict(torch.load(str(self.CACHE), map_location="cpu"))
+        self.m.eval()
+
+    def emb(self, x: np.ndarray) -> np.ndarray:
+        with self.torch.no_grad():
+            e = self.m(self.torch.from_numpy(_fbank(x))[None])[0].numpy()
+        return e / (np.linalg.norm(e) or 1e-9)
+
+
 ADAPTADORES = {
     "resemblyzer": lambda: _Resemblyzer(),
     "wespeaker34": lambda: _Onnx("voxceleb_resnet34_LM.onnx"),
     "wespeaker221": lambda: _Onnx("voxceleb_resnet221_LM.onnx"),
+    "campplus": lambda: _Campplus(),
 }
 
 
