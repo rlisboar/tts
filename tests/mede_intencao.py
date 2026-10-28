@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
 """Mede o classificador de intenção (#507): acerto vs regras, latência e memória.
 
-Uso: `./.venv-mlx/bin/python tests/mede_intencao.py`
+Uso (é o passo do gate #510 — sai !=0 quando reprova):
+
+    ./.venv-mlx/bin/python tests/mede_intencao.py                 # completo
+    ./.venv-mlx/bin/python tests/mede_intencao.py --sem-tts       # sem a parte do TTS
+    ./.venv-mlx/bin/python tests/mede_intencao.py --minimo 0.9    # barra mais dura
+
+`--sem-tts` pula a medição de latência com o TTS gerando ao mesmo tempo e o
+efeito no 1º trecho: nesse modo o veredito usa só o acerto (mais rápido, menos
+fiel). Sem ele a barra é a do card: ≥85 % de acerto, modelo > regra, p95 ≤400 ms.
 
 O corpus é versionado (`tests/fixtures/intencao_corpus.jsonl`, 70 frases ambíguas
-pt/en rotuladas à mão). As regras de comparação são a cadeia SÓ de regras do
-#501 (`classifica_barge`) quando ela existir; sem ela, este arquivo traz a
-mesma lista de comandos/backchannels e mede a regra equivalente — o número sai
-com a origem escrita ao lado, para não fingir comparação.
+pt/en rotuladas à mão). A comparação é com a replica LOCAL da regra do #501
+(as listas de comando/backchannel daqui) — este arquivo NÃO importa a
+`classifica_barge` real; o número sai ao lado da origem, para não fingir
+comparação.
 
 Latência: 40 decisões com o modelo quente, sem e COM TTS gerando ao mesmo tempo
-(um job real em thread). Memória: RSS do filho, do `/proc`-equivalente do macOS
-(`ps -o rss=`).
+(um job real em thread). Memória: PICO de RSS do filho (`ps -o rss=`, amostrado
+durante a rodada) — é o que a máquina paga; o RSS medido depois da carga cai por
+devolução de página do macOS e não serve de medida.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import statistics
 import subprocess
@@ -63,7 +73,19 @@ def _rss_mb(pid: int) -> float:
     return round(int((r.stdout or "0").strip() or 0) / 1024.0, 1)
 
 
+def _args():
+    ap = argparse.ArgumentParser(description="acerto, latência e memória do classificador de intenção")
+    ap.add_argument("--minimo", type=float, default=0.85,
+                    help="acerto mínimo para o veredito ser OK (padrão 0,85, o do card)")
+    ap.add_argument("--max-p95", type=int, default=400,
+                    help="p95 de latência máximo em ms (padrão 400, o do card)")
+    ap.add_argument("--sem-tts", dest="sem_tts", action="store_true",
+                    help="pula a parte do TTS concorrente (veredito só pelo acerto)")
+    return ap.parse_args()
+
+
 def main() -> int:
+    a = _args()
     casos = [json.loads(l) for l in CORPUS.read_text().splitlines() if l.strip()]
     print(f"corpus: {len(casos)} frases "
           f"({sum(1 for c in casos if c['esperado'] == 'cortar')} cortar / "
@@ -78,9 +100,19 @@ def main() -> int:
         print("worker não subiu:", inc.erro)
         return 1
     pid = inc._proc.pid
-    rss_vazio = _rss_mb(pid)
+    # PICO (#595): amostra em thread, porque o RSS medido depois da carga já caiu
+    # por devolução de página e o texto antigo chamava esse valor de "vazio".
+    rss_pico = {"mb": 0.0}
+    _para_rss = threading.Event()
+
+    def _amostra_rss():
+        while not _para_rss.is_set():
+            rss_pico["mb"] = max(rss_pico["mb"], _rss_mb(pid))
+            _para_rss.wait(0.2)
+
+    threading.Thread(target=_amostra_rss, daemon=True).start()
     try:
-        acertos, erros, lat = 0, [], []
+        acertos, erros = 0, []
         for c in casos:
             r = inc.decide(c["ref"], c["fala"], c["idioma"])
             if r is None:
@@ -88,8 +120,6 @@ def main() -> int:
                 continue
             if r["decisao"] == c["esperado"]:
                 acertos += 1
-            else:
-                lat.append(r["ms"])
         print(f"modelo: {acertos}/{len(casos)} = {100 * acertos / len(casos):.1f}%"
               f" (falhas de decisão: {len(erros)})")
 
@@ -161,7 +191,8 @@ def main() -> int:
                 amostras.append((time.perf_counter() - t0) * 1000)
             return st.median(amostras)
 
-        rss_quente = _rss_mb(pid)
+        _para_rss.set()
+        rss_quente = rss_pico["mb"] or _rss_mb(pid)
         com_worker = _primeiro_trecho_ms()
         inc.fecha()
         time.sleep(0.5)
@@ -169,12 +200,12 @@ def main() -> int:
         delta = 100 * (com_worker - sem_worker) / sem_worker
         print(f"\n1º trecho do TTS: {com_worker:.0f} ms com o worker | "
               f"{sem_worker:.0f} ms sem | {delta:+.1f}%")
-        print(f"RSS do worker: {rss_quente} MB (vazio {rss_vazio} MB) "
-              f"— ~2 GB de modelo, o preço de rodar LLM local")
+        print(f"RSS de PICO do worker: {rss_quente} MB — ~2 GB de modelo, o preço "
+              f"de rodar LLM local (o valor pós-carga cai por devolução de página)")
         print(f"acerto modelo {100 * acertos / len(casos):.1f}% x regra "
               f"{100 * acertos_regra / len(casos):.1f}%")
-        ok = (acertos / len(casos) >= 0.85 and acertos > acertos_regra
-              and ms2 and ms2[int(len(ms2) * 0.95) - 1] <= 400)
+        ok = (acertos / len(casos) >= a.minimo and acertos > acertos_regra
+              and (a.sem_tts or (ms2 and ms2[int(len(ms2) * 0.95) - 1] <= a.max_p95)))
         print("\nVEREDITO:", "OK" if ok else "REPROVADO")
         return 0 if ok else 1
     finally:
