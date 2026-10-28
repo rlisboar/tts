@@ -324,6 +324,12 @@ Entram na conta o `.wav`, o `.json` sem áudio e o diretório de trechos órfão
 (`.job-*` sem `.wav`) — os temporários de upload (`.stt-*` etc.) não, porque quem
 os recolhe é a limpeza por idade.
 
+As três settings de limpeza (`auto_cleanup`, `auto_cleanup_minutes` e
+`auto_cleanup_max_outputs`) são **administrativas**: elas apagam arquivo do dono,
+então uma chave `use` remota que mandasse `auto_cleanup_max_outputs: 1` deixaria o
+`outputs/` com um arquivo só no próximo minuto. Na tela, os campos ficam travados
+para chave de uso como as outras ações elevadas.
+
 Pela internet o `POST /api/tts` também passa pelo limitador de taxa
 (`TTS_RATE_LIMIT` / `TTS_HEAVY_RATE_LIMIT`, `TTS_POLL_RATE_LIMIT`); loopback é
 isento dele.

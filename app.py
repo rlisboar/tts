@@ -3603,9 +3603,11 @@ def shutdown(request: Request):
 # credencial dele) é outra. `_SETTINGS_ADMIN` = campos que só admin altera:
 # conexões externas (URLs, chaves, toggles de envio remoto) e escolha de modelo
 # (que dispara download/load de repo) e o formato do payload remoto
-# (`remote_tts_extra` — ele sobrepõe `text`/`speed` de TODO mundo). Fora da lista:
-# `remote_tts_voice` e políticas de recurso (idle_unload, free_local_on_remote,
-# speech_queue).
+# (`remote_tts_extra` — ele sobrepõe `text`/`speed` de TODO mundo) e as políticas
+# de LIMPEZA do `outputs/` (`auto_cleanup*`): uma chave `use` remota mandando
+# `auto_cleanup_max_outputs: 1` faz o próximo laço apagar tudo menos 1 arquivo do
+# dono (#543). Fora da lista: `remote_tts_voice` e políticas de recurso por
+# geração (idle_unload, free_local_on_remote, speech_queue).
 #
 # Compatibilidade: quem não quer separação nenhuma não muda NADA — sem
 # `TTS_ROD_ADMIN_KEY` e sem `role` nas chaves, toda chave válida segue admin.
@@ -3623,6 +3625,8 @@ _SETTINGS_ADMIN = frozenset({
     # o override é JSON aplicado sobre o corpo de TODOS os trechos: uma chave de
     # uso que manda `{"text": ...}` reescreveria o job alheio (#282)
     "remote_tts_extra",
+    # limpeza do `outputs/`: APAGA arquivo do dono (#543)
+    "auto_cleanup", "auto_cleanup_minutes", "auto_cleanup_max_outputs",
 })
 _SETTINGS_SECRETS = ("remote_api_key", "remote_stt_key", "chat_api_key")
 # marcador da máscara: começa com "•" e nunca é confundido com chave de verdade.
@@ -9414,15 +9418,29 @@ def _live_descarrega_pendente(sess: dict) -> None:
             _live_acorda_pendente(sess)
 
 
-def _live_transcreve_trecho(sess: dict, audio: bytes) -> str:
-    """Transcreve o trecho suspeito pelo MESMO STT do turno (o da sessão)."""
+def _live_transcreve_trecho(sess: dict, audio: bytes, cru: bool = False) -> str:
+    """Transcreve o trecho suspeito.
+
+    `cru=True` (passo do comando): vai DIRETO no whisper, sem o VAD e o juiz de
+    alucinação do `_stt_app` — eles custam ~200 ms e aqui só interessa casar
+    palavra de comando. A decisão final continua usando o caminho completo."""
     if not audio:
         return ""
     pipe = sess.get("pipe")
+    idioma = getattr(pipe, "language", None)
     stt = getattr(pipe, "_stt", None)
+    if cru:                              # o passo do comando não usa o `_stt`
+        try:
+            import numpy as _np
+            a = _np.frombuffer(audio, dtype="<i2").astype(_np.float32) / 32768.0
+            a = a[:24000]                      # ~1,5 s do INÍCIO: o comando vem no
+                                               # ataque, não no fim do trecho
+            return (_transcreve_em_janelas(a, idioma).get("text") or "").strip()
+        except Exception as exc:           # noqa: BLE001
+            _live_log_kv("barge_stt_erro", sess=sess["id"], erro=str(exc)[:100])
+            return ""
     if stt is None:
         return ""
-    idioma = getattr(pipe, "language", None)
     try:
         return (stt(audio, idioma) or "").strip()
     except Exception as exc:              # noqa: BLE001
@@ -9602,14 +9620,20 @@ def _live_suspeita_barge(sess: dict, ev) -> None:
     # ADENDO: comando cadastrado corta NA HORA. Em vez de esperar a janela
     # inteira, o trecho é transcrito em passos de `passo_ms` e, se um filtro de
     # comando disparar, a decisão sai ali (p50 ≤600 ms no smoke de latência).
+    # 150 ms: o STT custa ~300-500 ms, então passo maior só empurra o p50 para
+    # cima sem economizar nada (medido: 250→712 ms, 150→543 ms)
     passo = int((_settings.get("live_barge_filtros") or {}).get(
-        "palavras_corte", {}).get("passo_ms", 250))
+        "palavras_corte", {}).get("passo_ms", 150))
     if passo > 0:
         parar = threading.Event()
         sess["barge_parar"] = parar
 
         def _passos():
-            while not parar.wait(passo / 1000.0):
+            # 1ª passada IMEDIATA: o comando costuma vir no ataque e o STT já é o
+            # gargalo (~300-500 ms) — esperar um passo antes só soma
+            enquanto = 0.0
+            while not parar.wait(enquanto):
+                enquanto = passo / 1000.0
                 if not sess.get("barge_suspeito"):
                     return
                 _live_decide_barge(sess, b"", int(getattr(ev, "fala_ms", 0) or 0),
@@ -9635,12 +9659,13 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
     if so_comando:
         # passo intermediário: só o filtro de COMANDO pode fechar agora
         audio = audio_cru or sus.get("audio") or b""
-        texto = _live_transcreve_trecho(sess, audio)
-        tipo, _p, _m, filtro = _live_avalia_filtros(
-            sess, texto, fala_ms, {"modelo": {"on": False},
-                                   "pergunta": {"on": False},
-                                   "frase_longa": {"on": False},
-                                   "fala_sustentada": {"on": False}})
+        texto = _live_transcreve_trecho(sess, audio, cru=True)
+        # os filtros RÁPIDOS que não decidem no passo ficam desligados, mas a lista
+        # de palavras é a CONFIGURADA (o dono cadastra o que quiser)
+        rapidos = dict(_settings.get("live_barge_filtros") or {})
+        for lento in ("modelo", "pergunta", "frase_longa", "fala_sustentada"):
+            rapidos[lento] = {"on": False}
+        tipo, _p, _m, filtro = _live_avalia_filtros(sess, texto, fala_ms, rapidos)
         if filtro not in ("palavras_corte",):
             return
         sess.pop("barge_suspeito", None)
