@@ -67,8 +67,10 @@ def garante(verbose: bool = False) -> Path:
         print(f"pesos ausentes em {MODELOS}: rode {script}", flush=True)
     import subprocess
 
-    r = subprocess.run(["zsh" if sys.platform == "darwin" else "bash", "-f", str(script)],
-                       capture_output=True, text=True)
+    # o script é zsh (`#!/bin/zsh`, usa `${0:A:h}`): roda pelo SHEBANG, nunca com
+    # `bash`. Sem o bit de execução, cai no `zsh` explícito.
+    cmd = [str(script)] if os.access(script, os.X_OK) else ["zsh", str(script)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
     if not disponivel():
         raise SystemExit(
             f"pesos do separador ausentes em {MODELOS} — rode {script}. "

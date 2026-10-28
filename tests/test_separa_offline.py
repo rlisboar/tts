@@ -96,6 +96,19 @@ def test_sem_os_pesos_a_disponibilidade_cai_e_a_mensagem_diz_o_script(tmp_path):
     assert r.stdout.strip() == "False", r.stdout + r.stderr
 
 
+@_pesos
+def test_garante_roda_o_script_pelo_shebang_e_nao_baixa_a_toa(tmp_path):
+    """`garante()` é zsh (`#!/bin/zsh`, `${0:A:h}`) — com `bash` o caminho da raiz
+    sai vazio e o script quebra no CI Linux. Com os pesos no lugar ele nem executa:
+    devolve o diretório e não pede rede."""
+    sys.path.insert(0, str(REPO / "tools" / "bakeoff"))
+    import separa  # noqa: PLC0415 — só aqui precisa
+
+    script = REPO / "tools" / "baixa_modelos.sh"
+    assert os.access(script, os.X_OK), "script sem bit de execução (o shebang não roda)"
+    assert separa.garante() == separa.MODELOS
+
+
 def test_codigo_vendorizado_e_o_da_revisao_fixada():
     """Vendor sem conferência vira upstream fantasma: o `FONTE.txt` traz o sha256
     de cada arquivo e a revisão. O único desvio admitido é o `torchinfo` opcional."""
