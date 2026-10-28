@@ -313,6 +313,14 @@ O histórico guarda os 20 últimos jobs (`_JOBS_MAX`) e só descarta job já
 cliente perderia status e áudio no meio da fala. `GET /api/status` publica
 `jobs_active`, `jobs_active_max` e `jobs_history_max` para acompanhar a ocupação.
 
+`outputs/` também tem **teto de quantidade** (`auto_cleanup_max_outputs`, padrão
+500; `0` desliga). A poda roda de minuto em minuto junto da limpeza e derruba os
+áudios **mais antigos** — o que está em job ativo ou ainda no histórico nunca é
+podado. Ele é proteção do diretório, não preferência: vale mesmo com
+`auto_cleanup` desligado (esse é só o corte por TEMPO, `auto_cleanup_minutes`).
+Uma instalação com anos de uso chegou a 3.528 `.wav` (37 MB, a maioria sem `.json`
+e invisível na listagem); com o teto padrão ela voltou a 500 arquivos (14 MB).
+
 Pela internet o `POST /api/tts` também passa pelo limitador de taxa
 (`TTS_RATE_LIMIT` / `TTS_HEAVY_RATE_LIMIT`, `TTS_POLL_RATE_LIMIT`); loopback é
 isento dele.
