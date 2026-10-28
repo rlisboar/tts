@@ -140,6 +140,10 @@ def test_app_nao_baixa_modelo_no_boot():
         assert "from_hparams(" not in texto, f"{arq} carrega o extrator baixando sozinho"
 
 
+#: gerado pelo speechbrain no primeiro load (não é baixável nem versionado)
+GERADOS = {"label_encoder.ckpt"}
+
+
 def test_manifesto_lista_todos_os_pesos_do_repo():
     """Peso sem sha256 no manifesto é peso que ninguém confere."""
     manifesto = (REPO / "models" / "sha256sums.txt").read_text()
@@ -147,5 +151,17 @@ def test_manifesto_lista_todos_os_pesos_do_repo():
     no_disco = {f"models/{p.relative_to(REPO / 'models').as_posix()}"
                 for p in (REPO / "models").rglob("*")
                 if p.is_file() and p.suffix in {".ckpt", ".yaml", ".txt", ".npy"}
-                and p.name not in {"sha256sums.txt"}}
+                and p.name not in {"sha256sums.txt"} | GERADOS}
     assert not (no_disco - listados), f"peso fora do manifesto: {sorted(no_disco - listados)}"
+
+
+def test_ckpt_fica_fora_do_git_e_o_script_materializa():
+    """83 MB de um `.ckpt` não podem entrar no índice; quem põe é o script (#526)."""
+    pesos = sorted((REPO / "models").rglob("*.ckpt"))
+    assert pesos, "nenhum peso no disco — rode tools/baixa_modelos.sh"
+    rastreados = subprocess.run(["git", "-C", str(REPO), "ls-files", "models"],
+                                capture_output=True, text=True, check=True).stdout
+    assert not [p for p in pesos if f"models/{p.relative_to(REPO / 'models')}" in rastreados]
+    for p in pesos:
+        ignorado = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-q", str(p)])
+        assert ignorado.returncode == 0, f"{p.name} não está no .gitignore"

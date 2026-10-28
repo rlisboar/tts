@@ -15,6 +15,9 @@ Artefatos ao lado:
   AS-norm passa a normalizar pelo lugar errado (no Resemblyzer ele piora: 1,9 % →
   5,0 % de EER em 1 s).
 - `sha256sums.txt` — sha256 de cada arquivo de peso/artefato. Divergência é ERRO.
+  Os `.ckpt` NÃO estão no git (83 MB de um só): quem os materializa é o script,
+  conferindo o sha256. `label_encoder.ckpt` é gerado pelo speechbrain no primeiro
+  load a partir do `label_encoder.txt` e por isso não entra no manifesto.
 
 ## Como materializar
 

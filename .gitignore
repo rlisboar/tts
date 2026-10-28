@@ -54,3 +54,8 @@ tmp/
 .coverage
 .coverage.*
 htmlcov/
+
+# pesos de modelo: ficam FORA do git (83 MB de um .ckpt só). O manifesto
+# `models/sha256sums.txt` fica e `tools/baixa_modelos.sh` materializa conferindo.
+# `label_encoder.ckpt` é gerado pelo próprio speechbrain no primeiro load.
+models/**/*.ckpt
