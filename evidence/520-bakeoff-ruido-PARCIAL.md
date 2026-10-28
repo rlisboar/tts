@@ -32,6 +32,14 @@ O DFN3 limpa mais em OVRL; o RNNoise **preserva mais o timbre** em babble e tem 
 Ou seja: **não trocar o filtro do Live**; o ganho real está na amostra (a) e no
 import (d).
 
+## O que a medição ainda NÃO sustenta
+
+- **MossFormer2 e Resemble-Enhance** não foram medidos (entram no mesmo runner,
+  dependem de venv próprio).
+- **Demucs** também não: a recomendação (d) é desenho, não número.
+- PESQ/STOI e o custo no VAD (`smoke_live_turns.py` sob ventoinha) pendentes.
+- Só ventoinha e babble, SNR 5 e 10 — falta 0 e 20 e as demais famílias.
+
 ## Ressalvas
 
 - **O WER foi medido com `language="pt"` em áudio INGLÊS** (LibriSpeech): o valor
