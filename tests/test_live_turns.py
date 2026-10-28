@@ -1021,3 +1021,85 @@ def test_cliente_corta_o_playback_no_onset_mesmo_sem_barge():
     corpo = bloco.group(1)
     assert "LX.ativos.length" in corpo and "lxCancelaPlayback()" in corpo, \
         "`speech_start` deixou de cortar o playback com fila (#225)"
+
+
+# --------------------------------------------------------------------------
+# #501: interrupção inteligente (suspeita → decisão por conteúdo)
+# --------------------------------------------------------------------------
+def _motor_inteligente(modo: str = "inteligente", **cfg):
+    return _motor(**{**cfg, "interrupcao": modo})
+
+
+def test_modo_inteligente_emite_suspeito_e_nao_corta_sozinho():
+    motor, rel = _motor_inteligente()
+    ev = _abrir_por_barge(motor, rel)
+    tipos = [e.tipo for e in ev]
+    assert "barge_suspeito" in tipos
+    assert "barge_in" not in tipos, "o corte só vem na decisão"
+    assert "speech_start" not in tipos, "o cliente só abaixa o volume aqui"
+    assert motor.estado is lt.Estado.FALANDO
+
+
+def test_decisao_interrupcao_emite_barge_in_e_mantem_o_turno():
+    motor, rel = _motor_inteligente()
+    _abrir_por_barge(motor, rel)
+    out = motor.decidir_barge("interrupcao", "para", 620, 140)
+    tipos = [e.tipo for e in out]
+    assert tipos[0] == "barge_decisao" and out[0].tipo_barge == "interrupcao"
+    assert "barge_in" in tipos and "speech_start" in tipos
+    assert motor.estado is lt.Estado.FALANDO
+
+
+def test_decisao_backchannel_retoma_e_descarta_o_turno():
+    motor, rel = _motor_inteligente()
+    _abrir_por_barge(motor, rel)
+    out = motor.decidir_barge("backchannel", "uhum", 300, 120)
+    tipos = [e.tipo for e in out]
+    assert "barge_retoma" in tipos and "barge_in" not in tipos
+    assert out[-1].audio, "o áudio volta no `barge_retoma` (o handler anota a fala)"
+    assert motor.estado is lt.Estado.OCIOSO
+
+
+def test_decisao_chega_depois_do_fechamento_e_ainda_corta():
+    motor, rel = _motor_inteligente()
+    _abrir_por_barge(motor, rel)
+    motor.flush()                       # a janela fechou antes da decisão
+    out = motor.decidir_barge("interrupcao", "para", 620, 140)
+    assert [e.tipo for e in out][1] == "barge_in"
+    assert out[1].audio, "o áudio da suspeita sobrevive ao fechamento"
+    assert motor.estado is lt.Estado.FALANDO
+
+
+def test_modo_so_comando_continua_suspeitando():
+    motor, rel = _motor_inteligente("so_comando")
+    assert "barge_suspeito" in [e.tipo for e in _abrir_por_barge(motor, rel)]
+
+
+def test_modo_invalido_cai_no_default_do_app():
+    assert lt.Config(interrupcao="lixo").interrupcao == "inteligente"
+
+
+def test_classifica_barge_tabela_pt_en():
+    casos = [
+        (("para", 300), "interrupcao"), (("espera", 350), "interrupcao"),
+        (("chega", 350), "interrupcao"), (("stop", 300), "interrupcao"),
+        (("hold on", 400), "interrupcao"), (("qual o prazo?", 400), "interrupcao"),
+        (("quando sai", 500), "interrupcao"), (("sim, espera", 350), "interrupcao"),
+        (("uhum", 250), "backchannel"), (("ok", 300), "backchannel"),
+        (("sei", 200), "backchannel"), (("aham", 220), "backchannel"),
+        (("", 200), "ruido"), (("hm", 120), "backchannel"),
+        (("o dia ta bonito", 600), "interrupcao"),
+    ]
+    for (texto, ms), esperado in casos:
+        assert lt.classifica_barge(texto, ms) == esperado, (texto, ms)
+
+
+def test_fala_longa_corta_sem_esperar_texto():
+    assert lt.classifica_barge("", 1300) == "interrupcao"
+    assert lt.classifica_barge("alguma coisa", 1300) == "interrupcao"
+
+
+def test_eco_classifica_como_eco_antes_do_conteudo():
+    ref = "então o dia está bonito hoje"
+    assert lt.classifica_barge("o dia esta bonito", 600, ref_eco=ref) == "eco"
+    assert lt.classifica_barge("qual o prazo", 600, ref_eco=ref) == "interrupcao"

@@ -77,6 +77,76 @@ SILENCE_MS_MINIMO_STT = 500               # abaixo disto o STT come a última s�
 
 Scorer = Callable[[np.ndarray], float]
 
+# ── classificação de barge por CONTEÚDO (#501) ────────────────────────────
+# O corte por energia derruba a resposta em "uhum" e em tosse. A decisão passa a
+# olhar o TEXTO do trecho: comando/pergunta/3+ palavras cortam; backchannel puro,
+# ruído e eco deixam a resposta seguir. Listas pt/en, normalizadas (sem acento,
+# minúsculas) — comparação por conjunto, não por substring.
+_COMANDO_PARAR = frozenset("""
+para pare parar espera esperar perai pera calma chega chega_ai nao n pare_ai
+stop wait hold hold_on holdon hang_on quiet silence enough cancel cancela
+""".split())
+_BACKCHANNEL = frozenset("""
+uhum aham hum hmm hm mm sim sei ok okay ta tá certo certinho entendi entendido isso
+claro beleza legal nossa mhm yeah yep right sure humhum uhum ah ahh oh
+""".split())
+_PERGUNTA = frozenset("""
+que o_que qual quais quando onde como quem quanto quantos porque por_que
+cadê cade what why how when where who which
+""".split())
+
+
+def _sem_acento(texto: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", texto)
+                   if unicodedata.category(c) != "Mn")
+
+
+def _palavras(texto: str) -> list[str]:
+    """Palavras normalizadas, sem pontuação (``peraí,`` → ``perai``)."""
+    import re
+    low = _sem_acento((texto or "").lower())
+    return re.findall(r"[a-z0-9_]+", low)
+
+
+def classifica_barge(texto: str, fala_ms: int, ref_eco: str = "",
+                     idioma: str = "pt") -> str:
+    """Classifica o trecho que interrompeu: `interrupcao` | `backchannel` |
+    `ruido` | `eco`.
+
+    Função PURA (sem motor, sem I/O) — é o que permite tabela de casos em teste.
+    A ordem responde ao risco de cada erro: cortar por engano custa a resposta,
+    deixar de cortar custa o turno do usuário, então comando e pergunta vêm
+    antes de qualquer coisa; backchannel só depois de descartar comando/pergunta;
+    eco (o assistente ouvindo a si mesmo) por último e com a regra do #301."""
+    palavras = _palavras(texto)
+    # 1) fala LONGA é intenção, mesmo sem texto útil (o STT pode atrasar)
+    if fala_ms >= 1200:
+        return "interrupcao"
+    if not palavras:
+        return "ruido"
+    if ref_eco:
+        # import tardio: `live_pipeline` é quem tem a regra do #301 e importar no
+        # topo criaria ciclo (o pipeline consome este módulo)
+        from live_pipeline import _parece_eco
+        if _parece_eco(texto, ref_eco):
+            return "eco"
+    # 2) comando de parar: 1 palavra basta, e só vale nas posições de comando
+    # (começo ou fim) — "sim, espera" corta; "espera" no meio de frase longa já
+    # caiu na regra de 3+ palavras.
+    if palavras[0] in _COMANDO_PARAR or palavras[-1] in _COMANDO_PARAR:
+        return "interrupcao"
+    # 3) pergunta
+    if "?" in (texto or "") or any(p in _PERGUNTA for p in palavras):
+        return "interrupcao"
+    # 4) fala com conteúdo próprio
+    if len(palavras) >= 3 and not all(p in _BACKCHANNEL for p in palavras):
+        return "interrupcao"
+    # 5) backchannel puro (curto e todo da lista)
+    if len(palavras) <= 2 and all(p in _BACKCHANNEL for p in palavras):
+        return "backchannel"
+    return "interrupcao"
+
 
 class Estado(str, Enum):
     OCIOSO = "ocioso"
@@ -154,6 +224,13 @@ class Config:
     energia_margin_db: float = 6.0                # margem p/ ABRIR turno
     energia_margin_turno_db: float = 3.0          # margem p/ MANTER turno (histerese)
     min_fala_ms: int = 250                        # turno mais curto que isto é "curto"
+    # #501: interrupção INTELIGENTE. `imediata` = comportamento antigo (corta no
+    # limiar de energia); `so_comando` = só a lista de parar corta; `inteligente`
+    # (default) ouve até `barge_decisao_ms`/`speech_end` e decide pelo CONTEÚDO.
+    # Default do MOTOR é `imediata` (contrato antigo, sem handler de STT); o app
+    # passa o modo do setting, cujo default é `inteligente`.
+    interrupcao: str = "imediata"
+    barge_decisao_ms: int = 700                   # janela de escuta antes de decidir
     cauda_ms: int = 200                           # silêncio guardado no áudio do turno
     turno_max_ms: int = 30000
     piso_ruido_dbfs: float = -60.0
@@ -211,7 +288,10 @@ class Config:
     taxa_falso_barge_in_limite: float = 0.3
 
     def __post_init__(self) -> None:
+        if self.interrupcao not in ("inteligente", "imediata", "so_comando"):
+            object.__setattr__(self, "interrupcao", "inteligente")
         for nome in ("prefix_ms", "silence_ms", "onset_ms", "barge_in_ms", "min_fala_ms",
+                     "barge_decisao_ms",
                      "cauda_ms", "turno_max_ms", "playback_janela_ms", "eco_calibracao_ms",
                      "envelope_ms", "eco_pre_janela_ms"):
             if int(getattr(self, nome)) < 0:
@@ -248,6 +328,10 @@ class Config:
     @property
     def _frames_barge(self) -> int:
         return max(1, math.ceil(self.barge_in_ms / FRAME_MS))
+
+    @property
+    def _frames_decisao_barge(self) -> int:
+        return max(1, math.ceil(self.barge_decisao_ms / FRAME_MS))
 
     @property
     def _frames_prefix(self) -> int:
@@ -318,6 +402,11 @@ class TurnEvent:
     barge_in: bool = False
     barge_falso: bool = False       # barge-in sem fala além da janela de confirmação
     ms_desde_evento_anterior: int | None = None
+    # #501: decisão pelo conteúdo
+    tipo_barge: str | None = None   # interrupcao | backchannel | ruido | eco
+    texto: str | None = None
+    p_cortar: float | None = None
+    modelo_ms: int | None = None
 
     def to_json(self) -> dict:
         """Forma de fio do protocolo (o áudio do turno vai em frame binário)."""
@@ -331,6 +420,14 @@ class TurnEvent:
         if self.tipo == "speech_end":
             d["fala_ms"] = self.fala_ms
             d["barge_falso"] = self.barge_falso
+        if self.tipo_barge is not None:
+            d["tipo"] = self.tipo_barge
+        if self.texto is not None:
+            d["texto"] = self.texto
+        if self.p_cortar is not None:
+            d["p_cortar"] = round(self.p_cortar, 3)
+        if self.modelo_ms is not None:
+            d["modelo_ms"] = self.modelo_ms
         if self.audio:
             d["audio_bytes"] = len(self.audio)
         return d
@@ -385,6 +482,9 @@ class TurnEngine:
         self._eco_ausente = False
         self._degrau_base: float | None = None   # piso travado no salto (#273)
         self._barge_no_turno_emitido = False
+        self._suspeito = False          # #501: turno aberto por suspeita, sem decisão
+        self._decisao_frames = 0
+        self._suspeito_audio = b""
         self._nivel_payload: float | None = None
         self._pre_env: deque[float] = deque(maxlen=self.config._frames_pre)
         self._env: deque[float] = deque(maxlen=self.config._frames_envelope)
@@ -878,8 +978,23 @@ class TurnEngine:
             self._barge_frames = self._barge_frames + 1 if voz else 0
             self._onset_frames = 0
             if self._barge_frames >= self.config._frames_barge:
-                return self._abrir_turno(amostra + FRAME_SAMPLES, self._barge_frames,
-                                         barge=True, prob=prob, dbfs=dbfs)
+                if self.config.interrupcao == "imediata":
+                    return self._abrir_turno(amostra + FRAME_SAMPLES, self._barge_frames,
+                                             barge=True, prob=prob, dbfs=dbfs)
+                # #501: abre o turno já (para o áudio ficar bufferizado), mas NÃO
+                # anuncia o corte ainda — o cliente só abaixa o volume. A decisão
+                # vem depois, por `decidir_barge`.
+                evs = [e for e in self._abrir_turno(
+                    amostra + FRAME_SAMPLES, self._barge_frames,
+                    barge=True, prob=prob, dbfs=dbfs) if e.tipo != "speech_start"]
+                self._suspeito = True
+                self._suspeito_audio = b""
+                self._decisao_frames = 0
+                for e in evs:
+                    if e.tipo == "barge_in":
+                        e.tipo = "barge_suspeito"
+                        e.detalhe = f"onset durante playback ({self.config.interrupcao})"
+                return evs
             return []
 
         voz = self._voz(dbfs, prob, self.limiar_energia_dbfs)
@@ -928,6 +1043,9 @@ class TurnEngine:
                 inicio = fim
         audio = b"".join(_pcm16(f) for f in pre)
 
+        if not barge:
+            self._suspeito = False
+            self._suspeito_audio = b""
         self._estado = Estado.FALANDO
         self._turno = list(pre)
         self._turno_amostra = inicio
@@ -953,7 +1071,57 @@ class TurnEngine:
                                     detalhe="hold" if hold else ("barge_in" if barge else "")))
         return eventos
 
+    def decidir_barge(self, tipo: str, texto: str = "", fala_ms: int = 0,
+                      decisao_ms: int = 0, p_cortar: float | None = None,
+                      modelo_ms: int | None = None) -> list[TurnEvent]:
+        """Fecha a SUSPEITA de barge (#501). Chamado pelo handler quando chega o
+        `speech_end`, quando a janela de `barge_decisao_ms` estoura, ou direto com
+        `tipo` decidido.
+
+        `interrupcao` mantém o turno aberto e emite o `barge_in` que o cliente já
+        conhece (corta). Os demais tipos emitem `barge_retoma` e DESCARTAM o turno
+        bufferizado — a resposta do assistente continua e o backchannel não entra
+        no histórico. Devolve vazio se não havia suspeita."""
+        if not self._suspeito:
+            return []
+        self._suspeito = False
+        self._decisao_frames = 0
+        if self._turno:
+            self._suspeito_audio += b"".join(_pcm16(f) for f in self._turno)
+            self._turno = []
+        audio = self._suspeito_audio
+        self._suspeito_audio = b""
+        decisao = self._evento("barge_decisao", self._t_ms(), self._turno_amostra,
+                               b"", texto=texto, tipo_barge=tipo, p_cortar=p_cortar,
+                               modelo_ms=modelo_ms,
+                               detalhe=f"decisao em {decisao_ms} ms")
+        if tipo == "interrupcao":
+            if self._estado is Estado.OCIOSO:
+                # a decisão chegou DEPOIS de o turno fechar (janela do handler):
+                # reabre para os frames seguintes entrarem no turno certo
+                self._estado = Estado.FALANDO
+                self._turno_barge = True
+                self._silencio_frames = 0
+            self._stat["barge_in"] += 1
+            abrir = [self._evento("barge_in", self._t_ms(), self._turno_amostra, audio,
+                                  barge_in=True, detalhe=f"{tipo} (conteúdo)"),
+                     self._evento("speech_start", self._t_ms(), self._turno_amostra, audio,
+                                  barge_in=True, fala_ms=fala_ms, detalhe="barge_in")]
+            return [decisao, *abrir] if decisao else abrir
+        # retoma: solta o turno e devolve o áudio para o handler decidir (ele pode
+        # anotar a fala sem abrir turno)
+        self._stat["barge_retomado"] = self._stat.get("barge_retomado", 0) + 1
+        retoma = self._evento("barge_retoma", self._t_ms(), self._turno_amostra, audio,
+                              tipo_barge=tipo, texto=texto, fala_ms=fala_ms)
+        self._reset_turno()
+        return [decisao, retoma]
+
     def _fechar_turno(self, motivo: str) -> list[TurnEvent]:
+        if self._suspeito and self._turno:
+            # o áudio da suspeita não pode morrer no fechamento: a decisão ainda
+            # vai chegar (o handler chama `decidir_barge` com o transcript)
+            self._suspeito_audio += b"".join(_pcm16(f) for f in self._turno)
+            self._turno = []
         fala_ms = self._fala_frames * FRAME_MS
         curto = fala_ms < self.config.min_fala_ms
         sobra = max(0, self._silencio_frames - self.config._frames_cauda)
@@ -989,6 +1157,7 @@ class TurnEngine:
         self._barge_frames = 0
         self._degrau_base = None
         self._barge_no_turno_emitido = False
+        self._decisao_frames = 0
 
     def _evento(self, tipo: str, t_ms: int, amostra: int, audio: bytes, **kw) -> TurnEvent:
         t_ms = max(0, int(t_ms))
