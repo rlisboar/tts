@@ -1330,6 +1330,19 @@ def _stt_app(pcm16_le_16k: bytes, language: str | None,
     _fd, _nome = tempfile.mkstemp(prefix="tts-live-stt-", suffix=".wav")
     os.close(_fd)                       # será reaberto pelo `wave` logo abaixo
     destino = pathlib.Path(_nome)
+    # "SÓ A MINHA VOZ" (#533): o portão roda ANTES do STT — terceiro/TV não paga
+    # transcrição e não vira resposta. Mesma verificação do filtro `identidade`
+    # do barge (uma só). Indisponível ⇒ `ok=True` (fail-open) e o `motivo` diz.
+    if app._live_voz_ligado():
+        voz = app._voz_do_dono(pcm16_le_16k)
+        if julga is not None:
+            julga["voz"] = voz
+        if not voz.get("ok"):
+            if julga is not None:
+                julga["motivo"] = "voz"
+                julga["detalhe"] = voz.get("motivo") or "outra voz"
+            destino.unlink(missing_ok=True)
+            return ""
     try:
         with wave.open(str(destino), "wb") as w:
             w.setnchannels(1)

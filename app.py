@@ -495,6 +495,14 @@ _SETTINGS_DEFAULTS = {
     # não foi medido. Ligado, `_speaker_gate_ok` acrescenta `anticlone` na resposta
     # (hoje "pendente") sem mudar veredito; desligado, nem o campo aparece.
     "speaker_anticlone": False,
+    # "Só a minha voz" no Live (#533): portão ECAPA no TURNO. Desligado, nada
+    # muda. Ligado, terceiro/TV não corta a resposta nem vira turno (o filtro
+    # `identidade` do I4 reusa a MESMA verificação). `perfil` é o nome do perfil
+    # de voz do dono; `rigor_far` ("1"/"0,1") troca o limiar pelo alvo de FAR —
+    # vazio usa 0,44, o limiar do R4 (`evidence/532`; 0,35 passa voz parecida).
+    # `separacao` é OPCIONAL e desligada por default: custa ~1 s e 1,16 GB.
+    "live_so_minha_voz": {"on": False, "perfil": "", "rigor_far": "",
+                          "separacao": False},
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
     # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
@@ -2061,6 +2069,10 @@ def status():
     # carregou. Sem isto a única pista de um fallback para o torch seria o print
     # no stderr do servidor — /api/status prova em produção qual caminho está vivo.
     st["vad_backend"] = _vad_backend or None
+    # Extrator de locutor em uso e, quando caiu para o legado, o motivo (#606) —
+    # mesmo papel do `vad_backend`: o fallback tem de ser provado por fora, não
+    # descoberto no stderr.
+    st["extrator_locutor"] = _speaker_modelo_efetivo()
     # Tamanho do dict do rate limiter (buckets = identidade × path normalizado) e o
     # teto: era invisível e só aparecia como memória crescendo em caixa exposta.
     st["live_sessions"] = len(_live_sessions)
@@ -3739,6 +3751,12 @@ def _settings_vista(request) -> dict:
     não material para gerar fala. Admin/mac continua vendo tudo."""
     adm = _admin_is_allowed(request)
     extra = {"is_admin": adm, "admin_fields": sorted(_SETTINGS_ADMIN)}
+    # Extrator de locutor em uso (#606): a tela mostra o fallback em vez de deixar
+    # o dono achar que está no ECAPA. `motivo` só sai quando caiu para o legado.
+    extra["extrator_efetivo"] = _speaker_modelo_efetivo()
+    motivo = _speaker_ecapa_motivo()
+    if motivo:
+        extra["extrator_motivo"] = motivo
     if not adm:
         for k in _SETTINGS_SECRETS:
             if _settings.get(k):
@@ -4214,6 +4232,22 @@ def _apply_settings(payload: dict):
         v = payload["speaker_anticlone"]
         _settings["speaker_anticlone"] = (v if isinstance(v, bool)
                                           else str(v).strip().lower() in ("1", "true", "on"))
+    if "live_so_minha_voz" in payload:
+        # "só a minha voz" no Live (#533): bloco próprio, só as chaves conhecidas
+        # (o resto do bloco fica como está — a UI manda o objeto montado).
+        cfg = payload["live_so_minha_voz"]
+        if isinstance(cfg, dict):
+            atual = dict(_settings.get("live_so_minha_voz") or {})
+            for k, v in cfg.items():
+                if k in ("on", "separacao"):
+                    atual[k] = (v if isinstance(v, bool)
+                                else str(v).strip().lower() in ("1", "true", "on"))
+                elif k == "perfil":
+                    atual[k] = str(v or "").strip()[:60]
+                elif k == "rigor_far":
+                    v = str(v or "").strip().replace(",", ".")
+                    atual[k] = v if v in ("1", "0.1") else ""
+            _settings["live_so_minha_voz"] = atual
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
             _settings[chave] = str(payload[chave] or "").strip()[:120]
@@ -7974,6 +8008,28 @@ _speaker_lock = threading.Lock()
 _speaker_enc_lock = threading.Lock()   # só a criação do encoder
 _speaker_encoder = None      # VoiceEncoder (legado) carregado sob demanda
 _speaker_ecapa_enc = None    # EncoderClassifier (ECAPA) carregado sob demanda
+_speaker_fallback_avisado = False   # o aviso de fallback sai UMA vez por processo
+
+
+def _speaker_ecapa_motivo() -> str:
+    """Por que o ECAPA está fora ("" = está disponível).
+
+    A separação do motivo existe para o aviso ser ACIONÁVEL (#606): "pesos
+    ausentes" manda rodar o script, "lib ausente" manda olhar o venv. Antes o
+    fallback era silencioso e a instalação ficava no legado para sempre sem que
+    ninguém soubesse por quê."""
+    import importlib.util
+
+    try:
+        if importlib.util.find_spec("speechbrain") is None:
+            return "speechbrain não instalado no venv"
+    except (ImportError, ValueError):     # pacote quebrado no venv
+        return "pacote speechbrain quebrado no venv"
+    faltam = [a for a in _SPEAKER_ARQ_OBRIG if not (_SPEAKER_MODELO_DIR / a).is_file()]
+    if faltam:
+        return (f"pesos ausentes em {_SPEAKER_MODELO_DIR} (falta {', '.join(faltam)}) "
+                f"— rode ./tools/baixa_modelos.sh")
+    return ""
 
 
 def _speaker_ecapa_ok() -> bool:
@@ -7981,19 +8037,24 @@ def _speaker_ecapa_ok() -> bool:
 
     Sem download em runtime (decisão do PM no #525): quem traz os pesos é o #526.
     Ausente = False e o app segue no Resemblyzer."""
-    import importlib.util
-
-    try:
-        if importlib.util.find_spec("speechbrain") is None:
-            return False
-    except (ImportError, ValueError):     # pacote quebrado no venv
-        return False
-    return all((_SPEAKER_MODELO_DIR / a).is_file() for a in _SPEAKER_ARQ_OBRIG)
+    return not _speaker_ecapa_motivo()
 
 
 def _speaker_modelo_efetivo() -> str:
-    """Extrator que ESTA instalação usa de fato (o desejado, se disponível)."""
-    return SPEAKER_MODELO_ATUAL if _speaker_ecapa_ok() else SPEAKER_MODELO_LEGADO
+    """Extrator que ESTA instalação usa de fato (o desejado, se disponível).
+
+    Não carrega nada: só confere lib/pesos. A carga fica no primeiro embedding
+    (decisão do PM no #525: nada de modelo no boot). A disponibilidade passa por
+    `_speaker_ecapa_ok()` porque é ela que o resto do código injeta/dubla nos
+    testes; o motivo só é apurado no caminho de queda."""
+    if _speaker_ecapa_ok():
+        return SPEAKER_MODELO_ATUAL
+    global _speaker_fallback_avisado
+    if not _speaker_fallback_avisado:
+        _speaker_fallback_avisado = True
+        print(f"[speaker] ECAPA indisponível — usando o extrator legado "
+              f"(Resemblyzer): {_speaker_ecapa_motivo()}", file=sys.stderr, flush=True)
+    return SPEAKER_MODELO_LEGADO
 
 
 def _speaker_modelo_do_perfil(perfil: dict) -> str:
@@ -8321,6 +8382,133 @@ def _speaker_anticlone() -> dict:
     `pendente` em vez de inventar aprovação. Quando o detector existir ele entra
     como campo aditivo e o `enforce` passa a rejeitar clone."""
     return {"anticlone": "pendente"}
+
+
+# ── "só a minha voz" no Live (#533) ────────────────────────────────────────
+# Protocolo do R4 (`evidence/532`): ECAPA em janela de 1 s, passo de 0,25 s,
+# **2 janelas seguidas** acima do limiar e piso de energia (0,15 do p90). Falso
+# turno medido: 0 em 10 min; custo 17 ms por janela com o modelo carregado — daí
+# o PREWARM por sessão. O limiar default é 0,44 (0,35 passa voz parecida,
+# `evidence/521`); `rigor_far` troca pelo alvo de FAR quando o dono quiser.
+_VOZ_JANELA_S = 1.0
+_VOZ_PASSO_S = 0.25
+_VOZ_CONFIRMACOES = 2
+_VOZ_PISO_ENERGIA = 0.15
+_VOZ_LIMIAR_PADRAO = 0.44
+
+
+def _live_voz_ligado() -> dict | None:
+    cfg = _settings.get("live_so_minha_voz") or {}
+    return cfg if cfg.get("on") else None
+
+
+def _live_voz_perfil(cfg: dict) -> tuple[str, dict] | None:
+    """(nome, perfil) do dono. Sem escolha explícita usa o único/primeiro — o
+    dono costuma ter um perfil só, e exigir o nome travaria o modo à toa."""
+    with _speaker_lock:
+        perfis, erro = _speaker_load_estado()
+    if erro or not perfis:
+        return None
+    nome = str(cfg.get("perfil") or "")
+    if nome and nome in perfis:
+        return nome, perfis[nome]
+    if nome:
+        return None                       # escolhido e sumiu: não troca de voz sozinho
+    primeiro = next(iter(perfis))
+    return primeiro, perfis[primeiro]
+
+
+def _voz_do_dono(pcm16: bytes) -> dict:
+    """O trecho é o DONO falando? `{ok, score, janelas, latencia_ms, estado, motivo}`.
+
+    `ok=True` também nos casos de INDISPONIBILIDADE (fail-open, nunca ficar surdo):
+    o `estado` diz `indisponivel` e o `motivo` explica. Chamado pelo filtro
+    `identidade` do barge e pela cabeça do `_stt_app` (uma verificação só)."""
+    t0 = time.monotonic()
+    cfg = _live_voz_ligado()
+    if not cfg:
+        return {"ok": True, "estado": "off", "janelas": 0, "score": None,
+                "latencia_ms": 0, "motivo": ""}
+
+    def _fora(motivo: str, **extra) -> dict:
+        return {"ok": True, "estado": "indisponivel", "janelas": 0, "score": None,
+                "latencia_ms": int((time.monotonic() - t0) * 1000),
+                "motivo": motivo, **extra}
+
+    alvo = _live_voz_perfil(cfg)
+    if alvo is None:
+        return _fora("perfil de voz ausente")
+    _nome, perfil = alvo
+    vecs = perfil.get("vecs") or []
+    if not vecs:
+        return _fora("perfil sem amostras")
+    modelo = _speaker_modelo_do_perfil(perfil)
+    try:
+        import numpy as np
+        a = np.frombuffer(pcm16[: pcm16.size if hasattr(pcm16, "size") else len(pcm16)],
+                          dtype="<i2").astype(np.float32) / 32768.0
+    except Exception as exc:              # noqa: BLE001
+        return _fora(f"áudio ilegível ({type(exc).__name__})")
+    janela = int(16000 * _VOZ_JANELA_S)
+    passo = int(16000 * _VOZ_PASSO_S)
+    if a.size < janela:                   # curto demais p/ 1 janela cheia
+        if a.size < 16000 * 0.6:          # piso do próprio extrator
+            return _fora("áudio curto para identificar")
+        janela = a.size
+    # piso de ENERGIA: ventoinha/zumbido não confirmam ninguém (p90 do trecho)
+    quadro = 512
+    rms = np.array([float(np.sqrt((a[i:i + quadro] ** 2).mean()))
+                    for i in range(0, max(quadro, a.size - quadro), quadro)] or [0.0])
+    piso = float(np.percentile(rms, 90)) * _VOZ_PISO_ENERGIA if rms.size else 0.0
+    lim, _modo = _speaker_limiar(modelo)
+    if not _settings.get("speaker_far_alvo"):
+        lim = _VOZ_LIMIAR_PADRAO         # default do R4 (o cru 0,6 é do gate de enroll)
+    confirmacoes, scores = 0, []
+    necessarias = 1 if a.size < int(16000 * (_VOZ_JANELA_S * 1.75)) else _VOZ_CONFIRMACOES
+    for ini in range(0, max(1, a.size - janela + 1), passo):
+        trecho = a[ini:ini + janela]
+        if trecho.size < janela:
+            break
+        if float(np.sqrt((trecho ** 2).mean())) < piso and piso > 0:
+            continue                      # só ruído de fundo nesta janela
+        _fd, nome_tmp = tempfile.mkstemp(prefix="tts-voz-", suffix=".wav")
+        os.close(_fd)
+        tmp = Path(nome_tmp)
+        try:
+            with wave.open(str(tmp), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes((np.clip(trecho, -1, 1) * 32767).astype("<i2").tobytes())
+            emb = _speaker_embed(tmp, modelo)
+        finally:
+            tmp.unlink(missing_ok=True)
+        if not emb:
+            break                         # extrator indisponível: fail-open
+        score, _modo_esc = _speaker_asnorm(emb, vecs, modelo)
+        scores.append(score)
+        if score >= lim:
+            confirmacoes += 1
+            if confirmacoes >= necessarias:
+                break
+    if not scores:
+        return _fora("nenhuma janela com voz")
+    ok = confirmacoes >= necessarias
+    return {"ok": ok, "estado": "ok" if ok else "recusado",
+            "janelas": len(scores), "score": round(max(scores), 3),
+            "latencia_ms": int((time.monotonic() - t0) * 1000),
+            "motivo": "" if ok else f"outra voz (melhor {max(scores):.2f} < {lim:.2f})"}
+
+
+def _live_voz_anota(sess: dict, res: dict) -> None:
+    """Publica o veredito no `stats` (o instrumento do aceite do #533)."""
+    st = sess.setdefault("voz_stats", {"recusados": 0})
+    st["ultimo"] = {"estado": res.get("estado"), "score": res.get("score"),
+                    "janelas": res.get("janelas"),
+                    "latencia_ms": res.get("latencia_ms"),
+                    "motivo": res.get("motivo")}
+    if res.get("estado") == "recusado":
+        st["recusados"] = int(st.get("recusados", 0)) + 1
 
 
 #: qualidade do cadastro, derivada dos números do R2 (#525)
@@ -8924,7 +9112,9 @@ def _live_stats(sess: dict) -> dict:
                   # #501: desfecho da interrupção inteligente e p50 do filtro
                   # `modelo` (timeouts contados à parte — são o sinal de que o
                   # classificador não está dando conta da máquina)
-                  "barge": _live_stats_barge(sess)},
+                  "barge": _live_stats_barge(sess),
+                  # #533: veredito do portão "só a minha voz" e recusas contadas
+                  "voz": sess.get("voz_stats") or {}},
         "rnnoise": _live_stats_rnnoise(sess),
         "turno": {"stage": sess.get("st_stage", "idle"),
                   "ms": (int((agora - ini) * 1000) if ini else 0),
@@ -10239,6 +10429,12 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
     tipo, filtro = "ruido", "sem_decisao"
     texto, p_cortar, modelo_ms = "", None, None
     try:
+        # "SÓ A MINHA VOZ" (#533): quem não é o dono não corta e não vira turno —
+        # é o PRIMEIRO elo (a TV ou outra pessoa não pode cortar o assistente).
+        # Mesma verificação que o `_stt_app` usa no turno (uma só, não duas).
+        voz = _voz_do_dono(audio) if _live_voz_ligado() else None
+        if voz is not None:
+            _live_voz_anota(sess, voz)
         # ADENDO: perto do fim da resposta a fala vira turno pendente em vez de
         # cortar o restinho — cortar ali só encurta a frase sem ganhar nada.
         # A FALA LONGA atalha o STT, mas não pode atalhar o `fim_de_resposta`: ele
@@ -10249,7 +10445,9 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         perto_do_fim = (restante is not None and (filtros.get("fim_de_resposta") or {}).get(
             "on", True) and restante <= int(
                 (filtros.get("fim_de_resposta") or {}).get("restante_ms", 2000)))
-        if (fala_ms >= 1200 and (filtros.get("fala_sustentada") or {}).get("on", True)
+        if voz is not None and not voz.get("ok"):
+            tipo, filtro = "ruido", "identidade"
+        elif (fala_ms >= 1200 and (filtros.get("fala_sustentada") or {}).get("on", True)
                 and not perto_do_fim):
             tipo, filtro = "interrupcao", "fala_sustentada"
         else:

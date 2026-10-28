@@ -1440,3 +1440,93 @@ def test_comando_nao_morre_no_juiz_de_alucinacao(monkeypatch):
     assert texto2 == "o dia ta bonito"      # o texto sai, quem descarta é o turno
     assert julga2.get("motivo") == "stt"
     assert "comando" not in (julga2.get("detalhe") or "")
+
+
+def _pcm(segundos: float, amp: float = 0.2) -> bytes:
+    import numpy as np
+    t = np.arange(int(16000 * segundos)) / 16000.0
+    return (np.sin(2 * np.pi * 220 * t) * amp * 32767).astype("<i2").tobytes()
+
+
+def _perfil_fake():
+    return {"vecs": [[1.0, 0.0], [1.0, 0.0]], "modelo": "fake:v1"}
+
+
+def _liga_so_minha_voz(monkeypatch, *a, **k):
+    import app
+    from pathlib import Path
+    monkeypatch.setitem(app._settings, "live_so_minha_voz",
+                        {"on": True, "perfil": "dono", "rigor_far": "", "separacao": False})
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: ({"dono": _perfil_fake()}, ""))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, m=None: [1.0, 0.0])
+    monkeypatch.setattr(app, "_speaker_modelo_do_perfil", lambda p: "fake:v1")
+    monkeypatch.setattr(app, "_speaker_limiar", lambda m: (0.44, "cru"))
+    assert Path  # mantém o import explícito
+
+
+def test_voz_do_dono_aceita_duas_janelas_do_dono(monkeypatch):
+    _liga_so_minha_voz(monkeypatch)
+    import app
+    res = app._voz_do_dono(_pcm(3.0))
+    assert res["ok"] is True and res["estado"] == "ok"
+    assert res["janelas"] >= 2, "exige 2 confirmações (R4)"
+
+
+def test_voz_do_dono_recusa_outra_voz(monkeypatch):
+    _liga_so_minha_voz(monkeypatch)
+    import app
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, m=None: [0.0, 1.0])
+    res = app._voz_do_dono(_pcm(3.0))
+    assert res["ok"] is False and res["estado"] == "recusado"
+    assert "outra voz" in res["motivo"]
+
+
+def test_voz_do_dono_curto_demais_e_fail_open(monkeypatch):
+    _liga_so_minha_voz(monkeypatch)
+    import app
+    res = app._voz_do_dono(_pcm(0.3))
+    assert res["ok"] is True and res["estado"] == "indisponivel"
+
+
+def test_voz_do_dono_sem_perfil_e_fail_open(monkeypatch):
+    _liga_so_minha_voz(monkeypatch)
+    import app
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: ({}, ""))
+    res = app._voz_do_dono(_pcm(3.0))
+    assert res["ok"] is True and "perfil" in res["motivo"]
+
+
+def test_voz_do_dono_desligado_nao_custa_nada(monkeypatch):
+    import app
+    monkeypatch.setitem(app._settings, "live_so_minha_voz", {"on": False})
+    def explode(*a, **k):
+        raise AssertionError("não podia tocar no extrator com o modo desligado")
+    monkeypatch.setattr(app, "_speaker_embed", explode)
+    assert app._voz_do_dono(_pcm(3.0))["estado"] == "off"
+
+
+def test_filtro_identidade_nao_corta_o_barge(monkeypatch):
+    """Terceiro falando no playback: `barge_retoma` com `filtro=identidade`."""
+    import queue
+    import threading
+
+    import app
+
+    app._settings["live_barge_filtros"] = {}
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None,
+            "cancelado": threading.Event(), "turno": 1, "fila": queue.Queue(),
+            "engine": None}
+    motor, rel = _motor_inteligente()
+    sess["engine"] = motor
+    _abrir_por_barge(motor, rel)
+    sess["barge_suspeito"] = {"audio": _pcm(2.0)}
+    _liga_so_minha_voz(monkeypatch)
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, m=None: [0.0, 1.0])
+    ok = app._live_transcreve_trecho
+    app._live_transcreve_trecho = lambda *a, **k: "para"
+    try:
+        app._live_decide_barge(sess, _pcm(2.0), 400)
+    finally:
+        app._live_transcreve_trecho = ok
+    assert not sess["cancelado"].is_set(), "outra voz não podia cortar"
+    assert sess["voz_stats"]["recusados"] == 1
