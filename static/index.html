@@ -3077,6 +3077,9 @@
         <p class="hint">Síntese remota no OmniVoice (646 idiomas, rápido).</p>
         <label class="cfg-label">Voz remota (nome/preset)
           <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
+        <label class="cfg-label">Modelo remoto (repo/nome no servidor)
+          <input data-admin-setting="remote_tts_model" type="text" id="remoteTtsModel"
+                 placeholder="vazio = padrão do servidor remoto"></label>
         <label class="cfg-label">API key (opcional)
           <input data-admin-setting="remote_api_key" type="password" id="remoteApiKey" placeholder="vazio se não exigir" autocomplete="off"></label>
         <label class="cfg-label">Parâmetros extra (JSON)
@@ -3087,8 +3090,11 @@
         <label class="cfg-label">Base URL (termina em /v1)
           <input data-admin-setting="remote_base_url" type="text" id="remoteBaseUrl" placeholder="https://api.openai.com/v1"></label>
         <label class="check"><input data-admin-setting="remote_translate" type="checkbox" id="remoteTranslate"> Tradução via API</label>
-        <label class="cfg-label">Modelo de tradução
+        <label class="cfg-label">Modelo de tradução (API)
           <input data-admin-setting="remote_translate_model" type="text" id="remoteTranslateModel" placeholder="gpt-4o-mini"></label>
+        <label class="cfg-label">Modelo do tradutor LOCAL (repo MLX)
+          <input data-admin-setting="translate_model" type="text" id="translateModel"
+                 placeholder="vazio = padrão do app"></label>
         <p class="hint" style="margin-top:0">Na RTX: <code>qwen2.5-14b-instruct</code> ou <code>qwen2.5-7b-instruct</code>.</p>
         <label class="cfg-label">Modelo de transcrição (STT)
           <select data-admin-setting="remote_stt" id="sttEngine">
@@ -3352,7 +3358,10 @@ const ROTULO_SETTING = {
 const rotuloSetting = k => ROTULO_SETTING[k] || k;
 // Administrativos que existem no servidor mas ainda não têm input na tela: sem
 // isto o aviso de marcador faltante (abaixo) acusaria estes dois para sempre.
-const ADMIN_SEM_UI = new Set(["translate_model", "remote_tts_model"]);
+// Campos administrativos que ainda NÃO têm controle na tela. Hoje vazia: os dois
+// que faltavam (`translate_model`, `remote_tts_model`) ganharam input marcado no
+// #586 e o resguardo do `admin_ui_flow` reprova qualquer novo sem marcador.
+const ADMIN_SEM_UI = new Set();
 
 // Trava os campos administrativos e diz POR QUE estão travados: campo travado
 // sem explicação vira "a UI não me deixa mexer".
@@ -6870,10 +6879,12 @@ async function loadSettings() {
     cfgChk("remoteStt", s.remote_stt);
     cfgTxt("remoteTtsUrl", s.remote_tts_url);
     cfgTxt("remoteTtsVoice", s.remote_tts_voice);
+    cfgTxt("remoteTtsModel", s.remote_tts_model);
     cfgTxt("remoteTtsExtra", s.remote_tts_extra);
     cfgTxt("remoteBaseUrl", s.remote_base_url);
     cfgTxt("remoteApiKey", s.remote_api_key);
     cfgTxt("remoteTranslateModel", s.remote_translate_model || "gpt-4o-mini");
+    cfgTxt("translateModel", s.translate_model);
     cfgTxt("remoteSttModel", s.remote_stt_model || "whisper-1");
     cfgTxt("remoteSttBaseUrl", s.remote_stt_base_url);
     cfgTxt("remoteSttKey", s.remote_stt_key);
@@ -7090,7 +7101,8 @@ $("spTest")?.addEventListener("click", async () => {
 const CFG_DIRTY_IDS = ["cfgModel","cfgModelCustom","cfgPrePrompt","cfgLang","cfgVoice","cfgChunk","cfgSpeed",
   "cfgPrecision","audGain","audLow","audMid","audHigh",
   "remoteTts","remoteTtsUrl","remoteTtsVoice","remoteTtsExtra","remoteBaseUrl","remoteApiKey",
-  "remoteTranslate","remoteTranslateModel","vdGender","vdAge","vdPitch","vdAccent","vdWhisper",
+  "remoteTranslate","remoteTranslateModel","translateModel","remoteTtsModel",
+  "vdGender","vdAge","vdPitch","vdAccent","vdWhisper",
   "freeLocalOnRemote","idleUnloadMin","speechQueue","speechQueueGap",
   "sttFiltros","sttDenoise",
   // faltavam: editar estes não marcava nada (B6). `sttBeam` fica de fora porque
@@ -7151,6 +7163,8 @@ $("cfgSave").onclick = async () => {
       remote_base_url: $("remoteBaseUrl").value,
       remote_api_key: $("remoteApiKey").value,
       remote_translate_model: $("remoteTranslateModel").value,
+      translate_model: $("translateModel")?.value || "",
+      remote_tts_model: $("remoteTtsModel")?.value || "",
       remote_stt_model: $("remoteSttModel").value,
       remote_stt_base_url: $("remoteSttBaseUrl").value,
       remote_stt_key: $("remoteSttKey").value,

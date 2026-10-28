@@ -371,6 +371,17 @@ with sync_playwright() as p:
                f"o teto travado não diz o motivo ({teto['titulo']!r})")
         cobrar(teto["valor"] not in ("", None), "o teto não veio preenchido do servidor")
 
+    # #586: os dois campos que viviam na lista de exceções agora travam de verdade
+    campos_novos = pg.evaluate("""() => ["remoteTtsModel", "translateModel"].map(id => {
+        const el = document.getElementById(id);
+        return el ? { id, desab: el.disabled, titulo: el.title || "" } : { id, falta: true };
+    })""")
+    for c in campos_novos:
+        cobrar(not c.get("falta"), f"o campo #{c['id']} não existe na tela")
+        cobrar(c.get("desab") is True, f"#{c['id']} devia estar travado com chave de uso")
+        cobrar("administrativa" in c.get("titulo", "").lower(),
+               f"#{c['id']} travado sem dizer o motivo ({c.get('titulo')!r})")
+
     # o 🗑 do perfil de locutor é ação elevada (DELETE leva _exige_admin): com
     # chave de uso tem de estar travado. A instância de teste nasce sem perfis,
     # então a lista é servida por rota stubada — o alvo é a régua do botão.
@@ -583,9 +594,10 @@ with sync_playwright() as p:
     cobrar(not erros, "erros de JS (admin): " + "; ".join(erros[:3]))
 
     # --- resguardo: servidor protegendo campo SEM marcador no HTML ---
-    # O aviso é console-only, então sem isto um refactor que apague o bloco passa
-    # despercebido. E os dois administrativos que ainda não têm input na tela
-    # (`translate_model`, `remote_tts_model`) NÃO podem virar aviso eterno.
+    # #586: agora é REPROVAÇÃO, não aviso. Os dois que viviam na lista de exceções
+    # (`translate_model`, `remote_tts_model`) ganharam input com marcador; qualquer
+    # campo admin novo sem `data-admin-setting`/`data-setting` (e sem estar em
+    # `ADMIN_SEM_UI`) derruba a suíte em vez de virar aviso eterno.
     avisos = []
     pg.on("console", lambda m: avisos.append(m.text) if m.type == "warning" else None)
     pg.reload()
@@ -593,7 +605,8 @@ with sync_playwright() as p:
     pg.wait_for_timeout(400)
     do_load = [a for a in avisos if "[admin]" in a]
     print(f"  aviso no load normal: {do_load or '(nenhum, correto)'}")
-    cobrar(not do_load, f"load normal não pode avisar (os 2 sem-UI estão suprimidos): {do_load}")
+    cobrar(not do_load,
+           f"todo campo admin precisa de marcador (ou de exceção em ADMIN_SEM_UI): {do_load}")
 
     sim = pg.evaluate("""() => {
         const vistos = [], orig = console.warn;
@@ -603,21 +616,30 @@ with sync_playwright() as p:
             aplicarPoliticaAdmin();                       // deve avisar 1×
             const comNovo = vistos.length;
             ADMIN.fields = new Set(["translate_model", "remote_tts_model"]);
-            aplicarPoliticaAdmin();                       // os 2 sem-UI: sem aviso
+            aplicarPoliticaAdmin();     // os dois do #586: agora TÊM marcador, sem aviso
             const comSemUi = vistos.length;
+            // a exceção explícita continua valendo (campo que só existe por API)
+            ADMIN_SEM_UI.add("campo_so_api");
+            ADMIN.fields = new Set(["campo_so_api"]);
+            aplicarPoliticaAdmin();
+            const comExcecao = vistos.length;
+            ADMIN_SEM_UI.delete("campo_so_api");
             // controle negativo: controle dinâmico TEM data-setting -> não pode acusar
             const dinamicos = [...new Set([...document.querySelectorAll("[data-setting]")]
                 .map(e => e.dataset.setting))];
             ADMIN.fields = new Set(dinamicos.slice(0, 5));
             aplicarPoliticaAdmin();
-            return { comNovo, comSemUi, dinamicos: dinamicos.length,
+            return { comNovo, comSemUi, comExcecao, dinamicos: dinamicos.length,
                      total: vistos.length, vistos: vistos.join(" | ") };
         } finally { console.warn = orig; }
     }""")
     print(f"  campo protegido sem marcador -> {sim['comNovo']} aviso(s): {(sim['vistos'] or '')[:60]}")
     cobrar(sim["comNovo"] == 1, f"o resguardo deveria avisar o campo sem marcador: {sim}")
     cobrar("campo_novo_sem_marcador" in sim["vistos"], f"o aviso precisa nomear o campo: {sim['vistos']}")
-    cobrar(sim["comSemUi"] == 1, f"os 2 sem-UI não podem avisar: {sim['vistos']}")
+    cobrar(sim["comSemUi"] == 1,
+           f"campo com marcador (`translate_model`/`remote_tts_model`) não pode avisar: {sim['vistos']}")
+    cobrar(sim["comExcecao"] == sim["comSemUi"],
+           f"a exceção explícita (ADMIN_SEM_UI) precisa calar o aviso: {sim['vistos']}")
     if sim["dinamicos"]:
         cobrar(sim["total"] == sim["comSemUi"],
                f"controle dinâmico (com data-setting) não pode acusar: {sim['vistos']}")
