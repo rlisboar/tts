@@ -43,3 +43,15 @@ nunca exceção.
 - corpus do bake-off (`tools/bakeoff/corpus.py`, só para reproduzir medição);
 - qualquer coisa em tempo de boot: `run.sh`/`app.py` não chamam este diretório
   para baixar.
+
+## Custo medido (M3, CPU, `HF_HUB_OFFLINE=1`, 3 rodadas, mediana)
+
+| Cenário | RSS | Tempo |
+|---|---|---|
+| `import app` sem extrator | 60 MB | 0,4 s |
+| extrator carregado + 1 embedding | 517 MB | 0,88 s de carga · 0,03 s por embedding |
+
+Ou seja: o ECAPA custa ~**460 MB de RSS** e ~0,5 s de carga acima do boot atual —
+caro para o Live, aceitável para o cadastro/verificação. Roda em CPU: não disputa
+o Metal do TTS. Quem ligar o extrator deve carregá-lo sob demanda (primeiro uso),
+não no boot do servidor.
