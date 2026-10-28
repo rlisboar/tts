@@ -192,3 +192,44 @@ FragmentPath" também quando o host DEVOLVIA o caminho do repo — e aí o diff 
 
 O shim passou a usar `${T_FRAGMENT-…}` (com `-`, sem `:`): com `:-`, `T_FRAGMENT=""`
 caía no default e o caso "host sem FragmentPath" nem era exercitável.
+
+## #555 — mordida do `live_ws.sh` gravava no `.apikeys.json` do DONO
+
+A prova do #463 ("tirar os caminhos de chave do ambiente faz a guarda reprovar")
+só era verdadeira porque o app cai no arquivo real — e, ao medir, gravava
+`probe-live-ws` no `.apikeys.json` do dono (aconteceu duas vezes, api-backend no
+#463 e qa no #545; as duas limpas à mão). Mordida também tem de ser read-only no
+dado real.
+
+A saída é rodar a mordida contra um **dono de mentira**: um `git worktree` com
+`.apikeys.json`/`.apikey` sintéticos fazendo o papel do arquivo do dono. Sem os
+caminhos por ambiente, quem muda é o sintético; o sha256 do real é cobrado
+idêntico na própria célula.
+
+```bash
+WT=$(mktemp -d)/mordida
+git worktree add -q --detach "$WT" HEAD
+ln -s "$PWD/.venv-mlx" "$WT/.venv-mlx"      # venv e voz vêm do repo
+ln -s "$PWD/voices" "$WT/voices"
+printf '{"enabled": true, "keys": [{"id": "fake1", "name": "dono-fake",
+  "secret": "sk-fake-123456", "created_at": "2026-01-01 00:00:00", "role": null}]}' \
+  > "$WT/.apikeys.json"
+printf 'sk-fake-123456\n' > "$WT/.apikey"
+REAL=$(shasum -a 256 .apikey .apikeys.json)
+# SABOTAGEM: os caminhos de chave deixam de ir por ambiente (vazio = default)
+sed -i '' 's/"TTS_APIKEYS_PATH": str(chaves)/"TTS_APIKEYS_PATH": ""/;
+           s/"TTS_LEGACY_APIKEY_PATH": str(legado)/"TTS_LEGACY_APIKEY_PATH": ""/' \
+  "$WT/tests/live_ws.sh"
+(cd "$WT" && ./tests/live_ws.sh); echo "rc=$?"
+[ "$REAL" = "$(shasum -a 256 .apikey .apikeys.json)" ] && echo "REAL INTOCADO"
+git worktree remove --force "$WT"
+```
+
+| Sabotagem | Resultado |
+|---|---|
+| `"TTS_APIKEYS_PATH": ""` e `"TTS_LEGACY_APIKEY_PATH": ""` | `✘ a chave criada NÃO caiu no arquivo sintético: isolamento furado`, o sintético muda e recebe `probe-live-ws`, e o sha256 do arquivo real fica **idêntico** |
+
+Duas armadilhas medidas: (1) sabotar **apagando** as linhas com `sed` remove
+junto o `env.update({` e o arquivo quebra com `IndentationError` — use a forma
+"vazio = default"; (2) o worktree precisa dos links de `.venv-mlx` e `voices/`
+(sem eles a suíte não sobe ou não acha fala de teste).
