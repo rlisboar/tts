@@ -416,19 +416,19 @@ def _registro_limpo_entre_testes():
     também se espera o pre-warm do dsh que esteja em voo — sem o join, o cliente
     aterrissa no pool DEPOIS do teste que o pediu, e a conta cairia no seguinte.
 
-    O que um teste precisa herdar de outro passa por `monkeypatch`/fixture própria.
+    Este fixture zera no SETUP; a limpeza final é do espiao, que reporta antes de
+    zerar. Quem mover isso para cá (fixture teardown) cega o espiao para
+    `jobs`/`dsh` (#575). O que um teste precisa herdar de outro passa por
+    `monkeypatch`/fixture própria.
     """
     import app
 
     with app._jobs_lock:
         app._jobs.clear()
-    yield
-    prewarm = getattr(app, "_chat_dsh_prewarm_thread", None)
-    if prewarm is not None and prewarm.is_alive():
-        prewarm.join(30)
-    with app._jobs_lock:
-        app._jobs.clear()
     app._chat_dsh_livres.clear()
+    yield
+    # a limpeza FINAL é do espiao (`tests/_espiao.py`): ele reporta antes de
+    # zerar. Deixar aqui também cegava o espiao (#575).
 
 
 def _retrato_outputs(pasta) -> set:

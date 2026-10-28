@@ -21,13 +21,22 @@ import pytest
 
 @pytest.hookimpl(trylast=True)
 def pytest_runtest_teardown(item):
-    """`trylast`: roda DEPOIS dos finalizadores de fixture (#505).
+    """Reporta o que o teste deixou e SÓ DEPOIS limpa (#575).
 
-    Sem isso o espiao vê o estado de ANTES da limpeza do teste (o fixture `client`
-    zera `_jobs` no teardown) e acusa o que já ia sair."""
+    A limpeza fica aqui, não num fixture: quem limpa em fixture teardown roda
+    antes deste hook quando ele é `trylast` (e o espiao fica cego, que foi o
+    defeito do #575). O `conftest` zera o registro no SETUP, então o estado visto
+    aqui é só o deste teste — nada de acúmulo do anterior."""
     import app
 
     vivo = len(app._live_sessions)
     if vivo or app._chat_dsh_livres or app._jobs:
         print(f"\n[espiao] {item.name}: live={vivo} dsh={len(app._chat_dsh_livres)} "
               f"jobs={len(app._jobs)}", flush=True)
+    # higiene para o próximo teste: pre-warm que ainda vai aterrissar é esperado
+    prewarm = getattr(app, "_chat_dsh_prewarm_thread", None)
+    if prewarm is not None and prewarm.is_alive():
+        prewarm.join(30)
+    with app._jobs_lock:
+        app._jobs.clear()
+    app._chat_dsh_livres.clear()
