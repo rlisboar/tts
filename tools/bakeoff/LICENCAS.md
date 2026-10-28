@@ -13,7 +13,7 @@
 | Resemble-Enhance | MIT | MIT | candidato ruído |
 | Demucs (htdemucs_ft) | MIT | MIT | separação música |
 | AudioSeal | MIT | MIT (CC BY-NC 4.0 no pacote meta) | anti-clone |
-| AASIST | MIT | MIT | anti-clone |
+| AASIST (`clovaai/aasist`) | MIT | MIT — pesos `AASIST.pth`/`AASIST-L.pth` vivem no MESMO repositório MIT (NAVER Corp.); o dataset ASVspoof2019 LA não é herdado para inferência | detector de sintético |
 | DNSMOS P.835 | MIT (onnx) | MIT | métrica |
 
 **Pendência declarada:** licença de PESOS de cada um só vale para uso local; antes

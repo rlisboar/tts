@@ -126,6 +126,8 @@ def _regrava(pasta: Path, limite: int) -> dict[str, np.ndarray] | None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limite", type=int, default=6)
+    ap.add_argument("--sem-regravacao", dest="sem_regravacao", action="store_true",
+                    help="pula a regravação alto-falante→mic (usa o Mic e o som da sala)")
     a = ap.parse_args()
     comum.garante()
     tmp = comum.RESULTADOS / "_marca"
@@ -159,14 +161,14 @@ def main() -> int:
         print(f"{nome}: " + " ".join(f"{k}={v:.2f}" for k, v in linha.items()
                                     if k != "falante"), flush=True)
 
-    regravados = _regrava(tmp, a.limite)
+    regravados = None if a.sem_regravacao else _regrava(tmp, a.limite)
     if regravados:
         probs = [detecta(y[: 4 * comum.SR], comum.SR) for y in regravados.values()]
         print(f"regravação alto-falante→mic: mediana {np.median(probs):.2f} "
               f"({len(probs)} amostras)", flush=True)
     else:
         probs = None
-        print("regravação: não foi possível (sem microfone/afplay acessível)", flush=True)
+        print("regravação: pulada ou indisponível", flush=True)
 
     colunas = [c for c in linhas[0] if c != "falante"]
     resumo = {c: round(float(np.mean([l[c] for l in linhas])), 3) for c in colunas}
