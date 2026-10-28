@@ -102,3 +102,92 @@ venv próprio (`/tmp/tts-bakeoff/venv312`).
 ./.venv-mlx/bin/python tools/bakeoff/clone.py 8
 /tmp/tts-bakeoff/venv312/bin/python tools/bakeoff/identidade.py --modelos ecapa,eres2netv2,resemblyzer --k 5 --asnorm --clones
 ```
+
+
+---
+
+# Fechamento do R2 — as quatro condições do PM
+
+## (a) Sanidade de integração: ECAPA reproduz o cartão oficial
+
+`tools/bakeoff/sanidade.py`. Pares do cartão oficial do SpeechBrain, com a
+expectativa publicada junto:
+
+| par | esperado | medido |
+|---|---|---|
+| `spk1_snt1` × `spk1_snt2` (mesmo locutor) | predição 1 | **0,7295** |
+| `spk1_snt1` × `spk2_snt1` (diferentes) | predição 0 | **0,0762** |
+| controle no corpus (1272 × 8842) | baixo | 0,0053 |
+| o MESMO par positivo pelo `verify_files` oficial | — | **0,7295** |
+
+O nosso caminho de codificação dá o número idêntico ao oficial, então a
+integração é equivalente — é essa igualdade que pega regressão, não a coincidência
+de limiar. **Armadilha registrada:** `example1.wav`/`example2.flac` do repositório
+NÃO são o par do cartão, são falantes diferentes (0,18, predição 0); quem usa esse
+par como positivo conclui que a integração está quebrada.
+
+## (b) Cenário em pt-BR, com e sem ruído do R1
+
+`tools/bakeoff/pt_ruido.py`, 8 vozes pt-BR do macOS, cadastro com 2 frases e teste
+com a 3ª, ventoinha do R1 em SNR 10 e 5 dB aplicada em cadastro e teste:
+
+| condição | EER (IC 95 %) | FAR @0,44 | FRR @0,44 |
+|---|---|---|---|
+| limpo | 0,9 % (0,0–2,7) | 23 % | 0 % |
+| SNR 10 dB | 0,0 % | 16 % | 0 % |
+| SNR 5 dB | 0,0 % | 20 % | 0 % |
+
+**O ruído quase não dói** (0 % de EER em SNR 5 dB) e o EER em pt é tão bom quanto
+em inglês — o extrator atravessa idioma.
+
+**Mas o limiar cru NÃO atravessa corpus.** O mesmo 0,44 que zera a FAR em inglês
+deixa passar 23 % em pt; em pt a FAR só cai a 5–7 % em 0,68–0,74, com FRR ainda em
+0 %. Duas leituras: (1) é preciso recalibrar por corpus; (2) as 8 vozes sintéticas
+compartilham o mesmo sintetizador, então a FAR em pt é pessimista e não é
+estimativa de população. O caminho que dispensa recalibrar por corpus é o AS-norm —
+mais um argumento para ele, e para a coorte maior.
+
+## (c) Tentativas publicadas
+
+Cada linha da tabela do placar tem **40 positivos e 780 negativos** (40 locutores,
+todos os pares cruzados), com IC 95 % por bootstrap no EER. A rodada de clones tem
+24 tentativas por condição. O IC do ECAPA em 1 s (1,6–5,2) continua largo: é o que
+40 locutores permitem, e é por isso que a decisão se apoia na comparação com o
+Resemblyzer no mesmo ensaio, não no valor absoluto.
+
+## (d) Coorte do AS-norm é pública
+
+`cohorte_resemblyzer.json`: `fonte = "LibriSpeech dev-clean (CC BY 4.0), 40 falas"`,
+37 vetores, nenhum dado do dono. No ensaio do ECAPA a coorte é montada em tempo de
+execução com locutores FORA do conjunto de teste, do mesmo corpus público.
+
+## Vozes parecidas — o caso que o R4 deixou aberto
+
+`tools/bakeoff/parecidos.py`: centróide de 5 amostras por locutor, cosseno entre
+todos os 780 pares de locutores distintos, e os 10 pares **mais parecidos** usados
+como impostores. Teste sempre com amostra que não entrou no centróide.
+
+| métrica nos 10 pares mais parecidos | valor |
+|---|---|
+| FAR no limiar 0,35 (o que o R4 recomendou) | **60 %** |
+| FAR no limiar 0,40 | 10 % |
+| FAR no limiar **0,44** | **0 %** |
+| FRR do dono no 0,44 | 12 % (3 s de teste) |
+| FAR nos pares distintos (controle) | 0 % |
+| **erro do seletor do R4** (preferir o parecido ao alvo) | **0 %** |
+
+O 0,35 do R4 estava calibrado só em vozes distintas — com parecidos ele deixa
+passar 60 %. **O ponto honesto é 0,44**, ao custo de 12 % de FRR (fala legítima
+barrada, sempre recuperável repetindo). A curva completa está em
+`resultados/parecidos.json`.
+
+**O seletor de fluxo é bem mais fácil que o portão:** nos 10 pares mais parecidos
+ele errou **0 %** — o escore do próprio locutor (0,47–0,78) sempre bateu o do
+parecido (0,24–0,43). Escolher entre dois candidatos é mais simples que decidir
+"é ou não é ele", e isso vale para o R4.
+
+## Correção que sai daqui
+
+O R4 (#532) recomendou 0,35 para o portão do Live. **Passa a 0,44**, e o teto de
+FAR de 1 % do card fica cumprido mesmo no pior caso medido. O limiar continua
+tendo de ser recalibrado por corpus até o AS-norm entrar em produção.

@@ -138,6 +138,10 @@ class _Ecapa:
         return e / (np.linalg.norm(e) or 1e-9)
 
 
+#: repositório de origem de cada peso — usado pelo teste de sanidade, que precisa
+#: do par de exemplo do próprio autor para provar que a integração não está quebrada
+MODELOS_HF = {"ecapa": "speechbrain/spkrec-ecapa-voxceleb"}
+
 ADAPTADORES = {
     "resemblyzer": lambda: _Resemblyzer(),
     "wespeaker34": lambda: _Onnx("voxceleb_resnet34_LM.onnx"),
