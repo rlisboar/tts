@@ -141,6 +141,24 @@ def test_os_quatro_arquivos_de_estado_apontam_para_tmp(request):
         assert str(atual).startswith(("/tmp", "/private/tmp", "/var/folders", "/private/var/folders")), atual
 
 
+def test_outputs_do_processo_e_do_ambiente_apontam_para_tmp(request):
+    """`OUTPUTS_DIR` em tmp nas DUAS pontas (#542).
+
+    A RAM só vale neste processo: worker de job e subprocesso recalculam o caminho
+    no import. Sem a variável, os testes que gravam áudio de verdade voltavam a
+    deixar `t<hash>.wav` no `outputs/` do dono (3.510 medidos) — e a guarda de
+    sessão do `conftest` só acusa no FIM da rodada.
+    """
+    import pathlib
+
+    import app
+
+    atual = pathlib.Path(app.OUTPUTS_DIR)
+    assert atual != app.BASE / "outputs", "OUTPUTS_DIR aponta para o diretório do dono"
+    assert os.environ.get("TTS_OUTPUTS_DIR") == str(atual), (
+        "o caminho não foi para o ambiente: subprocesso cairia no diretório do dono")
+
+
 def test_basetemp_nao_carrega_secret_do_dono(request):
     import json as _json
     import pathlib

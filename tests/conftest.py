@@ -312,6 +312,11 @@ def _estado_isolado(tmp_path_factory):
     saida_destino.mkdir()
     saida_original = app.OUTPUTS_DIR
     app.OUTPUTS_DIR = saida_destino
+    # e por AMBIENTE também (#542): `app.OUTPUTS_DIR` só vale neste processo —
+    # worker de job, cópia de boot e qualquer subprocesso recalculavam o caminho
+    # e caíam no `outputs/` do dono (3.510 `t<hash>.wav` acumulados assim).
+    env_saida_original = os.environ.get("TTS_OUTPUTS_DIR")
+    os.environ["TTS_OUTPUTS_DIR"] = str(saida_destino)
     # env do dono fora da RAM: `TTS_ROD_API_KEY`/`TTS_ROD_ADMIN_KEY` exportados
     # decidiriam papel (e poriam secret real na memória). Restaurados no teardown.
     env_api_original, admin_api_original = app._ENV_API_KEY, app._ADMIN_API_KEY
@@ -325,6 +330,10 @@ def _estado_isolado(tmp_path_factory):
     app.SETTINGS_PATH = original
     app.OUTPUTS_DIR = saida_original
     app._ENV_API_KEY, app._ADMIN_API_KEY = env_api_original, admin_api_original
+    if env_saida_original is None:
+        os.environ.pop("TTS_OUTPUTS_DIR", None)
+    else:
+        os.environ["TTS_OUTPUTS_DIR"] = env_saida_original
     # `ignore_errors`: o pytest pode ter varrido o basetemp antes (sessão verde
     # com a política `failed`), e num run vermelho é justamente aqui que a cópia
     # sai do diretório que o pytest vai RETER. Não roda se o processo levar
@@ -337,3 +346,49 @@ def _estado_isolado(tmp_path_factory):
 # `LEGACY_APIKEY_PATH` e `SPEAKER_PATH` isolados na SESSÃO, a suíte não escreve mais
 # no arquivo do dono, então podar deixou de ser necessário. Quem cobra é
 # `tests/test_chaves_isoladas.py`.)
+
+
+def _retrato_outputs(pasta) -> set:
+    """Nomes do diretório real, sem recursão (a suíte só cria arquivo solto)."""
+    try:
+        return {p.name for p in pasta.iterdir()}
+    except OSError:
+        return set()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _outputs_do_dono_intocado():
+    """A suíte não pode escrever no `outputs/` REAL do dono (#542).
+
+    O caminho é redirecionado para tmp desde o #458, mas o isolamento era só de
+    RAM: worker de job e subprocesso recalculavam o caminho e deixavam
+    `t<hash>.wav` (0,1 s) no diretório do dono — 3.510 deles foram medidos lá.
+    Agora o caminho também vai por `TTS_OUTPUTS_DIR` (fixture de estado) e esta
+    guarda reprova a rodada se um artefato NOSSO reaparecer no diretório real.
+
+    O que é do dono e não nosso (o app vivo gerando áudio, a poda periódica dele)
+    entra como aviso, não como falha: só a assinatura da suíte — `t<hash10>.wav`
+    sem `.json` — reprova.
+    """
+    import re
+
+    import app
+
+    alvo = app.BASE / "outputs"
+    antes = _retrato_outputs(alvo)
+    yield
+    novos = _retrato_outputs(alvo) - antes
+    sumidos = antes - _retrato_outputs(alvo)
+    nossos = sorted(n for n in novos if re.fullmatch(r"t[0-9a-f]{10}\.wav", n))
+    outros = sorted(novos - set(nossos))
+    if sumidos or outros:
+        print(f"\n[outputs] o diretório real mudou por fora da suíte: "
+              f"+{len(outros)}/-{len(sumidos)} arquivo(s) "
+              f"(app do dono rodando? se não, investigue)")
+    if nossos:
+        pytest.fail(
+            "a suíte escreveu no `outputs/` REAL do dono (#542): "
+            + ", ".join(nossos[:10])
+            + (f" (+{len(nossos) - 10})" if len(nossos) > 10 else "")
+            + " — algum caminho não está seguindo `TTS_OUTPUTS_DIR`",
+            pytrace=False)
