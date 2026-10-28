@@ -14,6 +14,8 @@
 #     a mandar áudio (captura reaberta);
 #   · `busy` → mesma retomada, com espera maior entre tentativas;
 #   · o motivo NÃO é sobrescrito pelo ramo genérico (erro de pipeline atrás);
+#   · o close ATRASADO do socket antigo (chega depois da retomada) não derruba a
+#     conexão nova nem a captura;
 #   · `session_substituida` NÃO retoma (outra conexão é a dona do id) e o motivo
 #     fica;
 #   · depois de LX_RETOMA_MAX tentativas (4 conexões contando a do clique) a tela
@@ -202,6 +204,27 @@ try:
             print(f"  frames na 2ª conexão: {c2['frames']}")
             cobrar(c2["frames"] > 5, f"a captura não voltou depois da retomada ({c2['frames']} frames)")
             cobrar(pg.evaluate("() => !!LX.stream"), "o mic não foi reaberto depois da retomada")
+
+        # ── 1c) close ATRASADO: a retomada abre a nova e o velho fecha depois ─
+        # (rede lenta fecha > 250 ms; sem guarda, o `onclose` velho zerava o
+        # `LX.ws` novo e derrubava a captura recém-aberta)
+        alvo_velho = conns[-1]["rota"]
+        alvo_velho.send(json.dumps({"type": "error", "code": "session_ttl",
+                                    "message": "sessão ociosa por 300s"}))
+        esperar(lambda: pg.wait_for_function("() => LX.estado === 'ouvindo'", timeout=20000),
+                "a retomada abrir a nova conexão")
+        pg.wait_for_timeout(300)
+        n_antes_atraso = len(conns)
+        alvo_velho.close(code=1000)        # close do ANTIGO, já substituído
+        pg.wait_for_timeout(900)
+        a = pg.evaluate("() => ({ estado: LX.estado, ws: !!LX.ws && LX.ws.readyState === 1,"
+                        " stream: !!LX.stream, conexoes: 0 })")
+        frames_agora = conns[-1]["frames"]
+        print(f"  close atrasado: estado={a['estado']!r} wsAberto={a['ws']} mic={a['stream']} frames={frames_agora}")
+        cobrar(a["ws"] and a["stream"], "o close do socket velho derrubou a conexão/mic novos")
+        cobrar(a["estado"] == "ouvindo", f"o close velho pintou por cima ({a['estado']!r})")
+        cobrar(len(conns) == n_antes_atraso, "o close velho disparou outra retomada")
+        cobrar(frames_agora > 5, f"a captura parou no close velho ({frames_agora} frames)")
 
         # ── 2) `session_substituida` NÃO retoma e o motivo fica ──────────────
         n_antes = len(conns)

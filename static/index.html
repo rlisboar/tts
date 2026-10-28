@@ -8288,6 +8288,9 @@ async function lxwsConectar(opts) {
     }
   }
   let ws;
+  // #616: retomada com o socket anterior ainda de pé (close atrasado) — descarta o
+  // velho para não ficar com dois abertos; o `onclose` dele já não mexe no estado
+  if (LX.ws) { try { LX.ws.close(1000, "retomada"); } catch (e) {} LX.ws = null; }
   // #478: oferece a versão do protocolo; servidor antigo ignora e negocia vazio
   try { ws = new WebSocket(lxWsUrl() + q, "tts-live.v1"); }
   catch (e) { LX.conectando = false; lxEstado("erro", "✖ URL de WebSocket inválida: " + e.message); return; }
@@ -8298,14 +8301,20 @@ async function lxwsConectar(opts) {
     lxObsWs("conectado"); lxSetup();
     lxCaptura().catch(e => lxEstado("erro", "✖ mic: " + e.message));
   };
-  ws.onmessage = ev => lxRecebe(ev);
-  ws.onerror = () => { LX.erro = true; lxObsWs("erro de conexão", true); };
+  // #616: com a retomada o socket ANTIGO pode fechar DEPOIS de o novo já existir
+  // (close atrasado na rede). Sem esta guarda, o `onclose` velho zerava `LX.ws`
+  // — que já era o novo — e derrubava a captura recém-aberta. Só quem ainda é
+  // `LX.ws` mexe no estado; o resto só registra no painel.
+  ws.onmessage = ev => { if (LX.ws === ws) lxRecebe(ev); };
+  ws.onerror = () => { if (LX.ws !== ws) return; LX.erro = true; lxObsWs("erro de conexão", true); };
   ws.onclose = ev => {
     LX.conectando = false;
+    const atual = LX.ws === ws;
+    lxObsWs("fechado (código " + ev.code + ")" + (atual ? "" : " — conexão antiga"), LX.erro);
+    if (!atual) return;          // outra conexão (retomada) já assumiu
     LX.ws = null; lxParaCaptura(); lxCancelaPlayback();
     LX.obs.dshFallback = null;   // aviso é DA SESSÃO: morre com ela (#150)
     lxAvisaDsh();
-    lxObsWs("fechado (código " + ev.code + ")", LX.erro);
     // #244: o close da substituição é LIMPO (1000, sem `onerror` — `LX.erro` fica
     // falso), então sem esta precedência o motivo real morreria aqui como "sessão
     // encerrada". A substituição vem ANTES de `LX.erro`: é causa conhecida e
