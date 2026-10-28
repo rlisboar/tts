@@ -2127,6 +2127,57 @@ def test_speaker_modelo_dir_respeita_o_ambiente(tmp_path):
     assert saida.stdout.strip() == str(tmp_path)
 
 
+def test_extrator_nao_e_carregado_no_boot(tmp_path):
+    """Importar o app NÃO carrega encoder nenhum (#606).
+
+    O ECAPA custa ~460 MB de RSS e ~0,5 s (medido no #526) e o boot só sobe HTTP:
+    a carga é do primeiro uso de identidade. Sem esta célula, um `EncoderClassifier`
+    no import passava despercebido — e com ele o boot inteiro ficava refém do
+    torch. Também prova que `_speaker_modelo_efetivo()` só CONFERE, não carrega."""
+    env = {**os.environ, "TTS_SPEAKER_MODELO_DIR": str(tmp_path),
+           "TTS_SETTINGS_PATH": str(tmp_path / "settings.json"),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    for var in ("TTS_ROD_API_KEY", "TTS_ADMIN_KEY"):
+        env.pop(var, None)
+    saida = __import__("subprocess").run(
+        [sys.executable, "-c",
+         "import app; app._speaker_modelo_efetivo();"
+         "print(app._speaker_ecapa_enc is None, app._speaker_encoder is None)"],
+        cwd=str(Path(__file__).resolve().parent.parent), env=env, check=True,
+        capture_output=True, text=True)
+    assert saida.stdout.split() == ["True", "True"], "algum encoder carregou no boot"
+
+
+def test_speaker_fallback_avisa_uma_vez_e_aparece_no_get(tmp_path, monkeypatch, caplog,
+                                                        client, auth):
+    """Sem pesos, a queda para o Resemblyzer AVISA (log 1×) e sai no GET (#606).
+
+    O fallback era silencioso: a instalação ficava no extrator legado para sempre
+    e nem a tela nem o log diziam por quê. `motivo` tem de ser acionável."""
+    monkeypatch.setattr(app, "_SPEAKER_MODELO_DIR", tmp_path)      # diretório vazio
+    monkeypatch.setattr(app, "_speaker_fallback_avisado", False)
+    motivo = app._speaker_ecapa_motivo()
+    assert "baixa_modelos.sh" in motivo and "ausente" in motivo
+    assert app._speaker_modelo_efetivo() == app.SPEAKER_MODELO_LEGADO
+    assert app._speaker_modelo_efetivo() == app.SPEAKER_MODELO_LEGADO   # 2ª: cala
+    assert app._speaker_fallback_avisado is True
+    # o aviso vai UMA vez ao stderr (não polui `-q`, e não se repete por amostra)
+    assert sum("usando o extrator legado" in r.message for r in caplog.records) <= 1
+    # e o estado é VISÍVEL por fora, acionável: GET de settings e /api/status
+    s = client.get("/api/settings", headers=auth).json()
+    assert s["extrator_efetivo"] == app.SPEAKER_MODELO_LEGADO
+    assert "baixa_modelos.sh" in s["extrator_motivo"]
+    assert client.get("/api/status", headers=auth).json()["extrator_locutor"] == \
+        app.SPEAKER_MODELO_LEGADO
+    # com os pesos no lugar não há motivo nem aviso
+    for arq in app._SPEAKER_ARQ_OBRIG:
+        (tmp_path / arq).write_bytes(b"x")
+    monkeypatch.setattr(app, "_speaker_fallback_avisado", False)
+    assert app._speaker_ecapa_motivo() == ""
+    assert app._speaker_modelo_efetivo() == app.SPEAKER_MODELO_ATUAL
+    assert "extrator_motivo" not in client.get("/api/settings", headers=auth).json()
+
+
 def test_speaker_embed_escolhe_o_extrator_do_modelo_pedido(monkeypatch):
     """`modelo` decide o extrator: ECAPA só no atual e com os pesos; senão legado."""
     monkeypatch.setattr(sys, "modules", {**sys.modules})   # isola o import do legado

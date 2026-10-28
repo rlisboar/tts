@@ -315,6 +315,15 @@ runtime — quem materializa os pesos é `./tools/baixa_modelos.sh` (manifesto d
 sha256 e licenças em `models/`). Perfil novo no extrator novo começa do zero, sem
 misturar vetores de espaços diferentes.
 
+O fallback **não é silencioso**: na primeira vez que a instalação precisa do
+extrator sai uma linha no stderr dizendo o motivo (`pesos ausentes em … — rode
+./tools/baixa_modelos.sh` ou `speechbrain não instalado no venv`), e o
+**`GET /api/settings`** publica `extrator_efetivo` — com `extrator_motivo` quando
+caiu para o legado — para a tela avisar em vez de deixar você achar que está no
+extrator novo. `/api/status` traz o mesmo em `extrator_locutor`. O modelo é
+carregado no **primeiro uso** de identidade, nunca no boot: sem peso no boot, o
+`/health` sobe mesmo numa instalação sem os pesos.
+
 ### Modos do gate
 
 `speaker_gate` em Configurações → Rede & memória, seção *Tradução / STT ·
