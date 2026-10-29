@@ -213,23 +213,53 @@ _escritas_no_dono: list[str] = []
 _metricas_por_teste: list[str] = []
 
 
-def _impressao_do_dono() -> dict[str, tuple[str, int]]:
-    """Hash+mtime dos arquivos de estado EM USO (não de `app.BASE`).
+def _raiz_do_dono() -> Path | None:
+    """Raiz cujo estado é o do DONO — a principal, vista de QUALQUER worktree.
 
-    A sessão aponta os `TTS_*_PATH` para tmp; num worktree o `app.BASE` nem tem os
-    arquivos do dono, então olhar para lá dava impressão vazia e a guarda não via
-    nada (#659). O mapa nome→caminho vem do próprio app."""
+    `TTS_DONO_DIR` vence (é o contrato que o runner já usa). Sem ele, a raiz sai do
+    `--git-common-dir`: num worktree isso é `<principal>/.git`, então o pai é a
+    raiz principal; num repo comum coincide com a própria raiz. None quando não dá
+    para resolver (cópia sem `.git`, git antigo) — aí a guarda fica muda."""
+    import subprocess
+
+    env = os.environ.get("TTS_DONO_DIR")
+    if env:
+        return Path(env)
+    raiz_repo = Path(__file__).resolve().parent.parent
+    try:
+        r = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=raiz_repo,
+                           capture_output=True, text=True, timeout=10)
+    except Exception:  # noqa: BLE001 — guarda não pode quebrar a suíte
+        return None
+    comum = (r.stdout or "").strip()
+    if r.returncode != 0 or not comum:
+        return None
+    caminho = Path(comum)
+    if not caminho.is_absolute():
+        caminho = raiz_repo / caminho
+    return caminho.parent
+
+
+def _impressao_do_dono() -> dict[str, tuple[str, int]]:
+    """Hash+mtime dos arquivos REAIS do dono (a raiz principal, não o tmp).
+
+    A sessão aponta os `TTS_*_PATH` para tmp para isolar — mas era o tmp que a
+    guarda fotografava, então TODO teste que grava settings (como deve) virava
+    "escrita no dono": ~37 linhas de ruído e `TTS_EXIGE_DONO_INTOCADO=1` vermelho
+    falso (#685). O alvo é o arquivo da raiz principal; num worktree sem estado ele
+    não existe e a entrada fica vazia — silêncio, não erro (#659)."""
     import hashlib
 
     import app
 
+    raiz = _raiz_do_dono()
     caminhos = {"settings.json": app.SETTINGS_PATH,
                 ".apikeys.json": app.APIKEYS_PATH,
                 ".apikey": app.LEGACY_APIKEY_PATH,
                 ".speaker-profiles.json": app.SPEAKER_PATH}
     saida: dict[str, tuple[str, int]] = {}
     for nome in _ARQUIVOS_DO_DONO:
-        alvo = caminhos[nome]
+        alvo = (raiz / nome) if raiz is not None else caminhos[nome]
         try:
             st = alvo.stat()
             saida[nome] = (hashlib.sha256(alvo.read_bytes()).hexdigest()[:12], st.st_mtime_ns)
@@ -242,7 +272,15 @@ def _diferencas(antes: dict, depois: dict) -> list[str]:
     return sorted(n for n in _ARQUIVOS_DO_DONO if antes.get(n) != depois.get(n))
 
 
+#: testes que tocam o arquivo REAL de propósito (provam a guarda e o worktree sem
+#: estado): a escrita deles é esperada, não ruído — nem vermelho sob o knob
+_DONO_ESPERADO = ("tests/test_chaves_isoladas.py::test_guarda_nomeia",
+                  "tests/test_worktree_sem_estado.py::test_suite_passa_em_worktree")
+
+
 def _atribuir_escritas(antes: dict, quem: str) -> None:
+    if quem.startswith(_DONO_ESPERADO):
+        return
     for nome in _diferencas(antes, _impressao_do_dono()):
         _escritas_no_dono.append(f"{quem} escreveu {nome}")
 

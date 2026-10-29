@@ -58,7 +58,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
 export BASE="${BASE:-}"          # vazio = o driver sobe o próprio servidor
 
 "$PY" - "$@" <<'PY'
-import asyncio, json, os, pathlib, shutil, socket, subprocess, sys, threading, time, urllib.request
+import asyncio, json, os, pathlib, shutil, signal, socket, subprocess, sys, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import numpy as np
@@ -133,6 +133,34 @@ def http_get(caminho):
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
 
+def registra_voz_de_teste(nome, pcm, segundos=4.0):
+    """Cadastra a fala de teste como VOZ do servidor da rodada e devolve o id.
+
+    Num worktree não há `voices/` e sem voz registrada o turno não gera áudio. O
+    cadastro é no servidor PRÓPRIO da rodada (o do dono não é tocado)."""
+    import uuid
+    wav = pathlib.Path("/tmp") / f"live_ws_voz_{uuid.uuid4().hex[:8]}.wav"
+    dados = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32767.0
+    if len(dados) < int(segundos * 16000):    # o app exige 3 s+
+        dados = np.tile(dados, int(np.ceil(segundos * 16000 / max(len(dados), 1))))
+    sf.write(str(wav), dados[: int(segundos * 16000)], 16000, subtype="PCM_16")
+    fronteira = uuid.uuid4().hex
+    corpo = b""
+    for campo, valor in (("name", nome), ("denoise", "0")):
+        corpo += (f"--{fronteira}\r\nContent-Disposition: form-data; name=\"{campo}\"\r\n\r\n"
+                  f"{valor}\r\n").encode()
+    corpo += (f"--{fronteira}\r\nContent-Disposition: form-data; name=\"audio\"; "
+              f"filename=\"v.wav\"\r\nContent-Type: audio/wav\r\n\r\n").encode()
+    corpo += wav.read_bytes() + f"\r\n--{fronteira}--\r\n".encode()
+    req = urllib.request.Request(BASE + "/api/voices", data=corpo, method="POST",
+                                 headers={**H, "Content-Type":
+                                          f"multipart/form-data; boundary={fronteira}"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        criado = json.loads(r.read())
+    wav.unlink(missing_ok=True)
+    return criado["id"]
+
+
 def http_post(caminho, corpo, timeout=60):
     req = urllib.request.Request(BASE + caminho, method="POST",
                                  data=json.dumps(corpo).encode(),
@@ -177,11 +205,18 @@ def sobe_stub():
 
 # ---------------------------------------------------------------- fala de teste
 def fala_de_teste(segundos=2.4):
-    """PCM16 16 kHz a partir de uma voz do repo (é fala de verdade, não tom)."""
+    """PCM16 16 kHz a partir de uma voz (é fala de verdade, não tom).
+
+    Num worktree não existe `voices/` (ela não é versionada): cai na fixture
+    versionada, que é voz sintetizada do próprio app."""
     import subprocess
-    wavs = sorted(pathlib.Path("voices").glob("*.wav"))
+    wavs = sorted(pathlib.Path("voices").glob("*.wav")) or \
+        [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]
+    wavs = [w for w in wavs if w.is_file()]
+    if wavs and not list(pathlib.Path("voices").glob("*.wav")):
+        segundos = max(segundos, 5.0)   # fala de fixture é curta: usa os 5 s dela
     if not wavs:
-        raise SystemExit("sem voices/*.wav para usar como fala de teste")
+        raise SystemExit("sem voz de teste (nem voices/*.wav nem a fixture)")
     for w in wavs:
         a, sr = sf.read(str(w), dtype="float32")
         if a.ndim > 1:
@@ -195,6 +230,14 @@ def fala_de_teste(segundos=2.4):
                 inicio = i
                 break
         a = a[inicio:inicio + int(segundos * sr)]
+        # fixture é curta (0,6 s): repete até o tamanho pedido, com 0,1 s de vão
+        # para o VAD ver fala separada — sem isso o worktree fica sem fala
+        if len(a) < int(segundos * sr) and len(a):
+            vao = np.zeros(int(0.1 * sr), dtype=a.dtype)
+            pedaco, partes = a.copy(), [a]
+            while sum(len(x) for x in partes) < int(segundos * sr):
+                partes += [vao, pedaco]
+            a = np.concatenate(partes)[: int(segundos * sr)]
         if len(a) < sr:                      # curto demais: tenta a próxima voz
             continue
         idx = np.linspace(0, len(a) - 1, int(len(a) * 16000 / sr))
@@ -280,6 +323,12 @@ def sobe_servidor(porta, stub_porta):
     # `.job-*`/`.wav` e o histórico de jobs é estado — nada disso é nosso
     SAIDAS = pathlib.Path("/tmp") / f"live_ws_saidas_{porta}"
     SAIDAS.mkdir(parents=True, exist_ok=True)
+    if not list((RAIZ / "voices").glob("*.wav")):
+        # sem voz do dono (worktree): o cadastro vai para tmp e `voices/` fica limpo,
+        # senão a rodada grava no diretório do repo e ele passa a ter uma voz que
+        # não é do dono (a célula que usa a voz DELE rodaria com a nossa)
+        (SAIDAS / "voices").mkdir(parents=True, exist_ok=True)
+        env["TTS_VOICES_DIR"] = str(SAIDAS / "voices")
     env.update({"TTS_APIKEYS_PATH": str(chaves),
                 "TTS_LEGACY_APIKEY_PATH": str(legado),
                 "TTS_OUTPUTS_DIR": str(SAIDAS),
@@ -289,6 +338,13 @@ def sobe_servidor(porta, stub_porta):
          "--port", str(porta), "--log-level", "warning"],
         cwd=str(RAIZ), env=env, stdout=log.open("w"), stderr=subprocess.STDOUT,
         start_new_session=True)
+    global _SERVIDOR, _PIDFILE
+    _SERVIDOR = proc
+    _PIDFILE = pathlib.Path("/tmp") / f"live_ws_servidor_{porta}_{os.getpid()}.pgid"
+    try:
+        _PIDFILE.write_text(str(os.getpgid(proc.pid)))
+    except Exception:                         # noqa: BLE001
+        _PIDFILE = None
     for _ in range(300):                      # até 60 s
         if proc.poll() is not None:
             raise SystemExit(f"servidor do smoke morreu na subida — log em {log}")
@@ -301,15 +357,67 @@ def sobe_servidor(porta, stub_porta):
     raise SystemExit(f"servidor do smoke não subiu em 60 s — log em {log}")
 
 
+#: servidor da rodada (para o trap de saída) e o pidfile do GRUPO dele
+_SERVIDOR = None
+_PIDFILE = None
+
+
 def mata_servidor(proc):
+    """Mata o GRUPO do servidor — `terminate()` sozinho deixa filho para trás."""
+    if proc is None:
+        return
     try:
-        proc.terminate()                      # grupo próprio: mata o uvicorn e filhos
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except Exception:                         # noqa: BLE001 — já morreu
+        try:
+            proc.terminate()
+        except Exception:                     # noqa: BLE001
+            pass
+    try:
         proc.wait(timeout=15)
     except Exception:                         # noqa: BLE001
         try:
-            proc.kill()
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:                     # noqa: BLE001
             pass
+    if _PIDFILE is not None:
+        try:
+            _PIDFILE.unlink()
+        except Exception:                     # noqa: BLE001
+            pass
+
+
+def mata_servidores_antigos():
+    """SIGTERM nos grupos de rodadas ANTERIORES que ficaram para trás (#688).
+
+    O harness escolhe porta livre, então a rodada nova não sabe a porta da velha:
+    o pidfile do grupo (`$$` no nome) é o que sobra. Sem
+    isto, um SIGTERM no meio deixava uvicorn órfão (32 achados, 808 MB)."""
+    mortos = 0
+    for pidfile in pathlib.Path("/tmp").glob("live_ws_servidor_*.pgid"):
+        try:
+            pgid = int(pidfile.read_text().strip())
+        except Exception:                     # noqa: BLE001
+            pidfile.unlink(missing_ok=True)
+            continue
+        try:
+            os.killpg(pgid, signal.SIGTERM)   # sobra de rodada morta: avisa e segue
+            print(f"  (matei servidor órfão da rodada anterior, grupo {pgid})")
+            mortos += 1
+        except OSError:
+            pass
+        pidfile.unlink(missing_ok=True)
+    return mortos
+
+
+def instala_traps():
+    """SIGINT/SIGTERM/SIGHUP e saída normal passam TODOS por `mata_servidor`."""
+    def _sai(signum, _frame):
+        mata_servidor(_SERVIDOR)
+        raise SystemExit(128 + signum)
+
+    for sinal in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sinal, _sai)
 
 
 def guarda_do_settings():
@@ -425,6 +533,9 @@ async def principal():
             BASE = f"http://127.0.0.1:{porta_app}"
             ok(f"servidor próprio em {BASE} + stub de LLM em 127.0.0.1:{stub_porta} "
                f"(por TTS_CHAT_*, sem tocar o settings.json)")
+            if voz == "voz":          # fala veio da FIXTURE: cadastra como voz
+                voz = registra_voz_de_teste("fixture", pcm)
+                ok(f"voz de teste cadastrada no servidor da rodada ({voz})")
         else:
             ok(f"servidor já de pé em {BASE}; stub em 127.0.0.1:{stub_porta} "
                f"— só vale se o servidor foi subido com TTS_CHAT_BASE_URL (senão veja o aviso)")
@@ -662,9 +773,21 @@ async def principal():
         print(f"({len(avisos)} aviso(s))")
 
 
+if "--mata-orfaos" in sys.argv[1:]:
+    # sem rodar a suíte: serve para limpar sobra a qualquer momento (um SIGKILL no
+    # script não roda trap nenhum e o servidor fica até alguém varrer) (#688)
+    quantos = mata_servidores_antigos()
+    print(f"✔ {quantos} servidor(es) órfão(s) do harness encerrado(s)")
+    sys.exit(0)
+
+mata_servidores_antigos()             # #688: rodada anterior não pode ficar de pé
+instala_traps()
 try:
     asyncio.run(principal())
 except BaseException:                 # crash do driver (ex.: TypeError) também
+    mata_servidor(_SERVIDOR)          # servidor some INTEIRO, inclusive por sinal
     limpa_sobras(manter_log=True)     # tem de limpar: o log fica, o resto não
     raise
+else:
+    mata_servidor(_SERVIDOR)
 PY

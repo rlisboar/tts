@@ -322,8 +322,12 @@ def _arvore_descartavel(tmp_path: Path) -> Path:
     wt = tmp_path / "arvore"
     subprocess.run(["git", "-C", str(AQUI.parent), "worktree", "add", "-q", "--detach",
                     str(wt), "HEAD"], check=True, capture_output=True)
-    (wt / ".venv-mlx").symlink_to(AQUI.parent / ".venv-mlx")
-    if (AQUI.parent / "voices").is_dir():
+    # o `.venv-mlx` é entrada RASTREADA (symlink): num worktree o
+    # checkout já a materializa — recriar dá FileExistsError. Só liga quando falta.
+    if not (wt / ".venv-mlx").exists() and not (wt / ".venv-mlx").is_symlink():
+        (wt / ".venv-mlx").symlink_to(AQUI.parent / ".venv-mlx")
+    if (AQUI.parent / "voices").is_dir() and not (wt / "voices").is_symlink() \
+            and not (wt / "voices").exists():
         (wt / "voices").symlink_to(AQUI.parent / "voices")
     for linha in (AQUI.parent / "models" / "sha256sums.txt").read_text().splitlines():
         partes = linha.split("  ", 1)
@@ -540,3 +544,80 @@ def test_doc_lista_exatamente_o_que_o_runner_tem():
     assert palavras.get(m.group(1)) == len(_estagios()["INSTANCIA"]), (
         f"o texto fala de {m.group(1)} vermelhos e `instancia` tem "
         f"{len(_estagios()['INSTANCIA'])} suítes")
+
+
+def test_sigint_no_harness_nao_deixa_servidor(tmp_path):
+    """Interromper o smoke do Live não pode deixar o uvicorn dele para trás (#688).
+
+    O harness sobe o servidor com grupo próprio; sem trap, um `timeout` (SIGTERM)
+    matava só o script e o servidor ficava órfão — 32 achados com ppid 1 e 808 MB.
+    SIGTERM é o caso que vazou: o SIGINT já virá como KeyboardInterrupt e passa
+    pela limpeza normal, o SIGTERM não levanta nada. O teste interrompe com TERM e
+    cobra o grupo morto e o pidfile removido."""
+    import signal as _signal
+
+    proc = subprocess.Popen([str(AQUI / "live_ws.sh")], cwd=str(AQUI.parent),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                            start_new_session=True)
+    pidfile = None
+    try:
+        for _ in range(240):                  # até 60 s para o servidor subir
+            achados = sorted(Path("/tmp").glob("live_ws_servidor_*.pgid"),
+                             key=lambda p: p.stat().st_mtime)
+            if achados:
+                pidfile = achados[-1]
+                break
+            assert proc.poll() is None, "o harness saiu antes de subir o servidor"
+            time.sleep(0.25)
+        assert pidfile is not None, "o harness não registrou o grupo do servidor"
+        pgid = int(pidfile.read_text().strip())
+        proc.send_signal(_signal.SIGTERM)
+        proc.wait(timeout=90)
+        for _ in range(120):
+            try:
+                os.killpg(pgid, 0)
+            except OSError:
+                break
+            time.sleep(0.25)
+        else:
+            assert False, f"o servidor do harness sobreviveu ao SIGTERM (grupo {pgid})"
+        assert not pidfile.exists(), "o pidfile do grupo ficou para trás"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
+        if pidfile is not None and pidfile.exists():
+            try:
+                os.killpg(int(pidfile.read_text().strip()), _signal.SIGKILL)
+            except Exception:                 # noqa: BLE001
+                pass
+            pidfile.unlink(missing_ok=True)
+
+
+def test_mata_orfaos_do_harness_sob_demanda(tmp_path):
+    """Um SIGKILL no harness não roda trap: a sobra tem de morrer sob demanda (#688).
+
+    O harness deixa o pidfile do grupo em `/tmp`; sem um modo avulso, um órfão
+    sobrevive até alguém rodar a suíte de novo (40 h medidos)."""
+    proc = subprocess.Popen(["sleep", "120"], start_new_session=True)
+    pgid = os.getpgid(proc.pid)
+    pidfile = Path("/tmp") / f"live_ws_servidor_99999_{os.getpid()}.pgid"
+    pidfile.write_text(str(pgid))
+    try:
+        r = subprocess.run([str(AQUI / "live_ws.sh"), "--mata-orfaos"],
+                           cwd=str(AQUI.parent), capture_output=True, text=True, timeout=120)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "1 servidor(es) órfão(s)" in r.stdout, r.stdout
+        for _ in range(40):
+            try:
+                os.killpg(pgid, 0)
+            except OSError:
+                break
+            time.sleep(0.25)
+        else:
+            assert False, "o grupo órfão sobreviveu"
+        assert not pidfile.exists(), "o pidfile do órfão ficou"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        pidfile.unlink(missing_ok=True)

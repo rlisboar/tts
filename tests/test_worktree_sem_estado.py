@@ -41,7 +41,10 @@ def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
     subprocess.run([*git, "worktree", "add", "-q", "--detach", str(wt), "HEAD"],
                    check=True, capture_output=True)
     try:
-        (wt / ".venv-mlx").symlink_to(REPO / ".venv-mlx")
+        # o `.venv-mlx` é entrada RASTREADA (symlink): num worktree o
+        # checkout já a materializa — recriar dá FileExistsError. Só liga quando falta.
+        if not (wt / ".venv-mlx").exists() and not (wt / ".venv-mlx").is_symlink():
+            (wt / ".venv-mlx").symlink_to(REPO / ".venv-mlx")
         # pesos por symlink, como o `tools/worktrees.sh` faz (não são estado)
         manifesto = (REPO / "models" / "sha256sums.txt").read_text().splitlines()
         for linha in manifesto:
@@ -53,6 +56,11 @@ def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
             if origem.is_file() and not (wt / rel).exists():
                 (wt / rel).parent.mkdir(parents=True, exist_ok=True)
                 (wt / rel).symlink_to(origem)
+        # `voices` também é entrada RASTREADA (symlink): num worktree o checkout a
+        # materializa apontando para as vozes do dono. Aqui ela tem de ficar VAZIA.
+        if (wt / "voices").is_symlink():
+            (wt / "voices").unlink()
+        (wt / "voices").mkdir(exist_ok=True)
         # o estado do dono NÃO entra (nem as vozes clonadas: a pasta pode existir
         # vazia, porque o app a cria no import)
         for arq in ("settings.json", ".apikey", ".apikeys.json", ".speaker-profiles.json"):
@@ -77,3 +85,31 @@ def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
     finally:
         subprocess.run([*git, "worktree", "remove", "--force", str(wt)],
                        capture_output=True)
+
+
+def test_symlink_de_estado_e_ignorado_pelo_git():
+    """Num worktree `voices`/`.venv-mlx` são SYMLINK — e `voices/` no `.gitignore`
+    (com barra) só casa diretório, então eles escapavam e iam para o commit.
+
+    A forma é ANCORADA (`/voices`): na raiz o link casa, e uma pasta de mesmo nome
+    mais fundo não é sombreada.
+
+    Custa caro: `voices` é o dado REAL do dono (o commit apontaria para o caminho
+    dele) e `voices/voices` nasce quando o link cai dentro da pasta real."""
+    criados = []
+    try:
+        for nome in ("voices", ".venv-mlx", "outputs", "state"):
+            alvo = REPO / nome
+            if alvo.exists() or alvo.is_symlink():
+                continue
+            alvo.symlink_to(REPO / "tests" / "fixtures", target_is_directory=True)
+            criados.append(alvo)
+        r = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-v",
+                            "voices", ".venv-mlx", "outputs", "state"],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        for nome in ("voices", ".venv-mlx", "outputs", "state"):
+            assert f"\t{nome}" in r.stdout, f"{nome} (symlink) não está ignorado: {r.stdout}"
+    finally:
+        for alvo in criados:
+            alvo.unlink()

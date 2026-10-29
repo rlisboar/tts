@@ -22,6 +22,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 BASE = Path(__file__).resolve().parent.parent
 
 #: arquivos de estado do dono que a suíte não pode ler nem escrever
@@ -202,16 +204,35 @@ def test_import_nao_grava_arquivos_de_chave(tmp_path):
 # Sem atribuição, "o settings do dono mudou" é fato sem autor (foi o que travou a
 # investigação de 01:24: o qa já rodava isolado e ninguém sabia a origem).
 def test_guarda_nomeia_quem_tocou_o_arquivo_do_dono():
+    """O alvo é o arquivo REAL da raiz principal — não o tmp da sessão.
+
+    Fotografar o tmp fazia todo teste que grava settings virar "escrita no dono"
+    (37 linhas de ruído, #685)."""
+    import conftest
+
+    raiz = conftest._raiz_do_dono()
+    real = (raiz / "settings.json") if raiz is not None else None
+    if real is None or not real.exists():
+        pytest.skip("sem settings.json na raiz do dono (cópia sem estado)")
+    antes = conftest._impressao_do_dono()
+    os.utime(real)
+    conftest._atribuir_escritas(antes, "tests/test_exemplo.py::test_x")
+    assert "tests/test_exemplo.py::test_x escreveu settings.json" in conftest._escritas_no_dono
+
+
+def test_guarda_nao_acusa_escrita_no_tmp_da_sessao():
+    """Escrever no tmp é o comportamento CERTO da sessão: não pode virar aviso."""
     import conftest
 
     import app
 
-    if not app.SETTINGS_PATH.exists():        # caminho de tmp pode não ter arquivo
-        app._save_settings()
+    conftest._escritas_no_dono.clear()
     antes = conftest._impressao_do_dono()
-    os.utime(app.SETTINGS_PATH)                   # o caminho EM USO (tmp), não o do dono
-    conftest._atribuir_escritas(antes, "tests/test_exemplo.py::test_x")
-    assert "tests/test_exemplo.py::test_x escreveu settings.json" in conftest._escritas_no_dono
+    app._save_settings()                          # grava no caminho isolado (tmp)
+    os.utime(app.SETTINGS_PATH)
+    conftest._atribuir_escritas(antes, "tests/test_exemplo.py::test_tmp")
+    assert conftest._escritas_no_dono == [], conftest._escritas_no_dono
+    assert str(app.SETTINGS_PATH) != str(conftest._raiz_do_dono() / "settings.json")
 
 
 def test_guarda_nao_acusa_quando_nada_muda():

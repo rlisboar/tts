@@ -3,12 +3,15 @@
 .apikeys.json
 .speaker-profiles.json
 client/config.json
-voices/
-outputs/
+# a barra só casa DIRETÓRIO; num worktree `voices`/`.venv-mlx` são SYMLINK e
+# escapavam do ignore (o `cf52376` chegou a commitá-los). Forma ANCORADA e sem
+# barra: casa o link na raiz e não sombreia pasta de mesmo nome mais fundo (#685)
+/voices
+/outputs
 
 # ambientes e modelos (instalados/baixados sob demanda)
 .venv/
-.venv-mlx/
+/.venv-mlx
 # venv de teste do requirements.lock (task #29) e caches dele
 .venv-locktest/
 .tmp-lock/
@@ -42,7 +45,7 @@ server.log
 
 # estado de operação gerado em runtime: histórico do /api/metrics (JSONL por dia,
 # podado por TTL). Metadado de máquina, não se versiona (#376).
-state/
+/state
 
 # rascunhos locais: backups de probes e artefatos avulsos de sessão (o que
 # importa vira evidence/ ou teste versionado)

@@ -298,6 +298,17 @@ sha256 no manifesto reprova).
 | `demucs` fora do `requirements.txt` | `test_requirements_pinos` **FAILED** (dep sem pino e fora do lock) |
 | peso ausente do disco | célula offline **skipa** (o skip nomeia o script) |
 
+## #688 — harness do Live não deixa servidor órfão
+
+| Sabotagem | Resultado |
+|---|---|
+| `mata_servidor` vira no-op | `test_sigint_no_harness_nao_deixa_servidor` **FAILED** ("o servidor do harness sobreviveu ao SIGTERM") |
+| `mata_servidores_antigos` não varre (early return) | `test_mata_orfaos_do_harness_sob_demanda` **FAILED** (o grupo órfão sobrevive) |
+
+O SIGTERM (`timeout`) é o caso que vazou: o SIGINT já chega como KeyboardInterrupt e
+passa pela limpeza normal; o TERM não levanta nada. O trap cobre os dois e a rodada
+seguinte varre pidfiles de grupos anteriores.
+
 ## #659 — suíte em worktree SEM estado do dono
 
 | Sabotagem | Resultado |
