@@ -289,9 +289,12 @@ def test_import_com_os_caminhos_no_ambiente_nao_toca_o_settings_do_dono(tmp_path
     são trocados depois dele. Com o env ANTES, a leitura vem do isolamento, as
     escritas seguintes caem lá e os arquivos do dono ficam intactos."""
     saida = tmp_path / "veredito.txt"
+    # `TTS_EXIGE_DONO_INTOCADO=1`: se a sonda encostar no estado da árvore, o
+    # próprio runner reprova — a célula prova a intocabilidade, não confia nela
     r = _rodar("navegador", env={"SUITES": str(SONDAS / "sonda_import_app.sh"),
                                  "SONDA_MODO": "env", "SONDA_SAIDA": str(saida),
-                                 "SONDA_ISO": str(tmp_path)})
+                                 "SONDA_ISO": str(tmp_path),
+                                 "TTS_EXIGE_DONO_INTOCADO": "1"})
     assert r.returncode == 0, r.stdout + r.stderr
     assert "estado lido do isolamento" in saida.read_text()
 
@@ -303,7 +306,8 @@ def test_o_defeito_do_atributo_ainda_morde(tmp_path):
     saida = tmp_path / "veredito.txt"
     r = _rodar("navegador", env={"SUITES": str(SONDAS / "sonda_import_app.sh"),
                                  "SONDA_MODO": "atributo", "SONDA_SAIDA": str(saida),
-                                 "SONDA_ISO": str(tmp_path)})
+                                 "SONDA_ISO": str(tmp_path),
+                                 "TTS_EXIGE_DONO_INTOCADO": "1"})
     assert r.returncode == 0, r.stdout + r.stderr
     assert "estado do DONO entrou na RAM" in saida.read_text()
 
