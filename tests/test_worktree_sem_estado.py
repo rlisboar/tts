@@ -54,9 +54,13 @@ def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
         for arq in ("settings.json", ".apikey", ".apikeys.json", ".speaker-profiles.json"):
             assert not (wt / arq).exists(), f"{arq} veio junto (não devia)"
 
+        # `TTS_METRICS_DIR` próprio da rodada filha: sem ele o app do worktree grava
+        # `state/metrics` DENTRO do worktree e a guarda do conftest (que olha
+        # `app.BASE`) acusa no teardown da sessão filha.
         env = {**os.environ, "PATH": os.environ.get("PATH", ""),
-               "HOME": os.environ.get("HOME", "/tmp"), "PYTHONDONTWRITEBYTECODE": "1"}
-        for arq in ("settings.json", ".apikey", ".apikeys.json"):
+               "HOME": os.environ.get("HOME", "/tmp"), "PYTHONDONTWRITEBYTECODE": "1",
+               "TTS_METRICS_DIR": str(tmp_path / "metricas")}
+        for arq in ("SETTINGS_PATH", "APIKEYS_PATH", "LEGACY_APIKEY_PATH"):
             env.pop(f"TTS_{arq}", None)
         for arquivo, filtro in FATIA:
             r = subprocess.run([str(PY), "-m", "pytest", arquivo, "-q", "-k", filtro],
