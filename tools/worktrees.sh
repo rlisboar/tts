@@ -16,8 +16,11 @@
 # com estado SINTÉTICO (o `conftest` exporta os `TTS_*_PATH` para tmp). Cópia
 # multiplicaria os segredos do dono por N diretórios e esconderia célula que lê o
 # arquivo real por fora do isolamento — `tests/test_worktree_sem_estado.py` guarda.
-# `voices/` (10 MB, sem segredo) é copiado: é conteúdo, não estado, e sem ele a
-# resolução de voz cai em caminho que pede modelo. Os pesos (750 MB) vão por symlink.
+# Nada disso é copiado nem linkado — nem `voices/` (são vozes clonadas,
+# insubstituíveis: seis worktrees seriam seis cópias). A suíte tem de passar com
+# estado SINTÉTICO; a voz de fixture é `tests/fixtures/voz_fala_5s_16k.wav`,
+# versionada, e `tests/test_worktree_sem_estado.py` guarda. Os pesos (750 MB) são a
+# única coisa ligada, por symlink.
 #
 # Uso:
 #   tools/worktrees.sh cria <agente>     # ../tts-rod-wt/<agente> na branch wt/<agente>
@@ -51,7 +54,6 @@ _liga_o_que_nao_pode_copiar() {
     else
         echo "  ⚠ sem .venv-mlx na raiz — o worktree vai precisar de um venv" >&2
     fi
-    [ -d "$RAIZ/voices" ] && cp -Rp "$RAIZ/voices" "$destino/voices"
     [ -f "$SUMS" ] || return 0
     while read -r _sha rel; do
         [ -n "${rel:-}" ] || continue
@@ -80,7 +82,7 @@ cria() {
     _liga_o_que_nao_pode_copiar "$destino"
     echo "✔ worktree de $agente em $destino (branch wt/$agente, a partir de main)"
     echo "  compartilhados: .venv-mlx e os pesos de models/ (symlink)"
-    echo "  próprios: voices/, settings.json, .apikey*, outputs/, state/"
+    echo "  próprios (nascem vazios): voices/, settings.json, .apikey*, outputs/, state/"
     echo "  integre com: tools/integra.sh $agente"
 }
 

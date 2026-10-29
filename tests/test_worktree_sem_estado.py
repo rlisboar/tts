@@ -24,7 +24,10 @@ PY = REPO / ".venv-mlx" / "bin" / "python"
 FATIA = [("tests/test_run_sh.py", "dono or metrics or knob or j3 or import_com"),
          ("tests/test_chaves_isoladas.py", "guarda"),
          ("tests/test_tmpdir_sem_credencial.py", "basetemp"),
-         ("tests/test_api.py", "save_preserva or save_avisa")]
+         ("tests/test_api.py", "save_preserva or save_avisa"),
+         # sem o `voices/` do dono a resolução de voz caía em caminho que pede
+         # modelo: estas duas usam a voz de fixture versionada
+         ("tests/test_app.py", "marca_dagua_no_v1 or preaquece_o_marcador")]
 
 _sem_git = pytest.mark.skipif(not (REPO / ".git").exists(), reason="precisa do repo git")
 _sem_venv = pytest.mark.skipif(not PY.is_file(), reason="precisa da .venv-mlx")
@@ -50,9 +53,12 @@ def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
             if origem.is_file() and not (wt / rel).exists():
                 (wt / rel).parent.mkdir(parents=True, exist_ok=True)
                 (wt / rel).symlink_to(origem)
-        # o estado do dono NÃO entra
+        # o estado do dono NÃO entra (nem as vozes clonadas: a pasta pode existir
+        # vazia, porque o app a cria no import)
         for arq in ("settings.json", ".apikey", ".apikeys.json", ".speaker-profiles.json"):
             assert not (wt / arq).exists(), f"{arq} veio junto (não devia)"
+        assert not list((wt / "voices").glob("*")) if (wt / "voices").exists() else True, \
+            "voices/ veio com arquivos do dono (não devia)"
 
         # `TTS_METRICS_DIR` próprio da rodada filha: sem ele o app do worktree grava
         # `state/metrics` DENTRO do worktree e a guarda do conftest (que olha
@@ -60,7 +66,7 @@ def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
         env = {**os.environ, "PATH": os.environ.get("PATH", ""),
                "HOME": os.environ.get("HOME", "/tmp"), "PYTHONDONTWRITEBYTECODE": "1",
                "TTS_METRICS_DIR": str(tmp_path / "metricas")}
-        for arq in ("SETTINGS_PATH", "APIKEYS_PATH", "LEGACY_APIKEY_PATH"):
+        for arq in ("SETTINGS_PATH", "APIKEYS_PATH", "LEGACY_APIKEY_PATH", "VOICES_DIR"):
             env.pop(f"TTS_{arq}", None)
         for arquivo, filtro in FATIA:
             r = subprocess.run([str(PY), "-m", "pytest", arquivo, "-q", "-k", filtro],

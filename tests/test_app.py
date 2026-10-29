@@ -758,6 +758,22 @@ class _ModeloFalso:
     sample_rate = 24000
 
 
+def _voz_de_fixture(monkeypatch, tmp_path) -> str:
+    """Uma voz em tmp a partir do WAV VERSIONADO de `tests/fixtures/`.
+
+    O worktree não tem o `voices/` do dono (#670) e sem voz a resolução da rota cai
+    num caminho que pede modelo — as células de marca d'água quebravam assim."""
+    import shutil
+
+    vd = tmp_path / "vozes"
+    vd.mkdir(exist_ok=True)
+    shutil.copy(Path(__file__).resolve().parent / "fixtures" / "voz_fala_5s_16k.wav",
+                vd / "v1.wav")
+    (vd / "v1.json").write_text('{"id": "v1", "name": "Teste"}')
+    monkeypatch.setattr(app, "VOICES_DIR", vd)
+    return "v1"
+
+
 def _job_de_render(monkeypatch, tmp_path, gerador, texto="x", remoto=False):
     """Monta o mínimo para rodar `_run_tts_job` sem modelo nem Metal."""
     monkeypatch.setattr(app, "OUTPUTS_DIR", tmp_path)
@@ -1867,6 +1883,7 @@ def test_marca_dagua_no_v1_audio_speech(monkeypatch, tmp_path):
     def _gerador(model, texto, *a, **k):
         return np.full(24000, 0.1, dtype=np.float32)
 
+    voz = _voz_de_fixture(monkeypatch, tmp_path)
     _job_de_render(monkeypatch, tmp_path, _gerador, texto="oi")
     from fastapi.testclient import TestClient
 
@@ -1874,7 +1891,7 @@ def test_marca_dagua_no_v1_audio_speech(monkeypatch, tmp_path):
     chave = app._primary_api_key()
     cab = {"X-API-Key": chave} if chave else {}
     r = cliente.post("/v1/audio/speech", headers=cab, json={
-        "model": "tts-1", "input": "uma frase curta", "voice": "voz-x",
+        "model": "tts-1", "input": "uma frase curta", "voice": voz,
         "response_format": "wav"})
     assert r.status_code == 200, r.text[:200]
     assert marcas, "o /v1/audio/speech não passou pela marca"
@@ -1895,13 +1912,14 @@ def test_marca_dagua_v1_audio_speech_preaquece_o_marcador(monkeypatch, tmp_path)
     def _gerador(model, texto, *a, **k):
         return np.full(24000, 0.1, dtype=np.float32)
 
+    voz = _voz_de_fixture(monkeypatch, tmp_path)
     _job_de_render(monkeypatch, tmp_path, _gerador, texto="oi")
     from fastapi.testclient import TestClient
 
     chave = app._primary_api_key()
     cliente = TestClient(app.app, raise_server_exceptions=False)
     r = cliente.post("/v1/audio/speech", headers={"X-API-Key": chave} if chave else {},
-                     json={"model": "tts-1", "input": "frase", "voice": "voz-x",
+                     json={"model": "tts-1", "input": "frase", "voice": voz,
                            "response_format": "wav"})
     assert r.status_code == 200, r.text[:160]
     assert preaquecidos, "o /v1/audio/speech não aqueceu o marcador"
@@ -1909,6 +1927,6 @@ def test_marca_dagua_v1_audio_speech_preaquece_o_marcador(monkeypatch, tmp_path)
     monkeypatch.setitem(app._settings, "tts_marca_dagua", False)
     preaquecidos.clear()
     cliente.post("/v1/audio/speech", headers={"X-API-Key": chave} if chave else {},
-                 json={"model": "tts-1", "input": "frase", "voice": "voz-x",
+                 json={"model": "tts-1", "input": "frase", "voice": voz,
                        "response_format": "wav"})
     assert preaquecidos == []
