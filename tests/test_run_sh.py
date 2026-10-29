@@ -383,6 +383,12 @@ def test_live_lock_freeze_muta_uma_copia_e_deixa_a_arvore_intacta(tmp_path):
         subprocess.run(["git", "-C", str(AQUI.parent), "worktree", "remove", "--force",
                         str(wt)], capture_output=True)
 
+    # a árvore descartável tem de sumir — inclusive do registro do git (P3 do gate
+    # #681: sem esta linha, desligar o `remove` deixava worktree vivo e a célula verde)
+    assert not wt.exists(), f"a árvore descartável ficou em {wt}"
+    registro = subprocess.run(["git", "-C", str(AQUI.parent), "worktree", "list",
+                               "--porcelain"], capture_output=True, text=True).stdout
+    assert f"worktree {wt}\n" not in registro, "o worktree ficou registrado no `.git`"
     assert _impressao(raiz_app) == antes, (
         "o `app.py` da ÁRVORE mudou durante a célula (sha/mtime) — se outro agente"
         " não estava editando, a guarda sujou a raiz")
