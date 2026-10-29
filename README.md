@@ -455,11 +455,13 @@ escore cru) e o `GET /api/settings` devolve o valor justamente para a tela saber
 que o modo normalizado está ativo — enquanto ele estiver preenchido, o
 `speaker_threshold` cru deixa de decidir.
 
-**Anti-clone** (`speaker_anticlone`, default `false`): o gancho existe no gate e
-está DESLIGADO — o bake-off do R3 ainda não mediu marca d'água nem detector
-sintético, e ligar hoje não mudaria veredito. Ligado, a resposta do gate ganha
-`anticlone: "pendente"`; desligado, nem o campo aparece. Quando o detector
-existir, é esse campo que passa a rejeitar clone em `enforce` e avisar em `label`.
+**Anti-clone** (`speaker_anticlone`, default `false`): com ele ligado o gate lê a
+marca d'água do áudio (AudioSeal — clone feito pelo app sai marcado, fala humana
+não). Em `enforce` áudio MARCADO é rejeitado ("áudio com marca d'água de TTS"), em
+`label` vira `speaker_aviso`; `anticlone_prob` sai junto. Detector indisponível
+(sem pesos) **não rejeita** — marca ausente é a maioria da fala real, e o limite do
+R3 é áudio curto/cortado (83 % com 60 % do trecho cortado). Só vale para áudio de
+ARQUIVO: o Live tem o portão dele (`_voz_do_dono`).
 
 ## API compatível com OpenAI
 

@@ -2603,7 +2603,7 @@ def test_speaker_anticlone_desligado_nao_muda_a_resposta(monkeypatch):
     com = app._speaker_gate_ok(Path("x.wav"))
     assert com["anticlone"] == "marcado" and com["anticlone_prob"] == 0.97
     assert {k: v for k, v in com.items()
-            if k not in ("anticlone", "anticlone_prob")} == sem
+            if k not in ("anticlone", "anticlone_prob", "speaker_aviso")} == sem
     # áudio cru e detector fora também são ditos, sem aprovar nem reprovar
     monkeypatch.setattr(marca_dagua, "detecta_prob", lambda p: 0.02)
     assert app._speaker_gate_ok(Path("x.wav"))["anticlone"] == "cru"
@@ -7014,3 +7014,51 @@ def test_troca_de_extrator_reextrai_do_audio_guardado(client, auth, monkeypatch,
     assert lista[0]["modelo"] == app.SPEAKER_MODELO_ATUAL, lista
     assert lista[0]["precisa_recadastrar"] is False
     assert len(store["eu"]["vecs"]) == 3 and len(store["eu"]["vecs"][0]) == 256
+
+
+# --- VOZ-I3b (#613): o anti-clone VETA em `enforce` e avisa em `label` --------
+def _perfil_para_anticlone(monkeypatch, prob):
+    import marca_dagua
+
+    perfis = {"eu": {"vecs": [[1.0, 0.0]], "modelo": app._speaker_modelo_efetivo()}}
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
+    monkeypatch.setattr(marca_dagua, "disponivel", lambda: prob is not None)
+    monkeypatch.setattr(marca_dagua, "motivo", lambda: "sem pesos")
+    if prob is not None:
+        monkeypatch.setattr(marca_dagua, "detecta_prob", lambda p: prob)
+    monkeypatch.setitem(app._settings, "speaker_anticlone", True)
+
+
+def test_anticlone_veta_audio_marcado_em_enforce(monkeypatch):
+    """Marca detectada = áudio gerado por TTS: barra em `enforce`, com o motivo."""
+    _perfil_para_anticlone(monkeypatch, 0.98)
+    monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
+    out = app._speaker_gate_ok(Path("x.wav"))
+    assert out.get("rejected") is True
+    assert "clone" in out["reason"] and "0.98" in out["reason"]
+    # fala humana (cru) passa
+    _perfil_para_anticlone(monkeypatch, 0.01)
+    monkeypatch.setitem(app._settings, "speaker_anticlone", True)
+    assert not app._speaker_gate_ok(Path("x.wav")).get("rejected")
+
+
+def test_anticlone_avisa_em_label_e_nao_rejeita(monkeypatch):
+    """Em `label` a etiqueta continua e o clone só vira aviso."""
+    _perfil_para_anticlone(monkeypatch, 0.98)
+    monkeypatch.setitem(app._settings, "speaker_gate", "label")
+    out = app._speaker_gate_ok(Path("x.wav"))
+    assert out.get("speaker") == "eu" and not out.get("rejected")
+    assert "CLONE" in out["speaker_aviso"]
+
+
+def test_anticlone_sem_detector_nao_rejeita(monkeypatch):
+    """Sem pesos, `enforce` não pode barrar todo mundo: fail open com motivo."""
+    _perfil_para_anticlone(monkeypatch, None)
+    monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
+    out = app._speaker_gate_ok(Path("x.wav"))
+    assert out.get("anticlone") == "indisponivel" and not out.get("rejected")
+    # e desligado não consulta nada
+    monkeypatch.setitem(app._settings, "speaker_anticlone", False)
+    assert "anticlone" not in app._speaker_gate_ok(Path("x.wav"))

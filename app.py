@@ -8953,7 +8953,19 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
     # nem campo na resposta. O R3 ainda não foi medido, então ligar hoje só diria
     # "pendente"; o detector entra é aqui.
     if _settings.get("speaker_anticlone"):
-        out.update(_speaker_anticlone(wav_path))
+        anti = _speaker_anticlone(wav_path)
+        out.update(anti)
+        # VETO: áudio GERADO (clone) sai marcado; fala humana não. Só para áudio de
+        # ARQUIVO (o Live tem o caminho dele) e só quando o detector respondeu —
+        # `indisponivel` NÃO rejeita, porque marca ausente é a maioria da fala real.
+        if anti.get("anticlone") == "marcado":
+            if gate == "enforce":
+                out["rejected"] = True
+                out["reason"] = ("áudio com marca d'água de TTS (clone) — "
+                                 f"detecção {anti.get('anticlone_prob')}")
+            else:
+                out["speaker_aviso"] = ("áudio parece CLONE: marca d'água do TTS "
+                                        "detectada")
     return out
 
 
