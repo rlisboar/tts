@@ -6351,9 +6351,10 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                 `sob_lock` só é verdadeiro no FALLBACK: lá o job segura `_NO_LOCK`
                 (entrou pelo remoto), então sem pegar o `_gen_lock` aqui a geração
                 local correria junto com outro job no mesmo Metal. No caminho local
-                o job já segura o lock, e o `_gen_lock` não é reentrante — daí a
-                trava ficar só em volta do `generate`, nunca em volta de
-                `_prepara_local` (que também a toma).
+                o job já segura o lock; a trava fica em volta do `generate` e não
+                de `_prepara_local` — com `RLock` a reentrada seria tolerada, mas
+                pegar duas vezes só para chamar quem já pega esconde o desenho, e
+                o `_prepara_local` também é chamado de fora (troca de modelo).
                 """
                 if not _prepara_local():
                     raise RuntimeError("sem modelo local para o trecho")
@@ -10714,6 +10715,12 @@ def _live_abre_turno(sess: dict, pcm: bytes = b"", barge_in: bool = False) -> No
     # flag do evento: o pipeline usa para separar ECO de humano (decisão do PM);
     # vai na sessão E como kwarg quando o pipeline aceitar (transição).
     sess["turno_barge_in"] = bool(barge_in)
+    # TRECHO DO BARGE (#674): o áudio do trecho suspeito entra ANTES do áudio do
+    # turno. Ele já foi consumido do motor pela decisão, então o turno nascia só
+    # com a cauda (224 ms medidos) e o VAD do STT recusava o turno inteiro como
+    # `vad` — a fala do dono sumia e a sessão ficava parada. O `pop` garante uma
+    # vez só (o caminho pendente carrega o trecho junto, então aqui não sobra).
+    pcm = (sess.pop("barge_audio", b"") or b"") + (pcm or b"")
     pipe = sess.get("pipe")
     if pipe is None:                     # sem pipeline: stub mínimo
         # via `_live_envia_json` (#211), como o irmão `_live_engine`: a fila crua
@@ -11419,6 +11426,11 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
                  # sem ele no log a decisão não se explica pelo estado do playback
                  restante_ms=restante)
     if tipo == "interrupcao":
+        # o áudio do trecho vai JUNTO com o turno que vem depois: o pendente só
+        # recebia a cauda (224 ms medidos) e o VAD recusava o turno como `vad`,
+        # perdendo a fala do dono (#674)
+        if audio:
+            sess["barge_audio"] = audio
         _live_cancela(sess, forcar=True)
     if eventos:
         _live_trata_eventos(sess, eventos)

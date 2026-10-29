@@ -1,0 +1,5 @@
+htdemucs — pesos de separação de música (Demucs v4, Meta/`adefossez`).
+
+Licença: MIT (código e pesos; ver o repositório `adefossez/demucs`).
+Uso aqui: stem `vocals` como etapa "separar música" da limpeza de amostra (#520).
+Executado por `musica_worker.py` em processo separado, sempre com pesos locais.

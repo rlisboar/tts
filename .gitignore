@@ -65,4 +65,7 @@ models/dfn3-onnx/deepfilter.onnx
 models/dfn3-onnx/config.json
 # pacote + modelos do DNSMOS (extraídos do wheel pelo script): ver models/dnsmos/NOTICE
 models/dnsmos/*.whl
+# pesos do Demucs (htdemucs): yaml fica, o .th de 84 MB não — ver models/demucs/NOTICE
+models/demucs/*.th
+models/demucs/*.safetensors
 models/dnsmos/*.onnx

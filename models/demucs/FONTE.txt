@@ -1,0 +1,2 @@
+https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th
+sha256 do arquivo gravado em sha256sums.txt; o `htdemucs.yaml` (bag) é local.
