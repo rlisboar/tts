@@ -6890,21 +6890,47 @@ def _marca_stub(monkeypatch, ok=True):
                                                           _marca_fake["chamadas"] + 1) or p)
 
 
-def test_marca_dagua_marca_o_audio_do_live(monkeypatch):
-    """Trecho do Live sai marcado; desligado (ou sem pesos), sai o mesmo PCM."""
+def _sess_live_fila():
+    """Sessão mínima do Live com a FILA real: é o que o cliente recebe."""
+    sess = {"id": "s-marca", "fila": app._LiveFila(), "engine": None,
+            "audio_pendente": 0}
+    return sess
+
+
+def _pcm_na_fila(sess) -> list:
+    """Drena a fila e devolve só o áudio — é o que o cliente receberia."""
+    itens = []
+    while not sess["fila"].empty():
+        itens.append(sess["fila"].get())
+    return [c[1] for c in itens if c[0] == "audio"]
+
+
+def test_marca_dagua_marca_o_trecho_enviado_ao_cliente(monkeypatch):
+    """O caminho do LIVE tem de marcar: é o PCM que sai em `_live_envia_audio`.
+
+    A célula antiga chamava `_marca_pcm` direto, então apagar a chamada no
+    `_live_envia_audio` deixava tudo verde (mordida que não morde, gate #657)."""
     _marca_stub(monkeypatch)
     monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
     pcm = b"\x00\x01" * 800
-    saida = app._marca_pcm(pcm)
-    assert _marca_fake["chamadas"] == 1, "não mandou marcar"
-    assert len(saida) == len(pcm), "o PCM tem de voltar do mesmo tamanho (16 bits)"
+    sess = _sess_live_fila()
+    app._live_envia_audio(sess, pcm)
+    enviado = _pcm_na_fila(sess)
+    assert _marca_fake["chamadas"] == 1, "o envio ao cliente não pediu a marca"
+    assert enviado and len(enviado[0]) == len(pcm), "PCM tem de ir no mesmo tamanho"
+    assert sess["audio_pendente"] == 1, "a contagem de áudio em voo mudou"
+    # desligado: o cliente recebe o PCM ORIGINAL, byte a byte
     monkeypatch.setitem(app._settings, "tts_marca_dagua", False)
-    assert app._marca_pcm(pcm) == pcm and _marca_fake["chamadas"] == 1
-    # sem pesos: devolve o original e avisa uma vez
+    sess2 = _sess_live_fila()
+    app._live_envia_audio(sess2, pcm)
+    assert _pcm_na_fila(sess2) == [pcm] and _marca_fake["chamadas"] == 1
+    # sem pesos: o cliente recebe o original e o aviso sai uma vez
     monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
     _marca_stub(monkeypatch, ok=False)
     monkeypatch.setattr(app, "_marca_avisada", False)
-    assert app._marca_pcm(pcm) == pcm
+    sess3 = _sess_live_fila()
+    app._live_envia_audio(sess3, pcm)
+    assert _pcm_na_fila(sess3) == [pcm] and app._marca_avisada is True
 
 
 def test_marca_dagua_e_campo_ADMIN(monkeypatch):
