@@ -59,9 +59,10 @@ def test_grafo_carrega_offline_com_hfhome_vazio(tmp_path):
 
 
 def test_grafo_e_regular_e_o_config_esta_ao_lado():
-    """Symlink para o cache não sobrevive a clone limpo; o `config.json` é lido
-    junto (parâmetros do filtro) e fica no mesmo diretório."""
-    assert GRAFO_REPO.is_file() and not GRAFO_REPO.is_symlink()
+    """Arquivo regular — ou symlink que RESOLVE (worktree liga os pesos da raiz de
+    propósito): o que não vale é symlink quebrado ou para o cache do HF. O
+    `config.json` é lido junto (parâmetros do filtro) e fica no mesmo diretório."""
+    assert GRAFO_REPO.is_file() and GRAFO_REPO.resolve().is_file()
     assert (PASTA / "config.json").is_file()
     assert (PASTA / "NOTICE").is_file() and (PASTA / "FONTE.txt").is_file()
 

@@ -61,10 +61,10 @@ def test_ovrl_roda_offline_com_hfhome_vazio(tmp_path):
 
 def test_modelos_sao_regulares_e_a_licenca_esta_ao_lado():
     """MIT da Microsoft: o NOTICE tem de estar no diretório, com o texto, e os
-    arquivos não podem ser symlink (clone limpo)."""
+    modelos têm de RESOLVER (regular, ou symlink para a raiz num worktree)."""
     for arq in ("sig_bak_ovr.onnx", "model_v8.onnx"):
         alvo = PASTA / arq
-        assert alvo.is_file() and not alvo.is_symlink(), arq
+        assert alvo.is_file() and alvo.resolve().is_file(), arq
     notice = (PASTA / "NOTICE").read_text()
     assert "MIT License" in notice and "Microsoft" in notice
     assert "speechmos" in (PASTA / "FONTE.txt").read_text()
