@@ -354,6 +354,7 @@ que a suíte começa.
 |---|---|
 | suíte volta a mutar `$RAIZ/app.py` (rodar com `FREEZE_ARVORE=$PWD`) | **FAILED**: "a suíte mutou a árvore principal em vez da cópia" |
 | sentinela vazado no `app.py` da raiz (o defeito do #670) | **FAILED**: "o sentinela vazou para o `app.py` da árvore" |
+| célula de marca d'água volta a pedir `voice: "voz-x"` (sem voz no worktree) | guarda #659 **FAILED**: `_ModeloFalso` sem `generate` (a resolução cai no preset) |
 
 A célula roda o cenário num worktree descartável desde o #670 — antes ela mesma
 escrevia a sentinela no `app.py` da raiz (append + restore no `finally`, que morre
