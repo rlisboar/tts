@@ -12596,4 +12596,4 @@ async def _historico_operacao(request, call_next):
 
 # UI estática (registrada por último para não engolir /api/* e /v1/*)
 app.mount("/", StaticFiles(directory=BASE / "static", html=True), name="static")
-# sentinela-isolamento-49800-1793224211
+# sentinela-isolamento-velho
