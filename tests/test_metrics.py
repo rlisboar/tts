@@ -230,6 +230,10 @@ def test_escrita_sem_env_cai_no_repo_e_com_env_nao(tmp_path):
     rota = f"/api/_610_{os.getpid()}"
     raiz = Path(__file__).resolve().parent.parent
     real = raiz / "state" / "metrics"
+    # o arquivo do dia pode NÃO existir (worktree, árvore recém-clonada): a célula
+    # cria por desenho, então devolve a pasta ao que era — senão o guard de sessão
+    # acusa arquivo novo e a suíte fica vermelha em árvore limpa (#659)
+    _criados_antes = {p.name for p in real.glob("*.jsonl")}
     antes = {p.name: p.stat().st_size for p in real.glob("*.jsonl")}
     cmd = ("import metrics_hist, time;"
            f"metrics_hist.registrar({rota!r}, 1.0, 200); time.sleep(0.05)")
@@ -247,6 +251,11 @@ def test_escrita_sem_env_cai_no_repo_e_com_env_nao(tmp_path):
                                  check=True, capture_output=True)
     assert {p.name: p.stat().st_size for p in real.glob("*.jsonl")} == antes
     assert any(rota in p.read_text() for p in alvo.glob("*.jsonl")), "não escreveu no tmp"
+    for p in real.glob("*.jsonl"):
+        if p.name not in _criados_antes:
+            p.unlink(missing_ok=True)
+    if not any(real.iterdir()) if real.exists() else False:
+        real.rmdir()
 
 
 def test_a_suite_usa_audio_de_cadastro_fora_do_repo():
