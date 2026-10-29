@@ -181,6 +181,43 @@ CORR_SEPAROU = 0.90
 MARGEM = 0.05
 
 
+def _segmentos_de_fala(x, sr: int, maximo: int, piso: float = 0.15) -> list:
+    """(ini, fim) por segmento de FALA, cortados em blocos de `maximo` amostras.
+
+    Piso de energia adaptativo (0,15 do percentil 90 da própria faixa), quadros de
+    20 ms e emenda de vãos curtos (< 0,2 s) — mesma régua do VAD do R4. Trechos de
+    SILÊNCIO ficam fora da lista e o chamador os deixa como estão."""
+    import numpy as np
+
+    q = 320                          # 20 ms
+    if x.size < q * 2:
+        return [(0, x.size)]
+    quadros = x[: x.size // q * q].reshape(-1, q)
+    energia = np.sqrt((quadros.astype(np.float64) ** 2).mean(axis=1))
+    referencia = float(np.percentile(energia, 90)) or 1e-9
+    ativo = energia >= referencia * piso
+    juntos = max(1, int(0.2 * sr / q))            # emenda vãos < 0,2 s
+    for i in range(1, len(ativo) - juntos):
+        if ativo[i - 1] and ativo[min(len(ativo) - 1, i + juntos)]:
+            ativo[i:i + juntos] = True
+    segmentos = []
+    i = 0
+    while i < ativo.size:
+        if not ativo[i]:
+            i += 1
+            continue
+        j = i
+        while j < ativo.size and ativo[j]:
+            j += 1
+        ini, fim = i * q, min(j * q, x.size)
+        while fim - ini > maximo:                 # segmento longo: corta em blocos
+            segmentos.append((ini, ini + maximo))
+            ini += maximo
+        segmentos.append((ini, fim))
+        i = j
+    return segmentos or [(0, x.size)]
+
+
 def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
     """Áudio só com a voz do perfil: separa nas sobreposições, veta janela no resto.
 
@@ -223,17 +260,44 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
             emb = app._speaker_embed(tmp, modelo)
             return app._cos_sim(emb, centroide) if emb else -1.0
 
+        passo = int(0.5 * sr)        # sub-bloco da medida: 1,5 s sozinho pontua baixo
+
+        def _sim_forte(sinal) -> float:
+            """Melhor escore entre sub-blocos de 0,5 s: um trecho com o dono em
+            QUALQUER pedaço da janela não pode ser vetado (com o escore da janela
+            inteira, o dono sumia em blocos de 2 s — medido)."""
+            if sinal.size <= passo:
+                return _sim(sinal)
+            return max(_sim(sinal[k:k + passo])
+                       for k in range(0, sinal.size - passo + 1, passo))
+
         janela = int(JANELA_S * sr)
         saida = np.zeros(x.size, dtype=np.float32)
+        # as janelas seguem os SEGMENTOS DE FALA, não uma grade fixa: numa grade, a
+        # fronteira cai meio a meio entre dois falantes, pontua baixo e o veto come
+        # palavra do dono (#663). Segmento curto (< 0,25 s) não se separa.
+        segmentos = _segmentos_de_fala(x, sr, janela)
         descartados_ms = 0
         trechos_descartados = 0
         escores_janelas = []
         sobrepostas = 0
-        for ini in range(0, x.size, janela):
-            fim = min(ini + janela, x.size)
+        # PASSO 1: mede todas as janelas. O piso do veto é RELATIVO à mediana do
+        # próprio áudio — o escore cru cai com a duração da janela (a mesma fala em
+        # 1,5 s dá 0,26 e em 7 s dá ~0,9), então o limiar absoluto do gate vetava o
+        # próprio dono.
+        medido = []
+        for ini, fim in segmentos:
             sim_orig = _sim(x[ini:fim])
+            ocorre = _sim_forte(x[ini:fim])
             sims = [(_sim(f[ini:fim]), i) for i, f in enumerate(fluxos)]
             sims.sort(reverse=True)
+            medido.append((ini, fim, sim_orig, ocorre, sims))
+        validos = [m[4][0][0] for m in medido if m[4][0][0] > 0]
+        mediana = float(np.median(validos)) if validos else 0.0
+        piso = min(limiar * 0.5, mediana * 0.5)
+
+        # PASSO 2: decide
+        for ini, fim, sim_orig, ocorre, sims in medido:
             (melhor_sim, melhor_i), (seg_sim, _) = sims[0], sims[1]
             # os dois fluxos casam com o perfil: um falante só, separar atrapalha
             um_falante = (sim_orig >= limiar and seg_sim >= limiar
@@ -249,13 +313,18 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
             # satisfeito sem ela
             separou = corr < CORR_SEPAROU and melhor_sim >= limiar
             if melhor_sim < 0 and sim_orig < 0:
-                pass                       # embedding falhou: fica o original
-            elif (melhor_sim < limiar * 0.5 and sim_orig < limiar * 0.5):
-                # janela do concorrente: ATENUA (-30 dB) em vez de zerar. Silêncio
-                # digital picado faz o Whisper alucinar (medido: vazamento 464 % e
-                # WER 5,0 com as janelas zeradas) e -20 dB deixava vazar demais
-                # (14,3 %); -30 dB dá 7,1 % mantendo o contexto
+                # embedding falhou: fica o ORIGINAL (sem isto a janela ficava em
+                # zero no `saida` e o áudio saía picado de silêncio)
+                saida[ini:fim] = x[ini:fim]
+            elif melhor_sim < piso and ocorre < piso:
+                # janela do concorrente SEM o dono: atenua forte
                 saida[ini:fim] = x[ini:fim] * 0.03
+                trechos_descartados += 1
+                descartados_ms += int((fim - ini) / sr * 1000)
+            elif melhor_sim < piso:
+                # ambígua (o dono aparece em algum pedaço): atenua de leve, para a
+                # palavra dele não sumir do transcript
+                saida[ini:fim] = x[ini:fim] * 0.35
                 trechos_descartados += 1
                 descartados_ms += int((fim - ini) / sr * 1000)
             elif separou and not um_falante:
@@ -265,13 +334,11 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
                 saida[ini:fim] = x[ini:fim]
             escores_janelas.append([round(sim_orig, 3), round(melhor_sim, 3),
                                     round(seg_sim, 3), round(corr, 3)])
-            escores_janelas.append([round(sim_orig, 3), round(melhor_sim, 3),
-                                    round(seg_sim, 3)])
 
         final = Path(tempfile.mkstemp(prefix="alvo-", suffix=".wav")[1])
         sf.write(str(final), saida, sr, subtype="PCM_16")
         info = {"escores_janelas": escores_janelas[:40], "sobrepostas": sobrepostas,
-                "limiar": round(limiar, 3)}
+                "limiar": round(limiar, 3), "piso": round(piso, 3)}
         if trechos_descartados:
             info["descartados"] = {"trechos": trechos_descartados, "ms": descartados_ms}
         return final, info
