@@ -1671,3 +1671,65 @@ def test_presets_tem_instruct_distinto():
     """Dois presets com o mesmo instruct colapsam no mesmo timbre."""
     instructs = [p["instruct"] for p in app.OMNI_PRESETS.values()]
     assert len(set(instructs)) == len(instructs), instructs
+
+
+# --- marca d'água (#657): mesma régua nas TRÊS saídas -------------------------
+# A célula do Live chama o envio de verdade; aqui valem o trecho do job e o
+# `/v1/audio/speech` — apagar a chamada em qualquer um dos dois tem de reprovar.
+def _marca_espia(monkeypatch, ok=True):
+    import marca_dagua
+
+    marcas = []
+    monkeypatch.setattr(marca_dagua, "disponivel", lambda: ok)
+    monkeypatch.setattr(marca_dagua, "motivo", lambda: "" if ok else "sem pesos")
+
+    def _marca(p):
+        marcas.append(Path(p).name)
+        return p
+
+    monkeypatch.setattr(marca_dagua, "marca_wav", _marca)
+    return marcas
+
+
+def test_marca_dagua_marca_o_trecho_do_job(monkeypatch, tmp_path):
+    """O arquivo do trecho no disco tem de passar pela marca."""
+    marcas = _marca_espia(monkeypatch)
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+
+    def _gerador(model, texto, *a, **k):
+        return (0.2 * np.sin(2 * np.pi * 180 * np.arange(24000) / 24000)).astype(np.float32)
+
+    job_id = _job_de_render(monkeypatch, tmp_path, _gerador, texto=_TEXTO_1_TRECHO)
+    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    assert app._jobs[job_id]["status"] == "done"
+    assert marcas, "o trecho do job não passou pela marca"
+    assert all(n.endswith(".wav") for n in marcas)
+    # desligado: nenhuma marca nova
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", False)
+    marcas.clear()
+    job_id = _job_de_render(monkeypatch, tmp_path, _gerador, texto=_TEXTO_1_TRECHO)
+    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    assert marcas == [], f"marcou com a setting desligada: {marcas}"
+
+
+def test_marca_dagua_no_v1_audio_speech(monkeypatch, tmp_path):
+    """A rota OpenAI-compatível usa o mesmo pipeline: o áudio dela sai marcado."""
+    marcas = _marca_espia(monkeypatch)
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+
+    def _gerador(model, texto, *a, **k):
+        return np.full(24000, 0.1, dtype=np.float32)
+
+    _job_de_render(monkeypatch, tmp_path, _gerador, texto="oi")
+    from fastapi.testclient import TestClient
+
+    cliente = TestClient(app.app, raise_server_exceptions=False)
+    chave = app._primary_api_key()
+    cab = {"X-API-Key": chave} if chave else {}
+    r = cliente.post("/v1/audio/speech", headers=cab, json={
+        "model": "tts-1", "input": "uma frase curta", "voice": "voz-x",
+        "response_format": "wav"})
+    assert r.status_code == 200, r.text[:200]
+    assert marcas, "o /v1/audio/speech não passou pela marca"
