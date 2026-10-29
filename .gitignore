@@ -55,17 +55,21 @@ tmp/
 .coverage.*
 htmlcov/
 
-# pesos de modelo: ficam FORA do git (83 MB de um .ckpt só). O manifesto
-# `models/sha256sums.txt` fica e `tools/baixa_modelos.sh` materializa conferindo.
+# PESOS ficam FORA do git — regra por EXTENSÃO, não por arquivo: assim peso novo
+# de dono novo já nasce ignorado (o 84 MB do Demucs entrou como `*.th` não coberto
+# e ficou a um `git add` de voltar ao histórico). O que fica rastreado ao lado deles
+# é o manifesto (`models/sha256sums.txt`), `NOTICE`/`FONTE.txt`, configs (`*.yaml`,
+# `*.json` pequenos) e `label_encoder.txt`; quem materializa é o
+# `tools/baixa_modelos.sh`, conferindo sha256.
 # `label_encoder.ckpt` é gerado pelo próprio speechbrain no primeiro load.
 models/**/*.ckpt
 models/**/*.pt
-# artefato baixado pelo script (grafo + config): ver models/dfn3-onnx/NOTICE
-models/dfn3-onnx/deepfilter.onnx
+models/**/*.pth
+models/**/*.th
+models/**/*.safetensors
+models/**/*.onnx
+models/**/*.bin
+models/**/*.whl
+# config que vem junto do grafo do DFN3 (contrato do repositório): artefato igual
+# ao `.onnx`, materializado pelo script — ver models/dfn3-onnx/NOTICE
 models/dfn3-onnx/config.json
-# pacote + modelos do DNSMOS (extraídos do wheel pelo script): ver models/dnsmos/NOTICE
-models/dnsmos/*.whl
-# pesos do Demucs (htdemucs): yaml fica, o .th de 84 MB não — ver models/demucs/NOTICE
-models/demucs/*.th
-models/demucs/*.safetensors
-models/dnsmos/*.onnx

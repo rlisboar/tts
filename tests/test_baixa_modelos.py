@@ -253,8 +253,14 @@ def test_manifesto_lista_todos_os_pesos_do_repo():
 
 
 def test_ckpt_fica_fora_do_git_e_o_script_materializa():
-    """83 MB de um `.ckpt` não podem entrar no índice; quem põe é o script (#526)."""
-    pesos = sorted((REPO / "models").rglob("*.ckpt"))
+    """Peso não pode entrar no índice; quem põe é o script (#526).
+
+    Vale para TODA extensão de peso, não só `.ckpt`: o `955717e8.th` do Demucs
+    (84 MB) ficou não rastreado e não ignorado, a um `git add` de entrar no
+    histórico (#670)."""
+    extensoes = ("*.ckpt", "*.pt", "*.pth", "*.th", "*.safetensors", "*.onnx",
+                 "*.bin", "*.whl")
+    pesos = sorted(p for ext in extensoes for p in (REPO / "models").rglob(ext))
     assert pesos, "nenhum peso no disco — rode tools/baixa_modelos.sh"
     rastreados = subprocess.run(["git", "-C", str(REPO), "ls-files", "models"],
                                 capture_output=True, text=True, check=True).stdout
