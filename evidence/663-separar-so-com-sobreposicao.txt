@@ -45,3 +45,18 @@ próprio áudio: o escore cru cai com a duração da janela (a mesma fala em 1,5
   arquivo). Próximo passo nomeado: decidir a sobreposição por DURAÇÃO/energia
   simultânea dos dois fluxos (medir se as duas vozes têm energia no MESMO instante),
   hoje a correlação só diz "a separação mexeu no sinal".
+
+## Reprodução
+
+Corpus: LibriSpeech dev-clean público já montado por `tools/bakeoff/corpus.py`
+(alvo 1272 × concorrente 1462, 3 clipes de cada, 7 s por `junta`); nada do dono.
+Alternado = blocos de 2 s (`alvo.alternado`, determinístico); sobreposto = soma com
+SIR 0 (`alvo.mistura`). Perfil = 3 embeddings do alvo, como no app. Vazamento e WER
+pela régua do próprio R4 (`metricas.vazamento` / `metricas.alinhamento`).
+
+```sh
+TTS_SETTINGS_PATH=/tmp/i663.json TTS_SPEAKER_PATH=/tmp/i663p.json \
+  TTS_OUTPUTS_DIR=/tmp/i663o ./.venv-mlx/bin/python tools/bakeoff/mede_alvo_app.py
+```
+
+Roda os dois cenários duas vezes cada; os números acima saíram estáveis nas duas.
