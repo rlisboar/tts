@@ -3,6 +3,7 @@
 | item | licença do código | licença dos pesos | uso no bake-off |
 |---|---|---|---|
 | LibriSpeech dev-clean | CC BY 4.0 (corpus) | — | fala pública do corpus |
+| FLEURS pt_br (`google/fleurs`) | CC BY 4.0 (corpus) | — | fala pt REAL com 30+ locutores (R1b) |
 | Resemblyzer | MIT (código) | MIT (pesos do repo) | linha de base |
 | WeSpeaker ResNet34/221 | Apache-2.0 | CC BY 4.0 (ModelScope/HF) | candidato |
 | 3D-Speaker CAM++ / ERes2NetV2 | Apache-2.0 | Apache-2.0 | candidato |

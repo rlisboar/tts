@@ -171,3 +171,47 @@ espontânea em pt, ou WER com mais falantes. Não declaro o caso fechado.
 
 O que **não** muda: para a AMOSTRA, o DFN3 segue vencedor em todas as métricas
 (OVRL, timbre, PESQ, STOI).
+
+---
+
+# WER com fala pt REAL (R1b) — e as duas conclusões anteriores caem
+
+Corpus **real**: FLEURS pt_br (`google/fleurs`, CC BY 4.0), 30 locutores DIFERENTES,
+uma fala cada, transcrita no corpus, fala inteira (mediana 12 s). Nada de voz do
+dono. Carga no momento: loadavg registrado no json.
+
+| cenário | cru | RNNoise | DFN3 |
+|---|---|---|---|
+| ventoinha 0 dB | 0,146 | 0,146 | 0,148 |
+| ventoinha 5 dB | 0,145 | 0,143 | 0,149 |
+| ventoinha 20 dB | 0,144 | 0,146 | 0,144 |
+| babble 0 dB | **0,142** | 0,147 | 0,149 |
+| babble 5 dB | **0,142** | 0,147 | 0,149 |
+| babble 20 dB | **0,142** | 0,148 | 0,147 |
+
+**Nenhum filtro melhora o WER em fala real.** O cru empata nas ventoinhas e **ganha
+em todo o babble**. Diferenças de 0,002–0,007 estão dentro do ruído de amostragem
+com 30 locutores.
+
+## As duas conclusões anteriores caem
+
+1. **Vozes sintéticas do sistema** diziam que o RNNoise ajudava (0,533 × 0,622). Em
+   fala real ele não ajuda.
+2. **PESQ/STOI** diziam que o DFN3 era melhor em tudo — inclusive o RNNoise
+   derrubando o STOI a 0,81–0,86. Em WER real, o DFN3 também não ajuda.
+
+O que os três experimentos concordam: **o DFN3 não piora** o reconhecimento. O que
+só o experimento real mostra: **filtrar antes do STT não compra acerto** — compra
+outra coisa (menos ruído audível, timbre melhor na amostra) e cobra RTF.
+
+## Consequência para o I2
+
+O filtro antes do STT deixa de ser ganho de acerto e passa a ser escolha de custo e
+de experiência: se for para ter um, é o **RNNoise** (0,015 de RTF, neutro no WER);
+o DFN3 não se paga nesse ponto da cadeia (0,5–1,0 de RTF para WER igual ou pior).
+E vale reavaliar se o I2 precisa de filtro antes do reconhecedor **ou só atrás do
+VAD**, que é onde o R1 já o tinha.
+
+Ressalvas: FLEURS é leitura de frases de Wikipédia (não é fala espontânea), os
+ruídos são sintéticos e o piso do Whisper nesse corpus já é 0,14 — um ganho
+pequeno teria pouco espaço para aparecer.
