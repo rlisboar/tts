@@ -206,8 +206,10 @@ def test_guarda_nomeia_quem_tocou_o_arquivo_do_dono():
 
     import app
 
+    if not app.SETTINGS_PATH.exists():        # caminho de tmp pode não ter arquivo
+        app._save_settings()
     antes = conftest._impressao_do_dono()
-    os.utime(app.BASE / "settings.json")          # mesmo conteúdo, mtime novo
+    os.utime(app.SETTINGS_PATH)                   # o caminho EM USO (tmp), não o do dono
     conftest._atribuir_escritas(antes, "tests/test_exemplo.py::test_x")
     assert "tests/test_exemplo.py::test_x escreveu settings.json" in conftest._escritas_no_dono
 

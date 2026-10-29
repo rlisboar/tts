@@ -823,11 +823,24 @@ def test_settings_anti_ruido_persiste(client, auth):
                 json={"stt_anti_ruido": True, "stt_denoise": True})
 
 
+def _settings_em_disco() -> dict:
+    """Conteúdo do `settings.json` EM USO. Materializa se ainda não existir: o
+    caminho é o tmp da sessão e nem toda ordem de teste passa por um save antes —
+    num worktree, que nasce sem o arquivo do dono, nenhuma passa (#659)."""
+    if not app.SETTINGS_PATH.exists():
+        app._save_settings()
+    else:
+        disco = _json.loads(app.SETTINGS_PATH.read_text())
+        if not set(app._SETTINGS_DEFAULTS) <= set(disco):
+            app._save_settings()
+    return _json.loads(app.SETTINGS_PATH.read_text())
+
+
 def test_save_preserva_chave_de_build_desconhecida(client, auth, monkeypatch):
     """#197: o save reescreve o arquivo inteiro a partir da RAM — uma chave que ESTA
     build não conhece (gravada por uma build nova) não pode ser apagada por tabela."""
     monkeypatch.setattr(app, "_settings_desconhecidas_avisadas", set())
-    disco = _json.loads(app.SETTINGS_PATH.read_text())
+    disco = _settings_em_disco()
     disco["campo_de_build_nova"] = {"modo": "x"}
     disco.pop("stt_denoise")                    # e uma nossa ausente volta materializada
     app.SETTINGS_PATH.write_text(_json.dumps(disco))
@@ -845,7 +858,7 @@ def test_save_avisa_uma_vez_por_chave_desconhecida(client, auth, monkeypatch, ca
     """O aviso é sinal de instância/build desatualizada (par do `GET /api/build`) —
     e é UMA vez por chave, não a cada save."""
     monkeypatch.setattr(app, "_settings_desconhecidas_avisadas", set())
-    disco = _json.loads(app.SETTINGS_PATH.read_text())
+    disco = _settings_em_disco()
     disco["campo_de_build_nova"] = 1
     app.SETTINGS_PATH.write_text(_json.dumps(disco))
 

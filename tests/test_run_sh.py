@@ -170,10 +170,14 @@ def test_tempo_esperando_a_trava_nao_come_o_teto(tmp_path):
 # O "dono" é uma CÓPIA (`TTS_DONO_DIR`): a rodada do pytest não encosta mais no
 # `settings.json` real (ele ficou com 17 linhas em branco no gate do #535).
 def _dono(tmp_path: Path) -> str:
-    """Diretório de mentira com o MESMO settings.json do dono (cópia)."""
+    """Diretório de mentira com um `settings.json` SINTÉTICO.
+
+    Sintético e não cópia do arquivo do dono: o worktree não tem o arquivo dele
+    (#659) e o conteúdo aqui só precisa existir para a sonda mexer — o que se mede
+    é o runner ver a mudança, não os valores."""
     dono = tmp_path / "dono"
     dono.mkdir()
-    (dono / "settings.json").write_text((AQUI.parent / "settings.json").read_text())
+    (dono / "settings.json").write_text('{"pre_prompt": "", "model": "sintetico"}')
     return str(dono)
 
 

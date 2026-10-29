@@ -167,17 +167,25 @@ def test_basetemp_nao_carrega_secret_do_dono(request):
 
     raiz = request.config.option.basetemp
     assert raiz, "o conftest deveria ter fixado um basetemp por processo (#406)"
-    dono = app.BASE / ".apikeys.json"
+    # Referência: o arquivo de chaves EM USO pela sessão (o conftest manda para
+    # tmp). Sem ele, o do dono; sem nenhum, não há segredo para vazar — num
+    # worktree, que nasce sem estado, os dois podem faltar (#659).
+    dono = pathlib.Path(app.APIKEYS_PATH)
     if not dono.exists():
-        pytest_skip("sem .apikeys.json do dono nesta máquina")
+        dono = app.BASE / ".apikeys.json"
+    if not dono.exists():
+        pytest_skip("sem arquivo de chaves nesta sessão")
     reais = {k.get("secret") for k in _json.loads(dono.read_text()).get("keys", [])
              if k.get("secret")}
     if not reais:
         pytest_skip("arquivo do dono sem chave")
 
     achados = []
+    proprio = dono.parent.resolve()
     for p in pathlib.Path(raiz).rglob("*"):
         if p.name not in (".apikeys.json", ".apikey") or not p.is_file():
+            continue
+        if p.resolve().parent == proprio:      # o estado do app não é "cópia"
             continue
         try:
             txt = p.read_text(errors="replace")

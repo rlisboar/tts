@@ -11,12 +11,13 @@
 # NUNCA são compartilhados: `voices/`, `settings.json`, `.apikey*`, `outputs/` e
 # `state/`. Cada worktree tem os seus, então rodada e app não mexem no estado do dono.
 #
-# Mas CÓPIA (não symlink) de `settings.json`/`.apikey*` e de `voices/` é
-# necessária: a suíte lê o estado do dono como fixture e sem isso as células caem
-# (`FileNotFoundError`, e a resolução de voz cai em caminho que pede modelo — 20
-# células medidas no ensaio). Cópia mantém o isolamento: escrever no worktree não
-# encosta no arquivo real, e a rodada nasce com o estado do dono. `voices/` são
-# 10 MB (os pesos é que não podem ser copiados: 750 MB, vão por symlink).
+# Os arquivos de ESTADO do dono (`settings.json`, `.apikey`, `.apikeys.json`,
+# `.speaker-profiles.json`) NÃO são copiados nem linkados: a suíte tem de funcionar
+# com estado SINTÉTICO (o `conftest` exporta os `TTS_*_PATH` para tmp). Cópia
+# multiplicaria os segredos do dono por N diretórios e esconderia célula que lê o
+# arquivo real por fora do isolamento — `tests/test_worktree_sem_estado.py` guarda.
+# `voices/` (10 MB, sem segredo) é copiado: é conteúdo, não estado, e sem ele a
+# resolução de voz cai em caminho que pede modelo. Os pesos (750 MB) vão por symlink.
 #
 # Uso:
 #   tools/worktrees.sh cria <agente>     # ../tts-rod-wt/<agente> na branch wt/<agente>
@@ -50,10 +51,6 @@ _liga_o_que_nao_pode_copiar() {
     else
         echo "  ⚠ sem .venv-mlx na raiz — o worktree vai precisar de um venv" >&2
     fi
-    # estado do dono: CÓPIA (ver o porquê no topo). Some se o dono não tiver.
-    for rel in settings.json .apikeys.json .apikey; do
-        [ -f "$RAIZ/$rel" ] && cp -p "$RAIZ/$rel" "$destino/$rel"
-    done
     [ -d "$RAIZ/voices" ] && cp -Rp "$RAIZ/voices" "$destino/voices"
     [ -f "$SUMS" ] || return 0
     while read -r _sha rel; do

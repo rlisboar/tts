@@ -211,13 +211,22 @@ _escritas_no_dono: list[str] = []
 
 
 def _impressao_do_dono() -> dict[str, tuple[str, int]]:
+    """Hash+mtime dos arquivos de estado EM USO (não de `app.BASE`).
+
+    A sessão aponta os `TTS_*_PATH` para tmp; num worktree o `app.BASE` nem tem os
+    arquivos do dono, então olhar para lá dava impressão vazia e a guarda não via
+    nada (#659). O mapa nome→caminho vem do próprio app."""
     import hashlib
 
     import app
 
+    caminhos = {"settings.json": app.SETTINGS_PATH,
+                ".apikeys.json": app.APIKEYS_PATH,
+                ".apikey": app.LEGACY_APIKEY_PATH,
+                ".speaker-profiles.json": app.SPEAKER_PATH}
     saida: dict[str, tuple[str, int]] = {}
     for nome in _ARQUIVOS_DO_DONO:
-        alvo = app.BASE / nome
+        alvo = caminhos[nome]
         try:
             st = alvo.stat()
             saida[nome] = (hashlib.sha256(alvo.read_bytes()).hexdigest()[:12], st.st_mtime_ns)
@@ -326,8 +335,13 @@ def _estado_isolado(tmp_path_factory):
     destino = pasta / "settings.json"
     if app.SETTINGS_PATH.exists():
         destino.write_bytes(app.SETTINGS_PATH.read_bytes())
+    _sem_arquivo_na_arvore = not app.SETTINGS_PATH.exists()
     original = app.SETTINGS_PATH
     app.SETTINGS_PATH = destino
+    if _sem_arquivo_na_arvore:
+        # sem arquivo na árvore (worktree, #659): grava os DEFAULTS no destino, para
+        # a célula que mexe no arquivo encontrar o mesmo conjunto de chaves de sempre
+        app._save_settings()
     # CHAVES SINTÉTICAS, não cópia das do dono (#435): copiar o arquivo real
     # espalhava o SECRET dele por todo basetemp retido (medido: 48 sobras com o
     # segredo real). A sessão nasce com uma chave de teste — papel legado

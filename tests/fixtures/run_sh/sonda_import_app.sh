@@ -24,12 +24,18 @@ ORIG="$RAIZ"
 # varre o basetemp e aqui moram as cópias das chaves REAIS do dono (`-t` usaria o
 # basetemp quando `TMPDIR` aponta para ele — falso vermelho do guard).
 BAK="$(mktemp -d /tmp/dono-sonda.XXXXXX)"
-cp -p "$ORIG/settings.json" "$BAK/settings.json.orig" 2>/dev/null
-cp -p "$ORIG/.apikey" "$BAK/.apikey.orig" 2>/dev/null
-cp -p "$ORIG/.apikeys.json" "$BAK/.apikeys.json.orig" 2>/dev/null
+# O worktree NÃO tem os arquivos de estado do dono (#659): os que faltarem são
+# criados aqui como estado SINTÉTICO e removidos no fim (não viram resíduo).
+_NOVOS=""
+for f in settings.json .apikey .apikeys.json; do
+    if [ -f "$ORIG/$f" ]; then cp -p "$ORIG/$f" "$BAK/$f.orig"
+    else _NOVOS="$_NOVOS $f"; fi
+done
 trap 'for f in settings.json .apikey .apikeys.json; do
-        [ -f "$BAK/$f.orig" ] && cp -p "$BAK/$f.orig" "$ORIG/$f"
+        if [ -f "$BAK/$f.orig" ]; then cp -p "$BAK/$f.orig" "$ORIG/$f"
+        else case " $_NOVOS " in *" $f "*) rm -f "$ORIG/$f" ;; esac; fi
       done; rm -rf "$BAK"' EXIT
+[ -f "$ORIG/settings.json" ] || printf '{}\n' > "$ORIG/settings.json"
 # o runner só mostra o stdout da suíte quando ela FALHA: o veredito também vai
 # para `SONDA_SAIDA` (arquivo), que é o que o teste cobra.
 _fala() { printf '%s\n' "$1"; [ -n "${SONDA_SAIDA:-}" ] && printf '%s\n' "$1" > "$SONDA_SAIDA"; return 0; }

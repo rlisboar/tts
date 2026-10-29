@@ -290,6 +290,17 @@ CI. `test_app_nao_baixa_modelo_no_boot` e `test_manifesto_lista_todos_os_pesos`
 cobrem o contrato do card por leitura (o boot não chama o downloader; peso sem
 sha256 no manifesto reprova).
 
+## #659 — suíte em worktree SEM estado do dono
+
+| Sabotagem | Resultado |
+|---|---|
+| célula volta a tocar `app.BASE/"settings.json"` (o arquivo do dono) | `test_worktree_sem_estado` **FAILED** |
+| `worktrees.sh` volta a copiar `settings.json`/`.apikey*` para o worktree | a guarda não pega sozinha (o arquivo passa a existir); quem cobra é a revisão do script + a lista de "nunca compartilhados" no cabeçalho |
+
+A guarda monta um worktree de verdade e roda a fatia que já caiu por isso: ela
+reprova por ARQUIVO AUSENTE, que é o defeito (célula lendo o caminho real em vez
+do caminho que o `conftest` aponta).
+
 ## #649 — DNSMOS offline em `models/dnsmos`
 
 | Sabotagem | Resultado |
