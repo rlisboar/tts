@@ -1598,7 +1598,8 @@ def index_com_nonce(request: Request):
 
 _model = None
 _model_lock = threading.Lock()
-_gen_lock = threading.Lock()  # geração LOCAL (MLX) não é thread-safe; serializa
+# RLock: a cadeia de limpeza pode ser chamada de dentro de quem já segura a trava
+_gen_lock = threading.RLock()  # geração LOCAL (MLX) não é thread-safe; serializa
 import contextlib
 _NO_LOCK = contextlib.nullcontext()  # remoto pode rodar concorrente (sem serializar)
 _model_state = {"status": "idle", "device": None, "model": _settings["model"],
@@ -1918,8 +1919,11 @@ def _separa_musica(audio, sr: int):
             entrada = Path(pasta) / "in.wav"
             saida = Path(pasta) / "voz.wav"
             sf.write(str(entrada), np.asarray(audio, dtype=np.float32), sr, subtype="PCM_16")
-            r = subprocess.run([sys.executable, str(BASE / "musica_worker.py"),
-                                str(entrada), str(saida)], capture_output=True)
+            # MESMA exclusividade de Metal do TTS e do separador de voz: o worker
+            # usa MPS. A trava fica no PAI, em volta da chamada — nunca no filho
+            with _gen_lock:
+                r = subprocess.run([sys.executable, str(BASE / "musica_worker.py"),
+                                    str(entrada), str(saida)], capture_output=True)
             if r.returncode != 0 or not saida.exists():
                 print(f"[voice] separação de música falhou: "
                       f"{(r.stderr or b'').decode()[-200:]}", flush=True)
