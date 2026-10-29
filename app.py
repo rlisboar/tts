@@ -1895,6 +1895,17 @@ def _dfn3_limpa(audio, sr: int):
         return None
 
 
+#: pesos do Demucs (MIT). Fora do diretório, a etapa degrade e diz o motivo —
+#: NUNCA baixa: nada sai da máquina por padrão.
+_DEMUCS_DIR = _caminho_estado_env("TTS_DEMUCS_DIR", BASE / "models" / "demucs")
+_MUSICA_MOTIVO = ""
+
+
+def _musica_motivo() -> str:
+    """Por que a etapa de música não rodou (vazio = rodou ou nem foi pedida)."""
+    return _MUSICA_MOTIVO
+
+
 def _separa_musica(audio, sr: int):
     """Tira música/instrumental antes de limpar (import de YouTube). None quando
     o Demucs não está disponível — a etapa é opcional e some calada, mas o
@@ -1908,6 +1919,13 @@ def _separa_musica(audio, sr: int):
     try:
         __import__("demucs")            # só a presença do pacote decide a etapa
     except Exception:  # noqa: BLE001
+        _MUSICA_MOTIVO = "pacote demucs ausente"
+        globals()["_MUSICA_MOTIVO"] = _MUSICA_MOTIVO
+        return None
+    # pesos LOCAIS: a etapa NUNCA baixa (nada sai da máquina por padrão)
+    pesos = _DEMUCS_DIR
+    if not (pesos / "htdemucs.yaml").is_file():
+        globals()["_MUSICA_MOTIVO"] = f"pesos ausentes em {pesos}"
         return None
     try:
         import subprocess
@@ -1923,16 +1941,20 @@ def _separa_musica(audio, sr: int):
             # usa MPS. A trava fica no PAI, em volta da chamada — nunca no filho
             with _gen_lock:
                 r = subprocess.run([sys.executable, str(BASE / "musica_worker.py"),
-                                    str(entrada), str(saida)], capture_output=True)
+                                    str(entrada), str(saida)], capture_output=True,
+                                   env={**os.environ, "TTS_DEMUCS_DIR": str(pesos),
+                                        "HF_HUB_OFFLINE": "1"})
             if r.returncode != 0 or not saida.exists():
-                print(f"[voice] separação de música falhou: "
-                      f"{(r.stderr or b'').decode()[-200:]}", flush=True)
+                motivo = (r.stderr or b"").decode().strip()[-160:] or "worker falhou"
+                globals()["_MUSICA_MOTIVO"] = motivo
+                print(f"[voice] separação de música falhou: {motivo}", flush=True)
                 return None
             x, sr2 = sf.read(str(saida), dtype="float32")
             if sr2 != sr:
                 x = resample_poly(x, sr, sr2).astype(np.float32)
             return np.asarray(x, dtype=np.float32)[: np.asarray(audio).size]
     except Exception as erro:  # noqa: BLE001
+        globals()["_MUSICA_MOTIVO"] = str(erro)[:160]
         print(f"[voice] separação de música falhou ({erro})", flush=True)
         return None
 
@@ -2069,7 +2091,7 @@ def _denoise_para_referencia(audio, sr: int, strength: float):
     original = np.asarray(audio, dtype=np.float32)
     antes = original
     relatorio = {"motor": "gating", "timbre": None, "recusado_por": None,
-                 "musica": False, "dereverb": False,
+                 "musica": False, "musica_motivo": "", "dereverb": False,
                  "dnsmos_antes": None, "dnsmos_depois": None}
     # etapas opcionais, nesta ordem: música -> dereverb -> denoise
     if _settings.get("voice_limpar_musica"):
@@ -2077,6 +2099,8 @@ def _denoise_para_referencia(audio, sr: int, strength: float):
         if sem_musica is not None:
             antes = sem_musica
             relatorio["musica"] = True
+        else:
+            relatorio["musica_motivo"] = _musica_motivo() or "indisponivel"
     if _settings.get("voice_limpar_dereverb"):
         seco = _dereverb(antes, sr)
         if seco is not None:

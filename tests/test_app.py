@@ -1252,13 +1252,26 @@ def _musica_de_teste(segundos: float) -> np.ndarray:
     return (x / (3 * np.max(np.abs(x))) * 0.3).astype(np.float32)
 
 
-def test_separa_musica_tira_o_acompanhamento():
+def _pesos_demucs(tmp_path, monkeypatch) -> None:
+    """Marca um diretório como "com pesos": a etapa agora exige o local."""
+    (tmp_path / "htdemucs.yaml").write_text("x")
+    monkeypatch.setattr(app, "_DEMUCS_DIR", tmp_path)
+
+
+def _exige_pesos_reais() -> None:
+    """Os testes com o modelo de verdade precisam dos pesos em disco."""
+    pytest.importorskip("demucs")
+    if not (app._DEMUCS_DIR / "htdemucs.yaml").is_file():
+        pytest.skip("pesos do Demucs ausentes (models/demucs)")
+
+
+def test_separa_musica_tira_o_acompanhamento(tmp_path, monkeypatch):
     """O controle é a música SOZINHA: ela tem de quase sumir.
 
     A voz do teste é sintética (`_fala_suja`) e o Demucs é treinado em voz real —
     ele trata tom/ruído como acompanhamento, então a prova de que a voz sobrevive
     fica no teste seguinte, com fala de verdade."""
-    pytest.importorskip("demucs")
+    _exige_pesos_reais()
     musica = _musica_de_teste(2.0)
     saida = app._separa_musica(musica, 24000)
     assert saida is not None, "com o Demucs instalado a etapa tem de rodar"
@@ -1270,9 +1283,9 @@ def test_separa_musica_tira_o_acompanhamento():
     assert rms(saida) < rms(musica) / 20, "a música sozinha tem de quase sumir"
 
 
-def test_separa_musica_preserva_voz_real():
+def test_separa_musica_preserva_voz_real(tmp_path, monkeypatch):
     """Com fala de verdade o stem de voz sobrevive (precisa do corpus da bancada)."""
-    pytest.importorskip("demucs")
+    _exige_pesos_reais()
     import soundfile as sf
 
     falas = sorted(Path("/tmp/tts-bakeoff/fala_pt").glob("*.wav"))
@@ -1298,6 +1311,7 @@ def test_separa_musica_segura_a_trava_de_metal(monkeypatch, tmp_path):
     import time
 
     monkeypatch.setitem(sys.modules, "demucs", types.SimpleNamespace())
+    _pesos_demucs(tmp_path, monkeypatch)
     monkeypatch.setattr(app, "BASE", tmp_path)
     (tmp_path / "musica_worker.py").write_text("")
     dentro = threading.Event()
@@ -1321,6 +1335,41 @@ def test_separa_musica_segura_a_trava_de_metal(monkeypatch, tmp_path):
         esperou = time.monotonic() - t0
     thread.join(10)
     assert esperou > 0.05, f"esperou só {esperou:.3f}s — a trava não está segurando"
+
+
+def test_separa_musica_funciona_com_a_rede_morta(monkeypatch):
+    """Pesos locais + rede morta (proxy inexistente): a etapa roda igual.
+
+    É a prova de que nada sai da máquina por padrão — o load é do diretório, não
+    do hub."""
+    _exige_pesos_reais()
+    for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(var, "http://127.0.0.1:9")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    saida = app._separa_musica(_musica_de_teste(1.5), 24000)
+    assert saida is not None, "com os pesos locais a rede não pode ser necessária"
+
+
+def test_separa_musica_sem_pesos_nao_baixa_e_diz_o_motivo(monkeypatch, tmp_path):
+    """Rede morta: sem pesos locais a etapa degrada e NUNCA tenta o hub."""
+    monkeypatch.setitem(sys.modules, "demucs", types.SimpleNamespace())
+    monkeypatch.setattr(app, "_DEMUCS_DIR", tmp_path / "vazio")
+
+    def _morre(*a, **k):                       # qualquer download seria subprocesso
+        raise AssertionError("não podia chamar o worker")
+
+    monkeypatch.setattr(app.subprocess, "run", _morre)
+    assert app._separa_musica(_fala_suja(0.5), 24000) is None
+    assert "pesos ausentes" in app._musica_motivo()
+
+    # e o motivo chega ao relatório da cadeia
+    monkeypatch.setitem(app._settings, "voice_limpar_musica", True)
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setitem(app._settings, "voice_timbre_min", 0.0)
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: None)
+    monkeypatch.setattr(app, "_dnsmos", lambda a, sr: None)
+    _, _, rel = app._denoise_para_referencia(_fala_suja(0.5), 24000, 1.0)
+    assert rel["musica"] is False and "pesos ausentes" in rel["musica_motivo"]
 
 
 def test_separa_musica_sem_demucs_devolve_none(monkeypatch):

@@ -29,12 +29,18 @@ def main() -> int:
     from demucs.apply import apply_model
     from demucs.pretrained import get_model
 
-    # pesos locais quando existirem (`TTS_DEMUCS_DIR`): sem isso o `get_model`
-    # baixa do hub e a etapa deixa de ser offline
+    # PESOS LOCAIS, SEMPRE. Nada sai da máquina por padrão: sem o diretório com o
+    # `bag.yaml` a etapa falha aqui e o pai degrada — em vez de baixar do hub em
+    # silêncio na primeira execução.
     import os
 
-    repo = os.environ.get("TTS_DEMUCS_DIR") or None
-    modelo = get_model("htdemucs", repo=repo)
+    repo = os.environ.get("TTS_DEMUCS_DIR") or ""
+    if not repo or not (Path(repo) / "htdemucs.yaml").is_file():
+        print(f"pesos do Demucs ausentes em '{repo or '<sem TTS_DEMUCS_DIR>'}' "
+              f"(esperado htdemucs.yaml)", file=sys.stderr)
+        return 3
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    modelo = get_model("htdemucs", repo=Path(repo))
     modelo.eval()
 
     from scipy.signal import resample_poly
