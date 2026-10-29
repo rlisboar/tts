@@ -247,7 +247,7 @@ def test_manifesto_lista_todos_os_pesos_do_repo():
     listados = {linha.split("  ", 1)[1] for linha in manifesto.splitlines() if "  " in linha}
     no_disco = {f"models/{p.relative_to(REPO / 'models').as_posix()}"
                 for p in (REPO / "models").rglob("*")
-                if p.is_file() and p.suffix in {".ckpt", ".pt", ".onnx", ".yaml", ".txt", ".npy"}
+                if p.is_file() and p.suffix in {".ckpt", ".pt", ".onnx", ".th", ".yaml", ".txt", ".npy"}
                 and p.name not in {"sha256sums.txt"} | GERADOS}
     assert not (no_disco - listados), f"peso fora do manifesto: {sorted(no_disco - listados)}"
 
