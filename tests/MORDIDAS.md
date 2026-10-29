@@ -352,11 +352,21 @@ que a suíte começa.
 
 | Sabotagem | Resultado |
 |---|---|
-| suíte volta a mutar `$RAIZ/app.py` (versão anterior à cópia) | `test_live_lock_freeze_muta_uma_copia_e_deixa_a_arvore_intacta` **FAILED** ("a suíte mexeu no app.py da árvore principal") |
+| suíte volta a mutar `$RAIZ/app.py` (rodar com `FREEZE_ARVORE=$PWD`) | **FAILED**: "a suíte mutou a árvore principal em vez da cópia" |
+| sentinela vazado no `app.py` da raiz (o defeito do #670) | **FAILED**: "o sentinela vazou para o `app.py` da árvore" |
 
-A célula cobra sha256 **e** mtime: a versão antiga restaurava o conteúdo, então só
-o mtime denuncia — e é justamente ele que faz o `cp`-de-volta parecer intacto para
-quem olha o `git status`.
+A célula roda o cenário num worktree descartável desde o #670 — antes ela mesma
+escrevia a sentinela no `app.py` da raiz (append + restore no `finally`, que morre
+junto se a rodada for interrompida). Além do caminho da cópia e da forma do bloco,
+ela cobra sha256 **e** mtime da raiz: a versão antiga restaurava o conteúdo, então
+só o mtime denuncia — e é justamente ele que faz o `cp`-de-volta parecer intacto
+para quem olha o `git status`.
+
+Varredura da classe (#670): nenhuma outra célula do `test_run_sh` nem sonda de
+`tests/fixtures/run_sh/` escreve arquivo versionado da raiz — o que elas tocam é
+`settings.json`/`.apikey*` (não versionados, com backup e restore) e tmp. O risco
+que sobra é o `finally` não rodar em rodada interrompida, e é o que o worktree
+descartável resolve.
 
 ## #592 — teto pós-trava: rótulo, escada e rc do trap
 

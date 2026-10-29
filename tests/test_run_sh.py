@@ -310,51 +310,80 @@ def test_o_defeito_do_atributo_ainda_morde(tmp_path):
 
 
 # --- #621: suíte que MUTA arquivo versionado tem de mutar uma CÓPIA -------------
-def test_live_lock_freeze_muta_uma_copia_e_deixa_a_arvore_intacta(tmp_path):
-    """A suíte reverte o `app.py` para medir a mordida. Feito na árvore
-    COMPARTILHADA, o arquivo fica revertido por ~12 s — e um commit de terceiro
-    commita a reversão (suspeita nº 1 dos "códigos que sumiram", #573).
+def _arvore_descartavel(tmp_path: Path) -> Path:
+    """Worktree descartável com venv, pesos e `voices` ligados por symlink.
 
-    Sha/mtime sozinhos são reféns da árvore viva: outro agente editando o `app.py`
-    durante a medida deixa marcas que a suíte não fez (medido — o hook caiu assim uma
-    vez). O sinal imune a isso é a FORMA do bloco: a suíte reverte o `busy` por ~10 s
-    e só a reversão muda a indentação do `await`. A célula AMOSTRA o arquivo enquanto
-    a suíte roda; ver a forma revertida na árvore principal = mutou ali (terceiro não
-    muda indentação). Sentinela no fim do arquivo cobre o outro dano, o `cp` de foto
-    velha; ele sai no `finally`."""
-    alvo = AQUI.parent / "app.py"
-    revertido = re.compile(r"^            await ws\.send_json", re.M)
-    sentinela = f"# sentinela-isolamento-{os.getpid()}-{int(time.time())}"
-    copia_txt = tmp_path / "copia.txt"
-    alvo.write_text(alvo.read_text() + sentinela + "\n")
-    proc = subprocess.Popen(
-        ["bash", str(RUNNER), "rapido"], cwd=str(AQUI.parent),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env={**os.environ, "PATH": os.environ.get("PATH", ""),
-             "HOME": os.environ.get("HOME", "/tmp"), "TTS_SERIAL_ESPERA": "60",
-             "SUITES": str(AQUI / "live_lock_freeze.sh"), "MORDIDA": "1",
-             "FREEZE_SONO": "0.15", "TETO_S": "300",
-             "SONDA_SAIDA": str(copia_txt), "TTS_SERIAL_LOCK": str(tmp_path / "lock")})
-    vi_revertido = False
+    Mesma montagem do `tools/worktrees.sh`, sem depender dele: a célula não pode
+    depender do script que ela vigia."""
+    wt = tmp_path / "arvore"
+    subprocess.run(["git", "-C", str(AQUI.parent), "worktree", "add", "-q", "--detach",
+                    str(wt), "HEAD"], check=True, capture_output=True)
+    (wt / ".venv-mlx").symlink_to(AQUI.parent / ".venv-mlx")
+    if (AQUI.parent / "voices").is_dir():
+        (wt / "voices").symlink_to(AQUI.parent / "voices")
+    for linha in (AQUI.parent / "models" / "sha256sums.txt").read_text().splitlines():
+        partes = linha.split("  ", 1)
+        if len(partes) != 2:
+            continue
+        origem = AQUI.parent / partes[1]
+        if origem.is_file() and not (wt / partes[1]).exists():
+            (wt / partes[1]).parent.mkdir(parents=True, exist_ok=True)
+            (wt / partes[1]).symlink_to(origem)
+    return wt
+
+
+def test_live_lock_freeze_muta_uma_copia_e_deixa_a_arvore_intacta(tmp_path):
+    """A suíte reverte o `app.py` para medir a mordida. Feita na árvore
+    COMPARTILHADA, a reversão fica visível por ~10 s e um commit de terceiro a
+    commitaria (suspeita nº 1 dos "códigos que sumiram", #573).
+
+    A célula roda o cenário numa CÓPIA descartável: a guarda não pode cometer o
+    defeito que vigia (o `#670` pegou a versão anterior escrevendo no `app.py` da
+    raiz). Na cópia, dois fatos objetivos: o SENTINELA no fim do arquivo sobrevive
+    (prova que o `cp` de foto velha não sobrescreveu) e o bloco do `busy` volta à
+    forma do FIX (prova que a reversão não ficou para trás). A raiz, por fora, tem
+    de ficar com sha256 E mtime idênticos e sem o sentinela."""
+    raiz_app = AQUI.parent / "app.py"
+
+    def _impressao(arq: Path) -> tuple[str, int]:
+        import hashlib
+        return (hashlib.sha256(arq.read_bytes()).hexdigest(), arq.stat().st_mtime_ns)
+
+    antes = _impressao(raiz_app)
+    wt = _arvore_descartavel(tmp_path)
     try:
-        while proc.poll() is None:
-            if revertido.search(alvo.read_text()):
-                vi_revertido = True
-            time.sleep(0.15)
-        saida, erro = proc.communicate()
-        texto = alvo.read_text()
+        copia_app = wt / "app.py"
+        sentinela = f"# sentinela-isolamento-{os.getpid()}-{int(time.time())}"
+        copia_app.write_text(copia_app.read_text() + sentinela + "\n")
+        copia_txt = tmp_path / "copia.txt"
+        r = subprocess.run(
+            ["bash", str(wt / "tests" / "run_sh.sh"), "rapido"], cwd=str(wt),
+            capture_output=True, text=True, timeout=900,
+            env={**os.environ, "PATH": os.environ.get("PATH", ""),
+                 "HOME": os.environ.get("HOME", "/tmp"), "TTS_SERIAL_ESPERA": "60",
+                 "SUITES": str(wt / "tests" / "live_lock_freeze.sh"), "MORDIDA": "1",
+                 "FREEZE_SONO": "0.15", "TETO_S": "300",
+                 "SONDA_SAIDA": str(copia_txt), "TTS_SERIAL_LOCK": str(tmp_path / "lock")})
+        assert r.returncode == 0, r.stdout + r.stderr
+        texto = copia_app.read_text()
+        assert sentinela in texto, "a cópia foi sobrescrita (restore por `cp` de foto velha)"
+        # fix = `await ws.send_json(...)` a 8 espaços, DENTRO do `if ocupado:` a 4
+        assert re.search(r"^    if ocupado:\n(?:.*\n)*?        await ws\.send_json",
+                         texto, re.M), "o bloco do `busy` ficou revertido na cópia"
+        assert copia_txt.is_file(), "a suíte não registrou a cópia de trabalho"
+        assert not copia_txt.read_text().strip().startswith(str(AQUI.parent)), \
+            "a suíte mutou a árvore principal em vez da cópia"
+        assert not Path(copia_txt.read_text().strip()).exists(), \
+            "a cópia interna da suíte ficou para trás"
     finally:
-        if proc.poll() is None:      # falhou no meio do caminho: não deixe o runner vivo
-            proc.kill()
-            proc.communicate()
-        alvo.write_text(alvo.read_text().replace(sentinela + "\n", ""))
-    assert proc.returncode == 0, saida + erro
-    assert not vi_revertido, "a suíte deixou o app.py da ÁRVORE na forma revertida"
-    assert sentinela in texto, "o app.py da árvore foi sobrescrito (restore por `cp` de foto velha)"
-    assert copia_txt.is_file(), "a suíte não registrou a cópia de trabalho"
-    copia = copia_txt.read_text().strip()
-    assert not copia.startswith(str(AQUI.parent)), f"mutou a árvore: {copia}"
-    assert not Path(copia).exists(), "a cópia de trabalho ficou para trás"
+        subprocess.run(["git", "-C", str(AQUI.parent), "worktree", "remove", "--force",
+                        str(wt)], capture_output=True)
+
+    assert _impressao(raiz_app) == antes, (
+        "o `app.py` da ÁRVORE mudou durante a célula (sha/mtime) — se outro agente"
+        " não estava editando, a guarda sujou a raiz")
+    assert "sentinela-isolamento-" not in raiz_app.read_text(), \
+        "o sentinela vazou para o `app.py` da árvore"
 
 
 # --- #592: o teto pós-trava precisa VALER, dizer a verdade e não vazar ---------
