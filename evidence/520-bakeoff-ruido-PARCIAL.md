@@ -126,3 +126,48 @@ bancada — traz torch, então **não** entra no caminho do app por enquanto.
 
 O que fica de fora: música com voz cantada (o stem `vocals` do Demucs leva o
 cantor junto) e instrumento com timbre próximo da fala.
+
+---
+
+# SNR extremo (0 e 20 dB) com PESQ e STOI — e a tensão com o WER
+
+As pontas que faltavam. O `cru` não é candidato aqui (as duas métricas comparam
+contra a referência limpa) — ele é a linha de base de leitura.
+
+| cenário | candidato | PESQ | STOI |
+|---|---|---|---|
+| ventoinha 0 dB | cru | 1,15 | 0,960 |
+| ventoinha 0 dB | RNNoise | 1,41 | 0,810 |
+| ventoinha 0 dB | **DFN3** | **2,53** | **0,980** |
+| ventoinha 20 dB | cru | 2,86 | 1,000 |
+| ventoinha 20 dB | RNNoise | 2,84 | 0,860 |
+| ventoinha 20 dB | **DFN3** | **2,98** | **1,000** |
+| babble 0 dB | cru | 1,08 | 0,960 |
+| babble 0 dB | RNNoise | 1,16 | 0,810 |
+| babble 0 dB | **DFN3** | **2,30** | **0,980** |
+| babble 20 dB | cru | 2,31 | 1,000 |
+| babble 20 dB | RNNoise | 2,42 | 0,860 |
+| babble 20 dB | DFN3 | 2,42 | 1,000 |
+
+**O DFN3 domina nas duas métricas, inclusive a 20 dB** (onde o filtro só podia
+estragar, ele não estraga). O RNNoise **derruba o STOI para 0,81–0,86 em TODOS os
+SNR**, inclusive no quase limpo — é degradação estrutural, não só de ruído.
+
+## A tensão, declarada
+
+Isto **contradiz o WER em pt**, que elegeu o RNNoise (0,533 contra 0,622 do DFN3).
+Duas leituras possíveis, e o dado não decide sozinho:
+
+1. STOI/PESQ punem o processamento característico do RNNoise, mas o reconhecedor
+   se dá bem com ele — nesse caso o WER é que manda em STT, e o STOI só está
+   medindo outra coisa.
+2. O WER em pt com 6 falantes sintéticos tem ruído de amostragem e o ganho do
+   RNNoise é menor do que parecia.
+
+**Como fica a recomendação do I2:** WER continua sendo o critério para o STT
+(é o que o produto entrega), mas a força dele caiu para "1 experimento contra 2
+métricas". Antes de o filtro virar default, vale um terceiro eixo: WER com fala
+espontânea em pt, ou WER com mais falantes. Não declaro o caso fechado.
+
+O que **não** muda: para a AMOSTRA, o DFN3 segue vencedor em todas as métricas
+(OVRL, timbre, PESQ, STOI).
