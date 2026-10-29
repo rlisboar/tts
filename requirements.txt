@@ -14,6 +14,12 @@ mlx-lm==0.31.3
 transformers==5.10.2
 torch
 soundfile
+# separação de música (htdemucs, #520/I1b): instalado e conferido em 2026-10-29.
+# ATENÇÃO ao re-instalar: o demucs 4.1.0 aceita numpy<2.5 e o resolvedor DESCE o
+# numpy (medi 2.5.x → 2.4.6; torch 2.12.1, transformers 5.10.2 e mlx/mlx_audio não
+# se moveram, e a suíte passa inteira). Não subir o numpy sem re-medir as três
+# rotas (síntese, transcrição, separação).
+demucs==4.1.0
 # separação de locutores (MossFormer2_SS_16K, #526-bis): o código é vendorizado em
 # `tools/separa_vend/`, mas ele importa `einops` e `rotary_embedding_torch` — as
 # duas ÚNICAS dependências que o modelo acrescenta (torch já é do app). 0.8.2 e

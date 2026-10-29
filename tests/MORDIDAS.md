@@ -290,6 +290,14 @@ CI. `test_app_nao_baixa_modelo_no_boot` e `test_manifesto_lista_todos_os_pesos`
 cobrem o contrato do card por leitura (o boot não chama o downloader; peso sem
 sha256 no manifesto reprova).
 
+## #678 — `htdemucs` offline e pinado
+
+| Sabotagem | Resultado |
+|---|---|
+| fonte do peso removida de `FONTES` (manifesto passa a ter entrada órfã) | `test_baixa_modelos` **FAILED** (6 células) — o `--check` acusa "está no manifesto e não tem fonte" |
+| `demucs` fora do `requirements.txt` | `test_requirements_pinos` **FAILED** (dep sem pino e fora do lock) |
+| peso ausente do disco | célula offline **skipa** (o skip nomeia o script) |
+
 ## #659 — suíte em worktree SEM estado do dono
 
 | Sabotagem | Resultado |

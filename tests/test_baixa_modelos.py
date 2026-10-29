@@ -43,7 +43,10 @@ PESOS = (("models/ecapa-voxceleb/hyperparams.yaml", *_ECAPA),
          # #657: marca d'água (o manifesto confere sha256 como os demais)
          ("models/audioseal/gerador.pt", "facebook/audioseal", "main"),
          ("models/audioseal/detector.pt", "facebook/audioseal", "main"),
-         ("models/dnsmos/speechmos-0.0.1.1-py3-none-any.whl", "url", "-"))
+         ("models/dnsmos/speechmos-0.0.1.1-py3-none-any.whl", "url", "-"),
+         # #678: peso do Demucs — nome LOCAL diferente do nome na URL, então o
+         # espelho precisa dos dois
+         ("models/demucs/955717e8.th", "url", "-"))
 #: membros extraídos do wheel (DERIVADOS `zip:`) e o nome deles dentro do pacote
 WHEEL_MEMBROS = ("speechmos/dnsmos_models/sig_bak_ovr.onnx",
                  "speechmos/dnsmos_models/model_v8.onnx")
@@ -80,11 +83,11 @@ def amb(tmp_path: Path):
     """Root com o script + `models/` (vazio) + manifesto dos arquivos pequenos."""
     (tmp_path / "tools").mkdir()
     espelho = _Espelho(tmp_path / "origem")
-    # o script é a fonte das URLs: a cópia aponta a URL `url:` do wheel para o
-    # espelho local (nada de PyPI no CI)
+    # o script é a fonte das URLs: a cópia aponta TODA entrada `url:` para o espelho
+    # local (nada de PyPI nem fbaipublicfiles no CI)
     copia = (tmp_path / "tools" / "baixa_modelos.sh")
     copia.write_text(re.sub(
-        r"url:https://files\.pythonhosted\.org/\S+",
+        r"url:https://[^\s|]+",
         lambda m: f"url:{espelho.url}/url/{m.group(0).rsplit('/', 1)[-1]}",
         SCRIPT.read_text()))
     (tmp_path / "models").mkdir()
@@ -94,6 +97,13 @@ def amb(tmp_path: Path):
             origem = tmp_path / "origem" / "url"
             origem.mkdir(parents=True, exist_ok=True)
             fake = origem / Path(rel).name
+            # o nome na URL pode diferir do local (o do Demucs leva o hash):
+            # o espelho serve o basename da URL também
+            for linha_fonte in SCRIPT.read_text().splitlines():
+                if f'"{rel}|url:' in linha_fonte:
+                    nome_url = linha_fonte.split("url:")[1].split("|")[0].rsplit("/", 1)[-1]
+                    if nome_url != fake.name:
+                        (origem / nome_url).write_bytes(f"conteudo de {rel}\n".encode() * 20)
             if fake.suffix == ".whl":       # wheel de mentira, mas ZIP de verdade
                 import zipfile
                 with zipfile.ZipFile(fake, "w") as z:
@@ -112,7 +122,8 @@ def amb(tmp_path: Path):
     txt = tmp_path / "origem" / _ECAPA[0] / "resolve" / _ECAPA[1] / "label_encoder.txt"
     linhas.append(f"{_sha(txt)}  models/ecapa-voxceleb/label_encoder.ckpt")
     # os membros do wheel são DERIVADOS dele (`zip:`) — mesmo sha256 dos membros
-    with __import__("zipfile").ZipFile(tmp_path / "origem" / "url" / Path(PESOS[-1][0]).name) as z:
+    _wheel = tmp_path / "origem" / "url" / "speechmos-0.0.1.1-py3-none-any.whl"
+    with __import__("zipfile").ZipFile(_wheel) as z:
         for membro in WHEEL_MEMBROS:
             linhas.append(f"{_sha_bytes(z.read(membro))}  models/dnsmos/{Path(membro).name}")
     # a coorte é gerada: entra no manifesto mas não é baixável (repo "-")

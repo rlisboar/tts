@@ -49,6 +49,9 @@ FONTES=(
   "models/dfn3-onnx/deepfilter.onnx|soniqo/DeepFilterNet3-ONNX|63d8ba442ba900143c468b798e94a04009b2f0c9"
   "models/dfn3-onnx/config.json|soniqo/DeepFilterNet3-ONNX|63d8ba442ba900143c468b798e94a04009b2f0c9"
   "models/dnsmos/speechmos-0.0.1.1-py3-none-any.whl|url:https://files.pythonhosted.org/packages/30/0e/08369f3574447acfe78a7678f9a5e2b9c6629888be25a5e2407d616a6c02/speechmos-0.0.1.1-py3-none-any.whl|-"
+  "models/audioseal/gerador.pt|facebook/audioseal|main"
+  "models/audioseal/detector.pt|facebook/audioseal|main"
+  "models/demucs/955717e8.th|url:https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th|-"
   "models/asnorm-coorte-ecapa.npy|-|-"
 )
 # Arquivos DERIVADOS de outro arquivo versionado (não vêm da internet): o script
@@ -75,8 +78,28 @@ fi
 TMP_SUF="$$.$RANDOM"
 esperado() { awk -v alvo="$1" '$2 == alvo {print $1}' "$SUMS"; }
 
+# Toda linha do manifesto tem de ter FONTE ou DERIVADO. Sem isto, manifesto com
+# entrada nova e sem fonte passa calado: o `--check` não visita o arquivo e o
+# `--check` "verde" mente sobre ele (#678, medido ao remover a fonte do Demucs).
+_conhecidos=" "
+for linha in "${FONTES[@]}" "${DERIVADOS[@]}"; do
+  _conhecidos="$_conhecidos${linha%%|*} "
+done
 falhas=0
 faltando=()
+_e_repo=0
+git rev-parse --git-dir >/dev/null 2>&1 && _e_repo=1
+while read -r _sha_man rel_man; do
+  [ -n "${rel_man:-}" ] || continue
+  case "$_conhecidos" in
+    *" $rel_man "*) continue ;;
+  esac
+  # arquivo VERSIONADO (NOTICE, FONTE, yaml, json da coorte) não precisa de fonte
+  [ "$_e_repo" = 1 ] && git ls-files --error-unmatch -- "$rel_man" >/dev/null 2>&1 && continue
+  print -r -- "  [FALHA] $rel_man está no manifesto e não tem fonte (FONTES/DERIVADOS)"
+  falhas=1
+done < "$SUMS"
+
 for linha in "${FONTES[@]}"; do
   arq="${linha%%|*}"; resto="${linha#*|}"; repo="${resto%%|*}"; rev="${resto#*|}"
   alvo="$(esperado "$arq")"
