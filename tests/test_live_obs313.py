@@ -24,12 +24,23 @@ import live_pipeline as lp
 
 
 def _preso(lock) -> bool:
-    """O lock está preso NESTA thread? `RLock` (usado para o fallback aninhar) não
-    tem `locked()` antes do 3.14 — `_is_owned()` responde a mesma pergunta."""
+    """O lock está preso — pela thread atual OU por outra.
+
+    `RLock` não tem `locked()` antes do 3.14, e nenhum sinal sozinho cobre os dois
+    casos: `_is_owned()` só olha a thread atual, e tentar `acquire` sem bloquear
+    sempre passa quando é a MESMA thread (reentrante). Então: dona atual, preso;
+    senão, tenta pegar e devolve — se não conseguir, outra thread está com ele."""
     try:
         return bool(lock.locked())
     except AttributeError:
-        return bool(getattr(lock, "_is_owned")())
+        pass
+    dono = getattr(lock, "_is_owned", None)
+    if dono is not None and dono():
+        return True
+    if lock.acquire(blocking=False):
+        lock.release()
+        return False
+    return True
 
 
 def _sess(**extra) -> dict:
