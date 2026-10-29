@@ -499,11 +499,11 @@ _SETTINGS_DEFAULTS = {
     # Anti-clone (#525): GANCHO do gate. Ligado, `_speaker_gate_ok` consulta a
     # MARCA d'água do áudio e rejeita clone em `enforce`; desligado, nem o campo sai.
     "speaker_anticlone": False,
-    # Marca d'água AudioSeal em todo áudio GERADO (#657, decisão do dono): o app
-    # clona voz, então sem marca a saída é indistinguível de fala humana. É admin
-    # porque muda o áudio de todo mundo. Sem os pesos/`audioseal`, sai sem marca e
-    # o log diz; o default só vale em produção depois do ABX do dono.
-    "tts_marca_dagua": True,
+    # Marca d'água AudioSeal em todo áudio GERADO (#657). O app clona voz, então
+    # sem marca a saída é indistinguível de fala humana; é admin porque muda o áudio
+    # de todo mundo. DESLIGADA no default até o ABX do dono — ligar é uma linha
+    # (esta), com tudo pronto. Sem os pesos/`audioseal`, sai sem marca e o log diz.
+    "tts_marca_dagua": False,
     # "Só a minha voz" no Live (#533): portão ECAPA no TURNO. Desligado, nada
     # muda. Ligado, terceiro/TV não corta a resposta nem vira turno (o filtro
     # `identidade` do I4 reusa a MESMA verificação). `perfil` é o nome do perfil

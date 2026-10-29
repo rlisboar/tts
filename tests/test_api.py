@@ -6910,7 +6910,8 @@ def test_marca_dagua_marca_o_audio_do_live(monkeypatch):
 def test_marca_dagua_e_campo_ADMIN(monkeypatch):
     """Ligar/desligar muda o áudio de TODO mundo: só admin."""
     assert "tts_marca_dagua" in app._SETTINGS_ADMIN
-    assert app._SETTINGS_DEFAULTS["tts_marca_dagua"] is True, "o dono decidiu LIGADO"
+    # DESLIGADO no default até o ABX do dono (#657): ligar é uma linha no app.py
+    assert app._SETTINGS_DEFAULTS["tts_marca_dagua"] is False, "default não pode estar ligado antes do ABX"
     monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
     assert app._apply_settings({"tts_marca_dagua": "false"})["tts_marca_dagua"] is False
     assert app._apply_settings({"tts_marca_dagua": True})["tts_marca_dagua"] is True
