@@ -7163,3 +7163,30 @@ def test_transcribe_preque_ao_detector_com_anticlone_ligado(monkeypatch):
     cliente.post("/api/transcribe", headers=cab,
                  files={"audio": ("a.wav", b"x", "audio/wav")})
     assert aqueceu == []
+
+
+def test_audio_do_esquema_de_slug_e_adotado(client, auth, monkeypatch, tmp_path):
+    """Pasta do esquema ANTIGO (slug) é migrada em vez de ficar órfã (#658).
+
+    Instalação que guardou áudio entre o `3dd6a70` e o `c8134e9` tem perfil sem
+    `audio_id` e a pasta pelo nome; a reextração tem de achar o áudio."""
+    destino = _dir_audio(monkeypatch, tmp_path)
+    monkeypatch.setitem(app._settings, "speaker_guardar_audio", True)
+    store: dict = {"Ana Maria": {"vecs": [[1.0, 0.0]], "modelo": app.SPEAKER_MODELO_LEGADO,
+                                 "updated": 0}}
+    antiga = destino / "Ana_Maria"                       # slug do nome, esquema velho
+    antiga.mkdir(parents=True)
+    for i in range(3):
+        (antiga / f"{i}.wav").write_bytes(b"ri")
+    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: True)
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [0.5, 0.5] + [0.0] * 254)
+    monkeypatch.setattr(app, "_speaker_load", lambda: store)
+    monkeypatch.setattr(app, "_speaker_save", lambda p: None)
+    client.get("/api/speaker/profiles", headers=auth)
+    for _ in range(100):
+        if store["Ana Maria"].get("modelo") == app.SPEAKER_MODELO_ATUAL:
+            break
+        time.sleep(0.02)
+    assert store["Ana Maria"].get("audio_id"), "não ganhou id (migração)"
+    assert not antiga.exists(), "a pasta antiga ficou órfã"
+    assert len(store["Ana Maria"]["vecs"]) == 3, store["Ana Maria"]

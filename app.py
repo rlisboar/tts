@@ -1895,31 +1895,36 @@ def _dfn3_limpa(audio, sr: int):
 
 
 def _separa_musica(audio, sr: int):
-    """Tira música/instrumental antes de limpar (import de YouTube). None se o
-    Demucs não estiver instalado — a etapa é opcional e some calada, mas o
-    relatório registra que não rodou."""
+    """Tira música/instrumental antes de limpar (import de YouTube). None quando
+    o Demucs não está disponível — a etapa é opcional e some calada, mas o
+    relatório registra que não rodou.
+
+    Roda em WORKER (`musica_worker.py`): o Demucs é torch e o app é MLX; no mesmo
+    processo as duas pilhas de Metal se misturam, e o pai só lê o wav pronto. O
+    chamador segura a trava de Metal enquanto isto roda."""
     import numpy as np
 
     try:
-        __import__("demucs.separate")   # só a presença do pacote decide a etapa
+        __import__("demucs")            # só a presença do pacote decide a etapa
     except Exception:  # noqa: BLE001
         return None
     try:
         import subprocess
 
         import soundfile as sf
+        from scipy.signal import resample_poly
 
         with tempfile.TemporaryDirectory(prefix="musica-") as pasta:
             entrada = Path(pasta) / "in.wav"
+            saida = Path(pasta) / "voz.wav"
             sf.write(str(entrada), np.asarray(audio, dtype=np.float32), sr, subtype="PCM_16")
-            subprocess.run([sys.executable, "-m", "demucs", "--two-stems", "vocals",
-                            "-o", pasta, str(entrada)], capture_output=True, check=True)
-            achado = sorted(Path(pasta).rglob("vocals.wav"))
-            if not achado:
+            r = subprocess.run([sys.executable, str(BASE / "musica_worker.py"),
+                                str(entrada), str(saida)], capture_output=True)
+            if r.returncode != 0 or not saida.exists():
+                print(f"[voice] separação de música falhou: "
+                      f"{(r.stderr or b'').decode()[-200:]}", flush=True)
                 return None
-            x, sr2 = sf.read(str(achado[0]), dtype="float32")
-            from scipy.signal import resample_poly
-
+            x, sr2 = sf.read(str(saida), dtype="float32")
             if sr2 != sr:
                 x = resample_poly(x, sr, sr2).astype(np.float32)
             return np.asarray(x, dtype=np.float32)[: np.asarray(audio).size]
@@ -8694,7 +8699,12 @@ def _speaker_load() -> dict:
     return _speaker_load_estado()[0]
 
 
-def _speaker_audio_id(perfil: dict) -> str:
+def _speaker_slug(nome: str) -> str:
+    """Pasta do esquema ANTIGO (slug do nome) — só para migrar (#658)."""
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in nome)[:40] or "perfil"
+
+
+def _speaker_audio_id(perfil: dict, nome: str = "") -> str:
     """Id ESTÁVEL e único da pasta de áudio do perfil (não o nome).
 
     Slug de nome colide (`Ana Maria`, `Ana_Maria` e `Ana/Maria` caem no mesmo lugar
@@ -8704,11 +8714,20 @@ def _speaker_audio_id(perfil: dict) -> str:
     if not ident:
         ident = uuid.uuid4().hex[:16]
         perfil["audio_id"] = ident
+        # MIGRAÇÃO do esquema de slug (#658): quem guardou áudio entre o `3dd6a70` e
+        # o `c8134e9` tem a pasta velha — ela é adotada em vez de ficar órfã. Dois
+        # nomes que dividiam a mesma pasta: o primeiro que migrar leva.
+        antiga = SPEAKER_AUDIO_DIR / _speaker_slug(nome)
+        if nome and antiga.is_dir() and any(antiga.glob("*.wav")):
+            try:
+                antiga.rename(SPEAKER_AUDIO_DIR / ident)
+            except OSError:
+                pass
     return ident
 
 
-def _speaker_audio_dir(perfil: dict) -> Path:
-    return SPEAKER_AUDIO_DIR / _speaker_audio_id(perfil)
+def _speaker_audio_dir(perfil: dict, nome: str = "") -> Path:
+    return SPEAKER_AUDIO_DIR / _speaker_audio_id(perfil, nome)
 
 
 def _speaker_guarda_audio(nome: str, origem: Path) -> None:
@@ -8723,7 +8742,7 @@ def _speaker_guarda_audio(nome: str, origem: Path) -> None:
             perfis = _speaker_load()
             perfil = perfis.setdefault(nome, {"vecs": [], "updated": 0})
             novo_id = "audio_id" not in perfil
-            pasta = _speaker_audio_dir(perfil)
+            pasta = _speaker_audio_dir(perfil, nome)
             if novo_id:
                 _speaker_save(perfis)
         pasta.mkdir(parents=True, exist_ok=True)
@@ -8753,7 +8772,7 @@ def _speaker_reextrai(nome: str, perfil: dict) -> bool:
     efetivo = _speaker_modelo_efetivo()
     if _speaker_modelo_do_perfil(perfil) == efetivo:
         return False
-    pasta = _speaker_audio_dir(perfil)
+    pasta = _speaker_audio_dir(perfil, nome)
     if not pasta.is_dir():
         return False
     vecs: list = []
