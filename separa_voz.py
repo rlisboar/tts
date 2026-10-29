@@ -176,9 +176,32 @@ JANELA_S = 1.5
 #: sobreposição mais barato e estável que achei; os escores de perfil sozinhos não
 #: separam, porque o modelo também "separa" um falante só em dois fluxos
 CORR_SEPAROU = 0.90
+#: fração de quadros com as DUAS vozes ativas a partir da qual a janela é sobreposta
+SIMULTANEIDADE_MIN = 0.5
 #: os dois fluxos casando com o perfil = a MESMA voz partida em dois (não duas
 #: pessoas): margem curta entre os dois escores
 MARGEM = 0.05
+
+
+def _simultaneidade(a, b, q: int = 320) -> float:
+    """Fração de quadros (20 ms) em que os DOIS fluxos têm energia.
+
+    Sobreposição é isso: duas vozes falando AO MESMO TEMPO. A correlação dizia só
+    "a separação mexeu no sinal" e não separava os cenários; a simultaneidade olha
+    para o que importa. Energia normalizada pelo próprio fluxo (p90) para não
+    depender de nível."""
+    import numpy as np
+
+    n = min(a.size, b.size) // q
+    if n < 3:
+        return 0.0
+    qa = a[: n * q].reshape(n, q).astype(np.float64)
+    qb = b[: n * q].reshape(n, q).astype(np.float64)
+    ea = np.sqrt((qa ** 2).mean(axis=1))
+    eb = np.sqrt((qb ** 2).mean(axis=1))
+    la = float(np.percentile(ea, 90)) or 1e-9
+    lb = float(np.percentile(eb, 90)) or 1e-9
+    return float(np.mean((ea >= la * 0.3) & (eb >= lb * 0.3)))
 
 
 def _segmentos_de_fala(x, sr: int, maximo: int, piso: float = 0.15) -> list:
@@ -306,14 +329,15 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
             um_falante = (sim_orig >= limiar and seg_sim >= limiar
                           and (melhor_sim - seg_sim) <= MARGEM)
             escolhido = fluxos[melhor_i][ini:fim]
-            k = min(escolhido.size, fim - ini)
-            corr = float(np.corrcoef(x[ini:ini + k], escolhido[:k])[0, 1]) \
-                if k > 1 else 0.0
+            simult = _simultaneidade(fluxos[0][ini:fim], fluxos[1][ini:fim])
+            # DECISÃO pela correlação: a simultaneidade de energia foi medida e NÃO
+            # separa os cenários (0,35–0,43 nas janelas dos DOIS — as saídas são
+            # renormalizadas, então os dois fluxos têm energia quase sempre). Fica
+            # medida no info, como registro.
+            corr = float(np.corrcoef(x[ini:fim], escolhido[: fim - ini])[0, 1]) \
+                if fim - ini > 1 else 0.0
             if corr != corr:                  # NaN: sinal constante, sem correlação
                 corr = 0.0
-            # separar num bloco de UM falante atrapalha: a separação só vale quando
-            # mudou mesmo a janela (sobreposição) — e nunca quando o perfil já está
-            # satisfeito sem ela
             separou = corr < CORR_SEPAROU and melhor_sim >= limiar
             if melhor_sim < 0 and sim_orig < 0:
                 # embedding falhou: fica o ORIGINAL (sem isto a janela ficava em
@@ -336,7 +360,8 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
             else:
                 saida[ini:fim] = x[ini:fim]
             escores_janelas.append([round(sim_orig, 3), round(melhor_sim, 3),
-                                    round(seg_sim, 3), round(corr, 3)])
+                                    round(seg_sim, 3), round(corr, 3),
+                                    round(simult, 3)])
 
         if sobrepostas == 0:
             # REDE DE SEGURANÇA (#663): sem NENHUMA sobreposição o caminho novo não

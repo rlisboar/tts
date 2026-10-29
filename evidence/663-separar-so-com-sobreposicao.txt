@@ -34,6 +34,12 @@ próprio áudio: o escore cru cai com a duração da janela (a mesma fala em 1,5
   dois dá 0,786 / 6,0 %. Ou seja: os dois extremos ficam de lados opostos da meta —
   seleção pura acerta o WER e estoura o vazamento; separar acerta o vazamento e
   custa WER.
+- **energia simultânea dos dois fluxos, medida e DESCARTADA como detector**:
+  0,35–0,43 nas janelas dos DOIS cenários — as saídas da separação são
+  renormalizadas para o RMS da entrada, então os dois fluxos quase sempre têm
+  energia e a métrica não distingue. Testado com corte 0,5: o sobreposto deixou de
+  separar (voltava ao valor da mistura) e o alternado ficou em 2,4 %/0,833. A
+  decisão continua pela correlação; a simultaneidade segue registrada no info.
 - **causa do WER do alternado**: a transcrição perde o 2º bloco de fala do alvo.
   Não é a fronteira (o VAD resolveu) nem o piso (testado de 0,2 a 0,55 do melhor do
   arquivo). Próximo passo nomeado: decidir a sobreposição por DURAÇÃO/energia

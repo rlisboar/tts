@@ -384,9 +384,16 @@ Sem o parâmetro **nada muda** — nem campo na resposta. Com ele:
 
 Chave `use` pode usar. O modelo roda em **processo filho** e em MPS, com a trava de
 Metal segurada no pai (nada de geração local em paralelo); ociosidade de 10 min
-(`TTS_SEPARA_TTL_S`) fecha o filho, e ele também morre no shutdown. Medido com o
-corpus do R4: vazamento de terceiro cai de 6,0 % para 3,6 % (SIR 0) e de 3,6 % para
-2,4 % (SIR 5), com o WER caindo junto — `evidence/534-separacao-alvo.txt`.
+(`TTS_SEPARA_TTL_S`) fecha o filho, e ele também morre no shutdown.
+
+A decisão é POR JANELA de fala: separa só onde as duas vozes se sobrepõem, mantém
+a janela original no resto e atenua (−30 dB) a janela do terceiro. **Limite
+declarado:** com as vozes se ALTERNANDO (sem sobreposição) o vazamento cai de
+15,5 % para 6,0 %, mas o WER sobe de 0,643 para **0,786** — o caminho que separa é o
+default porque quem liga a opção quer excluir terceiro. Com sobreposição o
+vazamento cai de 6,0 % para 2,4 % e o WER MELHORA (0,667 → 0,595). Tabela e
+método: `evidence/663-separar-so-com-sobreposicao.txt`; a medição anterior está em
+`evidence/534-separacao-alvo.txt`.
 
 ### Marca d'água do áudio gerado (anti-clone)
 
