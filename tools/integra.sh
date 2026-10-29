@@ -46,13 +46,12 @@ if ! git -C "$WT" rebase main; then
 fi
 
 echo "→ hook no worktree (gate)"
-if git -C "$WT" hook run pre-commit; then
-    :
-elif [ -x "$WT/.githooks/pre-commit" ]; then
-    ( cd "$WT" && ./.githooks/pre-commit ) || _aborta "o hook reprovou — nada foi integrado"
-else
-    _aborta "não consegui rodar o hook (core.hooksPath configurado? veja o README)"
-fi
+# Executa o ARQUIVO, não `git hook run`: aquele devolve o mesmo código para "hook
+# não existe" e para "hook reprovou", e a queda para execução direta acabava rodando
+# a suíte DUAS vezes em toda reprovação (medido: 9 min a mais por vermelho).
+hook="$WT/.githooks/pre-commit"
+[ -x "$hook" ] || _aborta "não achei o hook executável em $hook"
+( cd "$WT" && "$hook" ) || _aborta "o hook reprovou — nada foi integrado"
 
 echo "→ merge --ff-only de $branch na main"
 git -C "$RAIZ" merge --ff-only "$branch" || _aborta "merge não foi fast-forward — nada integrado"
