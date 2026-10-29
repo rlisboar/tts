@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import types
 import threading
 import time
 from pathlib import Path
@@ -1288,6 +1289,38 @@ def test_separa_musica_preserva_voz_real():
         return float(np.sqrt(np.mean(np.asarray(x, np.float64) ** 2)))
 
     assert rms(saida) > rms(voz) / 4, "a voz real tem de sobreviver"
+
+
+def test_separa_musica_segura_a_trava_de_metal(monkeypatch, tmp_path):
+    """A separação usa MPS: tem de rodar sob `_gen_lock`, como o TTS e o separador
+    de voz. Um TTS concorrente ESPERA em vez de colidir no Metal."""
+    import threading
+    import time
+
+    monkeypatch.setitem(sys.modules, "demucs", types.SimpleNamespace())
+    monkeypatch.setattr(app, "BASE", tmp_path)
+    (tmp_path / "musica_worker.py").write_text("")
+    dentro = threading.Event()
+
+    def run_lento(*a, **k):                     # worker de mentira, lento
+        import soundfile as sf
+
+        dentro.set()
+        time.sleep(0.5)
+        sf.write(str(a[0][-1]), np.zeros(24000, np.float32), 24000, subtype="PCM_16")
+        return types.SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(app.subprocess, "run", run_lento)
+    thread = threading.Thread(target=lambda: app._separa_musica(_fala_suja(1.0), 24000))
+    thread.start()
+    assert dentro.wait(5), "o worker nem começou"
+    assert not app._gen_lock.acquire(blocking=False), \
+        "a trava tem de estar SEGURA durante a separação"
+    t0 = time.monotonic()
+    with app._gen_lock:                          # espera como um TTS faria
+        esperou = time.monotonic() - t0
+    thread.join(10)
+    assert esperou > 0.05, f"esperou só {esperou:.3f}s — a trava não está segurando"
 
 
 def test_separa_musica_sem_demucs_devolve_none(monkeypatch):
