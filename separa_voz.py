@@ -167,35 +167,113 @@ def _le_ate_resposta(proc: subprocess.Popen, ident: int) -> str:
             return linha
 
 
+#: janela de decisão. Separar um bloco que já é de UM falante atrapalha (R4:
+#: SI-SDRi negativo), então a separação só vale onde há sobreposição — a decisão é
+#: POR JANELA e o resto é veto por perfil, que é o que o R4 mediu como melhor.
+JANELA_S = 1.5
+#: correlação original x fluxo escolhido acima da qual a separação NÃO mudou a
+#: janela (medido: 0,95 em janela de um falante, 0,82 em sobreposta) — é o sinal de
+#: sobreposição mais barato e estável que achei; os escores de perfil sozinhos não
+#: separam, porque o modelo também "separa" um falante só em dois fluxos
+CORR_SEPAROU = 0.90
+#: os dois fluxos casando com o perfil = a MESMA voz partida em dois (não duas
+#: pessoas): margem curta entre os dois escores
+MARGEM = 0.05
+
+
 def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
-    """Fluxo do ALVO e o que foi descartado.
+    """Áudio só com a voz do perfil: separa nas sobreposições, veta janela no resto.
 
     `vecs` são as amostras do perfil e `modelo` é o extrator QUE AS GEROU — os dois
-    andam juntos: pontuar perfil do Resemblyzer com o ECAPA dava 0,055 para a mesma
-    fala (dimensões 256 x 192, e o `zip` truncava calado). O escolhido é o fluxo de
-    maior cosseno contra o centróide (o R2 mostrou o centróide vencendo o máximo).
-    Devolve o caminho do fluxo escolhido e `{"trechos": 1, "ms": <duração>}` do
-    descartado, além dos escores para o log/observabilidade."""
+    andam juntos (perfil do Resemblyzer pontuado pelo ECAPA dá 0,055: dimensões
+    256 x 192 e o `zip` truncava calado).
+
+    Por JANELA de `JANELA_S`:
+    - os DOIS fluxos casam com o perfil (escores próximos, ambos acima do limiar) →
+      é um falante só: fica o áudio ORIGINAL da janela (separar piora);
+    - só um fluxo casa → há sobreposição: fica esse fluxo;
+    - nenhum casa com folga → janela do concorrente: vira silêncio (veto).
+
+    Devolve o wav resultante e o que foi descartado (`trechos`/`ms`), além dos
+    escores por janela para o log."""
     import app                       # só para reusar o extrator já carregado
+    import numpy as np
+    import soundfile as sf
 
     with tempfile.TemporaryDirectory(prefix="separa-") as pastinha:
         dir_saida = Path(pastinha)
-        fluxos = separa(wav, dir_saida)
+        fluxos_p = separa(wav, dir_saida)
+        x, sr = sf.read(str(wav), dtype="float32")
+        if x.ndim > 1:
+            x = x.mean(axis=1)
+        fluxos = [sf.read(str(f), dtype="float32")[0] for f in fluxos_p]
         centroide = app._speaker_centroide(vecs)
-        escores = []
-        for f in fluxos:
-            emb = app._speaker_embed(f, modelo)
-            escores.append(app._cos_sim(emb, centroide) if emb else -1.0)
-        escolhido = max(range(len(fluxos)), key=lambda i: escores[i])
-        alvo = dir_saida / f"alvo{escolhido}.wav"
-        fluxos[escolhido].replace(alvo)
-        descartado = [f for i, f in enumerate(fluxos) if i != escolhido]
-        info = {"escores": [round(e, 3) for e in escores], "escolhido": escolhido}
-        if descartado:
-            info["descartados"] = {"trechos": 1, "ms": _duracao_ms(descartado[0])}
-        # o temporário morre com o `with`: devolve um arquivo que sobrevive
+        limiar = float(app._speaker_limiar(modelo)[0])
+
+        _conta = [0]
+
+        def _sim(sinal) -> float:
+            if sinal.size < 1600:            # < 0,1 s não gera embedding confiável
+                return -1.0
+            _conta[0] += 1
+            # arquivo PRÓPRIO por janela: reusar um nome só já deu leitura do
+            # conteúdo anterior (todos os escores voltando -1 na mesma rodada)
+            tmp = dir_saida / f"jan{_conta[0]}.wav"
+            sf.write(str(tmp), sinal, sr, subtype="PCM_16")
+            emb = app._speaker_embed(tmp, modelo)
+            return app._cos_sim(emb, centroide) if emb else -1.0
+
+        janela = int(JANELA_S * sr)
+        saida = np.zeros(x.size, dtype=np.float32)
+        descartados_ms = 0
+        trechos_descartados = 0
+        escores_janelas = []
+        sobrepostas = 0
+        for ini in range(0, x.size, janela):
+            fim = min(ini + janela, x.size)
+            sim_orig = _sim(x[ini:fim])
+            sims = [(_sim(f[ini:fim]), i) for i, f in enumerate(fluxos)]
+            sims.sort(reverse=True)
+            (melhor_sim, melhor_i), (seg_sim, _) = sims[0], sims[1]
+            # os dois fluxos casam com o perfil: um falante só, separar atrapalha
+            um_falante = (sim_orig >= limiar and seg_sim >= limiar
+                          and (melhor_sim - seg_sim) <= MARGEM)
+            escolhido = fluxos[melhor_i][ini:fim]
+            k = min(escolhido.size, fim - ini)
+            corr = float(np.corrcoef(x[ini:ini + k], escolhido[:k])[0, 1]) \
+                if k > 1 else 0.0
+            if corr != corr:                  # NaN: sinal constante, sem correlação
+                corr = 0.0
+            # separar num bloco de UM falante atrapalha: a separação só vale quando
+            # mudou mesmo a janela (sobreposição) — e nunca quando o perfil já está
+            # satisfeito sem ela
+            separou = corr < CORR_SEPAROU and melhor_sim >= limiar
+            if melhor_sim < 0 and sim_orig < 0:
+                pass                       # embedding falhou: fica o original
+            elif (melhor_sim < limiar * 0.5 and sim_orig < limiar * 0.5):
+                # janela do concorrente: ATENUA (-30 dB) em vez de zerar. Silêncio
+                # digital picado faz o Whisper alucinar (medido: vazamento 464 % e
+                # WER 5,0 com as janelas zeradas) e -20 dB deixava vazar demais
+                # (14,3 %); -30 dB dá 7,1 % mantendo o contexto
+                saida[ini:fim] = x[ini:fim] * 0.03
+                trechos_descartados += 1
+                descartados_ms += int((fim - ini) / sr * 1000)
+            elif separou and not um_falante:
+                saida[ini:fim] = escolhido
+                sobrepostas += 1
+            else:
+                saida[ini:fim] = x[ini:fim]
+            escores_janelas.append([round(sim_orig, 3), round(melhor_sim, 3),
+                                    round(seg_sim, 3), round(corr, 3)])
+            escores_janelas.append([round(sim_orig, 3), round(melhor_sim, 3),
+                                    round(seg_sim, 3)])
+
         final = Path(tempfile.mkstemp(prefix="alvo-", suffix=".wav")[1])
-        alvo.replace(final)
+        sf.write(str(final), saida, sr, subtype="PCM_16")
+        info = {"escores_janelas": escores_janelas[:40], "sobrepostas": sobrepostas,
+                "limiar": round(limiar, 3)}
+        if trechos_descartados:
+            info["descartados"] = {"trechos": trechos_descartados, "ms": descartados_ms}
         return final, info
 
 
@@ -209,4 +287,5 @@ def _duracao_ms(wav: Path) -> int:
         return 0
 
 
-__all__ = ["disponivel", "motivo", "separa", "separa_alvo", "fecha", "MODELO_DIR"]
+__all__ = ["disponivel", "motivo", "separa", "separa_alvo", "fecha",
+           "MODELO_DIR", "JANELA_S"]

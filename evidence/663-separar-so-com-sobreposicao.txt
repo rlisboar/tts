@@ -1,0 +1,27 @@
+#663 — `speaker_alvo` decide POR JANELA: separa só com sobreposição, veta no resto
+Corpus do R4 (LibriSpeech dev-clean público), alvo 1272 × concorrente 1462, inglês.
+Janela de decisão 1,5 s. Medido 2× por cenário (número estável).
+
+Sinal de sobreposição: correlação entre a janela original e o fluxo escolhido —
+0,95 em janela de um falante, 0,82 em sobreposta (abaixo de 0,90 = a separação
+mudou a janela). Os escores de perfil sozinhos NÃO separam os casos, porque o
+modelo também "separa" um falante só em dois fluxos.
+
+| cenário | método | vazamento | WER |
+|---|---|---|---|
+| alternado (2 s por falante) | mistura | 15,5 % | 0,643 |
+| alternado | por janela (este) | **7,1 %** | 0,690 |
+| sobreposto total | mistura | 6,0 % | 0,667 |
+| sobreposto total | por janela (este) | **2,4 %** | **0,643** |
+
+- No sobreposto o vazamento cai ao nível do melhor método e o WER MELHORA.
+- No alternado o vazamento cai 54 %, mas o WER piora +0,047. Causa medida: as
+  janelas de FRONTEIRA (bloco de 2 s com janela de 1,5 s) ficam meio a meio, dão
+  escore baixo e caem no veto, levando palavra do dono junto. 3 de 10 janelas
+  vetadas; o vazamento que sobra vem das fronteiras.
+- Janela vetada é ATENUADA a −30 dB, não zerada: silêncio digital picado faz o
+  Whisper alucinar (medido: vazamento 464 % e WER 5,05 com as janelas zeradas).
+  −20 dB deixava vazar demais (14,3 %) e o WER ficava igual; −30 dB é o ponto.
+
+Próximo passo nomeado (fora deste card): alinhar a janela de decisão a fala/energia
+em vez de grade fixa, que tira a fronteira do caminho.

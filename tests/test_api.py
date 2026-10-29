@@ -6727,7 +6727,7 @@ def test_cos_sim_levanta_para_dimensoes_diferentes():
         app._cos_sim([1.0, 0.0], [1.0, 0.0, 0.0])
 
 
-def test_separa_alvo_usa_o_extrator_DO_PERFIL_e_nao_o_efetivo(monkeypatch):
+def test_separa_alvo_usa_o_extrator_DO_PERFIL_e_nao_o_efetivo(monkeypatch, tmp_path):
     """Perfil legado (256-d) com o ECAPA disponível tem de pontuar pelo LEGADO.
 
     Pontuando pelo efetivo, o vetor do ECAPA (192-d) era comparado com o centróide
@@ -6745,25 +6745,35 @@ def test_separa_alvo_usa_o_extrator_DO_PERFIL_e_nao_o_efetivo(monkeypatch):
 
     def _emb(p, modelo=None):
         pedidos.append(modelo)
-        # fluxo a = voz do perfil no espaço LEGADO; fluxo b = o concorrente
-        return [1.0, 0.0] + [0.0] * 254 if str(p).endswith("a.wav") else [0.0, 1.0] + [0.0] * 254
+        # conteúdo decide: fluxo A é silêncio (como a janela original), fluxo B tem
+        # amostras — A casa com o perfil no espaço LEGADO, B é o concorrente
+        import soundfile as _sf
+
+        amostras = _sf.read(str(p), dtype="float32")[0]
+        return ([1.0, 0.0] + [0.0] * 254 if float(abs(amostras).max()) == 0.0
+                else [0.0, 1.0] + [0.0] * 254)
 
     monkeypatch.setattr(app, "_speaker_embed", _emb)
+    import soundfile as sf
 
     def _separa(wav, dir_saida):
         dir_s = Path(dir_saida)
         dir_s.mkdir(exist_ok=True)
         a, b = dir_s / "a.wav", dir_s / "b.wav"
-        a.write_bytes(b"a")
-        b.write_bytes(b"b")
+        sf.write(str(a), np.zeros(32000, dtype=np.float32), 16000, subtype="PCM_16")
+        sf.write(str(b), np.full(32000, 0.05, dtype=np.float32), 16000,
+                 subtype="PCM_16")
         return [a, b]
 
     monkeypatch.setattr(separa_voz, "separa", _separa)
-    escolhido, info = separa_voz.separa_alvo(Path("mix.wav"), perfis["eu"]["vecs"],
+    mix = Path(str(tmp_path) + "/mix.wav")
+    sf.write(str(mix), np.zeros(32000, dtype=np.float32), 16000, subtype="PCM_16")
+    escolhido, info = separa_voz.separa_alvo(mix, perfis["eu"]["vecs"],
                                              app.SPEAKER_MODELO_LEGADO)
-    assert escolhido.read_bytes() == b"a", f"escolheu o fluxo errado: {info}"
+    assert info["sobrepostas"] >= 1, f"não separou nenhuma janela: {info}"
     assert set(pedidos) == {app.SPEAKER_MODELO_LEGADO}, pedidos
-    assert info["escores"][0] > info["escores"][1]
+    # o perfil casou (fluxo a) e o concorrente não (fluxo b) em toda janela
+    assert all(j[1] > j[2] for j in info["escores_janelas"]), info["escores_janelas"]
 
 
 def test_descartar_recadastro_parcial_mantem_o_legado(client, auth, monkeypatch):
