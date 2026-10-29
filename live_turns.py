@@ -240,7 +240,10 @@ class Config:
     teto_ruido_dbfs: float = -30.0
     eco_perda_inicial_db: float = 12.0            # palpite ao abrir o playback
     eco_calibracao_ms: int = 400                  # janela que acha o nível do eco
-    eco_calibracao_teto: int = 3                  # ...repetida se o TTS abre em silêncio
+    # 6 e não 3 (#674): o teto é a trava contra calibração que não converge; com 3
+    # janelas (1,25 s) um TTS que abre com pausa legítima fechava no silêncio. 6
+    # (~2,5 s) respeita a pausa e ainda trava muito antes dos ~14 s medidos.
+    eco_calibracao_teto: int = 6
     eco_calibracao_quantil: float = 90.0          # estatística da janela (0-100)
     eco_pre_janela_ms: int = 1500                 # janela de nível ANTES do playback
     eco_contrib_min_db: float = 3.0               # abaixo disto o playback não somou eco
@@ -644,8 +647,15 @@ class TurnEngine:
             self._eco_dbfs = float(np.clip(palpite, self.config.piso_ruido_dbfs,
                                            self.config.teto_ruido_dbfs + 20.0))
             self._eco_ausente = False
-            self._calibrando = True
-            self._calibracao_vals = []
+            # NÃO reinicia a calibração se ela já está em curso (#674): o handler
+            # marca a borda a CADA chunk (a flag `_speaking` cai entre eles), e o
+            # reset apagava as amostras antes de a janela fechar — com chunks
+            # espaçados a calibração nunca convergia e `_avaliar_abertura` nunca
+            # rodava: o turno posterior ao corte só abria ~14 s depois, quando o
+            # TTS parava.
+            if not self._calibrando:
+                self._calibrando = True
+                self._calibracao_vals = []
             if not self._playback_ativo():
                 # só com a janela FECHADA (episódio novo de playback) o acumulador
                 # de barge zera e o aviso de "barge com turno aberto" rearma —
@@ -806,6 +816,12 @@ class TurnEngine:
             return eventos
         if self._calibrando:
             self._calibrar(env_dbfs)
+            if self._debug:
+                self._calib_n = getattr(self, "_calib_n", 0) + 1
+                if self._calib_n % 10 == 1:
+                    print(f"[CALIBRA] abertura BLOQUEADA (calibrando, "
+                          f"dbfs={env_dbfs:.1f} prob={prob:.2f})", file=sys.stderr,
+                          flush=True)
             return []
         self._adaptar(env_dbfs, prob)
         return self._avaliar_abertura(amostra, env_dbfs, prob)
@@ -853,9 +869,13 @@ class TurnEngine:
         self._calibracao_vals.append(env_dbfs)
         piso_audio = self._noise_dbfs + self.config.eco_faixa_morta_db
         com_audio = [v for v in self._calibracao_vals if v > piso_audio]
-        # o teto só vale depois de ver áudio: TTS que abre com pausa longa não
-        # pode fechar a calibração no silêncio (o seed viraria o eco)
-        esgotou = bool(com_audio) and len(self._calibracao_vals) >= \
+        # O TETO é INCONDICIONAL (#674): antes ele exigia já ter visto áudio, e se
+        # o piso de ruído subisse acima da voz (eco do turno anterior) a janela
+        # nunca fechava — `_calibrando` ficava ligado para sempre, `_avaliar_abertura`
+        # nunca rodava e o turno seguinte ao corte só abria ~14 s depois, quando o
+        # TTS parava. No teto sem áudio a amostra cai nas próprias janelas (o
+        # `com_audio or _calibracao_vals` logo abaixo já cobre isso).
+        esgotou = len(self._calibracao_vals) >= \
             self.config.eco_calibracao_teto * self.config._frames_calibracao
         if len(com_audio) < self.config._frames_calibracao and not esgotou:
             return
