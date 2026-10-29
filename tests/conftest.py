@@ -208,6 +208,9 @@ def pytest_report_header(config):
 # do dono pode estar rodando e gravando ao lado, o que não é regressão nossa.
 _ARQUIVOS_DO_DONO = ("settings.json", ".apikeys.json", ".apikey", ".speaker-profiles.json")
 _escritas_no_dono: list[str] = []
+#: quem criou arquivo NOVO em `state/metrics` (nome do teste) — o guard é de sessão
+#: e sem atribuição o culpado fica invisível, atribuído ao último teste da fila
+_metricas_por_teste: list[str] = []
 
 
 def _impressao_do_dono() -> dict[str, tuple[str, int]]:
@@ -252,9 +255,19 @@ def pytest_runtest_protocol(item, nextitem):
     except Exception:  # noqa: BLE001 — guarda não pode quebrar a suíte
         yield
         return
+    import app as _app
+
+    try:
+        _antes_metricas = {p.name for p in (_app.BASE / "state" / "metrics").glob("*.jsonl")}
+    except Exception:  # noqa: BLE001
+        _antes_metricas = set()
     yield
     try:
         _atribuir_escritas(antes, f"{item.nodeid}")
+        _novos_m = ({p.name for p in (_app.BASE / "state" / "metrics").glob("*.jsonl")}
+                    - _antes_metricas)
+        if _novos_m:
+            _metricas_por_teste.append(f"{item.nodeid} → {sorted(_novos_m)}")
     except Exception:  # noqa: BLE001
         pass
 
@@ -561,6 +574,8 @@ def _metricas_do_dono_intocadas():
         pytest.fail(
             "a suíte escreveu no `state/metrics` REAL do dono (#610): "
             + ", ".join(novos[:10])
+            + ("\n  por teste: " + "; ".join(_metricas_por_teste[-5:])
+               if _metricas_por_teste else "\n  (sem atribuição por teste)")
             + " — algum caminho não está seguindo `TTS_METRICS_DIR`",
             pytrace=False)
     cresceram = sorted(n for n, tam in depois.items() if tam > antes.get(n, 0))
