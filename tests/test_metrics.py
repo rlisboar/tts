@@ -247,3 +247,15 @@ def test_escrita_sem_env_cai_no_repo_e_com_env_nao(tmp_path):
                                  check=True, capture_output=True)
     assert {p.name: p.stat().st_size for p in real.glob("*.jsonl")} == antes
     assert any(rota in p.read_text() for p in alvo.glob("*.jsonl")), "não escreveu no tmp"
+
+
+def test_a_suite_usa_audio_de_cadastro_fora_do_repo():
+    """O áudio de cadastro também tem de estar isolado (#658).
+
+    Mesma forma da célula do histórico de métricas: o `enroll` copia amostra para
+    `SPEAKER_AUDIO_DIR`, e sem a env a suíte cria pasta no `state/` do dono."""
+    import app
+
+    assert not str(app.SPEAKER_AUDIO_DIR).startswith(
+        str(Path(__file__).resolve().parent.parent / "state")), app.SPEAKER_AUDIO_DIR
+    assert os.environ.get("TTS_SPEAKER_AUDIO_DIR"), "o conftest parou de exportar a env"

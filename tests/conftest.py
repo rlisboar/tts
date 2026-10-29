@@ -369,6 +369,15 @@ def _estado_isolado(tmp_path_factory):
         perfis_destino.write_bytes(app.SPEAKER_PATH.read_bytes())
     perfis_original = app.SPEAKER_PATH
     app.SPEAKER_PATH = perfis_destino
+    # áudio de cadastro (#658): em tmp pela RAM E pelo ambiente — o diretório é
+    # derivado no import, então subprocesso/cópia de boot recalculava e enchia
+    # `state/speaker-audio/` do dono (15 pastas medidas).
+    audio_destino = pasta / "speaker-audio"
+    audio_destino.mkdir()
+    audio_original = app.SPEAKER_AUDIO_DIR
+    app.SPEAKER_AUDIO_DIR = audio_destino
+    env_audio_original = os.environ.get("TTS_SPEAKER_AUDIO_DIR")
+    os.environ["TTS_SPEAKER_AUDIO_DIR"] = str(audio_destino)
     # `outputs/` em tmp (#458): a suíte grava wav de verdade e o diretório do dono
     # acumulava milhares deles (medido: 3.509, 34 MB) sem poda possível — o teto é
     # do #430. O job herda o caminho da requisição, então isto vale também para os
@@ -392,9 +401,14 @@ def _estado_isolado(tmp_path_factory):
     app.APIKEYS_PATH = apikeys_original
     app.LEGACY_APIKEY_PATH = legado_original
     app.SPEAKER_PATH = perfis_original
+    app.SPEAKER_AUDIO_DIR = audio_original
     app.SETTINGS_PATH = original
     app.OUTPUTS_DIR = saida_original
     app._ENV_API_KEY, app._ADMIN_API_KEY = env_api_original, admin_api_original
+    if env_audio_original is None:
+        os.environ.pop("TTS_SPEAKER_AUDIO_DIR", None)
+    else:
+        os.environ["TTS_SPEAKER_AUDIO_DIR"] = env_audio_original
     if env_saida_original is None:
         os.environ.pop("TTS_OUTPUTS_DIR", None)
     else:
@@ -490,6 +504,26 @@ def _outputs_do_dono_intocado():
             + ", ".join(nossos[:10])
             + (f" (+{len(nossos) - 10})" if len(nossos) > 10 else "")
             + " — algum caminho não está seguindo `TTS_OUTPUTS_DIR`",
+            pytrace=False)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _audio_cadastro_do_dono_intocado():
+    """A suíte não pode gravar em `state/speaker-audio` REAL do dono (#658).
+
+    `enroll` copia a amostra aceita para lá; sem `TTS_SPEAKER_AUDIO_DIR` cada
+    teste que cadastra deixa pasta (15 medidas). Pasta NOVA reprova."""
+    import app
+
+    alvo = app.BASE / "state" / "speaker-audio"
+    antes = {p.name for p in alvo.iterdir()} if alvo.is_dir() else set()
+    yield
+    novos = sorted(({p.name for p in alvo.iterdir()} if alvo.is_dir() else set()) - antes)
+    if novos:
+        pytest.fail(
+            "a suíte criou pasta no `state/speaker-audio` REAL do dono (#658): "
+            + ", ".join(novos[:10])
+            + " — algum caminho não está seguindo `TTS_SPEAKER_AUDIO_DIR`",
             pytrace=False)
 
 

@@ -1042,7 +1042,8 @@ BASE=http://127.0.0.1:7860 ./tests/run_sh.sh instancia   # exige app de pé (./r
 
 Os caminhos de estado têm override por variável de ambiente, **lidos no import**:
 `TTS_APIKEYS_PATH`, `TTS_LEGACY_APIKEY_PATH`, `TTS_SETTINGS_PATH`,
-`TTS_SPEAKER_PATH`, `TTS_VOICES_DIR`, `TTS_OUTPUTS_DIR`, `TTS_JOBS_HIST_PATH`,
+`TTS_SPEAKER_PATH`, `TTS_SPEAKER_AUDIO_DIR`, `TTS_VOICES_DIR`, `TTS_OUTPUTS_DIR`,
+`TTS_JOBS_HIST_PATH`,
 `TTS_METRICS_DIR` (histórico de operação), `TTS_SPEAKER_MODELO_DIR` (pesos do
 extrator) e `TTS_ASNORM_COORTE` (coorte do AS-norm).
 Variável ausente (ou vazia) = o caminho de sempre, ao lado do `app.py`; nada muda
