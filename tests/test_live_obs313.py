@@ -23,6 +23,15 @@ import app
 import live_pipeline as lp
 
 
+def _preso(lock) -> bool:
+    """O lock está preso NESTA thread? `RLock` (usado para o fallback aninhar) não
+    tem `locked()` antes do 3.14 — `_is_owned()` responde a mesma pergunta."""
+    try:
+        return bool(lock.locked())
+    except AttributeError:
+        return bool(getattr(lock, "_is_owned")())
+
+
 def _sess(**extra) -> dict:
     sess = {"id": "s-obs", "t0": time.monotonic(), "criada": time.time(),
             "visto": time.monotonic(), "turno": 1, "fila": app._LiveFila(1 << 20),
@@ -230,7 +239,7 @@ def test_tts_app_mede_a_espera_do_lock(monkeypatch, tmp_path):
         app._gen_lock.release()
         th.join(5)
     finally:
-        if app._gen_lock.locked():
+        if _preso(app._gen_lock):
             app._gen_lock.release()
     assert espera["lock_espera_ms"] >= 900, espera
 

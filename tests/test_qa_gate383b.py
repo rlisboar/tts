@@ -26,6 +26,15 @@ from test_app import _TEXTO_1_TRECHO, _bom, _job_de_render  # noqa: E402
 __all__ = ["app"]
 
 
+def _preso(lock) -> bool:
+    """O lock está preso NESTA thread? `RLock` (usado para o fallback aninhar) não
+    tem `locked()` antes do 3.14 — `_is_owned()` responde a mesma pergunta."""
+    try:
+        return bool(lock.locked())
+    except AttributeError:
+        return bool(getattr(lock, "_is_owned")())
+
+
 def _local_ok(monkeypatch):
     monkeypatch.setattr(app, "_ensure_remote_voice", lambda *a, **k: None)
     monkeypatch.setitem(app._settings, "remote_tts_voice", "")
@@ -99,13 +108,13 @@ def test_fallback_local_respeita_o_gen_lock(monkeypatch, tmp_path):
 
     def _gera(*a, **k):
         # se o `_gen_lock` estiver preso aqui, é o fallback que o segura
-        dono["quem"] = app._gen_lock.locked()
+        dono["quem"] = _preso(app._gen_lock)
         return _bom()
 
     _jid, job = _roda(monkeypatch, tmp_path, remoto=True, gerador=_gera)
     assert job["status"] == "done"
     assert dono["quem"] is True, "geração local do fallback fora do _gen_lock"
-    assert not app._gen_lock.locked(), "o lock ficou preso depois do job"
+    assert not _preso(app._gen_lock), "o lock ficou preso depois do job"
 
 
 def test_threads_nao_veem_fallback_parcial(monkeypatch, tmp_path):

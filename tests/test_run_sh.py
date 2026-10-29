@@ -93,7 +93,10 @@ SONDAS = AQUI / "fixtures" / "run_sh"
 
 
 def _rodar(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    base = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp")}
+    base = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp"),
+            # as sondas sobem app: sem isso elas escrevem no `state/metrics` da
+            # árvore (o app herda o ambiente mínimo e o guard do conftest acusa)
+            "TTS_METRICS_DIR": os.environ.get("TTS_METRICS_DIR", "")}
     base.update(env or {})
     return subprocess.run(["bash", str(RUNNER), *args], cwd=str(AQUI.parent),
                           capture_output=True, text=True, timeout=120,
