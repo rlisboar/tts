@@ -8694,10 +8694,21 @@ def _speaker_load() -> dict:
     return _speaker_load_estado()[0]
 
 
-def _speaker_audio_dir(nome: str) -> Path:
-    """Pasta do áudio de cadastro de um perfil (o nome vira pasta segura)."""
-    seguro = "".join(c if c.isalnum() or c in "-_" else "_" for c in nome)[:40] or "perfil"
-    return SPEAKER_AUDIO_DIR / seguro
+def _speaker_audio_id(perfil: dict) -> str:
+    """Id ESTÁVEL e único da pasta de áudio do perfil (não o nome).
+
+    Slug de nome colide (`Ana Maria`, `Ana_Maria` e `Ana/Maria` caem no mesmo lugar
+    e o delete de um apaga o áudio do outro) e o corte de 40 chars junta nomes
+    longos. O id nasce no primeiro áudio guardado e vive no perfil."""
+    ident = str(perfil.get("audio_id") or "")
+    if not ident:
+        ident = uuid.uuid4().hex[:16]
+        perfil["audio_id"] = ident
+    return ident
+
+
+def _speaker_audio_dir(perfil: dict) -> Path:
+    return SPEAKER_AUDIO_DIR / _speaker_audio_id(perfil)
 
 
 def _speaker_guarda_audio(nome: str, origem: Path) -> None:
@@ -8708,7 +8719,13 @@ def _speaker_guarda_audio(nome: str, origem: Path) -> None:
     if not _settings.get("speaker_guardar_audio"):
         return
     try:
-        pasta = _speaker_audio_dir(nome)
+        with _speaker_lock:                 # o id do perfil pode precisar nascer
+            perfis = _speaker_load()
+            perfil = perfis.setdefault(nome, {"vecs": [], "updated": 0})
+            novo_id = "audio_id" not in perfil
+            pasta = _speaker_audio_dir(perfil)
+            if novo_id:
+                _speaker_save(perfis)
         pasta.mkdir(parents=True, exist_ok=True)
         destino = pasta / f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}.wav"
         shutil.copyfile(origem, destino)
@@ -8717,9 +8734,12 @@ def _speaker_guarda_audio(nome: str, origem: Path) -> None:
         print(f"[speaker] não guardei o áudio de '{nome}': {exc}", flush=True)
 
 
-def _speaker_apaga_audio(nome: str) -> None:
+def _speaker_apaga_audio(perfil: dict | None) -> None:
+    ident = str((perfil or {}).get("audio_id") or "")
+    if not ident:
+        return
     try:
-        shutil.rmtree(_speaker_audio_dir(nome), ignore_errors=True)
+        shutil.rmtree(SPEAKER_AUDIO_DIR / ident, ignore_errors=True)
     except Exception:  # noqa: BLE001
         pass
 
@@ -8733,12 +8753,16 @@ def _speaker_reextrai(nome: str, perfil: dict) -> bool:
     efetivo = _speaker_modelo_efetivo()
     if _speaker_modelo_do_perfil(perfil) == efetivo:
         return False
-    pasta = _speaker_audio_dir(nome)
+    pasta = _speaker_audio_dir(perfil)
     if not pasta.is_dir():
         return False
     vecs: list = []
     for arq in sorted(pasta.glob("*.wav")):
-        emb = _speaker_embed(arq, efetivo)
+        try:
+            emb = _speaker_embed(arq, efetivo)
+        except Exception as exc:  # noqa: BLE001 — um .wav corrompido não derruba o resto
+            print(f"[speaker] áudio {arq.name} de '{nome}' falhou: {exc}", flush=True)
+            continue
         if emb:
             vecs.append(emb)
         if len(vecs) >= SPEAKER_MAX_SAMPLES:
@@ -8752,6 +8776,37 @@ def _speaker_reextrai(nome: str, perfil: dict) -> bool:
     print(f"[speaker] perfil '{nome}' reextraído no extrator {efetivo} "
           f"({len(vecs)} amostra(s)) — sem regravação", flush=True)
     return True
+
+
+_speaker_reextrai_thread: threading.Thread | None = None
+
+
+def _speaker_reextrai_todos() -> None:
+    """Reextrai quem precisa, FORA do caminho do GET (o embed pode custar caro)."""
+    with _speaker_lock:
+        perfis = _speaker_load()
+        mudou = False
+        for nome, p in list(perfis.items()):
+            try:
+                if _speaker_reextrai(nome, p):
+                    mudou = True
+            except Exception as exc:  # noqa: BLE001 — um perfil ruim não para os outros
+                print(f"[speaker] reextração de '{nome}' falhou: {exc}", flush=True)
+        if mudou:
+            _speaker_save(perfis)
+
+
+def _speaker_reextrai_em_segundo_plano(perfis: dict) -> None:
+    """Sobe a reextração se algum perfil precisa e não há uma rodando."""
+    global _speaker_reextrai_thread
+    efetivo = _speaker_modelo_efetivo()
+    if not any(_speaker_modelo_do_perfil(p) != efetivo for p in perfis.values()):
+        return
+    if _speaker_reextrai_thread is not None and _speaker_reextrai_thread.is_alive():
+        return
+    _speaker_reextrai_thread = threading.Thread(target=_speaker_reextrai_todos,
+                                                name="speaker-reextrai", daemon=True)
+    _speaker_reextrai_thread.start()
 
 
 def _speaker_save(perfis: dict) -> None:
@@ -8959,11 +9014,13 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
         # ARQUIVO (o Live tem o caminho dele) e só quando o detector respondeu —
         # `indisponivel` NÃO rejeita, porque marca ausente é a maioria da fala real.
         if anti.get("anticlone") == "marcado":
-            if gate == "enforce":
+            # voz não autorizada já foi barrada pelo escore: manter AQUELE motivo
+            ja_barrado = bool(out.get("rejected"))
+            if gate == "enforce" and not ja_barrado:
                 out["rejected"] = True
                 out["reason"] = ("áudio com marca d'água de TTS (clone) — "
                                  f"detecção {anti.get('anticlone_prob')}")
-            else:
+            elif gate != "enforce":
                 out["speaker_aviso"] = ("áudio parece CLONE: marca d'água do TTS "
                                         "detectada")
     return out
@@ -9275,13 +9332,9 @@ async def speaker_enroll(name: str = Form(...),
 def speaker_profiles():
     with _speaker_lock:
         perfis = _speaker_load()
-        # troca de extrator: quem tem áudio guardado se recadastra sozinho aqui
-        mudou = False
-        for nome, p in list(perfis.items()):
-            if _speaker_reextrai(nome, p):
-                mudou = True
-        if mudou:
-            _speaker_save(perfis)
+    # troca de extrator: quem tem áudio guardado se recadastra SOZINHO, em segundo
+    # plano — o embed pode custar segundos e não pode segurar a lista (#658)
+    _speaker_reextrai_em_segundo_plano(perfis)
     return [{"name": n, "samples": len(p.get("vecs", [])),
              "updated": p.get("updated", 0),
              "modelo": _speaker_modelo_do_perfil(p),
@@ -9324,10 +9377,11 @@ def speaker_delete(request: Request, name: str):
     _exige_admin(request)
     with _speaker_lock:
         perfis = _speaker_load()
-        if perfis.pop(name, None) is None:
+        removido = perfis.pop(name, None)
+        if removido is None:
             raise HTTPException(404, "Perfil não encontrado")
         _speaker_save(perfis)
-    _speaker_apaga_audio(name)      # o áudio de cadastro vai junto (#658)
+    _speaker_apaga_audio(removido)  # o áudio de cadastro vai junto (#658)
     return {"ok": True}
 
 
@@ -9375,6 +9429,13 @@ def transcribe_audio(response: Response, audio: UploadFile = None,
     aviso = {}
     tmp = _save_audio_upload(audio)
     extra_alvo: dict = {}
+    if _settings.get("speaker_anticlone"):
+        try:                    # 1ª detecção custa 4,6 s: aquece fora do relógio
+            import marca_dagua
+
+            marca_dagua.prewarm()
+        except Exception:       # noqa: BLE001 — prewarm é otimização
+            pass
     try:
         gate = _speaker_gate_ok(tmp)
         if gate.get("rejected"):
@@ -11368,10 +11429,18 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
                          barge_falso=getattr(ev, "barge_falso", None),
                          detalhe=getattr(ev, "detalhe", None))
             if sess.get("barge_suspeito"):
-                # o trecho suspeito acabou: decide AGORA pelo conteúdo, antes de
-                # abrir qualquer turno
-                _live_decide_barge(sess, _live_audio_cru(sess, ev),
-                                   int(getattr(ev, "fala_ms", 0) or 0))
+                # o trecho suspeito acabou: decide pelo conteúdo, antes de abrir
+                # qualquer turno. EM THREAD (#674): a decisão transcreve o trecho
+                # no caminho COMPLETO (VAD + whisper + juiz) e, feita aqui na
+                # linha, travava o loop de eventos inteiro — os frames do cliente
+                # ficavam parados no socket 12–14 s e o áudio da resposta nova não
+                # saía. O timer da suspeita já chama esta função de outra thread,
+                # então o caminho cruzado é o mesmo de antes.
+                _audio_sus = _live_audio_cru(sess, ev)
+                _fala_ms_sus = int(getattr(ev, "fala_ms", 0) or 0)
+                threading.Thread(
+                    target=_live_decide_barge, args=(sess, _audio_sus, _fala_ms_sus),
+                    name="barge-decide", daemon=True).start()
                 continue
             _live_stage(sess, "stt")
             sess["t_decisao_ms"] = int(getattr(ev, "t_decisao_ms", 0) or 0)
@@ -12062,8 +12131,17 @@ async def live_ws(ws: WebSocket):
 
 async def _live_loop(sess: dict, ws) -> None:
     """Loop de recepção: binário = áudio do turno, texto = comando do protocolo."""
+    _ultimo_rx = time.monotonic()
     while True:
         msg = await ws.receive()
+        _agora_rx = time.monotonic()
+        if _agora_rx - _ultimo_rx > 0.5:
+            # DIAGNÓSTICO (#674): quem trava o loop deixa rastro no intervalo entre
+            # frames — sem isto o atraso aparece como "cliente não mandou nada"
+            _live_log_kv("loop_atraso", sess=sess["id"],
+                         ms=int((_agora_rx - _ultimo_rx) * 1000),
+                         stage=sess.get("st_stage"))
+        _ultimo_rx = _agora_rx
         if msg.get("type") == "websocket.disconnect":
             return
         if sess.get("fechar"):
@@ -12085,6 +12163,12 @@ async def _live_loop(sess: dict, ws) -> None:
             else:
                 pcm = cru
             sess["st_frames"] += 1
+            if sess["st_frames"] % 10 == 0:
+                # DIAGNÓSTICO (#674): o frame CHEGOU? Com que estado do motor?
+                _live_log_kv("frame", sess=sess["id"], n=sess["st_frames"],
+                             stage=sess.get("st_stage"),
+                             estado=getattr(getattr(sess.get("engine"), "estado", None),
+                                            "value", None))
             sess["st_bytes"] += len(pcm)
             sess["st_ultimo_frame"] = time.monotonic()
             sess["st_dbfs"] = round(_dbfs16(pcm), 1)

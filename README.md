@@ -311,11 +311,13 @@ aparelho da LAN cadastra a própria voz); apagar o perfil (`DELETE
 | `POST /api/speaker/check` | `speaker`, `sim`, `limiar`, `modo` e `passaria` do áudio enviado (diagnóstico pela MESMA régua do gate) |
 | `DELETE /api/speaker/{name}/pendente` | joga fora o recadastro PARCIAL (admin); o perfil e os vetores antigos ficam |
 
-O áudio de cada amostra aceita fica guardado em `state/speaker-audio/<perfil>/`
-(0600, fora do git e de qualquer export) — é o que permite **recadastrar sozinho**
-numa troca de extrator, sem pedir gravação nova: na primeira vez que o perfil é
-listado ou testado, o app reextrai os vetores do áudio guardado e só promove o novo
-extrator se juntar o mínimo de amostras (o antigo vale até lá). Apagar o perfil
+O áudio de cada amostra aceita fica guardado em `state/speaker-audio/<id>/`
+(0600, fora do git e de qualquer export; o `<id>` é opaco e estável, então nomes
+parecidos não colidem) — é o que permite **recadastrar sozinho**
+numa troca de extrator, sem pedir gravação nova: ao abrir a lista o app dispara a
+reextração em SEGUNDO PLANO (a lista não espera), arquivo corrompido é registrado e
+pulado, e o novo extrator só é promovido com o mínimo de amostras (o antigo vale
+até lá). Apagar o perfil
 apaga os áudios. `speaker_guardar_audio` (admin, default ligado) desliga a
 gravação; sem ela o recadastro volta a exigir gravar.
 
@@ -457,8 +459,10 @@ que o modo normalizado está ativo — enquanto ele estiver preenchido, o
 
 **Anti-clone** (`speaker_anticlone`, default `false`): com ele ligado o gate lê a
 marca d'água do áudio (AudioSeal — clone feito pelo app sai marcado, fala humana
-não). Em `enforce` áudio MARCADO é rejeitado ("áudio com marca d'água de TTS"), em
-`label` vira `speaker_aviso`; `anticlone_prob` sai junto. Detector indisponível
+não). Em `enforce` áudio MARCADO é rejeitado ("áudio com marca d'água de TTS") — mas
+quem já foi barrado por VOZ mantém esse motivo; em `label` vira `speaker_aviso`.
+`anticlone_prob` sai junto e o detector é preaquecido na rota de STT (a 1ª detecção
+custa 4,6 s). Detector indisponível
 (sem pesos) **não rejeita** — marca ausente é a maioria da fala real, e o limite do
 R3 é áudio curto/cortado (83 % com 60 % do trecho cortado). Só vale para áudio de
 ARQUIVO: o Live tem o portão dele (`_voz_do_dono`).

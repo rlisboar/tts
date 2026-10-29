@@ -6999,8 +6999,9 @@ def test_troca_de_extrator_reextrai_do_audio_guardado(client, auth, monkeypatch,
     monkeypatch.setitem(app._settings, "speaker_guardar_audio", True)
     store: dict = {"eu": {"vecs": [[1.0, 0.0]] + [[0.0, 0.0]] * 0, "modelo": app.SPEAKER_MODELO_LEGADO,
                          "updated": 0}}
-    # 3 amostras guardadas do extrator antigo, prontas para reextrair
-    pasta = destino / "eu"
+    # 3 amostras guardadas do extrator antigo, prontas para reextrair (pasta = id)
+    store["eu"]["audio_id"] = "abc123"
+    pasta = destino / "abc123"
     pasta.mkdir(parents=True)
     for i in range(3):
         (pasta / f"{i}.wav").write_bytes(b"ri")
@@ -7010,10 +7011,16 @@ def test_troca_de_extrator_reextrai_do_audio_guardado(client, auth, monkeypatch,
                         if modelo == app.SPEAKER_MODELO_ATUAL else [0.5, 0.5])
     monkeypatch.setattr(app, "_speaker_load", lambda: store)
     monkeypatch.setattr(app, "_speaker_save", lambda p: None)
-    lista = client.get("/api/speaker/profiles", headers=auth).json()
-    assert lista[0]["modelo"] == app.SPEAKER_MODELO_ATUAL, lista
-    assert lista[0]["precisa_recadastrar"] is False
+    # a reextração vai em SEGUNDO PLANO: o GET não espera por ela
+    client.get("/api/speaker/profiles", headers=auth)
+    for _ in range(100):
+        if store["eu"].get("modelo") == app.SPEAKER_MODELO_ATUAL:
+            break
+        time.sleep(0.02)
+    assert store["eu"]["modelo"] == app.SPEAKER_MODELO_ATUAL, store
     assert len(store["eu"]["vecs"]) == 3 and len(store["eu"]["vecs"][0]) == 256
+    lista = client.get("/api/speaker/profiles", headers=auth).json()
+    assert lista[0]["precisa_recadastrar"] is False
 
 
 # --- VOZ-I3b (#613): o anti-clone VETA em `enforce` e avisa em `label` --------
@@ -7062,3 +7069,97 @@ def test_anticlone_sem_detector_nao_rejeita(monkeypatch):
     # e desligado não consulta nada
     monkeypatch.setitem(app._settings, "speaker_anticlone", False)
     assert "anticlone" not in app._speaker_gate_ok(Path("x.wav"))
+
+
+def test_audio_nao_colide_entre_nomes_parecidos(client, auth, monkeypatch, tmp_path):
+    """`Ana Maria`, `Ana_Maria` e `Ana/Maria` têm pastas próprias (#658).
+
+    Slug de nome colidia nos três e o delete de um apagava o áudio do outro."""
+    destino = _dir_audio(monkeypatch, tmp_path)
+    monkeypatch.setitem(app._settings, "speaker_guardar_audio", True)
+    store: dict = {}
+    for nome in ("Ana Maria", "Ana_Maria", "Ana/Maria"):
+        assert _enroll_uma(client, auth, monkeypatch, store, nome).status_code == 200
+    pastas = [p for p in destino.iterdir() if p.is_dir()]
+    assert len(pastas) == 3, [p.name for p in pastas]
+    assert len({p.name for p in pastas}) == 3
+    # apagar um não pode levar o áudio dos outros
+    client.delete("/api/speaker/Ana_Maria", headers=auth)
+    restantes = [p for p in destino.iterdir() if p.is_dir()]
+    assert len(restantes) == 2
+
+
+def test_reextracao_com_arquivo_corrompido_nao_derruba_a_lista(client, auth,
+                                                               monkeypatch, tmp_path):
+    """Um .wav quebrado é registrado e pulado; a lista continua respondendo."""
+    destino = _dir_audio(monkeypatch, tmp_path)
+    store: dict = {"eu": {"vecs": [[1.0, 0.0]], "modelo": app.SPEAKER_MODELO_LEGADO,
+                          "audio_id": "x1", "updated": 0}}
+    pasta = destino / "x1"
+    pasta.mkdir(parents=True)
+    for i in range(4):                     # 0 é o corrompido: se ele abortar, os
+        (pasta / f"{i}.wav").write_bytes(b"nao-e-wav")   # outros NÃO são lidos
+    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: True)
+
+    def _emb(p, modelo=None):
+        if str(p).endswith("0.wav"):
+            raise RuntimeError("wav corrompido")
+        return [0.5, 0.5] + [0.0] * 254
+
+    monkeypatch.setattr(app, "_speaker_embed", _emb)
+    monkeypatch.setattr(app, "_speaker_load", lambda: store)
+    monkeypatch.setattr(app, "_speaker_save", lambda p: None)
+    assert client.get("/api/speaker/profiles", headers=auth).status_code == 200
+    for _ in range(100):
+        if store["eu"].get("modelo") == app.SPEAKER_MODELO_ATUAL:
+            break
+        time.sleep(0.02)
+    # pulou o corrompido e seguiu: as 3 boas fecham o mínimo e promovem
+    assert store["eu"]["modelo"] == app.SPEAKER_MODELO_ATUAL, store["eu"]
+    assert len(store["eu"]["vecs"]) == 3
+    assert client.get("/api/speaker/profiles", headers=auth).status_code == 200
+
+
+def test_anticlone_nao_perde_o_motivo_de_voz_nao_autorizada(monkeypatch):
+    """Quem já foi barrado por VOZ tem de continuar sabendo disso (#613).
+
+    O "clone" sobrescrevia o motivo do escore, e o dono recebia "marca d'água"
+    quando o problema era a voz não ser do perfil."""
+    import marca_dagua
+
+    perfis = {"eu": {"vecs": [[1.0, 0.0]], "modelo": app._speaker_modelo_efetivo()}}
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [0.0, 1.0])  # outra voz
+    monkeypatch.setattr(marca_dagua, "disponivel", lambda: True)
+    monkeypatch.setattr(marca_dagua, "detecta_prob", lambda p: 0.99)   # e clone
+    monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
+    monkeypatch.setitem(app._settings, "speaker_anticlone", True)
+    out = app._speaker_gate_ok(Path("x.wav"))
+    assert out.get("rejected") is True
+    assert "voz não" in out["reason"], out["reason"]
+    assert out["anticlone"] == "marcado"        # a informação não se perde
+    assert "clone" in out.get("anticlone_motivo", "clone")
+
+
+def test_transcribe_preque_ao_detector_com_anticlone_ligado(monkeypatch):
+    """A 1ª detecção custa 4,6 s: com o anti-clone ligado a rota preaquece."""
+    import marca_dagua
+
+    aqueceu = []
+    monkeypatch.setattr(marca_dagua, "prewarm", lambda: aqueceu.append(1))
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("f.wav"))
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+                        {"text": "oi", "language": "pt", "segments": []})
+    cliente = TestClient(app.app, raise_server_exceptions=False)
+    chave = app._primary_api_key()
+    cab = {"X-API-Key": chave} if chave else {}
+    monkeypatch.setitem(app._settings, "speaker_anticlone", True)
+    cliente.post("/api/transcribe", headers=cab,
+                 files={"audio": ("a.wav", b"x", "audio/wav")})
+    assert aqueceu, "não preaqueceu com o anti-clone ligado"
+    monkeypatch.setitem(app._settings, "speaker_anticlone", False)
+    aqueceu.clear()
+    cliente.post("/api/transcribe", headers=cab,
+                 files={"audio": ("a.wav", b"x", "audio/wav")})
+    assert aqueceu == []
