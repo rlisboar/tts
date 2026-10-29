@@ -1243,6 +1243,58 @@ def test_musica_roda_antes_do_denoise(monkeypatch):
     assert rel["musica"] is False
 
 
+def _musica_de_teste(segundos: float) -> np.ndarray:
+    """Acorde sustentado com terças: serve de acompanhamento, não de voz."""
+    sr = 24000
+    t = np.arange(int(segundos * sr)) / sr
+    x = sum(np.sin(2 * np.pi * f * t) for f in (220.0, 277.18, 329.63))
+    return (x / (3 * np.max(np.abs(x))) * 0.3).astype(np.float32)
+
+
+def test_separa_musica_tira_o_acompanhamento():
+    """O controle é a música SOZINHA: ela tem de quase sumir.
+
+    A voz do teste é sintética (`_fala_suja`) e o Demucs é treinado em voz real —
+    ele trata tom/ruído como acompanhamento, então a prova de que a voz sobrevive
+    fica no teste seguinte, com fala de verdade."""
+    pytest.importorskip("demucs")
+    musica = _musica_de_teste(2.0)
+    saida = app._separa_musica(musica, 24000)
+    assert saida is not None, "com o Demucs instalado a etapa tem de rodar"
+    assert saida.size == musica.size
+
+    def rms(x):
+        return float(np.sqrt(np.mean(np.asarray(x, np.float64) ** 2)))
+
+    assert rms(saida) < rms(musica) / 20, "a música sozinha tem de quase sumir"
+
+
+def test_separa_musica_preserva_voz_real():
+    """Com fala de verdade o stem de voz sobrevive (precisa do corpus da bancada)."""
+    pytest.importorskip("demucs")
+    import soundfile as sf
+
+    falas = sorted(Path("/tmp/tts-bakeoff/fala_pt").glob("*.wav"))
+    if not falas:
+        pytest.skip("corpus pt da bancada ausente")
+    voz, sr = sf.read(str(falas[0]), dtype="float32")
+    voz = voz[: sr * 2]
+    musica = _musica_de_teste(voz.size / sr)
+    mistura = (voz + musica[: voz.size] * 0.5).astype(np.float32)
+    saida = app._separa_musica(mistura, sr)
+    assert saida is not None
+
+    def rms(x):
+        return float(np.sqrt(np.mean(np.asarray(x, np.float64) ** 2)))
+
+    assert rms(saida) > rms(voz) / 4, "a voz real tem de sobreviver"
+
+
+def test_separa_musica_sem_demucs_devolve_none(monkeypatch):
+    monkeypatch.setitem(sys.modules, "demucs", None)
+    assert app._separa_musica(_fala_suja(0.5), 24000) is None
+
+
 def test_recusa_devolve_o_original_de_verdade_com_musica_ligada(monkeypatch):
     """Achado P3 do gate: a recusa devolvia o áudio DEPOIS de música/dereverb, e o
     rótulo é "original". O que volta tem de ser o `audio` cru de entrada."""

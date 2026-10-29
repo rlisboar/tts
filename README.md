@@ -231,6 +231,11 @@ entre os trechos); "resetar" recria essa amostra. Para uma voz sob medida, use o
 
 ### Limpar ruído e substituir o áudio da voz (e como desfazer)
 
+> **Fora de escopo declarado** da etapa de música (`voice_limpar_musica`, Demucs):
+> voz **cantada** — o stem de voz do Demucs leva o cantor junto com o
+> acompanhamento — e instrumento com timbre próximo da fala. Para esses dois casos
+> a etapa não é confiável e é melhor deixá-la desligada.
+
 `POST /api/voices/{id}/denoise` e `.../replace` melhoram/substituem a amostra de
 referência de uma voz **no lugar**, e são liberados para chave `use` — um aparelho
 da LAN ajusta a própria voz sem precisar de admin. Como a referência é sobrescrita,
