@@ -660,22 +660,34 @@ try:
             corte = None
             if ok:
                 corte = pg.evaluate("() => { const t = window.__ev.find(e => e.tipo === 'interrupted'); return t ? Math.round(performance.now() - t.t) : null; }")
-            # PÓS-CORTE (#547): do FIM da fala da pessoa ao 1º áudio do turno
-            # seguinte — é a espera do dono que interrompeu e volta a falar.
-            # Contador de áudio do cliente (robusto) e relógio de parede.
+            # PÓS-CORTE (#674): do `speech_start` do TURNO SEGUINTE ao 1º áudio
+            # dele. Contar do corte pegava o áudio do turno cortado ainda no fio
+            # ("0 ms" falso); o tempo de a pessoa falar não entra.
             if ok and os.environ.get("MEDE_POS_CORTE"):
-                n_a = audio_n()
                 injeta(estimulo, segundos=2.0)
                 t0 = time.monotonic()
-                chegou = False
-                while time.monotonic() - t0 < 120:
-                    if audio_n() > n_a:
-                        chegou = True
+                abriu = False
+                while time.monotonic() - t0 < 30:
+                    if pg.evaluate(
+                            "() => window.__ev.some(e => e.tipo === 'speech_start')"):
+                        abriu = True
                         break
                     pg.wait_for_timeout(50)
-                print(f"  [{i}/{REP}] pós-corte: "
-                      + (f"1º áudio em {int((time.monotonic() - t0) * 1000)} ms"
-                         if chegou else "SEM áudio em 120 s"))
+                if not abriu:
+                    print(f"  [{i}/{REP}] pós-corte: SEM turno novo em 30 s")
+                else:
+                    t1 = time.monotonic()
+                    n_a = audio_n()
+                    chegou = False
+                    while time.monotonic() - t1 < 30:
+                        if audio_n() > n_a:
+                            chegou = True
+                            break
+                        pg.wait_for_timeout(50)
+                    print(f"  [{i}/{REP}] pós-corte: abertura "
+                          f"{int((t1 - t0) * 1000)} ms · 1º áudio "
+                          + (f"{int((time.monotonic() - t1) * 1000)} ms"
+                             if chegou else "AUSENTE em 30 s"))
             # #225: o corte do playback pode vir do `interrupted` (barge) OU do
             # `speech_start` (onset fora da janela). O que importa é: cortou?
             novo_corte = pg.evaluate("(n) => { const c = (window.__cortes || []).slice(n); return c.length ? c[0] : null; }", cortes0)
