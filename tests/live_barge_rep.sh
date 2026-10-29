@@ -663,6 +663,26 @@ try:
             # PÓS-CORTE (#674): do `speech_start` do TURNO SEGUINTE ao 1º áudio
             # dele. Contar do corte pegava o áudio do turno cortado ainda no fio
             # ("0 ms" falso); o tempo de a pessoa falar não entra.
+            # N CORTES SEGUIDOS (#674): o dono fala, é cortado, fala de novo... cada
+            # rodada tem de DEVOLVER áudio; sem a fusão da suspeita o segundo corte
+            # matava a resposta que acabou de nascer e o pendente só crescia.
+            if os.environ.get("N_CORTES"):
+                voltaram = 0
+                for _k in range(int(os.environ["N_CORTES"])):
+                    n_a = audio_n()
+                    injeta(estimulo, segundos=2.0)
+                    t_k = time.monotonic()
+                    while time.monotonic() - t_k < 30:
+                        if audio_n() > n_a:
+                            voltaram += 1
+                            break
+                        pg.wait_for_timeout(50)
+                    if voltaram <= _k:
+                        break
+                print(f"  [{i}/{REP}] N cortes: {voltaram}/"
+                      f"{os.environ['N_CORTES']} voltaram a falar")
+                if voltaram < int(os.environ["N_CORTES"]):
+                    ok = False
             if ok and os.environ.get("MEDE_POS_CORTE"):
                 injeta(estimulo, segundos=2.0)
                 t0 = time.monotonic()

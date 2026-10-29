@@ -1711,3 +1711,28 @@ def test_prazo_da_passada_abandona_DE_VERDADE(monkeypatch):
     assert texto == "", "o texto da passada abandonada não pode ser usado"
     assert decorrido < 1.0, f"o passo esperou {decorrido:.2f}s (prazo era 0,1)"
     assert sess["barge_stats"]["passo_abandonado"] == 1
+
+
+def test_suspeita_nova_dentro_da_fusao_nao_abre_barge(monkeypatch):
+    """#674: "para, para, para" abria um barge por repetição.
+
+    Depois de um `interrupted`, suspeita nova dentro de `barge_fusao_ms` se FUNDE
+    na fala em curso (o turno já está aberto e a resposta nova acabou de nascer)."""
+    import time
+
+    motor, rel = _motor_inteligente()
+    _abrir_por_barge(motor, rel)
+    motor._turno_barge = False            # turno NOVO, não nascido de barge
+    assert motor.decidir_barge("interrupcao", "para", 400, 0) != []
+    motor._turno_barge = False
+    motor._barge_no_turno_emitido = False
+    # DENTRO da janela de fusão: burst novo não abre barge
+    for _ in range(lt.Config()._frames_barge + 1):
+        assert motor._barge_com_turno_aberto(-20.0, 0.99) == []
+    # passada a janela, o mesmo burst emite
+    motor._funde_ate = time.monotonic() - 0.01
+    motor._barge_no_turno_emitido = False
+    evs = []
+    for _ in range(lt.Config()._frames_barge + 1):
+        evs += motor._barge_com_turno_aberto(-20.0, 0.99)
+    assert [e.tipo for e in evs] == ["barge_in"]

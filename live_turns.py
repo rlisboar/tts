@@ -243,6 +243,10 @@ class Config:
     # 6 e não 3 (#674): o teto é a trava contra calibração que não converge; com 3
     # janelas (1,25 s) um TTS que abre com pausa legítima fechava no silêncio. 6
     # (~2,5 s) respeita a pausa e ainda trava muito antes dos ~14 s medidos.
+    # FUSÃO (#674): depois de um `interrupted`, suspeita nova dentro desta janela se
+    # FUNDE na fala em curso (não corta a resposta que acabou de nascer). "Para,
+    # para, para" abria um barge por repetição e a resposta nunca saía.
+    barge_fusao_ms: int = 1500
     eco_calibracao_teto: int = 6
     eco_calibracao_quantil: float = 90.0          # estatística da janela (0-100)
     eco_pre_janela_ms: int = 1500                 # janela de nível ANTES do playback
@@ -491,6 +495,7 @@ class TurnEngine:
         self._eco_ausente = False
         self._degrau_base: float | None = None   # piso travado no salto (#273)
         self._barge_no_turno_emitido = False
+        self._funde_ate = 0.0        # monotonic: até aqui não abre barge novo
         self._suspeito = False          # #501: turno aberto por suspeita, sem decisão
         self._decisao_frames = 0
         self._suspeito_audio = b""
@@ -835,7 +840,8 @@ class TurnEngine:
         `barge_in` (sem `speech_start`) é o que evita reabrir o turno e perder o
         começo da fala do usuário, que veio antes do playback."""
         # turno aberto PELO barge já sinalizou o barge: não repete o evento
-        if (self._playback_ativo() and not self._barge_no_turno_emitido
+        if (time.monotonic() >= self._funde_ate
+                and self._playback_ativo() and not self._barge_no_turno_emitido
                 and not self._turno_barge):
             voz = self._voz(env_dbfs, prob, self.limiar_energia_dbfs)
             self._barge_frames = self._barge_frames + 1 if voz else 0
@@ -1155,6 +1161,7 @@ class TurnEngine:
                                modelo_ms=modelo_ms, filtro=filtro,
                                detalhe=f"decisao em {decisao_ms} ms")
         if tipo == "interrupcao":
+            self._funde_ate = time.monotonic() + self.config.barge_fusao_ms / 1000.0
             if self._estado is Estado.OCIOSO:
                 # a decisão chegou DEPOIS de o turno fechar (janela do handler):
                 # reabre para os frames seguintes entrarem no turno certo

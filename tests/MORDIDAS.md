@@ -458,3 +458,19 @@ pior caso do portão, e o motivo de a separação existir.
 `LIMIAR=` troca o limiar em uso: no corpora do R4 o FAR 1 % (2,434) custa caro
 (57 % de cobertura); 1,8 fica no joelho (90 % com 0 falso). O número fica impresso
 em toda rodada para o PM decidir.
+
+## #674 — pós-corte: fala depois do `interrupted` não pode sumir
+
+Cadeia medida: a decisão de interrupção consumia o áudio do trecho → o turno
+seguinte nascia com 224 ms → VAD recusava (`turno_descartado motivo=vad`) → sessão
+`idle` para sempre. Três correções, cada uma com sua mordida:
+
+| Sabotagem | Resultado |
+|---|---|
+| decisão síncrona no `_live_loop` (sem thread) | o loop trava e o turno abre 12–14 s depois |
+| calibração do eco reiniciando a cada chunk | `_calibrando` nunca converge, `_avaliar_abertura` nunca roda |
+| tirar o prepend do áudio do trecho em `_live_abre_turno` | o turno nasce com a cauda e morre em `vad` |
+| tirar a janela de fusão (`barge_fusao_ms`) | `test_suspeita_nova_dentro_da_fusao_nao_abre_barge` **FAILED** |
+
+Aceite medido com `MEDE_POS_CORTE`: **11 rodadas seguidas com áudio, 0 travadas**,
+54–1269 ms (p95 ≈ 1,3 s). `N_CORTES=3` → **3/3 voltaram a falar**.
