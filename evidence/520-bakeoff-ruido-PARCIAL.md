@@ -87,3 +87,42 @@ não para o reconhecedor.
 Ressalva do corpus: as vozes pt são sintéticas do sistema e o WER absoluto é alto
 (0,53 no melhor caso); a comparação relativa é o que vale, e o mesmo texto é usado
 nos três candidatos.
+
+---
+
+# Import com música (caso d) — Demucs medido
+
+Música não é ruído estacionário: o denoise tira ventoinha e deixa o acompanhamento.
+Hipótese testada: separar a voz PRIMEIRO (Demucs, stem vocals) e só depois, se for
+o caso, denoisar. Música do R1 em SNR 5 e 10, fala em pt, 4 falantes por célula.
+Carga no momento: loadavg 5,13.
+
+**Controle da música:** a música sozinha, passada pelo Demucs, cai de rms 0,05049
+para **0,00005** — mil vezes menos. A separação tira mesmo o acompanhamento, o
+número adiante não é sorte.
+
+| SNR | candidato | OVRL | timbre | WER | RTF |
+|---|---|---|---|---|---|
+| 5 | cru | 2,384 | 0,816 | 0,633 | 0,00 |
+| 5 | só DFN3 | **2,609** | 0,945 | 0,583 | 0,01 |
+| 5 | **só Demucs** | 2,533 | **0,987** | **0,450** | 0,63 |
+| 5 | Demucs + DFN3 | 2,558 | 0,988 | 0,450 | 0,50 |
+| 10 | cru | 2,514 | 0,854 | 0,617 | 0,00 |
+| 10 | só DFN3 | **2,598** | 0,951 | 0,617 | 0,01 |
+| 10 | **só Demucs** | 2,506 | **0,996** | **0,450** | 0,47 |
+| 10 | Demucs + DFN3 | 2,542 | 0,996 | 0,467 | 0,50 |
+
+**Recomendação: Demucs sozinho, como etapa PRIMÁRIA do import com música.** Ele
+derruba o WER em 0,18 e leva o timbre a 0,99; é a única camada que mexe na música.
+O DFN3 ganha no OVRL, mas **empilhar DFN3 depois do Demucs não paga**: WER igual a
+SNR 5 e pior a SNR 10 (0,467 × 0,450), por +0,03 a 0,5 de RTF. Quem escolhe pelo
+OVRL está escolhendo a métrica que menos importa aqui — o que se quer do import é
+texto certo e voz preservada.
+
+Custo: RTF 0,47–0,63 em CPU ocupada. É offline; para o Live não serve.
+
+Licença: Demucs MIT (código e pesos), linha no `LICENCAS.md`. Roda na venv de
+bancada — traz torch, então **não** entra no caminho do app por enquanto.
+
+O que fica de fora: música com voz cantada (o stem `vocals` do Demucs leva o
+cantor junto) e instrumento com timbre próximo da fala.

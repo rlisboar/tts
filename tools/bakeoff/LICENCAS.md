@@ -11,7 +11,7 @@
 | MossFormer2_SE_48K | Apache-2.0 | Apache-2.0 | candidato ruído |
 | MossFormer2_SS_16K | Apache-2.0 | Apache-2.0 (`alibabasglab/MossFormer2_SS_16K`, tag `license:apache-2.0`) | separação alvo × concorrente (#532) — **offline em `models/mossformer2-ss-16k`**, código vendorizado em `tools/separa_vend/` com NOTICE (#526-bis) |
 | Resemble-Enhance | MIT | MIT | candidato ruído |
-| Demucs (htdemucs_ft) | MIT | MIT | separação música |
+| Demucs (htdemucs) | MIT | MIT | separação música — MEDIDO no import (#520) |
 | AudioSeal | MIT | MIT (CC BY-NC 4.0 no pacote meta) | anti-clone |
 | AASIST (`clovaai/aasist`) | MIT | MIT — pesos `AASIST.pth`/`AASIST-L.pth` vivem no MESMO repositório MIT (NAVER Corp.); o dataset ASVspoof2019 LA não é herdado para inferência | detector de sintético |
 | DNSMOS P.835 | MIT (onnx) | MIT | métrica |
