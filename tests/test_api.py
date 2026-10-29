@@ -6941,3 +6941,76 @@ def test_marca_dagua_e_campo_ADMIN(monkeypatch):
     monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
     assert app._apply_settings({"tts_marca_dagua": "false"})["tts_marca_dagua"] is False
     assert app._apply_settings({"tts_marca_dagua": True})["tts_marca_dagua"] is True
+
+
+# --- áudio do cadastro guardado (#658, decisão do dono) -----------------------
+def _dir_audio(monkeypatch, tmp_path):
+    import app as _app
+
+    destino = tmp_path / "audio-cadastro"
+    monkeypatch.setattr(_app, "SPEAKER_AUDIO_DIR", destino)
+    return destino
+
+
+def _enroll_uma(client, auth, monkeypatch, store, nome="eu"):
+    """Uma amostra que passa na qualidade, com o upload dublado."""
+    wav = Path(str(Path("/tmp")) + "/amostra-658.wav")   # não é lido de verdade
+    monkeypatch.setattr(app, "_save_audio_upload",
+                        lambda up, prefix=".voz": (wav.write_bytes(b"ri"), wav)[1])
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
+    monkeypatch.setattr(app, "_vad_fala_s", lambda p: 5.0)
+    monkeypatch.setattr(app, "_snr_estimado", lambda p: 30.0)
+    monkeypatch.setattr(app, "_speaker_load", lambda: store)
+    monkeypatch.setattr(app, "_speaker_save", lambda p: None)
+    return client.post("/api/speaker/enroll", headers=auth, data={"name": nome},
+                       files={"audio": ("a.wav", b"x", "audio/wav")})
+
+
+def test_enroll_guarda_o_audio_em_0600(client, auth, monkeypatch, tmp_path):
+    """A amostra aceita fica em disco, 0600, fora de voices/ e do export."""
+    destino = _dir_audio(monkeypatch, tmp_path)
+    monkeypatch.setitem(app._settings, "speaker_guardar_audio", True)
+    store: dict = {}
+    assert _enroll_uma(client, auth, monkeypatch, store).status_code == 200
+    arquivos = list(destino.rglob("*.wav"))
+    assert arquivos, "a amostra não foi guardada"
+    assert arquivos[0].stat().st_mode & 0o777 == 0o600, "o áudio não está em 0600"
+    # desligar a setting para de guardar
+    monkeypatch.setitem(app._settings, "speaker_guardar_audio", False)
+    antes = len(list(destino.rglob("*.wav")))
+    assert _enroll_uma(client, auth, monkeypatch, store).status_code == 200
+    assert len(list(destino.rglob("*.wav"))) == antes
+
+
+def test_apagar_perfil_apaga_o_audio_guardado(client, auth, monkeypatch, tmp_path):
+    destino = _dir_audio(monkeypatch, tmp_path)
+    monkeypatch.setitem(app._settings, "speaker_guardar_audio", True)
+    store: dict = {}
+    _enroll_uma(client, auth, monkeypatch, store)
+    assert list(destino.rglob("*.wav"))
+    assert client.delete("/api/speaker/eu", headers=auth).status_code == 200
+    assert not list(destino.rglob("*.wav")), "o áudio ficou órfão"
+
+
+def test_troca_de_extrator_reextrai_do_audio_guardado(client, auth, monkeypatch,
+                                                      tmp_path):
+    """Com o áudio guardado o perfil se recadastra SOZINHO (sem regravar)."""
+    destino = _dir_audio(monkeypatch, tmp_path)
+    monkeypatch.setitem(app._settings, "speaker_guardar_audio", True)
+    store: dict = {"eu": {"vecs": [[1.0, 0.0]] + [[0.0, 0.0]] * 0, "modelo": app.SPEAKER_MODELO_LEGADO,
+                         "updated": 0}}
+    # 3 amostras guardadas do extrator antigo, prontas para reextrair
+    pasta = destino / "eu"
+    pasta.mkdir(parents=True)
+    for i in range(3):
+        (pasta / f"{i}.wav").write_bytes(b"ri")
+    monkeypatch.setattr(app, "_speaker_ecapa_ok", lambda: True)
+    monkeypatch.setattr(app, "_speaker_embed",
+                        lambda p, modelo=None: [0.5, 0.5] + [0.0] * 254
+                        if modelo == app.SPEAKER_MODELO_ATUAL else [0.5, 0.5])
+    monkeypatch.setattr(app, "_speaker_load", lambda: store)
+    monkeypatch.setattr(app, "_speaker_save", lambda p: None)
+    lista = client.get("/api/speaker/profiles", headers=auth).json()
+    assert lista[0]["modelo"] == app.SPEAKER_MODELO_ATUAL, lista
+    assert lista[0]["precisa_recadastrar"] is False
+    assert len(store["eu"]["vecs"]) == 3 and len(store["eu"]["vecs"][0]) == 256

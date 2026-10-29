@@ -189,6 +189,10 @@ OUTPUTS_DIR = _caminho_estado_env("TTS_OUTPUTS_DIR", BASE / "outputs")
 APIKEYS_PATH = _caminho_estado_env("TTS_APIKEYS_PATH", BASE / ".apikeys.json")
 # embeddings de voz (fora do git)
 SPEAKER_PATH = _caminho_estado_env("TTS_SPEAKER_PATH", BASE / ".speaker-profiles.json")
+#: áudio ORIGINAL de cada amostra aceita (#658): permite reextrair os vetores numa
+#: troca de extrator sem pedir regravação. Fica em `state/` (fora do git e de
+#: qualquer export), 0600. Sem ele o recadastro exige gravar de novo.
+SPEAKER_AUDIO_DIR = _caminho_estado_env("TTS_SPEAKER_AUDIO_DIR", BASE / "state" / "speaker-audio")
 LEGACY_APIKEY_PATH = _caminho_estado_env("TTS_LEGACY_APIKEY_PATH", BASE / ".apikey")
 VOICES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -496,6 +500,9 @@ _SETTINGS_DEFAULTS = {
     # o escore é normalizado (AS-norm) e o limiar vem da calibração do R2 (#525)
     # O seletor na tela entra junto do #528; até lá vale por `POST /api/settings`.
     "speaker_far_alvo": "",
+    # Guardar o áudio de cada amostra aceita (#658, decisão do dono): é o que
+    # permite reextrair sozinho numa troca de extrator. Não sai da máquina.
+    "speaker_guardar_audio": True,
     # Anti-clone (#525): GANCHO do gate. Ligado, `_speaker_gate_ok` consulta a
     # MARCA d'água do áudio e rejeita clone em `enforce`; desligado, nem o campo sai.
     "speaker_anticlone": False,
@@ -3979,6 +3986,8 @@ _SETTINGS_ADMIN = frozenset({
     "auto_cleanup", "auto_cleanup_minutes", "auto_cleanup_max_outputs",
     # marca d'água: muda o áudio de TODO mundo (#657)
     "tts_marca_dagua",
+    # guarda áudio do dono em disco (#658)
+    "speaker_guardar_audio",
 })
 _SETTINGS_SECRETS = ("remote_api_key", "remote_stt_key", "chat_api_key")
 # marcador da máscara: começa com "•" e nunca é confundido com chave de verdade.
@@ -4540,6 +4549,10 @@ def _apply_settings(payload: dict):
         v = payload["tts_marca_dagua"]
         _settings["tts_marca_dagua"] = (v if isinstance(v, bool)
                                         else str(v).strip().lower() in ("1", "true", "on"))
+    if "speaker_guardar_audio" in payload:
+        v = payload["speaker_guardar_audio"]
+        _settings["speaker_guardar_audio"] = (v if isinstance(v, bool)
+                                              else str(v).strip().lower() in ("1", "true", "on"))
     if "speaker_anticlone" in payload:
         # booleano por aceitação explícita: "false"/"0"/"" desligam de verdade
         v = payload["speaker_anticlone"]
@@ -8681,6 +8694,66 @@ def _speaker_load() -> dict:
     return _speaker_load_estado()[0]
 
 
+def _speaker_audio_dir(nome: str) -> Path:
+    """Pasta do áudio de cadastro de um perfil (o nome vira pasta segura)."""
+    seguro = "".join(c if c.isalnum() or c in "-_" else "_" for c in nome)[:40] or "perfil"
+    return SPEAKER_AUDIO_DIR / seguro
+
+
+def _speaker_guarda_audio(nome: str, origem: Path) -> None:
+    """Copia a amostra aceita para o arquivo de cadastro (0600, best effort).
+
+    Nunca levanta: sem o áudio guardado o recadastro volta a exigir gravação, e é
+    só isso (#658)."""
+    if not _settings.get("speaker_guardar_audio"):
+        return
+    try:
+        pasta = _speaker_audio_dir(nome)
+        pasta.mkdir(parents=True, exist_ok=True)
+        destino = pasta / f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}.wav"
+        shutil.copyfile(origem, destino)
+        destino.chmod(0o600)
+    except Exception as exc:  # noqa: BLE001 — guardar é melhoria, não requisito
+        print(f"[speaker] não guardei o áudio de '{nome}': {exc}", flush=True)
+
+
+def _speaker_apaga_audio(nome: str) -> None:
+    try:
+        shutil.rmtree(_speaker_audio_dir(nome), ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _speaker_reextrai(nome: str, perfil: dict) -> bool:
+    """Reextrai os vetores do perfil a partir do áudio guardado (#658).
+
+    Chamado quando o extrator mudou. Devolve True se conseguiu promover o perfil
+    para o extrator ATUAL; até lá o antigo continua valendo (o `modelo` só muda no
+    fim, com o mínimo de amostras)."""
+    efetivo = _speaker_modelo_efetivo()
+    if _speaker_modelo_do_perfil(perfil) == efetivo:
+        return False
+    pasta = _speaker_audio_dir(nome)
+    if not pasta.is_dir():
+        return False
+    vecs: list = []
+    for arq in sorted(pasta.glob("*.wav")):
+        emb = _speaker_embed(arq, efetivo)
+        if emb:
+            vecs.append(emb)
+        if len(vecs) >= SPEAKER_MAX_SAMPLES:
+            break
+    if len(vecs) < SPEAKER_MIN_AMOSTRAS:
+        return False
+    perfil["vecs"] = vecs[:SPEAKER_MAX_SAMPLES]
+    perfil["modelo"] = efetivo
+    perfil.pop("pendente", None)
+    perfil["updated"] = time.time()
+    print(f"[speaker] perfil '{nome}' reextraído no extrator {efetivo} "
+          f"({len(vecs)} amostra(s)) — sem regravação", flush=True)
+    return True
+
+
 def _speaker_save(perfis: dict) -> None:
     # tmp único + os.replace: crash no meio não deixa JSON truncado (#324)
     write_json_atomic(SPEAKER_PATH, perfis)
@@ -9136,6 +9209,10 @@ async def speaker_enroll(name: str = Form(...),
     tmp = _save_audio_upload(audio, ".voz")
     try:
         emb, problemas = await run_in_threadpool(_speaker_avalia, tmp, vecs_antes)
+        # guardado AQUI, antes do unlink, e só se a amostra vai entrar: é o que
+        # permite reextrair sozinho depois de uma troca de extrator (#658)
+        if emb and (forcar or not problemas):
+            _speaker_guarda_audio(nome, tmp)
     finally:
         tmp.unlink(missing_ok=True)
     if not emb:
@@ -9186,6 +9263,13 @@ async def speaker_enroll(name: str = Form(...),
 def speaker_profiles():
     with _speaker_lock:
         perfis = _speaker_load()
+        # troca de extrator: quem tem áudio guardado se recadastra sozinho aqui
+        mudou = False
+        for nome, p in list(perfis.items()):
+            if _speaker_reextrai(nome, p):
+                mudou = True
+        if mudou:
+            _speaker_save(perfis)
     return [{"name": n, "samples": len(p.get("vecs", [])),
              "updated": p.get("updated", 0),
              "modelo": _speaker_modelo_do_perfil(p),
@@ -9231,6 +9315,7 @@ def speaker_delete(request: Request, name: str):
         if perfis.pop(name, None) is None:
             raise HTTPException(404, "Perfil não encontrado")
         _speaker_save(perfis)
+    _speaker_apaga_audio(name)      # o áudio de cadastro vai junto (#658)
     return {"ok": True}
 
 

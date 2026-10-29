@@ -311,6 +311,14 @@ aparelho da LAN cadastra a própria voz); apagar o perfil (`DELETE
 | `POST /api/speaker/check` | `speaker`, `sim`, `limiar`, `modo` e `passaria` do áudio enviado (diagnóstico pela MESMA régua do gate) |
 | `DELETE /api/speaker/{name}/pendente` | joga fora o recadastro PARCIAL (admin); o perfil e os vetores antigos ficam |
 
+O áudio de cada amostra aceita fica guardado em `state/speaker-audio/<perfil>/`
+(0600, fora do git e de qualquer export) — é o que permite **recadastrar sozinho**
+numa troca de extrator, sem pedir gravação nova: na primeira vez que o perfil é
+listado ou testado, o app reextrai os vetores do áudio guardado e só promove o novo
+extrator se juntar o mínimo de amostras (o antigo vale até lá). Apagar o perfil
+apaga os áudios. `speaker_guardar_audio` (admin, default ligado) desliga a
+gravação; sem ela o recadastro volta a exigir gravar.
+
 O `check` existe para calibrar sem depender do gate ligado: ele pontua pelo
 centróide das amostras, com o extrator do perfil, e devolve o veredito do
 servidor (`passaria`; `autorizado` é o nome anterior, ainda publicado) junto do
