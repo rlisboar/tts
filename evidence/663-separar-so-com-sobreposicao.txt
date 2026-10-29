@@ -28,9 +28,14 @@ próprio áudio: o escore cru cai com a duração da janela (a mesma fala em 1,5
   (0,595 contra 0,643) e que a mistura.
 - **alternado**: vazamento 6,0 % (dentro do ≤7,1 % pedido), mas o WER fica em 0,786
   contra a meta de ≤0,643.
-- **causa medida do WER do alternado**: o 2º bloco de fala do ALVO pontua ~0,065 no
-  ECAPA contra o próprio perfil e cai no veto. Não é a fronteira (o VAD resolveu
-  isso — as janelas deixaram de ser grade), é o escore do mesmo falante em trecho
-  cujo conteúdo não está nas 3 amostras do perfil. Próximo passo nomeado: piso do
-  veto por FALANTE (comparar a janela com o melhor escore do próprio arquivo para
-  aquele fluxo) em vez de piso global relativo.
+- Piso do veto POR FALANTE (`melhor do arquivo × 0,55`) e REDE DE SEGURANÇA
+  (nenhuma sobreposição no arquivo ⇒ seleção pura do R4) implementados. A rede
+  sozinha dá 0,619 de WER e 16,7 % de vazamento no alternado; o caminho novo com os
+  dois dá 0,786 / 6,0 %. Ou seja: os dois extremos ficam de lados opostos da meta —
+  seleção pura acerta o WER e estoura o vazamento; separar acerta o vazamento e
+  custa WER.
+- **causa do WER do alternado**: a transcrição perde o 2º bloco de fala do alvo.
+  Não é a fronteira (o VAD resolveu) nem o piso (testado de 0,2 a 0,55 do melhor do
+  arquivo). Próximo passo nomeado: decidir a sobreposição por DURAÇÃO/energia
+  simultânea dos dois fluxos (medir se as duas vozes têm energia no MESMO instante),
+  hoje a correlação só diz "a separação mexeu no sinal".

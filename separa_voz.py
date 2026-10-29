@@ -292,9 +292,12 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
             sims = [(_sim(f[ini:fim]), i) for i, f in enumerate(fluxos)]
             sims.sort(reverse=True)
             medido.append((ini, fim, sim_orig, ocorre, sims))
-        validos = [m[4][0][0] for m in medido if m[4][0][0] > 0]
-        mediana = float(np.median(validos)) if validos else 0.0
-        piso = min(limiar * 0.5, mediana * 0.5)
+        # piso POR FALANTE: a janela se compara ao MELHOR escore do próprio arquivo
+        # para aquele fluxo. O dono num trecho fora das amostras do perfil pontua
+        # baixo no absoluto (0,065 medido), mas continua sendo o melhor do arquivo —
+        # piso global vetava ele (#663).
+        melhor_arquivo = max((m[4][0][0] for m in medido), default=0.0)
+        piso = melhor_arquivo * 0.55
 
         # PASSO 2: decide
         for ini, fim, sim_orig, ocorre, sims in medido:
@@ -335,6 +338,15 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
             escores_janelas.append([round(sim_orig, 3), round(melhor_sim, 3),
                                     round(seg_sim, 3), round(corr, 3)])
 
+        if sobrepostas == 0:
+            # REDE DE SEGURANÇA (#663): sem NENHUMA sobreposição o caminho novo não
+            # tem o que fazer — vale a seleção pura do R4 (manter quem casa com o
+            # perfil, atenuar o resto), que é o melhor método nesse cenário.
+            for ini, fim, _sim_orig, _ocorre, sims in medido:
+                if sims[0][0] >= piso:
+                    saida[ini:fim] = x[ini:fim]
+                else:
+                    saida[ini:fim] = x[ini:fim] * 0.03
         final = Path(tempfile.mkstemp(prefix="alvo-", suffix=".wav")[1])
         sf.write(str(final), saida, sr, subtype="PCM_16")
         info = {"escores_janelas": escores_janelas[:40], "sobrepostas": sobrepostas,
