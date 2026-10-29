@@ -18,8 +18,8 @@
 # arquivo real por fora do isolamento — `tests/test_worktree_sem_estado.py` guarda.
 # Nada disso é copiado nem linkado — nem `voices/` (são vozes clonadas,
 # insubstituíveis: seis worktrees seriam seis cópias). A suíte tem de passar com
-# estado SINTÉTICO; a voz de fixture é `tests/fixtures/voz_fala_5s_16k.wav`,
-# versionada, e `tests/test_worktree_sem_estado.py` guarda. Os pesos (750 MB) são a
+# estado SINTÉTICO; a voz de fixture é `tests/fixtures/voz_sintetica/`
+# (19 KB, sintética), versionada, e `tests/test_worktree_sem_estado.py` guarda. Os pesos (750 MB) são a
 # única coisa ligada, por symlink.
 #
 # Uso:

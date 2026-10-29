@@ -759,19 +759,20 @@ class _ModeloFalso:
 
 
 def _voz_de_fixture(monkeypatch, tmp_path) -> str:
-    """Uma voz em tmp a partir do WAV VERSIONADO de `tests/fixtures/`.
+    """Uma voz em tmp a partir da fixture VERSIONADA `tests/fixtures/voz_sintetica/`.
 
     O worktree não tem o `voices/` do dono (#670) e sem voz a resolução da rota cai
-    num caminho que pede modelo — as células de marca d'água quebravam assim."""
+    num caminho que pede modelo — as células de marca d'água quebravam assim. A
+    fixture é sintética e minúscula (19 KB, 0,6 s), não voz clonada de ninguém."""
     import shutil
 
+    origem = Path(__file__).resolve().parent / "fixtures" / "voz_sintetica"
     vd = tmp_path / "vozes"
     vd.mkdir(exist_ok=True)
-    shutil.copy(Path(__file__).resolve().parent / "fixtures" / "voz_fala_5s_16k.wav",
-                vd / "v1.wav")
-    (vd / "v1.json").write_text('{"id": "v1", "name": "Teste"}')
+    shutil.copy(origem / "voz.wav", vd / "voz-sintetica.wav")
+    shutil.copy(origem / "voz.json", vd / "voz-sintetica.json")
     monkeypatch.setattr(app, "VOICES_DIR", vd)
-    return "v1"
+    return "voz-sintetica"
 
 
 def _job_de_render(monkeypatch, tmp_path, gerador, texto="x", remoto=False):
