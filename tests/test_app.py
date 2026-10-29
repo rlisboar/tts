@@ -830,37 +830,48 @@ def test_render_com_nan_regera_e_nao_grava_mudo(monkeypatch, tmp_path, capsys):
 
 
 def test_render_anomalo_nas_duas_tentativas_avisa(monkeypatch, tmp_path):
-    """2ª tentativa também NaN: o trecho entra, mas o job fica AVISADO."""
+    """2ª tentativa também NaN: o trecho entra, mas o job fica AVISADO.
+
+    O caso usa a marca LIGADA de propósito (`setitem`, não atribuição manual): é a
+    marca que faz o arquivo deixar de ser silêncio digital. Sem fixar, o teste
+    dependia de quem rodou antes e sujava quem rodava depois."""
     def _gerador(model, texto, *a, **k):
         return np.full(24000, np.nan, dtype=np.float32)
 
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
     job_id = _job_de_render(monkeypatch, tmp_path, _gerador)
-    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
-                     "pt", {"num_steps": 4}, use_queue=False)
-    job = app._jobs[job_id]
     try:
+        app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                         "pt", {"num_steps": 4}, use_queue=False)
+        job = app._jobs[job_id]
         assert job["status"] == "done"
         assert job.get("retries") == 2
         assert "anômalos" in (job.get("warning") or "")
         # `anomalias` conta EVENTOS (as duas tentativas); o aviso é do não resolvido
         assert job["output"]["anomalias"] == 2
         assert job["warning"] in job["output"]["warning"]
-        # NaN vira zero, mas o arquivo NÃO fica em silêncio digital: a marca d'água
-        # entra em toda saída e deixa um resíduo (~1e-3). O rms BRUTO é o do áudio
-        # antes do FX e continua 0 — é ele que responde "o trecho saiu mudo".
+        # NaN vira zero, mas com a marca o arquivo NÃO fica em silêncio digital: ela
+        # deixa um resíduo (~1e-3). O rms BRUTO é o do áudio antes do FX e continua
+        # 0 — é ele que responde "o trecho saiu mudo".
         assert job["output"]["rms_bruto"] == 0.0
         assert 0.0 < job["output"]["rms"] < 0.01
-        # desligando a marca, o arquivo volta ao silêncio digital exato: é o que
-        # prova que o resíduo ACIMA é da marca e não de outra etapa
-        app._settings["tts_marca_dagua"] = False
-        job2 = _job_de_render(monkeypatch, tmp_path, _gerador)
-        try:
-            app._run_tts_job(job2, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
-                             "pt", {"num_steps": 4}, use_queue=False)
-            assert app._jobs[job2]["output"]["rms"] == 0.0
-        finally:
-            app._jobs.pop(job2, None)
-            app._settings["tts_marca_dagua"] = True
+    finally:
+        app._jobs.pop(job_id, None)
+
+
+def test_render_anomalo_sem_marca_fica_silencio_digital(monkeypatch, tmp_path):
+    """O par do teste acima: marca DESLIGADA, o mesmo render volta ao zero exato.
+
+    É o que prova que o resíduo de ~1e-3 é da marca e não de outra etapa."""
+    def _gerador(model, texto, *a, **k):
+        return np.full(24000, np.nan, dtype=np.float32)
+
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", False)
+    job_id = _job_de_render(monkeypatch, tmp_path, _gerador)
+    try:
+        app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                         "pt", {"num_steps": 4}, use_queue=False)
+        assert app._jobs[job_id]["output"]["rms"] == 0.0
     finally:
         app._jobs.pop(job_id, None)
 
@@ -1733,3 +1744,37 @@ def test_marca_dagua_no_v1_audio_speech(monkeypatch, tmp_path):
         "response_format": "wav"})
     assert r.status_code == 200, r.text[:200]
     assert marcas, "o /v1/audio/speech não passou pela marca"
+
+
+def test_marca_dagua_v1_audio_speech_preaquece_o_marcador(monkeypatch, tmp_path):
+    """A rota síncrona não pode pagar a carga do modelo no relógio do cliente.
+
+    A célula é do PREWARM, não da marca: apagar a chamada no `/v1/audio/speech`
+    deixava as outras verdes (P3 do gate #657)."""
+    import marca_dagua
+
+    preaquecidos = []
+    monkeypatch.setattr(marca_dagua, "prewarm", lambda: preaquecidos.append(1))
+    _marca_espia(monkeypatch)
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+
+    def _gerador(model, texto, *a, **k):
+        return np.full(24000, 0.1, dtype=np.float32)
+
+    _job_de_render(monkeypatch, tmp_path, _gerador, texto="oi")
+    from fastapi.testclient import TestClient
+
+    chave = app._primary_api_key()
+    cliente = TestClient(app.app, raise_server_exceptions=False)
+    r = cliente.post("/v1/audio/speech", headers={"X-API-Key": chave} if chave else {},
+                     json={"model": "tts-1", "input": "frase", "voice": "voz-x",
+                           "response_format": "wav"})
+    assert r.status_code == 200, r.text[:160]
+    assert preaquecidos, "o /v1/audio/speech não aqueceu o marcador"
+    # desligada, nem tenta
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", False)
+    preaquecidos.clear()
+    cliente.post("/v1/audio/speech", headers={"X-API-Key": chave} if chave else {},
+                 json={"model": "tts-1", "input": "frase", "voice": "voz-x",
+                       "response_format": "wav"})
+    assert preaquecidos == []

@@ -12240,6 +12240,13 @@ def openai_speech(payload: dict):
     if voice_id == DESIGN_VOICE_ID and not (omni.get("instruct") or "").strip():
         raise HTTPException(400, "voice='__design__' exige 'instruct' (descrição da voz) — "
                                  "ex.: 'female, young adult, high pitch' — ou defina omni_instruct nas settings")
+    if _settings.get("tts_marca_dagua"):
+        try:                    # #657: o cliente OpenAI espera o áudio AQUI; a carga
+            import marca_dagua  # do marcador (~2,6 s) não pode entrar nesse relógio
+
+            marca_dagua.prewarm()
+        except Exception:       # noqa: BLE001 — prewarm é otimização
+            pass
     # tts-1-hd força mais passos de difusão (qualidade); senão vale o padrão/override
     if str(payload.get("model", "tts-1")).endswith("-hd") and "num_steps" not in payload:
         omni["num_steps"] = OMNI_STEPS_HQ
