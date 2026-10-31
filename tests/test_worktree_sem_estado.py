@@ -135,7 +135,8 @@ def _falso(destino: Path) -> Path:
         copia = destino / "tools" / nome
         copia.write_text((REPO / "tools" / nome).read_text())
         copia.chmod(0o755)
-    (destino / ".gitignore").write_text("/.venv-mlx\n/voices\n/outputs\n/state\n")
+    (destino / ".gitignore").write_text("/.venv-mlx\n/voices\n/outputs\n/state\n"
+                                       "settings.json\n.apikey*\n.speaker-profiles.json\n")
     (destino / "models").mkdir()
     (destino / "models" / "sha256sums.txt").write_text("")
     (destino / ".githooks").mkdir()
@@ -155,15 +156,24 @@ def _integra(script: Path, *args: str, cwd: Path) -> subprocess.CompletedProcess
                           text=True, timeout=900, env={**os.environ})
 
 
+def _pasta_do_time() -> str:
+    """Onde o time põe worktree (`<raiz>-wt`). Worktree em `/tmp` é de sonda."""
+    return str(REPO.parent / f"{REPO.name}-wt")
+
+
 def _estado_real() -> tuple[str, set[str], set[str]]:
-    """(HEAD da main real, branches, worktrees) — o que um teste não pode mexer."""
+    """(HEAD da main real, branches, worktrees do time) — o que um teste não pode mexer.
+
+    Worktree em `/tmp` fica de fora: outra pessoa rodando a suíte ao lado cria e
+    remove a dela, e isso não é sujeira nossa (medido: a guarda caiu assim)."""
     head = subprocess.run(["git", "-C", str(REPO), "rev-parse", "main"],
                           capture_output=True, text=True).stdout.strip()
     ramos = subprocess.run(["git", "-C", str(REPO), "for-each-ref", "--format=%(refname)",
                             "refs/heads"], capture_output=True, text=True).stdout.split()
     wts = subprocess.run(["git", "-C", str(REPO), "worktree", "list", "--porcelain"],
                          capture_output=True, text=True).stdout.splitlines()
-    return head, set(ramos), {l for l in wts if l.startswith("worktree ")}
+    pasta = _pasta_do_time()
+    return head, set(ramos), {l for l in wts if l.startswith(f"worktree {pasta}")}
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -172,7 +182,11 @@ def guarda_do_repo_real():
     antes = _estado_real()
     yield
     depois = _estado_real()
-    assert depois[0] == antes[0], "o HEAD da main REAL mudou durante o arquivo"
+    # HEAD igual, ou só ANDOU por integração de outro agente (ancestral): o que não
+    # pode é o arquivo ter deixado a main em outro lugar
+    assert depois[0] == antes[0] or subprocess.run(
+        ["git", "-C", str(REPO), "merge-base", "--is-ancestor", antes[0], depois[0]]
+    ).returncode == 0, "o HEAD da main REAL saiu do lugar durante o arquivo"
     assert depois[1] <= antes[1], f"branch criada no repo real: {depois[1] - antes[1]}"
     assert depois[2] <= antes[2], f"worktree criada no repo real: {depois[2] - antes[2]}"
 
@@ -284,3 +298,49 @@ def _limpa(raiz: Path) -> None:
         subprocess.run(["git", "-C", str(raiz / "falso"), "worktree", "remove", "--force",
                         str(wt)], capture_output=True)
     shutil.rmtree(raiz, ignore_errors=True)
+
+
+# --- guarda contra CÓPIA do dado do dono (#727) ---------------------------------
+def test_integra_recusa_worktree_com_copia_do_dado_do_dono(falso):
+    """Cópia de voz/estado no worktree é recusada na integração.
+
+    Copiar `voices/`/estado para "validar suíte" foi praxe: o dado copiado
+    envelhece em silêncio e o worktree passa a rodar com estado que não é o dele."""
+    (falso / "voices").mkdir()
+    (falso / "voices" / "v1.wav").write_bytes(b"RIFF voz do dono\n")
+    (falso / "settings.json").write_text('{"model": "do-dono"}\n')
+    _cria(falso, "agentea")
+    b = _cria(falso, "agenteb")
+
+    # sem cópia: passa pela guarda (o worktree nasce vazio)
+    assert "cópia do dado do dono" not in subprocess.run(
+        [str(b / "tools" / "worktrees.sh"), "verifica", "agentea"], cwd=str(b),
+        capture_output=True, text=True).stderr
+
+    # com cópia: `verifica` reprova e a integração recusa antes do hook
+    alvo = b.parent / "agentea"
+    (alvo / "voices").mkdir(exist_ok=True)
+    (alvo / "voices" / "v1.wav").write_bytes(b"RIFF voz do dono\n")
+    (alvo / "settings.json").write_text('{"model": "do-dono"}\n')
+
+    r = subprocess.run([str(b / "tools" / "worktrees.sh"), "verifica", "agentea"],
+                       cwd=str(b), capture_output=True, text=True)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "v1.wav" in r.stderr and "settings.json" in r.stderr
+
+    r = _integra(b / "tools" / "integra.sh", "agentea", cwd=b)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "cópia do dado do dono" in r.stderr, r.stderr
+
+
+def test_verifica_por_conteudo_nao_por_nome(falso):
+    """Voz copiada com OUTRO nome também é cópia (compara sha, não caminho)."""
+    (falso / "voices").mkdir()
+    (falso / "voices" / "v1.wav").write_bytes(b"RIFF mesma voz\n")
+    a = _cria(falso, "agentea")
+    (a / "voices").mkdir()
+    (a / "voices" / "fixture.wav").write_bytes(b"RIFF mesma voz\n")
+    r = subprocess.run([str(a / "tools" / "worktrees.sh"), "verifica", "agentea"],
+                       cwd=str(a), capture_output=True, text=True)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "fixture.wav" in r.stderr

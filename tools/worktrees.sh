@@ -26,6 +26,7 @@
 #   tools/worktrees.sh cria <agente>     # ../tts-rod-wt/<agente> na branch wt/<agente>
 #   tools/worktrees.sh lista
 #   tools/worktrees.sh remove <agente> [--forca]
+#   tools/worktrees.sh verifica [<agente>|--aqui]   # cópia do dado do dono?
 #
 # Integração do trabalho de volta na `main`: `tools/integra.sh <agente>`.
 set -uo pipefail
@@ -73,6 +74,75 @@ _liga_o_que_nao_pode_copiar() {
         mkdir -p "$(dirname "$destino/$rel")"
         ln -sfn "$RAIZ/$rel" "$destino/$rel"
     done < "$SUMS"
+}
+
+# ── guarda contra CÓPIA do dado do dono (#727) ────────────────────────────────
+# A regra escrita ("state e voices são próprios de cada worktree") não bastou:
+# agentes copiaram as 21 vozes e o estado para "validar suíte". Aqui a comparação é
+# mecânica e SÓ LÊ: arquivo com o MESMO sha256 do original é cópia.
+_sha_de() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | cut -c1-64
+    else shasum -a 256 "$1" 2>/dev/null | cut -c1-64; fi
+}
+
+# relatórios relativos à raiz: `voices/*`, `outputs/*` e os quatro do estado
+_areas() { printf '%s\n' voices outputs settings.json .apikey .apikeys.json .speaker-profiles.json; }
+
+#: sha256 de tudo o que é dado do dono — comparar por CONTEÚDO, não por nome: voz
+#: copiada com outro nome (`fixture.wav`) é cópia igual
+_hashes_do_dono() {
+    local area
+    for area in $(_areas); do
+        [ -e "$RAIZ/$area" ] || continue
+        find "$RAIZ/$area" -type f -print0 2>/dev/null \
+            | xargs -0 -r -n 50 sh -c 'for f do sha256sum "$f" 2>/dev/null || shasum -a 256 "$f"; done' _ \
+            | awk '{print $1}'
+    done | sort -u
+}
+
+_verifica_um() {
+    local wt="$1" area rel achados=0 hashes
+    hashes="$(_hashes_do_dono)"
+    [ -n "$hashes" ] || return 0
+    for area in $(_areas); do
+        [ -e "$wt/$area" ] || continue
+        while IFS= read -r -d '' arq; do
+            [ -L "$arq" ] && continue               # symlink não é cópia
+            rel="${arq#$wt/}"
+            if printf '%s\n' "$hashes" | grep -qx "$(_sha_de "$arq")"; then
+                echo "✖ $rel é CÓPIA do dado do dono ($(basename "$wt"))" >&2
+                achados=$((achados + 1))
+            fi
+        done < <(find "$wt/$area" -type f -print0 2>/dev/null)
+    done
+    return $((achados > 0 ? 1 : 0))
+}
+
+verifica() {
+    local alvo="${1:-}" wt achados=0
+    local -a alvos=()
+    if [ "$alvo" = "--aqui" ]; then
+        wt="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 2
+        case "$wt" in "$RAIZ") echo "· raiz é a árvore principal — nada a comparar"; return 0 ;; esac
+        alvos=("$wt")
+    elif [ -n "$alvo" ]; then
+        _nome_ok "$alvo" || exit 2
+        wt="$(_destino "$alvo")"
+        [ -d "$wt" ] || { echo "✖ não achei o worktree de $alvo em $wt" >&2; exit 2; }
+        alvos=("$wt")
+    else
+        for wt in "$PASTA"/*; do [ -d "$wt" ] && alvos+=("$wt"); done
+        [ "${#alvos[@]}" -gt 0 ] || { echo "· nenhum worktree em $PASTA"; return 0; }
+    fi
+    for wt in "${alvos[@]}"; do
+        _verifica_um "$wt" || achados=$((achados + 1))
+    done
+    if [ "$achados" -gt 0 ]; then
+        echo "→ $achados worktree(s) com cópia. Copie só o que precisar, ou apague: a" >&2
+        echo "  guarda nunca apaga sozinha." >&2
+        return 1
+    fi
+    echo "✔ nenhuma cópia do dado do dono nos worktrees"
 }
 
 cria() {
@@ -128,5 +198,6 @@ case "${1:-}" in
     cria)   shift; cria "$@" ;;
     lista)  lista ;;
     remove) shift; remove "$@" ;;
+    verifica) shift; verifica "$@" ;;
     *)      _uso; exit 2 ;;
 esac

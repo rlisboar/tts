@@ -2,6 +2,23 @@
 # Pre-commit do TTS-STUDIO: análise estática + testes antes de cada commit.
 # Ativar (uma vez):  git config core.hooksPath .githooks
 cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# Cópia do dado do dono no worktree (#727): barato (só sha) e o commit é o último
+# ponto em que dá para barrar antes de a cópia virar histórico. Em worktree
+# `--aqui` acha a raiz pelo `.git` comum; na árvore principal não há o que comparar.
+topo="$(git rev-parse --show-toplevel)"
+comum_hook="$(git rev-parse --git-common-dir)"
+case "$comum_hook" in /*) ;; *) comum_hook="$(cd "$comum_hook" && pwd)" ;; esac
+if [ "$topo" != "$(cd "$(dirname "$comum_hook")" && pwd)" ]; then
+    # o script DO WORKTREE (é o que está sendo commitado); a raiz só como queda —
+    # antes de a guarda estar na main, o script da raiz ainda não tem o comando
+    guarda="$topo/tools/worktrees.sh"
+    [ -x "$guarda" ] || guarda="$(cd "$(dirname "$comum_hook")" && pwd)/tools/worktrees.sh"
+    if grep -q '^ *verifica)' "$guarda" 2>/dev/null; then
+        bash "$guarda" verifica --aqui \
+            || { echo "✖ cópia do dado do dono no worktree — apague e commite de novo"; exit 1; }
+    fi
+fi
 PY=.venv-mlx/bin/python
 [ -x "$PY" ] || PY=python3
 

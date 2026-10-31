@@ -80,6 +80,13 @@ if ! git -C "$WT" rebase main; then
     _aborta "rebase conflitou — nada foi integrado (resolva no worktree e rode de novo)"
 fi
 
+# CÓPIA do dado do dono no worktree (#727): a guarda só lê e reporta. Copiar
+# `voices/`/estado para "validar suíte" foi a praxe do dia — e o dado copiado
+# envelhece e some do radar.
+echo "→ cópia do dado do dono no worktree?"
+"$RAIZ/tools/worktrees.sh" verifica "$agente" || _aborta \
+    "o worktree de $agente tem cópia do dado do dono (lista acima) — apague e rode de novo"
+
 # `TTS_INTEGRA_SEM_HOOK=1` pula o gate — mas SÓ em árvore descartável (sob
 # `$TMPDIR`/`/tmp`). No repo de verdade o atalho engana: foi por ele que um teste
 # integrou um agente FALSO na main real sem gate (#705).

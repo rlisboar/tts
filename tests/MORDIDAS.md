@@ -300,6 +300,16 @@ sha256 no manifesto reprova).
 | `demucs` fora dos DOIS arquivos | idem **FAILED** (as células que comparam requirements↔lock sozinhas não pegavam — #684) |
 | peso ausente do disco | célula offline **skipa** (o skip nomeia o script) |
 
+## #727 — cópia do dado do dono no worktree
+
+| Sabotagem | Resultado |
+|---|---|
+| checagem removida do `integra.sh` | `test_integra_recusa_worktree_com_copia_do_dado_do_dono` **FAILED** (integra com `voices`/`settings` copiados) |
+| comparação por NOME em vez de sha | `test_verifica_por_conteudo_nao_por_nome` **FAILED** (voz copiada como `fixture.wav` passaria) |
+
+A guarda só LÊ: compara sha256 dos arquivos de `voices/`, `outputs/` e dos quatro
+de estado com os da raiz principal, nomeia cada cópia e nunca apaga nada.
+
 ## #690 — `integra.sh` de qualquer worktree e recusa de estado no commit
 
 | Sabotagem | Resultado |
