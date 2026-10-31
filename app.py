@@ -7933,6 +7933,47 @@ def _aplica_speaker_alvo(tmp: Path, alvo: str) -> tuple[Path, dict]:
     return novo, campos
 
 
+def _separacao_do_turno(tmp: Path) -> tuple[Path, dict]:
+    """Separação no turno do LIVE, atrás do turno já ABERTO (#533, item 2).
+
+    Só com `live_so_minha_voz.separacao` ligado. Devolve `(wav a transcrever,
+    campos para o `stats`)`; `tmp` volta quando não há separação. NUNCA levanta:
+    separador fora, perfil sumido ou worker morto seguem com o áudio ORIGINAL e
+    dizem o motivo — é a mesma queda do `/api/transcribe`, mas aqui sem HTTP.
+
+    `separa_alvo` já veta as janelas que não são do alvo (viram silêncio), então
+    o transcript sai sem a fala de terceiros."""
+    cfg = _live_voz_ligado()
+    if not cfg or not cfg.get("separacao"):
+        return tmp, {}
+    alvo = _live_voz_perfil(cfg)
+    if alvo is None:
+        return tmp, {"separacao": "indisponivel", "separacao_motivo": "perfil ausente"}
+    _nome, perfil = alvo
+    vecs = perfil.get("vecs") or []
+    if not vecs:
+        return tmp, {"separacao": "indisponivel", "separacao_motivo": "perfil sem amostras"}
+    import separa_voz
+
+    if not separa_voz.disponivel():
+        return tmp, {"separacao": "indisponivel", "separacao_motivo": separa_voz.motivo()}
+    t0 = time.monotonic()
+    try:
+        with _gen_lock:                  # Metal: nada de geração local em paralelo
+            # extrator DO PERFIL (perfil legado tem 256-d; o ECAPA devolve 192-d)
+            novo, info = separa_voz.separa_alvo(tmp, vecs, _speaker_modelo_do_perfil(perfil))
+    except Exception as exc:             # noqa: BLE001 — o STT não cai pelo filtro
+        print(f"[separa] turno falhou: {exc}", flush=True)
+        return tmp, {"separacao": "falhou", "separacao_motivo": str(exc)[:160],
+                     "separacao_ms": int((time.monotonic() - t0) * 1000)}
+    campos = {"separacao": "ok", "separacao_ms": int((time.monotonic() - t0) * 1000)}
+    if info.get("descartados"):
+        campos["segmentos_descartados"] = info["descartados"]
+    if info.get("escores"):
+        campos["separacao_escores"] = info["escores"]
+    return novo, campos
+
+
 def _stt_ok(r: dict, text: str, forcar: bool = False):
     """Aceita só transcrição que pareça fala real (rejeita ruído/alucinação).
 
@@ -9910,6 +9951,15 @@ def _live_observa(sess: dict, obj) -> None:
             n = None
         if n is not None:
             sess["turno"] = n
+    elif tipo in ("latency", "turn_complete") and obj.get("separacao"):
+        # separação do turno (#533): o `stats` é o instrumento do aceite; o
+        # caminho do TURNO não tem sessão no pipeline, então os campos vêm no
+        # evento e são copiados aqui
+        st = sess.setdefault("voz_stats", {"recusados": 0})
+        st["separacao"] = obj.get("separacao")
+        for k in ("separacao_motivo", "separacao_ms", "segmentos_descartados"):
+            if obj.get(k) is not None:
+                st[k] = obj[k]
     elif tipo == "latency":
         # espera pelo `_gen_lock` medida no pipeline (#313); o TTS pode estar
         # atrás de um job de lote, e sem este campo o tempo some dentro do

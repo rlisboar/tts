@@ -1883,3 +1883,86 @@ def test_portao_de_perfil_LEGADO_usa_o_extrator_do_perfil_e_limiar_cru(monkeypat
     assert vistos and set(vistos) == {app.SPEAKER_MODELO_LEGADO}, \
         f"pontuou com {set(vistos)}, o perfil é legado"
     assert res["escore"] == "cru" and res["limiar"] == 0.44
+
+
+# ---------------------------------------------------------------------------
+# #533 (item 2): separação do turno, OPCIONAL e atrás do turno aberto
+# ---------------------------------------------------------------------------
+def test_separacao_desligada_nao_custa_nada(monkeypatch, tmp_path):
+    import app
+    _liga_so_minha_voz(monkeypatch)
+    monkeypatch.setitem(app._settings, "live_so_minha_voz",
+                        {"on": True, "perfil": "dono", "separacao": False})
+    def explode(*a, **k):
+        raise AssertionError("chamou o separador com o recurso desligado")
+    monkeypatch.setattr(app, "_gen_lock", type("L", (), {"__enter__": explode,
+                                                         "__exit__": lambda *a: None})())
+    wav = tmp_path / "t.wav"
+    wav.write_bytes(b"RIFF")
+    caminho, campos = app._separacao_do_turno(wav)
+    assert caminho == wav and campos == {}
+
+
+def test_separacao_indisponivel_segue_com_o_audio_original(monkeypatch, tmp_path):
+    """Separador fora (peso ausente): o STT NÃO pode cair — áudio cru e motivo."""
+    import app
+    import separa_voz
+    _liga_so_minha_voz(monkeypatch)
+    monkeypatch.setitem(app._settings, "live_so_minha_voz",
+                        {"on": True, "perfil": "dono", "separacao": True})
+    monkeypatch.setattr(separa_voz, "disponivel", lambda: False)
+    monkeypatch.setattr(separa_voz, "motivo", lambda: "pesos ausentes")
+    wav = tmp_path / "t.wav"
+    wav.write_bytes(b"RIFF")
+    caminho, campos = app._separacao_do_turno(wav)
+    assert caminho == wav
+    assert campos["separacao"] == "indisponivel" and "pesos" in campos["separacao_motivo"]
+
+
+def test_separacao_ok_devolve_o_fluxo_do_alvo(monkeypatch, tmp_path):
+    import app
+    import separa_voz
+    _liga_so_minha_voz(monkeypatch)
+    monkeypatch.setitem(app._settings, "live_so_minha_voz",
+                        {"on": True, "perfil": "dono", "separacao": True})
+    monkeypatch.setattr(separa_voz, "disponivel", lambda: True)
+    novo = tmp_path / "alvo.wav"
+    novo.write_bytes(b"RIFF")
+    vistos = []
+
+    def separa(wav, vecs, modelo):
+        vistos.append(modelo)
+        return novo, {"descartados": 2, "escores": [0.9, 0.1]}
+
+    monkeypatch.setattr(separa_voz, "separa_alvo", separa)
+    wav = tmp_path / "t.wav"
+    wav.write_bytes(b"RIFF")
+    caminho, campos = app._separacao_do_turno(wav)
+    assert caminho == novo and campos["separacao"] == "ok"
+    assert campos["segmentos_descartados"] == 2
+    assert vistos == ["fake:v1"], "tem de usar o extrator DO PERFIL"
+
+
+def test_stt_do_turno_transcreve_o_audio_separado_e_limpa(monkeypatch, tmp_path):
+    """A separação não pode vazar arquivo nem transcrever o áudio cru."""
+    import app
+    import live_pipeline
+
+    separado = tmp_path / "alvo.wav"
+    separado.write_bytes(b"RIFF")
+    monkeypatch.setattr(app, "_separacao_do_turno",
+                        lambda destino: (separado, {"separacao": "ok"}))
+    transcritos = []
+
+    def transcreve(caminho, **k):
+        transcritos.append(caminho)
+        return {"text": "oi", "language": "pt"}
+
+    monkeypatch.setattr(app, "_transcribe", transcreve)
+    monkeypatch.setattr(app, "_live_voz_ligado", lambda: None)
+    julga = {}
+    texto = live_pipeline._stt_app(b"\x01\x00" * 1600, "pt", julga)
+    assert texto == "oi"
+    assert transcritos == [separado], "transcreveu o áudio errado"
+    assert julga["separacao"]["separacao"] == "ok"
+    assert not separado.exists(), "o wav separado tem de sair"

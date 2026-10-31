@@ -604,3 +604,13 @@ limiar CRU do Resemblyzer mesmo com coorte disponível.
 |---|---|
 | deixar o AS-norm valer para qualquer modelo | `test_portao_de_perfil_LEGADO_usa_o_extrator_do_perfil_e_limiar_cru` **FAILED** |
 | pontuar com o extrator EFETIVO em vez do extrator do perfil | mesma célula **FAILED** (o dublê do ECAPA dispara) |
+
+### Separação do turno no Live (item 2 do #533)
+
+Opcional e desligada por default; roda atrás do turno já aberto, com o extrator
+DO PERFIL e queda para o áudio cru.
+
+| Sabotagem | Resultado |
+|---|---|
+| `_separacao_do_turno` ignorando o `separacao` do settings | `test_separacao_desligada_nao_custa_nada` **FAILED** |
+| `_stt_app` transcrevendo o áudio CRU com a separação ligada | `test_stt_do_turno_transcreve_o_audio_separado_e_limpa` **FAILED** |

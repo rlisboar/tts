@@ -848,6 +848,11 @@ class LivePipeline:
             else:
                 texto = self._stt(pcm, self.language)
             lat["stt_ms"] = _ms(t0)
+            # a separação do turno (#533) vai no `latency` e nos `turn_complete`
+            # de descarte: é o instrumento do aceite (`stats.motor.voz`)
+            sep = dict(julga.get("separacao") or {})
+            if sep:
+                lat.update(sep)
             if self.cancelado:
                 return self._interrompido(lat, t0, turno, estado)
             motivo = str(julga.get("motivo") or "")
@@ -860,7 +865,7 @@ class LivePipeline:
                                 "motivo": motivo,
                                 "detalhe": str(julga.get("detalhe") or "")[:120],
                                 "buffer_bytes": bytes_entrada, "transcript": texto,
-                                "truncated": truncado})
+                                "truncated": truncado, **sep})
                 self._truncado = False
                 return
             if not texto.strip():
@@ -1349,7 +1354,18 @@ def _stt_app(pcm16_le_16k: bytes, language: str | None,
             w.setsampwidth(2)
             w.setframerate(16000)
             w.writeframes(pcm16_le_16k)
-        r = app._transcribe(destino, language=language)
+        # SEPARAÇÃO (#533, item 2): opcional, atrás do turno JÁ ABERTO — custa
+        # `first_audio_ms`, não a abertura. Ela veta as janelas que não são do
+        # alvo, então o transcript sai sem a fala de terceiros. Falhou? Segue com
+        # o áudio original e o motivo vai no `julga`.
+        alvo_stt, sep = app._separacao_do_turno(destino)
+        if sep and julga is not None:
+            julga["separacao"] = sep
+        try:
+            r = app._transcribe(alvo_stt, language=language)
+        finally:
+            if alvo_stt != destino:
+                alvo_stt.unlink(missing_ok=True)
         texto = (r.get("text") or "").strip()
         if not texto:
             if julga is not None:
