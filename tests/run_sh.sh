@@ -198,12 +198,9 @@ if _probe_na_lista; then
     if [ -z "${TTS_DONO_DIR:-}" ]; then
         TTS_DONO_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dono-sonda.XXXXXX")" || exit 1
         for a in "${_ARQ_DONO[@]}"; do
-            if [ -f "$RAIZ/$a" ]; then
-                cp -p "$RAIZ/$a" "$TTS_DONO_DIR/$a"
-                # `cp -p` leva junto a flag `uchg` do arquivo do dono; na CÓPIA ela
-                # atrapalha (a sonda não consegue escrever e o `rm` não apaga).
-                chflags nouchg "$TTS_DONO_DIR/$a" 2>/dev/null || true
-            fi
+            # `cp` SEM `-p`: o `-p` leva junto a flag `uchg` do arquivo do dono e a
+            # cópia fica impossível de escrever (e de apagar no fim).
+            [ -f "$RAIZ/$a" ] && cp "$RAIZ/$a" "$TTS_DONO_DIR/$a" && chmod 600 "$TTS_DONO_DIR/$a"
         done
         export TTS_DONO_DIR
         trap 'rm -rf "$TTS_DONO_DIR"' EXIT

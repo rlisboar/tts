@@ -206,9 +206,9 @@ def test_guarda_nomeia_quem_tocou_o_arquivo_do_dono(monkeypatch, tmp_path):
     """O alvo é o "dono" — e a célula usa um dono FALSO, sem tocar a raiz principal.
 
     Fotografar o tmp fazia todo teste que grava settings virar "escrita no dono"
-    (37 linhas de ruído, #685). E mexer no arquivo REAL (utime, e o `chflags` que a
-    flag `uchg` exigia) é mutação de dado do dono: aqui `TTS_DONO_DIR` aponta para um
-    tmp com um `settings.json` sintético e a raiz não é tocada (#710)."""
+    (37 linhas de ruído, #685). E mexer no arquivo REAL (mexer no mtime e na flag `uchg`) é mutação de
+    dado do dono: aqui `TTS_DONO_DIR` aponta para um tmp com um `settings.json`
+    sintético e a raiz não é tocada (#710)."""
     import conftest
 
     dono = tmp_path / "dono"
