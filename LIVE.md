@@ -997,7 +997,7 @@ e o exit **0**:
 ```bash
 ./.venv-mlx/bin/python tests/_pyflakes_gate.py
 ```
-O hook tem hoje **27 alvos explícitos** (o `tests/*.py` é glob e não conta). Rode o
+O hook tem hoje **28 alvos explícitos** (o `tests/*.py` é glob e não conta). Rode o
 comando, não copie a lista: ao acrescentar um módulo ao hook, atualize esse número
 aqui — `tests/test_doc_pyflakes_list.py` compara e fica vermelho.
 
