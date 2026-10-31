@@ -7778,3 +7778,36 @@ def test_raiz_principal_usa_o_aplicativo(tmp_path, monkeypatch):
     monkeypatch.delenv("TTS_STATE_DIR", raising=False)
     assert app._arbore_e_a_principal() is True
     assert app._dir_de_estado_padrao() != raiz / ".state-local"
+
+
+def test_rollback_do_restore_nao_devolve_arquivo_imutavel(tmp_path, monkeypatch):
+    """Snapshot/restauração do import também não podem viajar flag (#721).
+
+    `copy2` no snapshot e no restore levava `uchg` do original: o settings voltava
+    ao estado vivo imutável e o app não salvava mais."""
+    import app as _app
+
+    vivo = tmp_path / "vivo"
+    vivo.mkdir()
+    monkeypatch.setattr(app, "SETTINGS_PATH", vivo / "settings.json")
+    monkeypatch.setattr(app, "APIKEYS_PATH", vivo / ".apikeys.json")
+    monkeypatch.setattr(app, "SPEAKER_PATH", vivo / ".speaker-profiles.json")
+    monkeypatch.setattr(app, "VOICES_DIR", tmp_path / "sem-voices")
+    alvo = vivo / "settings.json"
+    alvo.write_text('{"x": 1}')
+    alvo.chmod(0o400)
+    velho = time.time() - 3 * 3600
+    os.utime(alvo, (velho, velho))
+    rollback = tmp_path / "rollback"
+    rollback.mkdir()
+    _app._snapshot_estado(rollback)
+    copia = rollback / "settings.json"
+    assert copia.read_text() == '{"x": 1}'
+    assert copia.stat().st_mode & 0o777 == 0o600, "snapshot não saiu 0600"
+    alvo.chmod(0o600)                     # 0400 de propósito na origem
+    alvo.write_text('{"x": 2}')
+    _app._restaura_estado(rollback)
+    assert alvo.read_text() == '{"x": 1}'
+    assert alvo.stat().st_mode & 0o777 == 0o600, "restauração voltou 0400"
+    alvo.write_text('{"x": 3}')                    # e o app consegue salvar
+    assert alvo.read_text() == '{"x": 3}'

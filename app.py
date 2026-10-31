@@ -5409,7 +5409,10 @@ def _snapshot_estado(destino: Path) -> None:
     """Copia o estado atual para o rollback (arquivos ausentes ficam ausentes)."""
     for nome in _ESTADO_SIMPLES:
         if _caminho_estado(nome).exists():
-            shutil.copy2(_caminho_estado(nome), destino / nome)
+            # `copyfile`, não `copy2`: flag do original (ex.: `uchg`) não pode
+            # viajar para o rollback e voltar imutável na restauração (#721)
+            shutil.copyfile(_caminho_estado(nome), destino / nome)
+            (destino / nome).chmod(0o600)
     if VOICES_DIR.exists():
         (destino / "voices").mkdir(exist_ok=True)
         for p in VOICES_DIR.iterdir():
@@ -5440,7 +5443,8 @@ def _restaura_estado(rollback: Path) -> None:
     for nome in _ESTADO_SIMPLES:
         origem, destino = rollback / nome, _caminho_estado(nome)
         if origem.exists():
-            shutil.copy2(origem, destino)
+            shutil.copyfile(origem, destino)      # idem: sem flag/mtime (#721)
+            destino.chmod(0o600)
         else:
             destino.unlink(missing_ok=True)
     if VOICES_DIR.exists():
