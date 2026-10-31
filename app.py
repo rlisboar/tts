@@ -5548,6 +5548,10 @@ def delete_voice(request: Request, voice_id: str):
         if path.exists():
             path.unlink()
             removed = True
+    # temporário de um denoise/replace interrompido não fica órfão até a poda: o id
+    # vem seguido de `-`, então `abc` não leva o temporário de `abcd` junto
+    for tmp in VOICES_DIR.glob(f"{_TMP_VOICES_PREFIX}*{voice_id}-*"):
+        tmp.unlink(missing_ok=True)
     if not removed:
         raise HTTPException(404, "Voz não encontrada")
     return {"ok": True}

@@ -7585,3 +7585,40 @@ def test_orig_reserva_atomica_em_corrida(voices_tmp, monkeypatch):
     app._guarda_original("abc")            # 2ª (concorrente): não pode sobrescrever
     monkeypatch.setattr(Path, "exists", real_exists)
     assert orig.read_bytes() == b"ORIGINAL", orig.read_bytes()
+
+
+def test_poda_em_disco_preserva_voz_meta_e_orig_e_leva_o_temp_velho(client, auth,
+                                                                   voices_tmp):
+    """Com fixture no disco: a poda APAGA só o temporário, e só o velho.
+
+    O glob conferido por nome não basta — aqui os arquivos existem de verdade e
+    passam pela poda. `<id>.wav`, `<id>.json` e o `<id>.orig.wav` do #443 têm de
+    sobreviver; o temporário antigo some e o recente fica."""
+    import os as _os
+
+    wav = _voz_para_limpar(voices_tmp)
+    orig = voices_tmp / "limpa00001.orig.wav"
+    orig.write_bytes(b"RIFF....orig")
+    velho = voices_tmp / (app._TMP_VOICES_PREFIX + "denoise-limpa00001-aaaa.wav")
+    velho.write_bytes(b"RIFF....")
+    recente = voices_tmp / (app._TMP_VOICES_PREFIX + "denoise-limpa00001-bbbb.wav")
+    recente.write_bytes(b"RIFF....")
+    quando = time.time() - 7 * 3600
+    _os.utime(velho, (quando, quando))
+    assert app._auto_cleanup_once() >= 1
+    assert wav.exists() and (voices_tmp / "limpa00001.json").exists(), "comeu a voz"
+    assert orig.exists(), "comeu o .orig real do #443"
+    assert not velho.exists(), "o temporário velho ficou"
+    assert recente.exists(), "comeu temporário em uso"
+
+
+def test_apagar_voz_leva_os_temporarios_dela(client, auth, voices_tmp):
+    """O temporário órfão da voz sai no DELETE — e não o de id com prefixo igual."""
+    _voz_para_limpar(voices_tmp)
+    meu = voices_tmp / (app._TMP_VOICES_PREFIX + "denoise-limpa00001-aaaa.wav")
+    meu.write_bytes(b"RIFF....")
+    outro = voices_tmp / (app._TMP_VOICES_PREFIX + "denoise-limpa00001x-bbbb.wav")
+    outro.write_bytes(b"RIFF....")
+    assert client.delete("/api/voices/limpa00001", headers=auth).status_code == 200
+    assert not meu.exists(), "o temporário da voz ficou órfão"
+    assert outro.exists(), "levou o temporário de uma voz de nome parecido"
