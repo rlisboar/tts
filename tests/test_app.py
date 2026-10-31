@@ -1876,6 +1876,45 @@ def test_marca_dagua_marca_o_trecho_do_job(monkeypatch, tmp_path):
     assert marcas == [], f"marcou com a setting desligada: {marcas}"
 
 
+def test_marca_mais_fraca_em_audio_baixo_e_deteccao_sobrevive(tmp_path):
+    """Achado do ABX (#687): o dono OUVIU a marca no par mais baixo (-22 dBFS).
+
+    A força relativa era a mesma dos outros — o que manda é o nível absoluto. Em
+    áudio baixo a marca tem de sair mais FRACA que a força cheia do gerador, e o
+    detector tem de continuar achando (por isso o piso da escala é 0,6)."""
+    import soundfile as sf
+    import torch
+    from audioseal import AudioSeal
+
+    import marca_dagua
+
+    if not marca_dagua.disponivel():
+        pytest.skip(f"marca indisponível: {marca_dagua.motivo()}")
+
+    def rms(x):
+        return float(np.sqrt(np.mean(np.asarray(x, np.float64) ** 2)))
+
+    t = np.arange(16000 * 3) / 16000
+    base = (np.sin(2 * np.pi * 180 * t) + 0.4 * np.sin(2 * np.pi * 460 * t)).astype(np.float32)
+    for rotulo, nivel in (("baixo", 0.06), ("alto", 0.8)):
+        carimbo = tmp_path / f"{rotulo}.wav"
+        sf.write(str(carimbo), (base / np.abs(base).max() * nivel).astype(np.float32),
+                 16000, subtype="PCM_16")
+        cru = sf.read(str(carimbo), dtype="float32")[0]
+
+        gerador = AudioSeal.load_generator(str(marca_dagua.MODELO_DIR / marca_dagua.GERADOR),
+                                           nbits=16).eval()
+        with torch.no_grad():
+            cheia = gerador(torch.from_numpy(cru)[None, None], sample_rate=16000).squeeze().numpy()
+
+        marca_dagua.marca_wav(carimbo)
+        aplicada = rms(sf.read(str(carimbo), dtype="float32")[0] - cru)
+        assert marca_dagua.detecta_prob(carimbo) > 0.9, f"detecção perdida no {rotulo}"
+        if rotulo == "baixo":
+            assert aplicada < 0.85 * rms(cheia - cru), (
+                f"em áudio baixo a marca não foi atenuada ({aplicada:.2e} x {rms(cheia - cru):.2e})")
+
+
 def test_marca_dagua_no_v1_audio_speech(monkeypatch, tmp_path):
     """A rota OpenAI-compatível usa o mesmo pipeline: o áudio dela sai marcado."""
     marcas = _marca_espia(monkeypatch)

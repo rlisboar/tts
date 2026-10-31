@@ -82,6 +82,14 @@ def main() -> int:
             else:
                 with torch.no_grad():
                     y = gerador(wav, sample_rate=int(sr)).squeeze().numpy()
+                # A marca é AUDÍVEL em fala baixa (#687): no par mais baixo do ABX
+                # ela ficou em -63 dBFS e o dono ouviu. O que manda não é a força
+                # relativa (SNR era 24 dB, igual às outras) e sim o nível absoluto.
+                # Então o tanto de marca segue o nível do trecho: piso 0,6 (onde a
+                # detecção ainda fica >=0,96 medido) até 1,0 em material alto.
+                nivel = 20 * np.log10(max(float(np.sqrt(np.mean(x.astype(np.float64) ** 2))), 1e-9))
+                fator = float(np.clip(0.6 + (nivel + 32.0) * 0.02, 0.6, 1.0))
+                y = (x + fator * (y - x)).astype(np.float32)
                 sf.write(pedido["saida"], y, int(sr), subtype="PCM_16")
                 print(json.dumps({"id": pedido.get("id"),
                                   "ms": int((time.perf_counter() - t0) * 1000)}), flush=True)
