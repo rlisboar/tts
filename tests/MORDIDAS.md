@@ -673,3 +673,10 @@ passaria a tolerar muitos vãos em turno longo (50 chunks = 10). O cap é 3.
 | Sabotagem | Resultado |
 |---|---|
 | normalizador do filtro `modelo` aceitando `dsh` | `test_provedor_dsh_sai_da_oferta_e_cai_no_local` **FAILED** |
+
+### #711 — script que importa `app` isola o estado em tmp
+
+| Sabotagem | Resultado |
+|---|---|
+| tirar a chamada `isola()` de um smoke | `test_smokes_isolam_o_estado_do_app_em_tmp` **FAILED** |
+| importar o helper DEPOIS de `import app` | mesma célula **FAILED** |

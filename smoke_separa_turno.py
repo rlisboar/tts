@@ -31,6 +31,9 @@ sys.path.insert(0, str(RAIZ))
 import numpy as np                                   # noqa: E402
 import soundfile as sf                               # noqa: E402
 
+sys.path.insert(0, str(RAIZ / "tests"))
+from _estado_tmp import isola                        # noqa: E402
+
 BASE = pathlib.Path(os.environ.get("BAKEOFF_DIR", "/tmp/tts-bakeoff"))
 FALA = BASE / "fala"
 RUIDO = BASE / "ruido"
@@ -78,6 +81,7 @@ def _grava(pcm: np.ndarray, destino: pathlib.Path) -> pathlib.Path:
 def main() -> int:
     if not FALA.exists():
         raise SystemExit(f"sem corpus em {FALA}: rode `tools/bakeoff/corpus.py publico`")
+    _isola_estado()
     import app
     import separa_voz
 
@@ -150,6 +154,12 @@ def main() -> int:
     ok = p50 <= PISO_LAT_MS
     print("VEREDITO:", "OK" if ok else "REPROVADO")
     return 0 if ok else 1
+
+
+def _isola_estado() -> None:
+    """Estado do app em tmp (#711): sem isto o `_apply_settings` daqui grava
+    `settings.json` no worktree."""
+    isola()
 
 
 if __name__ == "__main__":                       # pragma: no cover

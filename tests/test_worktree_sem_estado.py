@@ -349,3 +349,21 @@ def test_verifica_por_conteudo_nao_por_nome(falso):
                        cwd=str(a), capture_output=True, text=True)
     assert r.returncode == 1, r.stdout + r.stderr
     assert "fixture.wav" in r.stderr
+
+
+def test_smokes_isolam_o_estado_do_app_em_tmp():
+    """#732: script que importa `app` direto tem de isolar o estado ANTES.
+
+    O `conftest` isola o pytest, mas smoke/medição rodada à mão não passa por ele:
+    um `_apply_settings` gravava `settings.json` DENTRO do worktree e o diretório
+    passava a ter estado do dono. Todo script que importa `app` chama
+    `_estado_tmp.isola()` antes do import."""
+    for nome in ("smoke_so_minha_voz.py", "smoke_separa_turno.py",
+                 "tests/mede_intencao.py"):
+        fonte = (REPO / nome).read_text()
+        pos_isola = fonte.find("from _estado_tmp import")
+        pos_app = fonte.find("import app")
+        assert pos_isola >= 0, f"{nome} não isola o estado do app (use _estado_tmp)"
+        assert pos_isola < pos_app, (
+            f"{nome} isola DEPOIS de importar o app — o import já gravou no worktree")
+        assert "isola()" in fonte, f"{nome} importa o helper mas não CHAMA isola()"

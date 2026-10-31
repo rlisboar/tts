@@ -31,6 +31,10 @@ sys.path.insert(0, str(RAIZ))
 import numpy as np                                             # noqa: E402
 import soundfile as sf                                         # noqa: E402
 
+sys.path.insert(0, str(RAIZ / "tests"))
+from _estado_tmp import isola                                   # noqa: E402
+isola()                             # #711: estado em tmp, nunca no worktree
+
 BASE = pathlib.Path(os.environ.get("BAKEOFF_DIR", "/tmp/tts-bakeoff"))
 FALA = BASE / "fala"
 RUIDO = BASE / "ruido"
