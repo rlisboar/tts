@@ -31,11 +31,6 @@ AQUI = Path(__file__).resolve().parent
 PY = RAIZ / ".venv-mlx" / "bin" / "python"
 ISCA = "ISCA-CANARIO-NAO-CHEGUE-NA-RODADA"
 
-#: suítes que PODEM tocar o estado da raiz, com o motivo. Todas são leitura de
-#: COMPARAÇÃO (régua de "o dono não foi tocado"), nunca fonte do que a rodada usa.
-EXCECOES: dict[str, tuple[str, ...]] = {}   # nenhuma suíte lê o estado da raiz
-                                           # (a chave sintética do `live_ws` é gerada por ela)
-
 #: caminhos do estado do dono que a suíte não pode ler como FONTE
 PADROES = (
     r'RAIZ / "settings\.json"',
@@ -60,9 +55,6 @@ def test_nenhuma_suite_usa_o_estado_da_raiz_como_fonte():
         for padrao in PADROES:
             for m in re.finditer(padrao, texto):
                 trecho = texto[max(0, m.start() - 40):m.end() + 40].splitlines()
-                if arq.name in EXCECOES and any(
-                        re.search(permitido, m.group(0)) for permitido in EXCECOES[arq.name]):
-                    continue
                 linha = texto[:m.start()].count("\n") + 1
                 problemas.append(f"{arq.name}:{linha} `{m.group(0)}` "
                                  f"({trecho[len(trecho) // 2].strip()[:60]})")
