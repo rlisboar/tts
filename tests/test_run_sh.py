@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -678,3 +679,32 @@ def test_varredura_de_orfao_nao_mata_rodada_viva(tmp_path):
                 os.killpg(sinal, _signal.SIGTERM)
             except OSError:
                 pass
+
+
+def test_freeze_nao_liga_o_voices_real_e_duas_rodadas_seguidas(tmp_path):
+    """`voices` é estado do DONO: a cópia do freeze não pode ligá-lo (#703).
+
+    Com o link, o servidor da medida lia o diretório real e — pior — o `ln -s` sem
+    `-n` seguia um `voices` que já fosse link e criava `voices/voices` DENTRO do
+    dado do dono (aconteceu duas vezes). Aqui: duas rodadas seguidas, nenhum
+    symlink dentro do `voices` da cópia e a listagem real intacta por fora."""
+    real = AQUI.parent / "voices"
+    antes = sorted(p.name for p in real.iterdir()) if real.is_dir() else []
+    for rodada in (1, 2):
+        copia_txt = tmp_path / f"copia{rodada}.txt"
+        r = _rodar("rapido", env={
+            "SUITES": str(AQUI / "live_lock_freeze.sh"), "MORDIDA": "1",
+            "FREEZE_SONO": "0.15", "TETO_S": "300", "SONDA_SAIDA": str(copia_txt),
+            "TTS_SERIAL_LOCK": str(tmp_path / "lock"), "TTS_SERIAL_ESPERA": "60",
+            "FREEZE_MANTER": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        copia = Path(copia_txt.read_text().strip())
+        tmp_path.joinpath(f"copia{rodada}.dir").write_text(str(copia))
+        voz = copia / "voices"
+        assert voz.is_dir() and not voz.is_symlink(), f"rodada {rodada}: voices é LINK"
+        assert (voz / "voz.wav").is_file(), f"rodada {rodada}: a fixture não foi para a cópia"
+        ligados = [str(p) for p in voz.rglob("*") if p.is_symlink()]
+        assert not ligados, f"rodada {rodada}: symlink dentro do voices da cópia: {ligados}"
+        depois = sorted(p.name for p in real.iterdir()) if real.is_dir() else []
+        assert depois == antes, f"rodada {rodada}: o voices REAL mudou ({set(depois) ^ set(antes)})"
+        shutil.rmtree(copia, ignore_errors=True)   # FREEZE_MANTER: a limpeza é minha

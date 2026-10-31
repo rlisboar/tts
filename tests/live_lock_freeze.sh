@@ -120,12 +120,21 @@ if [ -z "$ARVORE" ]; then
        | tar -xf - -C "$ARVORE" 2>/dev/null; then
     echo "✖ não consegui copiar a árvore para $ARVORE" >&2; rm -rf "$ARVORE"; exit 1
   fi
-  ln -s "$RAIZ/.venv-mlx" "$ARVORE/.venv-mlx"
-  ln -s "$RAIZ/voices" "$ARVORE/voices"
-  ln -s "$RAIZ/models" "$ARVORE/models"
+  # `-n` é obrigatório: sem ele, se o alvo já existir como LINK o `ln` segue e cria
+  # um link DENTRO do destino (`voices/voices` dentro do dado do dono, duas vezes).
+  ln -sfn "$RAIZ/.venv-mlx" "$ARVORE/.venv-mlx"
+  ln -sfn "$RAIZ/models" "$ARVORE/models"
+  # `voices` NÃO é ligado: o estado do dono fica fora da medida. A cópia ganha uma
+  # pasta própria com a fixture (a voz do cadastro) (#703).
+  mkdir -p "$ARVORE/voices"
+  # `-n`: com `FREEZE_ARVORE=$PWD` (receita do MORDIDAS) o alvo é a própria raiz e
+  # o `cp` deixaria a fixture no `voices/` do worktree.
+  cp -n "$RAIZ/tests/fixtures/voz_sintetica/voz.wav" "$ARVORE/voices/"
   mkdir -p "$ARVORE/outputs"
   _limpa_arvore() { [ -n "${ARVORE:-}" ] && rm -rf "$ARVORE"; }
-  trap '_limpa_arvore' EXIT
+  # `FREEZE_MANTER=1`: quem chamou quer inspecionar a cópia depois (a célula do
+  # #703 lê o `voices` dela) e assume a limpeza.
+  [ "${FREEZE_MANTER:-0}" = "1" ] || trap '_limpa_arvore' EXIT
 fi
 echo "· árvore de trabalho (cópia): $ARVORE"
 # `SONDA_SAIDA` (convenção das sondas): o teste lê o caminho da cópia — o runner só
@@ -201,7 +210,7 @@ PYM
   }
   # `_teto_matar`: este trap SOBRESCREVE o do `serial.sh` e o vigia do teto
   # sobreviveria ao shell, matando por teto alheio quem herdasse o PID (#592).
-  trap 'restaura; serial_solta; _teto_matar; _limpa_arvore' EXIT
+  trap 'restaura; serial_solta; _teto_matar; [ "${FREEZE_MANTER:-0}" = "1" ] || _limpa_arvore' EXIT
   trap 'exit 130' INT TERM
 
   echo "══ MORDIDA 1/2 — app.py COMO ESTÁ (o fix): tem de sair 0"
@@ -356,7 +365,9 @@ def cena(preso):
                 "TTS_APIKEYS_PATH": str(tmp / "apikeys.json"),
                 "TTS_LEGACY_APIKEY_PATH": str(tmp / "apikey"),
                 "TTS_OUTPUTS_DIR": str(tmp / "outputs"),
-                "TTS_SPEAKER_PATH": str(tmp / "perfis.json")}
+                "TTS_SPEAKER_PATH": str(tmp / "perfis.json"),
+                # voz do cadastro: pasta da CÓPIA (nunca o `voices/` do dono, #703)
+                "TTS_VOICES_DIR": str(RAIZ / "voices")}
     logf = open(logp, "w")
     proc = subprocess.Popen([PY, str(tmp / "servidor.py")], env=ambiente,
                             stdout=logf, stderr=subprocess.STDOUT)

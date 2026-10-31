@@ -49,8 +49,11 @@ _destino() { printf '%s/%s' "$PASTA" "$1"; }
 # sha256sums) já é arquivo rastreado do worktree, não pode virar symlink.
 _liga_o_que_nao_pode_copiar() {
     local destino="$1" rel
+    # `-n`: alvo que JÁ é link não pode ser seguido (senão nasce `x/x` dentro do
+    # dado do dono — `voices/voices`, duas vezes no #703).
     if [ -d "$RAIZ/.venv-mlx" ]; then
-        ln -s "$RAIZ/.venv-mlx" "$destino/.venv-mlx"
+        [ -e "$destino/.venv-mlx" ] || [ -L "$destino/.venv-mlx" ] || \
+            ln -sfn "$RAIZ/.venv-mlx" "$destino/.venv-mlx"
     else
         echo "  ⚠ sem .venv-mlx na raiz — o worktree vai precisar de um venv" >&2
     fi
@@ -61,9 +64,9 @@ _liga_o_que_nao_pode_copiar() {
             echo "  ⚠ peso do manifesto ausente na raiz: $rel (rode tools/baixa_modelos.sh)" >&2
             continue
         fi
-        [ -e "$destino/$rel" ] && continue
+        [ -e "$destino/$rel" ] || [ -L "$destino/$rel" ] && continue
         mkdir -p "$(dirname "$destino/$rel")"
-        ln -s "$RAIZ/$rel" "$destino/$rel"
+        ln -sfn "$RAIZ/$rel" "$destino/$rel"
     done < "$SUMS"
 }
 

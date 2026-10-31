@@ -215,7 +215,20 @@ def test_guarda_nomeia_quem_tocou_o_arquivo_do_dono():
     if real is None or not real.exists():
         pytest.skip("sem settings.json na raiz do dono (cópia sem estado)")
     antes = conftest._impressao_do_dono()
-    os.utime(real)
+    try:
+        os.utime(real)
+    except PermissionError:
+        # `settings.json` do dono com a flag `uchg` (imutável): utime e escrita dão
+        # EPERM. Tira a flag, toca e devolve a flag — sem tocar no conteúdo.
+        import stat as _stat
+        imutavel = bool(real.stat().st_flags & _stat.UF_IMMUTABLE)
+        if not imutavel:
+            raise
+        os.chflags(real, 0)
+        try:
+            os.utime(real)
+        finally:
+            os.chflags(real, _stat.UF_IMMUTABLE)
     conftest._atribuir_escritas(antes, "tests/test_exemplo.py::test_x")
     assert "tests/test_exemplo.py::test_x escreveu settings.json" in conftest._escritas_no_dono
 

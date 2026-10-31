@@ -311,6 +311,17 @@ passa pela limpeza normal; o TERM não levanta nada. O trap cobre os dois e a ro
 seguinte varre pidfiles de grupos anteriores — varredura que NÃO pode derrubar
 rodada concorrente: o dono do pidfile (PID no nome) vivo é vizinho, morto é órfão.
 
+## #703 — suíte de medição não liga o `voices` do dono
+
+| Sabotagem | Resultado |
+|---|---|
+| volta o `ln -s "$RAIZ/voices" "$ARVORE/voices"` | `test_freeze_nao_liga_o_voices_real_e_duas_rodadas_seguidas` **FAILED**: "voices é LINK" |
+
+O `ln -s` sem `-n` SEGUE um alvo que já é link e cria `voices/voices` DENTRO do dado
+do dono (aconteceu duas vezes, 03:20 e no `cf52376`). A cópia passa a ter pasta
+própria com a fixture e exporta `TTS_VOICES_DIR`; a célula roda DUAS vezes seguidas
+e cobra nenhum symlink na pasta da cópia e a listagem real igual.
+
 ## #659 — suíte em worktree SEM estado do dono
 
 | Sabotagem | Resultado |
