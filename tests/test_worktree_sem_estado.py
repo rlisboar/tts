@@ -76,6 +76,14 @@ def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
                "TTS_METRICS_DIR": str(tmp_path / "metricas")}
         for arq in ("SETTINGS_PATH", "APIKEYS_PATH", "LEGACY_APIKEY_PATH", "VOICES_DIR"):
             env.pop(f"TTS_{arq}", None)
+        # `TTS_DONO_DIR` do filho é um "dono" de MENTIRA (#710): sem ele o
+        # `_raiz_do_dono()` do filho resolve para a raiz PRINCIPAL e qualquer célula
+        # que mexa no dono muda o arquivo do dono de verdade (foi o que aconteceu às
+        # 10:21, antes da célula da guarda passar a usar dono falso).
+        dono_falso = tmp_path / "dono"
+        dono_falso.mkdir()
+        (dono_falso / "settings.json").write_text('{"model": "sintetico"}')
+        env["TTS_DONO_DIR"] = str(dono_falso)
         for arquivo, filtro in FATIA:
             r = subprocess.run([str(PY), "-m", "pytest", arquivo, "-q", "-k", filtro],
                                cwd=str(wt), capture_output=True, text=True,
