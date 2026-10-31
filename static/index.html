@@ -530,6 +530,11 @@
     cursor: pointer; font-size: 12px; color: var(--muted); padding: 2px 0;
   }
   .sp-avancado > summary:hover { color: var(--text); }
+  .sp-assist { margin-top: 6px; }
+  .sp-medidor { font-variant-numeric: tabular-nums; }
+  .sp-medidor.ok { color: var(--ok); }
+  .sp-medidor.warn { color: var(--warn); }
+  .sp-medidor[hidden] { display: none; }
   .sp-extrator { color: var(--warn); border-left: 3px solid var(--warn); padding-left: 8px; }
   .sp-extrator[hidden] { display: none; }
 
@@ -1098,6 +1103,23 @@
     display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
     flex-shrink: 0; margin-left: auto; padding-top: 2px;
   }
+  /* prévia A/B da limpeza (#528): painel na linha de baixo do item, com os dois
+     lados lado a lado e os números do servidor */
+  .item { flex-wrap: wrap; }
+  .ab-previa {
+    flex-basis: 100%; order: 9; margin-top: 10px; padding: 10px 12px;
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 8px; background: var(--elevated);
+  }
+  .ab-previa .ab-pars {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;
+  }
+  .ab-previa .ab-par { display: flex; flex-direction: column; gap: 4px; }
+  .ab-previa .ab-par span { font-size: 11.5px; color: var(--muted); }
+  .ab-previa .ab-par audio { width: 100%; height: 32px; }
+  .ab-previa .ab-num { font-size: 12px; color: var(--muted); margin: 8px 0 6px; }
+  .ab-previa .ab-num b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .ab-previa .ab-recusa { color: var(--warn); font-size: 12px; margin: 6px 0; }
   .item .wrow {
     margin-top: 10px; padding: 8px 10px;
     background: var(--sunken); border: 1px solid var(--border); border-radius: 8px;
@@ -3240,6 +3262,13 @@
           <p class="hint" style="margin:2px 0 0">O perfil precisa de <b>3 amostras</b> (o alvo é 5) —
             uma vai melhorando a outra; a 1ª <b>não</b> fecha o cadastro.</p>
         </div>
+        <!-- assistente (#528): frase pronta e medidor AO VIVO durante a gravação,
+             para a pessoa corrigir antes de gastar a amostra -->
+        <div class="sp-assist" id="spAssistente">
+          <p class="hint" style="margin:0">Frase sugerida: <b id="spFrase"></b>
+            <button type="button" class="ghost small" id="spOutraFrase">outra frase</button></p>
+          <p class="hint sp-medidor" id="spMedidor" role="status" aria-live="polite" hidden></p>
+        </div>
         <div class="row2" style="gap:8px; margin-top:6px">
           <input type="text" id="spName" placeholder="nome do perfil (ex.: você)" maxlength="40"
                  title="até 40 caracteres (o servidor trunca além disso)" style="flex:1; min-width:120px">
@@ -4853,15 +4882,85 @@ async function refreshVoices() {
       };
       const cb = div.querySelector(".clean");
       if (cb) cb.onclick = async () => {
-        cb.disabled = true; cb.textContent = "limpando…";
+        cb.disabled = true;
+        const restaurar = () => { cb.disabled = false; cb.textContent = "Limpar"; };
+        cb.textContent = "preparando prévia…";
+        let resp = null;
         try {
-          await api(`/api/voices/${v.id}/denoise`, {
+          resp = await authFetch(`/api/voices/${encodeURIComponent(v.id)}/denoise?previa=true`, {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ strength: 0.7 })
           });
-          toast("Voz limpa ✔ — regenere a fala p/ ouvir o efeito");
-          refreshVoices();
-        } catch (e) { toast("Erro: " + e.message); cb.disabled = false; cb.textContent = "limpar"; }
+        } catch (e) { resp = null; }
+        // servidor sem a prévia: comportamento antigo (aplica direto)
+        if (!resp || resp.status === 404) {
+          cb.textContent = "limpando…";
+          try {
+            await api(`/api/voices/${v.id}/denoise`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ strength: 0.7 })
+            });
+            toast("Voz limpa ✔ — regenere a fala p/ ouvir o efeito");
+            refreshVoices();
+          } catch (e) { toast("Erro: " + e.message, 6000); restaurar(); }
+          return;
+        }
+        if (!resp.ok) {
+          let d = resp.statusText;
+          try { d = (await resp.json()).detail || d; } catch (e) {}
+          toast("Erro: " + d, 6000); restaurar(); return;
+        }
+        const recusado = resp.headers.get("X-Recusado") === "1";
+        const motivo = resp.headers.get("X-Motivo") || "";
+        const timbre = parseFloat(resp.headers.get("X-Timbre") || "");
+        const dnA = resp.headers.get("X-Dnsmos-Antes") || "";
+        const dnD = resp.headers.get("X-Dnsmos-Depois") || "";
+        const dnMot = resp.headers.get("X-Dnsmos-Motivo") || "";
+        let blob = null;
+        try { blob = await resp.blob(); } catch (e) {}
+        restaurar();
+        div.querySelector(".ab-previa")?.remove();
+        const painel = document.createElement("div");
+        painel.className = "ab-previa";
+        const num = [];
+        if (dnA || dnD) num.push(`DNSMOS <b>${esc(dnA || "—")}</b> → <b>${esc(dnD || "—")}</b>`
+                                + (dnMot ? ` (${esc(dnMot)})` : ""));
+        if (Number.isFinite(timbre)) num.push(`timbre preservado <b>${Math.round(timbre * 100)}%</b>`);
+        painel.innerHTML = `
+          <div class="ab-pars">
+            <label class="ab-par"><span>antes</span><audio controls></audio></label>
+            <label class="ab-par"><span>depois (limpa)</span><audio controls></audio></label>
+          </div>
+          ${num.length ? `<p class="ab-num">${num.join(" · ")}</p>` : ""}
+          ${recusado ? `<p class="ab-recusa">⚠ a guarda recusou: ${esc(motivo || "a limpeza piorou a amostra")}`
+                        + ` — o original fica como está</p>` : ""}
+          <div class="row2" style="gap:8px; margin-top:6px">
+            <button type="button" class="small ab-aplicar"${recusado ? ' disabled title="a guarda recusou — nada a aplicar"' : ""}>Aplicar limpeza</button>
+            <button type="button" class="ghost small ab-descartar">Descartar</button>
+          </div>`;
+        div.appendChild(painel);
+        const [aAntes, aDepois] = painel.querySelectorAll("audio");
+        protectedAudio(aAntes, `/api/voices/${v.id}/audio?_v=${buster}`);
+        if (blob) { aDepois.src = URL.createObjectURL(blob); }
+        painel.querySelector(".ab-descartar").onclick = () => {
+          if (aDepois.src.startsWith("blob:")) URL.revokeObjectURL(aDepois.src);
+          painel.remove();
+        };
+        const ap = painel.querySelector(".ab-aplicar");
+        ap.onclick = async () => {
+          ap.disabled = true; ap.textContent = "aplicando…";
+          try {
+            await api(`/api/voices/${v.id}/denoise`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ strength: 0.7 })
+            });
+            toast("Voz limpa ✔ — regenere a fala p/ ouvir o efeito");
+            refreshVoices();          // o painel morre junto com a lista
+          } catch (e) {
+            toast("Erro ao aplicar: " + e.message, 6000);
+            ap.disabled = false; ap.textContent = "Aplicar limpeza";
+          }
+        };
       };
       const ub = div.querySelector(".undo");
       if (ub) {
@@ -7194,6 +7293,69 @@ async function refreshSpProfiles() {
 $("spThr")?.addEventListener("input", () => { $("spThrOut").textContent = (+$("spThr").value).toFixed(2); });
 // trocar o alvo muda o que decide: o rótulo do número cru acompanha na hora
 $("spFarAlvo")?.addEventListener("change", () => spRigorNota($("spFarAlvo").value));
+//: frases do assistente: dizem o que falar e variam para não decorar o timbre
+const SP_FRASES = [
+  "Falo assim quando explico uma ideia com calma e sem pressa.",
+  "Hoje o dia amanheceu bonito e eu acordei cedo para trabalhar.",
+  "Meu nome é o nome do perfil e esta é a minha voz normal.",
+];
+let spFraseN = 0;
+
+//: medidor AO VIVO (#528): manda trechos de ~2,5 s para `/api/speaker/avalia`
+//: enquanto grava e mostra fala acumulada e ruído. Servidor sem o endpoint (404)
+//: esconde o medidor — a gravação segue como antes.
+function spMedidorInicia(stream) {
+  const el = $("spMedidor");
+  if (!el) return null;
+  let vivo = true, fala = 0, rec = null, tmr = 0;
+  el.hidden = false; el.className = "hint sp-medidor";
+  el.textContent = "medindo o ambiente…";
+  const pinta = r => {
+    if (!vivo) return;
+    const snr = r.snr_db;
+    const ruidoso = (r.problemas || []).some(p => p.startsWith("ruído"));
+    const pronto = fala >= SP_MIN_AMOSTRAS;
+    el.className = "hint sp-medidor " + (pronto && !ruidoso ? "ok" : ruidoso ? "warn" : "");
+    el.textContent = `fala ${fala.toFixed(1)}s de ${SP_MIN_AMOSTRAS}s`
+      + (snr != null ? ` · SNR ${snr} dB` : "")
+      + (pronto && !ruidoso ? " · ✔ pode concluir"
+         : ruidoso ? " · ⚠ ambiente ruidoso — aproxime o mic e abafe a fonte"
+         : " · siga falando");
+  };
+  const ciclo = () => {
+    if (!vivo) return;
+    rec = new MediaRecorder(stream);
+    const pedacos = [];
+    rec.ondataavailable = ev => ev.data.size && pedacos.push(ev.data);
+    rec.onstop = async () => {
+      const blob = new Blob(pedacos, { type: rec.mimeType || "audio/webm" });
+      if (vivo && blob.size) {
+        const fd = new FormData(); fd.append("audio", blob, "medida.webm");
+        try {
+          const r = await api("/api/speaker/avalia", { method: "POST", body: fd });
+          fala += Number(r.fala_s) || 0; pinta(r);
+        } catch (e) {
+          if (e && e.status === 404) { vivo = false; el.hidden = true; }
+        }
+      }
+      if (vivo) tmr = setTimeout(ciclo, 150);
+    };
+    try { rec.start(); } catch (e) { vivo = false; return; }
+    tmr = setTimeout(() => { try { if (rec.state === "recording") rec.stop(); } catch (e) {} }, 2500);
+  };
+  ciclo();
+  return { parar() {
+    vivo = false; clearTimeout(tmr);
+    try { if (rec && rec.state === "recording") rec.stop(); } catch (e) {}
+    el.hidden = true; el.textContent = "";
+  } };
+}
+$("spOutraFrase")?.addEventListener("click", () => {
+  spFraseN = (spFraseN + 1) % SP_FRASES.length;
+  if ($("spFrase")) $("spFrase").textContent = SP_FRASES[spFraseN];
+});
+if ($("spFrase")) $("spFrase").textContent = SP_FRASES[0];
+
 async function spGravar(segundos, st) {
   // mesma cadeia das demais telas: biometria cadastrada por outro caminho de áudio
   // desalinha o limiar usado na escuta real
@@ -7202,6 +7364,7 @@ async function spGravar(segundos, st) {
   const rec = new MediaRecorder(cap.stream);
   const pedacos = [];
   rec.ondataavailable = ev => ev.data.size && pedacos.push(ev.data);
+  const medidor = spMedidorInicia(cap.stream);
   rec.start();
   let faltam = segundos;
   st.textContent = `🔴 gravando… ${faltam}s`;
@@ -7210,7 +7373,7 @@ async function spGravar(segundos, st) {
     if (faltam > 0) st.textContent = `🔴 gravando… ${faltam}s`;
     else { clearInterval(t); rec.stop(); }
   }, 1000);
-  await new Promise(res => rec.onstop = () => { res(); cap.close(); });
+  await new Promise(res => rec.onstop = () => { res(); cap.close(); medidor?.parar(); });
   return new Blob(pedacos, { type: rec.mimeType || "audio/webm" });
 }
 

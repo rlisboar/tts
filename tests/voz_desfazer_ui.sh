@@ -61,16 +61,25 @@ for d in (VOZES, DIR / "outputs"):
     d.mkdir(parents=True, exist_ok=True)
 (DIR / "settings.json").write_text("{}")
 
-# duas vozes: uma SEM original (nunca editada) e outra que será editada de verdade
+# duas vozes: uma SEM original (nunca editada) e outra que será editada de verdade.
+# A editada usa FALA de verdade: desde o #523 a guarda de timbre RECUSA a limpeza
+# de um tom puro (`recusado_por: nivel`, nada escrito) e sem recusa não há `.orig`
+# — o teste do desfazer ficava impossível com senoide.
 import numpy as np, soundfile as sf
+FALA = pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")
 def cria(vid, freq):
     n = int(1.2 * 16000)
     a = (np.sin(2 * np.pi * freq * np.arange(n) / 16000) * 0.3 + 0.01 * np.random.randn(n))
     sf.write(str(VOZES / f"{vid}.wav"), np.clip(a, -1, 1).astype("<f4"), 16000, subtype="PCM_16")
     (VOZES / f"{vid}.json").write_text(json.dumps(
         {"id": vid, "name": vid, "created_at": "2026-01-01 00:00:00", "duration": 1.2}))
+def cria_fala(vid):
+    import shutil as _sh
+    _sh.copy(FALA, str(VOZES / f"{vid}.wav"))
+    (VOZES / f"{vid}.json").write_text(json.dumps(
+        {"id": vid, "name": vid, "created_at": "2026-01-01 00:00:00", "duration": 5.0}))
 cria("voz-limpa", 220)
-cria("voz-editada", 330)
+cria_fala("voz-editada")
 ORIGINAL = VOZES / "voz-editada.orig.wav"
 
 porta_key = porta_livre()          # sobe depois: a chave `use` só é usada na 2ª fase
