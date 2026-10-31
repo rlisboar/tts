@@ -100,6 +100,11 @@ def _inc(tmp_path, mudo=False, quebra=False, timeout_ms=5000,
     return inc
 
 
+def _stub_real():
+    """O worker de VERDADE (modelo) — só a célula de acerto usa."""
+    return RAIZ / "intencao_worker.py"
+
+
 def _aquece(inc) -> bool:
     """Sobe o stub apontando o módulo para ele (o worker real é o do repo)."""
     live_intencao.WORKER = inc._script
@@ -177,6 +182,46 @@ def test_duas_decisoes_simultaneas_nao_trocam_resposta(tmp_path):
         t.join(15)
     assert saida["a"]["decisao"] == "cortar"
     assert saida["b"]["decisao"] == "continuar"
+
+
+def test_acerto_minimo_e_melhor_que_as_regras():
+    """O aceite do #507: acerto >=85% no corpus e ACIMA das regras no mesmo corpus.
+
+    É a célula que separa "o modelo decide" de "um rótulo fixo passa": fixando a
+    probabilidade o acerto cai para 50% (o corpus é 35/35) e reprova aqui. A mordida
+    é na `p_cortar`, não no campo `decisao` — o pai RECALCULA o rótulo por
+    `p >= LIMIAR`, então fixar só o `decisao` do worker passa despercebido. Prazo
+    folgado de propósito — na suíte cheia o Metal é disputado e o `None` do prazo
+    de produção (400 ms) apareceria por mérito da carga, não do modelo; o número de
+    produção é cobrado no `mede_intencao.py`."""
+    import json
+
+    corpus = [json.loads(l) for l in
+              (Path(__file__).parent / "fixtures" / "intencao_corpus.jsonl").read_text().splitlines()
+              if l.strip()]
+    assert len(corpus) >= 60, f"corpus pequeno demais: {len(corpus)}"
+
+    from mede_intencao import regra_decisao      # baseline do mesmo corpus
+
+    regras = sum(1 for c in corpus if regra_decisao(c["fala"]) == c["esperado"])
+    inc = live_intencao.Intencao(python=sys.executable, timeout_ms=1500)
+    live_intencao.WORKER = _stub_real()
+    if not inc.aquece(espera_s=120):
+        pytest.skip(f"modelo não subiu: {inc.erro}")
+
+    acertos, sem_resposta = 0, 0
+    for c in corpus:
+        r = inc.decide(c["ref"], c["fala"], c["idioma"])
+        if r is None:
+            sem_resposta += 1
+            continue
+        acertos += r["decisao"] == c["esperado"]
+    total = len(corpus)
+    print(f"\nmodelo {acertos}/{total} = {100 * acertos / total:.1f}% "
+          f"| regras {regras}/{total} = {100 * regras / total:.1f}% "
+          f"| sem resposta {sem_resposta}")
+    assert acertos >= 0.85 * total, f"acerto {acertos}/{total} abaixo de 85%"
+    assert acertos > regras, f"modelo ({acertos}) não ganhou das regras ({regras})"
 
 
 # -- worker único, TTL e stats ------------------------------------------------
