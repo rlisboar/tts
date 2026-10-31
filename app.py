@@ -4784,7 +4784,7 @@ def _guarda_original(voice_id: str) -> None:
     destino = VOICES_DIR / f"{voice_id}.orig.wav"
     if destino.exists() or not origem.exists():
         return
-    tmp = VOICES_DIR / f".orig-{voice_id}"
+    tmp = VOICES_DIR / f".orig-{voice_id}-{uuid.uuid4().hex[:8]}"
     shutil.copy2(origem, tmp)
     os.replace(tmp, destino)
 
@@ -4855,7 +4855,9 @@ def denoise_voice(voice_id: str, payload: dict = None, previa: bool = False):
     _guarda_original(voice_id)          # antes de sobrescrever (#443)
     # troca ATÔMICA (#690): com a prévia lendo o mesmo `.wav` em paralelo, gravar
     # por cima deixava o outro lado lendo arquivo pela metade (cabeçalho truncado).
-    tmp_denoise = VOICES_DIR / f".denoise-{voice_id}.wav"
+    # sufixo único: duas aplicações simultâneas da MESMA voz não compartilham o
+    # temporário (a última troca vence, nenhuma lê a outra pela metade)
+    tmp_denoise = VOICES_DIR / f".denoise-{voice_id}-{uuid.uuid4().hex[:8]}.wav"
     sf.write(str(tmp_denoise), data, sr, subtype="PCM_16")
     os.replace(tmp_denoise, path)
     _conds_cache.clear()
@@ -6897,7 +6899,7 @@ def _auto_cleanup_once():
         removidos += 1
     # Temporários de uploads podem sobreviver a timeout/crash. Limpa somente
     # arquivos conhecidos e antigos, nunca outputs finais.
-    return removidos + _limpa_temporarios()
+    return removidos + _limpa_temporarios() + _limpa_temporarios_de_voices()
 
 
 def _limpa_temporarios() -> int:
@@ -6914,6 +6916,26 @@ def _limpa_temporarios() -> int:
         for tmp in OUTPUTS_DIR.glob(pattern):
             try:
                 if tmp.is_file() and tmp.stat().st_mtime < temp_cutoff:
+                    tmp.unlink(missing_ok=True)
+                    removidos += 1
+            except OSError:
+                pass
+    return removidos
+
+
+def _limpa_temporarios_de_voices() -> int:
+    """Remove temporários órfãos de `voices/` — crash entre o write e o replace.
+
+    `.denoise-*` e `.orig-*` vivem em `voices/` de propósito (mesmo sistema de
+    arquivos, `os.replace` atômico). Se o processo cair no meio, sobra o arquivo:
+    ele não aparece na listagem (que anda por `*.json`) nem no export (que ignora
+    ponto), mas fica no disco para sempre sem esta poda."""
+    removidos = 0
+    corte = time.time() - 6 * 3600
+    for pattern in (".denoise-*", ".orig-*"):
+        for tmp in VOICES_DIR.glob(pattern):
+            try:
+                if tmp.is_file() and tmp.stat().st_mtime < corte:
                     tmp.unlink(missing_ok=True)
                     removidos += 1
             except OSError:

@@ -7454,3 +7454,59 @@ def test_live_ws_fechar_avisa_session_fechada_nao_ociosa(ws_client, live_limpo,
         assert "ociosa" not in aviso["message"], aviso["message"]
         with pytest.raises(WebSocketDisconnect):
             ws.receive_json()
+
+
+def test_temporarios_de_voices_nao_ficam_para_sempre(client, auth, voices_tmp,
+                                                     monkeypatch):
+    """Órfão do `denoise`/`.orig` em `voices/` é podado, e não vaza na listagem.
+
+    O temporário fica em `voices/` de propósito (mesmo FS para o `os.replace`
+    atômico do #690). Se o processo cair entre o write e o replace, ele sobra —
+    sem esta poda ficaria para sempre e a listagem por `*.json` não o veria."""
+    import os as _os
+
+    _voz_para_limpar(voices_tmp)          # a voz de verdade, com o .json
+    orfao = voices_tmp / ".denoise-limpa00001-deadbeef.wav"
+    orfao.write_bytes(b"RIFF....")
+    recente = voices_tmp / ".orig-limpa00001-cafebabe"
+    recente.write_bytes(b"RIFF....")
+    velho = time.time() - 7 * 3600
+    _os.utime(orfao, (velho, velho))
+    # pela entrada PÚBLICA: cobra também a fiação em `_auto_cleanup_once`
+    assert app._auto_cleanup_once() >= 1, "a poda não está ligada na limpeza"
+    assert not orfao.exists() and recente.exists(), "podou o recente ou deixou o velho"
+    # e a listagem não os mostra como voz
+    corpo = client.get("/api/voices", headers=auth).json()
+    vozes = corpo if isinstance(corpo, list) else corpo["voices"]
+    ids = [v["id"] for v in vozes]
+    assert "limpa00001" in ids, ids
+    assert not [i for i in ids if i.startswith(".")], ids
+
+
+def test_denoise_temporarios_de_duas_chamadas_nao_colidem(client, auth, voices_tmp,
+                                                         monkeypatch):
+    """Duas aplicações usam temporários DISTINTOS para a mesma voz.
+
+    Com nome fixo (`.denoise-<id>.wav`) a segunda escrevia por cima do temporário
+    da primeira e uma das trocas publicava arquivo pela metade."""
+    import soundfile as _sf
+
+    _voz_para_limpar(voices_tmp)
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: np.asarray(a, dtype=np.float32))
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: 0.95)
+    temporarios = []
+    real = _sf.write
+
+    def _espia(destino, *a, **k):
+        nome = Path(str(destino)).name
+        if nome.startswith(".denoise-"):
+            temporarios.append(nome)
+        return real(destino, *a, **k)
+
+    monkeypatch.setattr(_sf, "write", _espia)
+    assert client.post("/api/voices/limpa00001/denoise", headers=auth).status_code == 200
+    assert client.post("/api/voices/limpa00001/denoise", headers=auth).status_code == 200
+    assert len(temporarios) == 2 and temporarios[0] != temporarios[1], temporarios
+    assert not list(voices_tmp.glob(".denoise-*")), "sobrou temporário"
