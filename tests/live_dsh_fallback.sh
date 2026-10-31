@@ -79,6 +79,12 @@ env = {**os.environ,
        "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1", "TTS_CHAT_MODEL": "stub-fallback",
        "TTS_CHAT_BACKEND": "dsh",           # pede o dsh…
        "TTS_CHAT_DSH_BIN": "/bin/false",    # …que morre no handshake
+       # prazo do gate de pre-warm bem folgado: o cliente já transmite o mic assim
+       # que a sessão abre, e com o prazo curto (2 s) o aviso de "aquecendo" sai
+       # quase sempre — aí a suíte não consegue cobrar o comportamento são. Com o
+       # prazo folgado o turno ESPERA o pipeline (é o que o #315 quer) e o aviso
+       # só aparece se o servidor não esperar mesmo.
+       "TTS_LIVE_ESPERA_PREWARM_S": "60",
        # estado próprio (#541): o arquivo do dono não entra na rodada
        "TTS_SETTINGS_PATH": str(DIR_TMP / "settings.json"),
        "TTS_APIKEYS_PATH": str(DIR_TMP / "apikeys.json"),
@@ -125,7 +131,14 @@ try:
         def guarda(f):
             dado = getattr(f, "payload", f)
             if isinstance(dado, str):
-                try: eventos.append(json.loads(dado).get("type"))
+                try:
+                    m = json.loads(dado)
+                    # o CÓDIGO importa: `prewarm_em_curso` vem dentro de um `error`,
+                    # e só o tipo não distingue aquecimento de qualquer outro erro
+                    if m.get("type") == "error":
+                        eventos.append(f"error:{m.get('code')}")
+                    elif m.get("type"):
+                        eventos.append(m["type"])
                 except Exception: pass
         pg.on("websocket", lambda w: w.on("framereceived", guarda))
         pg.goto(base, wait_until="networkidle")
@@ -157,24 +170,9 @@ try:
             print("  DIAG:", pg.evaluate("""() => ({ estado: LX.estado,
                 ws: LX.ws && LX.ws.readyState, erro: window.__errWs })"""))
             raise
-        esperou = pg.evaluate("() => window.__prontidao")
-        if esperou is None:
-            try:
-                pg.wait_for_function("() => window.__prontidao", timeout=180000)
-                esperou = pg.evaluate("() => window.__prontidao")
-            except Exception:
-                print("  ⚠ pre-warm não chegou em 180 s — sigo (o turno paga a carga)")
-        print(f"  pre-warm: {esperou}")
-        if esperou and esperou.get("ok") is False:
-            print("  ⚠ o pre-warm FALHOU:", esperou.get("message"))
-        # O frame `prewarm` sai ANTES de o servidor marcar `prewarm_ok` (o `finally`
-        # de `_live_pipe_start` é um instante depois). Injetando no mesmo tick, o
-        # turno abre na janela e o servidor responde "pipeline ainda aquecendo" —
-        # com áudio, mas sem exercitar o LLM. 400 ms fechavam a janela na máquina
-        # vazia; com a máquina carregada não fecham (medido 2/2), então a espera é
-        # maior e o erro de aquecimento é RETENTADO em vez de reprovar.
-        pg.wait_for_timeout(1200)
-        cobrar(esperou is not None, "o pre-warm não chegou — o turno vai pagar a carga fria")
+        # O turno entra DE PROPÓSITO antes do pre-warm: é o que o gate do #315 tem
+        # de segurar (prazo folgado no env). Se a suíte esperasse o frame, o gate
+        # nunca seria exercitado e o ramo do aviso ficaria sem prova.
 
         # turno: fala de verdade em quadros de 100 ms (o mesmo caminho do cliente)
         INJETA = """async (pcmB64) => {
@@ -235,30 +233,44 @@ try:
             pass
         rec = pg.evaluate("() => LX.obs.rec")
         ia = pg.evaluate("() => document.getElementById('lxIA').textContent")
-        marcador = 0
-        # com a máquina carregada o turno pode cair na janela do pre-warm (aviso
-        # "aquecendo" em vez do LLM, medido 2/2): repete o turno até 3 vezes
+        # A prova vem dos FRAMES, não do texto: o `prewarm_em_curso` é um `error`
+        # do servidor e o texto da coluna não é confiável para isso (o cliente pode
+        # pintá-lo fora do `#lxIA`). Contrato do #315: o turno ESPERA o pipeline e
+        # só avisa se o prazo estourar com ele frio.
+        ok_turno = False
         for tentativa in range(3):
-            if "aquecendo" not in ia.lower():
-                break
-            print(f"  (tentativa {tentativa + 1}: servidor avisou 'aquecendo' — espero e repito)")
-            pg.wait_for_timeout(2500)
-            marcador = len(ia)
             pg.evaluate(INJETA, wav)
             try:
-                pg.wait_for_function(
-                    f"() => document.getElementById('lxIA').textContent.length > {marcador}",
-                    timeout=40000)
+                pg.wait_for_function("() => document.getElementById('lxIA').textContent.trim()",
+                                     timeout=40000)
             except Exception:
                 pass
+            pg.wait_for_timeout(500)          # os frames do turno chegam antes do texto
             rec = max(rec, pg.evaluate("() => LX.obs.rec"))
             ia = pg.evaluate("() => document.getElementById('lxIA').textContent")
+            if "error:prewarm_em_curso" not in eventos:   # a sessão INTEIRA
+                ok_turno = True
+                break
+            print(f"  (tentativa {tentativa + 1}: servidor avisou 'prewarm_em_curso' — repito)")
+            pg.wait_for_timeout(2500)
+            pg.evaluate("() => { document.getElementById('lxIA').innerHTML = ''; }")
+            ia = ""
+        try:
+            pg.wait_for_function("() => window.__prontidao", timeout=180000)
+        except Exception:
+            print("  ⚠ pre-warm não chegou em 180 s")
+        esperou = pg.evaluate("() => window.__prontidao")
+        print(f"  pre-warm: {esperou}")
+        cobrar(esperou is not None, "o pre-warm não chegou — o turno vai pagar a carga fria")
         print(f"  chunks de áudio recebidos: {rec} · texto da IA: {ia[:40]!r}")
         cobrar(rec > 0, f"nenhum áudio voltou pelo fallback (rec={rec})")
         cobrar(ia.strip(), "coluna da IA ficou vazia (fallback não respondeu)")
-        ultimo = ia[marcador:] if "aquecendo" in ia.lower() else ia
-        cobrar("aquecendo" not in ultimo.lower(),
-               f"o turno caiu no aviso de aquecimento em vez do LLM: {ultimo[-80:]!r}")
+        # o aviso é DA SESSÃO (o mic já transmite desde o `ouvindo`, então ele pode
+        # chegar antes da injeção daqui): se apareceu, o servidor não esperou
+        print("  EVENTOS:", [e for e in eventos if e][:12])
+        cobrar("error:prewarm_em_curso" not in eventos,
+               "o servidor avisou 'prewarm_em_curso' — o turno não esperou o pipeline "
+               f"(eventos: {[e for e in eventos if e][:8]})")
         cobrar(pg.evaluate("() => LX.obs.dshFallback.fallback") == "openai",
                "fallback registrado no cliente não é openai")
 

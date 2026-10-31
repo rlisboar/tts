@@ -213,10 +213,7 @@ def fala_de_teste(segundos=2.4):
     # SEMPRE a fixture: o `voices/` do dono não é lido nem quando existe
     wavs = [RAIZ / "tests" / "fixtures" / "voz_fala_5s_16k.wav"]
     wavs = [w for w in wavs if w.is_file()]
-    if wavs:
-        segundos = max(segundos, 5.0)   # fala de fixture é curta: usa os 5 s dela
-    if not wavs:
-        raise SystemExit("sem voz de teste (nem voices/*.wav nem a fixture): 1")
+    segundos = max(segundos, 5.0)       # fala de fixture é curta: usa os 5 s dela
     for w in wavs:
         a, sr = sf.read(str(w), dtype="float32")
         if a.ndim > 1:
