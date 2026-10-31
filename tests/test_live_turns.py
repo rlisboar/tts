@@ -1846,3 +1846,40 @@ def test_pausa_entre_palavras_ainda_abre_a_suspeita():
     evs += _tocar(motor, rel, _tom(0.001), folga)     # pausa entre palavras
     evs += _tocar(motor, rel, _tom(0.3), 1)
     assert "barge_suspeito" in [e.tipo for e in evs]
+
+
+def test_portao_de_perfil_LEGADO_usa_o_extrator_do_perfil_e_limiar_cru(monkeypatch):
+    """#533 (achado do gate do #534): perfil LEGADO com o ECAPA ligado.
+
+    O portão pontua o perfil com o extrator QUE O GEROU — senão o ECAPA (192-d)
+    era comparado com o centróide do Resemblyzer (256-d) e o `_cos_sim` truncava
+    calado (0,06 para a MESMA fala). O AS-norm também só vale para perfil ECAPA:
+    perfil legado vai para o limiar CRU do Resemblyzer."""
+    import app
+
+    _liga_so_minha_voz(monkeypatch)
+    # mesma regra de produção (o helper acima troca por "fake:v1"; aqui precisa
+    # da regra DE VERDADE: perfil sem `modelo` é legado)
+    monkeypatch.setattr(app, "_speaker_modelo_do_perfil",
+                        lambda p: str((p or {}).get("modelo") or app.SPEAKER_MODELO_LEGADO))
+    perfil_legado = {"vecs": [[1.0, 0.0], [1.0, 0.0]]}        # sem "modelo"
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: ({"dono": perfil_legado}, ""))
+    monkeypatch.setattr(app, "_speaker_modelo_efetivo", lambda: app.SPEAKER_MODELO_ATUAL)
+    vistos = []
+
+    def embed(caminho, modelo=None):
+        vistos.append(modelo)
+        return [1.0, 0.0]
+
+    monkeypatch.setattr(app, "_speaker_embed", embed)
+    # coorte EXISTE (o ECAPA tem), mas o perfil é legado: nada de AS-norm
+    monkeypatch.setattr(app, "_speaker_cohorte", lambda m: [[0.0, 1.0]])
+    monkeypatch.setattr(app, "_speaker_asnorm", lambda *a, **k: (0.99, "asnorm"))
+    monkeypatch.setattr(app, "_speaker_embed_ecapa_x",
+                        lambda t: (_ for _ in ()).throw(AssertionError("usou o ECAPA")))
+
+    res = app._voz_do_dono(_pcm(3.0))
+    assert res["ok"] is True and res["estado"] == "ok"
+    assert vistos and set(vistos) == {app.SPEAKER_MODELO_LEGADO}, \
+        f"pontuou com {set(vistos)}, o perfil é legado"
+    assert res["escore"] == "cru" and res["limiar"] == 0.44

@@ -592,3 +592,15 @@ vazio em 3 ms) — virando `fala_sustentada` ou nada. A folga (`barge_folga_ms`,
 `barge_pico` no `stats.motor` mede o burst máximo do episódio: abaixo do alvo é
 a fala que não sustentou; no alvo sem suspeita é outra coisa. Medido em
 `BLOCO=comando`: 4 rodadas seguidas de 6/6 (antes, 3/6 e 4/6 com o pico travado).
+
+### Perfil LEGADO com o ECAPA ligado (confirmação pedida pelo PM)
+
+O portão pontua o perfil com o extrator QUE O GEROU; senão o ECAPA (192-d) era
+comparado com o centróide do Resemblyzer (256-d) e o `_cos_sim` truncava calado.
+AS-norm também só vale para perfil do extrator ATUAL: perfil legado vai para o
+limiar CRU do Resemblyzer mesmo com coorte disponível.
+
+| Sabotagem | Resultado |
+|---|---|
+| deixar o AS-norm valer para qualquer modelo | `test_portao_de_perfil_LEGADO_usa_o_extrator_do_perfil_e_limiar_cru` **FAILED** |
+| pontuar com o extrator EFETIVO em vez do extrator do perfil | mesma célula **FAILED** (o dublê do ECAPA dispara) |

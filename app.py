@@ -9212,10 +9212,17 @@ def _voz_limiar(modelo: str, rigor: str, fixo: float = 0.0) -> tuple[float, str]
 
     Ordem: `limiar` explícito do bloco (no espaço do escore em uso) > AS-norm com
     a coorte e o limiar por FAR (`_SPEAKER_LIMIAR_FAR`, o do cadastro) > 0,44 CRU
-    quando não há coorte/alvo."""
+    quando não há coorte/alvo.
+
+    AS-norm SÓ em perfil do extrator ATUAL (decisão do PM, achado do gate do
+    #534): os perfis do dono hoje são legados e o escore normalizado de um
+    extrator não atravessa para o outro. Perfil legado vai para o limiar CRU do
+    Resemblyzer mesmo com coorte disponível."""
+    asnorm_ok = (modelo == SPEAKER_MODELO_ATUAL and bool(rigor)
+                 and bool(_speaker_cohorte(modelo)))
     if fixo and fixo > 0:
-        return float(fixo), ("asnorm" if (rigor and _speaker_cohorte(modelo)) else "cru")
-    if rigor and _speaker_cohorte(modelo):
+        return float(fixo), ("asnorm" if asnorm_ok else "cru")
+    if asnorm_ok:
         lim = _SPEAKER_LIMIAR_FAR.get(modelo, {}).get(rigor)
         if lim is not None:
             return float(lim), "asnorm"
