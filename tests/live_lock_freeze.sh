@@ -136,6 +136,7 @@ if [ -z "$ARVORE" ]; then
   # #703 lê o `voices` dela) e assume a limpeza.
   [ "${FREEZE_MANTER:-0}" = "1" ] || trap '_limpa_arvore' EXIT
 fi
+export ARVORE                          # o miolo python precisa dela (voz do cadastro)
 echo "· árvore de trabalho (cópia): $ARVORE"
 # `SONDA_SAIDA` (convenção das sondas): o teste lê o caminho da cópia — o runner só
 # mostra stdout de suíte vermelha, e aqui o verde é o esperado.
@@ -366,8 +367,9 @@ def cena(preso):
                 "TTS_LEGACY_APIKEY_PATH": str(tmp / "apikey"),
                 "TTS_OUTPUTS_DIR": str(tmp / "outputs"),
                 "TTS_SPEAKER_PATH": str(tmp / "perfis.json"),
-                # voz do cadastro: pasta da CÓPIA (nunca o `voices/` do dono, #703)
-                "TTS_VOICES_DIR": str(RAIZ / "voices")}
+                # voz do cadastro: pasta da CÓPIA (nunca o `voices/` do dono, #703;
+                # a cópia já recebe a fixture — o `voices/` do dono nem é lido)
+                "TTS_VOICES_DIR": str(pathlib.Path(os.environ["ARVORE"]) / "voices")}
     logf = open(logp, "w")
     proc = subprocess.Popen([PY, str(tmp / "servidor.py")], env=ambiente,
                             stdout=logf, stderr=subprocess.STDOUT)

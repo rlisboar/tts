@@ -70,8 +70,9 @@ import soundfile as sf
 BASE = os.environ.get("BASE", "").rstrip("/")
 RAIZ = pathlib.Path(os.environ.get("LIVE_WS_RAIZ") or pathlib.Path.cwd())
 MODO = os.environ.get("LIVE_LLM", "stub")
-#: conteúdo do `.apikeys.json` do dono no INÍCIO (leitura apenas): é a régua da
-#: mordida — se a escrita da rodada cair nele, o isolamento furou (#463).
+#: conteúdo do `.apikeys.json` do dono no INÍCIO (leitura apenas, opcional): é a
+#: régua da mordida — se a ESCRITA da rodada cair nele, o isolamento furou (#463).
+#: A leitura é só comparação: nenhum dado do dono entra na pasta da rodada.
 try:
     DONO_CHAVES = pathlib.Path(".apikeys.json").read_text()
 except OSError:
@@ -216,10 +217,10 @@ def fala_de_teste(segundos=2.4):
     # ABSOLUTOS a partir de `RAIZ`: o harness pode ser chamado de qualquer cwd (o
     # test_run_sh chama com cwd=tests/) — relativo dava "sem voz de teste" e o
     # smoke morria em 0 s com rc=0 (#688).
-    do_dono = sorted((RAIZ / "voices").glob("*.wav"))
-    wavs = do_dono or [RAIZ / "tests" / "fixtures" / "voz_fala_5s_16k.wav"]
+    # SEMPRE a fixture: o `voices/` do dono não é lido nem quando existe
+    wavs = [RAIZ / "tests" / "fixtures" / "voz_fala_5s_16k.wav"]
     wavs = [w for w in wavs if w.is_file()]
-    if wavs and not do_dono:
+    if wavs:
         segundos = max(segundos, 5.0)   # fala de fixture é curta: usa os 5 s dela
     if not wavs:
         raise SystemExit("sem voz de teste (nem voices/*.wav nem a fixture): 1")
@@ -329,12 +330,9 @@ def sobe_servidor(porta, stub_porta):
     # `.job-*`/`.wav` e o histórico de jobs é estado — nada disso é nosso
     SAIDAS = pathlib.Path("/tmp") / f"live_ws_saidas_{porta}"
     SAIDAS.mkdir(parents=True, exist_ok=True)
-    if not list((RAIZ / "voices").glob("*.wav")):
-        # sem voz do dono (worktree): o cadastro vai para tmp e `voices/` fica limpo,
-        # senão a rodada grava no diretório do repo e ele passa a ter uma voz que
-        # não é do dono (a célula que usa a voz DELE rodaria com a nossa)
-        (SAIDAS / "voices").mkdir(parents=True, exist_ok=True)
-        env["TTS_VOICES_DIR"] = str(SAIDAS / "voices")
+    # o cadastro vai SEMPRE para tmp (o `voices/` do repo não é tocado)
+    (SAIDAS / "voices").mkdir(parents=True, exist_ok=True)
+    env["TTS_VOICES_DIR"] = str(SAIDAS / "voices")
     # `settings` também: o servidor GRAVA nele (marca d'água, backend do chat) e sem
     # a env ele escreve no arquivo do dono. Sintético (`{}` + defaults do app): o
     # worktree não tem o arquivo e nada do dono é lido (#685/#720).
