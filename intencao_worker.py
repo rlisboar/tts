@@ -11,7 +11,11 @@ Modo único, NDJSON em stdin/stdout (o pai abre uma vez por sessão e manda pedi
 
 Resposta:
 
-    {"id": 1, "decisao": "cortar"|"continuar", "p_cortar": 0.97, "ms": 104}
+    {"id": 1, "p_cortar": 0.97, "ms": 104}
+
+A resposta NÃO traz rótulo: quem compara com o limiar é o PAI (`live_intencao`).
+Campo de rótulo aqui virou armadilha quando passou a ser recalculado lá — o do
+worker podia divergir do limiar e ninguém via (#507).
 
 A decisão é por LOGITS de UM passo: o prompt fecha em `Resposta:` e a
 probabilidade sai do `softmax` de dois tokens de rótulo (` sim` / ` não`). Não
@@ -99,7 +103,6 @@ def main() -> int:
             p_cortar = float(par[0])
             ms = int((time.perf_counter() - t0) * 1000)
             print(json.dumps({"id": pedido.get("id"), "p_cortar": p_cortar,
-                              "decisao": "cortar" if p_cortar >= 0.5 else "continuar",
                               "ms": ms}), flush=True)
         except Exception as exc:  # noqa: BLE001 — o pai cai no `sem_decisao`
             print(json.dumps({"id": pedido.get("id"), "erro": f"{type(exc).__name__}: {exc}"}),

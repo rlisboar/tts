@@ -224,6 +224,39 @@ def test_acerto_minimo_e_melhor_que_as_regras():
     assert acertos > regras, f"modelo ({acertos}) não ganhou das regras ({regras})"
 
 
+def test_o_pai_decide_so_pela_probabilidade(tmp_path):
+    """O limiar é do PAI: a resposta do worker não traz rótulo (#507).
+
+    O worker já respondeu um campo `decisao` que o pai ignorava (ele recalcula por
+    `p >= LIMIAR`). Campo que ninguém lê é armadilha: bastava os dois divergirem
+    para ninguém ver. Aqui a resposta vem SEM o campo e a decisão tem de sair da
+    probabilidade — inclusive contra um rótulo contraditório, se ele voltar."""
+    inc = live_intencao.Intencao(python=sys.executable, timeout_ms=5000)
+    inc._script = tmp_path / "stub_sem_rotulo.py"
+    inc._script.write_text("""
+import json, sys
+print(json.dumps({"tipo": "pronto"}), flush=True)
+for linha in sys.stdin:
+    p = json.loads(linha)
+    if p.get("tipo") == "close":
+        break
+    alta = "preço" in (p.get("fala") or "")
+    # rótulo CONTRADITÓRIO de propósito: quem manda é a probabilidade
+    print(json.dumps({"id": p.get("id"), "p_cortar": 0.93 if alta else 0.05,
+                      "decisao": "continuar" if alta else "cortar", "ms": 1}), flush=True)
+""")
+    live_intencao.WORKER = inc._script
+    assert inc.aquece(espera_s=10)
+    assert inc.decide("x", "mas e o preço?")["decisao"] == "cortar"
+    assert inc.decide("x", "uhum, ok")["decisao"] == "continuar"
+
+    # e o worker de verdade não manda mais o campo
+    import intencao_worker as iw
+
+    fonte = Path(iw.__file__).read_text()
+    assert '"decisao"' not in fonte.split("Resposta:")[1], "o worker voltou a rotular"
+
+
 # -- worker único, TTL e stats ------------------------------------------------
 
 def test_duas_sessoes_compartilham_um_unico_worker(tmp_path):
