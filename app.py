@@ -517,7 +517,7 @@ _SETTINGS_DEFAULTS = {
     # de voz do dono; `rigor_far` ("1"/"0,1") troca o limiar pelo alvo de FAR —
     # vazio usa 0,44, o limiar do R4 (`evidence/532`; 0,35 passa voz parecida).
     # `separacao` é OPCIONAL e desligada por default: custa ~1 s e 1,16 GB.
-    "live_so_minha_voz": {"on": False, "perfil": "", "rigor_far": "1",
+    "live_so_minha_voz": {"on": False, "perfil": "", "rigor_far": "1.8",
                           "limiar": 0.0, "separacao": False},
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
@@ -4607,7 +4607,8 @@ def _apply_settings(payload: dict):
                     atual[k] = _clamp(v, 0.0, 9.9, 0.0)   # 0 = usa a tabela de FAR
                 elif k == "rigor_far":
                     v = str(v or "").strip().replace(",", ".")
-                    atual[k] = v if v in ("1", "0.1") else "1"   # vazio = default
+                    # "1.8" é o joelho medido no corpus do R4 (#533)
+                    atual[k] = v if v in ("1", "1.8", "0.1") else _VOZ_RIGOR_PADRAO
             _settings["live_so_minha_voz"] = atual
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
@@ -7974,6 +7975,42 @@ def _separacao_do_turno(tmp: Path) -> tuple[Path, dict]:
     return novo, campos
 
 
+def _separa_prewarm() -> None:
+    """Aquece o separador quando o modo está ligado (chamado no prewarm da sessão).
+
+    Sem isto o PRIMEIRO turno com separação paga a carga do modelo e o
+    aquecimento dentro do `first_audio_ms` (medido: 0,90 s + 0,65 s), estourando o
+    piso de 1,2 s. Roda em thread, atrás do prewarm do pipeline, e falha em
+    silêncio: prewarm é adiantamento, nunca pré-requisito."""
+    cfg = _live_voz_ligado()
+    if not cfg or not cfg.get("separacao"):
+        return
+    import separa_voz
+
+    if not separa_voz.disponivel():
+        return
+
+    def _aquece():
+        try:
+            import numpy as np
+            _fd, nome = tempfile.mkstemp(prefix="tts-separa-pre-", suffix=".wav")
+            os.close(_fd)
+            tmp = Path(nome)
+            with wave.open(str(tmp), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                t = np.arange(8000) / 16000.0
+                w.writeframes((np.sin(2 * np.pi * 180 * t) * 8000).astype("<i2").tobytes())
+            with _gen_lock:
+                separa_voz.separa(tmp, tmp.parent)
+            tmp.unlink(missing_ok=True)
+        except Exception as exc:         # noqa: BLE001 — prewarm não derruba sessão
+            print(f"[separa] prewarm falhou: {exc}", flush=True)
+
+    threading.Thread(target=_aquece, name="separa-prewarm", daemon=True).start()
+
+
 def _stt_ok(r: dict, text: str, forcar: bool = False):
     """Aceita só transcrição que pareça fala real (rejeita ruído/alucinação).
 
@@ -9016,7 +9053,10 @@ def _speaker_pontua(wav_path: Path, perfis: dict
 #: para escore AS-normalizado — não se compara com o 0,6/0,75 cru.
 _SPEAKER_LIMIAR_FAR = {
     "resemblyzer:v1": {"1": 2.906, "0.1": 3.173},
-    "ecapa:v1": {"1": 2.434, "0.1": 3.044},
+    # "1.8" é o JOELHO medido no corpus do R4 (#533): o 2,434 veio da calibração
+    # do R2, com OUTRO corpus e outro cadastro, e no corpus do card custa a
+    # cobertura do dono (57 %); no 1,8 são 90 % com 0 turno falso em 10 min.
+    "ecapa:v1": {"1": 2.434, "1.8": 1.8, "0.1": 3.044},
 }
 #: artefato da coorte por extrator. O do ECAPA é o `.npy` publicado em `models/`
 #: junto dos pesos (o `.json` ao lado é a ficha: modelo, dimensão, corpus) — antes o
@@ -9216,15 +9256,17 @@ def _speaker_anticlone(wav_path: Path) -> dict:
 # turno medido: 0 em 10 min; custo 17 ms por janela com o modelo carregado — daí
 # o PREWARM por sessão.
 # LIMIAR: o escore é o ECAPA **AS-normalizado** com a mesma coorte do I3 e limiar
-# por alvo de FAR (`rigor_far`, default "1" ≈ 2,43 para o ecapa:v1, o mesmo número
-# do cadastro). O 0,44 CRU é só QUEDA, quando não há coorte/alvo ou a normalização
-# não pegou (0,35 cru passa voz parecida, `evidence/521`).
+# por alvo de FAR (`rigor_far`; default "1.8" = 1,8 no escore AS-normalizado, o
+# JOELHO medido no corpus do R4 — o "1" (2,434) vem da calibração do R2, com outro
+# corpus e outro cadastro, e custa 33 p.p. de cobertura do dono). O 0,44 CRU é só
+# QUEDA, quando não há coorte/alvo ou a normalização não pegou (0,35 cru passa voz
+# parecida, `evidence/521`); perfil legado vai SEMPRE no cru.
 _VOZ_JANELA_S = 1.0
 _VOZ_PASSO_S = 0.25
 _VOZ_CONFIRMACOES = 2
 _VOZ_PISO_ENERGIA = 0.15
 _VOZ_LIMIAR_PADRAO = 0.44         # queda CRU (sem coorte): nunca é o caminho feliz
-_VOZ_RIGOR_PADRAO = "1"           # FAR alvo, o mesmo default do cadastro (#521)
+_VOZ_RIGOR_PADRAO = "1.8"         # joelho do corpus do R4 (#533); "1" custa 33 p.p. de cobertura
 
 
 def _live_voz_ligado() -> dict | None:
@@ -11810,6 +11852,8 @@ def _live_pipe_start(sess: dict) -> None:
     pipe = sess.get("pipe")
     if pipe is None:
         return
+    # separação do turno (#533): aquece junto, atrás do prewarm do pipeline
+    _separa_prewarm()
     try:
         pipe.start()
         _live_envia_json(sess, {"type": "prewarm", "ok": True})

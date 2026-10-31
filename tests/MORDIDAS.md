@@ -614,3 +614,9 @@ DO PERFIL e queda para o áudio cru.
 |---|---|
 | `_separacao_do_turno` ignorando o `separacao` do settings | `test_separacao_desligada_nao_custa_nada` **FAILED** |
 | `_stt_app` transcrevendo o áudio CRU com a separação ligada | `test_stt_do_turno_transcreve_o_audio_separado_e_limpa` **FAILED** |
+
+### Prewarm do separador
+
+| Sabotagem | Resultado |
+|---|---|
+| `_separa_prewarm` aquecendo com a separação DESLIGADA | `test_prewarm_da_separacao_so_com_o_modo_ligado` **FAILED** |

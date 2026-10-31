@@ -159,7 +159,12 @@ def main() -> int:
     if os.environ.get("SEM_PORTAO"):
         app._voz_do_dono = lambda pcm: {"ok": True, "estado": "ok", "janelas": 0,
                                         "score": 1.0, "latencia_ms": 0, "motivo": ""}
-    app._settings["live_so_minha_voz"] = {"on": True, "perfil": "dono", "rigor_far": "1",
+    # `RIGOR=` troca a faixa de FAR; o default é o do APP (`_VOZ_RIGOR_PADRAO`),
+    # que é o joelho medido neste corpus — fixar "1" aqui escondia o default e
+    # media a calibração do R2 (33 p.p. de cobertura a menos)
+    app._settings["live_so_minha_voz"] = {
+        "on": True, "perfil": "dono",
+        "rigor_far": os.environ.get("RIGOR") or app._VOZ_RIGOR_PADRAO,
                                           "limiar": float(os.environ.get("LIMIAR") or 0),
                                           "separacao": False}
 
@@ -201,8 +206,10 @@ def main() -> int:
     # CURVA do limiar: o FAR 1 % (2,434) é um ponto, não uma verdade — no corpus
     # do R4 ele custa cobertura, então o número fica visível para o PM decidir.
     import app as _app
-    lim_ef, modo_ef = _app._voz_limiar(_app.SPEAKER_MODELO_ATUAL, "1",
-                                      float(os.environ.get("LIMIAR") or 0))
+    lim_ef, modo_ef = _app._voz_limiar(
+        _app.SPEAKER_MODELO_ATUAL,
+        str(_app._settings["live_so_minha_voz"].get("rigor_far") or ""),
+        float(os.environ.get("LIMIAR") or 0))
     print(f"\nlimiar em uso: {lim_ef:g} ({modo_ef}) — curva em "
           f"`LIMIAR=<v>` para comparar")
     print("\nVEREDITO:", "REPROVADO" if falhou else "OK")

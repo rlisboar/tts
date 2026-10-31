@@ -1966,3 +1966,34 @@ def test_stt_do_turno_transcreve_o_audio_separado_e_limpa(monkeypatch, tmp_path)
     assert transcritos == [separado], "transcreveu o áudio errado"
     assert julga["separacao"]["separacao"] == "ok"
     assert not separado.exists(), "o wav separado tem de sair"
+
+
+def test_prewarm_da_separacao_so_com_o_modo_ligado(monkeypatch):
+    """O prewarm evita o custo de carga no 1º turno — mas só existe com o modo ligado."""
+    import separa_voz
+    import app
+    chamou = []
+    monkeypatch.setattr(separa_voz, "disponivel", lambda: True)
+    monkeypatch.setattr(separa_voz, "separa",
+                        lambda wav, d: chamou.append(wav) or [])
+    monkeypatch.setattr(app, "_live_voz_ligado", lambda: None)
+    app._separa_prewarm()
+    for t in __import__("threading").enumerate():
+        if t.name == "separa-prewarm":
+            t.join(5)
+    assert not chamou, "sem o modo ligado não podia aquecer"
+    # modo LIGADO mas SEM separação: também não aquece (é o custo de 1,16 GB)
+    monkeypatch.setattr(app, "_live_voz_ligado",
+                        lambda: {"on": True, "perfil": "dono", "separacao": False})
+    app._separa_prewarm()
+    for t in __import__("threading").enumerate():
+        if t.name == "separa-prewarm":
+            t.join(5)
+    assert not chamou, "com a separação desligada não podia aquecer"
+    monkeypatch.setattr(app, "_live_voz_ligado",
+                        lambda: {"on": True, "perfil": "dono", "separacao": True})
+    app._separa_prewarm()
+    for t in __import__("threading").enumerate():
+        if t.name == "separa-prewarm":
+            t.join(5)
+    assert len(chamou) == 1
