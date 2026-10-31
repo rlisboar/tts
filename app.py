@@ -514,7 +514,7 @@ _SETTINGS_DEFAULTS = {
     # "Só a minha voz" no Live (#533): portão ECAPA no TURNO. Desligado, nada
     # muda. Ligado, terceiro/TV não corta a resposta nem vira turno (o filtro
     # `identidade` do I4 reusa a MESMA verificação). `perfil` é o nome do perfil
-    # de voz do dono; `rigor_far` ("1"/"0,1") troca o limiar pelo alvo de FAR —
+    # de voz do dono; `rigor_far` ("joelho"/"1"/"0,1") troca o limiar —
     # vazio usa 0,44, o limiar do R4 (`evidence/532`; 0,35 passa voz parecida).
     # `separacao` é OPCIONAL e desligada por default: custa ~1 s e 1,16 GB.
     "live_so_minha_voz": {"on": False, "perfil": "", "rigor_far": "1.8",
@@ -4608,7 +4608,8 @@ def _apply_settings(payload: dict):
                 elif k == "rigor_far":
                     v = str(v or "").strip().replace(",", ".")
                     # "1.8" é o joelho medido no corpus do R4 (#533)
-                    atual[k] = v if v in ("1", "1.8", "0.1") else _VOZ_RIGOR_PADRAO
+                    atual[k] = (v if v in ("1", "0.1") else _VOZ_RIGOR_JOELHO
+                                if v in ("joelho", "1.8") else _VOZ_RIGOR_PADRAO)
             _settings["live_so_minha_voz"] = atual
     for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
         if chave in payload:
@@ -9056,7 +9057,11 @@ _SPEAKER_LIMIAR_FAR = {
     # "1.8" é o JOELHO medido no corpus do R4 (#533): o 2,434 veio da calibração
     # do R2, com OUTRO corpus e outro cadastro, e no corpus do card custa a
     # cobertura do dono (57 %); no 1,8 são 90 % com 0 turno falso em 10 min.
-    "ecapa:v1": {"1": 2.434, "1.8": 1.8, "0.1": 3.044},
+    # as bandas são de FAR CALIBRADO (identidade: speaker_gate, anti-clone, "só a
+    # voz de:" no STT/Tradutor). O joelho do Live NÃO entra aqui: ele é
+    # `_VOZ_LIMIAR_JOELHO` (constante própria), senão mexer no portão do Live
+    # mexeria na identidade (decisão do PM, #533).
+    "ecapa:v1": {"1": 2.434, "0.1": 3.044},
 }
 #: artefato da coorte por extrator. O do ECAPA é o `.npy` publicado em `models/`
 #: junto dos pesos (o `.json` ao lado é a ficha: modelo, dimensão, corpus) — antes o
@@ -9266,7 +9271,14 @@ _VOZ_PASSO_S = 0.25
 _VOZ_CONFIRMACOES = 2
 _VOZ_PISO_ENERGIA = 0.15
 _VOZ_LIMIAR_PADRAO = 0.44         # queda CRU (sem coorte): nunca é o caminho feliz
-_VOZ_RIGOR_PADRAO = "1.8"         # joelho do corpus do R4 (#533); "1" custa 33 p.p. de cobertura
+#: JOELHO do portão do Live no corpus do R4 (#533): 90 % de cobertura do dono com
+#: 0 turno falso em 10 min. NÃO é banda de FAR calibrado — vale SÓ aqui; a
+#: identidade (`speaker_gate`, anti-clone, "só a voz de:") segue no FAR 1 %
+#: (2,434), que é o número calibrado no R2 (decisão do PM).
+_VOZ_LIMIAR_JOELHO = 1.8
+#: nome da faixa do joelho (o `rigor_far` do dono aceita "1"/"joelho"/"0.1")
+_VOZ_RIGOR_JOELHO = "joelho"
+_VOZ_RIGOR_PADRAO = _VOZ_RIGOR_JOELHO
 
 
 def _live_voz_ligado() -> dict | None:
@@ -9305,6 +9317,8 @@ def _voz_limiar(modelo: str, rigor: str, fixo: float = 0.0) -> tuple[float, str]
                  and bool(_speaker_cohorte(modelo)))
     if fixo and fixo > 0:
         return float(fixo), ("asnorm" if asnorm_ok else "cru")
+    if asnorm_ok and rigor in (_VOZ_RIGOR_JOELHO, "1.8"):
+        return _VOZ_LIMIAR_JOELHO, "asnorm"
     if asnorm_ok:
         lim = _SPEAKER_LIMIAR_FAR.get(modelo, {}).get(rigor)
         if lim is not None:

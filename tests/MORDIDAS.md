@@ -627,3 +627,13 @@ DO PERFIL e queda para o áudio cru.
 |---|---|
 | subir o `fim_de_resposta` para antes do `palavras_corte` na cadeia | `test_comando_no_ultimo_segundo_CORTA_mesmo_com_fim_de_resposta` **FAILED** |
 | idem, contraprova de ordem | `test_passo_de_comando_transcreve_a_janela_NOVA` **FAILED** |
+
+### O joelho é SÓ do portão do Live
+
+A faixa do joelho (`1.8` → `joelho`, `_VOZ_LIMIAR_JOELHO`) é constante própria do
+portão de turno; a tabela `_SPEAKER_LIMIAR_FAR` fica com as bandas de FAR
+CALIBRADO usadas pela identidade (`speaker_gate`, anti-clone, "só a voz de:").
+
+| Sabotagem | Resultado |
+|---|---|
+| `_voz_limiar` devolvendo o FAR 1 % para a faixa "joelho" | `test_portao_usa_o_joelho_do_live_e_a_identidade_fica_no_far_1` **FAILED** |

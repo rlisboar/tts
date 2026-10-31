@@ -2029,3 +2029,29 @@ def test_comando_no_ultimo_segundo_CORTA_mesmo_com_fim_de_resposta():
         app._live_transcreve_trecho = ok
     assert sess["cancelado"].is_set(), "comando no último segundo TEM de cortar"
     assert not sess.get("turno_pendente"), "comando corta, não anota"
+
+
+def test_portao_usa_o_joelho_do_live_e_a_identidade_fica_no_far_1(monkeypatch):
+    """Condição do PM: o joelho vale SÓ no portão do Live.
+
+    A identidade (`speaker_gate`, anti-clone, "só a voz de:" no STT/Tradutor)
+    segue no FAR calibrado 1 % (2,434). Aqui se prova que os dois caminhos não
+    compartilham o número."""
+    import app
+
+    real_limiar = app._speaker_limiar          # o helper abaixo troca pelo dublê
+    _liga_so_minha_voz(monkeypatch)
+    monkeypatch.setattr(app, "_speaker_limiar", real_limiar)
+    monkeypatch.setattr(app, "_speaker_modelo_do_perfil", lambda p: "ecapa:v1")
+    monkeypatch.setattr(app, "_speaker_cohorte", lambda m: [[0.0, 1.0]])
+    monkeypatch.setattr(app, "_speaker_asnorm", lambda *a, **k: (3.5, "asnorm"))
+    monkeypatch.setitem(app._settings, "live_so_minha_voz",
+                        {"on": True, "perfil": "dono", "rigor_far": "joelho"})
+    res = app._voz_do_dono(_pcm(3.0))
+    assert (res["limiar"], res["escore"]) == (1.8, "asnorm"), "o portão não está no joelho"
+    # identidade: sem banda escolhida, o limiar cru do cadastro (0,6); com FAR 1 %,
+    # 2,434 — nunca 1,8, que é do portão do Live
+    monkeypatch.setitem(app._settings, "speaker_far_alvo", "")
+    assert app._speaker_limiar("ecapa:v1")[0] == 0.6
+    monkeypatch.setitem(app._settings, "speaker_far_alvo", "1")
+    assert app._speaker_limiar("ecapa:v1")[0] == 2.434
