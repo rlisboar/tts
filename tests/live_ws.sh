@@ -70,13 +70,6 @@ import soundfile as sf
 BASE = os.environ.get("BASE", "").rstrip("/")
 RAIZ = pathlib.Path(os.environ.get("LIVE_WS_RAIZ") or pathlib.Path.cwd())
 MODO = os.environ.get("LIVE_LLM", "stub")
-#: conteúdo do `.apikeys.json` do dono no INÍCIO (leitura apenas, opcional): é a
-#: régua da mordida — se a ESCRITA da rodada cair nele, o isolamento furou (#463).
-#: A leitura é só comparação: nenhum dado do dono entra na pasta da rodada.
-try:
-    DONO_CHAVES = pathlib.Path(".apikeys.json").read_text()
-except OSError:
-    DONO_CHAVES = ""
 
 #: chave usada no HTTP/WS. No servidor PRÓPRIO é a SEMENTE do arquivo sintético —
 #: a chave do dono nem é lida. Só com um servidor EXTERNO (`BASE=…`) a chave real
@@ -265,20 +258,13 @@ def limpa_sobras(manter_log=False):
         except Exception: pass
 
 
-def _chave_do_dono() -> str:
-    """Chave da instalação já de pé (só leitura): `.apikey`, senão a 1ª do arquivo."""
-    try:
-        return pathlib.Path(".apikey").read_text().strip()
-    except OSError:
-        pass
-    try:
-        dados = json.loads(pathlib.Path(".apikeys.json").read_text())
-        for k in dados.get("keys") or []:
-            if (k.get("secret") or "").strip():
-                return k["secret"].strip()
-    except Exception:            # noqa: BLE001 — sem chave: loopback ainda passa
-        pass
-    return ""
+def _chave_da_instalacao() -> str:
+    """Chave para o servidor EXTERNO (`BASE=…`) vinda só do AMBIENTE (#720).
+
+    Nada de ler `.apikey`/`.apikeys.json` da raiz: quem aponta para uma instalação
+    de pé passa `LIVE_WS_KEY`. Sem ela a rodada segue desautenticada — de loopback
+    a instalação aceita, e é o caso normal."""
+    return (os.environ.get("LIVE_WS_KEY") or os.environ.get("TTS_CHAVE") or "").strip()
 
 
 def porta_livre():
@@ -538,10 +524,12 @@ async def principal():
     print("Live — smoke do ciclo completo (tasks #93/#104)")
     CARGA_ABERTURA = carga_por_nucleo()
     guarda_do_settings()
-    # Servidor EXTERNO: a chave é a do dono (leitura apenas). No servidor próprio
-    # quem define a chave é o `sobe_servidor`, com o arquivo sintético.
+    # Servidor EXTERNO: a chave vem do ambiente (`LIVE_WS_KEY`). No servidor
+    # próprio quem define a chave é o `sobe_servidor`, com o arquivo sintético.
     if BASE:
-        define_chave(_chave_do_dono())
+        define_chave(_chave_da_instalacao())
+        if not CHAVE:
+            print("  (sem LIVE_WS_KEY: rodando sem chave — só passa de loopback)")
     voz, pcm = fala_de_teste()
 
     servidor, stub_porta = None, None
@@ -592,8 +580,6 @@ async def principal():
                     ok("chave da rodada gravada no arquivo sintético (dono intocado)")
                 else:
                     falha("a chave criada NÃO caiu no arquivo sintético: isolamento furado")
-                if DONO_CHAVES and criada in DONO_CHAVES:
-                    falha("a chave de teste vazou para o .apikeys.json do dono")
 
             # 1.5) espera o pre-warm: antes dele o 1º turno paga a compilação dos
             # kernels dos modelos (medido: 7,3 s de 1º áudio contra 0,7 s depois)

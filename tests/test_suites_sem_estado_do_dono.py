@@ -47,6 +47,8 @@ PADROES = (
     r'RAIZ/"voices"',
     r'RAIZ / "\.speaker-profiles\.json"',
     r'RAIZ/"\.speaker-profiles\.json"',
+    r'pathlib\.Path\("\.apikey',        # `.apikey` e `.apikeys.json` pelo cwd
+    r'RAIZ / "\.apikey',
 )
 
 
