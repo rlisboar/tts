@@ -7750,3 +7750,19 @@ def test_migracao_nao_copia_metadados_do_original(tmp_path):
     assert alvo.stat().st_mtime > velho + 60, "veio o mtime do original (metadado)"
     alvo.write_text('{"x": 2}')                       # gravável de verdade
     assert alvo.read_text() == '{"x": 2}'
+
+
+def test_sessao_nao_e_semeada_com_o_settings_do_dono():
+    """O estado da sessão é o de DEFAULTS, não uma cópia do dono (#721).
+
+    Antes o conftest copiava `app.SETTINGS_PATH` para o tmp da sessão; quando esse
+    caminho era o arquivo do dono, cada rodada deixava uma cópia com a chave
+    secreta em /tmp (191 medidas). Agora o caminho é o `STATE_DIR` em tmp e o
+    arquivo nasce dos defaults: `chat_api_key` vazio é a marca de "sem cópia"."""
+    import app
+
+    assert app.SETTINGS_PATH.is_absolute()
+    assert str(app.BASE) not in str(app.SETTINGS_PATH), \
+        f"o estado da sessão está na árvore: {app.SETTINGS_PATH}"
+    assert not app._settings.get("chat_api_key"), \
+        "os settings da sessão vieram do dono (têm chave secreta)"
