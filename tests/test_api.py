@@ -7466,9 +7466,9 @@ def test_temporarios_de_voices_nao_ficam_para_sempre(client, auth, voices_tmp,
     import os as _os
 
     _voz_para_limpar(voices_tmp)          # a voz de verdade, com o .json
-    orfao = voices_tmp / ".denoise-limpa00001-deadbeef.wav"
+    orfao = voices_tmp / ".tmp-tts-denoise-limpa00001-deadbeef.wav"
     orfao.write_bytes(b"RIFF....")
-    recente = voices_tmp / ".orig-limpa00001-cafebabe"
+    recente = voices_tmp / ".tmp-tts-orig-limpa00001-cafebabe"
     recente.write_bytes(b"RIFF....")
     velho = time.time() - 7 * 3600
     _os.utime(orfao, (velho, velho))
@@ -7487,7 +7487,7 @@ def test_denoise_temporarios_de_duas_chamadas_nao_colidem(client, auth, voices_t
                                                          monkeypatch):
     """Duas aplicações usam temporários DISTINTOS para a mesma voz.
 
-    Com nome fixo (`.denoise-<id>.wav`) a segunda escrevia por cima do temporário
+    Com nome fixo (`.tmp-tts-denoise-<id>.wav`) a segunda escrevia por cima do temporário
     da primeira e uma das trocas publicava arquivo pela metade."""
     import soundfile as _sf
 
@@ -7501,7 +7501,7 @@ def test_denoise_temporarios_de_duas_chamadas_nao_colidem(client, auth, voices_t
 
     def _espia(destino, *a, **k):
         nome = Path(str(destino)).name
-        if nome.startswith(".denoise-"):
+        if nome.startswith(".tmp-tts-"):
             temporarios.append(nome)
         return real(destino, *a, **k)
 
@@ -7509,4 +7509,79 @@ def test_denoise_temporarios_de_duas_chamadas_nao_colidem(client, auth, voices_t
     assert client.post("/api/voices/limpa00001/denoise", headers=auth).status_code == 200
     assert client.post("/api/voices/limpa00001/denoise", headers=auth).status_code == 200
     assert len(temporarios) == 2 and temporarios[0] != temporarios[1], temporarios
-    assert not list(voices_tmp.glob(".denoise-*")), "sobrou temporário"
+    assert not list(voices_tmp.glob(".tmp-tts-*")), "sobrou temporário"
+
+
+def test_poda_de_voices_nao_casa_nada_que_nao_seja_temporario(voices_tmp):
+    """O glob da poda é o ponto mais sensível: ele APAGA em `voices/`.
+
+    Nada de voz, meta, `.orig` real do #443 nem nome de usuário com ponto pode
+    casar. Varre os nomes que existem HOJE no `voices/` real do dono também."""
+    import glob as _glob
+
+    prefixo = app._TMP_VOICES_PREFIX
+    assert prefixo == ".tmp-tts-", "o prefixo mudou: revise o glob da poda"
+    padrao = prefixo + "*"
+    intactos = ["abc.wav", "abc.json", "abc.orig.wav", "voz.com.ponto.wav",
+                "vd-narrador.wav", "vd-narrador.json", ".orig-abc", ".denoise-abc"]
+    for nome in intactos:
+        assert not _glob.fnmatch.fnmatch(nome, padrao), f"{nome} casaria a poda"
+    temporarios = ["%sdenoise-abc-1234.wav" % prefixo, "%sorig-abc-1234" % prefixo]
+    for nome in temporarios:
+        assert _glob.fnmatch.fnmatch(nome, padrao), f"{nome} não casaria a poda"
+    # e os nomes REAIS do voices do dono (só `ls`, sem ler conteúdo). No worktree
+    # o `voices/` é o da árvore PRINCIPAL (diretório git comum), não o local.
+    for real in (app.BASE / "voices",
+                 app.BASE.parent / "tts-rod" / "voices",
+                 Path(app.BASE.anchor) / "none"):
+        if real.is_dir() and any(real.iterdir()):
+            for nome in sorted(p.name for p in real.iterdir()):
+                deve = nome.startswith(prefixo)
+                assert _glob.fnmatch.fnmatch(nome, padrao) == deve, nome
+            break
+
+
+def test_poda_nao_apaga_temporario_recente(voices_tmp):
+    """Temporário em uso (mtime de agora) sobrevive à poda de 6 h."""
+    novo = voices_tmp / (app._TMP_VOICES_PREFIX + "denoise-x-aaaa.wav")
+    novo.write_bytes(b"RIFF....")
+    app._limpa_temporarios_de_voices()
+    assert novo.exists(), "a poda comeu um temporário recém-criado"
+
+
+def test_orig_guardado_uma_vez_so_com_duas_aplicacoes(client, auth, voices_tmp,
+                                                      monkeypatch):
+    """O `.orig` é criado UMA vez e guarda o áudio de ANTES, mesmo em corrida."""
+    wav = _voz_para_limpar(voices_tmp)
+    original = wav.read_bytes()
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: np.asarray(a, dtype=np.float32))
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: 0.95)
+    assert client.post("/api/voices/limpa00001/denoise", headers=auth).status_code == 200
+    assert client.post("/api/voices/limpa00001/denoise", headers=auth).status_code == 200
+    orig = voices_tmp / "limpa00001.orig.wav"
+    assert orig.read_bytes() == original, "o `.orig` não guardou o áudio de antes"
+
+
+def test_orig_reserva_atomica_em_corrida(voices_tmp, monkeypatch):
+    """Duas cópias concorrentes: o `.orig` fica com a PRIMEIRA, não com a última.
+
+    `exists()` antes da cópia não basta — dois pedidos simultâneos veem `False`,
+    os dois copiam e o último `replace` vence, guardando áudio já limpo. A reserva
+    `O_EXCL` é o que resolve; aqui o `exists()` é forçado a mentir para simular a
+    corrida."""
+    wav = voices_tmp / "abc.wav"
+    wav.write_bytes(b"ORIGINAL")
+    orig = voices_tmp / "abc.orig.wav"
+    real_exists = Path.exists
+
+    def _exists_mentiroso(self):
+        return False if self.name.endswith(".orig.wav") else real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", _exists_mentiroso)
+    app._guarda_original("abc")            # 1ª: guarda ORIGINAL
+    wav.write_bytes(b"JA-LIMPO")
+    app._guarda_original("abc")            # 2ª (concorrente): não pode sobrescrever
+    monkeypatch.setattr(Path, "exists", real_exists)
+    assert orig.read_bytes() == b"ORIGINAL", orig.read_bytes()

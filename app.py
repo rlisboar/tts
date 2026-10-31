@@ -4773,6 +4773,12 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
     return meta
 
 
+#: prefixo dos temporários DENTRO de `voices/` (#690). Inconfundível de propósito:
+#: `voices/` é o dado insubstituível do dono e a poda APAGA ali — o prefixo tem de
+#: não casar `<id>.wav`, `<id>.json`, `<id>.orig.wav` nem id com ponto no nome.
+_TMP_VOICES_PREFIX = ".tmp-tts-"
+
+
 def _guarda_original(voice_id: str) -> None:
     """Cópia intocável da referência ANTES da primeira sobrescrita (#443).
 
@@ -4784,9 +4790,22 @@ def _guarda_original(voice_id: str) -> None:
     destino = VOICES_DIR / f"{voice_id}.orig.wav"
     if destino.exists() or not origem.exists():
         return
-    tmp = VOICES_DIR / f".orig-{voice_id}-{uuid.uuid4().hex[:8]}"
-    shutil.copy2(origem, tmp)
-    os.replace(tmp, destino)
+    # RESERVA com O_EXCL: dois `denoise` concorrentes na mesma voz viam
+    # `exists() == False`, os dois copiavam e o último replace vencia — se um write
+    # entrasse no meio, o "original" guardado virava áudio JÁ limpo. Quem perde o
+    # `O_EXCL` desiste e não sobrescreve.
+    try:
+        os.close(os.open(destino, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+    except FileExistsError:
+        return
+    tmp = VOICES_DIR / f"{_TMP_VOICES_PREFIX}orig-{voice_id}-{uuid.uuid4().hex[:8]}"
+    try:
+        shutil.copy2(origem, tmp)
+        os.replace(tmp, destino)
+    except Exception:  # noqa: BLE001 — sem cópia, a reserva vazia não serve
+        tmp.unlink(missing_ok=True)
+        destino.unlink(missing_ok=True)
+        raise
 
 
 def _com_dnsmos_motivo(relatorio: dict) -> dict:
@@ -4857,7 +4876,7 @@ def denoise_voice(voice_id: str, payload: dict = None, previa: bool = False):
     # por cima deixava o outro lado lendo arquivo pela metade (cabeçalho truncado).
     # sufixo único: duas aplicações simultâneas da MESMA voz não compartilham o
     # temporário (a última troca vence, nenhuma lê a outra pela metade)
-    tmp_denoise = VOICES_DIR / f".denoise-{voice_id}-{uuid.uuid4().hex[:8]}.wav"
+    tmp_denoise = VOICES_DIR / f"{_TMP_VOICES_PREFIX}denoise-{voice_id}-{uuid.uuid4().hex[:8]}.wav"
     sf.write(str(tmp_denoise), data, sr, subtype="PCM_16")
     os.replace(tmp_denoise, path)
     _conds_cache.clear()
@@ -6932,7 +6951,8 @@ def _limpa_temporarios_de_voices() -> int:
     ponto), mas fica no disco para sempre sem esta poda."""
     removidos = 0
     corte = time.time() - 6 * 3600
-    for pattern in (".denoise-*", ".orig-*"):
+    # os dois nomes antigos entram enquanto houver main que os gerou
+    for pattern in (_TMP_VOICES_PREFIX + "*", ".denoise-*", ".orig-*"):
         for tmp in VOICES_DIR.glob(pattern):
             try:
                 if tmp.is_file() and tmp.stat().st_mtime < corte:
