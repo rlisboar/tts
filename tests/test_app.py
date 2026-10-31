@@ -1980,10 +1980,12 @@ def test_esgotar_guarda_a_MELHOR_tentativa_nao_a_ultima():
 def test_esgotar_as_tentativas_ainda_deixa_marca_detectavel(tmp_path):
     """A conferência não pode terminar pior do que começou.
 
-    Cada subprocesso sorteia a própria mensagem (é o sorteio que varia entre
-    processos) e o laço é forçado a esgotar as 4 tentativas; o que fica gravado
-    tem de continuar detectável. Se o laço guardasse a última sem conferir — ou
-    abortasse — este número cai."""
+    Cada subprocesso tem SEMENTE própria (`torch.manual_seed`, uma por índice): o
+    sorteio da mensagem continua existindo, mas deixa de ser azar — três processos
+    com a mesma semente dão hash de áudio idêntico, então a célula não mancha a
+    rodada de outro agente. O laço é forçado a esgotar as 4 tentativas e o que fica
+    gravado tem de continuar detectável; se ele guardasse a última sem conferir, ou
+    abortasse, este número cai."""
     import subprocess
 
     import soundfile as sf
