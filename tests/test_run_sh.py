@@ -724,17 +724,32 @@ def test_freeze_nao_liga_o_voices_real_e_duas_rodadas_seguidas(tmp_path):
         shutil.rmtree(copia, ignore_errors=True)   # FREEZE_MANTER: a limpeza é minha
 
 
-def test_sonda_sem_dono_dir_nao_escreve_na_raiz(tmp_path):
+@pytest.fixture
+def settings_na_raiz():
+    """Garante um `settings.json` na raiz — worktree limpo não tem o do dono (#710).
+
+    Devolve o caminho e o estado inicial. Se o arquivo já existir (árvore principal,
+    ou worktree com estado) ele NÃO é tocado e não é removido no fim; se faltar, é
+    criado sintético e apagado depois — a célula nunca depende da máquina."""
+    real = AQUI.parent / "settings.json"
+    criado = not real.is_file()
+    if criado:
+        real.write_text('{"model": "sintetico", "pre_prompt": ""}')
+    try:
+        yield real, (real.read_bytes(), real.stat().st_mtime_ns)
+    finally:
+        if criado:
+            real.unlink(missing_ok=True)
+
+
+def test_sonda_sem_dono_dir_nao_escreve_na_raiz(tmp_path, settings_na_raiz):
     """Sem `TTS_DONO_DIR` o runner dá uma CÓPIA à sonda; a raiz fica intocada (#710).
 
     O fallback da sonda era `$AQUI/../../..` = a raiz do repo — e na ÁRVORE
     PRINCIPAL a raiz é o `settings.json` do DONO: a sonda gravava `{}` por cima
     (3 bytes, 3 vezes em 31/10). Aqui: rodada sem a env, raiz com sha E mtime
     iguais, e o runner ainda tem de NOMEAR a escrita (na cópia)."""
-    real = AQUI.parent / "settings.json"
-    if not real.is_file():
-        pytest.skip("sem settings.json na raiz desta árvore")
-    antes = (real.read_bytes(), real.stat().st_mtime_ns)
+    real, antes = settings_na_raiz
     r = _rodar("navegador", env={"SUITES": str(SONDAS / "suja_o_dono.sh"),
                                  "TTS_DONO_DIR": ""})
     assert r.returncode == 0, r.stdout + r.stderr
