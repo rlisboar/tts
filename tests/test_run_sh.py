@@ -784,9 +784,11 @@ def test_runner_nao_abre_arquivo_do_dono_para_a_guarda_de_segredo(tmp_path):
     """A agulha da guarda é SINTÉTICA: sem chave no ambiente, o runner inventa o canário.
 
     Ler `.apikey`/`.apikeys.json` da raiz puxava o segredo para o shell e fazia a
-    guarda depender de estado do dono (#723/task_57cef75c). Aqui: árvore com um
-    `.apikey` que NÃO é o valor circulante, rodada sem `TTS_ROD_API_KEY`, e o
-    segredo plantado em `/tmp` é o do canário — que o runner tem de ter exportado."""
+    guarda depender de estado do dono (#723/task_57cef75c). Rodada sem
+    `TTS_ROD_API_KEY`: o que circula tem de ser o canário, e o valor não pode sair
+    impresso. O `.apikey` plantado em `tmp_path` é INERTE de propósito (o runner roda
+    do repo, não daquela árvore): ele marca que nada da raiz entrou no arquivo, e a
+    asserção de ausência prova isso."""
     arvore = tmp_path / "arvore"
     (arvore / "tests" / "fixtures" / "run_sh").mkdir(parents=True)
     # nome por `mktemp`: o PID do pytest pode se repetir entre rodadas e o arquivo
@@ -796,6 +798,7 @@ def test_runner_nao_abre_arquivo_do_dono_para_a_guarda_de_segredo(tmp_path):
         'A="$(mktemp /tmp/canario_sonda_XXXXXXXX)"\n'
         'printf \'{"k":"%s"}\' "$TTS_ROD_API_KEY" > "$A"\n'
         'printf %s "$A" > "$TMP_OUT"\n')
+    # isca INERTE: nada lê este arquivo; serve só para provar que ele não vaza
     dono_antigo = tmp_path / "dono" / ".apikey"
     dono_antigo.parent.mkdir()
     dono_antigo.write_text("chave-velha-do-dono-nao-circula")
@@ -821,3 +824,24 @@ def test_runner_nao_abre_arquivo_do_dono_para_a_guarda_de_segredo(tmp_path):
     finally:
         if saida is not None:
             saida.unlink(missing_ok=True)
+
+
+def test_cp_p_por_cima_de_homonimo_e_acusado(tmp_path):
+    """O caso que o P2 apontou: `cp -p` sobre arquivo que JÁ estava no retrato (#723).
+
+    mtime preservado e nome conhecido — a comparação por conjunto ou por mtime não
+    vê nada. Só o retrato por (caminho, HASH) acusa."""
+    alvo = Path("/tmp") / f"homonimo_{os.getpid()}.json"
+    fonte = tmp_path / "origem.json"
+    alvo.write_text('{"k":"velho"}\n')
+    try:
+        r = _rodar("navegador", env={
+            "SUITES": str(SONDAS / "cp_p_segredo.sh"),
+            "TTS_ROD_API_KEY": "segredo-de-teste-123456",
+            "ALVO": str(alvo), "FONTE": str(fonte)})
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "segredo do dono em" in r.stdout, r.stdout
+        assert alvo.name in r.stdout, r.stdout
+        assert "segredo-de-teste-123456" not in r.stdout, "imprimiu o valor"
+    finally:
+        alvo.unlink(missing_ok=True)

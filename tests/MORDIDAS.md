@@ -351,6 +351,8 @@ iguais (e ainda nomear a escrita, que acontece na cópia).
 | Sabotagem | Resultado |
 |---|---|
 | desliga a guarda `conta_segredo_em_tmp` do runner | `test_segredo_do_dono_deixado_em_tmp_derruba_a_rodada` **FAILED** (rodada passa com o segredo em `/tmp`) |
+| retrato volta a nome/mtime (sem hash) | `test_cp_p_por_cima_de_homonimo_e_acusado` **FAILED** (o `cp -p` sobre homônimo passa limpo) |
+| volta a ler `.apikey` da raiz em vez do canário | `test_runner_nao_abre_arquivo_do_dono_para_a_guarda_de_segredo` **FAILED** |
 
 O caminho: o app semeia a chave do AMBIENTE (`TTS_ROD_API_KEY`) e a persiste no
 arquivo de chaves da rodada — o segredo real ia parar em `/tmp` (191 arquivos) e as

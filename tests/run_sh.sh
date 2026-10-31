@@ -289,9 +289,19 @@ _amostra() {
 # `EPOCHREALTIME` só existe no bash 5 (o macOS traz 3.2): sub-segundo pelo perl,
 # que o runner já usa para o alarme. Idade em SEGUNDOS FRACIONÁRIOS é o que
 # desempata quem largou por último (o escritor é o mais novo, não o do nome).
+# Retrato de `/tmp` por (caminho, HASH do conteúdo): mtime e tamanho não bastam —
+# um `cp -p` do arquivo do dono por cima de um homônimo já existente preserva o
+# mtime e o nome já está no retrato, e a rodada passava limpa (#723).
+_impressao_tmp() {
+    # `|| true`: num /tmp mexido, arquivo some entre o `find` e o `shasum` e o
+    # `xargs` sai 123; sem isto o pipefail devolve retrato VAZIO e a guarda cala.
+    find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f -size -256k -print0 2>/dev/null \
+        | xargs -0 shasum -a 256 2>/dev/null \
+        | sed 's#  /private/tmp#  /tmp#' | sort || true
+}
+
 _agora() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
-find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f 2>/dev/null \
-    | sed 's#^/private/tmp#/tmp#' | sort -u > "$DIR/tmp_antes"
+_impressao_tmp > "$DIR/tmp_antes"
 : > "$DIR/comeca"   # carimbo: nome REUSADO também entra (união, não filtro)
 _amostra &
 AMOSTRADOR=$!
@@ -465,11 +475,8 @@ conta_segredo_em_tmp() {
     local seg f achados=0 segredos=""
     segredos="$(_segredos_do_dono)"
     [ -n "$segredos" ] || return 0
-    # Candidatos: arquivos NOVOS (diferença de conjunto) ou do segundo do carimbo
-    # para cá (`-newermt`, um passe só). `-newer` cru compara em ns e o arquivo
-    # criado no MESMO segundo do carimbo escapava.
-    local desde
-    desde="$(date -r "$DIR/comeca" '+%Y-%m-%d %H:%M:%S')"
+    # Candidatos por LINHA (caminho + hash): arquivo novo OU conteúdo trocado. É o
+    # que pega o `cp -p` por cima de homônimo (mtime preservado, nome já no retrato).
     while IFS= read -r f; do
         [ -f "$f" ] || continue
         for seg in $segredos; do
@@ -479,8 +486,17 @@ conta_segredo_em_tmp() {
                 break
             fi
         done
-    done < <({ find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f 2>/dev/null | sed 's#^/private/tmp#/tmp#' | sort -u | comm -13 "$DIR/tmp_antes" -
-               find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f -newermt "$desde" 2>/dev/null | sed 's#^/private/tmp#/tmp#'; } | sort -u)
+    # Novo ou conteúdo trocado, comparando o retrato por (caminho, hash) com o do
+    # início. `awk` de um passe (o `antes` vira mapa) — sem depender de ordem.
+    # Fontes: (a) retrato por hash — arquivo novo ou conteúdo trocado; (b) `-cnewer`
+    # — o ctime muda em QUALQUER escrita e não é preservado por `cp -p`, então cobre
+    # o caso em que o hash falte (arquivo sumindo no meio do `shasum`).
+    done < <({ _impressao_tmp > "$DIR/tmp_depois"
+               awk 'NR==FNR {antes[$2]=$1; next}
+                    ($2 in antes) && antes[$2]==$1 {next} {print $2}' \
+                   "$DIR/tmp_antes" "$DIR/tmp_depois"
+               find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f -cnewer "$DIR/comeca" 2>/dev/null \
+                   | sed 's#^/private/tmp#/tmp#'; } | sort -u)
     echo "$achados"
 }
 
