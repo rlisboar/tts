@@ -48,17 +48,27 @@ def embute_conferido(gerador, detector, x, sr, fator, alvo=None, tentativas=4,
             cru = gerador(base, sample_rate=sr).squeeze().numpy()
         y = (x + fator * (cru - x)).astype(np.float32)
         usadas += 1
-        melhor = y
+        if melhor is None:
+            melhor = y                    # já existe marca para cair de volta
         try:
             with torch.no_grad():
                 prob, _m = detector.detect_watermark(
                     torch.from_numpy(np.ascontiguousarray(y))[None, None], sample_rate=sr)
-            melhor_prob = float(prob.squeeze())
+            prob = float(prob.squeeze())
         except Exception as exc:  # noqa: BLE001 — sem conferência, fica a marca feita
+            melhor = y                    # esta é a única que existe: fica ela
             erro = f"{type(exc).__name__}: {exc}"[:160]
             print(f"[marca] detector falhou, mantendo a marca da tentativa {usadas}: {erro}",
                   flush=True)
             break
+        # SÓ troca se MELHOROU. Antes o `melhor` era reatribuído a cada volta e o
+        # que saía era a ÚLTIMA tentativa, não a melhor: sob carga uma sorte ruim
+        # em último lugar derrubava a marca para ~0,6 (#706).
+        # `melhor_prob` começa NaN e `prob >= NaN` é SEMPRE falso: sem o teste de
+        # NaN a primeira tentativa nunca seria guardada e o retorno sairia NaN.
+        if melhor_prob == melhor_prob and prob <= melhor_prob:
+            continue
+        melhor, melhor_prob = y, prob
         if melhor_prob >= alvo:
             break
     return melhor, melhor_prob, usadas, erro

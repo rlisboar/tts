@@ -87,6 +87,33 @@ a saída **difere do original** e que a probabilidade vem NaN.
   (alvo inalcançável) — a marca final tem de seguir ≥0,96. Ambas caem se o
   re-sorteio for removido (conferido).
 
+## Sob carga: a marca podia sair FRACA mesmo esgotando (#706)
+
+Relato do infra na suíte cheia: a célula do piso viu **0,613** contra 0,96. O
+suspeito era o produto, e era: `embute_conferido` fazia `melhor = y` em TODA volta
+e só atualizava a probabilidade — então o que saía era a **última** tentativa, não a
+melhor. Enquanto o laço para no alvo isso não aparece (a 1ª já é a boa); quando ele
+**esgota** — exatamente o que a célula do piso força — uma sorte ruim no fim
+derrubava a marca para ~0,6.
+
+Dois defeitos, os dois corrigidos:
+
+1. só trocar a guardada quando a tentativa é melhor;
+2. `melhor_prob` começa `NaN` e `prob >= NaN` é **sempre falso** — sem teste de NaN
+   a primeira tentativa nunca seria guardada e o retorno sairia `NaN`.
+
+Célula determinística nova (`test_esgotar_guarda_a_MELHOR_tentativa_nao_a_ultima`):
+probabilidades 0,99 / 0,99 / 0,30 / 0,30 com alvo inalcançável → tem de guardar a de
+0,99 e o áudio dela. Reverter para o comportamento antigo derruba a célula.
+
+Reprodução sob carga aqui: **8 e 16 processos simultâneos** a −38 dBFS, marca
+1,000 em todos nas três rodadas — a sorte fraca é rara, por isso a célula precisa do
+forçamento para morder, e o defeito só se via no caminho de esgotamento.
+
+Comportamento certo, agora: depois das 4 tentativas sai a **melhor** delas. Se todas
+forem fracas, ainda sai uma marca (com marca > sem marca) e o número vai para o log
+pelo `prob` do protocolo — quem chama pode alertar.
+
 ## O que continua valendo
 
 - O ABX v2 para o dono está em `/tmp/abx-marca-v2/` (4 pares, detecção 1,0 nos

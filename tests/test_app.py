@@ -1894,6 +1894,43 @@ print(usadas, round(float(d.detect_watermark(torch.from_numpy(y)[None, None],
 """
 
 
+def test_esgotar_guarda_a_MELHOR_tentativa_nao_a_ultima():
+    """Esgotar não pode terminar com a pior sorte em mãos (#706).
+
+    Antes o `melhor` era reatribuído a cada volta, então o que saía era a ÚLTIMA
+    tentativa. Enquanto o laço para no alvo isso passa despercebido (a 1ª já é a
+    boa); quando ele esgota — que é o que a célula do piso força — uma sorte ruim no
+    fim derrubava a marca para ~0,6."""
+    import marca_worker
+
+    class _Gerador:
+        def __init__(self):
+            self.n = 0
+
+        def __call__(self, base, sample_rate=16000):
+            import torch
+            self.n += 1
+            # cada tentativa deixa um degrau distinguível de 0.01
+            return base + torch.from_numpy(np.full(tuple(base.shape), 0.01 * self.n, np.float32))
+
+    class _DetectorSequencia:
+        def __init__(self, probs):
+            self.probs = list(probs)
+
+        def detect_watermark(self, y, **k):
+            import torch
+            return torch.tensor([self.probs.pop(0)]), None
+
+    x = np.zeros(16000, np.float32)
+    y, prob, usadas, _ = marca_worker.embute_conferido(
+        _Gerador(), _DetectorSequencia([0.99, 0.99, 0.30, 0.30]), x, 16000, 1.0,
+        alvo=1.01, tentativas=4)
+    assert usadas == 4
+    assert prob == pytest.approx(0.99), f"guardou a última ({prob}), não a melhor"
+    # as duas primeiras empatam em 0,99: fica a PRIMEIRA, não a última (0,30)
+    assert y is not None and np.isclose(y[0], 0.01), "o áudio guardado não é de uma boa"
+
+
 def test_esgotar_as_tentativas_ainda_deixa_marca_detectavel(tmp_path):
     """A conferência não pode terminar pior do que começou.
 
