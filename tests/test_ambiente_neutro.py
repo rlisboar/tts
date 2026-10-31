@@ -154,16 +154,28 @@ _VARS_CAMINHO = {
     "TTS_OUTPUTS_DIR": "OUTPUTS_DIR",
     "TTS_JOBS_HIST_PATH": "_JOBS_HIST_PATH",
 }
-# os caminhos de hoje, sem nenhuma variável (é o que o default tem de continuar)
+# Caminhos sem nenhuma variável. Os quatro de ESTADO (#721) não ficam mais ao lado
+# do `app.py`: vão para o `STATE_DIR` (Application Support só com `.git` DIRETÓRIO,
+# senão `<árvore>/.state-local`). Vozes/outputs/histórico seguem na árvore.
 _PADROES = {
-    "APIKEYS_PATH": ".apikeys.json",
-    "LEGACY_APIKEY_PATH": ".apikey",
-    "SETTINGS_PATH": "settings.json",
-    "SPEAKER_PATH": ".speaker-profiles.json",
     "VOICES_DIR": "voices",
     "OUTPUTS_DIR": "outputs",
     "_JOBS_HIST_PATH": "state/jobs-history.json",
 }
+_NOMES_ESTADO = {
+    "APIKEYS_PATH": ".apikeys.json",
+    "LEGACY_APIKEY_PATH": ".apikey",
+    "SETTINGS_PATH": "settings.json",
+    "SPEAKER_PATH": ".speaker-profiles.json",
+}
+
+
+def _esperado(campo: str) -> str:
+    if campo in _NOMES_ESTADO:
+        import app
+
+        return str(app._dir_de_estado_padrao() / _NOMES_ESTADO[campo])
+    return str(BASE / _PADROES[campo])
 
 
 def _sem_vars_de_caminho() -> dict:
@@ -179,10 +191,9 @@ def test_caminhos_de_estado_sem_variavel_ficam_no_default():
         cwd=str(BASE), env=_sem_vars_de_caminho(), capture_output=True, text=True)
     assert r.returncode == 0, r.stderr[-2000:]
     obtido = r.stdout.strip().splitlines()
-    assert obtido == [str(BASE / _PADROES[c]) for c in _VARS_CAMINHO.values()]
-    base_real = BASE.resolve()
+    assert obtido == [_esperado(c) for c in _VARS_CAMINHO.values()]
     for linha in obtido:                  # relativo herdaria o CWD de quem chama
-        assert Path(linha).is_absolute() and base_real in Path(linha).parents
+        assert Path(linha).is_absolute(), linha
 
 
 def test_caminhos_de_estado_respeitam_a_variavel_no_import(tmp_path):
@@ -211,4 +222,4 @@ def test_variavel_vazia_cai_no_default(tmp_path):
         [sys.executable, "-c", "import app; print(app.APIKEYS_PATH, app.VOICES_DIR)"],
         cwd=str(BASE), env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr[-2000:]
-    assert r.stdout.split() == [str(BASE / ".apikeys.json"), str(BASE / "voices")]
+    assert r.stdout.split() == [_esperado("APIKEYS_PATH"), str(BASE / "voices")]
