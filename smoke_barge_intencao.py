@@ -117,21 +117,35 @@ def _latencia_do_comando(n: int = 6) -> list[int]:
     import threading
     import time
 
+    import subprocess
+
     import numpy as np
     import soundfile as sf
-    from scipy.signal import resample_poly
 
     import live_turns as lt
     from live_pipeline import _stt_app
 
-    voz = sorted(pathlib.Path("voices").glob("*.wav"))[0]
-    a, sr = sf.read(str(voz), dtype="float32")
-    if a.ndim > 1:
-        a = a.mean(axis=1)
-    pcm = (np.clip(resample_poly(a, 16000, int(sr)), -1, 1) * 32767).astype("<i2").tobytes()[:36000]
-    tmp = pathlib.Path(tempfile.mkdtemp()) / "comando.wav"
+    # VOZ: a do `voices/` quando existe, senão um COMANDO sintetizado (#732) — num
+    # worktree `voices/` não existe e o primeiro wav do dono transcreve uma frase
+    # qualquer ("olá"), que não casa `palavras_corte`: a medição dava 6 s (o teto
+    # da espera) em toda amostra, sem nunca cortar.
+    # O comando é SINTETIZADO sempre: a voz de `voices/` muda por árvore (o dono
+    # tem as dele, o worktree tem a fixture) e o que ela transcreve não é comando
+    # — "Esta é uma amostra" não casa `palavras_corte` e a amostra expirava no teto
+    # de 6 s sem corte. Com `say` o áudio é o mesmo em qualquer máquina.
+    dir_tmp = pathlib.Path(tempfile.mkdtemp())
+    aiff = dir_tmp / "cmd.aiff"
+    wav = dir_tmp / "cmd.wav"
+    subprocess.run(["say", "-o", str(aiff), "Para, para, espera um pouco."],
+                   check=True, timeout=30, capture_output=True)
+    subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
+                    str(aiff), str(wav)], check=True, timeout=30, capture_output=True)
+    a, sr = sf.read(str(wav), dtype="float32")
+    pcm = (np.clip(a, -1, 1) * 32767).astype("<i2").tobytes()
+    palavras = ["para", "espera"]
+    tmp = dir_tmp / "comando.wav"
     sf.write(str(tmp), np.frombuffer(pcm, dtype="<i2"), 16000, subtype="PCM_16")
-    app._settings["live_barge_filtros"] = {"palavras_corte": {"palavras": ["olá", "ola"],
+    app._settings["live_barge_filtros"] = {"palavras_corte": {"palavras": palavras,
                                                "passo_ms": 150}}
     tempos = []
     for _ in range(n):
@@ -142,7 +156,10 @@ def _latencia_do_comando(n: int = 6) -> list[int]:
                 "cancelado": threading.Event(), "turno": 0, "fila": queue.Queue()}
         sess["engine"] = lt.TurnEngine(lt.Config(interrupcao="inteligente"),
                                        scorer=lambda f: 0.95)
-        sess["engine"].set_speaking(True, nivel_dbfs=-20)
+        # BACKLOG no engine: sem ele `playback_restante_ms()==0` e o
+        # `fim_de_resposta` ganha do comando (anota em vez de cortar) — a amostra
+        # mediria o último segundo, não o corte
+        sess["engine"].set_speaking(True, nivel_dbfs=-20, duracao_ms=3000)
 
         class _Ev:
             audio = pcm

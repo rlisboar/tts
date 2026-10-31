@@ -684,3 +684,11 @@ dois caminhos precisa dos dois cobertos pela posição.
 |---|---|
 | tirar a chamada `isola()` de qualquer smoke (testado em `smoke_barge_intencao` e `smoke_worker_persist`) | `test_todo_script_que_importa_app_isola_o_estado_em_tmp` **FAILED** |
 | importar o helper DEPOIS de `import app` | mesma célula **FAILED** |
+
+### #501 — a matriz de intenção (três mordidas)
+
+| Sabotagem | Resultado |
+|---|---|
+| `BARGE_MODO=imediata` (energia pura) | backchannel **0/25** → REPROVADO |
+| `return "interrupcao"` final trocado por `backchannel` | grupo `curto` **2/20** → REPROVADO |
+| `return "backchannel"` trocado por `interrupcao` | backchannel **0/25** → REPROVADO |
