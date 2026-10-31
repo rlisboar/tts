@@ -72,6 +72,21 @@ def test_nenhuma_suite_usa_o_estado_da_raiz_como_fonte():
         "`tests/fixtures/voz_fala_5s_16k.wav`:\n  " + "\n  ".join(problemas))
 
 
+def _isca_wav(raiz: Path) -> None:
+    """`voices/<isca>.wav` com 0,9 s — ABAIXO do filtro de 1 s das suítes.
+
+    Assim, quem voltar a usar glob em `voices/` pega a isca e morre no filtro (não
+    cai na fixture de novo): o efeito é uma falha clara, não um falso verde.
+    """
+    import soundfile as sf
+    import numpy as np
+
+    (raiz / "voices").mkdir(parents=True, exist_ok=True)
+    (raiz / "voices" / "isca.wav").write_bytes(b"RIFF")
+    sf.write(str(raiz / "voices" / "isca.wav"), np.zeros(int(0.9 * 16000), dtype="<f4"),
+             16000, subtype="PCM_16")
+
+
 def _raiz_falsa(tmp_path: Path) -> Path:
     """Raiz de mentira com o estado do dono envenenado pela isca.
 
@@ -94,13 +109,15 @@ def _raiz_falsa(tmp_path: Path) -> Path:
         (raiz / "tests" / nome).symlink_to(AQUI / nome)
     if (AQUI / "fixtures").exists():
         (raiz / "tests" / "fixtures").symlink_to(AQUI / "fixtures")
-    # a suíte vai COPIADA (o `RAIZ` dela vem do próprio caminho do script)
-    shutil.copy(AQUI / "hash_deep_link.sh", raiz / "tests" / "hash_deep_link.sh")
-    os.chmod(raiz / "tests" / "hash_deep_link.sh", 0o755)
+    # as suítes vão COPIADAS (o `RAIZ` delas vem do próprio caminho do script)
+    for nome in ("hash_deep_link.sh", "obs_ui.sh"):
+        shutil.copy(AQUI / nome, raiz / "tests" / nome)
+        os.chmod(raiz / "tests" / nome, 0o755)
     (raiz / "settings.json").write_text('{"chat_model": "%s"}\n' % ISCA)
     (raiz / ".apikeys.json").write_text('{"keys": [{"name": "%s", "secret": "%s"}]}\n'
                                         % (ISCA, ISCA))
     (raiz / ".apikey").write_text(ISCA + "\n")
+    _isca_wav(raiz)
     return raiz
 
 
@@ -125,6 +142,30 @@ def test_suite_roda_sem_ler_o_estado_da_raiz(tmp_path):
             Path(nome).unlink()
         except OSError:
             pass
+
+
+def test_suite_usa_a_fixture_mesmo_com_voz_na_raiz(tmp_path):
+    """`voices/` da raiz com uma isca curta: a suíte tem de seguir na fixture.
+
+    A isca tem 0,9 s e as suítes descartam áudio com menos de 1 s — se voltarem a
+    fazer glob em `voices/`, pegam a isca e morrem no filtro.
+    """
+    if not PY.exists():
+        pytest.skip("sem venv para subir o app")
+    raiz = _raiz_falsa(tmp_path)
+    antes = set(glob.glob("/tmp/obs_ui_estado_*"))
+    r = subprocess.run([str(raiz / "tests" / "obs_ui.sh")], cwd=str(raiz),
+                       capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0, (r.stdout + r.stderr)[-2000:]
+    novos = set(glob.glob("/tmp/obs_ui_estado_*")) - antes
+    assert novos, "a rodada não deixou a pasta de estado (caminho mudou?)"
+    for d in novos:
+        cfg = Path(d) / "settings.json"
+        if cfg.exists():
+            assert ISCA not in cfg.read_text(errors="replace"), (
+                f"a rodada copiou o settings da raiz para {cfg}")
+    for d in novos:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_raiz_falsa_envenenada_de_fato(tmp_path):
