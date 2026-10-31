@@ -1880,6 +1880,9 @@ ROTEIRO_PISO = """
 import sys, numpy as np, soundfile as sf, pathlib, torch
 sys.path.insert(0, {raiz!r})
 import marca_worker
+# SEMENTE fixa: sem ela a mensagem sorteada muda a cada processo e a célula fica
+# dependente de sorte (o fix tinha subido a margem, não a reprodutibilidade)
+torch.manual_seed({semente})
 from audioseal import AudioSeal
 g = AudioSeal.load_generator({gerador!r}, nbits=16).eval()
 d = AudioSeal.load_detector({detector!r}, nbits=16).eval()
@@ -1892,6 +1895,38 @@ sf.write({saida!r}, y, sr, subtype="PCM_16")
 print(usadas, round(float(d.detect_watermark(torch.from_numpy(y)[None, None],
                                              sample_rate=sr)[0].squeeze()), 3))
 """
+
+
+def test_nan_na_primeira_tentativa_nao_engole_as_seguintes():
+    """A armadilha é `not prob >= melhor_prob`: com `melhor_prob` NaN a comparação é
+    sempre falsa, então NENHUMA tentativa é aceita e o laço esgota em vão — medido:
+    `usou 4` e a 2ª, que presta, nunca vira a guardada."""
+    import marca_worker
+
+    class _Gerador:
+        def __init__(self):
+            self.n = 0
+
+        def __call__(self, base, sample_rate=16000):
+            import torch
+            self.n += 1
+            return base + torch.from_numpy(np.full(tuple(base.shape), 0.01 * self.n, np.float32))
+
+    class _DetectorNaN:
+        def __init__(self):
+            self.n = 0
+
+        def detect_watermark(self, y, **k):
+            import torch
+            self.n += 1
+            return torch.tensor([float("nan") if self.n == 1 else 0.99]), None
+
+    x = np.zeros(16000, np.float32)
+    y, prob, usadas, _ = marca_worker.embute_conferido(
+        _Gerador(), _DetectorNaN(), x, 16000, 1.0, alvo=0.96, tentativas=4)
+    assert usadas == 2, f"parou na 1ª tentativa NaN (usou {usadas})"
+    assert prob == pytest.approx(0.99), f"ficou com {prob}"
+    assert y is not None and np.isclose(y[0], 0.02), "o áudio guardado não é o da 2ª"
 
 
 def test_esgotar_guarda_a_MELHOR_tentativa_nao_a_ultima():
@@ -1955,6 +1990,7 @@ def test_esgotar_as_tentativas_ainda_deixa_marca_detectavel(tmp_path):
         sf.write(str(carimbo), x, 16000, subtype="PCM_16")
         roteiro = tmp_path / f"roda{i}.py"
         roteiro.write_text(ROTEIRO_PISO.format(
+            semente=20261031 + i,
             raiz=str(Path(__file__).resolve().parents[1]),
             gerador=str(marca_dagua.MODELO_DIR / marca_dagua.GERADOR),
             detector=str(marca_dagua.MODELO_DIR / marca_dagua.DETECTOR),
