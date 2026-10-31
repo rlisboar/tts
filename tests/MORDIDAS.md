@@ -295,7 +295,9 @@ sha256 no manifesto reprova).
 | Sabotagem | Resultado |
 |---|---|
 | fonte do peso removida de `FONTES` (manifesto passa a ter entrada órfã) | `test_baixa_modelos` **FAILED** (6 células) — o `--check` acusa "está no manifesto e não tem fonte" |
-| `demucs` fora do `requirements.txt` | `test_requirements_pinos` **FAILED** (dep sem pino e fora do lock) |
+| `demucs` sem `==` | `test_worker_nao_usa_pacote_fora_do_requirements` **FAILED** ("está sem `==` e fora da ALLOWLIST") |
+| `demucs` fora do `requirements.txt` | idem **FAILED** ("importa 'demucs' e não há 'demucs' no requirements.txt") |
+| `demucs` fora dos DOIS arquivos | idem **FAILED** (as células que comparam requirements↔lock sozinhas não pegavam — #684) |
 | peso ausente do disco | célula offline **skipa** (o skip nomeia o script) |
 
 ## #690 — `integra.sh` de qualquer worktree e recusa de estado no commit

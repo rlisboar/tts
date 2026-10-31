@@ -15,6 +15,7 @@ A REGRA, e por que ela não é "todo mundo com `==`":
 """
 
 import re
+import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
@@ -121,3 +122,52 @@ def test_o_teste_se_morde(monkeypatch, tmp_path):
     with __import__("pytest").raises(AssertionError) as e:
         mod.test_toda_dependencia_tem_teto_ou_esta_na_allowlist()
     assert "pacote-novo-sem-pino" in str(e.value)
+
+
+# --- o que o código USA tem de estar no requirements (e pinado) -----------------
+#: de onde saem os imports de terceiro que valem cobrança: os workers que rodam
+#: fora do processo do app e o próprio app
+_FONTES_DE_IMPORT = ("musica_worker.py", "separa_worker.py", "intencao_worker.py")
+#: módulo de terceiro -> nome da distribuição, quando diferem
+_DISTRINOME = {"soundfile": "soundfile", "yaml": "pyyaml", "PIL": "pillow"}
+
+
+def _imports_de_terceiro(arquivo: Path) -> set[str]:
+    """Módulos de TOPO importados pelo arquivo, sem stdlib e sem módulos do repo."""
+    stdlib = getattr(sys, "stdlib_module_names", set())
+    # módulos do próprio repo (raiz e `tools/bakeoff`): não são distribuição
+    locais = {p.stem for p in arquivo.parent.glob("*.py")}
+    locais |= {p.stem for p in (BASE / "tools" / "bakeoff").glob("*.py")}
+    achados = set()
+    for m in re.finditer(r"^\s*(?:import|from)\s+([A-Za-z_][\w]*)", arquivo.read_text(),
+                         re.M):
+        mod = m.group(1)
+        if mod in stdlib or mod in locais or mod.startswith("_"):
+            continue
+        achados.add(mod)
+    return achados
+
+
+def test_worker_nao_usa_pacote_fora_do_requirements():
+    """Quem o código importa tem de estar no `requirements.txt` — e com `==`.
+
+    Por que não bastam as células vizinhas (#684): a de teto PULA dep sem `==` que
+    esteja no lock, e a de runtime compara `requirements` com o `.lock` — então
+    tirar o pacote dos dois lados fica consistente e passa. Sem esta célula, o
+    `demucs` podia sumir do arquivo sem ninguém notar, e a instalação limpa é que
+    quebrava.
+    """
+    nomes = {_norm(n): linha for _n, n, linha in _deps()}
+    problemas = []
+    for arquivo in (BASE / nome for nome in _FONTES_DE_IMPORT):
+        if not arquivo.is_file():
+            continue
+        for mod in sorted(_imports_de_terceiro(arquivo)):
+            dist = _norm(_DISTRINOME.get(mod, mod))
+            if dist not in nomes:
+                problemas.append(f"{arquivo.name} importa '{mod}' e não há '{dist}' "
+                                 "no requirements.txt")
+            elif "==" not in nomes[dist] and dist not in {_norm(a) for a in ALLOWLIST}:
+                problemas.append(f"'{dist}' (usado por {arquivo.name}) está sem `==` "
+                                 "e fora da ALLOWLIST")
+    assert not problemas, "\n".join(problemas)

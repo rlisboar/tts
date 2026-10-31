@@ -5,6 +5,8 @@
 # sem `==` só passa se estiver pinada no `requirements.lock` (o teto versionado,
 # usado pelo `-c requirements.lock` do deploy e pelo CI) ou se estiver na allowlist
 # do teste, com motivo. Dep nova: pine, ou rode `pip freeze` no venv verificado.
+# `mlx` cru vem pelos mlx-*; o worker de intenção importa direto, então é pinado
+mlx==0.31.2
 mlx-audio==0.4.4
 mlx-whisper==0.4.3
 mlx-lm==0.31.3
@@ -13,7 +15,11 @@ mlx-lm==0.31.3
 # o bug não se aplica mais. Re-verificar com áudio real ao subir versão.
 transformers==5.10.2
 torch
-soundfile
+# numpy PINADO por causa do demucs (#684): o 4.1.0 aceita `numpy<2.5` e o resolvedor
+# DESCE a versão sozinho (medi 2.5.x → 2.4.6). Pinado, a descida é decisão, não
+# surpresa; subir exige re-medir síntese, transcrição e separação.
+numpy==2.4.6
+soundfile==0.14.0
 # separação de música (htdemucs, #520/I1b): instalado e conferido em 2026-10-29.
 # ATENÇÃO ao re-instalar: o demucs 4.1.0 aceita numpy<2.5 e o resolvedor DESCE o
 # numpy (medi 2.5.x → 2.4.6; torch 2.12.1, transformers 5.10.2 e mlx/mlx_audio não
@@ -29,7 +35,7 @@ rotary_embedding_torch==0.9.1
 # scipy: DSP do app (resample_poly em _wav_to_mono16k, sosfilt nos filtros) e
 # reamostragem do áudio do navegador (24 kHz) p/ 16 kHz antes do VAD — sem ele
 # aquele caminho cai no `except` e o guarda anti-alucinação volta a ser no-op.
-scipy
+scipy==1.17.1
 fastapi
 uvicorn
 # WS: sem `websockets` (ou wsproto) o uvicorn NÃO faz upgrade de WebSocket —
