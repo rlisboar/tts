@@ -30,7 +30,12 @@
 # Integração do trabalho de volta na `main`: `tools/integra.sh <agente>`.
 set -uo pipefail
 
-RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# A RAIZ sai do `.git` comum, não do diretório do script: chamado de dentro de um
+# worktree, `dirname/..` apontava para o próprio worktree e a pasta virava
+# `…-wt/<agente>-wt` (#690).
+comum="$(git rev-parse --git-common-dir 2>/dev/null)" || { echo "✖ não é repo git" >&2; exit 2; }
+case "$comum" in /*) ;; *) comum="$(cd "$comum" && pwd)" ;; esac
+RAIZ="$(cd "$(dirname "$comum")" && pwd)"
 PASTA="${TTS_WT_DIR:-$(dirname "$RAIZ")/$(basename "$RAIZ")-wt}"
 SUMS="$RAIZ/models/sha256sums.txt"
 
@@ -83,6 +88,14 @@ cria() {
     mkdir -p "$PASTA"
     git -C "$RAIZ" worktree add -q -b "wt/$agente" "$destino" main || exit 1
     _liga_o_que_nao_pode_copiar "$destino"
+    # o `.venv-mlx` ligado aqui tem de estar IGNORADO: sem isso o symlink entra no
+    # commit apontando para o venv da raiz (#685). O `integra.sh` também recusa,
+    # mas falhar já na criação é mais barato.
+    if ! git -C "$RAIZ" check-ignore -q .venv-mlx; then
+        echo "✖ `.venv-mlx` não está no .gitignore — o symlink entrará no commit" >&2
+        echo "  ponha `/.venv-mlx` no .gitignore (sem barra no fim: symlink não é diretório)" >&2
+        exit 1
+    fi
     echo "✔ worktree de $agente em $destino (branch wt/$agente, a partir de main)"
     echo "  compartilhados: .venv-mlx e os pesos de models/ (symlink)"
     echo "  próprios (nascem vazios): voices/, settings.json, .apikey*, outputs/, state/"

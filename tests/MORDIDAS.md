@@ -298,6 +298,15 @@ sha256 no manifesto reprova).
 | `demucs` fora do `requirements.txt` | `test_requirements_pinos` **FAILED** (dep sem pino e fora do lock) |
 | peso ausente do disco | célula offline **skipa** (o skip nomeia o script) |
 
+## #690 — `integra.sh` de qualquer worktree e recusa de estado no commit
+
+| Sabotagem | Resultado |
+|---|---|
+| raiz resolvida pelo diretório do script (`dirname/..`) | `test_integra_acha_a_raiz_chamado_de_dentro_de_outro_worktree` **FAILED**: "a raiz está em 'wt/agenteb' — a integração é sempre na main" |
+| recusa de estado desligada | `test_integra_recusa_branch_que_leva_estado` **FAILED** (branch com `voices` symlink e `settings.json` passa) |
+| `worktrees.sh` sem o `git check-ignore .venv-mlx` | `test_worktrees_falha_quando_venv_nao_esta_ignorado` **FAILED** |
+| raiz com WIP não commitado | `test_integra_recusa_raiz_suja` **FAILED** ("trabalho não commitado") |
+
 ## #688 — harness do Live não deixa servidor órfão
 
 | Sabotagem | Resultado |

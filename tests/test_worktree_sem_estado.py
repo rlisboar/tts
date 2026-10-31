@@ -121,3 +121,121 @@ def test_symlink_de_estado_e_ignorado_pelo_git():
     finally:
         for alvo in criados:
             alvo.unlink()
+
+
+# --- tools/integra.sh: raiz de qualquer worktree e recusa de estado --------------
+def _integra(*args: str, cwd: Path, pasta: Path) -> subprocess.CompletedProcess:
+    """Roda o script DA ÁRVORE DE TRABALHO, com cwd dentro do worktree — é o caso do
+    agente (`tools/integra.sh` a partir do próprio worktree) sem precisar commitar
+    cópia: o script em `REPO` já é a versão editada."""
+    return subprocess.run([str(REPO / "tools" / "integra.sh"), *args], cwd=str(cwd),
+                          capture_output=True, text=True, timeout=900,
+                          env={**os.environ, "TTS_INTEGRA_SEM_HOOK": "1",
+                               "TTS_WT_DIR": str(pasta)})
+
+
+def _worktree(temporario: Path, nome: str) -> Path:
+    wt = temporario / nome
+    subprocess.run(["git", "-C", str(REPO), "worktree", "add", "-q", "-B", f"wt/{nome}",
+                    str(wt), "main"], check=True, capture_output=True)
+    # o hook roda no worktree: sem venv ele cai no python do sistema (sem ruff)
+    (wt / ".venv-mlx").symlink_to(REPO / ".venv-mlx")
+    # (o script roda de `REPO`, então não precisa commitar cópia aqui)
+    return wt
+
+
+def tmp_dir_de(worktrees) -> Path:
+    return worktrees[0].parent
+
+
+@pytest.fixture
+def worktrees(tmp_path):
+    """Dois worktrees descartáveis; devolve o que serve de "onde eu estou"."""
+    criados = []
+    # rodada anterior pode ter morrido entre criar e limpar: branch presa em
+    # worktree fantasma faz `worktree add` falhar com 128
+    subprocess.run(["git", "-C", str(REPO), "worktree", "prune"], capture_output=True)
+    try:
+        for nome in ("agentea", "agenteb"):
+            subprocess.run(["git", "-C", str(REPO), "branch", "-D", f"wt/{nome}"],
+                           capture_output=True)
+            criados.append(_worktree(tmp_path, nome))
+        yield criados
+    finally:
+        for wt in criados:
+            subprocess.run(["git", "-C", str(REPO), "worktree", "remove", "--force",
+                            str(wt)], capture_output=True)
+            subprocess.run(["git", "-C", str(REPO), "branch", "-D", f"wt/{wt.name}"],
+                           capture_output=True)
+
+
+def test_integra_acha_a_raiz_chamado_de_dentro_de_outro_worktree(worktrees):
+    """Chamado de dentro de um worktree, a raiz sai do `.git` comum (#690).
+
+    Antes, `dirname(script)/..` apontava para o próprio worktree e o script
+    procurava `…-wt/<agente>-wt` — recusava com "não achei o worktree"."""
+    de_dentro = worktrees[1]
+    r = _integra("agentea", cwd=de_dentro, pasta=tmp_dir_de(worktrees))
+    assert "não achei o worktree" not in r.stderr, r.stderr
+    # agentea está em main, sem commit: o fluxo segue até o fim
+    assert r.returncode == 0, r.stderr + r.stdout
+
+
+def test_integra_recusa_branch_que_leva_estado(worktrees):
+    """Estado do dono no commit — arquivo ou SYMLINK (modo 120000) — é recusado."""
+    wt = worktrees[0]
+    (wt / "voices").symlink_to(REPO / "tests" / "fixtures")
+    (wt / "settings.json").write_text("{}\n")
+    subprocess.run(["git", "-C", str(wt), "add", "-f", "voices", "settings.json"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(wt), "-c", "core.hooksPath=/dev/null", "commit",
+                    "-q", "-m", "estado"], check=True, capture_output=True)
+
+    r = _integra("agentea", cwd=worktrees[1], pasta=worktrees[0].parent)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "leva estado do dono" in r.stderr
+    assert "voices" in r.stderr and "settings.json" in r.stderr
+    assert "symlink rastreado" in r.stderr, r.stderr
+
+
+def test_worktrees_falha_quando_venv_nao_esta_ignorado(tmp_path):
+    """`worktrees.sh` confere `git check-ignore .venv-mlx` no fim (#685).
+
+    Um repositório de mentira, sem a regra no `.gitignore`: o script tem de parar
+    em vez de entregar um worktree cujo symlink entraria no commit."""
+    repo = tmp_path / "falso"
+    (repo / "tools").mkdir(parents=True)
+    (repo / "tools" / "worktrees.sh").write_text(
+        (REPO / "tools" / "worktrees.sh").read_text())
+    (repo / "tools" / "worktrees.sh").chmod(0o755)
+    (repo / ".gitignore").write_text("# sem regra para o venv\n")
+    (repo / "models").mkdir()
+    (repo / "models" / "sha256sums.txt").write_text("")
+    for cmd in (["init", "-q", "-b", "main"],
+                ["-c", "user.email=x@y", "-c", "user.name=x", "commit", "-q",
+                 "--allow-empty", "-m", "raiz"]):
+        subprocess.run(["git", "-C", str(repo), *cmd], check=True, capture_output=True)
+
+    r = subprocess.run(["bash", str(repo / "tools" / "worktrees.sh"), "cria", "x"],
+                       cwd=str(repo), capture_output=True, text=True, timeout=120)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "não está no .gitignore" in r.stderr
+
+
+def test_integra_recusa_raiz_suja(worktrees):
+    """Integração é sobre árvore limpa: WIP na raiz seria atropelado pelo `--ff-only`.
+
+    (O caso "raiz fora da main" não dá para montar aqui sem trocar o HEAD da raiz
+    compartilhada — a checagem existe no script e o fluxo de integração a exercita.)"""
+    de_dentro, wt = worktrees[1], worktrees[0]
+    common = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--git-common-dir"],
+                            capture_output=True, text=True).stdout.strip()
+    raiz = (Path(common) if Path(common).is_absolute() else REPO / common).resolve().parent
+    alvo = raiz / "WIP-do-teste.txt"
+    alvo.write_text("x\n")
+    try:
+        r = _integra("agentea", cwd=de_dentro, pasta=wt.parent)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "trabalho não commitado" in r.stderr, r.stderr
+    finally:
+        alvo.unlink(missing_ok=True)

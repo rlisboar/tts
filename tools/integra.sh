@@ -14,10 +14,14 @@
 # nenhum commit de merge; se não for fast-forward, algo fugiu do fluxo e é melhor
 # parar do que inventar.
 #
-# Uso: tools/integra.sh <agente>        (da raiz ou de qualquer lugar)
+# Uso: tools/integra.sh <agente>        (da raiz ou de QUALQUER worktree)
 set -uo pipefail
 
-RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# A RAIZ sai do `.git` comum, não do diretório do script: chamado de dentro de um
+# worktree, `dirname/..` dava `…-wt/<agente>-wt` e o script recusava (#690).
+comum="$(git rev-parse --git-common-dir 2>/dev/null)" || { echo "✖ não é repo git" >&2; exit 2; }
+case "$comum" in /*) ;; *) comum="$(cd "$comum" && pwd)" ;; esac
+RAIZ="$(cd "$(dirname "$comum")" && pwd)"
 PASTA="${TTS_WT_DIR:-$(dirname "$RAIZ")/$(basename "$RAIZ")-wt}"
 
 _aborta() { echo "✖ $*" >&2; exit 1; }
@@ -33,18 +37,54 @@ branch="wt/$agente"
 git -C "$RAIZ" rev-parse --verify -q "refs/heads/$branch" >/dev/null || _aborta "a branch $branch não existe"
 
 atual="$(git -C "$RAIZ" symbolic-ref --short -q HEAD)"
-[ "$atual" = "main" ] || _aborta "a raiz está em '$atual' — a integração é sempre na main"
+[ "$atual" = "main" ] || _aborta "a raiz está em '${atual:-detached}' — a integração é sempre na main"
 wip_raiz="$(git -C "$RAIZ" status --porcelain)"
 [ -z "$wip_raiz" ] || { echo "$wip_raiz" >&2; _aborta "a raiz tem trabalho não commitado (commite/stashe antes de integrar)"; }
 wip_wt="$(git -C "$WT" status --porcelain)"
 [ -z "$wip_wt" ] || { echo "$wip_wt" >&2; _aborta "o worktree de $agente tem trabalho não commitado (commite lá antes)"; }
 
+# Estado do dono NÃO entra no commit: nem arquivo, nem symlink (modo 120000 — é o
+# que acontecia com `voices`/`.venv-mlx`, que num worktree são link e iam para o
+# índice apontando para o dado real). Recusa ANTES de rebase/hook: barato e claro.
+_estado_proibido() {
+    local p="$1"
+    case "$p" in
+        .venv-mlx|.venv-mlx/*|voices|voices/*|outputs|outputs/*|state|state/*|\
+        settings.json|.apikey|.apikeys.json|.speaker-profiles.json) return 0 ;;
+    esac
+    return 1
+}
+_links=""
+_novos=""
+while read -r modo _sha _resto caminho; do
+    [ "$modo" = "120000" ] || continue        # symlink: é o que entrava calado
+    [ -n "${caminho:-}" ] || continue
+    _estado_proibido "$caminho" && _links="$_links $caminho"
+done < <(git -C "$RAIZ" ls-tree -r "$branch")
+while read -r caminho; do
+    [ -n "${caminho:-}" ] || continue
+    _estado_proibido "$caminho" && _novos="$_novos $caminho"
+done < <(git -C "$RAIZ" diff --name-only --diff-filter=A "main...$branch")
+if [ -n "$_links$_novos" ]; then
+    echo "✖ a branch $branch leva estado do dono para o commit:" >&2
+    [ -n "$_links" ] && echo "   symlink rastreado:$_links" >&2
+    [ -n "$_novos" ] && echo "   arquivo adicionado:$_novos" >&2
+    echo "  tire do índice e commite no worktree: git -C \"$WT\" rm --cached <caminho>" >&2
+    exit 1
+fi
+
+base_inicial="$(git -C "$RAIZ" rev-parse main)"
 echo "→ rebase de $branch em cima da main"
 if ! git -C "$WT" rebase main; then
     git -C "$WT" rebase --abort 2>/dev/null
     _aborta "rebase conflitou — nada foi integrado (resolva no worktree e rode de novo)"
 fi
 
+# `TTS_INTEGRA_SEM_HOOK=1` pula o gate: para teste do próprio script (o hook roda a
+# suíte inteira e leva minutos) e para reintegrar algo que já passou no hook.
+if [ "${TTS_INTEGRA_SEM_HOOK:-0}" = 1 ]; then
+    echo "→ hook no worktree (gate) — PULADO (TTS_INTEGRA_SEM_HOOK=1)"
+else
 echo "→ hook no worktree (gate)"
 # Executa o ARQUIVO, não `git hook run`: aquele devolve o mesmo código para "hook
 # não existe" e para "hook reprovou", e a queda para execução direta acabava rodando
@@ -52,6 +92,13 @@ echo "→ hook no worktree (gate)"
 hook="$WT/.githooks/pre-commit"
 [ -x "$hook" ] || _aborta "não achei o hook executável em $hook"
 ( cd "$WT" && "$hook" ) || _aborta "o hook reprovou — nada foi integrado"
+fi
+
+# a `main` pode andar entre o rebase e o merge (outro agente integrando): o merge
+# `--ff-only` falharia com "not possible to fast-forward" sem dizer por quê
+base_agora="$(git -C "$RAIZ" rev-parse main)"
+[ "$base_agora" = "$base_inicial" ] || _aborta \
+    "a main andou durante a rodada (${base_inicial:0:7} → ${base_agora:0:7}) — rode de novo"
 
 echo "→ merge --ff-only de $branch na main"
 git -C "$RAIZ" merge --ff-only "$branch" || _aborta "merge não foi fast-forward — nada integrado"
