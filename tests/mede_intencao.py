@@ -81,7 +81,58 @@ def _args():
                     help="p95 de latência máximo em ms (padrão 400, o do card)")
     ap.add_argument("--sem-tts", dest="sem_tts", action="store_true",
                     help="pula a parte do TTS concorrente (veredito só pelo acerto)")
+    ap.add_argument("--prazo-ms", type=int, default=400,
+                    help="prazo do filtro modelo (o timeout_ms do settings). O dsh "
+                         "paga o barramento ACP: com 400 ms ~1/4 dos trechos estoura")
+    ap.add_argument("--provedor", choices=("local", "dsh"), default="local",
+                    help="local = classificador no worker; dsh = o PROMPT do dsh pelo "
+                         "chat (#596). O número do dsh é o que decide se ele segue "
+                         "na oferta — a acurácia do local não vale para ele")
     return ap.parse_args()
+
+
+def _mede_dsh(casos: list, a) -> int:
+    """Acerto/latência pelo `provedor: dsh` (o prompt do dsh, com prazo real).
+
+    `_live_modelo_dsh` devolve (tipo, p) — `interrupcao` = cortar. Timeout e erro
+    contam como NÃO decidido (a cadeia cai no próximo filtro), e por isso entram
+    no relatório separados do erro de classificação."""
+    import app
+
+    acertos_regra = sum(1 for c in casos if regra_decisao(c["fala"]) == c["esperado"])
+    print(f"regras (baseline local): {acertos_regra}/{len(casos)} = "
+          f"{100 * acertos_regra / len(casos):.1f}%")
+    app._settings["live_barge_filtros"] = {"modelo": {
+        "on": True, "provedor": "dsh", "limiar": 0.5, "timeout_ms": a.prazo_ms}}
+    sess = {"id": "mede", "barge_stats": {"tipos": {}, "decisoes": [], "modelo": []}}
+    acertos, sem_decisao, errados, ms = 0, 0, [], []
+    for c in casos:
+        t0 = time.monotonic()
+        tipo, _p = app._live_modelo_dsh(sess, c["fala"], c["ref"], {"timeout_ms": a.prazo_ms})
+        ms.append(int((time.monotonic() - t0) * 1000))
+        if tipo is None:
+            sem_decisao += 1
+            continue
+        if (tipo == "interrupcao") == (c["esperado"] == "cortar"):
+            acertos += 1
+        else:
+            errados.append(f"{c['fala']!r} -> {tipo} (esperado {c['esperado']})")
+    decididos = len(casos) - sem_decisao
+    pct = 100.0 * acertos / len(casos)
+    ms.sort()
+    print(f"dsh: {acertos}/{len(casos)} = {pct:.1f}% · sem decisão (timeout/erro): "
+          f"{sem_decisao} · erro de classificação: {len(errados)} de {decididos} decididos")
+    for e in errados[:8]:
+        print("   ✘", e)
+    if ms:
+        print(f"latência: p50 {statistics.median(ms):.0f} ms | "
+              f"p95 {ms[int(len(ms) * 0.95) - 1]} ms | máx {ms[-1]} ms "
+              f"(prazo {a.prazo_ms} ms; estouro não segura o turno)")
+    print(f"timeouts contados: {sess['barge_stats'].get('modelo_timeouts', 0)}")
+    ok = pct >= 100 * a.minimo
+    print("\nVEREDITO:", "OK" if ok else "REPROVADO",
+          f"(piso {100 * a.minimo:.0f}% de acerto — o mesmo do local)")
+    return 0 if ok else 1
 
 
 def main() -> int:
@@ -94,6 +145,9 @@ def main() -> int:
     acertos_regra = sum(1 for c in casos if regra_decisao(c["fala"]) == c["esperado"])
     print(f"regras (baseline local): {acertos_regra}/{len(casos)} = "
           f"{100 * acertos_regra / len(casos):.1f}%")
+
+    if a.provedor == "dsh":
+        return _mede_dsh(casos, a)
 
     inc = live_intencao.Intencao()
     if not inc.aquece():

@@ -2141,3 +2141,33 @@ def test_filtro_identidade_fail_open_nao_barra_o_dono(monkeypatch):
     tipo, _p, _m, filtro = app._live_avalia_filtros(sess, "o dia ta bonito", 900, filtros,
                                                     audio=b"\x01\x00" * 800)
     assert filtro != "identidade" and tipo == "interrupcao"
+
+
+def test_modelo_dsh_tem_piso_de_prazo_de_900ms(monkeypatch):
+    """#596: o barramento ACP custa ~350 ms por si — com o prazo do local (400 ms)
+    um quarto dos trechos estourava e o filtro não decidia (medido: 70 % de acerto
+    contra 91,4 % com o piso). O piso NÃO encurta um prazo maior do dono."""
+    import time
+
+    import app
+
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+
+    def lento(*a, **k):
+        time.sleep(0.55)                 # acima de 400 ms, abaixo do piso
+        return "0.9"
+
+    monkeypatch.setattr(app, "_chat_llm", lento)
+    tipo, p = app._live_modelo_decide(sess, "para", 400, "", _cfg_modelo(provedor="dsh"))
+    assert tipo == "interrupcao", "com prazo de 400 ms o dsh estouraria"
+    # o piso não reduz um prazo MAIOR pedido pelo dono
+    assert app._MODELO_DSH_PRAZO_MIN_S == 0.9
+    caixa = {"t": 0.0}
+
+    def conta(*a, **k):
+        caixa["t"] = time.monotonic()
+        return "0.2"
+
+    monkeypatch.setattr(app, "_chat_llm", conta)
+    app._live_modelo_dsh(sess, "sei", "", {"timeout_ms": 3000})
+    assert time.monotonic() - caixa["t"] < 0.5     # não esperou 3 s

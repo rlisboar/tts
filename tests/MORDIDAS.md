@@ -653,3 +653,10 @@ passaria a tolerar muitos vãos em turno longo (50 chunks = 10). O cap é 3.
 | Sabotagem | Resultado |
 |---|---|
 | tirar `min(3, ...)` e deixar `max(1, n_chunks // 5)` | com 50 chunks e 4 vãos o turno passa (o teto reprova) |
+
+### #596 — prazo e acerto do `provedor: dsh`
+
+| Sabotagem | Resultado |
+|---|---|
+| tirar o piso de 900 ms do prazo no dsh | `test_modelo_dsh_tem_piso_de_prazo_de_900ms` **FAILED** |
+| voltar o prompt antigo do filtro `modelo` | acerto no corpus cai de 91,4 % para 52,9 % (`mede_intencao.py --provedor dsh`) |

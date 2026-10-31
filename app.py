@@ -11403,12 +11403,18 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
             "sem_decisao")
 
 
+# O prompt é o CONTRATO do filtro: medido no corpus de `intencao_corpus.jsonl`
+# pelo próprio `provedor: dsh`, a versão antiga (uma frase corrida pedindo "prob
+# de interromper") dava 52,9 % — o modelo respondia alto para backchannel. Esta
+# versão separa as duas faixas e pede UMA casa decimal: 29/32 nas duas metades
+# medidas (16/16 em cortar, 13/16 em continuar).
 _PROMPT_MODELO = (
-    "Classifique se a fala abaixo INTERROMPE um assistente que está falando. "
-    "Responda só com um número de 0 a 1 (probabilidade de interromper). "
-    "Comandos de parar, perguntas e frases com conteúdo têm prob alta; "
-    "'uhum', 'sim', tosse e eco do próprio assistente, prob baixa.\n"
-    "Assistente estava falando: {ref}\nFala: {fala}")
+    "Você classifica UM trecho de fala de um usuário que pode estar interrompendo "
+    "um assistente que fala. Responda APENAS um número de 0 a 1, com uma casa "
+    "decimal, e nada mais.\n"
+    "0.0-0.4 = NÃO interrompe (concordância, 'sim', 'uhum', tosse, eco).\n"
+    "0.6-1.0 = INTERROMPE (comando de parar, pergunta, frase com conteúdo próprio).\n"
+    "Assistente estava falando: {ref}\nFala: {fala}\nNota:")
 
 
 def _live_modelo_timeout(sess: dict, provedor: str) -> None:
@@ -11418,6 +11424,10 @@ def _live_modelo_timeout(sess: dict, provedor: str) -> None:
     _live_log_kv("barge_modelo_timeout", sess=sess["id"], provedor=provedor)
     st = sess.setdefault("barge_stats", {"tipos": {}, "decisoes": [], "modelo": []})
     st["modelo_timeouts"] = int(st.get("modelo_timeouts") or 0) + 1
+
+
+#: piso de prazo do filtro `modelo` no provedor `dsh` (ver `_live_modelo_dsh`)
+_MODELO_DSH_PRAZO_MIN_S = 0.9
 
 
 def _live_modelo_dsh(sess: dict, texto: str, eco_txt: str,
@@ -11431,7 +11441,11 @@ def _live_modelo_dsh(sess: dict, texto: str, eco_txt: str,
     import re as _re
     if not texto:
         return None, None
-    prazo = max(0.05, float(cfg.get("timeout_ms") or 400) / 1000.0)
+    # PISO de 900 ms SÓ no dsh (#596): o barramento ACP custa ~350 ms por si
+    # (medido: p50 371 ms), então com o `timeout_ms` do local (400) um quarto dos
+    # trechos estourava e o filtro não decidia — 70 % de acerto contra 91,4 % com
+    # o piso. O teto do duck são 2 s, então 900 ms ainda cabe com folga.
+    prazo = max(_MODELO_DSH_PRAZO_MIN_S, float(cfg.get("timeout_ms") or 400) / 1000.0)
     caixa: dict = {}
 
     def _roda():
