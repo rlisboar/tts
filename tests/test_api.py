@@ -7516,29 +7516,24 @@ def test_poda_de_voices_nao_casa_nada_que_nao_seja_temporario(voices_tmp):
     """O glob da poda é o ponto mais sensível: ele APAGA em `voices/`.
 
     Nada de voz, meta, `.orig` real do #443 nem nome de usuário com ponto pode
-    casar. Varre os nomes que existem HOJE no `voices/` real do dono também."""
+    casar. A lista é versionada aqui de propósito: apontar para o `voices/` do dono
+    faria a célula depender da máquina (nem existe em worktree limpo)."""
     import glob as _glob
 
     prefixo = app._TMP_VOICES_PREFIX
     assert prefixo == ".tmp-tts-", "o prefixo mudou: revise o glob da poda"
     padrao = prefixo + "*"
+    # nomes representativos: id simples, com ponto, o `.orig` do #443, meta, os
+    # temporários do esquema ANTIGO e um arquivo qualquer do usuário
     intactos = ["abc.wav", "abc.json", "abc.orig.wav", "voz.com.ponto.wav",
-                "vd-narrador.wav", "vd-narrador.json", ".orig-abc", ".denoise-abc"]
+                "vd-narrador.wav", "vd-narrador.json", "voz.da.familia.wav",
+                ".orig-abc", ".denoise-abc", "nota.txt"]
     for nome in intactos:
         assert not _glob.fnmatch.fnmatch(nome, padrao), f"{nome} casaria a poda"
     temporarios = ["%sdenoise-abc-1234.wav" % prefixo, "%sorig-abc-1234" % prefixo]
     for nome in temporarios:
         assert _glob.fnmatch.fnmatch(nome, padrao), f"{nome} não casaria a poda"
-    # e os nomes REAIS do voices do dono (só `ls`, sem ler conteúdo). No worktree
-    # o `voices/` é o da árvore PRINCIPAL (diretório git comum), não o local.
-    for real in (app.BASE / "voices",
-                 app.BASE.parent / "tts-rod" / "voices",
-                 Path(app.BASE.anchor) / "none"):
-        if real.is_dir() and any(real.iterdir()):
-            for nome in sorted(p.name for p in real.iterdir()):
-                deve = nome.startswith(prefixo)
-                assert _glob.fnmatch.fnmatch(nome, padrao) == deve, nome
-            break
+
 
 
 def test_poda_nao_apaga_temporario_recente(voices_tmp):
