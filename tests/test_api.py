@@ -7400,3 +7400,38 @@ def test_handler_le_o_passo_ms_do_settings(monkeypatch):
             break
         time.sleep(0.02)
     assert 0.05 in esperas, f"o handler não leu o passo do settings: {esperas}"
+
+
+def test_denoise_troca_o_wav_de_forma_atomica(client, auth, voices_tmp, monkeypatch):
+    """Quem lê durante o `denoise` vê o arquivo ANTIGO inteiro, não um pela metade.
+
+    Risco 5 do gate #690: prévia (leitura) e aplicar (escrita) ao mesmo tempo. A
+    escrita vai para um temporário e entra com `os.replace`; gravar por cima deixava
+    o leitor com cabeçalho truncado."""
+    import soundfile as _sf
+
+    wav = _voz_para_limpar(voices_tmp)
+    antes = wav.read_bytes()
+    inode_antes = wav.stat().st_ino
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: np.asarray(a, dtype=np.float32))
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: 0.95)
+    vistas = []
+    real = _sf.write
+
+    def _espia(destino, *a, **k):
+        # no instante em que a cadeia GRAVA (no temporário), alguém lê o FINAL
+        if str(destino) != str(wav) and Path(str(destino)).suffix == ".wav":
+            vistas.append(wav.read_bytes())
+        return real(destino, *a, **k)
+
+    monkeypatch.setattr(_sf, "write", _espia)
+    assert client.post("/api/voices/limpa00001/denoise", headers=auth).status_code == 200
+    assert vistas, "a cadeia não gravou no destino final"
+    # a leitura concorrente tem de ser um WAV COMPLETO (o antigo, neste instante)
+    assert vistas[0] == antes, "leitor concorrente viu arquivo parcial"
+    # e o final é OUTRO inode: gravar por cima mantém o mesmo (trunca no lugar) e
+    # é justamente o que deixa leitor concorrente com arquivo pela metade
+    assert wav.stat().st_ino != inode_antes, "o `.wav` foi sobrescrito no lugar"
+    assert _sf.read(str(wav))[0].size > 0

@@ -4853,7 +4853,11 @@ def denoise_voice(voice_id: str, payload: dict = None, previa: bool = False):
                 "duration": _wav_duration(path), "limpeza": relatorio}
     data = _referencia_pronta(data, sr)
     _guarda_original(voice_id)          # antes de sobrescrever (#443)
-    sf.write(str(path), data, sr, subtype="PCM_16")
+    # troca ATÔMICA (#690): com a prévia lendo o mesmo `.wav` em paralelo, gravar
+    # por cima deixava o outro lado lendo arquivo pela metade (cabeçalho truncado).
+    tmp_denoise = VOICES_DIR / f".denoise-{voice_id}.wav"
+    sf.write(str(tmp_denoise), data, sr, subtype="PCM_16")
+    os.replace(tmp_denoise, path)
     _conds_cache.clear()
     _cache_limpa()           # a amostra mudou: todo áudio dela em cache caiu
     duration = _wav_duration(path)
