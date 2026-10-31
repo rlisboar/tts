@@ -4346,8 +4346,10 @@ def _normaliza_filtro_barge(nome: str, cfg) -> dict:
         fora["far"] = _clamp(cfg.get("far"), 0.001, 0.2, 0.01)
         fora["on"] = bool(cfg.get("on", False))     # #527: começa DESLIGADO
     if nome == "modelo":
-        fora["provedor"] = ("dsh" if str(cfg.get("provedor") or "local").lower() == "dsh"
-                            else "local")
+        # OFERTA: só `local` (decisão do PM, #596). O `dsh` saiu — empata com a
+        # régua de regras (91,4 %), custa 900 ms de prazo e traz egress. Um
+        # settings antigo com `dsh` cai no local, sem erro.
+        fora["provedor"] = "local"
         fora["limiar"] = _clamp(cfg.get("limiar"), 0.05, 0.95, 0.5)
         fora["timeout_ms"] = int(_clamp(cfg.get("timeout_ms"), 100, 3000, 400))
         fora["on"] = bool(cfg.get("on", False))     # #509: começa DESLIGADO
@@ -11432,7 +11434,10 @@ _MODELO_DSH_PRAZO_MIN_S = 0.9
 
 def _live_modelo_dsh(sess: dict, texto: str, eco_txt: str,
                      cfg: dict) -> tuple[str | None, float | None]:
-    """`provedor=dsh`: mesma pergunta, pelo LLM do chat.
+    """`provedor=dsh`: mesma pergunta, pelo LLM do chat — FORA DA OFERTA desde o
+    #596 (o normalizador coerce tudo para `local`). Fica aqui para quando o corpus
+    voltar a justificar: medido no corpus real, 91,4 % (64/70), empate com a régua
+    de regras e 900 ms de prazo.
 
     PRAZO REAL (#596): `_chat_llm` é bloqueante e `timeout_ms` era ignorado — a 1ª
     chamada medida levou 2 574 ms com o turno pagando tudo. Agora a chamada roda em

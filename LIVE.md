@@ -131,6 +131,15 @@ quem fala) e antes do resto, para a fala de terceiro não cortar por ser longa.
 (~30–70 ms) por suspeita. Indisponível (perfil/sem áudio) ⇒ fail-open, a cadeia
 segue. O veredito e o escore saem em `stats.motor.voz`.
 
+`modelo` decide pelo classificador de intenção, e o `provedor` é **só `local`**
+(#596). O `dsh` esteve ofertado e SAIU: no corpus de intenção ele empata com a
+régua de regras de onde o filtro existe para se separar (91,4 % contra 91,4 %, com
+o local em 98,6 %), precisa de piso de prazo de 900 ms porque o barramento ACP
+custa ~350 ms por si, e ainda põe o trecho num processo a mais (egress quando a
+rota do dsh é remota). Um `settings.json` antigo com `provedor: dsh` cai no local
+sem erro; `_live_modelo_dsh` fica no código para quando o corpus justificar de
+novo.
+
 `interrupcao` em settings escolhe o modo: `inteligente` (default), `imediata` (o
 comportamento antigo) ou `so_comando`. `smoke_barge_intencao.py` mede a matriz; com
 `imediata` o backchannel reprova de propósito (corta 100 %).

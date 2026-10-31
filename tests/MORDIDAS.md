@@ -667,3 +667,9 @@ passaria a tolerar muitos vãos em turno longo (50 chunks = 10). O cap é 3.
 |---|---|
 | trocar o default de `cru` para `filtrado` | `test_default_do_filtro_no_stt_e_CRU_travado` **FAILED** |
 | remover o desvio `filtrado` do `_live_audio_cru` | mesma célula **FAILED** |
+
+### #596 — `provedor: dsh` fora da oferta
+
+| Sabotagem | Resultado |
+|---|---|
+| normalizador do filtro `modelo` aceitando `dsh` | `test_provedor_dsh_sai_da_oferta_e_cai_no_local` **FAILED** |

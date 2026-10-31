@@ -2171,3 +2171,23 @@ def test_modelo_dsh_tem_piso_de_prazo_de_900ms(monkeypatch):
     monkeypatch.setattr(app, "_chat_llm", conta)
     app._live_modelo_dsh(sess, "sei", "", {"timeout_ms": 3000})
     assert time.monotonic() - caixa["t"] < 0.5     # não esperou 3 s
+
+
+def test_provedor_dsh_sai_da_oferta_e_cai_no_local(monkeypatch):
+    """Decisão do PM (#596): oferta só `local`.
+
+    O dsh empata com a régua de regras (91,4 %), custa 900 ms de prazo e traz
+    egress. Um settings antigo com `provedor: dsh` NÃO pode virar erro nem voltar
+    a usar o dsh — o normalizador coerce para o local."""
+    import app
+
+    limpo = app._normaliza_filtro_barge("modelo", {"on": True, "provedor": "dsh"})
+    assert limpo["provedor"] == "local"
+    app._apply_settings({"live_barge_filtros": {"modelo": {"on": True, "provedor": "dsh"}}})
+    assert app._settings["live_barge_filtros"]["modelo"]["provedor"] == "local"
+    # e o caminho local responde de verdade (não é só o rótulo)
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None}
+    monkeypatch.setitem(app.__dict__, "_live_classificador_barge",
+                        lambda texto, ms, ref_eco="": 0.2)
+    tipo, p = app._live_modelo_decide(sess, "sei", 400, "", _cfg_modelo(provedor="local"))
+    assert (tipo, p) == ("backchannel", 0.2)
