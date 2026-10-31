@@ -25,6 +25,9 @@ import os
 import sys
 import time
 
+#: probabilidade mínima aceita na saída; abaixo disso o embed é repetido (máx. 4)
+ALVO_DETECCAO = float(os.environ.get("TTS_MARCA_ALVO", "0.97"))
+
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -89,8 +92,26 @@ def main() -> int:
                 # detecção ainda fica >=0,96 medido) até 1,0 em material alto.
                 nivel = 20 * np.log10(max(float(np.sqrt(np.mean(x.astype(np.float64) ** 2))), 1e-9))
                 fator = float(np.clip(0.6 + (nivel + 32.0) * 0.02, 0.6, 1.0))
-                y = (x + fator * (y - x)).astype(np.float32)
-                sf.write(pedido["saida"], y, int(sr), subtype="PCM_16")
+                # A mensagem é SORTEADA a cada embed e algumas sortes grudam mal em
+                # áudio baixo: medido 0,68 a 1,00 com o MESMO trecho em processos
+                # diferentes (#687). Então a marca é CONFERIDA na saída e, se não
+                # passou do alvo, sorteia de novo — sai sempre uma marca que o
+                # detector acha, em vez de uma fraca e silenciosa.
+                melhor, melhor_prob = None, -1.0
+                for _tentativa in range(4):
+                    with torch.no_grad():
+                        y = gerador(wav, sample_rate=int(sr)).squeeze().numpy()
+                    y = (x + fator * (y - x)).astype(np.float32)
+                    with torch.no_grad():
+                        prob, _m = detector.detect_watermark(
+                            torch.from_numpy(np.ascontiguousarray(y))[None, None],
+                            sample_rate=int(sr))
+                    prob = float(prob.squeeze())
+                    if prob > melhor_prob:
+                        melhor, melhor_prob = y, prob
+                    if prob >= ALVO_DETECCAO:
+                        break
+                sf.write(pedido["saida"], melhor, int(sr), subtype="PCM_16")
                 print(json.dumps({"id": pedido.get("id"),
                                   "ms": int((time.perf_counter() - t0) * 1000)}), flush=True)
         except Exception as exc:  # noqa: BLE001 — o chamador segue sem marca

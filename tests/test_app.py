@@ -1876,12 +1876,13 @@ def test_marca_dagua_marca_o_trecho_do_job(monkeypatch, tmp_path):
     assert marcas == [], f"marcou com a setting desligada: {marcas}"
 
 
-def test_marca_mais_fraca_em_audio_baixo_e_deteccao_sobrevive(tmp_path):
+def test_marca_mais_fraca_em_audio_baixo_e_deteccao_no_piso(tmp_path):
     """Achado do ABX (#687): o dono OUVIU a marca no par mais baixo (-22 dBFS).
 
-    A força relativa era a mesma dos outros — o que manda é o nível absoluto. Em
-    áudio baixo a marca tem de sair mais FRACA que a força cheia do gerador, e o
-    detector tem de continuar achando (por isso o piso da escala é 0,6)."""
+    Duas coisas que a célula anterior não cobria: (i) o PISO da escala (0,6, que
+    é o que justifica não descer mais) — sem ele, baixar o piso passaria verde
+    levando a detecção junto; (ii) independência de ordem: o worker é aquecido e
+    conferido ANTES de medir, porque a detecção é feita por ele."""
     import soundfile as sf
     import torch
     from audioseal import AudioSeal
@@ -1890,27 +1891,38 @@ def test_marca_mais_fraca_em_audio_baixo_e_deteccao_sobrevive(tmp_path):
 
     if not marca_dagua.disponivel():
         pytest.skip(f"marca indisponível: {marca_dagua.motivo()}")
+    marca_dagua.prewarm()
+    sonda = tmp_path / "sonda.wav"
+    sf.write(str(sonda), np.zeros(16000, np.float32), 16000, subtype="PCM_16")
+    limite = time.monotonic() + 20
+    while time.monotonic() < limite:              # worker pronto antes de medir
+        if marca_dagua.detecta_prob(sonda) is not None:
+            break
+        time.sleep(0.1)
 
     def rms(x):
         return float(np.sqrt(np.mean(np.asarray(x, np.float64) ** 2)))
 
     t = np.arange(16000 * 3) / 16000
     base = (np.sin(2 * np.pi * 180 * t) + 0.4 * np.sin(2 * np.pi * 460 * t)).astype(np.float32)
-    for rotulo, nivel in (("baixo", 0.06), ("alto", 0.8)):
-        carimbo = tmp_path / f"{rotulo}.wav"
-        sf.write(str(carimbo), (base / np.abs(base).max() * nivel).astype(np.float32),
-                 16000, subtype="PCM_16")
-        cru = sf.read(str(carimbo), dtype="float32")[0]
+    base /= np.abs(base).max()
+    gerador = AudioSeal.load_generator(str(marca_dagua.MODELO_DIR / marca_dagua.GERADOR),
+                                       nbits=16).eval()
 
-        gerador = AudioSeal.load_generator(str(marca_dagua.MODELO_DIR / marca_dagua.GERADOR),
-                                           nbits=16).eval()
+    for rotulo, pico in (("baixo", 0.06), ("PISO", 0.012)):     # -24 e -38 dBFS
+        carimbo = tmp_path / f"{rotulo}.wav"
+        sf.write(str(carimbo), (base * pico).astype(np.float32), 16000, subtype="PCM_16")
+        cru = sf.read(str(carimbo), dtype="float32")[0]
         with torch.no_grad():
             cheia = gerador(torch.from_numpy(cru)[None, None], sample_rate=16000).squeeze().numpy()
 
         marca_dagua.marca_wav(carimbo)
         aplicada = rms(sf.read(str(carimbo), dtype="float32")[0] - cru)
-        assert marca_dagua.detecta_prob(carimbo) > 0.9, f"detecção perdida no {rotulo}"
-        if rotulo == "baixo":
+        prob = marca_dagua.detecta_prob(carimbo)
+        # o piso 0,6 existe por este número: no piso de escala a detecção tem de
+        # ficar >=0,96 (medido 0,998 na amostra mais baixa do corpus)
+        assert prob is not None and prob >= 0.96, f"detecção {prob} abaixo do piso em {rotulo}"
+        if rotulo != "PISO":       # a atenuação só faz sentido acima do piso
             assert aplicada < 0.85 * rms(cheia - cru), (
                 f"em áudio baixo a marca não foi atenuada ({aplicada:.2e} x {rms(cheia - cru):.2e})")
 
