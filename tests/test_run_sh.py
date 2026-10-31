@@ -789,19 +789,27 @@ def test_runner_nao_abre_arquivo_do_dono_para_a_guarda_de_segredo(tmp_path):
     segredo plantado em `/tmp` é o do canário — que o runner tem de ter exportado."""
     arvore = tmp_path / "arvore"
     (arvore / "tests" / "fixtures" / "run_sh").mkdir(parents=True)
+    # nome por `mktemp`: o PID do pytest pode se repetir entre rodadas e o arquivo
+    # já existiria no retrato do início (a guarda compara conjuntos)
     (arvore / "tests" / "fixtures" / "run_sh" / "sonda.sh").write_text(
-        '#!/usr/bin/env bash\nprintf \'{"k":"%s"}\' "$TTS_ROD_API_KEY" > "$TMP_OUT"\n')
+        '#!/usr/bin/env bash\n'
+        'A="$(mktemp /tmp/canario_sonda_XXXXXXXX)"\n'
+        'printf \'{"k":"%s"}\' "$TTS_ROD_API_KEY" > "$A"\n'
+        'printf %s "$A" > "$TMP_OUT"\n')
     dono_antigo = tmp_path / "dono" / ".apikey"
     dono_antigo.parent.mkdir()
     dono_antigo.write_text("chave-velha-do-dono-nao-circula")
-    saida = Path("/tmp") / f"canario_sonda_{os.getpid()}.json"
+    ponteiro = tmp_path / "caminho.txt"
+    saida = None
     try:
         r = subprocess.run(
             ["bash", str(RUNNER), "navegador"],
             cwd=str(AQUI.parent), capture_output=True, text=True, timeout=120,
             env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp"),
-                 "TTS_METRICS_DIR": "", "TMP_OUT": str(saida), "TTS_SERIAL_ESPERA": "60",
+                 "TTS_METRICS_DIR": "", "TMP_OUT": str(ponteiro), "TTS_SERIAL_ESPERA": "60",
                  "SUITES": str(arvore / "tests" / "fixtures" / "run_sh" / "sonda.sh")})
+        assert ponteiro.is_file(), r.stdout + r.stderr
+        saida = Path(ponteiro.read_text().strip())
         assert saida.is_file(), r.stdout + r.stderr
         conteudo = saida.read_text()
         assert "canario-da-rodada-" in conteudo, conteudo
@@ -811,4 +819,5 @@ def test_runner_nao_abre_arquivo_do_dono_para_a_guarda_de_segredo(tmp_path):
         assert r.returncode == 0, r.stdout
         assert (saida.stat().st_mode & 0o777) == 0o600, oct(saida.stat().st_mode)
     finally:
-        saida.unlink(missing_ok=True)
+        if saida is not None:
+            saida.unlink(missing_ok=True)

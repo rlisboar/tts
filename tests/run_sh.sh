@@ -465,6 +465,11 @@ conta_segredo_em_tmp() {
     local seg f achados=0 segredos=""
     segredos="$(_segredos_do_dono)"
     [ -n "$segredos" ] || return 0
+    # Candidatos: arquivos NOVOS (diferença de conjunto) ou do segundo do carimbo
+    # para cá (`-newermt`, um passe só). `-newer` cru compara em ns e o arquivo
+    # criado no MESMO segundo do carimbo escapava.
+    local desde
+    desde="$(date -r "$DIR/comeca" '+%Y-%m-%d %H:%M:%S')"
     while IFS= read -r f; do
         [ -f "$f" ] || continue
         for seg in $segredos; do
@@ -474,19 +479,11 @@ conta_segredo_em_tmp() {
                 break
             fi
         done
-    # `/tmp` explícito: no macOS o `TMPDIR` é `/var/folders/...` e as suítes
-    # escrevem em `/tmp`
-    # `-H`: no macOS `/tmp` é link para `/private/tmp` e sem ele o `find` não desce
-    # DIFERENÇA de conjunto (não mtime): o nome pode ser reusado e o relógio tem
-    # resolução de segundo — comparar com o retrato do início é o que não mente
-    # UNIÃO: arquivos novos (diferença de conjunto) + tocados nesta rodada (carimbo).
-    # Só a diferença perdia o nome REUSADO (outra rodada já tinha criado o arquivo).
-    done < <({ find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f 2>/dev/null \
-                   | sed 's#^/private/tmp#/tmp#' | sort -u | comm -13 "$DIR/tmp_antes" -
-               find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f -newer "$DIR/comeca" 2>/dev/null \
-                   | sed 's#^/private/tmp#/tmp#'; } | sort -u)
+    done < <({ find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f 2>/dev/null | sed 's#^/private/tmp#/tmp#' | sort -u | comm -13 "$DIR/tmp_antes" -
+               find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f -newermt "$desde" 2>/dev/null | sed 's#^/private/tmp#/tmp#'; } | sort -u)
     echo "$achados"
 }
+
 SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
 if [ "${SEGREDOS_EM_TMP%%$'\n'*}" != "0" ] && [ -n "$SEGREDOS_EM_TMP" ]; then
     echo "$SEGREDOS_EM_TMP" | grep -v '^[0-9]*$'

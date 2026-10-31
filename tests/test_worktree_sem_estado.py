@@ -42,6 +42,11 @@ def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
     subprocess.run([*git, "worktree", "add", "-q", "--detach", str(wt), "HEAD"],
                    check=True, capture_output=True)
     try:
+        # `tests/` do WORKING TREE por cima do checkout: o filho tem de rodar o que
+        # está ENTRANDO, não o commit anterior. Sem isto, mexer numa célula que a
+        # fatia roda reprova o próprio commit que a conserta (o hook roda antes).
+        import shutil as _sh
+        _sh.copytree(REPO / "tests", wt / "tests", dirs_exist_ok=True)
         # o `.venv-mlx` é entrada RASTREADA (symlink): num worktree o
         # checkout já a materializa — recriar dá FileExistsError. Só liga quando falta.
         if not (wt / ".venv-mlx").exists() and not (wt / ".venv-mlx").is_symlink():
