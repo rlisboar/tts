@@ -308,6 +308,8 @@ sha256 no manifesto reprova).
 | recusa de estado desligada | `test_integra_recusa_branch_que_leva_estado` **FAILED** (branch com `voices` symlink e `settings.json` passa) |
 | `worktrees.sh` sem o `git check-ignore .venv-mlx` | `test_worktrees_falha_quando_venv_nao_esta_ignorado` **FAILED** |
 | raiz com WIP não commitado | `test_integra_recusa_raiz_suja` **FAILED** ("trabalho não commitado") |
+| atalho de hook aceito fora de tmp | `test_atalho_de_hook_so_vale_em_arvore_de_tmp` **FAILED** (hook não roda e nada avisa) |
+| célula apontando o `integra` para o repo REAL | guarda de módulo **FAILED** (HEAD/branch/worktree do repo real mudou) |
 
 ## #688 — harness do Live não deixa servidor órfão
 

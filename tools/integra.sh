@@ -80,10 +80,18 @@ if ! git -C "$WT" rebase main; then
     _aborta "rebase conflitou — nada foi integrado (resolva no worktree e rode de novo)"
 fi
 
-# `TTS_INTEGRA_SEM_HOOK=1` pula o gate: para teste do próprio script (o hook roda a
-# suíte inteira e leva minutos) e para reintegrar algo que já passou no hook.
+# `TTS_INTEGRA_SEM_HOOK=1` pula o gate — mas SÓ em árvore descartável (sob
+# `$TMPDIR`/`/tmp`). No repo de verdade o atalho engana: foi por ele que um teste
+# integrou um agente FALSO na main real sem gate (#705).
+pular_hook=0
 if [ "${TTS_INTEGRA_SEM_HOOK:-0}" = 1 ]; then
-    echo "→ hook no worktree (gate) — PULADO (TTS_INTEGRA_SEM_HOOK=1)"
+    case "$RAIZ/" in
+        "${TMPDIR:-/tmp}"/*|/tmp/*) pular_hook=1 ;;
+        *) echo "  (atalho ignorado: $RAIZ não é árvore descartável — o hook roda)" ;;
+    esac
+fi
+if [ "$pular_hook" = 1 ]; then
+    echo "→ hook no worktree (gate) — PULADO (TTS_INTEGRA_SEM_HOOK=1, árvore em tmp)"
 else
 echo "→ hook no worktree (gate)"
 # Executa o ARQUIVO, não `git hook run`: aquele devolve o mesmo código para "hook
