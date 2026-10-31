@@ -79,7 +79,10 @@ if os.environ.get("STUB_CAI"):
 # ─── fala de teste -> WAV 16k mono (alimenta o mic falso) ────────────────────
 import numpy as np, soundfile as sf
 wav_entrada = None
-for w in sorted(pathlib.Path("voices").glob("*.wav")):
+# `voices/` do dono só existe na árvore principal: worktree novo cai na
+# FIXTURE versionada (estado do dono não vai para worktree)
+for w in sorted(pathlib.Path("voices").glob("*.wav")) \
+        or [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]:
     a, sr = sf.read(str(w), dtype="float32")
     if a.ndim > 1: a = a.mean(axis=1)
     if len(a) < sr: continue
@@ -115,7 +118,8 @@ _PNG_VER = pathlib.Path("evidence") / "244-live-substituida.png"
 _MTIME_ANTES = _PNG_VER.stat().st_mtime_ns if _PNG_VER.exists() else None
 _ESTADO = pathlib.Path(f"/tmp/live_ui_estado_{porta}")
 _ESTADO.mkdir(exist_ok=True)
-(_ESTADO / "settings.json").write_text((RAIZ / "settings.json").read_text())
+(_ESTADO / "settings.json").write_text((RAIZ / "settings.json").read_text()
+                                       if (RAIZ / "settings.json").is_file() else "{}")
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1", "TTS_CHAT_MODEL": "stub-live",
        "TTS_SETTINGS_PATH": str(_ESTADO / "settings.json"),
        "TTS_APIKEYS_PATH": str(_ESTADO / "apikeys.json"),

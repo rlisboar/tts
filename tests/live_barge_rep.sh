@@ -199,7 +199,10 @@ threading.Thread(target=HTTPServer(("127.0.0.1", stub_porta), Stub).serve_foreve
 
 import numpy as np, soundfile as sf
 fala = None
-for w in sorted(pathlib.Path("voices").glob("*.wav")):
+# `voices/` do dono só existe na árvore principal: worktree novo cai na
+# FIXTURE versionada (estado do dono não vai para worktree)
+for w in sorted(pathlib.Path("voices").glob("*.wav")) \
+        or [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]:
     a, sr = sf.read(str(w), dtype="float32")
     if a.ndim > 1: a = a.mean(axis=1)
     if len(a) < sr: continue
