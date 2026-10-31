@@ -148,11 +148,21 @@ try:
         pg.fill("#spName", "perfil-sem-medidor")
         pg.evaluate("() => { const o = window.spGravar; window.spGravar = (s, st) => o(5, st); }")
         pg.click("#spEnroll")
-        # o 404 só é descoberto no 1º trecho (~2,5 s): o medidor aparece e então
-        # se esconde sozinho — o que não pode é quebrar o cadastro
-        esperar(lambda: pg.wait_for_function(
-            "() => document.getElementById('spMedidor').hidden", timeout=20000),
-            "o medidor se esconder depois do 404")
+        # o 404 só é descoberto no 1º trecho (~2,5 s). A prova tem de ser DURANTE a
+        # gravação: no fim o `parar()` esconde o medidor de qualquer jeito e a
+        # célula não distinguiria o ramo do 404 de nada.
+        # tem de esconder DURANTE a gravação: no fim o `parar()` esconde de
+        # qualquer jeito e a célula não distinguiria o ramo do 404 de nada
+        cedo = False
+        for _ in range(28):                  # ~7 s, dentro dos 8 s de gravação
+            pg.wait_for_timeout(250)
+            st = pg.text_content("#spStatus") or ""
+            if pg.evaluate("() => document.getElementById('spMedidor').hidden") and "gravando" in st:
+                cedo = True
+                break
+        cobrar(cedo, "o medidor não se escondeu DURANTE a gravação — o ramo do 404 não agiu")
+        cobrar(not (pg.text_content("#spMedidor") or "").strip(),
+               f"o medidor ficou com texto depois do 404 ({(pg.text_content('#spMedidor') or '')[:60]!r})")
         esperar(lambda: pg.wait_for_function(
             "() => /amostra 1/.test(document.getElementById('spProgresso').textContent)",
             timeout=60000), "o cadastro seguir sem o medidor")

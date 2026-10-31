@@ -7335,7 +7335,7 @@ function spMedidorInicia(stream) {
           const r = await api("/api/speaker/avalia", { method: "POST", body: fd });
           fala += Number(r.fala_s) || 0; pinta(r);
         } catch (e) {
-          if (e && e.status === 404) { vivo = false; el.hidden = true; }
+          if (e && e.status === 404) { vivo = false; el.hidden = true; el.textContent = ""; }
         }
       }
       if (vivo) tmr = setTimeout(ciclo, 150);

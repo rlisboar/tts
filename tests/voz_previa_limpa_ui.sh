@@ -142,6 +142,9 @@ try:
         pg.wait_for_timeout(300)
         cobrar(not pg.query_selector(".ab-previa"), "o painel não fechou ao descartar")
         cobrar(sha() == antes, "descartar mexeu no arquivo")
+        # `.orig` é o backup do #443: só nasce no ACEITE, nunca na prévia/descarte
+        cobrar(not (VOZES / "voz-ruidosa.orig.wav").exists(),
+               "descartar criou o `.orig` (o backup só pode nascer no aplicar)")
 
         # ── 3) aplicar grava de verdade ──────────────────────────────────────
         limpar()
@@ -151,6 +154,8 @@ try:
             "() => !document.querySelector('.ab-previa')", timeout=60000), "a lista recarregar")
         pg.wait_for_timeout(500)
         cobrar(sha() != antes, "aplicar não mudou o áudio")
+        cobrar((VOZES / "voz-ruidosa.orig.wav").exists(),
+               "aplicar não criou o `.orig` (sem ele não há como desfazer)")
         cobrar("limpa" in (pg.text_content("#voiceList") or ""), "a voz não ficou marcada como limpa")
 
         # ── 4) recusa da guarda trava o aplicar e diz o motivo ───────────────
