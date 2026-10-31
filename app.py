@@ -247,7 +247,7 @@ def _migra_estado_para_fora_do_repo(base: Path | None = None,
     destino = destino or STATE_DIR
     if destino == base:
         return                                   # já é a própria raiz: nada a fazer
-    if destino == BASE / ".state-local":
+    if destino == base / ".state-local":
         return                                   # worktree/cópia: estado local, não migra
     try:
         destino.mkdir(parents=True, exist_ok=True)
@@ -258,7 +258,10 @@ def _migra_estado_para_fora_do_repo(base: Path | None = None,
         if alvo.exists() or not origem.is_file():
             continue
         try:
-            shutil.copy2(origem, alvo)           # copy2 lê até com `uchg`
+            # `copyfile`, NÃO `copy2`: copy2 leva as flags do original e o
+            # `settings.json` do dono está com `uchg` — o migrado nasceria
+            # imutável e o app não conseguiria salvar (#721)
+            shutil.copyfile(origem, alvo)
             alvo.chmod(0o600)
             print(f"[estado] copiado {nome} para {destino} (o original fica na raiz)",
                   flush=True)

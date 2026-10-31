@@ -7705,3 +7705,51 @@ def test_instalacao_fora_de_git_conta_como_principal(tmp_path, monkeypatch):
     monkeypatch.delenv("TTS_STATE_DIR", raising=False)
     assert "Application Support" in str(app._dir_de_estado_padrao()) or \
         ".local" in str(app._dir_de_estado_padrao())
+
+
+def test_worktree_falso_resolve_para_estado_local(tmp_path, monkeypatch):
+    """Árvore com `.git` ARQUIVO (worktree) usa `.state-local`, nunca o real."""
+    falsa = tmp_path / "wt-falso"
+    falsa.mkdir()
+    (falsa / ".git").write_text("gitdir: /qualquer/.git/worktrees/x\n")
+    monkeypatch.setattr(app, "BASE", falsa)
+    monkeypatch.delenv("TTS_STATE_DIR", raising=False)
+    assert app._arbore_e_a_principal() is False
+    assert app._dir_de_estado_padrao() == falsa / ".state-local"
+
+
+def test_migracao_nao_copia_para_estado_local(tmp_path):
+    """Worktree/cópia não migra: `.state-local` nasce do que a árvore tiver."""
+    raiz = tmp_path / "repo"
+    raiz.mkdir()
+    (raiz / "settings.json").write_text('{"x": 1}')
+    destino = raiz / ".state-local"
+    app._migra_estado_para_fora_do_repo(base=raiz, destino=destino)
+    assert not (destino / "settings.json").exists()
+
+
+def test_migracao_nao_leva_a_flag_uchg_do_original(tmp_path):
+    """`copy2` preservaria `uchg` e o settings migrado nasceria imutável.
+
+    A flag é criada só no arquivo da célula (tmp) e removida no teardown; no do
+    dono, nunca se mexe."""
+    import stat as _stat
+
+    if not hasattr(os, "chflags"):
+        pytest.skip("sem chflags (não-macOS)")
+    raiz = tmp_path / "repo"
+    destino = tmp_path / "estado"
+    raiz.mkdir()
+    origem = raiz / "settings.json"
+    origem.write_text('{"x": 1}')
+    os.chflags(origem, _stat.UF_IMMUTABLE)
+    try:
+        app._migra_estado_para_fora_do_repo(base=raiz, destino=destino)
+        alvo = destino / "settings.json"
+        assert alvo.read_text() == '{"x": 1}'
+        assert not alvo.stat().st_flags & _stat.UF_IMMUTABLE, \
+            "o arquivo migrado nasceu imutável (copy2)"
+        alvo.write_text('{"x": 2}')          # e o app consegue salvar
+        assert alvo.read_text() == '{"x": 2}'
+    finally:
+        os.chflags(origem, 0)
