@@ -763,3 +763,18 @@ def test_sonda_sem_dono_dir_nao_escreve_na_raiz(tmp_path, settings_na_raiz):
                        capture_output=True, text=True, env=env, timeout=60)
     assert d.returncode == 2, (d.returncode, d.stdout, d.stderr)
     assert "TTS_DONO_DIR" in d.stderr, d.stderr
+
+
+def test_segredo_do_dono_deixado_em_tmp_derruba_a_rodada(tmp_path):
+    """Suíte que deixa a chave do dono em `/tmp` tem de ser acusada (#711).
+
+    O app semeia a chave do ambiente (`TTS_ROD_API_KEY`) e a PERSISTE no arquivo de
+    chaves da rodada, então o segredo real ia parar em `/tmp` — 191 arquivos, e as
+    suítes não limpavam. A guarda roda no fim do estágio e nomeia o arquivo."""
+    r = _rodar("navegador", env={"SUITES": str(SONDAS / "vaza_segredo.sh"),
+                                 "TTS_ROD_API_KEY": "segredo-de-teste-123456"})
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "segredo do dono em" in r.stdout, r.stdout
+    assert "vaza_segredo_" in r.stdout, r.stdout
+    assert "segredo-em-tmp" in r.stdout, r.stdout
+    assert "segredo-em-tmp" in r.stdout, r.stdout

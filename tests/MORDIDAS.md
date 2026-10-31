@@ -323,6 +323,17 @@ A célula cobre as duas pontas: a sonda SOZINHA sem a env tem de sair 2, e a rod
 pelo runner sem a env tem de deixar o `settings.json` da raiz com sha **e** mtime
 iguais (e ainda nomear a escrita, que acontece na cópia).
 
+## #711 — segredo do dono não fica em /tmp
+
+| Sabotagem | Resultado |
+|---|---|
+| desliga a guarda `conta_segredo_em_tmp` do runner | `test_segredo_do_dono_deixado_em_tmp_derruba_a_rodada` **FAILED** (rodada passa com o segredo em `/tmp`) |
+
+O caminho: o app semeia a chave do AMBIENTE (`TTS_ROD_API_KEY`) e a persiste no
+arquivo de chaves da rodada — o segredo real ia parar em `/tmp` (191 arquivos) e as
+suítes não limpavam. A guarda varre `/tmp` pelos arquivos criados na rodada que
+contêm o segredo e acusa; a suíte que limpa passa.
+
 ## #703 — suíte de medição não liga o `voices` do dono
 
 | Sabotagem | Resultado |

@@ -282,6 +282,8 @@ _amostra() {
 # que o runner já usa para o alarme. Idade em SEGUNDOS FRACIONÁRIOS é o que
 # desempata quem largou por último (o escritor é o mais novo, não o do nome).
 _agora() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
+find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f 2>/dev/null \
+    | sed 's#^/private/tmp#/tmp#' | sort -u > "$DIR/tmp_antes"
 _amostra &
 AMOSTRADOR=$!
 
@@ -440,9 +442,51 @@ if [ -n "$MUDOU" ]; then
     fi
 fi
 
+# SEGREDO DO DONO EM /tmp (#711): o app semeia a chave do ambiente
+# (`TTS_ROD_API_KEY`) e a PERSISTE no arquivo de chaves da rodada — então o segredo
+# real acaba em /tmp e fica lá se a suíte não limpar. Aqui a rodada é acusada
+# quando deixa cópia do segredo para trás.
+_segredos_do_dono() {
+    local a
+    # a env é a fonte que as suítes propagam; os arquivos do dono só existem quando
+    # a rodada é na árvore principal
+    [ -n "${TTS_ROD_API_KEY:-}" ] && printf '%s\n' "$TTS_ROD_API_KEY"
+    for a in "$RAIZ/.apikey" "$RAIZ/.apikeys.json"; do
+        [ -f "$a" ] && grep -oE '[A-Za-z0-9_-]{8,}' "$a" 2>/dev/null
+    done | sort -u
+}
+conta_segredo_em_tmp() {
+    local seg f achados=0 segredos=""
+    segredos="$(_segredos_do_dono)"
+    [ -n "$segredos" ] || return 0
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        for seg in $segredos; do
+            if LC_ALL=C grep -qF -- "$seg" "$f" 2>/dev/null; then
+                printf '  segredo do dono em %s\n' "$f"
+                achados=$((achados + 1))
+                break
+            fi
+        done
+    # `/tmp` explícito: no macOS o `TMPDIR` é `/var/folders/...` e as suítes
+    # escrevem em `/tmp`
+    # `-H`: no macOS `/tmp` é link para `/private/tmp` e sem ele o `find` não desce
+    # DIFERENÇA de conjunto (não mtime): o nome pode ser reusado e o relógio tem
+    # resolução de segundo — comparar com o retrato do início é o que não mente
+    done < <(find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f 2>/dev/null \
+                  | sed 's#^/private/tmp#/tmp#' | sort -u | comm -13 "$DIR/tmp_antes" -)
+    echo "$achados"
+}
+SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
+if [ "${SEGREDOS_EM_TMP%%$'\n'*}" != "0" ] && [ -n "$SEGREDOS_EM_TMP" ]; then
+    echo "$SEGREDOS_EM_TMP" | grep -v '^[0-9]*$'
+    FALHAS+=("segredo-em-tmp")
+fi
+
 echo "--- $estagio: ${#FALHAS[@]} falha(s) de ${#RODADAS[@]} suíte(s) em $(( $(date +%s) - comeca ))s"
 
 if [ "${#FALHAS[@]}" -gt 0 ]; then
+    printf '  ✖ %s\n' "${FALHAS[@]}"
     for nome in "${FALHAS[@]}"; do
         log="$(awk -v n="$nome" '$2 == n {print $4; exit}' "$DIR/resultado")"
         # falha que não é suíte (ex.: escrita no estado do dono) não tem log: sem

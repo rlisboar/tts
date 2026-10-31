@@ -95,6 +95,13 @@ uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["FALLBACK_PORT"]), lo
 proc = subprocess.Popen([str(RAIZ / ".venv-mlx" / "bin" / "python"), "-c", _launcher],
                         cwd=str(RAIZ), env=env, stdout=log.open("w"), stderr=subprocess.STDOUT,
                         start_new_session=True)
+# verde não deixa NADA em /tmp (#711): o arquivo de chaves da rodada carrega o
+# segredo do dono quando `TTS_ROD_API_KEY` está no ambiente
+def _limpa_tmp():
+    import shutil as _sh
+    _sh.rmtree(DIR_TMP, ignore_errors=True)
+    log.unlink(missing_ok=True)
+
 base = f"http://127.0.0.1:{porta}"
 try:
     for _ in range(300):
@@ -246,7 +253,5 @@ if falhas:
     for f in falhas: print("  -", f)
     sys.exit(1)
 print("\n✔ OK — dsh morto: sessão segue no openai, aviso persistente na tela, selo corrigido e áudio voltando.")
-for _s in (log,):
-    try: _s.unlink()
-    except Exception: pass
+_limpa_tmp()
 PYEOF
