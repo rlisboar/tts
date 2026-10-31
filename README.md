@@ -251,6 +251,12 @@ O `.orig.wav` entra no export de vozes e no backup do estado (e volta no import 
 no restore, byte a byte), e some junto com a voz. Sem ele (voz nunca editada) o
 restore responde 404.
 
+`POST .../denoise?previa=true` roda a MESMA cadeia e devolve `200` com WAV da versão
+limpa **sem escrever nada** (nem o `.orig`): os números vão em header (`X-Timbre`,
+`X-Dnsmos-Antes/Depois`) e a recusa sai com o WAV original e `X-Recusado: 1`. A
+troca do `.wav` é atômica (temporário + `os.replace`), então prévia e aplicação
+simultâneas não deixam ninguém lendo arquivo pela metade.
+
 Na tela de **Vozes**, a voz que tem original guardado ganha o botão **↩ desfazer
 edição** (só admin; sem `.orig` o botão nem aparece).
 
