@@ -85,10 +85,15 @@ fi
 # integrou um agente FALSO na main real sem gate (#705).
 pular_hook=0
 if [ "${TTS_INTEGRA_SEM_HOOK:-0}" = 1 ]; then
-    case "$RAIZ/" in
-        "${TMPDIR:-/tmp}"/*|/tmp/*) pular_hook=1 ;;
-        *) echo "  (atalho ignorado: $RAIZ não é árvore descartável — o hook roda)" ;;
-    esac
+    # caminho REAL dos dois lados: no macOS `$TMPDIR` é `/var/folders/...` e os
+    # testes usam `tmp_path`, que resolve para `/private/tmp` — comparar texto cru
+    # dava falso negativo
+    raiz_real="$(cd "$RAIZ" && pwd -P)"
+    for base in "${TMPDIR:-/tmp}" /tmp /private/tmp; do
+        base_real="$(cd "$base" 2>/dev/null && pwd -P)" || continue
+        case "$raiz_real/" in "$base_real"/*) pular_hook=1; break ;; esac
+    done
+    [ "$pular_hook" = 1 ] || echo "  (atalho ignorado: $RAIZ não é árvore descartável — o hook roda)"
 fi
 if [ "$pular_hook" = 1 ]; then
     echo "→ hook no worktree (gate) — PULADO (TTS_INTEGRA_SEM_HOOK=1, árvore em tmp)"
