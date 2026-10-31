@@ -812,7 +812,8 @@ class TurnEngine:
         self._calibracao_vals = []
         self._barge_frames = 0
         self._barge_sem_voz = 0
-        self._barge_pico = 0
+        # `_barge_pico` fica: é do episódio que ACABOU de ser cortado e é o
+        # número que o painel lê logo depois da decisão
         self._barge_no_turno_emitido = False
 
     def playback_restante_ms(self) -> int:
@@ -1343,7 +1344,9 @@ class TurnEngine:
         self._onset_frames = 0
         self._barge_frames = 0
         self._barge_sem_voz = 0
-        self._barge_pico = 0
+        # `_barge_pico` NÃO zera aqui: ele é do EPISÓDIO de playback (a leitura do
+        # painel acontece depois da decisão, com o turno já fechado) — zerar no
+        # `_reset_turno` fazia o campo sair 0 em toda rodada
         self._degrau_base = None
         self._barge_no_turno_emitido = False
         self._decisao_frames = 0
