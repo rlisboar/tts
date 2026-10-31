@@ -7811,3 +7811,29 @@ def test_rollback_do_restore_nao_devolve_arquivo_imutavel(tmp_path, monkeypatch)
     assert alvo.stat().st_mode & 0o777 == 0o600, "restauração voltou 0400"
     alvo.write_text('{"x": 3}')                    # e o app consegue salvar
     assert alvo.read_text() == '{"x": 3}'
+
+
+def test_import_nao_cai_com_diretorio_de_estado_sem_permissao(tmp_path):
+    """Pai somente-leitura: o import avisa e segue em vez de explodir (#721).
+
+    Sem os `try`, um `TTS_STATE_DIR` dentro de diretório sem escrita derrubava o
+    app no import."""
+    import subprocess
+
+    pai = tmp_path / "pai"
+    pai.mkdir()
+    pai.chmod(0o500)
+    env = {**os.environ, "TTS_STATE_DIR": str(pai / "estado"),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    for var in ("TTS_SETTINGS_PATH", "TTS_APIKEYS_PATH", "TTS_LEGACY_APIKEY_PATH",
+                "TTS_SPEAKER_PATH"):
+        env.pop(var, None)
+    app_dir = Path(__file__).resolve().parent.parent
+    try:
+        saida = subprocess.run([sys.executable, "-c", "import app; print('ok')"],
+                               cwd=str(app_dir), env=env, capture_output=True, text=True)
+    finally:
+        pai.chmod(0o700)
+    assert saida.returncode == 0, saida.stderr[-1500:]
+    assert saida.stdout.strip().endswith("ok")
+    assert "não criei o pai" in saida.stdout and "estado" in saida.stdout

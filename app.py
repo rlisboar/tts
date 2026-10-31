@@ -231,7 +231,10 @@ LEGACY_APIKEY_PATH = _caminho_estado_env("TTS_LEGACY_APIKEY_PATH", STATE_DIR / "
 VOICES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 for _p in (APIKEYS_PATH, SPEAKER_PATH, LEGACY_APIKEY_PATH):
-    _p.parent.mkdir(parents=True, exist_ok=True)   # `write_json_atomic` exige o pai
+    try:               # pai somente-leitura não pode derrubar o import (#721)
+        _p.parent.mkdir(parents=True, exist_ok=True)   # `write_json_atomic` exige
+    except OSError as _exc_pai:
+        print(f"[estado] não criei o pai de {_p}: {_exc_pai}", flush=True)
 
 
 def _migra_estado_para_fora_do_repo(base: Path | None = None,
@@ -267,11 +270,11 @@ def _migra_estado_para_fora_do_repo(base: Path | None = None,
             print(f"[estado] não copiei {nome}: {exc}", flush=True)
 
 
-STATE_DIR.mkdir(parents=True, exist_ok=True)
-try:
+try:                       # diretório somente-leitura não pode derrubar o import
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.chmod(0o700)
-except OSError:
-    pass
+except OSError as _exc_estado:
+    print(f"[estado] não preparei {STATE_DIR}: {_exc_estado}", flush=True)
 _migra_estado_para_fora_do_repo()
 
 # ---------------------------------------------------------------------------
@@ -425,7 +428,10 @@ DESIGN_VOICE_ID = "__design__"
 # valem para UI e API; parâmetro explícito na requisição sempre sobrepõe)
 # ---------------------------------------------------------------------------
 SETTINGS_PATH = _caminho_estado_env("TTS_SETTINGS_PATH", STATE_DIR / "settings.json")
-SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+try:                   # idem: o pai do settings é o diretório de estado
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+except OSError as _exc_set:
+    print(f"[estado] não criei o pai de {SETTINGS_PATH}: {_exc_set}", flush=True)
 _SETTINGS_DEFAULTS = {
     "model": MODEL_ID,         # atalho (omnivoice, qwen3-0.6b…) ou id/dir MLX
     "pre_prompt": "",          # texto falado antes de toda geração
