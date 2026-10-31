@@ -4802,10 +4802,25 @@ def _com_dnsmos_motivo(relatorio: dict) -> dict:
     return relatorio
 
 
+def _dnsmos_header(valor) -> str:
+    """Nota OVRL em texto para header (vazio = não medido)."""
+    try:
+        return f"{float(valor['ovrl']):.2f}" if isinstance(valor, dict) else ""
+    except (TypeError, ValueError, KeyError):
+        return ""
+
+
 @app.post("/api/voices/{voice_id}/denoise")
-def denoise_voice(voice_id: str, payload: dict = None):
+def denoise_voice(voice_id: str, payload: dict = None, previa: bool = False):
     """Limpa o ruído de fundo de uma voz JÁ existente, sobrescrevendo o .wav. O
-    mtime muda -> o cache de ref_tokens invalida sozinho na próxima geração."""
+    mtime muda -> o cache de ref_tokens invalida sozinho na próxima geração.
+
+    `?previa=true` NÃO escreve nada (nem o `.orig` do #443): devolve 200 com WAV da
+    versão limpa e os números em header (`X-Timbre`, `X-Dnsmos-Antes`,
+    `X-Dnsmos-Depois`), ou o ORIGINAL com `X-Recusado: 1` e `X-Motivo`. A tela toca
+    original × limpa em paralelo e só aplica quando o dono aprovar (#690)."""
+    import io
+
     import soundfile as sf
 
     voice_id = _safe_id(voice_id)
@@ -4817,6 +4832,18 @@ def denoise_voice(voice_id: str, payload: dict = None):
     data, sr = sf.read(str(path), dtype="float32")
     data, recusado, relatorio = _denoise_para_referencia(data, sr, strg)
     relatorio = _com_dnsmos_motivo(relatorio)
+    if previa:
+        audivel = data if recusado else _referencia_pronta(data, sr)
+        buf = io.BytesIO()
+        sf.write(buf, audivel, sr, format="WAV", subtype="PCM_16")
+        cab = {"X-Recusado": "1" if recusado else "0",
+               "X-Motivo": relatorio.get("recusado_por") or "",
+               "X-Timbre": "" if relatorio.get("timbre") is None
+               else f"{float(relatorio['timbre']):.3f}",
+               "X-Dnsmos-Antes": _dnsmos_header(relatorio.get("dnsmos_antes")),
+               "X-Dnsmos-Depois": _dnsmos_header(relatorio.get("dnsmos_depois")),
+               "X-Dnsmos-Motivo": relatorio.get("dnsmos_motivo") or ""}
+        return Response(content=buf.getvalue(), media_type="audio/wav", headers=cab)
     if recusado:
         # RECUSA é estado ESPERADO, não erro do cliente (#523, decisão do PM):
         # 200 com o motivo e o relatório; a amostra original fica intacta (nada é
@@ -9431,6 +9458,36 @@ def speaker_delete(request: Request, name: str):
         _speaker_save(perfis)
     _speaker_apaga_audio(removido)  # o áudio de cadastro vai junto (#658)
     return {"ok": True}
+
+
+@app.post("/api/speaker/avalia")
+async def speaker_avalia(audio: UploadFile = None):
+    """Medidor AO VIVO do cadastro: réguas de qualidade sem tocar em perfil (#690).
+
+    O assistente manda um trecho curto ~1×/s enquanto a pessoa fala, para ela
+    corrigir ANTES de gravar. Devolve FALA (VAD), SNR e os MESMOS problemas do
+    `enroll` — só as réguas de amostra, sem consistência (não há perfil aqui).
+    É de USO, como o resto de `/api/speaker/*`."""
+    from starlette.concurrency import run_in_threadpool
+
+    if audio is None:
+        raise HTTPException(400, "Áudio obrigatório")
+    tmp = _save_audio_upload(audio, ".vozav")
+    try:
+        fala, snr = await run_in_threadpool(
+            lambda: (_vad_fala_s(tmp), _snr_estimado(tmp)))
+    finally:
+        tmp.unlink(missing_ok=True)
+    problemas = []
+    if fala is not None and fala < SPEAKER_MIN_FALA_S:
+        problemas.append(f"fala curta: {fala:.1f}s de voz (mínimo "
+                         f"{SPEAKER_MIN_FALA_S:.0f}s — pausas não contam)")
+    if snr is not None and snr < SPEAKER_MIN_SNR_DB:
+        problemas.append(f"ruído alto: SNR {snr:.0f} dB (mínimo "
+                         f"{SPEAKER_MIN_SNR_DB:.0f} dB) — grave num ambiente quieto")
+    return {"fala_s": None if fala is None else round(fala, 2),
+            "snr_db": None if snr is None else round(snr, 1),
+            "ok": not problemas, "problemas": problemas}
 
 
 @app.post("/api/speaker/check")

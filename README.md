@@ -326,6 +326,10 @@ até lá). Apagar o perfil
 apaga os áudios. `speaker_guardar_audio` (admin, default ligado) desliga a
 gravação; sem ela o recadastro volta a exigir gravar.
 
+`POST /api/speaker/avalia` é o medidor AO VIVO do cadastro (uso): recebe um trecho
+curto e devolve `fala_s`, `snr_db`, `ok` e `problemas` com as MESMAS réguas do
+`enroll`, sem tocar em perfil — o assistente chama ~1×/s enquanto a pessoa fala.
+
 O `check` existe para calibrar sem depender do gate ligado: ele pontua pelo
 centróide das amostras, com o extrator do perfil, e devolve o veredito do
 servidor (`passaria`; `autorizado` é o nome anterior, ainda publicado) junto do

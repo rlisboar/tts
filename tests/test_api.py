@@ -7238,3 +7238,81 @@ def test_default_ligado_nao_reescreve_o_settings_do_dono(tmp_path):
                            cwd=str(base), env=env, check=True,
                            capture_output=True, text=True)
     assert saida.stdout.strip() == "False", "o default sobrescreveu a escolha do dono"
+
+
+# --- endpoints da UI do #528 (#690) ------------------------------------------
+def test_denoise_previa_devolve_wav_sem_escrever(client, auth, voices_tmp, monkeypatch):
+    """A prévia devolve o áudio limpo e NÃO toca na voz nem cria `.orig`."""
+    wav = _voz_para_limpar(voices_tmp)
+    antes = wav.read_bytes()
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: np.asarray(a, dtype=np.float32))
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: 0.93)
+    monkeypatch.setattr(app, "_dnsmos", lambda a, sr: {"ovrl": 3.1, "sig": 3.2,
+                                                       "bak": 3.0, "p808": 3.0})
+    r = client.post("/api/voices/limpa00001/denoise?previa=true", headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "audio/wav"
+    assert r.content[:4] == b"RIFF"
+    assert r.headers["X-Recusado"] == "0"
+    assert r.headers["X-Timbre"] == "0.930"
+    assert r.headers["X-Dnsmos-Antes"] == "3.10"
+    assert wav.read_bytes() == antes, "a prévia escreveu na voz"
+    assert not (voices_tmp / "limpa00001.orig.wav").exists(), "criou o .orig"
+    # sem `previa` continua aplicando (contrato antigo intacto)
+    corpo = client.post("/api/voices/limpa00001/denoise", headers=auth).json()
+    assert corpo["ok"] is True and corpo["recusado"] is False
+    assert wav.read_bytes() != antes and (voices_tmp / "limpa00001.orig.wav").exists()
+
+
+def test_denoise_previa_recusada_devolve_o_original(client, auth, voices_tmp, monkeypatch):
+    """Recusa na prévia: WAV do ORIGINAL e o motivo no header."""
+    wav = _voz_para_limpar(voices_tmp)
+    antes = wav.read_bytes()
+    monkeypatch.setitem(app._settings, "voice_limpar_motor", "gating")
+    monkeypatch.setattr(app, "_denoise_audio",
+                        lambda a, sr, s: np.asarray(a, dtype=np.float32) * 0.9)
+    monkeypatch.setattr(app, "_guarda_timbre", lambda a, b, sr: 0.5)
+    monkeypatch.setitem(app._settings, "voice_timbre_min", 0.80)
+    r = client.post("/api/voices/limpa00001/denoise?previa=true", headers=auth)
+    assert r.status_code == 200 and r.headers["X-Recusado"] == "1"
+    assert r.headers["X-Motivo"] == "timbre"
+    assert r.content[:4] == b"RIFF"
+    assert wav.read_bytes() == antes and not (voices_tmp / "limpa00001.orig.wav").exists()
+
+
+def test_speaker_avalia_mede_sem_perfil(client, auth, monkeypatch):
+    """O medidor responde as réguas e não toca em perfil nenhum."""
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".vozav": Path("f.wav"))
+    monkeypatch.setattr(app, "_vad_fala_s", lambda p: 1.2)
+    monkeypatch.setattr(app, "_snr_estimado", lambda p: 4.0)
+    tocados = []
+    monkeypatch.setattr(app, "_speaker_save", lambda p: tocados.append(1))
+    r = client.post("/api/speaker/avalia", headers=auth,
+                    files={"audio": ("a.wav", b"x", "audio/wav")})
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert corpo["ok"] is False and corpo["fala_s"] == 1.2 and corpo["snr_db"] == 4.0
+    assert len(corpo["problemas"]) == 2 and tocados == []
+    # amostra boa passa
+    monkeypatch.setattr(app, "_vad_fala_s", lambda p: 5.0)
+    monkeypatch.setattr(app, "_snr_estimado", lambda p: 30.0)
+    corpo = client.post("/api/speaker/avalia", headers=auth,
+                        files={"audio": ("a.wav", b"x", "audio/wav")}).json()
+    assert corpo["ok"] is True and corpo["problemas"] == []
+
+
+def test_avalia_aceita_chave_de_uso(client, monkeypatch):
+    """É uso, como o resto de `/api/speaker/*`: chave `use` alcança."""
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".vozav": Path("f.wav"))
+    monkeypatch.setattr(app, "_vad_fala_s", lambda p: 4.0)
+    monkeypatch.setattr(app, "_snr_estimado", lambda p: 30.0)
+    segredo = app._apikeys["keys"][0]["secret"]
+    app._apikeys["keys"][0]["role"] = "use"
+    try:
+        r = client.post("/api/speaker/avalia", headers={"X-API-Key": segredo},
+                        files={"audio": ("a.wav", b"x", "audio/wav")})
+    finally:
+        app._apikeys["keys"][0]["role"] = "admin"
+    assert r.status_code == 200
