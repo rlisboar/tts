@@ -46,6 +46,8 @@ server.log
 # estado de operação gerado em runtime: histórico do /api/metrics (JSONL por dia,
 # podado por TTL). Metadado de máquina, não se versiona (#376).
 /state
+# estado local de worktree/cópia (#721): nunca o do dono
+.state-local/
 
 # rascunhos locais: backups de probes e artefatos avulsos de sessão (o que
 # importa vira evidence/ ou teste versionado)

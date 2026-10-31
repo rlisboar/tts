@@ -186,15 +186,32 @@ def _caminho_estado_env(nome: str, padrao: Path) -> Path:
 BASE = Path(__file__).resolve().parent
 
 
+def _arbore_e_a_principal() -> bool:
+    """A árvore é a RAIZ PRINCIPAL do repositório (não worktree, não cópia)?
+
+    Só a raiz principal pode usar o estado real do dono: worktree/cópia/CI que
+    caíssem no Application Support fariam todo harness escrever no dado real (#721).
+    `.git` DIRETÓRIO = raiz principal; `.git` ARQUIVO = worktree; sem `.git` =
+    instalação fora de git (conta como principal)."""
+    marca = BASE / ".git"
+    if marca.is_dir():
+        return True
+    if marca.is_file():
+        return False                        # worktree: `.git` é arquivo com "gitdir:"
+    return True                             # instalação fora de git
+
+
 def _dir_de_estado_padrao() -> Path:
     """Onde vive o estado do dono FORA do repositório (#721).
 
     Dentro da árvore, qualquer teste/worktree/script alcança o dado real — e a
-    suíte já apagou o `settings.json` do dono 3 vezes. No macOS o lugar é o
-    padrão de aplicativo; em outros sistemas, o estado do usuário."""
+    suíte já apagou o `settings.json` do dono 3 vezes. O diretório de aplicativo só
+    vale na RAIZ PRINCIPAL; em worktree/cópia/CI o estado é local da árvore."""
     bruto = (os.environ.get("TTS_STATE_DIR") or "").strip()
     if bruto:
         return Path(bruto).expanduser()
+    if not _arbore_e_a_principal():
+        return BASE / ".state-local"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "tts-studio"
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "tts-studio"
@@ -230,6 +247,8 @@ def _migra_estado_para_fora_do_repo(base: Path | None = None,
     destino = destino or STATE_DIR
     if destino == base:
         return                                   # já é a própria raiz: nada a fazer
+    if destino == BASE / ".state-local":
+        return                                   # worktree/cópia: estado local, não migra
     try:
         destino.mkdir(parents=True, exist_ok=True)
     except OSError:

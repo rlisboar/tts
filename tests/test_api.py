@@ -7673,3 +7673,35 @@ def test_estado_nao_sobrescreve_destino_existente(tmp_path):
     app._migra_estado_para_fora_do_repo(base=raiz, destino=destino)
     assert "estado" in (destino / "settings.json").read_text()
     assert (raiz / "settings.json").exists()
+
+
+def test_worktree_usa_estado_local_e_nunca_o_real(tmp_path):
+    """Fora da raiz principal, o padrão é `<árvore>/.state-local` (#721).
+
+    Sem isso, todo harness num worktree (live_ws, suítes .sh, uvicorn) escreveria no
+    estado REAL do dono — o problema que o card fecha, por outra porta."""
+    import subprocess
+
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    for var in ("TTS_STATE_DIR", "TTS_SETTINGS_PATH", "TTS_APIKEYS_PATH",
+                "TTS_LEGACY_APIKEY_PATH", "TTS_SPEAKER_PATH"):
+        env.pop(var, None)
+    app_dir = Path(__file__).resolve().parent.parent
+    saida = subprocess.run(
+        [sys.executable, "-c",
+         "import app; print(app._arbore_e_a_principal(), app.STATE_DIR)"],
+        cwd=str(app_dir), env=env, check=True, capture_output=True, text=True)
+    # ESTE processo de teste roda no worktree, que é o caso que o card cobra
+    assert saida.stdout.split()[0] == "False", saida.stdout
+    assert saida.stdout.strip().endswith(".state-local"), saida.stdout
+
+
+def test_instalacao_fora_de_git_conta_como_principal(tmp_path, monkeypatch):
+    """Sem `.git` a árvore é instalação: usa o diretório de aplicativo."""
+    falso = tmp_path / "instalacao"
+    falso.mkdir()
+    monkeypatch.setattr(app, "BASE", falso)
+    assert app._arbore_e_a_principal() is True
+    monkeypatch.delenv("TTS_STATE_DIR", raising=False)
+    assert "Application Support" in str(app._dir_de_estado_padrao()) or \
+        ".local" in str(app._dir_de_estado_padrao())
