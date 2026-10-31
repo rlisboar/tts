@@ -1997,3 +1997,35 @@ def test_prewarm_da_separacao_so_com_o_modo_ligado(monkeypatch):
         if t.name == "separa-prewarm":
             t.join(5)
     assert len(chamou) == 1
+
+
+def test_comando_no_ultimo_segundo_CORTA_mesmo_com_fim_de_resposta():
+    """#569: comando explícito vence o `fim_de_resposta`.
+
+    O `fim_de_resposta` existe para deixar a resposta terminar, mas ele é o 3º
+    elo — `palavras_corte` é o 1º. Quando a regra subiu para a frente da cadeia,
+    uma interrupção clara no último segundo passou a virar "não-corte" (medido:
+    `tipo=ruido filtro=fim_de_resposta texto=Amém.`). Comando tem de cortar
+    SEMPRE, em qualquer ponto do playback."""
+    import queue
+    import threading
+
+    import app
+
+    sess = {"id": "s", "ultimo_assistente": "", "pipe": None,
+            "cancelado": threading.Event(), "turno": 1, "fila": queue.Queue(),
+            "engine": None}
+    motor, rel = _motor_inteligente()
+    sess["engine"] = motor
+    _abrir_por_barge(motor, rel)
+    sess["barge_suspeito"] = {"audio": b"\x01\x00" * 800}
+    motor._playback_restante = 2                     # ~0,1 s: último segundo
+    app._settings["live_barge_filtros"] = {}
+    ok = app._live_transcreve_trecho
+    app._live_transcreve_trecho = lambda *a, **k: "para, para"
+    try:
+        app._live_decide_barge(sess, b"\x01\x00" * 800, 700)
+    finally:
+        app._live_transcreve_trecho = ok
+    assert sess["cancelado"].is_set(), "comando no último segundo TEM de cortar"
+    assert not sess.get("turno_pendente"), "comando corta, não anota"

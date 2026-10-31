@@ -620,3 +620,10 @@ DO PERFIL e queda para o áudio cru.
 | Sabotagem | Resultado |
 |---|---|
 | `_separa_prewarm` aquecendo com a separação DESLIGADA | `test_prewarm_da_separacao_so_com_o_modo_ligado` **FAILED** |
+
+### #569 — comando vence o `fim_de_resposta`
+
+| Sabotagem | Resultado |
+|---|---|
+| subir o `fim_de_resposta` para antes do `palavras_corte` na cadeia | `test_comando_no_ultimo_segundo_CORTA_mesmo_com_fim_de_resposta` **FAILED** |
+| idem, contraprova de ordem | `test_passo_de_comando_transcreve_a_janela_NOVA` **FAILED** |
