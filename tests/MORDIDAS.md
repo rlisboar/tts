@@ -311,6 +311,18 @@ passa pela limpeza normal; o TERM não levanta nada. O trap cobre os dois e a ro
 seguinte varre pidfiles de grupos anteriores — varredura que NÃO pode derrubar
 rodada concorrente: o dono do pidfile (PID no nome) vivo é vizinho, morto é órfão.
 
+## #710 — sonda não pode escrever na raiz do repo (é o settings do DONO)
+
+| Sabotagem | Resultado |
+|---|---|
+| volta o fallback `"${TTS_DONO_DIR:-$AQUI/../../..}"` e tira a guarda da sonda | `test_sonda_sem_dono_dir_nao_escreve_na_raiz` **FAILED**: a sonda devolve 0 em vez de 2 |
+| tira o bloco do runner que dá a CÓPIA à sonda | mesma célula **FAILED**: `FALHA … suja_o_dono.sh … (rc=2)` |
+| célula da guarda volta a tocar o arquivo REAL (utime/chflags) | `test_guarda_nomeia_quem_tocou_o_arquivo_do_dono` deixa de provar o dono FALSO — no arquivo real o mtime muda a cada rodada |
+
+A célula cobre as duas pontas: a sonda SOZINHA sem a env tem de sair 2, e a rodada
+pelo runner sem a env tem de deixar o `settings.json` da raiz com sha **e** mtime
+iguais (e ainda nomear a escrita, que acontece na cópia).
+
 ## #703 — suíte de medição não liga o `voices` do dono
 
 | Sabotagem | Resultado |

@@ -7,6 +7,13 @@
 # `TTS_DONO_DIR` aponta para uma CÓPIA (o arquivo real não é tocado).
 set -uo pipefail
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# SEM fallback: `TTS_DONO_DIR` ausente tem de parar a sonda, não escolher sozinha.
+# A queda para `$AQUI/../../..` fazia a sonda escrever na RAIZ do repo — e na árvore
+# principal a raiz é o `settings.json` do DONO (virou `{}` três vezes, #710).
+if [ -z "${TTS_DONO_DIR:-}" ]; then
+    echo "✖ ${0##*/}: TTS_DONO_DIR não veio (sem fallback — veja tests/run_sh.sh)" >&2
+    exit 2
+fi
 ALVO="${TTS_DONO_DIR:-$AQUI/../../..}/settings.json"
 CONTEUDO="$(cat "$ALVO")"
 # espera ANTES de escrever: o `stat` só tem resolução de SEGUNDO, e o retrato

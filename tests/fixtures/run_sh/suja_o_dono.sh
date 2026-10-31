@@ -9,6 +9,13 @@
 # do #535).
 set -uo pipefail
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# SEM fallback: `TTS_DONO_DIR` ausente tem de parar a sonda, não escolher sozinha.
+# A queda para `$AQUI/../../..` fazia a sonda escrever na RAIZ do repo — e na árvore
+# principal a raiz é o `settings.json` do DONO (virou `{}` três vezes, #710).
+if [ -z "${TTS_DONO_DIR:-}" ]; then
+    echo "✖ ${0##*/}: TTS_DONO_DIR não veio (sem fallback — veja tests/run_sh.sh)" >&2
+    exit 2
+fi
 printf '{}\n' > "${TTS_DONO_DIR:-$AQUI/../../..}/settings.json"
 # segue VIVA um instante depois de escrever: o amostrador precisa ver o marcador
 # dela no instante da mudança para poder nomeá-la (a escrita em si é instantânea)

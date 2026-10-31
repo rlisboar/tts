@@ -13,6 +13,8 @@ import os
 import re
 import shutil
 import subprocess
+
+import pytest
 import threading
 import time
 import pathlib
@@ -193,6 +195,12 @@ def test_runner_nomeia_a_suite_que_escreveu_no_estado_do_dono(tmp_path):
                                  "TTS_DONO_DIR": _dono(tmp_path)})
     assert "estado REAL do dono" in r.stdout, r.stdout
     assert "suja_o_dono.sh escreveu settings.json" in r.stdout, r.stdout
+    # e a sonda SOZINHA, sem a env, tem de RECUSAR (nada de fallback para a raiz)
+    env = {k: v for k, v in os.environ.items() if k != "TTS_DONO_DIR"}
+    d = subprocess.run(["bash", str(SONDAS / "suja_o_dono.sh")],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert d.returncode == 2, (d.returncode, d.stdout, d.stderr)
+    assert "TTS_DONO_DIR" in d.stderr, d.stderr
     # sem o knob é AVISO: a suíte em si passou
     assert r.returncode == 0, r.stdout
 
@@ -260,6 +268,12 @@ def test_atribuicao_sob_j3_nomeia_a_certa_e_nao_as_vizinhas(tmp_path):
                     "TTS_EXIGE_DONO_INTOCADO": "1"})
     assert r.returncode == 1, r.stdout + r.stderr
     assert "suja_o_dono.sh escreveu settings.json" in r.stdout, r.stdout
+    # e a sonda SOZINHA, sem a env, tem de RECUSAR (nada de fallback para a raiz)
+    env = {k: v for k, v in os.environ.items() if k != "TTS_DONO_DIR"}
+    d = subprocess.run(["bash", str(SONDAS / "suja_o_dono.sh")],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert d.returncode == 2, (d.returncode, d.stdout, d.stderr)
+    assert "TTS_DONO_DIR" in d.stderr, d.stderr
     # as duas paradas não escreveram: no máximo aparecem como co-rodantes
     escritores = [ln.strip() for ln in r.stdout.splitlines()
                   if " escreveu " in ln and "co-rodavam" not in ln]
@@ -708,3 +722,29 @@ def test_freeze_nao_liga_o_voices_real_e_duas_rodadas_seguidas(tmp_path):
         depois = sorted(p.name for p in real.iterdir()) if real.is_dir() else []
         assert depois == antes, f"rodada {rodada}: o voices REAL mudou ({set(depois) ^ set(antes)})"
         shutil.rmtree(copia, ignore_errors=True)   # FREEZE_MANTER: a limpeza é minha
+
+
+def test_sonda_sem_dono_dir_nao_escreve_na_raiz(tmp_path):
+    """Sem `TTS_DONO_DIR` o runner dá uma CÓPIA à sonda; a raiz fica intocada (#710).
+
+    O fallback da sonda era `$AQUI/../../..` = a raiz do repo — e na ÁRVORE
+    PRINCIPAL a raiz é o `settings.json` do DONO: a sonda gravava `{}` por cima
+    (3 bytes, 3 vezes em 31/10). Aqui: rodada sem a env, raiz com sha E mtime
+    iguais, e o runner ainda tem de NOMEAR a escrita (na cópia)."""
+    real = AQUI.parent / "settings.json"
+    if not real.is_file():
+        pytest.skip("sem settings.json na raiz desta árvore")
+    antes = (real.read_bytes(), real.stat().st_mtime_ns)
+    r = _rodar("navegador", env={"SUITES": str(SONDAS / "suja_o_dono.sh"),
+                                 "TTS_DONO_DIR": ""})
+    assert r.returncode == 0, r.stdout + r.stderr
+    depois = (real.read_bytes(), real.stat().st_mtime_ns)
+    assert depois == antes, "a sonda escreveu no settings.json da RAIZ"
+    assert real.read_bytes() != b"{}\n", "a raiz ficou com o conteúdo da sonda"
+    assert "suja_o_dono.sh escreveu settings.json" in r.stdout, r.stdout
+    # e a sonda SOZINHA, sem a env, tem de RECUSAR (nada de fallback para a raiz)
+    env = {k: v for k, v in os.environ.items() if k != "TTS_DONO_DIR"}
+    d = subprocess.run(["bash", str(SONDAS / "suja_o_dono.sh")],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert d.returncode == 2, (d.returncode, d.stdout, d.stderr)
+    assert "TTS_DONO_DIR" in d.stderr, d.stderr

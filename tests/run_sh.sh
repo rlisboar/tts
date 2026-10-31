@@ -184,6 +184,34 @@ _com_teto() {
 # em 40 s com o dono intocado). As métricas seguem na rodada como NOTA, com o mesmo
 # diff, sem entrar em `FALHAS`.
 _ARQ_DONO=(settings.json .apikeys.json .apikey)
+# SONDA (#710): o "dono" delas tem de ser uma CÓPIA. Sem `TTS_DONO_DIR` o alvo caía
+# na raiz do repo e, na ÁRVORE PRINCIPAL, a raiz é o `settings.json` do dono — a
+# sonda gravava `{}` por cima dele (3 bytes, 3 vezes em 31/10).
+_probe_na_lista() {
+    local a
+    for a in "${ALVOS[@]}"; do
+        case "$a" in *fixtures/run_sh/*) return 0 ;; esac
+    done
+    return 1
+}
+if _probe_na_lista; then
+    if [ -z "${TTS_DONO_DIR:-}" ]; then
+        TTS_DONO_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dono-sonda.XXXXXX")" || exit 1
+        for a in "${_ARQ_DONO[@]}"; do
+            if [ -f "$RAIZ/$a" ]; then
+                cp -p "$RAIZ/$a" "$TTS_DONO_DIR/$a"
+                # `cp -p` leva junto a flag `uchg` do arquivo do dono; na CÓPIA ela
+                # atrapalha (a sonda não consegue escrever e o `rm` não apaga).
+                chflags nouchg "$TTS_DONO_DIR/$a" 2>/dev/null || true
+            fi
+        done
+        export TTS_DONO_DIR
+        trap 'rm -rf "$TTS_DONO_DIR"' EXIT
+    elif [ "$(cd "$TTS_DONO_DIR" 2>/dev/null && pwd -P)" = "$(cd "$RAIZ" && pwd -P)" ]; then
+        echo "✖ sonda com TTS_DONO_DIR na RAIZ ($RAIZ): é o settings do DONO na árvore principal" >&2
+        exit 2
+    fi
+fi
 DONO_DIR="${TTS_DONO_DIR:-$RAIZ}"
 # portátil: o job `suites-sh` do CI é Linux (`sha256sum`/`stat -c`), a máquina de
 # trabalho é macOS (`shasum`/`stat -f`). Sem o ramo, a impressão degrada a ruído.

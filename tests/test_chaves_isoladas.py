@@ -22,7 +22,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
 BASE = Path(__file__).resolve().parent.parent
 
@@ -203,32 +202,21 @@ def test_import_nao_grava_arquivos_de_chave(tmp_path):
 # --- #535: a guarda NOMEIA quem escreveu no arquivo do dono ───────────────────
 # Sem atribuição, "o settings do dono mudou" é fato sem autor (foi o que travou a
 # investigação de 01:24: o qa já rodava isolado e ninguém sabia a origem).
-def test_guarda_nomeia_quem_tocou_o_arquivo_do_dono():
-    """O alvo é o arquivo REAL da raiz principal — não o tmp da sessão.
+def test_guarda_nomeia_quem_tocou_o_arquivo_do_dono(monkeypatch, tmp_path):
+    """O alvo é o "dono" — e a célula usa um dono FALSO, sem tocar a raiz principal.
 
     Fotografar o tmp fazia todo teste que grava settings virar "escrita no dono"
-    (37 linhas de ruído, #685)."""
+    (37 linhas de ruído, #685). E mexer no arquivo REAL (utime, e o `chflags` que a
+    flag `uchg` exigia) é mutação de dado do dono: aqui `TTS_DONO_DIR` aponta para um
+    tmp com um `settings.json` sintético e a raiz não é tocada (#710)."""
     import conftest
 
-    raiz = conftest._raiz_do_dono()
-    real = (raiz / "settings.json") if raiz is not None else None
-    if real is None or not real.exists():
-        pytest.skip("sem settings.json na raiz do dono (cópia sem estado)")
+    dono = tmp_path / "dono"
+    dono.mkdir()
+    (dono / "settings.json").write_text('{"model": "sintetico", "pre_prompt": ""}')
+    monkeypatch.setenv("TTS_DONO_DIR", str(dono))
     antes = conftest._impressao_do_dono()
-    try:
-        os.utime(real)
-    except PermissionError:
-        # `settings.json` do dono com a flag `uchg` (imutável): utime e escrita dão
-        # EPERM. Tira a flag, toca e devolve a flag — sem tocar no conteúdo.
-        import stat as _stat
-        imutavel = bool(real.stat().st_flags & _stat.UF_IMMUTABLE)
-        if not imutavel:
-            raise
-        os.chflags(real, 0)
-        try:
-            os.utime(real)
-        finally:
-            os.chflags(real, _stat.UF_IMMUTABLE)
+    (dono / "settings.json").write_text('{}')
     conftest._atribuir_escritas(antes, "tests/test_exemplo.py::test_x")
     assert "tests/test_exemplo.py::test_x escreveu settings.json" in conftest._escritas_no_dono
 
