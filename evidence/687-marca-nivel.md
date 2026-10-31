@@ -68,6 +68,25 @@ detecção não passar de `TTS_MARCA_ALVO` (padrão 0,97), sorteia de novo — a
 vezes, guardando a melhor. Custo medido: 0,1 ms/s no piso e 0,8 ms/s no alto; no
 piso o alvo passa a ser atingido em **5 de 5** processos (era 0,868 a 1,000).
 
+## Falha do detector não pode custar a marca
+
+A conferência é otimização em cima da marca, não pré-requisito. Sem `try` em volta
+do `detect_watermark`, um detector que levanta matava o laço, o `except` do `main`
+engolia e o arquivo saía **sem marca** (o gate mediu: `ESTOUROU detector morreu`).
+
+Agora: exceção no detector → fica a embedding já feita (com marca), o erro é
+devolvido no protocolo e logado. Célula própria com detector que levanta cobra que
+a saída **difere do original** e que a probabilidade vem NaN.
+
+## Como as células mordem
+
+- `test_re_sorteio_insiste_ate_passar_do_alvo`: detector falso fraco e depois bom —
+  com re-sorteio passa do alvo na 3ª; com `tentativas=1` fica abaixo. Determinístico.
+- `test_esgotar_as_tentativas_ainda_deixa_marca_detectavel`: **5 subprocessos**, cada
+  um sorteando a própria mensagem, com o laço forçado a esgotar as 4 tentativas
+  (alvo inalcançável) — a marca final tem de seguir ≥0,96. Ambas caem se o
+  re-sorteio for removido (conferido).
+
 ## O que continua valendo
 
 - O ABX v2 para o dono está em `/tmp/abx-marca-v2/` (4 pares, detecção 1,0 nos

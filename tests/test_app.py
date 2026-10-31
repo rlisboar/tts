@@ -1876,55 +1876,113 @@ def test_marca_dagua_marca_o_trecho_do_job(monkeypatch, tmp_path):
     assert marcas == [], f"marcou com a setting desligada: {marcas}"
 
 
-def test_marca_mais_fraca_em_audio_baixo_e_deteccao_no_piso(tmp_path):
-    """Achado do ABX (#687): o dono OUVIU a marca no par mais baixo (-22 dBFS).
+ROTEIRO_PISO = """
+import sys, numpy as np, soundfile as sf, pathlib, torch
+sys.path.insert(0, {raiz!r})
+import marca_worker
+from audioseal import AudioSeal
+g = AudioSeal.load_generator({gerador!r}, nbits=16).eval()
+d = AudioSeal.load_detector({detector!r}, nbits=16).eval()
+x, sr = sf.read({wav!r}, dtype="float32")
+base = torch.from_numpy(np.ascontiguousarray(x))[None, None]
+# alvo inalcançável: o laço ESCOLTA as 4 tentativas mesmo quando a 1ª já bastava
+y, prob, usadas, erro = marca_worker.embute_conferido(g, d, x, sr, 0.6, alvo=1.01,
+                                                      wav_original=base)
+sf.write({saida!r}, y, sr, subtype="PCM_16")
+print(usadas, round(float(d.detect_watermark(torch.from_numpy(y)[None, None],
+                                             sample_rate=sr)[0].squeeze()), 3))
+"""
 
-    Duas coisas que a célula anterior não cobria: (i) o PISO da escala (0,6, que
-    é o que justifica não descer mais) — sem ele, baixar o piso passaria verde
-    levando a detecção junto; (ii) independência de ordem: o worker é aquecido e
-    conferido ANTES de medir, porque a detecção é feita por ele."""
+
+def test_esgotar_as_tentativas_ainda_deixa_marca_detectavel(tmp_path):
+    """A conferência não pode terminar pior do que começou.
+
+    Cada subprocesso sorteia a própria mensagem (é o sorteio que varia entre
+    processos) e o laço é forçado a esgotar as 4 tentativas; o que fica gravado
+    tem de continuar detectável. Se o laço guardasse a última sem conferir — ou
+    abortasse — este número cai."""
+    import subprocess
+
     import soundfile as sf
-    import torch
-    from audioseal import AudioSeal
 
     import marca_dagua
 
     if not marca_dagua.disponivel():
         pytest.skip(f"marca indisponível: {marca_dagua.motivo()}")
-    marca_dagua.prewarm()
-    sonda = tmp_path / "sonda.wav"
-    sf.write(str(sonda), np.zeros(16000, np.float32), 16000, subtype="PCM_16")
-    limite = time.monotonic() + 20
-    while time.monotonic() < limite:              # worker pronto antes de medir
-        if marca_dagua.detecta_prob(sonda) is not None:
-            break
-        time.sleep(0.1)
 
-    def rms(x):
-        return float(np.sqrt(np.mean(np.asarray(x, np.float64) ** 2)))
+    t = np.arange(16000 * 2) / 16000
+    x = (np.sin(2 * np.pi * 180 * t) + 0.4 * np.sin(2 * np.pi * 460 * t)).astype(np.float32)
+    x = (x / np.abs(x).max() * 0.012).astype(np.float32)      # -38 dBFS: o PISO
+    for i in range(5):
+        carimbo, saida = tmp_path / f"piso{i}.wav", tmp_path / f"saida{i}.wav"
+        sf.write(str(carimbo), x, 16000, subtype="PCM_16")
+        roteiro = tmp_path / f"roda{i}.py"
+        roteiro.write_text(ROTEIRO_PISO.format(
+            raiz=str(Path(__file__).resolve().parents[1]),
+            gerador=str(marca_dagua.MODELO_DIR / marca_dagua.GERADOR),
+            detector=str(marca_dagua.MODELO_DIR / marca_dagua.DETECTOR),
+            wav=str(carimbo), saida=str(saida)))
+        r = subprocess.run([sys.executable, str(roteiro)], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr[-300:]
+        usadas, prob = r.stdout.strip().splitlines()[-1].split()
+        assert int(usadas) == 4, f"não esgotou as tentativas ({usadas})"
+        assert float(prob) >= 0.96, f"marca fraca depois de esgotar: {prob}"
 
-    t = np.arange(16000 * 3) / 16000
-    base = (np.sin(2 * np.pi * 180 * t) + 0.4 * np.sin(2 * np.pi * 460 * t)).astype(np.float32)
-    base /= np.abs(base).max()
-    gerador = AudioSeal.load_generator(str(marca_dagua.MODELO_DIR / marca_dagua.GERADOR),
-                                       nbits=16).eval()
 
-    for rotulo, pico in (("baixo", 0.06), ("PISO", 0.012)):     # -24 e -38 dBFS
-        carimbo = tmp_path / f"{rotulo}.wav"
-        sf.write(str(carimbo), (base * pico).astype(np.float32), 16000, subtype="PCM_16")
-        cru = sf.read(str(carimbo), dtype="float32")[0]
-        with torch.no_grad():
-            cheia = gerador(torch.from_numpy(cru)[None, None], sample_rate=16000).squeeze().numpy()
+def test_detector_que_levanta_ainda_deixa_a_marca(tmp_path):
+    """Detector quebrado não pode custar o áudio SEM marca.
 
-        marca_dagua.marca_wav(carimbo)
-        aplicada = rms(sf.read(str(carimbo), dtype="float32")[0] - cru)
-        prob = marca_dagua.detecta_prob(carimbo)
-        # o piso 0,6 existe por este número: no piso de escala a detecção tem de
-        # ficar >=0,96 (medido 0,998 na amostra mais baixa do corpus)
-        assert prob is not None and prob >= 0.96, f"detecção {prob} abaixo do piso em {rotulo}"
-        if rotulo != "PISO":       # a atenuação só faz sentido acima do piso
-            assert aplicada < 0.85 * rms(cheia - cru), (
-                f"em áudio baixo a marca não foi atenuada ({aplicada:.2e} x {rms(cheia - cru):.2e})")
+    A conferência é otimização: se ela levanta, fica a embedding já feita e o erro
+    é devolvido. Sem o `try`, a exceção matava o laço, o `except` do `main`
+    engolia e o arquivo saía cru (medido no gate)."""
+    import marca_worker
+
+    class _Gerador:
+        def __call__(self, base, sample_rate=16000):
+            import torch
+            ruido = torch.from_numpy(np.full(tuple(base.shape), 0.01, np.float32))
+            return base + ruido
+
+    class _DetectorQuebrado:
+        def detect_watermark(self, *a, **k):
+            raise RuntimeError("detector morreu")
+
+    x = (0.2 * np.sin(2 * np.pi * 200 * np.arange(16000) / 16000)).astype(np.float32)
+    y, prob, usadas, erro = marca_worker.embute_conferido(
+        _Gerador(), _DetectorQuebrado(), x, 16000, 1.0)
+    assert y is not None and not np.allclose(y, x), "saiu áudio SEM marca"
+    assert usadas == 1 and "detector morreu" in erro
+    assert prob != prob, "sem detecção, a probabilidade é NaN"
+
+
+def test_re_sorteio_insiste_ate_passar_do_alvo():
+    """Abaixo do alvo o embed é repetido; é o que faz o piso 0,6 valer."""
+    import marca_worker
+
+    class _Gerador:
+        def __call__(self, base, sample_rate=16000):
+            import torch
+            return base + torch.from_numpy(np.full(tuple(base.shape), 0.01, np.float32))
+
+    class _DetectorFracoDepoisBom:
+        def __init__(self):
+            self.chamadas = 0
+
+        def detect_watermark(self, *a, **k):
+            import torch
+            self.chamadas += 1
+            return torch.tensor([0.30 if self.chamadas < 3 else 0.99]), None
+
+    x = (0.2 * np.sin(2 * np.pi * 200 * np.arange(16000) / 16000)).astype(np.float32)
+    detector = _DetectorFracoDepoisBom()
+    _, prob, usadas, _ = marca_worker.embute_conferido(
+        _Gerador(), detector, x, 16000, 0.6, alvo=0.96)
+    assert usadas == 3 and prob >= 0.96, "desistiu antes de passar do alvo"
+
+    # com uma tentativa só (sem re-sorteio) ficaria abaixo do alvo — é o defeito
+    _, prob1, usadas1, _ = marca_worker.embute_conferido(
+        _Gerador(), _DetectorFracoDepoisBom(), x, 16000, 0.6, alvo=0.96, tentativas=1)
+    assert usadas1 == 1 and prob1 < 0.96
 
 
 def test_marca_dagua_no_v1_audio_speech(monkeypatch, tmp_path):

@@ -25,6 +25,45 @@ import os
 import sys
 import time
 
+import numpy as np
+
+
+def embute_conferido(gerador, detector, x, sr, fator, alvo=None, tentativas=4,
+                     wav_original=None):
+    """Embute e CONFERE: abaixo do alvo, sorteia de novo (até `tentativas`).
+
+    A mensagem é sorteada a cada embed e algumas sortes grudam mal em áudio baixo
+    (#687), então a saída é medida antes de valer. Se o DETECTOR levantar, a marca
+    ainda existe: fica a última embedding feita e o erro é devolvido — perder a
+    detecção não pode custar o áudio sem marca."""
+    import torch
+
+    alvo = ALVO_DETECCAO if alvo is None else alvo
+    base = wav_original
+    if base is None:
+        base = torch.from_numpy(np.ascontiguousarray(x))[None, None]
+    melhor, melhor_prob, usadas, erro = None, float("nan"), 0, ""
+    for _ in range(max(1, tentativas)):
+        with torch.no_grad():
+            cru = gerador(base, sample_rate=sr).squeeze().numpy()
+        y = (x + fator * (cru - x)).astype(np.float32)
+        usadas += 1
+        melhor = y
+        try:
+            with torch.no_grad():
+                prob, _m = detector.detect_watermark(
+                    torch.from_numpy(np.ascontiguousarray(y))[None, None], sample_rate=sr)
+            melhor_prob = float(prob.squeeze())
+        except Exception as exc:  # noqa: BLE001 — sem conferência, fica a marca feita
+            erro = f"{type(exc).__name__}: {exc}"[:160]
+            print(f"[marca] detector falhou, mantendo a marca da tentativa {usadas}: {erro}",
+                  flush=True)
+            break
+        if melhor_prob >= alvo:
+            break
+    return melhor, melhor_prob, usadas, erro
+
+
 #: probabilidade mínima aceita na saída; abaixo disso o embed é repetido (máx. 4)
 ALVO_DETECCAO = float(os.environ.get("TTS_MARCA_ALVO", "0.97"))
 
@@ -83,8 +122,6 @@ def main() -> int:
                 print(json.dumps({"id": pedido.get("id"), "prob": float(prob.squeeze()),
                                   "ms": int((time.perf_counter() - t0) * 1000)}), flush=True)
             else:
-                with torch.no_grad():
-                    y = gerador(wav, sample_rate=int(sr)).squeeze().numpy()
                 # A marca é AUDÍVEL em fala baixa (#687): no par mais baixo do ABX
                 # ela ficou em -63 dBFS e o dono ouviu. O que manda não é a força
                 # relativa (SNR era 24 dB, igual às outras) e sim o nível absoluto.
@@ -97,23 +134,16 @@ def main() -> int:
                 # diferentes (#687). Então a marca é CONFERIDA na saída e, se não
                 # passou do alvo, sorteia de novo — sai sempre uma marca que o
                 # detector acha, em vez de uma fraca e silenciosa.
-                melhor, melhor_prob = None, -1.0
-                for _tentativa in range(4):
-                    with torch.no_grad():
-                        y = gerador(wav, sample_rate=int(sr)).squeeze().numpy()
-                    y = (x + fator * (y - x)).astype(np.float32)
-                    with torch.no_grad():
-                        prob, _m = detector.detect_watermark(
-                            torch.from_numpy(np.ascontiguousarray(y))[None, None],
-                            sample_rate=int(sr))
-                    prob = float(prob.squeeze())
-                    if prob > melhor_prob:
-                        melhor, melhor_prob = y, prob
-                    if prob >= ALVO_DETECCAO:
-                        break
-                sf.write(pedido["saida"], melhor, int(sr), subtype="PCM_16")
+                y, prob, usadas, erro = embute_conferido(
+                    gerador, detector, x, int(sr), fator, wav_original=wav)
+                sf.write(pedido["saida"], y, int(sr), subtype="PCM_16")
                 print(json.dumps({"id": pedido.get("id"),
-                                  "ms": int((time.perf_counter() - t0) * 1000)}), flush=True)
+                                  "ms": int((time.perf_counter() - t0) * 1000),
+                                  "prob": None if prob != prob else round(prob, 3),
+                                  "tentativas": usadas,
+                                  "detector_erro": erro}), flush=True)
+                continue
+
         except Exception as exc:  # noqa: BLE001 — o chamador segue sem marca
             print(json.dumps({"id": pedido.get("id"),
                               "erro": f"{type(exc).__name__}: {exc}"[:200]}), flush=True)

@@ -304,7 +304,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `590-testar-veredito.txt` | #590 | 2026-10-28 | "Testar" do perfil (#590): o veredito vem do SERVIDOR e o slider se rotula no modo normalizado |
 | `657-marca-dagua.txt` | #657 | 2026-10-28 | 657 — marca d'água AudioSeal: custo por segundo e carga (2026-10-28) |
 | `663-separar-so-com-sobreposicao.txt` | #663 | 2026-10-28 | 663 — `speaker_alvo` decide POR SEGMENTO DE FALA: separa só com sobreposição |
-| `687-marca-nivel.md` | #687 | — | Marca d'água audível em fala baixa (#687) — diagnóstico e correção |
+| `687-marca-nivel.md` | #687 | 2026-10-31 | Marca d'água audível em fala baixa (#687) — diagnóstico e correção |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |
