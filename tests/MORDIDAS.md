@@ -696,3 +696,14 @@ dois caminhos precisa dos dois cobertos pela posição.
 | `BARGE_MODO=imediata` (energia pura) | backchannel **0/25** → REPROVADO |
 | `return "interrupcao"` final trocado por `backchannel` | grupo `curto` **2/20** → REPROVADO |
 | `return "backchannel"` trocado por `interrupcao` | backchannel **0/25** → REPROVADO |
+
+### #509 — o filtro `modelo` muda o desfecho dos ambíguos
+
+O grupo `ambíguo` do `smoke_barge_intencao.py` só existe com `BARGE_MODELO=<p>` e a
+própria rodada confere que SEM o filtro os casos não cortam (é o que os torna
+ambíguos). `BARGE_MODELO=0.9` → 20/20; `BARGE_MODELO=0.1` → **0/20, REPROVADO**.
+
+| Sabotagem | Resultado |
+|---|---|
+| `BARGE_MODELO=0.1` (o modelo manda continuar) | grupo `ambíguo` **0/20** → REPROVADO |
+| corpus "ambíguo" com casos que as regras já cortam | a checagem "sem o filtro ≤2" reprova |

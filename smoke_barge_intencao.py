@@ -26,6 +26,7 @@ direção sem a outra passaria com metade da regra morta.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import queue
 import sys
@@ -79,29 +80,55 @@ CURTO = ["tchau", "obrigado", "beleza mano", "vamos lá", "combinado então",
 ECO = ["então o dia está bonito hoje", "o dia está bonito",
        "quer que eu conte mais alguma coisa?", "claro, o dia está bonito hoje",
        "mais alguma coisa", "que eu conte mais alguma coisa"]
+# AMBÍGUO (#509): o filtro `modelo` existe para decidir o que a LISTA de
+# backchannel engole por parecer concordância. Com o modelo ligado e ele dizendo
+# "corta" (p alta), estes viram interrupção; sem o filtro, ficam em backchannel —
+# é a comparação que a mordida do card cobra.
+AMBIGUO = ["sim, sim", "uhum", "sei", "tá", "certo", "entendi", "isso", "claro",
+           "beleza", "nossa", "aham", "yeah", "right", "sim sim", "uhum uhum",
+           "certo isso", "mhm", "ok", "hum", "hmm"]
 # (paráfrase fora do literal — "eu posso contar outra coisa" — não entra: a regra
 # do #301 compara palavras, e uma paráfrase cairia em `frase_longa` e cortaria)
 REF = "então o dia está bonito hoje. Quer que eu conte mais alguma coisa?"
 
-ESPERADO = {"backchannel": "backchannel", "comando": "corta", "pergunta": "corta",
+ESPERADO = {"ambíguo": "corta", "backchannel": "backchannel", "comando": "corta",
+            "pergunta": "corta",
             "ruido": "ruido", "eco": "eco", "conteudo": "corta",
             "curto": "corta"}
 
 
-def decide(texto: str, ms: int) -> str:
+def decide(texto: str, ms: int, modelo: bool = False) -> str:
     # modo FIXO no default (o `settings.json` do dono é mutável e a rodada tem de
     # ser reprodutível): `BARGE_MODO=imediata` força a mordida
     import os
     modo = os.environ.get("BARGE_MODO") or "inteligente"
     if modo == "imediata":
         return "corta"        # o modo antigo corta no limiar, sem olhar conteúdo
+    # MODELO (#509): `BARGE_MODELO=<p>` liga o filtro com um dublê que devolve
+    # esse p. O dublê é o certo aqui: a matriz mede a CADEIA, e o classificador
+    # real tem card e mordidas próprios — com ele a rodada deixaria de ser
+    # reproduzível e passaria a depender de Metal.
+    if os.environ.get("BARGE_MODELO"):
+        p_modelo = float(os.environ["BARGE_MODELO"])
+
+        def _stub(*_a, **_k):
+            return p_modelo
+
+        app.__dict__["_live_classificador_barge"] = _stub
     sess = {"id": "smoke", "ultimo_assistente": REF, "pipe": None}
     # `so_comando`: só a lista de parar corta (o resto segue a resposta)
-    app._settings["live_barge_filtros"] = (
-        {"pergunta": {"on": False}, "frase_longa": {"on": False},
-         "fala_sustentada": {"on": False}, "eco": {"on": False}} if modo == "so_comando" else {})
+    base_f = {}
+    if modo == "so_comando":
+        base_f = {"pergunta": {"on": False}, "frase_longa": {"on": False},
+                  "fala_sustentada": {"on": False}, "eco": {"on": False}}
+    if modelo:
+        # o modelo decide EXATAMENTE o que a lista de backchannel engoliria; nas
+        # OUTRAS famílias ele fica fora para o dublê constante não mascará-las
+        base_f = {**base_f, "backchannel": {"on": False},
+                  "modelo": {"on": True, "limiar": 0.5, "timeout_ms": 400}}
+    app._settings["live_barge_filtros"] = base_f
     app._settings["live_barge_sem_decisao"] = "continua"
-    tipo, _p, _m, _f = app._live_avalia_filtros(sess, texto, ms, {})
+    tipo, _p, _m, _f = app._live_avalia_filtros(sess, texto, ms, base_f)
     # devolve o TIPO (não só corta/não corta): com a regra sabotada para "sempre
     # interrupção", o backchannel vira `sem_decisao` e o grupo tem de REPROVAR
     return "corta" if tipo == "interrupcao" else tipo
@@ -188,17 +215,30 @@ def main(argv: list[str]) -> int:
                "conteudo": CONTEUDO, "curto": CURTO}
     piso = {"backchannel": 0.90, "ruido": 0.90, "comando": 0.95,
             "pergunta": 0.95, "eco": 1.00, "conteudo": 0.95, "curto": 0.95}
+    falhou = False
+    if os.environ.get("BARGE_MODELO"):
+        # grupo PRÓPRIO, com o modelo ligado só nele (a leitura direta do card);
+        # as outras famílias seguem sem ele, senão um dublê constante as derruba
+        corpora["ambíguo"] = AMBIGUO
+        piso["ambíguo"] = 0.90
+        # MORDIDA do card, medida na própria rodada: SEM o filtro estes casos NÃO
+        # podem cortar (é o que os torna ambíguos) e COM ele têm de cortar. Se os
+        # dois números empatarem, o grupo não mede nada.
+        sem_modelo = sum(1 for t in AMBIGUO if decide(t, 300, modelo=False) == "corta")
+        marca_b = "✔" if sem_modelo <= 2 else "✘"
+        print(f"{marca_b} ambíguo sem o filtro: {sem_modelo}/{len(AMBIGUO)} cortam "
+              f"(esperado ≤2 — é o que os torna ambíguos)")
+        falhou |= sem_modelo > 2
     # `ruido` abaixo de 200 ms de propósito: acima disso o `stt_vazio` (falha
     # segura) corta, e o grupo de ruído deixaria de medir o que mede
     # `conteudo` abaixo de 1200 ms de propósito: acima disso o `fala_sustentada`
     # atalha o STT e o grupo deixaria de medir a regra de conteúdo próprio.
-    dur = {"backchannel": 300, "comando": 350, "pergunta": 500, "ruido": 150,
-           "eco": 600, "conteudo": 900, "curto": 700}
-    falhou = False
+    dur = {"ambíguo": 300, "backchannel": 300, "comando": 350, "pergunta": 500,
+           "ruido": 150, "eco": 600, "conteudo": 900, "curto": 700}
     for nome, casos in corpora.items():
         ok = 0
         for texto in casos:
-            obtido = decide(texto, dur[nome])
+            obtido = decide(texto, dur[nome], modelo=(nome == "ambíguo"))
             certo = obtido == ESPERADO[nome]
             ok += certo
             if not certo and verboso:
