@@ -35,7 +35,7 @@
 #
 # O contador de `underrun` (#492) é sensível à carga: com outras suítes rodando
 # junto o TTS não acompanha o tempo real e um vão isolado aparece. O critério é
-# ZERO; a tolerância (1 vão a cada 5 chunks, como aviso) só vale quando a carga
+# ZERO; a tolerância (1 vão a cada 5 chunks, no máximo 3, como aviso) só vale quando a carga
 # por núcleo NO PONTO MEDIDO passa de `LIMITE_CARGA` — a da abertura sai junto na
 # mesma linha, para a decisão ser auditável. A/B no mesmo minuto mostrou a versão anterior deste
 # arquivo piorando igual ou mais (4 vãos em 11 chunks contra 1 em 8, no #463).
@@ -652,7 +652,13 @@ async def principal():
                 # da abertura, máquina que esfriou no meio continuaria tolerando
                 # regressão. As duas saem na linha para a decisão ser auditável.
                 carga = carga_por_nucleo()
-                limite = max(1, n_chunks // 5) if carga > LIMITE_CARGA else 0
+                # TETO (#559): a tolerância é proporcional, mas com turno longo
+                # `n_chunks // 5` solto passaria a tolerar muitos vãos (50 chunks =
+                # 10), e 10 vãos num turno de ~20 s é regressão disfarçada. O teto
+                # mantém o defeito visível e segue folgado para a disputa de CPU
+                # que motivou a tolerância.
+                limite = (min(3, max(1, n_chunks // 5))
+                          if carga > LIMITE_CARGA else 0)
                 rotulo = (f"carga {carga:.2f}/núcleo agora, {CARGA_ABERTURA:.2f} na "
                           f"abertura")
                 if n_chunks < 5:

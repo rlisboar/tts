@@ -644,3 +644,12 @@ CALIBRADO usadas pela identidade (`speaker_gate`, anti-clone, "só a voz de:").
 |---|---|
 | tirar o ramo `identidade` da cadeia | `test_filtro_identidade_terceiro_continua_e_leva_o_score` **FAILED** |
 | ligar o filtro por default | `test_defaults_tem_os_dez_filtros_com_modelo_e_identidade_desligados` **FAILED** |
+
+### #559 — tolerância de `underrun` tem TETO
+
+A tolerância por carga (1 vão a cada 5 chunks) é proporcional, mas sem teto solto
+passaria a tolerar muitos vãos em turno longo (50 chunks = 10). O cap é 3.
+
+| Sabotagem | Resultado |
+|---|---|
+| tirar `min(3, ...)` e deixar `max(1, n_chunks // 5)` | com 50 chunks e 4 vãos o turno passa (o teto reprova) |
