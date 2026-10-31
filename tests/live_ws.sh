@@ -427,30 +427,176 @@ def instala_traps():
         signal.signal(sinal, _sai)
 
 
-def guarda_do_settings():
-    """Se o settings REAL parece poluído por um smoke antigo, avisa (ou aborta).
+def _chave_da_instalacao() -> str:
+    """Chave para o servidor EXTERNO (`BASE=…`) vinda só do AMBIENTE (#720).
 
-    Antes o smoke 'restaurava' o snapshot — e um snapshot tirado já poluído fazia
-    o lixo virar permanente (não se auto-curava). Com o env isto não escreve mais,
-    mas o estado do arquivo continua valendo para quem roda o app à mão."""
-    caminho = RAIZ / "settings.json"
+    Nada de ler `.apikey`/`.apikeys.json` da raiz: quem aponta para uma instalação
+    de pé passa `LIVE_WS_KEY`. Sem ela a rodada segue desautenticada — de loopback
+    a instalação aceita, e é o caso normal."""
+    return (os.environ.get("LIVE_WS_KEY") or os.environ.get("TTS_CHAVE") or "").strip()
+
+
+def porta_livre():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def sobe_servidor(porta, stub_porta):
+    """Servidor próprio com o stub por ENV — o settings.json do dono fica intocado.
+
+    Sem isto o smoke tinha de gravar via POST /api/settings e, se morresse no meio,
+    deixava o provedor de teste no arquivo do dono (incidente de 2026-09-25).
+
+    `TTS_CHAT_BACKEND` PRECISA ser pinado junto: sem ele o backend vem do
+    `settings.json` e, com o dono em `chat_backend: "dsh"`, a suíte saía do stub e
+    media outra rota (achado do gate #135/#137) — e caía quando o dsh não subia, o
+    que virava vermelho FALSO do smoke. O env do CHAMADOR ainda manda (é o que
+    permite `TTS_CHAT_BACKEND=dsh ./tests/live_ws.sh` medir o harness); o pino só
+    impede o settings do dono de decidir sozinho.
+
+    `TTS_CHAT_BACKEND_LIVE` é o MESMO caso, e ficou de fora por um tempo: ele manda
+    sobre `chat_backend_live` e `TTS_CHAT_BACKEND=openai` só governa a Conversa —
+    com o Live em dsh (por env do chamador OU por `chat_backend_live` no settings)
+    a suíte saía do stub sem querer (#195)."""
+    env = {**os.environ,
+           "TTS_CHAT_BACKEND": os.environ.get("TTS_CHAT_BACKEND") or "openai",
+           "TTS_CHAT_BACKEND_LIVE": BACKEND_LIVE,
+           "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
+           "TTS_CHAT_MODEL": "stub-live"}
+    global LOG
+    log = LOG = pathlib.Path("/tmp") / f"live_ws_servidor_{porta}.log"
+    # ARQUIVO DE CHAVES PRÓPRIO (#435/#463): a suíte cria chave para conectar e, sem
+    # isto, a gravação caía no `.apikeys.json` do dono (o conftest não alcança shell).
+    # Os DOIS caminhos vão por AMBIENTE (#461) — o `.apikey` legado inclusive, porque
+    # `_save_apikeys` espelha nele — e o arquivo nasce com uma chave, não vazio
+    # (vazio faria `_load_apikeys` gerar uma e gravar por conta própria).
+    chaves = pathlib.Path("/tmp") / f"live_ws_apikeys_{porta}.json"
+    legado = chaves.with_suffix(".apikey")
+    semente = "sk-teste-" + os.urandom(8).hex()
+    chaves.write_text(json.dumps({"enabled": True, "keys": [
+        {"id": "sessao-legado", "name": "smoke", "secret": semente,
+         "created_at": "2026-01-01 00:00:00", "role": None}]}))
+    legado.write_text(semente + "\n")
+    global CHAVES, LEGADO, SAIDAS
+    CHAVES, LEGADO = chaves, legado
+    define_chave(semente)          # quem conecta é a chave DESTE arquivo
+    # saídas e histórico também saem do diretório do dono (#463): a síntese grava
+    # `.job-*`/`.wav` e o histórico de jobs é estado — nada disso é nosso
+    SAIDAS = pathlib.Path("/tmp") / f"live_ws_saidas_{porta}"
+    SAIDAS.mkdir(parents=True, exist_ok=True)
+    # o cadastro vai SEMPRE para tmp (o `voices/` do repo não é tocado)
+    (SAIDAS / "voices").mkdir(parents=True, exist_ok=True)
+    env["TTS_VOICES_DIR"] = str(SAIDAS / "voices")
+    # `settings` também: o servidor GRAVA nele (marca d'água, backend do chat) e sem
+    # a env ele escreve no arquivo do dono. Sintético (`{}` + defaults do app): o
+    # worktree não tem o arquivo e nada do dono é lido (#685/#720).
+    settings = SAIDAS / "settings.json"
+    settings.write_text("{}\n")
+    env.update({"TTS_SETTINGS_PATH": str(settings),
+                "TTS_APIKEYS_PATH": str(chaves),
+                "TTS_LEGACY_APIKEY_PATH": str(legado),
+                "TTS_OUTPUTS_DIR": str(SAIDAS),
+                "TTS_JOBS_HIST_PATH": str(SAIDAS / "jobs-history.json")})
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1",
+         "--port", str(porta), "--log-level", "warning"],
+        cwd=str(RAIZ), env=env, stdout=log.open("w"), stderr=subprocess.STDOUT,
+        start_new_session=True)
+    global _SERVIDOR, _PIDFILE
+    _SERVIDOR = proc
+    _PIDFILE = pathlib.Path("/tmp") / f"live_ws_servidor_{porta}_{os.getpid()}.pgid"
     try:
-        cfg = json.loads(caminho.read_text())
+        _PIDFILE.write_text(str(os.getpgid(proc.pid)))
     except Exception:                         # noqa: BLE001
-        return
-    base = (cfg.get("chat_base_url") or "").strip()
-    if not base.startswith(("http://127.0.0.1", "http://localhost")):
+        _PIDFILE = None
+    for _ in range(300):                      # até 60 s
+        if proc.poll() is not None:
+            raise SystemExit(f"servidor do smoke morreu na subida — log em {log}")
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{porta}/health", timeout=2).read()
+            return proc
+        except Exception:                     # noqa: BLE001
+            time.sleep(0.2)
+    mata_servidor(proc)
+    raise SystemExit(f"servidor do smoke não subiu em 60 s — log em {log}")
+
+
+#: servidor da rodada (para o trap de saída) e o pidfile do GRUPO dele
+_SERVIDOR = None
+_PIDFILE = None
+
+
+def mata_servidor(proc):
+    """Mata o GRUPO do servidor — `terminate()` sozinho deixa filho para trás."""
+    if proc is None:
         return
     try:
-        urllib.request.urlopen(base.rstrip("/") + "/models", timeout=2).read()
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except Exception:                         # noqa: BLE001 — já morreu
+        try:
+            proc.terminate()
+        except Exception:                     # noqa: BLE001
+            pass
+    try:
+        proc.wait(timeout=15)
     except Exception:                         # noqa: BLE001
-        if MODO == "config":
-            raise SystemExit(
-                f"settings.json aponta para {base} (stub de smoke) e ele NÃO responde:\n"
-                "  restaure com: curl -X POST .../api/settings -d '{\"chat_model\":\"\"}'\n"
-                "  ou rode com o stub: ./tests/live_ws.sh (auto-contido)")
-        aviso(f"settings.json aponta para {base} (stub de smoke) que não responde — "
-              f"o servidor JÁ DE PÉ vai falhar; o meu usa TTS_CHAT_* e não sofre")
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:                     # noqa: BLE001
+            pass
+    if _PIDFILE is not None:
+        try:
+            _PIDFILE.unlink()
+        except Exception:                     # noqa: BLE001
+            pass
+
+
+def mata_servidores_antigos():
+    """SIGTERM nos grupos de rodadas ANTERIORES que ficaram para trás (#688).
+
+    O harness escolhe porta livre, então a rodada nova não sabe a porta da velha:
+    o pidfile do grupo (`$$` no nome) é o que sobra. Sem
+    isto, um SIGTERM no meio deixava uvicorn órfão (32 achados, 808 MB)."""
+    mortos = 0
+    for pidfile in pathlib.Path("/tmp").glob("live_ws_servidor_*.pgid"):
+        # o nome carrega o PID do HARNESS dono do pidfile (`_{os.getpid()}.pgid`).
+        # Harness VIVO é rodada concorrente (outro agente/worktree): não é órfão —
+        # sem este filtro, quem começa derrubava o servidor de quem já estava
+        # rodando. Órfão de verdade tem o harness morto e o servidor de pé.
+        try:
+            dono = int(pidfile.stem.rsplit("_", 1)[-1])
+            os.kill(dono, 0)
+            if dono != os.getpid():
+                continue
+        except (ValueError, OSError):
+            pass
+        try:
+            pgid = int(pidfile.read_text().strip())
+        except Exception:                     # noqa: BLE001
+            pidfile.unlink(missing_ok=True)
+            continue
+        try:
+            os.killpg(pgid, signal.SIGTERM)   # sobra de rodada morta: avisa e segue
+            print(f"  (matei servidor órfão da rodada anterior, grupo {pgid})")
+            mortos += 1
+        except OSError:
+            pass
+        pidfile.unlink(missing_ok=True)
+    return mortos
+
+
+def instala_traps():
+    """SIGINT/SIGTERM/SIGHUP e saída normal passam TODOS por `mata_servidor`."""
+    def _sai(signum, _frame):
+        mata_servidor(_SERVIDOR)
+        raise SystemExit(128 + signum)
+
+    for sinal in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sinal, _sai)
+
+
+# (o `settings.json` da raiz não é lido: o estado é sempre sintético — #720)
 
 
 # ---------------------------------------------------------------- cliente WS
@@ -523,7 +669,6 @@ async def principal():
     global CARGA_ABERTURA
     print("Live — smoke do ciclo completo (tasks #93/#104)")
     CARGA_ABERTURA = carga_por_nucleo()
-    guarda_do_settings()
     # Servidor EXTERNO: a chave vem do ambiente (`LIVE_WS_KEY`). No servidor
     # próprio quem define a chave é o `sobe_servidor`, com o arquivo sintético.
     if BASE:

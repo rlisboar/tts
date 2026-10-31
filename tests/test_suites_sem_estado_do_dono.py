@@ -33,11 +33,8 @@ ISCA = "ISCA-CANARIO-NAO-CHEGUE-NA-RODADA"
 
 #: suítes que PODEM tocar o estado da raiz, com o motivo. Todas são leitura de
 #: COMPARAÇÃO (régua de "o dono não foi tocado"), nunca fonte do que a rodada usa.
-EXCECOES = {
-    # guarda anti-vazamento: lê o `.apikeys.json` do dono para provar que a rodada
-    # não escreveu nele (#463) — se ler, compara; não copia para a pasta
-    "live_ws.sh": (r'\.apikeys\.json"', r'\.apikey"', r'RAIZ / "settings\.json"'),
-}
+EXCECOES: dict[str, tuple[str, ...]] = {}   # nenhuma suíte lê o estado da raiz
+                                           # (a chave sintética do `live_ws` é gerada por ela)
 
 #: caminhos do estado do dono que a suíte não pode ler como FONTE
 PADROES = (
