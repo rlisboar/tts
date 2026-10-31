@@ -49,10 +49,8 @@ threading.Thread(target=HTTPServer(("127.0.0.1", stub_porta), Stub).serve_foreve
 # ─── fala de teste -> WAV 16k, alimenta o mic falso (o medidor precisa de sinal) ─
 import numpy as np, soundfile as sf
 wav_entrada = None
-# `voices/` do dono só existe na árvore principal: worktree novo cai na
-# FIXTURE versionada (estado do dono não vai para worktree)
-for w in sorted(pathlib.Path("voices").glob("*.wav")) \
-        or [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]:
+# a fala do mic falso é SINTÉTICA e versionada: nada é lido do `voices/` do dono
+for w in [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]:
     a, sr = sf.read(str(w), dtype="float32")
     if a.ndim > 1: a = a.mean(axis=1)
     if len(a) < sr: continue
@@ -68,10 +66,10 @@ if not wav_entrada: raise SystemExit("sem voices/*.wav para alimentar o mic fals
 
 # ─── servidor próprio ────────────────────────────────────────────────────────
 porta = porta_livre()
-# Estado do dono em CÓPIA/tmp (#535): o app grava settings e espelha o `.apikey`.
+# Estado em tmp, sintético: `{}` e o app preenche os defaults — nada do dono.
 ESTADO = pathlib.Path("/tmp") / f"obs_ui_estado_{SUF}"
 ESTADO.mkdir(exist_ok=True)
-(ESTADO / "settings.json").write_text((RAIZ / "settings.json").read_text())
+(ESTADO / "settings.json").write_text("{}")
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        "TTS_SETTINGS_PATH": str(ESTADO / "settings.json"),
        "TTS_APIKEYS_PATH": str(ESTADO / "apikeys.json"),

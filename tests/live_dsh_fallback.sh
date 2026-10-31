@@ -57,10 +57,8 @@ threading.Thread(target=HTTPServer(("127.0.0.1", stub_porta), Stub).serve_foreve
 
 import numpy as np, soundfile as sf
 wav = None
-# `voices/` do dono só existe na árvore principal: worktree novo cai na
-# FIXTURE versionada (estado do dono não vai para worktree)
-for w in sorted(pathlib.Path("voices").glob("*.wav")) \
-        or [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]:
+# a fala do mic falso é SINTÉTICA e versionada: nada é lido do `voices/` do dono
+for w in [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]:
     a, sr = sf.read(str(w), dtype="float32")
     if a.ndim > 1: a = a.mean(axis=1)
     if len(a) < sr: continue
@@ -172,12 +170,14 @@ try:
         # O frame `prewarm` sai ANTES de o servidor marcar `prewarm_ok` (o `finally`
         # de `_live_pipe_start` é um instante depois). Injetando no mesmo tick, o
         # turno abre na janela e o servidor responde "pipeline ainda aquecendo" —
-        # com áudio, mas sem exercitar o LLM. 400 ms fecham a janela.
-        pg.wait_for_timeout(400)
+        # com áudio, mas sem exercitar o LLM. 400 ms fechavam a janela na máquina
+        # vazia; com a máquina carregada não fecham (medido 2/2), então a espera é
+        # maior e o erro de aquecimento é RETENTADO em vez de reprovar.
+        pg.wait_for_timeout(1200)
         cobrar(esperou is not None, "o pre-warm não chegou — o turno vai pagar a carga fria")
 
         # turno: fala de verdade em quadros de 100 ms (o mesmo caminho do cliente)
-        pg.evaluate("""async (pcmB64) => {
+        INJETA = """async (pcmB64) => {
             const bin = atob(pcmB64); const bytes = new Uint8Array(bin.length);
             for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
             const i16 = new Int16Array(bytes.buffer);
@@ -187,10 +187,17 @@ try:
                 await new Promise(r => setTimeout(r, 25));
             }
             if (LX.ws && LX.ws.readyState === 1) LX.ws.send(JSON.stringify({ type: "end_of_speech" }));
-        }""", wav)
+        }"""
+        pg.evaluate(INJETA, wav)
 
         # o dsh tenta 5 handshakes com backoff antes de desistir (~8 s) — é o preço
         # que o usuário paga UMA vez por sessão, e é o que o aviso explica
+        # a janela do pre-warm pode reaparecer com a máquina carregada: se o turno
+        # caiu no aviso de aquecimento, repete UMA vez depois de esperar
+        if "aquecendo" in (pg.text_content("#toast") or ""):
+            print("  (servidor avisou 'aquecendo' — espero e repito o turno)")
+            pg.wait_for_timeout(2000)
+            pg.evaluate(INJETA, wav)
         try:
             pg.wait_for_function("() => LX.obs.dshFallback", timeout=120000)
         except Exception:
@@ -228,11 +235,30 @@ try:
             pass
         rec = pg.evaluate("() => LX.obs.rec")
         ia = pg.evaluate("() => document.getElementById('lxIA').textContent")
+        marcador = 0
+        # com a máquina carregada o turno pode cair na janela do pre-warm (aviso
+        # "aquecendo" em vez do LLM, medido 2/2): repete o turno até 3 vezes
+        for tentativa in range(3):
+            if "aquecendo" not in ia.lower():
+                break
+            print(f"  (tentativa {tentativa + 1}: servidor avisou 'aquecendo' — espero e repito)")
+            pg.wait_for_timeout(2500)
+            marcador = len(ia)
+            pg.evaluate(INJETA, wav)
+            try:
+                pg.wait_for_function(
+                    f"() => document.getElementById('lxIA').textContent.length > {marcador}",
+                    timeout=40000)
+            except Exception:
+                pass
+            rec = max(rec, pg.evaluate("() => LX.obs.rec"))
+            ia = pg.evaluate("() => document.getElementById('lxIA').textContent")
         print(f"  chunks de áudio recebidos: {rec} · texto da IA: {ia[:40]!r}")
         cobrar(rec > 0, f"nenhum áudio voltou pelo fallback (rec={rec})")
         cobrar(ia.strip(), "coluna da IA ficou vazia (fallback não respondeu)")
-        cobrar("aquecendo" not in ia.lower(),
-               f"o turno caiu no aviso de aquecimento em vez do LLM: {ia[:80]!r}")
+        ultimo = ia[marcador:] if "aquecendo" in ia.lower() else ia
+        cobrar("aquecendo" not in ultimo.lower(),
+               f"o turno caiu no aviso de aquecimento em vez do LLM: {ultimo[-80:]!r}")
         cobrar(pg.evaluate("() => LX.obs.dshFallback.fallback") == "openai",
                "fallback registrado no cliente não é openai")
 

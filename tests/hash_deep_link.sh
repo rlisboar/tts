@@ -43,8 +43,7 @@ def porta_livre():
 porta = porta_livre()
 # settings em CÓPIA (#535): o boot/save do app não pode mexer no arquivo do dono
 _SETTINGS = pathlib.Path(f"/tmp/hash_deep_settings-{porta}.json")
-_SETTINGS.write_text((RAIZ / "settings.json").read_text()
-                      if (RAIZ / "settings.json").is_file() else "{}")
+_SETTINGS.write_text("{}")     # defaults do app; nada do dono
 env = {**os.environ, "LIVE_UI_PORT": str(porta), "TTS_SETTINGS_PATH": str(_SETTINGS),
        # espelho legado de `_save_apikeys` (#535)
        "TTS_APIKEYS_PATH": f"/tmp/hash_deep_apikeys_{porta}.json",

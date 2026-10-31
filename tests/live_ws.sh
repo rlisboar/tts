@@ -336,13 +336,10 @@ def sobe_servidor(porta, stub_porta):
         (SAIDAS / "voices").mkdir(parents=True, exist_ok=True)
         env["TTS_VOICES_DIR"] = str(SAIDAS / "voices")
     # `settings` também: o servidor GRAVA nele (marca d'água, backend do chat) e sem
-    # a env ele escreve no arquivo do dono. Cópia, para a LEITURA continuar sendo a
-    # config do dono sem que a rodada a altere (#685).
+    # a env ele escreve no arquivo do dono. Sintético (`{}` + defaults do app): o
+    # worktree não tem o arquivo e nada do dono é lido (#685/#720).
     settings = SAIDAS / "settings.json"
-    if (RAIZ / "settings.json").is_file():
-        settings.write_bytes((RAIZ / "settings.json").read_bytes())
-    else:
-        settings.write_text("{}\n")
+    settings.write_text("{}\n")
     env.update({"TTS_SETTINGS_PATH": str(settings),
                 "TTS_APIKEYS_PATH": str(chaves),
                 "TTS_LEGACY_APIKEY_PATH": str(legado),

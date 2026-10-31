@@ -40,7 +40,7 @@ log = pathlib.Path(f"/tmp/ultima_chave-{porta}.log")
 # o `.apikey` legado também: `_save_apikeys` espelha nele e, sem a variável, o
 # espelho caía no arquivo do dono (#535)
 _SETTINGS = pathlib.Path(f"/tmp/settings_teste-{SUF}.json")
-_SETTINGS.write_text((RAIZ / "settings.json").read_text())
+_SETTINGS.write_text("{}")          # defaults do app; nada do dono
 env_proc = {**os.environ, "TTS_APIKEYS_PATH": str(apikeys),
             "TTS_LEGACY_APIKEY_PATH": str(pathlib.Path(f"/tmp/apikey_teste-{SUF}")),
             "TTS_SETTINGS_PATH": str(_SETTINGS)}
