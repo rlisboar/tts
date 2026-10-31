@@ -119,6 +119,8 @@ def _raiz_falsa(tmp_path: Path) -> Path:
     (raiz / ".apikeys.json").write_text('{"keys": [{"name": "%s", "secret": "%s"}]}\n'
                                         % (ISCA, ISCA))
     (raiz / ".apikey").write_text(ISCA + "\n")
+    (raiz / ".speaker-profiles.json").write_text(
+        '{"perfis": [{"nome": "%s", "modelo": "%s"}]}\n' % (ISCA, ISCA))
     _isca_wav(raiz)
     return raiz
 
@@ -134,16 +136,28 @@ def test_suite_roda_sem_ler_o_estado_da_raiz(tmp_path):
     assert r.returncode == 0, (r.stdout + r.stderr)[-2000:]
     novos = set(glob.glob("/tmp/hash_deep_*")) - antes
     assert novos, "a rodada não deixou o arquivo sintético (caminho mudou?)"
-    for nome in novos:
-        p = Path(nome)
-        if p.is_file():
-            assert ISCA not in p.read_text(errors="replace"), (
-                f"a rodada leu o estado da raiz: {p} tem a isca")
+    _varre_isca(novos)
     for nome in novos:                      # não deixa lixo do teste
         try:
             Path(nome).unlink()
         except OSError:
             pass
+
+
+def _varre_isca(caminhos) -> None:
+    """Reprova se a ISCA aparecer em QUALQUER arquivo do estado da rodada."""
+    achados = []
+    for nome in caminhos:
+        p = Path(nome)
+        arquivos = [p] if p.is_file() else [q for q in p.rglob("*") if q.is_file()]
+        for arq in arquivos:
+            try:
+                if ISCA in arq.read_text(errors="replace"):
+                    achados.append(str(arq))
+            except OSError:
+                continue
+    assert not achados, ("a rodada leu o estado da raiz — a isca vazou para: "
+                         + ", ".join(achados))
 
 
 def test_suite_usa_a_fixture_mesmo_com_voz_na_raiz(tmp_path):
@@ -161,11 +175,7 @@ def test_suite_usa_a_fixture_mesmo_com_voz_na_raiz(tmp_path):
     assert r.returncode == 0, (r.stdout + r.stderr)[-2000:]
     novos = set(glob.glob("/tmp/obs_ui_estado_*")) - antes
     assert novos, "a rodada não deixou a pasta de estado (caminho mudou?)"
-    for d in novos:
-        cfg = Path(d) / "settings.json"
-        if cfg.exists():
-            assert ISCA not in cfg.read_text(errors="replace"), (
-                f"a rodada copiou o settings da raiz para {cfg}")
+    _varre_isca(novos)
     for d in novos:
         shutil.rmtree(d, ignore_errors=True)
 
