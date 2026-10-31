@@ -346,7 +346,7 @@ A célula cobre as duas pontas: a sonda SOZINHA sem a env tem de sair 2, e a rod
 pelo runner sem a env tem de deixar o `settings.json` da raiz com sha **e** mtime
 iguais (e ainda nomear a escrita, que acontece na cópia).
 
-## #711 — segredo do dono não fica em /tmp
+## #723 — segredo do dono não fica em /tmp
 
 | Sabotagem | Resultado |
 |---|---|

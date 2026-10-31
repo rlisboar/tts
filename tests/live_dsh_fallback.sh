@@ -102,7 +102,7 @@ uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["FALLBACK_PORT"]), lo
 proc = subprocess.Popen([str(RAIZ / ".venv-mlx" / "bin" / "python"), "-c", _launcher],
                         cwd=str(RAIZ), env=env, stdout=log.open("w"), stderr=subprocess.STDOUT,
                         start_new_session=True)
-# verde não deixa NADA em /tmp (#711): o arquivo de chaves da rodada carrega o
+# verde não deixa NADA em /tmp (#723): o arquivo de chaves da rodada carrega o
 # segredo do dono quando `TTS_ROD_API_KEY` está no ambiente
 def _limpa_tmp():
     import shutil as _sh

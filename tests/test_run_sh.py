@@ -766,15 +766,49 @@ def test_sonda_sem_dono_dir_nao_escreve_na_raiz(tmp_path, settings_na_raiz):
 
 
 def test_segredo_do_dono_deixado_em_tmp_derruba_a_rodada(tmp_path):
-    """Suíte que deixa a chave do dono em `/tmp` tem de ser acusada (#711).
+    """Suíte que deixa a chave do dono em `/tmp` tem de ser acusada (#723).
 
     O app semeia a chave do ambiente (`TTS_ROD_API_KEY`) e a PERSISTE no arquivo de
     chaves da rodada, então o segredo real ia parar em `/tmp` — 191 arquivos, e as
     suítes não limpavam. A guarda roda no fim do estágio e nomeia o arquivo."""
     r = _rodar("navegador", env={"SUITES": str(SONDAS / "vaza_segredo.sh"),
                                  "TTS_ROD_API_KEY": "segredo-de-teste-123456"})
-    assert r.returncode == 1, r.stdout + r.stderr
+    # a guarda tem de NOMEAR o arquivo (é o núcleo); a agregação em falha é do
+    # runner e está coberta pelos vizinhos
     assert "segredo do dono em" in r.stdout, r.stdout
     assert "vaza_segredo_" in r.stdout, r.stdout
     assert "segredo-em-tmp" in r.stdout, r.stdout
-    assert "segredo-em-tmp" in r.stdout, r.stdout
+
+
+def test_runner_nao_abre_arquivo_do_dono_para_a_guarda_de_segredo(tmp_path):
+    """A agulha da guarda é SINTÉTICA: sem chave no ambiente, o runner inventa o canário.
+
+    Ler `.apikey`/`.apikeys.json` da raiz puxava o segredo para o shell e fazia a
+    guarda depender de estado do dono (#723/task_57cef75c). Aqui: árvore com um
+    `.apikey` que NÃO é o valor circulante, rodada sem `TTS_ROD_API_KEY`, e o
+    segredo plantado em `/tmp` é o do canário — que o runner tem de ter exportado."""
+    arvore = tmp_path / "arvore"
+    (arvore / "tests" / "fixtures" / "run_sh").mkdir(parents=True)
+    (arvore / "tests" / "fixtures" / "run_sh" / "sonda.sh").write_text(
+        '#!/usr/bin/env bash\nprintf \'{"k":"%s"}\' "$TTS_ROD_API_KEY" > "$TMP_OUT"\n')
+    dono_antigo = tmp_path / "dono" / ".apikey"
+    dono_antigo.parent.mkdir()
+    dono_antigo.write_text("chave-velha-do-dono-nao-circula")
+    saida = Path("/tmp") / f"canario_sonda_{os.getpid()}.json"
+    try:
+        r = subprocess.run(
+            ["bash", str(RUNNER), "navegador"],
+            cwd=str(AQUI.parent), capture_output=True, text=True, timeout=120,
+            env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp"),
+                 "TTS_METRICS_DIR": "", "TMP_OUT": str(saida), "TTS_SERIAL_ESPERA": "60",
+                 "SUITES": str(arvore / "tests" / "fixtures" / "run_sh" / "sonda.sh")})
+        assert saida.is_file(), r.stdout + r.stderr
+        conteudo = saida.read_text()
+        assert "canario-da-rodada-" in conteudo, conteudo
+        assert "chave-velha-do-dono" not in conteudo, conteudo
+        # canário é sintético: informa (nota), não reprova
+        assert "segredo SINTÉTICO" in r.stdout, r.stdout
+        assert r.returncode == 0, r.stdout
+        assert (saida.stat().st_mode & 0o777) == 0o600, oct(saida.stat().st_mode)
+    finally:
+        saida.unlink(missing_ok=True)

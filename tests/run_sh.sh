@@ -209,6 +209,13 @@ if _probe_na_lista; then
         exit 2
     fi
 fi
+# Canário de segredo da rodada (#723): sem chave no ambiente, o app semeia DESTA —
+# assim o segredo que circula em /tmp é sintético e a guarda tem agulha certa.
+CANARIO=0
+if [ -z "${TTS_ROD_API_KEY:-}" ]; then
+    export TTS_ROD_API_KEY="canario-da-rodada-$$"
+    CANARIO=1
+fi
 DONO_DIR="${TTS_DONO_DIR:-$RAIZ}"
 # portátil: o job `suites-sh` do CI é Linux (`sha256sum`/`stat -c`), a máquina de
 # trabalho é macOS (`shasum`/`stat -f`). Sem o ramo, a impressão degrada a ruído.
@@ -249,6 +256,7 @@ _arquivos_mudados_conteudo() { # $1 = impressão de antes, $2 = de depois
 }
 
 declare -a FALHAS=() RODADAS=()
+umask 077   # tmp de suíte nasce 0700/0600 (#723)
 comeca=$(date +%s)
 DONO_ANTES="$(_impressao_dono)"
 METRICAS_ANTES="$(_impressao_metricas)"
@@ -284,6 +292,7 @@ _amostra() {
 _agora() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
 find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f 2>/dev/null \
     | sed 's#^/private/tmp#/tmp#' | sort -u > "$DIR/tmp_antes"
+: > "$DIR/comeca"   # carimbo: nome REUSADO também entra (união, não filtro)
 _amostra &
 AMOSTRADOR=$!
 
@@ -442,18 +451,15 @@ if [ -n "$MUDOU" ]; then
     fi
 fi
 
-# SEGREDO DO DONO EM /tmp (#711): o app semeia a chave do ambiente
+# SEGREDO DO DONO EM /tmp (#723): o app semeia a chave do ambiente
 # (`TTS_ROD_API_KEY`) e a PERSISTE no arquivo de chaves da rodada — então o segredo
 # real acaba em /tmp e fica lá se a suíte não limpar. Aqui a rodada é acusada
 # quando deixa cópia do segredo para trás.
 _segredos_do_dono() {
-    local a
-    # a env é a fonte que as suítes propagam; os arquivos do dono só existem quando
-    # a rodada é na árvore principal
-    [ -n "${TTS_ROD_API_KEY:-}" ] && printf '%s\n' "$TTS_ROD_API_KEY"
-    for a in "$RAIZ/.apikey" "$RAIZ/.apikeys.json"; do
-        [ -f "$a" ] && grep -oE '[A-Za-z0-9_-]{8,}' "$a" 2>/dev/null
-    done | sort -u
+    # A agulha vem da ENV (o que as suítes propagam). Sem ela, o runner SINTETIZA
+    # um canário e o exporta: nenhum arquivo do dono é aberto e o valor não é
+    # impresso (#723/task_57cef75c).
+    printf '%s\n' "${TTS_ROD_API_KEY%%\n*}"
 }
 conta_segredo_em_tmp() {
     local seg f achados=0 segredos=""
@@ -473,14 +479,23 @@ conta_segredo_em_tmp() {
     # `-H`: no macOS `/tmp` é link para `/private/tmp` e sem ele o `find` não desce
     # DIFERENÇA de conjunto (não mtime): o nome pode ser reusado e o relógio tem
     # resolução de segundo — comparar com o retrato do início é o que não mente
-    done < <(find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f 2>/dev/null \
-                  | sed 's#^/private/tmp#/tmp#' | sort -u | comm -13 "$DIR/tmp_antes" -)
+    # UNIÃO: arquivos novos (diferença de conjunto) + tocados nesta rodada (carimbo).
+    # Só a diferença perdia o nome REUSADO (outra rodada já tinha criado o arquivo).
+    done < <({ find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f 2>/dev/null \
+                   | sed 's#^/private/tmp#/tmp#' | sort -u | comm -13 "$DIR/tmp_antes" -
+               find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f -newer "$DIR/comeca" 2>/dev/null \
+                   | sed 's#^/private/tmp#/tmp#'; } | sort -u)
     echo "$achados"
 }
 SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
 if [ "${SEGREDOS_EM_TMP%%$'\n'*}" != "0" ] && [ -n "$SEGREDOS_EM_TMP" ]; then
     echo "$SEGREDOS_EM_TMP" | grep -v '^[0-9]*$'
-    FALHAS+=("segredo-em-tmp")
+    if [ "$CANARIO" = "1" ]; then
+        # canário sintético: informa, não reprova (o segredo do dono não circulou)
+        echo "  nota: segredo SINTÉTICO deixado em /tmp (não é o do dono)"
+    else
+        FALHAS+=("segredo-em-tmp")
+    fi
 fi
 
 echo "--- $estagio: ${#FALHAS[@]} falha(s) de ${#RODADAS[@]} suíte(s) em $(( $(date +%s) - comeca ))s"
