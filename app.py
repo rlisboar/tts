@@ -10120,7 +10120,14 @@ def _live_stats(sess: dict) -> dict:
             # sempre 0 — a chave do motor é `barge_in_falso`.
             limiares.update({"barge_ativos": st.get("barge_in", 0)
                              + st.get("barge_in_com_turno_aberto", 0),
-                             "barge_falsos": st.get("barge_in_falso", 0)})
+                             "barge_falsos": st.get("barge_in_falso", 0),
+                             # #707: burst máximo do episódio (de `barge_in_ms`).
+                             # Abaixo do alvo = a fala não sustentou; no alvo sem
+                             # barge = outra coisa. Sem publicar, o campo não chega
+                             # ao painel/harness e a medida vira adivinhação.
+                             "barge_pico": st.get("barge_pico", 0),
+                             "barge_alvo": getattr(
+                                 getattr(eng, "config", None), "_frames_barge", 0)})
             # #313: o estado que EXPLICA um barge falso sai do motor (já calculado,
             # custo zero). Sem estes quatro o painel só mostra o sintoma.
             limiares.update({
