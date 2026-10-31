@@ -91,8 +91,11 @@ Parte do falso positivo pode ser o recorte, não o modelo — **não isolado**.
 
 1. **Marca d'água LIGADA por padrão** em toda saída (jobs, Live e
    `/v1/audio/speech`): custa 72–82 ms de embed, é inaudível no PESQ e sobrevive ao
-   caminho por onde o áudio passa. É o que sustenta (b) filtro de ECO do Live — o
-   caso do dono que clonou a própria voz, onde a identidade não separa — e (c)
+   caminho por onde o áudio passa (arquivo: codec, reamostragem, ganho).
+   **Correção depois da regravação:** ela NÃO atravessa o alto-falante e o
+   microfone, então o (b) filtro de ECO do Live **não** pode contar com ela — o eco
+   precisa de correlação com o que foi tocado ou de controle de eco próprio. O que
+   a marca sustenta de verdade é (a) veto em áudio que chega como ARQUIVO e (c)
    proveniência.
 2. **No gate de locutor, a marca é veto**: áudio com marca = é o próprio TTS
    voltando, não é o dono falando.
