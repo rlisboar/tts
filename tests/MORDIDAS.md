@@ -304,10 +304,12 @@ sha256 no manifesto reprova).
 |---|---|
 | `mata_servidor` vira no-op | `test_sigint_no_harness_nao_deixa_servidor` **FAILED** ("o servidor do harness sobreviveu ao SIGTERM") |
 | `mata_servidores_antigos` não varre (early return) | `test_mata_orfaos_do_harness_sob_demanda` **FAILED** (o grupo órfão sobrevive) |
+| varredura sem o filtro de dono vivo (mata todo pidfile de `/tmp`) | `test_varredura_de_orfao_nao_mata_rodada_viva` **FAILED**: "a varredura matou o servidor de uma rodada VIVA" |
 
 O SIGTERM (`timeout`) é o caso que vazou: o SIGINT já chega como KeyboardInterrupt e
 passa pela limpeza normal; o TERM não levanta nada. O trap cobre os dois e a rodada
-seguinte varre pidfiles de grupos anteriores.
+seguinte varre pidfiles de grupos anteriores — varredura que NÃO pode derrubar
+rodada concorrente: o dono do pidfile (PID no nome) vivo é vizinho, morto é órfão.
 
 ## #659 — suíte em worktree SEM estado do dono
 

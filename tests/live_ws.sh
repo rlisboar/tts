@@ -56,6 +56,9 @@ PY="$RAIZ/.venv-mlx/bin/python"
 # latência do live_ws.sh dá falso vermelho sob contenção de Metal/CPU (#134).
 source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
 export BASE="${BASE:-}"          # vazio = o driver sobe o próprio servidor
+# a raiz do repo vai por ENV: `cwd` pode ser outro (o `test_run_sh` chama com
+# cwd=tests/) e caminho relativo dava "sem voz de teste" com o smoke morrendo em 0 s
+export LIVE_WS_RAIZ="$RAIZ"
 
 "$PY" - "$@" <<'PY'
 import asyncio, json, os, pathlib, shutil, signal, socket, subprocess, sys, threading, time, urllib.request
@@ -65,7 +68,7 @@ import numpy as np
 import soundfile as sf
 
 BASE = os.environ.get("BASE", "").rstrip("/")
-RAIZ = pathlib.Path.cwd()
+RAIZ = pathlib.Path(os.environ.get("LIVE_WS_RAIZ") or pathlib.Path.cwd())
 MODO = os.environ.get("LIVE_LLM", "stub")
 #: conteúdo do `.apikeys.json` do dono no INÍCIO (leitura apenas): é a régua da
 #: mordida — se a escrita da rodada cair nele, o isolamento furou (#463).
@@ -210,13 +213,16 @@ def fala_de_teste(segundos=2.4):
     Num worktree não existe `voices/` (ela não é versionada): cai na fixture
     versionada, que é voz sintetizada do próprio app."""
     import subprocess
-    wavs = sorted(pathlib.Path("voices").glob("*.wav")) or \
-        [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]
+    # ABSOLUTOS a partir de `RAIZ`: o harness pode ser chamado de qualquer cwd (o
+    # test_run_sh chama com cwd=tests/) — relativo dava "sem voz de teste" e o
+    # smoke morria em 0 s com rc=0 (#688).
+    do_dono = sorted((RAIZ / "voices").glob("*.wav"))
+    wavs = do_dono or [RAIZ / "tests" / "fixtures" / "voz_fala_5s_16k.wav"]
     wavs = [w for w in wavs if w.is_file()]
-    if wavs and not list(pathlib.Path("voices").glob("*.wav")):
+    if wavs and not do_dono:
         segundos = max(segundos, 5.0)   # fala de fixture é curta: usa os 5 s dela
     if not wavs:
-        raise SystemExit("sem voz de teste (nem voices/*.wav nem a fixture)")
+        raise SystemExit("sem voz de teste (nem voices/*.wav nem a fixture): 1")
     for w in wavs:
         a, sr = sf.read(str(w), dtype="float32")
         if a.ndim > 1:
@@ -329,7 +335,16 @@ def sobe_servidor(porta, stub_porta):
         # não é do dono (a célula que usa a voz DELE rodaria com a nossa)
         (SAIDAS / "voices").mkdir(parents=True, exist_ok=True)
         env["TTS_VOICES_DIR"] = str(SAIDAS / "voices")
-    env.update({"TTS_APIKEYS_PATH": str(chaves),
+    # `settings` também: o servidor GRAVA nele (marca d'água, backend do chat) e sem
+    # a env ele escreve no arquivo do dono. Cópia, para a LEITURA continuar sendo a
+    # config do dono sem que a rodada a altere (#685).
+    settings = SAIDAS / "settings.json"
+    if (RAIZ / "settings.json").is_file():
+        settings.write_bytes((RAIZ / "settings.json").read_bytes())
+    else:
+        settings.write_text("{}\n")
+    env.update({"TTS_SETTINGS_PATH": str(settings),
+                "TTS_APIKEYS_PATH": str(chaves),
                 "TTS_LEGACY_APIKEY_PATH": str(legado),
                 "TTS_OUTPUTS_DIR": str(SAIDAS),
                 "TTS_JOBS_HIST_PATH": str(SAIDAS / "jobs-history.json")})
@@ -395,6 +410,17 @@ def mata_servidores_antigos():
     isto, um SIGTERM no meio deixava uvicorn órfão (32 achados, 808 MB)."""
     mortos = 0
     for pidfile in pathlib.Path("/tmp").glob("live_ws_servidor_*.pgid"):
+        # o nome carrega o PID do HARNESS dono do pidfile (`_{os.getpid()}.pgid`).
+        # Harness VIVO é rodada concorrente (outro agente/worktree): não é órfão —
+        # sem este filtro, quem começa derrubava o servidor de quem já estava
+        # rodando. Órfão de verdade tem o harness morto e o servidor de pé.
+        try:
+            dono = int(pidfile.stem.rsplit("_", 1)[-1])
+            os.kill(dono, 0)
+            if dono != os.getpid():
+                continue
+        except (ValueError, OSError):
+            pass
         try:
             pgid = int(pidfile.read_text().strip())
         except Exception:                     # noqa: BLE001

@@ -14,6 +14,7 @@ import re
 import subprocess
 import threading
 import time
+import pathlib
 from pathlib import Path
 
 AQUI = Path(__file__).resolve().parent
@@ -556,16 +557,24 @@ def test_sigint_no_harness_nao_deixa_servidor(tmp_path):
     cobra o grupo morto e o pidfile removido."""
     import signal as _signal
 
+    # o pidfile é nomeado pelo PID do PYTHON filho, não do bash: o jeito imune a
+    # rodada vizinha é a DIFERENÇA de conjunto (quais existiam antes × depois)
+    antes_pidfiles = set(Path("/tmp").glob("live_ws_servidor_*.pgid"))
+    # `TTS_SERIAL=0`: a célula só quer o trap. Com a trava, o harness pode ficar
+    # esperando outra suíte (espera padrão 1800 s) e não chega a subir o servidor
+    # dentro da janela daqui — foi assim que falhou na suíte cheia.
     proc = subprocess.Popen([str(AQUI / "live_ws.sh")], cwd=str(AQUI.parent),
                             stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
-                            start_new_session=True)
+                            start_new_session=True,
+                            env={**os.environ, "TTS_SERIAL": "0"})
     pidfile = None
     try:
+        # pidfile pelo PID DO HARNESS que subimos (`_{pid}.pgid`), não pelo mais
+        # recente de /tmp: com outra rodada viva ao lado, o "mais novo" é do outro
         for _ in range(240):                  # até 60 s para o servidor subir
-            achados = sorted(Path("/tmp").glob("live_ws_servidor_*.pgid"),
-                             key=lambda p: p.stat().st_mtime)
+            achados = list(set(Path("/tmp").glob("live_ws_servidor_*.pgid")) - antes_pidfiles)
             if achados:
-                pidfile = achados[-1]
+                pidfile = achados[0]
                 break
             assert proc.poll() is None, "o harness saiu antes de subir o servidor"
             time.sleep(0.25)
@@ -601,11 +610,14 @@ def test_mata_orfaos_do_harness_sob_demanda(tmp_path):
     sobrevive até alguém rodar a suíte de novo (40 h medidos)."""
     proc = subprocess.Popen(["sleep", "120"], start_new_session=True)
     pgid = os.getpgid(proc.pid)
-    pidfile = Path("/tmp") / f"live_ws_servidor_99999_{os.getpid()}.pgid"
+    # o DONO no nome do pidfile tem de estar MORTO: é o que distingue órfão de
+    # rodada vizinha (o filtro do 26b6d1a). PID alto e inexistente serve.
+    pidfile = Path("/tmp") / "live_ws_servidor_99999_999999.pgid"
     pidfile.write_text(str(pgid))
     try:
         r = subprocess.run([str(AQUI / "live_ws.sh"), "--mata-orfaos"],
-                           cwd=str(AQUI.parent), capture_output=True, text=True, timeout=120)
+                           cwd=str(AQUI.parent), capture_output=True, text=True, timeout=120,
+                           env={**os.environ, "TTS_SERIAL": "0"})
         assert r.returncode == 0, r.stdout + r.stderr
         assert "1 servidor(es) órfão(s)" in r.stdout, r.stdout
         for _ in range(40):
@@ -621,3 +633,48 @@ def test_mata_orfaos_do_harness_sob_demanda(tmp_path):
         if proc.poll() is None:
             proc.kill()
         pidfile.unlink(missing_ok=True)
+
+
+def test_varredura_de_orfao_nao_mata_rodada_viva(tmp_path):
+    """A varredura de servidores órfãos não pode derrubar quem está rodando (#688).
+
+    O harness varre `/tmp/live_ws_servidor_*.pgid` ao subir. Sem filtro, quem começa
+    mata o servidor de outra rodada — e numa máquina com vários worktrees isso é o
+    caso comum. O nome carrega o PID do dono: dono VIVO é rodada concorrente, dono
+    morto é órfão de verdade."""
+    import signal as _signal
+
+    fonte = (AQUI / "live_ws.sh").read_text()
+    ini = fonte.index("def mata_servidores_antigos")
+    fim = fonte.index("def instala_traps")
+    ns = {"os": os, "signal": _signal, "pathlib": pathlib}
+
+    def _grupo(com_dono_vivo: bool) -> tuple[int, int]:
+        dono = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        pgid = os.getpgid(dono.pid)
+        pidfile = Path("/tmp") / f"live_ws_servidor_9_{dono.pid}.pgid"
+        pidfile.write_text(str(pgid))
+        ns.setdefault("_limpar", []).append(pidfile)
+        if not com_dono_vivo:
+            dono.kill()
+            dono.wait()
+        return dono.pid, pgid
+
+    import atexit
+    atexit.register(lambda: [p.unlink(missing_ok=True) for p in ns.get("_limpar", [])])
+
+    _, vivo = _grupo(True)
+    _, morto = _grupo(False)
+    try:
+        exec(fonte[ini:fim], ns)
+        ns["mata_servidores_antigos"]()
+        assert subprocess.run(["kill", "-0", str(vivo)]).returncode == 0, \
+            "a varredura matou o servidor de uma rodada VIVA"
+        assert subprocess.run(["kill", "-0", str(morto)]).returncode != 0, \
+            "a varredura não matou o órfão"
+    finally:
+        for sinal in (vivo, morto):
+            try:
+                os.killpg(sinal, _signal.SIGTERM)
+            except OSError:
+                pass
