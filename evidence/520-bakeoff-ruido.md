@@ -1,9 +1,20 @@
-# Bake-off de redução de ruído (#520) — parcial com recomendação
+# Bake-off de redução de ruído (#520) — medido e decidido
 
-Estado: **medido em parte**, com os quatro casos recomendados abaixo. Corpus
-público em tmp (o mesmo do #521), nunca `voices/`/`outputs/`.
+Corpus público em tmp (o mesmo do #521), nunca `voices/`/`outputs/`.
 
-## Números (DNSMOS 1–5; timbre = similaridade do locutor antes/depois; WER do Whisper)
+**Como ler este arquivo:** as seções estão em ordem cronológica e a conclusão
+MUDOU no meio do caminho. A primeira rodada (inglês) elegeu DFN3 na amostra e
+RNNoise no Live; a rodada em pt com **fala real** mostrou que nenhum filtro
+melhora o WER do STT. O veredito final está no fim — **leia a última seção antes
+de tirar conclusão das tabelas do começo**.
+
+| pergunta | resposta final |
+|---|---|
+| limpar a AMOSTRA de referência | **DFN3** (timbre 0,97–0,99, PESQ e STOI ganham) — virou o motor do #523, com guarda de timbre |
+| filtro antes do STT | **não compra acerto** em fala real; o caminho do I2 é híbrido (RNNoise só no VAD/barge) |
+| import com música | **Demucs** sozinho (WER 0,63 → 0,45); empilhar DFN3 depois não paga |
+
+## Primeira rodada — inglês (DNSMOS 1–5; timbre = similaridade do locutor antes/depois; WER do Whisper)
 
 | cenário | candidato | OVRL | timbre | WER | RTF |
 |---|---|---|---|---|---|
@@ -32,7 +43,7 @@ O DFN3 limpa mais em OVRL; o RNNoise **preserva mais o timbre** em babble e tem 
 Ou seja: **não trocar o filtro do Live**; o ganho real está na amostra (a) e no
 import (d).
 
-## O que a medição ainda NÃO sustenta
+## O que a primeira rodada ainda NÃO sustentava (as seções seguintes cobrem)
 
 - **MossFormer2 e Resemble-Enhance** não foram medidos (entram no mesmo runner,
   dependem de venv próprio).
