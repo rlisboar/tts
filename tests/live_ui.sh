@@ -16,6 +16,7 @@ export LIVE_UI_LOG="${LIVE_UI_LOG:-/tmp/live_ui_servidor-$$.log}"
 # WS -> turno com áudio de volta -> playback -> barge-in com corte medido.
 #
 #   ./tests/live_ui.sh            # sobe stub+servidor em portas livres e derruba no fim
+#   EVIDENCE=1 ./tests/live_ui.sh # regrava os PNGs versionados em evidence/
 #
 # BARGE: o corte do playback é exigência DURA por padrão. Escapes, para quando se
 # está medindo OUTRA coisa:
@@ -106,6 +107,12 @@ if not wav_entrada: raise SystemExit("sem voices/*.wav para alimentar o mic fals
 
 # ─── servidor próprio com TTS_CHAT_* (settings do dono intocado) ─────────────
 # Estado do dono em CÓPIA/tmp (#535): settings sai do arquivo DELE, mas grava na cópia
+#: `EVIDENCE=1` regrava os PNGs versionados em `evidence/`; sem a flag a captura
+#: fica no diretório da rodada (#720).
+EVIDENCE = os.environ.get("EVIDENCE") == "1"
+#: mtime do PNG VERSIONADO no início: sem `EVIDENCE` a rodada não pode encostar nele
+_PNG_VER = pathlib.Path("evidence") / "244-live-substituida.png"
+_MTIME_ANTES = _PNG_VER.stat().st_mtime_ns if _PNG_VER.exists() else None
 _ESTADO = pathlib.Path(f"/tmp/live_ui_estado_{porta}")
 _ESTADO.mkdir(exist_ok=True)
 (_ESTADO / "settings.json").write_text((RAIZ / "settings.json").read_text())
@@ -573,12 +580,22 @@ try:
             # status é o que fica legível sem depender do scroll do painel.
             try: pg.evaluate("() => { const e = document.getElementById('lxStatus'); e && e.scrollIntoView({block: 'center'}); }")
             except Exception: pass
-            pg.screenshot(path=str(RAIZ / "evidence" / "244-live-substituida.png"))
+            # captura no DIRETÓRIO DA RODADA: gravar em `evidence/` (versionado)
+            # sujava a árvore a cada rodada e travava o `integra.sh` (#720).
+            # `EVIDENCE=1` regrava os versionados.
+            _alvo = (RAIZ / "evidence") if EVIDENCE else _ESTADO
+            pg.screenshot(path=str(_alvo / "244-live-substituida.png"))
             try:
-                pg.locator("#lxStatus").screenshot(path=str(RAIZ / "evidence" / "244-live-substituida-status.png"))
+                pg.locator("#lxStatus").screenshot(path=str(_alvo / "244-live-substituida-status.png"))
             except Exception as e:
                 print("  (recorte do status falhou:", e, ")")
-            print("  evidência: evidence/244-live-substituida.png")
+            print(f"  evidência: {_alvo}/244-live-substituida.png")
+            # a captura da rodada não pode regravar o versionado sem a flag (#720)
+            if _MTIME_ANTES is not None:
+                _atual = _PNG_VER.stat().st_mtime_ns if _PNG_VER.exists() else None
+                cobrar((_atual != _MTIME_ANTES) == EVIDENCE,
+                       f"PNG versionado {'não ' if EVIDENCE else ''}foi regravado sem a flag"
+                       f" (EVIDENCE={int(EVIDENCE)}, mtime {_MTIME_ANTES} -> {_atual})")
 
         # o MESMO ramo, injetado (isolado do servidor): o contrato do cliente é o
         # ramo próprio — a preservação no close fica por conta do bloco real acima

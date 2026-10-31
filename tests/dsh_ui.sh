@@ -10,6 +10,7 @@
 # que precisa funcionar sem mentir.
 #
 #   ./tests/dsh_ui.sh
+#   EVIDENCE=1 ./tests/dsh_ui.sh   # regrava o PNG versionado em evidence/
 #
 # Servidor PRÓPRIO (porta livre), stub de chat por env e ESTADO PRÓPRIO (#608):
 # `TTS_SETTINGS_PATH`/`TTS_APIKEYS_PATH`/`TTS_LEGACY_APIKEY_PATH`/`OUTPUTS`/
@@ -75,6 +76,12 @@ for _velho in pathlib.Path("/tmp").glob("dsh_ui_*"):
     except Exception:
         pass
 
+#: `EVIDENCE=1` regrava os PNGs versionados em `evidence/`; sem a flag a captura
+#: fica no diretório da rodada (#720).
+EVIDENCE = os.environ.get("EVIDENCE") == "1"
+#: mtime do PNG VERSIONADO no início: sem `EVIDENCE` a rodada não pode encostar nele
+_PNG_VER = pathlib.Path("evidence") / "178-backend-live-heranca.png"
+_MTIME_ANTES = _PNG_VER.stat().st_mtime_ns if _PNG_VER.exists() else None
 stub_porta = porta_livre()
 threading.Thread(target=HTTPServer(("127.0.0.1", stub_porta), Stub).serve_forever, daemon=True).start()
 
@@ -291,8 +298,19 @@ try:
                    "() => document.getElementById('chatBackendLiveHint').textContent"),
                "voltar para 'igual ao da Conversa' não devolve o hint de herança")
         pg.locator("#chatBackendLive").scroll_into_view_if_needed()
-        pg.screenshot(path=str(RAIZ / "evidence" / "178-backend-live-heranca.png"))
-        print("  evidência: evidence/178-backend-live-heranca.png")
+        # a captura vai para o DIRETÓRIO DA RODADA: gravar em `evidence/` (versionado)
+        # sujava a árvore a cada rodada e travava o `integra.sh` (#720). O arquivo
+        # versionado só é regravado com `EVIDENCE=1`.
+        EVID = (RAIZ / "evidence" / "178-backend-live-heranca.png") if EVIDENCE \
+            else (DIR / "178-backend-live-heranca.png")
+        pg.screenshot(path=str(EVID))
+        print(f"  evidência: {EVID}")
+        # a captura da rodada não pode regravar o versionado sem a flag (#720)
+        if _MTIME_ANTES is not None:
+            atual = _PNG_VER.stat().st_mtime_ns if _PNG_VER.exists() else None
+            cobrar((atual != _MTIME_ANTES) == EVIDENCE,
+                   f"PNG versionado {'não ' if EVIDENCE else ''}foi regravado sem a flag"
+                   f" (EVIDENCE={int(EVIDENCE)}, mtime {_MTIME_ANTES} -> {atual})")
 
         # ─── 2c) caminhos MISTOS: a config do dsh é COMPARTILHADA, então o bloco
         # não pode sumir quando só o Live quer o dsh (senão o dono não alcança o
