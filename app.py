@@ -508,9 +508,9 @@ _SETTINGS_DEFAULTS = {
     "speaker_anticlone": False,
     # Marca d'água AudioSeal em todo áudio GERADO (#657). O app clona voz, então
     # sem marca a saída é indistinguível de fala humana; é admin porque muda o áudio
-    # de todo mundo. DESLIGADA no default até o ABX do dono — ligar é uma linha
-    # (esta), com tudo pronto. Sem os pesos/`audioseal`, sai sem marca e o log diz.
-    "tts_marca_dagua": False,
+    # de todo mundo. LIGADA no default: o ABX do dono passou (só o par 7 audível de
+    # 8). Sem os pesos/`audioseal`, sai sem marca e o log diz.
+    "tts_marca_dagua": True,
     # "Só a minha voz" no Live (#533): portão ECAPA no TURNO. Desligado, nada
     # muda. Ligado, terceiro/TV não corta a resposta nem vira turno (o filtro
     # `identidade` do I4 reusa a MESMA verificação). `perfil` é o nome do perfil

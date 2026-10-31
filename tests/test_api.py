@@ -6949,8 +6949,8 @@ def test_marca_dagua_marca_o_trecho_enviado_ao_cliente(monkeypatch):
 def test_marca_dagua_e_campo_ADMIN(monkeypatch):
     """Ligar/desligar muda o áudio de TODO mundo: só admin."""
     assert "tts_marca_dagua" in app._SETTINGS_ADMIN
-    # DESLIGADO no default até o ABX do dono (#657): ligar é uma linha no app.py
-    assert app._SETTINGS_DEFAULTS["tts_marca_dagua"] is False, "default não pode estar ligado antes do ABX"
+    # LIGADO no default: o ABX do dono passou (só o par 7 audível de 8)
+    assert app._SETTINGS_DEFAULTS["tts_marca_dagua"] is True, "o dono aprovou a marca"
     monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
     assert app._apply_settings({"tts_marca_dagua": "false"})["tts_marca_dagua"] is False
     assert app._apply_settings({"tts_marca_dagua": True})["tts_marca_dagua"] is True
@@ -7203,3 +7203,38 @@ def test_audio_do_esquema_de_slug_e_adotado(client, auth, monkeypatch, tmp_path)
     assert store["Ana Maria"].get("audio_id"), "não ganhou id (migração)"
     assert not antiga.exists(), "a pasta antiga ficou órfã"
     assert len(store["Ana Maria"]["vecs"]) == 3, store["Ana Maria"]
+
+
+def test_default_ligado_nao_reescreve_o_settings_do_dono(tmp_path):
+    """Novo default NÃO pode regravar o `settings.json` que já existe (#593).
+
+    Quem já tem arquivo recebe o default na RAM e o arquivo fica byte a byte como
+    estava — se ele tivesse `"tts_marca_dagua": false` explícito, esse valor vence.
+    """
+    import subprocess
+
+    base = Path(__file__).resolve().parent.parent
+    arquivo = tmp_path / "settings.json"
+    original = '{"speed": 1.15, "idle_unload_minutes": 3}'
+    arquivo.write_text(original)
+    env = {**os.environ, "TTS_SETTINGS_PATH": str(arquivo),
+           "TTS_APIKEYS_PATH": str(tmp_path / "apikeys.json"),
+           "TTS_LEGACY_APIKEY_PATH": str(tmp_path / "apikey"),
+           "TTS_SPEAKER_PATH": str(tmp_path / "perfis.json"),
+           "TTS_SPEAKER_AUDIO_DIR": str(tmp_path / "audio"),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    for var in ("TTS_ROD_API_KEY", "TTS_ADMIN_KEY"):
+        env.pop(var, None)
+    saida = subprocess.run([sys.executable, "-c",
+                            "import app; print(app._settings['tts_marca_dagua'])"],
+                           cwd=str(base), env=env, check=True,
+                           capture_output=True, text=True)
+    assert saida.stdout.strip() == "True", "o default novo não chegou na RAM"
+    assert arquivo.read_text() == original, "o import reescreveu o settings do dono"
+    # valor EXPLÍCITO no disco vence o default
+    arquivo.write_text('{"tts_marca_dagua": false}')
+    saida = subprocess.run([sys.executable, "-c",
+                            "import app; print(app._settings['tts_marca_dagua'])"],
+                           cwd=str(base), env=env, check=True,
+                           capture_output=True, text=True)
+    assert saida.stdout.strip() == "False", "o default sobrescreveu a escolha do dono"

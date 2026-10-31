@@ -418,9 +418,11 @@ sai com a marca do **AudioSeal** (MIT, Meta, CPU) — medido no R3: 100 % de det
 no marcado, 0 % no cru, e sobrevive a mp3/opus 32k, reamostragem e ganho −12 dB (o
 limite honesto é corte grande: 83 % com 60 % do trecho cortado).
 
-`tts_marca_dagua` (campo **admin** — muda o áudio de todo mundo; hoje **desligado
-no default**, e ligar é uma linha no `app.py` quando o ABX do dono fechar). Custo
-medido: **28 ms por segundo de áudio**; a carga do modelo (~2,6 s) é
+`tts_marca_dagua` (campo **admin** — muda o áudio de todo mundo; **ligada no
+default** desde o ABX do dono, que só ouviu diferença em 1 dos 8 pares; desligar é
+um POST). Instalação com `settings.json` já existente NÃO é reescrita: o default
+novo só vale na RAM e um valor explícito no arquivo vence. Custo medido: **28 ms
+por segundo de áudio**; a carga do modelo (~2,6 s) é
 paga uma vez e o Live a adianta na abertura da sessão, para o `first_audio_ms` não
 incluir. Sem o pacote `audioseal` ou sem os pesos em `models/audioseal`, o áudio
 sai SEM marca e o log avisa uma vez — nada quebra.
