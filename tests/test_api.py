@@ -7588,7 +7588,11 @@ def test_poda_em_disco_preserva_voz_meta_e_orig_e_leva_o_temp_velho(client, auth
 
     O glob conferido por nome não basta — aqui os arquivos existem de verdade e
     passam pela poda. `<id>.wav`, `<id>.json` e o `<id>.orig.wav` do #443 têm de
-    sobreviver; o temporário antigo some e o recente fica."""
+    sobreviver; o temporário antigo some e o recente fica.
+
+    Voz, meta e `.orig` nascem VELHOS (7 h) de propósito: recém-criados eles
+    sobreviveriam por idade e um glob errado que os casasse passaria verde. Velhos,
+    só sobrevivem se o nome estiver fora do padrão."""
     import os as _os
 
     wav = _voz_para_limpar(voices_tmp)
@@ -7599,7 +7603,8 @@ def test_poda_em_disco_preserva_voz_meta_e_orig_e_leva_o_temp_velho(client, auth
     recente = voices_tmp / (app._TMP_VOICES_PREFIX + "denoise-limpa00001-bbbb.wav")
     recente.write_bytes(b"RIFF....")
     quando = time.time() - 7 * 3600
-    _os.utime(velho, (quando, quando))
+    for arq in (velho, wav, voices_tmp / "limpa00001.json", orig):
+        _os.utime(arq, (quando, quando))
     assert app._auto_cleanup_once() >= 1
     assert wav.exists() and (voices_tmp / "limpa00001.json").exists(), "comeu a voz"
     assert orig.exists(), "comeu o .orig real do #443"
