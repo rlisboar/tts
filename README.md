@@ -1055,9 +1055,25 @@ BASE=http://127.0.0.1:7860 ./tests/run_sh.sh instancia   # exige app de pé (./r
 ./.venv-mlx/bin/python smoke_live_turns.py                     # precisa de voices/
 ```
 
+### Onde mora o estado do dono (#721)
+
+`settings.json`, `.apikeys.json`, `.apikey` e `.speaker-profiles.json` ficam FORA
+do repositório, em `~/Library/Application Support/tts-studio/` (0700, arquivos
+0600; `TTS_STATE_DIR` troca o diretório). Fora da árvore, nenhum teste, worktree ou
+script alcança o dado do dono por acidente — a suíte já apagou o `settings.json`
+real 3 vezes.
+
+Na primeira partida, se o destino não tem o arquivo e a raiz do repositório tem, o
+app **COPIA** (nunca move nem apaga; o original fica na raiz, e hoje está com
+`chflags uchg`). Destino que já existe não é tocado — a cópia é só a semente.
+`voices/` e `outputs/` continuam na árvore nesta fase — são dado grande e
+insubstituível e a mudança deles é decisão do dono, em fase própria (só registrada
+aqui, não feita).
+
 ### Estado isolado por ambiente (#461)
 
 Os caminhos de estado têm override por variável de ambiente, **lidos no import**:
+`TTS_STATE_DIR` (o diretório do estado acima),
 `TTS_APIKEYS_PATH`, `TTS_LEGACY_APIKEY_PATH`, `TTS_SETTINGS_PATH`,
 `TTS_SPEAKER_PATH`, `TTS_SPEAKER_AUDIO_DIR`, `TTS_VOICES_DIR`, `TTS_OUTPUTS_DIR`,
 `TTS_JOBS_HIST_PATH`,

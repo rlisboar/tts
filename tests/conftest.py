@@ -11,6 +11,7 @@ pytest_plugins = ("_espiao",)
 
 import pathlib
 import shutil
+import tempfile
 import sys
 import time
 import warnings
@@ -50,6 +51,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import os                       # noqa: E402
 
 os.environ.setdefault("TTS_LIVE_WORKER", "0")
+
+# ── #721: o estado do dono vive FORA do repositório ─────────────────────────────
+# `~/Library/Application Support/tts-studio` por padrão. Sem exportar um destino
+# aqui, o `import app` da suíte copiaria (migração) e gravaria no Application
+# Support REAL — exatamente o que se quer evitar. Trocado antes de qualquer
+# `import app`; a guarda `_estado_do_dono_intocado` cobra que nada escape.
+def _retrato_app_support() -> dict:
+    """(nome → sha256, mtime) do estado REAL do dono. Só leitura."""
+    import hashlib
+
+    real = pathlib.Path.home() / "Library" / "Application Support" / "tts-studio"
+    if not real.is_dir():
+        return {}
+    volta = {}
+    for p in sorted(real.iterdir()):
+        if not p.is_file():
+            continue
+        try:
+            volta[p.name] = (hashlib.sha256(p.read_bytes()).hexdigest(),
+                             p.stat().st_mtime)
+        except OSError:
+            volta[p.name] = ("ilegivel", 0)
+    return volta
+
+
+# o retrato tem de ser ANTES do primeiro `import app` (é ele que migra/grava)
+_RETRATO_APP_SUPPORT = _retrato_app_support()
+_TMP_ESTADO = tempfile.mkdtemp(prefix="tts-estado-")
+os.environ["TTS_STATE_DIR"] = _TMP_ESTADO
 
 # ── #206: o AMBIENTE do dono não decide o veredito ───────────────────────────────
 # O env TEM PRECEDÊNCIA sobre o settings (por desenho, #112): um
@@ -570,6 +600,31 @@ def _outputs_do_dono_intocado():
             + (f" (+{len(nossos) - 10})" if len(nossos) > 10 else "")
             + " — algum caminho não está seguindo `TTS_OUTPUTS_DIR`",
             pytrace=False)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _estado_do_dono_intocado():
+    """O Application Support REAL não pode ser tocado pela suíte (#721).
+
+    O retrato é do IMPORT do conftest (antes de qualquer `import app`, que é quem
+    migra/grava); comparar aqui pega escrita, remoção e arquivo novo — o mesmo dano
+    que apagou o settings 3 vezes, agora num diretório que a suíte não deveria nem
+    enxergar."""
+    yield
+    depois = _retrato_app_support()
+    if depois != _RETRATO_APP_SUPPORT:
+        novos = sorted(set(depois) - set(_RETRATO_APP_SUPPORT))
+        mudados = sorted(k for k in _RETRATO_APP_SUPPORT
+                         if depois.get(k) != _RETRATO_APP_SUPPORT[k])
+        pytest.fail(
+            "a suíte tocou o estado REAL do dono em Application Support (#721): "
+            + "; ".join(filter(None, [
+                "novos: " + ", ".join(novos[:5]) if novos else "",
+                "alterados: " + ", ".join(mudados[:5]) if mudados else ""]))
+            + " — falta `TTS_STATE_DIR` em algum caminho",
+            pytrace=False)
+    if _TMP_ESTADO.startswith(tempfile.gettempdir()):   # não apagar o real
+        shutil.rmtree(_TMP_ESTADO, ignore_errors=True)
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -184,20 +184,75 @@ def _caminho_estado_env(nome: str, padrao: Path) -> Path:
 
 
 BASE = Path(__file__).resolve().parent
+
+
+def _dir_de_estado_padrao() -> Path:
+    """Onde vive o estado do dono FORA do repositório (#721).
+
+    Dentro da árvore, qualquer teste/worktree/script alcança o dado real — e a
+    suíte já apagou o `settings.json` do dono 3 vezes. No macOS o lugar é o
+    padrão de aplicativo; em outros sistemas, o estado do usuário."""
+    bruto = (os.environ.get("TTS_STATE_DIR") or "").strip()
+    if bruto:
+        return Path(bruto).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "tts-studio"
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "tts-studio"
+
+
+#: diretório do estado do dono: settings, chaves e perfis (fase 1 do #721). Cada
+#: `TTS_*_PATH` individual continua vencendo este diretório (#461).
+STATE_DIR = _dir_de_estado_padrao()
 VOICES_DIR = _caminho_estado_env("TTS_VOICES_DIR", BASE / "voices")
 OUTPUTS_DIR = _caminho_estado_env("TTS_OUTPUTS_DIR", BASE / "outputs")
-APIKEYS_PATH = _caminho_estado_env("TTS_APIKEYS_PATH", BASE / ".apikeys.json")
+APIKEYS_PATH = _caminho_estado_env("TTS_APIKEYS_PATH", STATE_DIR / ".apikeys.json")
 # embeddings de voz (fora do git)
-SPEAKER_PATH = _caminho_estado_env("TTS_SPEAKER_PATH", BASE / ".speaker-profiles.json")
+SPEAKER_PATH = _caminho_estado_env("TTS_SPEAKER_PATH", STATE_DIR / ".speaker-profiles.json")
 #: áudio ORIGINAL de cada amostra aceita (#658): permite reextrair os vetores numa
 #: troca de extrator sem pedir regravação. Fica em `state/` (fora do git e de
 #: qualquer export), 0600. Sem ele o recadastro exige gravar de novo.
 SPEAKER_AUDIO_DIR = _caminho_estado_env("TTS_SPEAKER_AUDIO_DIR", BASE / "state" / "speaker-audio")
-LEGACY_APIKEY_PATH = _caminho_estado_env("TTS_LEGACY_APIKEY_PATH", BASE / ".apikey")
+LEGACY_APIKEY_PATH = _caminho_estado_env("TTS_LEGACY_APIKEY_PATH", STATE_DIR / ".apikey")
 VOICES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 for _p in (APIKEYS_PATH, SPEAKER_PATH, LEGACY_APIKEY_PATH):
     _p.parent.mkdir(parents=True, exist_ok=True)   # `write_json_atomic` exige o pai
+
+
+def _migra_estado_para_fora_do_repo(base: Path | None = None,
+                                    destino: Path | None = None) -> None:
+    """1ª partida com o estado ainda no repositório: COPIA para o `STATE_DIR` (#721).
+
+    Nunca move nem apaga: os originais ficam na raiz até o dono decidir (e hoje
+    estão com `uchg`, que só permite leitura). Destino que já existe não é tocado.
+    Uma linha de log por arquivo copiado."""
+    base = base or BASE
+    destino = destino or STATE_DIR
+    if destino == base:
+        return                                   # já é a própria raiz: nada a fazer
+    try:
+        destino.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    for nome in ("settings.json", ".apikeys.json", ".apikey", ".speaker-profiles.json"):
+        origem, alvo = base / nome, destino / nome
+        if alvo.exists() or not origem.is_file():
+            continue
+        try:
+            shutil.copy2(origem, alvo)           # copy2 lê até com `uchg`
+            alvo.chmod(0o600)
+            print(f"[estado] copiado {nome} para {destino} (o original fica na raiz)",
+                  flush=True)
+        except Exception as exc:  # noqa: BLE001 — migração é conveniência, não requisito
+            print(f"[estado] não copiei {nome}: {exc}", flush=True)
+
+
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    STATE_DIR.chmod(0o700)
+except OSError:
+    pass
+_migra_estado_para_fora_do_repo()
 
 # ---------------------------------------------------------------------------
 # Limpeza de boot dos diretórios de job (outputs/.job-*)
@@ -349,7 +404,7 @@ DESIGN_VOICE_ID = "__design__"
 # Configurações padrão editáveis no dashboard (persistem em settings.json e
 # valem para UI e API; parâmetro explícito na requisição sempre sobrepõe)
 # ---------------------------------------------------------------------------
-SETTINGS_PATH = _caminho_estado_env("TTS_SETTINGS_PATH", BASE / "settings.json")
+SETTINGS_PATH = _caminho_estado_env("TTS_SETTINGS_PATH", STATE_DIR / "settings.json")
 SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
 _SETTINGS_DEFAULTS = {
     "model": MODEL_ID,         # atalho (omnivoice, qwen3-0.6b…) ou id/dir MLX

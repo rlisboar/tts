@@ -7622,3 +7622,54 @@ def test_apagar_voz_leva_os_temporarios_dela(client, auth, voices_tmp):
     assert client.delete("/api/voices/limpa00001", headers=auth).status_code == 200
     assert not meu.exists(), "o temporário da voz ficou órfão"
     assert outro.exists(), "levou o temporário de uma voz de nome parecido"
+
+
+# --- #721: estado do dono fora do repositório ---------------------------------
+def test_state_dir_vence_por_ambiente(tmp_path):
+    """`TTS_STATE_DIR` manda: é o que o conftest usa para não tocar o real."""
+    import subprocess
+
+    env = {**os.environ, "TTS_STATE_DIR": str(tmp_path / "estado"),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    for var in ("TTS_SETTINGS_PATH", "TTS_APIKEYS_PATH", "TTS_LEGACY_APIKEY_PATH",
+                "TTS_SPEAKER_PATH"):
+        env.pop(var, None)
+    app_dir = Path(__file__).resolve().parent.parent
+    saida = subprocess.run(
+        [sys.executable, "-c", "import app; print(app.SETTINGS_PATH.parent)"],
+        cwd=str(app_dir), env=env, check=True, capture_output=True, text=True)
+    raiz_saida = Path(saida.stdout.strip().splitlines()[-1]).resolve()
+    assert raiz_saida == (tmp_path / "estado").resolve(), saida.stdout
+    assert raiz_saida != app_dir.resolve(), "estado continuou no repositório"
+
+
+def test_estado_migra_por_copia_e_nunca_move(tmp_path):
+    """1ª partida: COPIA raiz → STATE_DIR (0600/0700) e deixa o original."""
+    raiz = tmp_path / "repo"
+    destino = tmp_path / "estado"
+    raiz.mkdir()
+    for nome, conteudo in (("settings.json", '{"speed": 1.1}'), (".apikey", "chave\n"),
+                           (".apikeys.json", '{"keys": []}'),
+                           (".speaker-profiles.json", "{}")):
+        (raiz / nome).write_text(conteudo)
+    app._migra_estado_para_fora_do_repo(base=raiz, destino=destino)
+    for nome, conteudo in (("settings.json", '{"speed": 1.1}'), (".apikey", "chave\n"),
+                           (".apikeys.json", '{"keys": []}'),
+                           (".speaker-profiles.json", "{}")):
+        assert (destino / nome).is_file(), f"não copiou {nome}"
+        assert (destino / nome).read_text() == conteudo, f"copiou errado {nome}"
+        assert (raiz / nome).is_file(), f"APAGOU o original {nome}"   # nunca move
+        assert (destino / nome).stat().st_mode & 0o777 == 0o600, f"modo de {nome}"
+
+
+def test_estado_nao_sobrescreve_destino_existente(tmp_path):
+    """Destino que já existe manda: a raiz não vence na 2ª partida."""
+    raiz = tmp_path / "repo"
+    destino = tmp_path / "estado"
+    raiz.mkdir()
+    destino.mkdir()
+    (raiz / "settings.json").write_text('{"origem": "raiz"}')
+    (destino / "settings.json").write_text('{"origem": "estado"}')
+    app._migra_estado_para_fora_do_repo(base=raiz, destino=destino)
+    assert "estado" in (destino / "settings.json").read_text()
+    assert (raiz / "settings.json").exists()
