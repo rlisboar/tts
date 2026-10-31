@@ -536,12 +536,20 @@ try:
                                            "assinatura": {}})
                         print(f"  [{i}/{REP}] ✖ sem áudio do servidor — tail:\n{tail(6)}")
                         continue
-                    if tem_fila:
-                        pg.wait_for_timeout(300)
                     pg.evaluate("() => { window.__ev = []; }")
-                    pg.wait_for_function(
-                        "() => window.__ev.some(e => e.tipo === 'turn_complete')",
-                        timeout=40000)
+                    # `turn_complete` só vem se um turno NOVO foi gerado. No REUSO
+                    # o turno em reprodução já completou antes do `__ev` ser
+                    # zerado, então esperar o evento lá travava 40 s e a rodada
+                    # saía como "janela de playback não atingida" (medido nas
+                    # rodadas com playback ativo=4: o defeito batia SEMPRE que
+                    # havia fila para reusar). Quem garante que o motor fechou o
+                    # turno é a condição `ocioso`+`idle` do laço abaixo.
+                    if not tem_fila:
+                        pg.wait_for_function(
+                            "() => window.__ev.some(e => e.tipo === 'turn_complete')",
+                            timeout=40000)
+                    else:
+                        pg.wait_for_timeout(300)
                     # stats saem ~1/s: sem esta espera o laço decide com o retrato
                     # ANTERIOR (medido: `ocioso` e 24 s de backlog do turno velho)
                     pg.wait_for_timeout(1300)
@@ -584,8 +592,11 @@ try:
                         "(m) => { const c = LX.ctxPlay; if (!c) return false;"
                         " return (LX.proximo - c.currentTime) * 1000 >= m; }",
                         arg=PLAYBACK_MIN_MS, timeout=8000)
-            except Exception:
-                print(f"  [{i}/{REP}] ⚠ janela de playback não atingida")
+            except Exception as exc:
+                # o motivo REAL vai junto: a mensagem seca já custou uma rodada de
+                # diagnóstico (a espera do `turn_complete` no reuso caía aqui)
+                print(f"  [{i}/{REP}] ⚠ janela de playback não atingida "
+                      f"({type(exc).__name__}: {str(exc)[:80]})")
             marco = pg.evaluate("() => window.__ev.length")
             est0 = pg.evaluate("() => ({ estado: LX.estado, ativos: LX.ativos.length, chunks: (LX.obs.stats||{}).playback ? LX.obs.stats.playback.chunks : null })")
             # #225: FILA = o que o cliente ainda vai tocar AGORA (segundos de áudio
