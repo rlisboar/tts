@@ -39,6 +39,8 @@ sys.path.insert(0, str(RAIZ))
 
 from _estado_tmp import isola  # noqa: E402
 
+isola()            # #732: estado em tmp ANTES de qualquer `import app`
+
 import live_intencao  # noqa: E402
 
 CORPUS = Path(__file__).resolve().parent / "fixtures" / "intencao_corpus.jsonl"
@@ -99,7 +101,6 @@ def _mede_dsh(casos: list, a) -> int:
     `_live_modelo_dsh` devolve (tipo, p) — `interrupcao` = cortar. Timeout e erro
     contam como NÃO decidido (a cadeia cai no próximo filtro), e por isso entram
     no relatório separados do erro de classificação."""
-    isola()                            # #711: estado em tmp, nunca no worktree
     import app
 
     acertos_regra = sum(1 for c in casos if regra_decisao(c["fala"]) == c["esperado"])

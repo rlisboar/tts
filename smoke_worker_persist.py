@@ -29,8 +29,13 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
+if str(BASE / "tests") not in sys.path:
+    sys.path.insert(0, str(BASE / "tests"))
 
 import numpy as np                      # noqa: E402
+from _estado_tmp import isola            # noqa: E402
+
+isola()                                 # #732: estado em tmp, nunca no worktree
 
 import app                              # noqa: E402
 import live_pipeline as lp              # noqa: E402

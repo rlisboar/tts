@@ -30,7 +30,12 @@ import pathlib
 import queue
 import sys
 
-import app  # noqa: F401 — o `_settings` da cadeia
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "tests"))
+from _estado_tmp import isola  # noqa: E402
+
+isola()          # #732: estado em tmp, nunca no worktree
+
+import app  # noqa: E402,F401 — o `_settings` da cadeia
 from live_turns import classifica_barge
 
 BACKCHANNEL = ["uhum", "aham", "hum", "hmm", "sim", "sei", "ok", "tá", "certo",

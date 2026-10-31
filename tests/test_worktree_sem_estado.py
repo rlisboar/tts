@@ -351,19 +351,25 @@ def test_verifica_por_conteudo_nao_por_nome(falso):
     assert "fixture.wav" in r.stderr
 
 
-def test_smokes_isolam_o_estado_do_app_em_tmp():
-    """#732: script que importa `app` direto tem de isolar o estado ANTES.
+def test_todo_script_que_importa_app_isola_o_estado_em_tmp():
+    """#732: TODO `import app` de smoke/medição executa depois de um `isola()`.
 
-    O `conftest` isola o pytest, mas smoke/medição rodada à mão não passa por ele:
-    um `_apply_settings` gravava `settings.json` DENTRO do worktree e o diretório
-    passava a ter estado do dono. Todo script que importa `app` chama
-    `_estado_tmp.isola()` antes do import."""
-    for nome in ("smoke_so_minha_voz.py", "smoke_separa_turno.py",
-                 "tests/mede_intencao.py"):
-        fonte = (REPO / nome).read_text()
-        pos_isola = fonte.find("from _estado_tmp import")
-        pos_app = fonte.find("import app")
-        assert pos_isola >= 0, f"{nome} não isola o estado do app (use _estado_tmp)"
-        assert pos_isola < pos_app, (
-            f"{nome} isola DEPOIS de importar o app — o import já gravou no worktree")
-        assert "isola()" in fonte, f"{nome} importa o helper mas não CHAMA isola()"
+    O `conftest` isola o pytest, mas script rodado à mão não passa por ele: um
+    `_apply_settings` grava `settings.json` DENTRO do worktree e o diretório passa
+    a ter estado do dono. A varredura é por ARQUIVO e por OCORRÊNCIA: um `isola()`
+    no módulo não cobre um `import app` que já tenha acontecido, e um script com
+    dois caminhos (módulo e função) precisa dos dois cobertos pela posição.
+    """
+    alvos = sorted(REPO.glob("smoke_*.py")) + sorted((REPO / "tests").glob("mede_*.py"))
+    assert len(alvos) >= 4, f"varredura vazia: {alvos}"
+    furos = []
+    for caminho in alvos:
+        fonte = caminho.read_text()
+        pos_isola = [i for i in range(len(fonte)) if fonte.startswith("isola()", i)]
+        for i in range(len(fonte)):
+            if not fonte.startswith("import app", i):
+                continue
+            if not any(p < i for p in pos_isola):
+                furos.append(f"{caminho.name}: `import app` na posição {i} sem isola() "
+                             f"antes")
+    assert not furos, "\n".join(furos)

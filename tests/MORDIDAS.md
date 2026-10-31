@@ -674,9 +674,13 @@ passaria a tolerar muitos vãos em turno longo (50 chunks = 10). O cap é 3.
 |---|---|
 | normalizador do filtro `modelo` aceitando `dsh` | `test_provedor_dsh_sai_da_oferta_e_cai_no_local` **FAILED** |
 
-### #711 — script que importa `app` isola o estado em tmp
+### #732 — todo `import app` em smoke/medição vem depois de `isola()`
+
+A célula VARRE `smoke_*.py` e `tests/mede_*.py` e olha CADA `import app`: um
+`isola()` no módulo não cobre um import que já aconteceu antes dele, e script com
+dois caminhos precisa dos dois cobertos pela posição.
 
 | Sabotagem | Resultado |
 |---|---|
-| tirar a chamada `isola()` de um smoke | `test_smokes_isolam_o_estado_do_app_em_tmp` **FAILED** |
+| tirar a chamada `isola()` de qualquer smoke (testado em `smoke_barge_intencao` e `smoke_worker_persist`) | `test_todo_script_que_importa_app_isola_o_estado_em_tmp` **FAILED** |
 | importar o helper DEPOIS de `import app` | mesma célula **FAILED** |
