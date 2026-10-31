@@ -84,8 +84,15 @@ fi
 # `voices/`/estado para "validar suíte" foi a praxe do dia — e o dado copiado
 # envelhece e some do radar.
 echo "→ cópia do dado do dono no worktree?"
-"$RAIZ/tools/worktrees.sh" verifica "$agente" || _aborta \
-    "o worktree de $agente tem cópia do dado do dono (lista acima) — apague e rode de novo"
+# o script DO WORKTREE (é o código que está sendo integrado); a raiz só como queda e
+# só quando o de lá ainda não tem o comando — antes de a guarda estar na main,
+# chamar o da raiz dava "uso" e recusava tudo (#727)
+guarda_wt="$WT/tools/worktrees.sh"
+[ -x "$guarda_wt" ] || guarda_wt="$RAIZ/tools/worktrees.sh"
+if grep -q '^ *verifica)' "$guarda_wt" 2>/dev/null; then
+    bash "$guarda_wt" verifica "$agente" || _aborta \
+        "o worktree de $agente tem cópia do dado do dono (lista acima) — apague e rode de novo"
+fi
 
 # `TTS_INTEGRA_SEM_HOOK=1` pula o gate — mas SÓ em árvore descartável (sob
 # `$TMPDIR`/`/tmp`). No repo de verdade o atalho engana: foi por ele que um teste
