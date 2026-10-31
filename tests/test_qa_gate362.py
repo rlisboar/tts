@@ -75,6 +75,7 @@ CONSUMO = [
     ("POST", "/api/voices/abc123/denoise"),
     ("POST", "/api/live/ticket"),
     ("POST", "/api/speaker/check"),
+    ("POST", "/api/speaker/avalia"),      # medidor ao vivo do cadastro (#690)
     ("POST", "/v1/audio/transcriptions"),
     ("POST", "/v1/audio/translations"),
     ("POST", "/v1/audio/speech"),
