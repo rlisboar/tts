@@ -343,6 +343,56 @@ def test_cancel_de_barge_com_audio_pendente_avisa_o_cliente():
     assert tipos == ["interrupted"]
 
 
+class _EngCortado:
+    """Motor de dublê que conta os descartes de playback (o resto é inerte."""
+
+    turno_aberto = False
+
+    def __init__(self):
+        self.cortes = 0
+
+    def playback_cortado(self) -> None:
+        self.cortes += 1
+
+
+def test_cancel_manda_o_motor_descartar_o_playback():
+    """#674 (P3 do gate): a CHAMADA do `playback_cortado` no handler.
+
+    O motor tem as células dele (backlog/cauda/calibração), mas quem tem de
+    CHAMAR é o `_live_cancela` — e as células do motor ficam verdes mesmo se a
+    chamada sair daqui num refactor. O gate pegou exatamente isso."""
+    eng = _EngCortado()
+    sess = _sess(engine=eng, turno=3)
+    app._live_cancela(sess, forcar=True)
+    assert eng.cortes == 1
+
+
+def test_cancel_com_pipeline_ocupado_tambem_descarta_o_playback():
+    """O `_live_cancela` sai cedo com o pipeline ocupado (quem avisa é ele).
+
+    O descarte tem de acontecer ANTES dessa saída: é justamente o caso do corte
+    no meio de uma resposta, em que o cliente fica com a fila cheia."""
+    class PipeOcupado:
+        ocupado = True
+
+        def cancel(self):
+            pass
+
+    eng = _EngCortado()
+    sess = _sess(pipe=PipeOcupado(), engine=eng, turno=2)
+    app._live_cancela(sess)
+    assert eng.cortes == 1
+    assert sess["cancelado"].is_set()
+
+
+def test_cancel_com_motor_sem_o_metodo_nao_derruba_a_sessao():
+    """Dublê/motor antigo sem `playback_cortado`: o corte segue valendo."""
+    sess = _sess(engine=object(), turno=3)
+    app._live_cancela(sess, forcar=True)
+    tipos = [i[1]["type"] for i in list(sess["fila"]._q.queue)]
+    assert tipos == ["interrupted"]
+
+
 def test_cancel_nao_incrementa_o_turno():
     class PipeOcupado:
         ocupado = True

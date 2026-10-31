@@ -571,6 +571,24 @@ limiar: motor `ocioso` recebendo voz e nenhum turno abrindo (26 s sem áudio).
 | soltar o `_cortado` no `set_speaking(False)` (cauda de 900 ms volta) | `test_corte_fecha_a_janela_o_playback_descartado_nao_conta` **FAILED** |
 | tirar `_funde_ate` do `_avaliar_abertura` | `test_continuacao_da_fala_depois_do_corte_nao_mata_a_resposta_nova` **FAILED** |
 
+| tirar a CHAMADA do `playback_cortado` no `_live_cancela` (app.py) | `test_cancel_manda_o_motor_descartar_o_playback` e `test_cancel_com_pipeline_ocupado_tambem_descarta_o_playback` **FAILED** |
+
 `decisao_ms` também voltou a ser real: a decisão pelo prazo chegava com
 `fala_ms=0` (o evento `barge_suspeito` não carrega o campo) e o `fala_sustentada`
 nunca disparava — decidia-se pelo texto de um fragmento de 200 ms.
+
+## #707 — `comando`: o braço do barge zerava na pausa entre palavras
+
+O contador do braço zerava no PRIMEIRO frame abaixo do limiar. "Para, para,
+espera um pouco" tem pausas: o burst parava em 2–3 de 10, nenhuma suspeita saía
+e a rodada caía num turno de 64 ms — que o VAD do STT recusa (`motivo=vad`, texto
+vazio em 3 ms) — virando `fala_sustentada` ou nada. A folga (`barge_folga_ms`,
+128 ms) só zera depois de silêncio SEGUIDO; eco é plano e não acumula.
+
+| Sabotagem | Resultado |
+|---|---|
+| `_conta_barge` zerando no 1º frame sem voz (folga 0) | `test_braco_do_barge_aguenta_a_pausa_entre_palavras` e `test_pausa_entre_palavras_ainda_abre_a_suspeita` **FAILED** |
+
+`barge_pico` no `stats.motor` mede o burst máximo do episódio: abaixo do alvo é
+a fala que não sustentou; no alvo sem suspeita é outra coisa. Medido em
+`BLOCO=comando`: 4 rodadas seguidas de 6/6 (antes, 3/6 e 4/6 com o pico travado).
