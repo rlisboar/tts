@@ -7728,28 +7728,25 @@ def test_migracao_nao_copia_para_estado_local(tmp_path):
     assert not (destino / "settings.json").exists()
 
 
-def test_migracao_nao_leva_a_flag_uchg_do_original(tmp_path):
-    """`copy2` preservaria `uchg` e o settings migrado nasceria imutável.
+def test_migracao_nao_copia_metadados_do_original(tmp_path):
+    """A cópia é só de CONTEÚDO: nada de metadados/flag do original.
 
-    A flag é criada só no arquivo da célula (tmp) e removida no teardown; no do
-    dono, nunca se mexe."""
-    import stat as _stat
-
-    if not hasattr(os, "chflags"):
-        pytest.skip("sem chflags (não-macOS)")
+    O original vai de propósito com modo 400 e mtime velho, sem chflags em lugar
+    nenhum: se a migração preservasse metadados (`copy2`), o destino nasceria
+    somente-leitura e o app não conseguiria salvar. O destino tem de sair 0600,
+    GRAVÁVEL e com mtime NOVO."""
     raiz = tmp_path / "repo"
     destino = tmp_path / "estado"
     raiz.mkdir()
     origem = raiz / "settings.json"
     origem.write_text('{"x": 1}')
-    os.chflags(origem, _stat.UF_IMMUTABLE)
-    try:
-        app._migra_estado_para_fora_do_repo(base=raiz, destino=destino)
-        alvo = destino / "settings.json"
-        assert alvo.read_text() == '{"x": 1}'
-        assert not alvo.stat().st_flags & _stat.UF_IMMUTABLE, \
-            "o arquivo migrado nasceu imutável (copy2)"
-        alvo.write_text('{"x": 2}')          # e o app consegue salvar
-        assert alvo.read_text() == '{"x": 2}'
-    finally:
-        os.chflags(origem, 0)
+    origem.chmod(0o400)
+    velho = time.time() - 3 * 3600
+    os.utime(origem, (velho, velho))
+    app._migra_estado_para_fora_do_repo(base=raiz, destino=destino)
+    alvo = destino / "settings.json"
+    assert alvo.read_text() == '{"x": 1}'
+    assert alvo.stat().st_mode & 0o777 == 0o600, "modo do destino não é 0600"
+    assert alvo.stat().st_mtime > velho + 60, "veio o mtime do original (metadado)"
+    alvo.write_text('{"x": 2}')                       # gravável de verdade
+    assert alvo.read_text() == '{"x": 2}'
