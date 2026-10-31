@@ -98,8 +98,8 @@ ligá-lo (sobe quando `taxa_falso_barge_in` passa do limite).
 Em vez de cortar no limiar de energia, o onset durante o playback emite
 `barge_suspeito{turn}` e o cliente só ABAIXA o volume. O servidor segue ouvindo até
 `speech_end` ou `barge_decisao_ms` (700 ms) e decide pelo conteúdo com a cadeia de
-`live_barge_filtros`, na ordem palavras_corte > eco > fim_de_resposta > backchannel >
-ruido > modelo > pergunta > frase_longa > fala_sustentada > sem_decisão. Comando
+`live_barge_filtros`, na ordem palavras_corte > eco > identidade > fim_de_resposta >
+backchannel > ruido > modelo > pergunta > frase_longa > fala_sustentada > sem_decisão. Comando
 sempre corta (primeiro elo); `fim_de_resposta` (menos de `restante_ms` de playback)
 deixa a resposta terminar e ANOTA a fala num `turno_pendente`, para ela não se perder. `interrupcao` emite
 `barge_decisao` + `barge_in` + `speech_start` (corta, como antes); backchannel,
@@ -121,6 +121,15 @@ motor corre ~1,1–1,3 s à frente do que o cliente de fato tem na fila (medido:
 fila real 0 ms com o motor dizendo 1300 ms). Com 1000 a regra só disparava
 DEPOIS de o áudio acabar, quando a janela de barge já tinha fechado — o último
 segundo nunca anotava nada.
+
+`identidade` (#527) é o filtro "só a minha voz" da INTERRUPÇÃO: o trecho do
+barge é verificado contra os perfis e, não sendo voz cadastrada, CONTINUA (TV ou
+outra pessoa não corta). Vem depois do eco (áudio igual ao TTS é eco, não importa
+quem fala) e antes do resto, para a fala de terceiro não cortar por ser longa.
+`perfis` vazio usa o perfil do `live_so_minha_voz`; `far` escolhe a faixa
+(0.01 = FAR 1 %, o calibrado). DESLIGADO por default: custa um passo do extrator
+(~30–70 ms) por suspeita. Indisponível (perfil/sem áudio) ⇒ fail-open, a cadeia
+segue. O veredito e o escore saem em `stats.motor.voz`.
 
 `interrupcao` em settings escolhe o modo: `inteligente` (default), `imediata` (o
 comportamento antigo) ou `so_comando`. `smoke_barge_intencao.py` mede a matriz; com

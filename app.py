@@ -368,6 +368,10 @@ _SETTINGS_DEFAULTS = {
     "live_barge_filtros": {
         "palavras_corte": {"on": True, "palavras": []},
         "eco": {"on": True},
+        # identidade (#527): só voz cadastrada corta; TV/outra pessoa continua.
+        # DESLIGADO por default — custa um passo do extrator por suspeita.
+        # `far` escolhe a faixa do limiar (0.01 = FAR 1 %, o calibrado).
+        "identidade": {"on": False, "perfis": [], "far": 0.01},
         "backchannel": {"on": True, "palavras": []},
         "ruido": {"on": True},
         "modelo": {"on": False, "provedor": "local", "limiar": 0.5, "timeout_ms": 400},
@@ -4303,8 +4307,9 @@ _LIVE_SEM_DECISAO_ALIAS = {"corta": "interrompe", "cortar": "interrompe",
 # Ordem da cadeia (#501): o modelo é o 5º e só é consultado quando os rápidos não
 # decidiram. O vocabulário vem FECHADO daqui para o `settings.json` não virar
 # contrato aberto.
-_LIVE_BARGE_FILTROS = ("palavras_corte", "eco", "backchannel", "ruido", "modelo",
-                       "pergunta", "frase_longa", "fala_sustentada", "fim_de_resposta")
+_LIVE_BARGE_FILTROS = ("palavras_corte", "eco", "identidade", "backchannel", "ruido",
+                       "modelo", "pergunta", "frase_longa", "fala_sustentada",
+                       "fim_de_resposta")
 _LIVE_MAX_PALAVRAS = 100
 _LIVE_MAX_PALAVRA_CHARS = 40
 
@@ -4331,6 +4336,15 @@ def _normaliza_filtro_barge(nome: str, cfg) -> dict:
         fora["passo_ms"] = int(_clamp(cfg["passo_ms"], 50, 1000, 150))
     if "restante_ms" in cfg:
         fora["restante_ms"] = int(_clamp(cfg["restante_ms"], 200, 5000, 2000))
+    if nome == "identidade":
+        # `perfis` vazio = o perfil do `live_so_minha_voz`; lista explícita manda
+        perfis = cfg.get("perfis")
+        if isinstance(perfis, str):
+            perfis = [p for p in perfis.replace(",", " ").split() if p]
+        if isinstance(perfis, list):
+            fora["perfis"] = [str(p).strip()[:60] for p in perfis[:8] if str(p).strip()]
+        fora["far"] = _clamp(cfg.get("far"), 0.001, 0.2, 0.01)
+        fora["on"] = bool(cfg.get("on", False))     # #527: começa DESLIGADO
     if nome == "modelo":
         fora["provedor"] = ("dsh" if str(cfg.get("provedor") or "local").lower() == "dsh"
                             else "local")
@@ -9326,14 +9340,18 @@ def _voz_limiar(modelo: str, rigor: str, fixo: float = 0.0) -> tuple[float, str]
     return _VOZ_LIMIAR_PADRAO, "cru"
 
 
-def _voz_do_dono(pcm16: bytes) -> dict:
+def _voz_do_dono(pcm16: bytes, cfg: dict | None = None) -> dict:
     """O trecho é o DONO falando? `{ok, score, janelas, latencia_ms, estado, motivo}`.
 
     `ok=True` também nos casos de INDISPONIBILIDADE (fail-open, nunca ficar surdo):
     o `estado` diz `indisponivel` e o `motivo` explica. Chamado pelo filtro
-    `identidade` do barge e pela cabeça do `_stt_app` (uma verificação só)."""
+    `identidade` do barge e pela cabeça do `_stt_app` (uma verificação só).
+
+    `cfg` é o bloco do modo (`live_so_minha_voz`). O filtro `identidade` passa o
+    dele, então ele funciona SEM o modo I5 ligado — com `perfis`/`far` do próprio
+    filtro."""
     t0 = time.monotonic()
-    cfg = _live_voz_ligado()
+    cfg = cfg or _live_voz_ligado()
     if not cfg:
         return {"ok": True, "estado": "off", "janelas": 0, "score": None,
                 "latencia_ms": 0, "motivo": ""}
@@ -11266,8 +11284,20 @@ def _live_transcreve_trecho(sess: dict, audio: bytes, cru: bool = False,
         return ""
 
 
+def _cfg_identidade(cfg: dict) -> dict:
+    """Bloco do `_voz_do_dono` a partir do FILTRO: `perfis` vazio = modo I5, e o
+    `far` vira faixa (0.01 = FAR 1 %, o calibrado; o resto vai no joelho)."""
+    perfis = [str(p) for p in (cfg.get("perfis") or []) if str(p).strip()]
+    far = float(cfg.get("far") or 0.01)
+    rigor = "1" if far <= 0.011 else ("0.1" if far >= 0.05 else _VOZ_RIGOR_JOELHO)
+    base = _live_voz_ligado() or {"on": True, "perfil": ""}
+    return {**base, "on": True, "perfil": (perfis[0] if perfis else base.get("perfil") or ""),
+            "rigor_far": rigor}
+
+
 def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
-                         filtros: dict) -> tuple[str, float | None, int | None, str]:
+                         filtros: dict, audio: bytes = b""
+                         ) -> tuple[str, float | None, int | None, str]:
     """Roda a cadeia NA ORDEM do card e devolve (tipo, p_cortar, modelo_ms).
 
     Cada filtro só age se estiver `on`. `modelo` é o único assíncrono e o único
@@ -11305,6 +11335,15 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
         from live_pipeline import _parece_eco
         if _parece_eco(texto, eco_txt):
             return "eco", None, None, "eco"
+    # 2b) IDENTIDADE (#527): só voz cadastrada corta. Vem depois do eco (áudio
+    # idêntico ao TTS é eco, não importa quem fala) e antes do resto: TV/outra
+    # pessoa não pode cortar por ser "fala longa". Sem áudio (dublês) é pulado.
+    if ligado("identidade", False) and audio and not _live_voz_ligado():
+        cfg_id = _cfg_identidade(filtros.get("identidade") or {})
+        voz = _voz_do_dono(audio, cfg_id)
+        _live_voz_anota(sess, voz)
+        if voz.get("estado") == "recusado":
+            return "ruido", voz.get("score"), None, "identidade"
     # 3) fim_de_resposta — perto do fim, deixar terminar vence backchannel/ruído
     if ligado("fim_de_resposta"):
         motor = sess.get("engine")
@@ -11594,7 +11633,8 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         rapidos = dict(_settings.get("live_barge_filtros") or {})
         for lento in ("modelo", "pergunta", "frase_longa", "fala_sustentada"):
             rapidos[lento] = {"on": False}
-        tipo, _p, _m, filtro = _live_avalia_filtros(sess, texto, fala_ms, rapidos)
+        tipo, _p, _m, filtro = _live_avalia_filtros(sess, texto, fala_ms, rapidos,
+                                                     audio=audio)
         if filtro not in ("palavras_corte",):
             return
         sess.pop("barge_suspeito", None)

@@ -1256,14 +1256,17 @@ def test_provedor_dsh_chama_o_llm_do_chat(monkeypatch):
     assert tipo == "interrupcao" and p == 0.9
 
 
-def test_defaults_tem_os_nove_filtros_com_modelo_desligado():
+def test_defaults_tem_os_dez_filtros_com_modelo_e_identidade_desligados():
     import app
 
     f = app._SETTINGS_DEFAULTS["live_barge_filtros"]
-    assert set(f) == {"palavras_corte", "eco", "backchannel", "ruido", "modelo",
-                      "pergunta", "frase_longa", "fala_sustentada", "fim_de_resposta"}
+    assert set(f) == {"palavras_corte", "eco", "identidade", "backchannel", "ruido",
+                      "modelo", "pergunta", "frase_longa", "fala_sustentada",
+                      "fim_de_resposta"}
     assert f["modelo"] == {"on": False, "provedor": "local", "limiar": 0.5,
                            "timeout_ms": 400}
+    # #527: identidade também nasce DESLIGADA (custa um passo do extrator)
+    assert f["identidade"] == {"on": False, "perfis": [], "far": 0.01}
 
 
 def test_stt_lento_decide_dentro_do_teto_de_2s(monkeypatch):
@@ -2055,3 +2058,86 @@ def test_portao_usa_o_joelho_do_live_e_a_identidade_fica_no_far_1(monkeypatch):
     assert app._speaker_limiar("ecapa:v1")[0] == 0.6
     monkeypatch.setitem(app._settings, "speaker_far_alvo", "1")
     assert app._speaker_limiar("ecapa:v1")[0] == 2.434
+
+
+# ---------------------------------------------------------------------------
+# #527: filtro `identidade` na cadeia (só voz cadastrada corta)
+# ---------------------------------------------------------------------------
+def test_filtro_identidade_desligado_nao_custa_extrator(monkeypatch):
+    import app
+
+    def explode(*a, **k):
+        raise AssertionError("chamou o extrator com o filtro desligado")
+
+    monkeypatch.setattr(app, "_voz_do_dono", explode)
+    sess = {"id": "s"}
+    _t, _p, _m, filtro = app._live_avalia_filtros(sess, "o dia ta bonito", 900, {},
+                                                  audio=b"\x01\x00" * 800)
+    assert filtro != "identidade"
+
+
+def test_filtro_identidade_terceiro_continua_e_leva_o_score(monkeypatch):
+    """Outra voz/TV: CONTINUA (não corta) e o escore sai no evento."""
+    import app
+
+    filtros = {"identidade": {"on": True, "perfis": [], "far": 0.01}}
+    monkeypatch.setattr(app, "_live_voz_ligado", lambda: None)
+    monkeypatch.setattr(app, "_voz_do_dono",
+                        lambda pcm, cfg=None: {"ok": False, "estado": "recusado",
+                                               "score": 0.31, "janelas": 2,
+                                               "latencia_ms": 30, "motivo": "outra voz"})
+    sess = {"id": "s"}
+    tipo, p, _m, filtro = app._live_avalia_filtros(sess, "o dia ta bonito", 900, filtros,
+                                                   audio=b"\x01\x00" * 800)
+    assert (tipo, filtro) == ("ruido", "identidade")
+    assert p == 0.31, "o escore tem de sair (vai para o evento e o stats)"
+    assert sess["voz_stats"]["recusados"] == 1
+
+
+def test_filtro_identidade_dono_segue_a_cadeia(monkeypatch):
+    import app
+
+    filtros = {"identidade": {"on": True, "perfis": [], "far": 0.01}}
+    monkeypatch.setattr(app, "_live_voz_ligado", lambda: None)
+    monkeypatch.setattr(app, "_voz_do_dono",
+                        lambda pcm, cfg=None: {"ok": True, "estado": "ok", "score": 1.9,
+                                               "janelas": 2, "latencia_ms": 30, "motivo": ""})
+    sess = {"id": "s"}
+    tipo, _p, _m, filtro = app._live_avalia_filtros(sess, "o dia ta bonito", 900, filtros,
+                                                    audio=b"\x01\x00" * 800)
+    assert filtro != "identidade" and tipo == "interrupcao"
+
+
+def test_filtro_identidade_fica_depois_do_eco(monkeypatch):
+    """Eco do próprio TTS é eco, não importa quem fala: o eco vem ANTES."""
+    import app
+
+    monkeypatch.setitem(app._settings, "live_barge_filtros",
+                        {"identidade": {"on": True, "perfis": [], "far": 0.01}})
+    monkeypatch.setattr(app, "_live_voz_ligado", lambda: None)
+
+    def explode(*a, **k):
+        raise AssertionError("o eco devia ter decidido antes do extrator")
+
+    monkeypatch.setattr(app, "_voz_do_dono", explode)
+    sess = {"id": "s", "ultimo_assistente": "claro, o dia está bonito hoje e amanhã também"}
+    filtros = {"identidade": {"on": True}, "eco": {"on": True}}
+    _t, _p, _m, filtro = app._live_avalia_filtros(
+        sess, "claro o dia está bonito hoje", 900, filtros, audio=b"\x01\x00" * 800)
+    assert filtro == "eco", f"o eco tinha de decidir antes do extrator (veio {filtro})"
+
+
+def test_filtro_identidade_fail_open_nao_barra_o_dono(monkeypatch):
+    """Portão indisponível: a cadeia segue (nunca ficar surdo)."""
+    import app
+
+    filtros = {"identidade": {"on": True, "perfis": [], "far": 0.01}}
+    monkeypatch.setattr(app, "_live_voz_ligado", lambda: None)
+    monkeypatch.setattr(app, "_voz_do_dono",
+                        lambda pcm, cfg=None: {"ok": True, "estado": "indisponivel",
+                                               "score": None, "janelas": 0,
+                                               "latencia_ms": 1, "motivo": "perfil ausente"})
+    sess = {"id": "s"}
+    tipo, _p, _m, filtro = app._live_avalia_filtros(sess, "o dia ta bonito", 900, filtros,
+                                                    audio=b"\x01\x00" * 800)
+    assert filtro != "identidade" and tipo == "interrupcao"

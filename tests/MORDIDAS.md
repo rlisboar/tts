@@ -637,3 +637,10 @@ CALIBRADO usadas pela identidade (`speaker_gate`, anti-clone, "só a voz de:").
 | Sabotagem | Resultado |
 |---|---|
 | `_voz_limiar` devolvendo o FAR 1 % para a faixa "joelho" | `test_portao_usa_o_joelho_do_live_e_a_identidade_fica_no_far_1` **FAILED** |
+
+### #527 — filtro `identidade` na interrupção
+
+| Sabotagem | Resultado |
+|---|---|
+| tirar o ramo `identidade` da cadeia | `test_filtro_identidade_terceiro_continua_e_leva_o_score` **FAILED** |
+| ligar o filtro por default | `test_defaults_tem_os_dez_filtros_com_modelo_e_identidade_desligados` **FAILED** |
