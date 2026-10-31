@@ -7435,3 +7435,22 @@ def test_denoise_troca_o_wav_de_forma_atomica(client, auth, voices_tmp, monkeypa
     # é justamente o que deixa leitor concorrente com arquivo pela metade
     assert wav.stat().st_ino != inode_antes, "o `.wav` foi sobrescrito no lugar"
     assert _sf.read(str(wav))[0].size > 0
+
+
+def test_live_ws_fechar_avisa_session_fechada_nao_ociosa(ws_client, live_limpo,
+                                                         monkeypatch):
+    """#628: task de envio morta por outro motivo NÃO é "ociosa".
+
+    Antes `fechar` saía como `session_ttl` com o texto "sessão ociosa por Ns" e o
+    cliente RETOMAVA — a coluna IA mentia e a retomada era de um caso que não é
+    vencimento. Aqui a marca é posta SEM mexer no `visto`, então o único motivo
+    possível é o `fechar`."""
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        sid = _setup_ok(ws)["session_id"]
+        with app._live_lock:
+            app._live_sessions[sid]["fechar"] = True   # visto RECENTE de propósito
+        aviso = ws.receive_json()
+        assert aviso["code"] == "session_fechada", aviso
+        assert "ociosa" not in aviso["message"], aviso["message"]
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()

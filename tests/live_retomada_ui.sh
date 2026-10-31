@@ -18,6 +18,8 @@
 #     conexão nova nem a captura;
 #   · `session_substituida` NÃO retoma (outra conexão é a dona do id) e o motivo
 #     fica;
+#   · `session_fechada` (#628) também não retoma e explica o motivo próprio — o
+#     código não pode cair no ramo genérico ("sessão viva");
 #   · depois de LX_RETOMA_MAX tentativas (4 conexões contando a do clique) a tela
 #     para e pede o clique, sem laço infinito.
 #
@@ -159,6 +161,23 @@ try:
                                " status: document.getElementById('lxStatus').textContent,"
                                " ia: document.getElementById('lxIA').innerText })")
 
+        def religar(rotulo, ouvindo=True):
+            """Estado limpo e clica em Ligar: com `LX.ws` de pé o clique DESLIGA.
+
+            `ouvindo=False` para cenários que RECUSAM a conexão (busy): aí não há
+            `ouvindo` para esperar."""
+            pg.evaluate("""() => { clearTimeout(LX.retomaT); LX.retomaT = 0;
+                if (LX.ws) { try { LX.ws.close(); } catch (e) {} LX.ws = null; }
+                lxParaCaptura(); LX.sid = ''; LX.retoma = 0; LX.estado = 'desligado';
+                LX.substituida = false; }""")
+            pg.wait_for_timeout(200)
+            pg.click("#lxLigar")
+            if ouvindo:
+                esperar(lambda: pg.wait_for_function(
+                    "() => LX.sid && LX.estado === 'ouvindo'", timeout=20000), rotulo)
+            else:
+                pg.wait_for_timeout(500)
+
         # ── 1) `session_ttl`: motivo na tela + retomada automática ───────────
         pg.click("#lxLigar")
         esperar(lambda: pg.wait_for_function("() => LX.sid && LX.estado === 'ouvindo'", timeout=20000),
@@ -244,6 +263,29 @@ try:
             "() => LX.estado === 'ouvindo'", timeout=20000), "a retomada do pipeline")
         cobrar(len(conns) > n_antes_pipe, "o pipeline morto não retomou a sessão")
 
+        # ── 2b) `session_fechada` (task de envio morta) NÃO retoma e explica ─
+        # #628: o código próprio não pode cair no ramo genérico ("sessão viva")
+        # nem no de vencimento (que RETOMA).
+        n_antes_f = len(conns)
+        conns[-1]["rota"].send(json.dumps({"type": "error", "code": "session_fechada",
+                                           "message": "a sessão foi encerrada pelo servidor"}))
+        conns[-1]["rota"].close(code=1000)
+        pg.wait_for_timeout(1200)
+        e2f = estado()
+        print(f"  após session_fechada: estado={e2f['estado']!r} · status={e2f['status']!r}")
+        cobrar(len(conns) == n_antes_f, f"session_fechada reconectou ({len(conns)} conexões)")
+        # o que DISTINGUE do ramo genérico é `LX.explicado`: só o ramo próprio
+        # fixa o motivo; o genérico deixa o `onclose` pintar por cima e o motivo
+        # vira "sessão encerrada" genérico
+        cobrar("encerrada pelo servidor" in (e2f["explicado"] or ""),
+               f"caiu no ramo genérico (explicado={e2f['explicado']!r})")
+        cobrar("encerrada" in (e2f["status"] + e2f["ia"]).lower(),
+               f"o motivo do fechamento se perdeu ({e2f['status']!r})")
+        cobrar("sessão viva" not in (e2f["status"] + " " + e2f["ia"]).lower(),
+               f"caiu no ramo genérico e diz que está viva ({e2f['status']!r})")
+
+        religar("a sessão religar antes do caso da substituída")
+
         # ── 2) `session_substituida` NÃO retoma e o motivo fica ──────────────
         n_antes = len(conns)
         conns[-1]["rota"].send(json.dumps({"type": "error", "code": "session_substituida",
@@ -260,12 +302,7 @@ try:
         # ── 3) `busy` retoma (com espera maior) e desiste no teto ────────────
         roteiro["modo"] = "busy_sempre"
         conns.clear()
-        # estado limpo à força: com `LX.ws` de pé o clique DESLIGA em vez de ligar
-        pg.evaluate("""() => { clearTimeout(LX.retomaT); LX.retomaT = 0;
-            if (LX.ws) { try { LX.ws.close(); } catch (e) {} LX.ws = null; }
-            lxParaCaptura(); LX.sid = ''; LX.retoma = 0; LX.estado = 'desligado'; }""")
-        pg.wait_for_timeout(200)
-        pg.click("#lxLigar")
+        religar("a sessão religar antes do caso do busy", ouvindo=False)
         esperar(lambda: pg.wait_for_function(
             "() => /não consegui retomar/.test(document.getElementById('lxStatus').textContent)",
             timeout=25000), "a tela desistir depois do teto de tentativas")
@@ -310,6 +347,6 @@ if falhas:
     raise SystemExit(1)
 try: shutil.rmtree(DIR)
 except Exception: pass
-print("✔ OK — session_ttl e busy RETOMAM a sessão (mesmo session_id, captura de volta), "
+print("✔ OK — session_fechada e substituída não retomam; session_ttl e busy RETOMAM (mesmo session_id, captura de volta), "
       "o motivo não é sobrescrito, substituição não retoma e o teto de tentativas pede o clique")
 PYEOF
