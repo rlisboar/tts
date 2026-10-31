@@ -7316,3 +7316,87 @@ def test_avalia_aceita_chave_de_uso(client, monkeypatch):
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
     assert r.status_code == 200
+
+
+# --- `passo_ms` do filtro de comando (#577) -----------------------------------
+# Está na whitelist com piso/teto e o handler o lê (`_live_suspeita_barge`); sem
+# estas células, apagar a linha da whitelist passava com a suíte verde.
+def _passo_gravado(client, auth, valor):
+    r = client.post("/api/settings", headers=auth, json={
+        "live_barge_filtros": {"palavras_corte": {"passo_ms": valor}}})
+    assert r.status_code == 200, r.text
+    return r.json()["live_barge_filtros"]["palavras_corte"].get("passo_ms")
+
+
+def test_passo_ms_tem_piso_e_teto(client, auth):
+    """`passo_ms` é clampado em 50–1000 como o handler espera."""
+    try:
+        assert _passo_gravado(client, auth, 9) == 50, "piso não aplicado"
+        assert _passo_gravado(client, auth, 9999) == 1000, "teto não aplicado"
+        assert _passo_gravado(client, auth, 300) == 300, "valor válido não passou"
+    finally:
+        client.post("/api/settings", headers=auth, json={"live_barge_filtros": {}})
+
+
+def test_passo_ms_ausente_mantem_o_que_estava(client, auth):
+    """Filtro sem `passo_ms` não inventa campo (o handler usa o default dele)."""
+    try:
+        client.post("/api/settings", headers=auth, json={
+            "live_barge_filtros": {"palavras_corte": {"passo_ms": 400}}})
+        r = client.post("/api/settings", headers=auth, json={
+            "live_barge_filtros": {"palavras_corte": {"palavras": ["basta"]}}})
+        assert r.status_code == 200, r.text
+        assert "passo_ms" not in r.json()["live_barge_filtros"]["palavras_corte"]
+    finally:
+        client.post("/api/settings", headers=auth, json={"live_barge_filtros": {}})
+
+
+def test_handler_le_o_passo_ms_do_settings(monkeypatch):
+    """O elo com o HANDLER: `_live_suspeita_barge` tira o passo do settings.
+
+    Sem esta célula a whitelist podia gravar um campo que ninguém lê."""
+    passos = []
+
+    class _Motor:
+        config = type("C", (), {"barge_decisao_ms": 10})()
+
+        def audio_suspeito(self):
+            return b""
+
+        def playback_restante_ms(self):
+            return 5000
+
+    class _Timer:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(app.threading, "Timer", _Timer)
+    monkeypatch.setattr(app, "_live_transcreve_trecho", lambda s, a: "para")
+    monkeypatch.setattr(app, "_live_decide_barge",
+                        lambda s, a, fala, *resto, **kw: passos.append(1))
+    # o Evento de parada dublado guarda a ESPERA pedida: é nela que o passo
+    # aparece (0,05 s com `passo_ms: 50`; 0,15 s seria o default do handler)
+    esperas = []
+
+    _EventoReal = threading.Event
+
+    class _Parar(_EventoReal):               # herda: o próprio Thread usa Event
+        def wait(self, t=None):
+            if t is None:
+                return False
+            esperas.append(round(t, 3))
+            return t > 0                     # 0,0 na 1ª volta; depois encerra
+
+    monkeypatch.setattr(app.threading, "Event", lambda: _Parar())
+    monkeypatch.setitem(app._settings, "live_barge_filtros",
+                        {"palavras_corte": {"passo_ms": 50}})
+    sess = {"id": "s1", "engine": _Motor(), "barge_suspeito": {"audio": b""}}
+    app._live_suspeita_barge(sess, type("E", (), {"audio": b"\x00\x00", "fala_ms": 300})())
+    for _ in range(50):
+        if 0.05 in esperas:
+            break
+        time.sleep(0.02)
+    assert 0.05 in esperas, f"o handler não leu o passo do settings: {esperas}"
