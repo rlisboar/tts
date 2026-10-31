@@ -11,6 +11,7 @@ import logging
 import math
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -733,3 +734,22 @@ def test_ring_guarda_a_cauda_e_mantem_o_alinhamento(monkeypatch):
     assert len(ring) == 200 and base == 200           # cortou 100 amostras do início
     # a amostra 250 está no ring e é lida no lugar certo
     assert app._live_audio_cru(sess, _EvFake(250, b"\x00\x00" * 10)) == _cru(300)[250*2:260*2]
+
+
+def test_default_do_filtro_no_stt_e_CRU_travado():
+    """#524: o default do `TTS_LIVE_RNNOISE_STT` é `cru` e não pode mudar sozinho.
+
+    A decisão tem histórico: com vozes SINTÉTICAS o RNNoise "vencia" no WER e o
+    default chegou a ser trocado; com fala pt REAL (FLEURS, 30 locutores) o cru
+    empata na ventoinha e ganha em todo o babble. Sem esta guarda, o número
+    sintético volta a tentar. Guarda de TEXTO: a constante é lida no import, então
+    relê-la aqui não provaria o default do código."""
+    fonte = (Path(__file__).resolve().parents[1] / "app.py").read_text()
+    linha = [l for l in fonte.splitlines() if "_TTS_LIVE_RNNOISE_STT = " in l]
+    assert linha, "a constante `_TTS_LIVE_RNNOISE_STT` sumiu do app.py"
+    assert 'or "cru"' in linha[0], (
+        f"o default do filtro no STT mudou para {linha[0].strip()} — a evidência de "
+        "fala REAL (R1b) sustenta o cru; trocar exige refazer a medição")
+    # a opção `filtrado` (a mordida) é lida no call site, não na constante
+    assert '_TTS_LIVE_RNNOISE_STT != "cru"' in fonte, (
+        "o desvio para o caminho filtrado (a mordida) sumiu de `_live_audio_cru`")

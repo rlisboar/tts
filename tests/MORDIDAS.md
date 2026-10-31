@@ -660,3 +660,10 @@ passaria a tolerar muitos vãos em turno longo (50 chunks = 10). O cap é 3.
 |---|---|
 | tirar o piso de 900 ms do prazo no dsh | `test_modelo_dsh_tem_piso_de_prazo_de_900ms` **FAILED** |
 | voltar o prompt antigo do filtro `modelo` | acerto no corpus cai de 91,4 % para 52,9 % (`mede_intencao.py --provedor dsh`) |
+
+### #524 — o default do STT é CRU (não `filtrado`)
+
+| Sabotagem | Resultado |
+|---|---|
+| trocar o default de `cru` para `filtrado` | `test_default_do_filtro_no_stt_e_CRU_travado` **FAILED** |
+| remover o desvio `filtrado` do `_live_audio_cru` | mesma célula **FAILED** |

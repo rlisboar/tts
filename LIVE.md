@@ -281,12 +281,24 @@ mesmo tamanho do que entrou, então o relógio do VAD não anda.
 
 - **Desligar:** `TTS_LIVE_RNNOISE=0` no ambiente do servidor (a suíte já usa isso
   pelo conftest; nada mais precisa mudar).
-- **Onde ele age: SÓ no VAD, e o STT recebe o PCM CRU** (#481). Medido
-  (`evidence/442-rnnoise-vad-x-stt.md`): sob ventoinha alta o motor SEM filtro não
-  abre turno nenhum, e o filtro no caminho do STT desvia ~50% das palavras. Então o
-  motor continua comendo o filtrado (é ele que decide) e o áudio do turno sai de um
-  ring do cru, alinhado por amostra — `speech_start`/`speech_end` fatiam dele.
+- **Onde ele age: SÓ no VAD, e o STT recebe o PCM CRU** (#481/#442, a "híbrida").
+  Sob ventoinha alta o motor SEM filtro não abre turno nenhum (é o filtro que
+  salva a abertura), mas no caminho do STT ele desvia palavras. Então o motor
+  continua comendo o filtrado (é ele que decide) e o áudio do turno sai de um ring
+  do cru, alinhado por amostra — `speech_start`/`speech_end` fatiam dele.
   `TTS_LIVE_RNNOISE_STT=filtrado` volta ao caminho antigo (é a mordida).
+- **Por que a híbrida, e não o filtro no STT (a decisão tem HISTÓRICO):** o R1
+  com vozes SINTÉTICAS fez o RNNoise "vencer" o cru no WER em pt — 0,533–0,622
+  contra 0,600–0,711 em ventoinha/babble a SNR 5 e 10, com o DFN3 não melhorando
+  nenhuma célula — e o default chegou a ser trocado para `filtrado`. O R1b refez com
+  fala pt REAL (FLEURS pt_br, 30 locutores, seção R1b de
+  `evidence/520-bakeoff-ruido.md`) e **desfez o resultado**: com voz real o cru
+  fica em 0,142–0,146 e o RNNoise em 0,143–0,148 — empate na ventoinha e derrota em
+  todo o babble, com o DFN3 igualmente sem ganho. Daí o default `cru` e o RNNoise
+  só no VAD. Lição registrada: WER com 6 vozes sintéticas não atravessa para voz
+  humana.
+- **O DFN3:** fica para a AMOSTRA (timbre), não para o STT — custa 0,062–0,104 de
+  RTF contra 0,015–0,017 do RNNoise e não ganha WER em nenhuma célula.
 - **Dependência:** ffmpeg com `arnndn` — o binário do `imageio-ffmpeg` tem; o
   fallback fixo é `/opt/homebrew/bin/ffmpeg`.
 - **Quando ele some:** o filtro degrada sozinho e **sempre com log** — modelo
