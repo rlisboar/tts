@@ -1059,9 +1059,11 @@ BASE=http://127.0.0.1:7860 ./tests/run_sh.sh instancia   # exige app de pé (./r
 
 `settings.json`, `.apikeys.json`, `.apikey` e `.speaker-profiles.json` ficam FORA
 do repositório, em `~/Library/Application Support/tts-studio/` (0700, arquivos
-0600; `TTS_STATE_DIR` troca o diretório). Vale **só na raiz principal**: em
-worktree, cópia em tmp ou CI o padrão é `<árvore>/.state-local/` (gitignored), para
-nenhum harness escrever no estado real do dono. Fora da árvore, nenhum teste, worktree ou
+0600; `TTS_STATE_DIR` troca o diretório). Vale **só com `.git` DIRETÓRIO** — a raiz
+principal. Worktree, cópia sem `.git` (as suítes fazem `git ls-files | tar` em /tmp),
+CI e qualquer outra árvore usam `<árvore>/.state-local/` (gitignored), para nenhum
+harness escrever no estado real do dono; instalação de verdade fora de git passa
+`TTS_STATE_DIR` explícito. Fora da árvore, nenhum teste, worktree ou
 script alcança o dado do dono por acidente — a suíte já apagou o `settings.json`
 real 3 vezes.
 

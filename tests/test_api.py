@@ -7696,15 +7696,17 @@ def test_worktree_usa_estado_local_e_nunca_o_real(tmp_path):
     assert saida.stdout.strip().endswith(".state-local"), saida.stdout
 
 
-def test_instalacao_fora_de_git_conta_como_principal(tmp_path, monkeypatch):
-    """Sem `.git` a árvore é instalação: usa o diretório de aplicativo."""
-    falso = tmp_path / "instalacao"
-    falso.mkdir()
-    monkeypatch.setattr(app, "BASE", falso)
-    assert app._arbore_e_a_principal() is True
+def test_copia_sem_git_usa_estado_local(tmp_path, monkeypatch):
+    """Cópia da árvore SEM `.git` (é o que as suítes fazem em /tmp) usa local.
+
+    Se caísse no Application Support, todo freeze/probe que sobe servidor de uma
+    cópia escreveria no estado REAL do dono."""
+    copia = tmp_path / "copia-da-arvore"
+    copia.mkdir()
+    monkeypatch.setattr(app, "BASE", copia)
     monkeypatch.delenv("TTS_STATE_DIR", raising=False)
-    assert "Application Support" in str(app._dir_de_estado_padrao()) or \
-        ".local" in str(app._dir_de_estado_padrao())
+    assert app._arbore_e_a_principal() is False
+    assert app._dir_de_estado_padrao() == copia / ".state-local"
 
 
 def test_worktree_falso_resolve_para_estado_local(tmp_path, monkeypatch):
@@ -7766,3 +7768,13 @@ def test_sessao_nao_e_semeada_com_o_settings_do_dono():
         f"o estado da sessão está na árvore: {app.SETTINGS_PATH}"
     assert not app._settings.get("chat_api_key"), \
         "os settings da sessão vieram do dono (têm chave secreta)"
+
+
+def test_raiz_principal_usa_o_aplicativo(tmp_path, monkeypatch):
+    """O outro lado da regra: `.git` DIRETÓRIO = raiz principal = Application Support."""
+    raiz = tmp_path / "raiz"
+    (raiz / ".git").mkdir(parents=True)
+    monkeypatch.setattr(app, "BASE", raiz)
+    monkeypatch.delenv("TTS_STATE_DIR", raising=False)
+    assert app._arbore_e_a_principal() is True
+    assert app._dir_de_estado_padrao() != raiz / ".state-local"

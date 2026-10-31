@@ -191,14 +191,12 @@ def _arbore_e_a_principal() -> bool:
 
     Só a raiz principal pode usar o estado real do dono: worktree/cópia/CI que
     caíssem no Application Support fariam todo harness escrever no dado real (#721).
-    `.git` DIRETÓRIO = raiz principal; `.git` ARQUIVO = worktree; sem `.git` =
-    instalação fora de git (conta como principal)."""
-    marca = BASE / ".git"
-    if marca.is_dir():
-        return True
-    if marca.is_file():
-        return False                        # worktree: `.git` é arquivo com "gitdir:"
-    return True                             # instalação fora de git
+    SÓ o `.git` DIRETÓRIO qualifica. Worktree (`.git` arquivo), cópia sem `.git`
+    (as suítes fazem `git ls-files | tar` em /tmp e sobem servidor de lá) e CI caem
+    em `.state-local` — qualquer uma delas escreveria no estado REAL do dono se o
+    padrão fosse o diretório de aplicativo. Instalação de verdade fora de git, se um
+    dia existir, passa `TTS_STATE_DIR` explícito."""
+    return (BASE / ".git").is_dir()
 
 
 def _dir_de_estado_padrao() -> Path:
