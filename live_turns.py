@@ -215,6 +215,13 @@ class Config:
     silence_ms: int = SILENCE_MS_PADRAO
     onset_ms: int = 2 * FRAME_MS                  # 2 frames confirmam o início
     barge_in_ms: int = 300                        # energia sustentada exigida
+    # #707: FOLGA dentro do burst. O contador do braço do barge zerava no
+    # primeiro frame abaixo do limiar e fala com pausa entre palavras ("Para,
+    # para, espera...") nunca somava `barge_in_ms`: o pico ficava em 2–3 de 10,
+    # nenhuma suspeita saía e a rodada caía num turno de 64 ms, que o VAD do STT
+    # recusa (texto vazio em 3 ms). Zerar só depois desta folga seguida mantém a
+    # defesa contra o eco: eco é PLANO, não tem burst intermitente.
+    barge_folga_ms: int = 128
     barge_in_margin_db: float = 4.0               # margem sobre o nível de eco (medido)
     # #273: a voz no alto-falante sobe o piso e a fala normal não passa
     # eco+4 dB, então o speech_start não sai e o cliente não corta. Caminho
@@ -301,7 +308,7 @@ class Config:
         if self.interrupcao not in ("inteligente", "imediata", "so_comando"):
             object.__setattr__(self, "interrupcao", "inteligente")
         for nome in ("prefix_ms", "silence_ms", "onset_ms", "barge_in_ms", "min_fala_ms",
-                     "barge_decisao_ms",
+                     "barge_decisao_ms", "barge_folga_ms",
                      "cauda_ms", "turno_max_ms", "playback_janela_ms", "eco_calibracao_ms",
                      "envelope_ms", "eco_pre_janela_ms"):
             if int(getattr(self, nome)) < 0:
@@ -338,6 +345,11 @@ class Config:
     @property
     def _frames_barge(self) -> int:
         return max(1, math.ceil(self.barge_in_ms / FRAME_MS))
+
+    @property
+    def _frames_barge_folga(self) -> int:
+        """Frames seguidos SEM voz que ainda não zeram o braço (#707)."""
+        return max(1, math.ceil(self.barge_folga_ms / FRAME_MS))
 
     @property
     def _frames_decisao_barge(self) -> int:
@@ -495,6 +507,8 @@ class TurnEngine:
         self._eco_ausente = False
         self._degrau_base: float | None = None   # piso travado no salto (#273)
         self._barge_no_turno_emitido = False
+        self._barge_sem_voz = 0      # #707: folga corrida dentro do burst
+        self._barge_pico = 0         # #707: maior burst desde o último zero
         self._funde_ate = 0.0        # monotonic: até aqui não abre barge novo
         self._cortado = False        # cliente descartou a fila (barge/cancel)
         self._suspeito = False          # #501: turno aberto por suspeita, sem decisão
@@ -617,6 +631,9 @@ class TurnEngine:
         taxa = (self._stat["barge_in_falso"] / total) if total else 0.0
         return {**self._stat,
                 "taxa_falso_barge_in": round(taxa, 4),
+                # #707: maior burst do episódio (de `_frames_barge`). Abaixo do
+                # alvo = a fala não sustentou; no alvo sem barge = outra coisa.
+                "barge_pico": self._barge_pico,
                 "noise_dbfs": round(self._noise_dbfs, 1),
                 "eco_dbfs": round(self._eco_dbfs, 1),
                 "playback_ativo": self._playback_ativo(),
@@ -689,6 +706,7 @@ class TurnEngine:
                 # de barge zera e o aviso de "barge com turno aberto" rearma —
                 # assim o par True/False por chunk não repete o evento (#115)
                 self._barge_frames = 0
+                self._barge_sem_voz = 0
                 self._barge_no_turno_emitido = False
         self._speaking = bool(ligado)
         self._nivel_payload = nivel_dbfs if ligado else None
@@ -793,6 +811,8 @@ class TurnEngine:
         self._calibrando = False
         self._calibracao_vals = []
         self._barge_frames = 0
+        self._barge_sem_voz = 0
+        self._barge_pico = 0
         self._barge_no_turno_emitido = False
 
     def playback_restante_ms(self) -> int:
@@ -919,7 +939,7 @@ class TurnEngine:
                 and self._playback_ativo() and not self._barge_no_turno_emitido
                 and not self._turno_barge):
             voz = self._voz(env_dbfs, prob, self.limiar_energia_dbfs)
-            self._barge_frames = self._barge_frames + 1 if voz else 0
+            self._conta_barge(voz)
             if self._barge_frames >= self.config._frames_barge:
                 self._barge_frames = 0
                 self._barge_no_turno_emitido = True
@@ -1020,6 +1040,25 @@ class TurnEngine:
     def _voz(self, env_dbfs: float, prob: float, limiar_dbfs: float) -> bool:
         return prob >= self.config.fala_threshold and env_dbfs >= limiar_dbfs
 
+    def _conta_barge(self, voz: bool) -> int:
+        """Conta o burst do barge COM folga (#707).
+
+        O contador zerava no primeiro frame abaixo do limiar: uma fala com pausa
+        entre palavras nunca somava `barge_in_ms` (o pico ficava em 2–3 de 10) e
+        nenhuma suspeita saía — o turno caía com 64 ms e o VAD do STT recusava.
+        Agora só zera depois de `barge_folga_ms` SEGUIDOS sem voz; o eco é plano,
+        então não acumula. `_barge_pico` guarda o máximo do episódio para o log."""
+        if voz:
+            self._barge_frames += 1
+            self._barge_sem_voz = 0
+            self._barge_pico = max(self._barge_pico, self._barge_frames)
+        else:
+            self._barge_sem_voz += 1
+            if self._barge_sem_voz > self.config._frames_barge_folga:
+                self._barge_frames = 0
+                self._barge_sem_voz = 0
+        return self._barge_frames
+
     def _env_antes(self) -> float:
         """Envelope uma janela atrás (~200 ms). É o que separa salto de rampa."""
         n = self.config._frames_envelope
@@ -1103,7 +1142,7 @@ class TurnEngine:
         if self._playback_ativo() and time.monotonic() >= self._funde_ate:
             voz = (self._voz(dbfs, prob, self.limiar_energia_dbfs)
                    or self._degrau_sobre_eco(dbfs, prob))
-            self._barge_frames = self._barge_frames + 1 if voz else 0
+            self._conta_barge(voz)
             self._onset_frames = 0
             if self._barge_frames >= self.config._frames_barge:
                 if self.config.interrupcao == "imediata":
@@ -1303,6 +1342,8 @@ class TurnEngine:
         self._silencio_frames = 0
         self._onset_frames = 0
         self._barge_frames = 0
+        self._barge_sem_voz = 0
+        self._barge_pico = 0
         self._degrau_base = None
         self._barge_no_turno_emitido = False
         self._decisao_frames = 0

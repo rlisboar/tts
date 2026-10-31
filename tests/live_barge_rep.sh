@@ -733,6 +733,7 @@ try:
                                                else ("✖ SEM CORTE (tocou por cima)" if fila_ms >= 400 else "sem fila"))
                   + (f" · anotada={fim_resp} respondida={respondida}" if BLOCO == "fim" else "")
                   + f" · motor: barge_ativos={motor_agora.get('barge_ativos')}"
+                  f" barge_pico={motor_agora.get('barge_pico')}"
                   f" barge_falsos={motor_agora.get('barge_falsos')}"
                   f" limiar={motor_agora.get('limiar_dbfs')}")
             for s in assin:

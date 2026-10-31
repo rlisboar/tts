@@ -1809,3 +1809,40 @@ def test_continuacao_da_fala_depois_do_corte_nao_mata_a_resposta_nova():
     tipos = [e.tipo for e in evs]
     assert "barge_suspeito" not in tipos, "a continuação abriu suspeita e matou a resposta"
     assert "speech_start" in tipos
+
+
+def test_braco_do_barge_aguenta_a_pausa_entre_palavras():
+    """#707: o contador zerava no PRIMEIRO frame sem voz.
+
+    "Para, para, espera um pouco" tem pausas entre as palavras: o burst nunca
+    somava `barge_in_ms`, nenhuma suspeita saía e o turno caía com 64 ms — que o
+    VAD do STT recusa (texto vazio em 3 ms). A folga só zera depois de
+    `barge_folga_ms` seguidos sem voz; eco é PLANO e não acumula."""
+    motor, _rel = _motor_inteligente()
+    alvo, folga = lt.Config()._frames_barge, lt.Config()._frames_barge_folga
+    for _ in range(alvo - 1):
+        motor._conta_barge(True)
+    assert motor._barge_frames == alvo - 1
+    # a pausa entre as palavras NÃO zera
+    for _ in range(folga):
+        motor._conta_barge(False)
+    assert motor._barge_frames == alvo - 1, "a pausa zerou o burst"
+    motor._conta_barge(True)
+    assert motor._barge_frames == alvo
+    # silêncio longo zera (é o que segura o eco)
+    for _ in range(folga + 1):
+        motor._conta_barge(False)
+    assert motor._barge_frames == 0
+
+
+def test_pausa_entre_palavras_ainda_abre_a_suspeita():
+    """De ponta a ponta: com pausa no meio, o burst FECHA a suspeita."""
+    motor, rel = _motor_inteligente()
+    _tocar(motor, rel, _tom(0.001), 20)
+    motor.set_speaking(True, nivel_dbfs=-18.0, duracao_ms=3000.0)
+    motor._calibrando = False                 # foco no braço, não na calibração
+    alvo, folga = lt.Config()._frames_barge, lt.Config()._frames_barge_folga
+    evs = _tocar(motor, rel, _tom(0.3), alvo - 1)
+    evs += _tocar(motor, rel, _tom(0.001), folga)     # pausa entre palavras
+    evs += _tocar(motor, rel, _tom(0.3), 1)
+    assert "barge_suspeito" in [e.tipo for e in evs]

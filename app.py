@@ -11562,7 +11562,11 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
                  fala_ms=fala_ms, decisao_ms=decisao_ms, texto=(texto or "")[:80],
                  # `restante` é o que separa "cortar" de "anotar" (fim_de_resposta):
                  # sem ele no log a decisão não se explica pelo estado do playback
-                 restante_ms=restante)
+                 restante_ms=restante,
+                 # `trecho_ms` (#707): o VAD do STT exige ~300 ms de fala — abaixo
+                 # disso o trecho volta VAZIO em 3 ms e a decisão fica sem texto.
+                 # Sem o número no log o trecho curto e o STT lento são idênticos.
+                 trecho_ms=len(audio) // 32)
     if tipo == "interrupcao":
         # o áudio do trecho vai JUNTO com o turno que vem depois: o pendente só
         # recebia a cauda (224 ms medidos) e o VAD recusava o turno como `vad`,
