@@ -1736,3 +1736,76 @@ def test_suspeita_nova_dentro_da_fusao_nao_abre_barge(monkeypatch):
     for _ in range(lt.Config()._frames_barge + 1):
         evs += motor._barge_com_turno_aberto(-20.0, 0.99)
     assert [e.tipo for e in evs] == ["barge_in"]
+
+
+def test_corte_fecha_a_janela_o_playback_descartado_nao_conta():
+    """#674: depois do corte o cliente DESCARTOU a fila — o backlog não pode contar.
+
+    `interrupted` manda o cliente chamar `lxCancelaPlayback`, mas o motor seguia
+    achando que o áudio já enviado ia ser ouvido. A janela ficava aberta pelo
+    backlog INTEIRO (medido no bloco `misto`: 9,5 a 19,4 s) e, dentro dela, a
+    fala seguinte era lida como BARGE: suspeita → `interrupcao` → matava a
+    resposta que acabara de nascer. Com o piso de ECO (alto, de um TTS que já
+    não toca) a fala nem passava do limiar e o turno não abria.
+    `playback_cortado` zera o que o cliente não vai tocar."""
+    motor, rel = _motor_inteligente()
+    _tocar(motor, rel, _tom(0.001), 20)
+    # playback com 5 s de backlog: a janela fica aberta MUITO depois do stop
+    motor.set_speaking(True, nivel_dbfs=-18.0, duracao_ms=5000.0)
+    assert motor.playback_restante_ms() >= 4000
+    motor.set_speaking(False)
+    _tocar(motor, rel, ECO, 10)
+    assert motor._playback_ativo(), "sem o corte a janela segue aberta (baseline)"
+    motor.playback_cortado()
+    _tocar(motor, rel, ECO, 10)
+    assert motor.playback_restante_ms() == 0
+    assert not motor._playback_ativo(), "a janela do playback descartado não pode seguir"
+    # e o stop que ainda vem da fila do sender não reabre a cauda
+    motor.set_speaking(False)
+    assert not motor._playback_ativo()
+    assert not motor._calibrando
+
+
+def test_fala_depois_do_corte_abre_turno_normal_e_nao_barge():
+    """O sintoma do P1: depois do corte a fala tem de ONSET, não nova suspeita.
+
+    Sem `playback_cortado` a janela sobrevive ao corte e o motor abre o turno como
+    BARGE (`barge_suspeito`), que a decisão converte em `interrupcao` — o turno
+    novo morre antes de qualquer áudio."""
+    motor, rel = _motor_inteligente()
+    _tocar(motor, rel, _tom(0.001), 20)
+    motor.set_speaking(True, nivel_dbfs=-18.0, duracao_ms=5000.0)
+    motor.set_speaking(False)
+    motor.playback_cortado()
+    evs = _tocar(motor, rel, _tom(0.3), lt.Config()._frames_onset + 2)
+    tipos = [e.tipo for e in evs]
+    assert "speech_start" in tipos
+    assert "barge_suspeito" not in tipos, "fala posterior ao corte virou barge"
+    assert motor.estado is lt.Estado.FALANDO
+
+
+def test_continuacao_da_fala_depois_do_corte_nao_mata_a_resposta_nova():
+    """#674: a fusão vale também na abertura, não só com o turno aberto.
+
+    Depois do `interrupted` o turno da fala que interrompeu FECHA (o motor fica
+    ocioso) e a resposta nova começa a tocar. A continuação da fala ("para, para,
+    espera") chegava com a janela aberta e o motor ocioso, abria OUTRA suspeita e
+    decidia `interrupcao`: o turno novo morria antes do 1º áudio. Medido no bloco
+    `misto`: 17 decisões e 24 `interrupted` para 6 falas."""
+    motor, rel = _motor_inteligente()
+    _abrir_por_barge(motor, rel)
+    out = motor.decidir_barge("interrupcao", "para", 1500, 0)
+    assert "barge_in" in [e.tipo for e in out]
+    motor.playback_cortado()                 # o cliente descartou a fila
+    motor.flush()                            # speech_end fecha o turno da fala
+    # a resposta nova começa a tocar ANTES de a pessoa retomar: motor ocioso com a
+    # janela ABERTA — é o estado em que a fala era lida como barge
+    motor.set_speaking(True, nivel_dbfs=-18.0, duracao_ms=2000.0)
+    # a pessoa já estava nesse nível ANTES de a resposta nova tocar: sem a fusão a
+    # calibração declara eco nesse nível e o limiar sobe acima da própria voz
+    motor._pre_env.clear()
+    motor._pre_env.extend([-13.4] * 200)
+    evs = _tocar(motor, rel, _tom(0.3), 40)
+    tipos = [e.tipo for e in evs]
+    assert "barge_suspeito" not in tipos, "a continuação abriu suspeita e matou a resposta"
+    assert "speech_start" in tipos

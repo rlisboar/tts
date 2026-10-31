@@ -498,3 +498,22 @@ seguinte nascia com 224 ms → VAD recusava (`turno_descartado motivo=vad`) → 
 
 Aceite medido com `MEDE_POS_CORTE`: **11 rodadas seguidas com áudio, 0 travadas**,
 54–1269 ms (p95 ≈ 1,3 s). `N_CORTES=3` → **3/3 voltaram a falar**.
+
+### Janela 2: o backlog do playback sobrevive ao corte
+
+A `interrupted` manda o cliente descartar a fila, mas o motor seguia contando o
+backlog inteiro como "vai tocar" (9,5–19,4 s medidos). Dentro dessa janela
+fantasma a fala seguinte era lida como BARGE: suspeita → `interrupcao` → matava a
+resposta que acabara de nascer (17 decisões e 24 `interrupted` em 6 rodadas), e
+com o piso de ECO — alto, de um TTS que já não toca — a fala nem passava do
+limiar: motor `ocioso` recebendo voz e nenhum turno abrindo (26 s sem áudio).
+
+| Sabotagem | Resultado |
+|---|---|
+| `playback_cortado` virando no-op | `test_corte_fecha_a_janela_o_playback_descartado_nao_conta` e `test_fala_depois_do_corte_abre_turno_normal_e_nao_barge` **FAILED** |
+| soltar o `_cortado` no `set_speaking(False)` (cauda de 900 ms volta) | `test_corte_fecha_a_janela_o_playback_descartado_nao_conta` **FAILED** |
+| tirar `_funde_ate` do `_avaliar_abertura` | `test_continuacao_da_fala_depois_do_corte_nao_mata_a_resposta_nova` **FAILED** |
+
+`decisao_ms` também voltou a ser real: a decisão pelo prazo chegava com
+`fala_ms=0` (o evento `barge_suspeito` não carrega o campo) e o `fala_sustentada`
+nunca disparava — decidia-se pelo texto de um fragmento de 200 ms.

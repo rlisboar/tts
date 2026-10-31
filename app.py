@@ -10736,6 +10736,20 @@ def _live_cancela(sess: dict, do_cliente: bool = False, *,
                 _live_pendente_zera_contadores(sess)
                 _live_log_kv("pend_cancelado", sess=sess["id"])
     _live_log_kv("cancel", sess=sess["id"], turno=sess["turno"], em_curso=em_curso)
+    # O corte DESCARTA o playback que já saiu: o cliente chama `lxCancelaPlayback`
+    # no `interrupted` e não vai tocar mais nada da fila. Sem avisar o motor, a
+    # JANELA dele seguia aberta pelo backlog inteiro (9,5–19,4 s medidos) e, dentro
+    # dela, a fala seguinte era lida como BARGE: suspeita nova → `interrupcao` →
+    # matava a resposta que acabara de nascer, em cascata — e com o piso de ECO
+    # (alto, de um TTS que já não toca) a fala nem passava do limiar, então o turno
+    # não abria e a sessão ficava parada com o motor `ocioso` recebendo voz.
+    eng = sess.get("engine")
+    fn_cortado = getattr(eng, "playback_cortado", None)
+    if fn_cortado is not None:
+        try:
+            fn_cortado()
+        except Exception:                # noqa: BLE001 — motor não pode derrubar o WS
+            pass
     pipe = sess.get("pipe")
     if pipe is not None:
         pipe.cancel()
@@ -11319,6 +11333,23 @@ def _live_stats_barge(sess: dict) -> dict:
             "modelo_timeouts": int(st.get("modelo_timeouts") or 0)}
 
 
+def _live_fala_ms(sess: dict, ev) -> int:
+    """Duração da fala em curso (ms) — para a decisão que não vem do `speech_end`.
+
+    O `barge_suspeito` NÃO carrega `fala_ms` (o motor só o põe no `speech_end`),
+    então toda decisão pelo PRAZO ou pelas passadas de comando chegava com 0: o
+    `fala_sustentada` (>=1200 ms) nunca disparava e a decisão saía pelo TEXTO de
+    um fragmento de 200 ms — medido: o mesmo "Eu preciso resolver" cortando a
+    mesma fala quatro vezes seguidas. O motor sabe quanto já durou; ele conta os
+    frames, então é ele que responde."""
+    motor = sess.get("engine")
+    try:
+        ms = int(motor.fala_ms_atual())
+    except Exception:                    # noqa: BLE001 — dublê sem o método
+        ms = 0
+    return ms or int(getattr(ev, "fala_ms", 0) or 0)
+
+
 def _live_suspeita_barge(sess: dict, ev) -> None:
     """Onset durante o playback, sem decisão ainda (#501).
 
@@ -11333,7 +11364,7 @@ def _live_suspeita_barge(sess: dict, ev) -> None:
     motor = sess.get("engine")
     prazo = getattr(getattr(motor, "config", None), "barge_decisao_ms", 700) / 1000.0
     can = threading.Timer(prazo, lambda: _live_decide_barge(
-        sess, b"", int(getattr(ev, "fala_ms", 0) or 0), por_prazo=True))
+        sess, b"", _live_fala_ms(sess, ev), por_prazo=True))
     can.daemon = True
     sess["barge_timer"] = can
     can.start()
@@ -11356,7 +11387,7 @@ def _live_suspeita_barge(sess: dict, ev) -> None:
                 enquanto = passo / 1000.0
                 if not sess.get("barge_suspeito"):
                     return
-                _live_decide_barge(sess, b"", int(getattr(ev, "fala_ms", 0) or 0),
+                _live_decide_barge(sess, b"", _live_fala_ms(sess, ev),
                                    so_comando=True)
                 if not sess.get("barge_suspeito"):
                     return

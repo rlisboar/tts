@@ -496,6 +496,7 @@ class TurnEngine:
         self._degrau_base: float | None = None   # piso travado no salto (#273)
         self._barge_no_turno_emitido = False
         self._funde_ate = 0.0        # monotonic: até aqui não abre barge novo
+        self._cortado = False        # cliente descartou a fila (barge/cancel)
         self._suspeito = False          # #501: turno aberto por suspeita, sem decisão
         self._decisao_frames = 0
         self._suspeito_audio = b""
@@ -561,7 +562,19 @@ class TurnEngine:
 
     def _ref_audio(self) -> bool:
         """Qual das duas leituras governa a ENERGIA (eco x ruído)."""
-        return self._tocando() if self.config.eco_so_tocando else self._playback_ativo()
+        return (self._tocando() if self.config.eco_so_tocando
+                else self._playback_ativo()) and not self._fundindo()
+
+    def _fundindo(self) -> bool:
+        """Ainda na fusão pós-corte: o playback é FUNDO, a fala é o primeiro plano.
+
+        Logo depois de um `interrupted` (e da borda da resposta nova) o eco não
+        serve de referência de energia: a pessoa já está falando, a resposta
+        acabou de nascer e o que se ouve no mic é ela. Medido no `misto`, a
+        calibração comia a fala como eco (eco -12,8 contra voz -13,4 dBFS) e o
+        limiar subia acima da própria voz — o turno não abria e a sessão ficava
+        parada com o motor `ocioso` recebendo frames de voz."""
+        return time.monotonic() < self._funde_ate
 
     def _janela_log(self, motivo: str, antes: bool) -> None:
         """Diagnóstico das transições da JANELA (LIVE_TURNS_DEBUG=1).
@@ -652,6 +665,16 @@ class TurnEngine:
             self._eco_dbfs = float(np.clip(palpite, self.config.piso_ruido_dbfs,
                                            self.config.teto_ruido_dbfs + 20.0))
             self._eco_ausente = False
+            if self._cortado:
+                # resposta NOVA depois de um corte: a fusão vale a partir da BORDA
+                # dela. A calibração do eco começa junto e leva
+                # `eco_calibracao_ms` (~1,3 s) com `_avaliar_abertura` parada; sem
+                # esta extensão a janela de fusão expirava DURANTE a calibração e a
+                # continuação da fala caía no braço do barge outra vez — matando a
+                # resposta que acabara de nascer.
+                self._funde_ate = max(self._funde_ate, time.monotonic()
+                                      + self.config.barge_fusao_ms / 1000.0)
+                self._cortado = False
             # NÃO reinicia a calibração se ela já está em curso (#674): o handler
             # marca a borda a CADA chunk (a flag `_speaking` cai entre eles), e o
             # reset apagava as amostras antes de a janela fechar — com chunks
@@ -671,9 +694,14 @@ class TurnEngine:
         self._nivel_payload = nivel_dbfs if ligado else None
         if not ligado:
             # o stop não fecha a janela na hora: o cliente ainda tem áudio na fila
-            # E ainda vai TOCAR o chunk que acabou de chegar (duração real dele)
-            self._playback_frames = max(self.config._frames_playback,
-                                        self._playback_restante)
+            # E ainda vai TOCAR o chunk que acabou de chegar (duração real dele).
+            # Depois de um CORTE não sobra fila nenhuma (`playback_cortado`), e
+            # rearmar a cauda aqui reabria 900 ms de janela para uma fala que não
+            # tem o que interromper — a fala seguinte voltava a ser lida como
+            # barge. O `_cortado` só cai quando chega áudio NOVO (ver a borda).
+            if not self._cortado:
+                self._playback_frames = max(self.config._frames_playback,
+                                            self._playback_restante)
         self._janela_log("set_speaking", janela_antes)
 
     def set_turno_aberto(self, aberto: bool) -> None:
@@ -687,8 +715,11 @@ class TurnEngine:
         self._turno_aberto = bool(aberto) and self.config.barge_janela_turno
         self._turno_aberto_frames = self.config._frames_turno_assistente_max
         self._janela_log("set_turno_aberto", janela_antes)
-        if not aberto:
-            # fechou o turno: vale a cauda normal (pode haver áudio no cliente)
+        if aberto:
+            self._cortado = False
+        elif not self._cortado:
+            # fechou o turno: vale a cauda normal (pode haver áudio no cliente).
+            # Depois de um corte não: o cliente descartou a fila (`playback_cortado`).
             self._playback_frames = max(self._playback_frames,
                                         self.config._frames_playback)
 
@@ -726,6 +757,44 @@ class TurnEngine:
             return []
         return self._fechar_turno("flush")
 
+    def fala_ms_atual(self) -> int:
+        """Quanto a fala ABERTA já durou (ms); 0 sem turno.
+
+        A decisão pelo PRAZO (`barge_decisao_ms`) só tem o retrato do onset, e o
+        `barge_suspeito` não carrega `fala_ms` (o motor o põe no `speech_end`):
+        sem isto toda decisão pelo prazo chegava com 0, o `fala_sustentada`
+        (>=1200 ms) nunca disparava e a decisão saía pelo TEXTO de um fragmento
+        de 200 ms — medido: "Eu preciso resolver" cortando a MESMA fala quatro
+        vezes seguidas no bloco `misto`."""
+        return int(self._fala_frames * FRAME_MS)
+
+    def playback_cortado(self) -> None:
+        """O cliente DESCARTOU a fila de playback (barge/cancel): o backlog não toca.
+
+        A `interrupted` manda o cliente chamar `lxCancelaPlayback`, mas o motor
+        continuava achando que TUDO que já saiu ainda vai ser ouvido. A JANELA
+        ficava aberta pelo backlog inteiro depois do corte (medido no bloco
+        `misto`: `restante_ms` de 9,5 a 19,4 s) e, dentro dela, a fala seguinte
+        era lida como BARGE em vez de onset: cada fala virava suspeita, decidia
+        `interrupcao` e matava a resposta que acabara de nascer — 17 decisões e
+        24 `interrupted` em 6 rodadas, em cascata. Pior, no regime de barge o
+        limiar usa o piso de ECO (alto, de um TTS que já não toca) e a fala não
+        passava: o motor ficava `ocioso` recebendo frame de voz e o turno não
+        abria (a rodada sem áudio por 26 s).
+
+        Zera o que o cliente ia tocar, a cauda de `_frames_playback` (não há áudio
+        no fio para cobrir) e a calibração em curso (ela mede o eco do playback
+        que morreu — e, enquanto `_calibrando`, `_avaliar_abertura` nem roda). O
+        `_speaking` cai junto: o chunk em voo foi cancelado no pipeline."""
+        self._playback_restante = 0
+        self._playback_frames = 0
+        self._speaking = False
+        self._cortado = True
+        self._calibrando = False
+        self._calibracao_vals = []
+        self._barge_frames = 0
+        self._barge_no_turno_emitido = False
+
     def playback_restante_ms(self) -> int:
         """Quanto o CLIENTE ainda vai tocar (backlog do último chunk), em ms."""
         return int(self._playback_restante * FRAME_MS)
@@ -733,6 +802,8 @@ class TurnEngine:
     def reset(self) -> None:
         self._reset_turno()
         self._playback_frames = 0
+        self._playback_restante = 0
+        self._cortado = False
         self._turno_aberto = False
         self._calibrando = False
         self._calibracao_vals = []
@@ -827,7 +898,11 @@ class TurnEngine:
                     print(f"[CALIBRA] abertura BLOQUEADA (calibrando, "
                           f"dbfs={env_dbfs:.1f} prob={prob:.2f})", file=sys.stderr,
                           flush=True)
-            return []
+            # NA FUSÃO a calibração segue acumulando mas NÃO segura a abertura: a
+            # resposta nova é fundo, a pessoa já está falando e esse é justamente o
+            # caso em que a janela de calibração (~1,3 s) engolia o onset inteiro.
+            if not self._fundindo():
+                return []
         self._adaptar(env_dbfs, prob)
         return self._avaliar_abertura(amostra, env_dbfs, prob)
 
@@ -1018,7 +1093,14 @@ class TurnEngine:
                   f" frames={self._playback_frames} restante={self._playback_restante}"
                   f" turno_aberto={self._turno_aberto} dbfs={dbfs:.1f} prob={prob:.2f}",
                   file=sys.stderr, flush=True)
-        if self._playback_ativo():
+        # FUSÃO DEPOIS DO CORTE: `_funde_ate` vale também aqui, não só no
+        # `_barge_com_turno_aberto`. Logo depois de um `interrupted` a resposta
+        # nova mal começou e o turno da fala que interrompeu já FECHOU (o motor
+        # está ocioso) — sem esta guarda a continuação da fala abre OUTRA
+        # suspeita, decide `interrupcao` e mata a resposta que acabou de nascer.
+        # Medido no bloco `misto` antes dela: 17 decisões e 24 `interrupted`
+        # para 6 falas, e o turno novo morria antes do 1º áudio.
+        if self._playback_ativo() and time.monotonic() >= self._funde_ate:
             voz = (self._voz(dbfs, prob, self.limiar_energia_dbfs)
                    or self._degrau_sobre_eco(dbfs, prob))
             self._barge_frames = self._barge_frames + 1 if voz else 0
