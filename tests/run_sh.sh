@@ -500,7 +500,7 @@ conta_segredo_em_tmp() {
     # `sleep 1` ANTES do primeiro `find`: o `find` lê a lista de entradas do
     # diretório UMA vez e não vê arquivo criado depois dessa leitura — e a suíte
     # acabou de sair. Sem isto a guarda perdia o arquivo recém-escrito.
-    sleep 2
+    sleep 1
     # 1ª via, BARATA: arquivo novo (diferença de nomes) ou tocado nesta rodada
     # (`-cnewer` — o ctime muda em qualquer escrita e o `cp -p` não o preserva).
     find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f -cnewer "$DIR/comeca" 2>/dev/null \
