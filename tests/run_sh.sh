@@ -501,6 +501,12 @@ conta_segredo_em_tmp() {
 }
 
 SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
+# Uma segunda passada quando a primeira não acha nada: o arquivo pode aparecer
+# entre o `find` e o `grep` (a suíte acabou de sair). Barato e tira o falso verde.
+if [ "${SEGREDOS_EM_TMP%%$'\n'*}" = "0" ]; then
+    sleep 1
+    SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
+fi
 if [ "${SEGREDOS_EM_TMP%%$'\n'*}" != "0" ] && [ -n "$SEGREDOS_EM_TMP" ]; then
     echo "$SEGREDOS_EM_TMP" | grep -v '^[0-9]*$'
     if [ "$CANARIO" = "1" ]; then
