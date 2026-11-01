@@ -469,14 +469,20 @@ _segredos_do_dono() {
     # A agulha vem da ENV (o que as suítes propagam). Sem ela, o runner SINTETIZA
     # um canário e o exporta: nenhum arquivo do dono é aberto e o valor não é
     # impresso (#723/task_57cef75c).
-    printf '%s\n' "${TTS_ROD_API_KEY%%\n*}"
+    # `$'\n'` é NEWLINE de verdade: `%%\n*` casa o `n` literal e a chave ficava
+    # truncada no primeiro `n` (e ZERADA se começa com `n`).
+    local k="${TTS_ROD_API_KEY%%$'\n'*}"
+    # Agulha vazia nunca: cai no mesmo canário do runner (o export só cobre o caso
+    # de a variável não existir; se ela vier vazia, o `printf` devolveria nada).
+    [ -n "$k" ] || k="canario-da-rodada-$$"
+    printf '%s\n' "$k"
 }
 conta_segredo_em_tmp() {
     local seg f achados=0 segredos=""
     segredos="$(_segredos_do_dono)"
-    # `return` sem `echo` some dentro de `$( )` e o chamador lê vazio como "nada
-    # achado" — verde falso. A contagem sai SEMPRE, mesmo sem agulha.
-    [ -n "$segredos" ] || { echo 0; return 0; }
+    # Sem agulha a guarda não pode responder NADA (nem 0): o chamador trata vazio
+    # como falha, então "sem agulha" reprova em vez de passar calado.
+    [ -n "$segredos" ] || return 0
     # Candidatos por LINHA (caminho + hash): arquivo novo OU conteúdo trocado. É o
     # que pega o `cp -p` por cima de homônimo (mtime preservado, nome já no retrato).
     while IFS= read -r f; do
@@ -503,16 +509,21 @@ conta_segredo_em_tmp() {
 }
 
 SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
-SEGREDOS_EM_TMP="${SEGREDOS_EM_TMP:-0}"     # vazio nunca é "achou"
-# Repete a varredura enquanto ela zerar (até 3 voltas): sob carga o retrato e o
-# `grep` competem com quem mexe em /tmp e a passada isolada às vezes volta vazia.
+# Repete enquanto não houver CONTAGEM (vazia) ou ela for 0: sob carga a passada
+# isolada volta vazia, e vazio não pode seguir como se fosse "nada achado".
 for _volta in 1 2 3; do
-    [ "${SEGREDOS_EM_TMP%%$'\n'*}" = "0" ] || break
+    [ -z "$SEGREDOS_EM_TMP" ] || [ "${SEGREDOS_EM_TMP%%$'\n'*}" = "0" ] || break
     sleep 1
     SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
-    SEGREDOS_EM_TMP="${SEGREDOS_EM_TMP:-0}"
 done
-if [ "${SEGREDOS_EM_TMP%%$'\n'*}" != "0" ] && [ -n "$SEGREDOS_EM_TMP" ]; then
+# VAZIO é falha, não "nada achado": sem saída o veredito não entra e a rodada fica
+# verde com o segredo em /tmp (era o verde falso medido sob carga).
+if [ -z "${SEGREDOS_EM_TMP:-}" ]; then
+    echo "  guarda de segredo não respondeu (saída vazia)"
+    FALHAS+=("guarda-muda")
+    SEGREDOS_EM_TMP=0
+fi
+if [ "${SEGREDOS_EM_TMP%%$'\n'*}" != "0" ]; then
     echo "$SEGREDOS_EM_TMP" | grep -v '^[0-9]*$'
     if [ "$CANARIO" = "1" ]; then
         # canário sintético: informa, não reprova (o segredo do dono não circulou)
