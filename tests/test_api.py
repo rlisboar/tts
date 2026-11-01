@@ -7785,11 +7785,18 @@ def test_raiz_principal_usa_o_aplicativo(tmp_path, monkeypatch):
 
 
 def test_rollback_do_restore_nao_devolve_arquivo_imutavel(tmp_path, monkeypatch):
-    """Snapshot/restauração do import também não podem viajar flag (#721).
+    """Snapshot/restauração não podem viajar a FLAG de imutabilidade (#721).
 
-    `copy2` no snapshot e no restore levava `uchg` do original: o settings voltava
-    ao estado vivo imutável e o app não salvava mais."""
+    Modo 0400 não defende: `copy2` copia o modo, mas o `chmod` seguinte conserta e
+    a célula passa. Com `chflags uchg` o `copy2` leva a flag, o `chmod` do destino
+    dá EPERM e a escrita do app falha — é o caso real do settings do dono. A flag
+    fica só nos arquivos desta célula (tmp) e sai no `finally`."""
+    import stat as _stat
+
     import app as _app
+
+    if not hasattr(os, "chflags"):
+        pytest.skip("sem chflags (não-macOS)")
 
     vivo = tmp_path / "vivo"
     vivo.mkdir()
@@ -7799,22 +7806,30 @@ def test_rollback_do_restore_nao_devolve_arquivo_imutavel(tmp_path, monkeypatch)
     monkeypatch.setattr(app, "VOICES_DIR", tmp_path / "sem-voices")
     alvo = vivo / "settings.json"
     alvo.write_text('{"x": 1}')
-    alvo.chmod(0o400)
-    velho = time.time() - 3 * 3600
-    os.utime(alvo, (velho, velho))
     rollback = tmp_path / "rollback"
     rollback.mkdir()
-    _app._snapshot_estado(rollback)
     copia = rollback / "settings.json"
-    assert copia.read_text() == '{"x": 1}'
-    assert copia.stat().st_mode & 0o777 == 0o600, "snapshot não saiu 0600"
-    alvo.chmod(0o600)                     # 0400 de propósito na origem
-    alvo.write_text('{"x": 2}')
-    _app._restaura_estado(rollback)
-    assert alvo.read_text() == '{"x": 1}'
-    assert alvo.stat().st_mode & 0o777 == 0o600, "restauração voltou 0400"
-    alvo.write_text('{"x": 3}')                    # e o app consegue salvar
-    assert alvo.read_text() == '{"x": 3}'
+    os.chflags(alvo, _stat.UF_IMMUTABLE)
+    try:
+        _app._snapshot_estado(rollback)
+        assert copia.read_text() == '{"x": 1}'
+        assert not copia.stat().st_flags & _stat.UF_IMMUTABLE, \
+            "a flag viajou para o snapshot"
+        assert copia.stat().st_mode & 0o777 == 0o600, "snapshot não saiu 0600"
+        os.chflags(alvo, 0)               # equivale ao app poder salvar de novo
+        alvo.write_text('{"x": 2}')
+        os.chflags(alvo, _stat.UF_IMMUTABLE)
+        _app._restaura_estado(rollback)
+        assert alvo.read_text() == '{"x": 1}'
+        assert not alvo.stat().st_flags & _stat.UF_IMMUTABLE, \
+            "a restauração devolveu o arquivo imutável"
+        assert alvo.stat().st_mode & 0o777 == 0o600, "restauração não deixou 0600"
+        alvo.write_text('{"x": 3}')       # gravável de verdade, sem tirar flag
+        assert alvo.read_text() == '{"x": 3}'
+    finally:
+        for arq in (alvo, copia):
+            if arq.exists():
+                os.chflags(arq, 0)
 
 
 def test_import_nao_cai_com_diretorio_de_estado_sem_permissao(tmp_path):

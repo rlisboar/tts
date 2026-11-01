@@ -5453,6 +5453,13 @@ def _restaura_estado(rollback: Path) -> None:
     for nome in _ESTADO_SIMPLES:
         origem, destino = rollback / nome, _caminho_estado(nome)
         if origem.exists():
+            # arquivo vivo com `uchg` recusa a escrita: limpa a flag antes de copiar
+            # (o que o dono faria à mão) e devolve 0600 sem flag (#721)
+            try:
+                if destino.exists() and getattr(destino.stat(), "st_flags", 0) & 0x2:
+                    os.chflags(destino, 0)
+            except OSError:
+                pass
             shutil.copyfile(origem, destino)      # idem: sem flag/mtime (#721)
             destino.chmod(0o600)
         else:
