@@ -7691,9 +7691,13 @@ def test_worktree_usa_estado_local_e_nunca_o_real(tmp_path):
         [sys.executable, "-c",
          "import app; print(app._arbore_e_a_principal(), app.STATE_DIR)"],
         cwd=str(app_dir), env=env, check=True, capture_output=True, text=True)
-    # ESTE processo de teste roda no worktree, que é o caso que o card cobra
-    assert saida.stdout.split()[0] == "False", saida.stdout
-    assert saida.stdout.strip().endswith(".state-local"), saida.stdout
+    # vale em qualquer árvore: worktree/cópia → `.state-local`; raiz principal →
+    # o diretório de aplicativo (a célula do worktree FALSO cobre o caso estrito)
+    principal, estado = saida.stdout.strip().split(maxsplit=1)
+    if principal == "False":
+        assert estado == str(app_dir / ".state-local"), estado
+    else:
+        assert str(app_dir) not in estado, estado
 
 
 def test_copia_sem_git_usa_estado_local(tmp_path, monkeypatch):
@@ -7836,4 +7840,5 @@ def test_import_nao_cai_com_diretorio_de_estado_sem_permissao(tmp_path):
         pai.chmod(0o700)
     assert saida.returncode == 0, saida.stderr[-1500:]
     assert saida.stdout.strip().endswith("ok")
-    assert "não criei o pai" in saida.stdout and "estado" in saida.stdout
+    # o aviso vai para STDERR (stdout do import fica só com o que a sonda imprime)
+    assert "não criei o pai" in saida.stderr and "estado" in saida.stderr

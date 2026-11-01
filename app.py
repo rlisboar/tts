@@ -234,7 +234,8 @@ for _p in (APIKEYS_PATH, SPEAKER_PATH, LEGACY_APIKEY_PATH):
     try:               # pai somente-leitura não pode derrubar o import (#721)
         _p.parent.mkdir(parents=True, exist_ok=True)   # `write_json_atomic` exige
     except OSError as _exc_pai:
-        print(f"[estado] não criei o pai de {_p}: {_exc_pai}", flush=True)
+        print(f"[estado] não criei o pai de {_p}: {_exc_pai}",
+              file=sys.stderr, flush=True)
 
 
 def _migra_estado_para_fora_do_repo(base: Path | None = None,
@@ -265,16 +266,18 @@ def _migra_estado_para_fora_do_repo(base: Path | None = None,
             shutil.copyfile(origem, alvo)
             alvo.chmod(0o600)
             print(f"[estado] copiado {nome} para {destino} (o original fica na raiz)",
-                  flush=True)
+                  file=sys.stderr, flush=True)
         except Exception as exc:  # noqa: BLE001 — migração é conveniência, não requisito
-            print(f"[estado] não copiei {nome}: {exc}", flush=True)
+            print(f"[estado] não copiei {nome}: {exc}",
+                  file=sys.stderr, flush=True)
 
 
 try:                       # diretório somente-leitura não pode derrubar o import
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.chmod(0o700)
 except OSError as _exc_estado:
-    print(f"[estado] não preparei {STATE_DIR}: {_exc_estado}", flush=True)
+    print(f"[estado] não preparei {STATE_DIR}: {_exc_estado}",
+          file=sys.stderr, flush=True)
 _migra_estado_para_fora_do_repo()
 
 # ---------------------------------------------------------------------------
@@ -431,7 +434,8 @@ SETTINGS_PATH = _caminho_estado_env("TTS_SETTINGS_PATH", STATE_DIR / "settings.j
 try:                   # idem: o pai do settings é o diretório de estado
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
 except OSError as _exc_set:
-    print(f"[estado] não criei o pai de {SETTINGS_PATH}: {_exc_set}", flush=True)
+    print(f"[estado] não criei o pai de {SETTINGS_PATH}: {_exc_set}",
+          file=sys.stderr, flush=True)
 _SETTINGS_DEFAULTS = {
     "model": MODEL_ID,         # atalho (omnivoice, qwen3-0.6b…) ou id/dir MLX
     "pre_prompt": "",          # texto falado antes de toda geração
