@@ -527,8 +527,7 @@ for _volta in 1 2 3; do
     SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
 done
 # VAZIO é falha, não "nada achado": sem saída o veredito não entra e a rodada fica
-# verde com o segredo em /tmp (era o verde falso medido sob carga). Antes de acusar,
-# uma última varredura BRUTA pelo texto da agulha, que não depende de retrato.
+# verde com o segredo em /tmp (era o verde falso medido sob carga).
 if [ -z "${SEGREDOS_EM_TMP:-}" ]; then
     if [ "$CANARIO" = "1" ]; then
         # canário é invenção nossa: se não apareceu, nada vazou

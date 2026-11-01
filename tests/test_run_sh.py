@@ -103,7 +103,9 @@ def _rodar(*args: str, env: dict[str, str] | None = None) -> subprocess.Complete
             "TTS_METRICS_DIR": os.environ.get("TTS_METRICS_DIR", "")}
     base.update(env or {})
     return subprocess.run(["bash", str(RUNNER), *args], cwd=str(AQUI.parent),
-                          capture_output=True, text=True, timeout=120,
+                          # 300: a guarda de segredo varre /tmp no fim do estágio e
+                          # sob carga come minutos; 120 estourava célula de duas rodadas
+                          capture_output=True, text=True, timeout=300,
                           env={**base, "TTS_SERIAL_ESPERA": "60"})
 
 
