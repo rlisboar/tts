@@ -7857,3 +7857,20 @@ def test_import_nao_cai_com_diretorio_de_estado_sem_permissao(tmp_path):
     assert saida.stdout.strip().endswith("ok")
     # o aviso vai para STDERR (stdout do import fica só com o que a sonda imprime)
     assert "não criei o pai" in saida.stderr and "estado" in saida.stderr
+
+
+def test_log_da_migracao_vai_para_stderr(tmp_path, capsys):
+    """O log da migração é LOG: stderr, com o stdout do import limpo (#744).
+
+    Sondas leem o stdout de `import app` como lista de caminhos; um `[estado] …` ali
+    vira caminho inválido. Chamada DIRETA (sem subprocesso com `TTS_STATE_DIR`
+    vazio, que copiaria o settings do dono para o tmp): estado sintético em tmp."""
+    raiz = tmp_path / "repo"
+    destino = tmp_path / "estado"
+    raiz.mkdir()
+    (raiz / "settings.json").write_text('{"sintetico": true}')
+    app._migra_estado_para_fora_do_repo(base=raiz, destino=destino)
+    saida = capsys.readouterr()
+    assert saida.out == "", f"o log vazou para o stdout: {saida.out!r}"
+    assert "[estado] copiado settings.json" in saida.err, saida.err
+    assert (destino / "settings.json").is_file()      # e a cópia aconteceu
