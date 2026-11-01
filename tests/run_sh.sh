@@ -474,7 +474,9 @@ _segredos_do_dono() {
 conta_segredo_em_tmp() {
     local seg f achados=0 segredos=""
     segredos="$(_segredos_do_dono)"
-    [ -n "$segredos" ] || return 0
+    # `return` sem `echo` some dentro de `$( )` e o chamador lê vazio como "nada
+    # achado" — verde falso. A contagem sai SEMPRE, mesmo sem agulha.
+    [ -n "$segredos" ] || { echo 0; return 0; }
     # Candidatos por LINHA (caminho + hash): arquivo novo OU conteúdo trocado. É o
     # que pega o `cp -p` por cima de homônimo (mtime preservado, nome já no retrato).
     while IFS= read -r f; do
@@ -501,12 +503,15 @@ conta_segredo_em_tmp() {
 }
 
 SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
-# Uma segunda passada quando a primeira não acha nada: o arquivo pode aparecer
-# entre o `find` e o `grep` (a suíte acabou de sair). Barato e tira o falso verde.
-if [ "${SEGREDOS_EM_TMP%%$'\n'*}" = "0" ]; then
+SEGREDOS_EM_TMP="${SEGREDOS_EM_TMP:-0}"     # vazio nunca é "achou"
+# Repete a varredura enquanto ela zerar (até 3 voltas): sob carga o retrato e o
+# `grep` competem com quem mexe em /tmp e a passada isolada às vezes volta vazia.
+for _volta in 1 2 3; do
+    [ "${SEGREDOS_EM_TMP%%$'\n'*}" = "0" ] || break
     sleep 1
     SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
-fi
+    SEGREDOS_EM_TMP="${SEGREDOS_EM_TMP:-0}"
+done
 if [ "${SEGREDOS_EM_TMP%%$'\n'*}" != "0" ] && [ -n "$SEGREDOS_EM_TMP" ]; then
     echo "$SEGREDOS_EM_TMP" | grep -v '^[0-9]*$'
     if [ "$CANARIO" = "1" ]; then
