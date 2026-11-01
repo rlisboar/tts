@@ -469,11 +469,10 @@ _segredos_do_dono() {
     # A agulha vem da ENV (o que as suítes propagam). Sem ela, o runner SINTETIZA
     # um canário e o exporta: nenhum arquivo do dono é aberto e o valor não é
     # impresso (#723/task_57cef75c).
-    # `$'\n'` é NEWLINE de verdade: `%%\n*` casa o `n` literal e a chave ficava
-    # truncada no primeiro `n` (e ZERADA se começa com `n`).
-    local k="${TTS_ROD_API_KEY%%$'\n'*}"
-    # Agulha vazia nunca: cai no mesmo canário do runner (o export só cobre o caso
-    # de a variável não existir; se ela vier vazia, o `printf` devolveria nada).
+    # SEM padrão de newline: `%%\n*` casa o `n` LITERAL e apaga a chave do primeiro
+    # `n` para o fim (`canario-…` vira `ca`; chave começando com `n` vira vazia).
+    local k="${TTS_ROD_API_KEY:-}"
+    # Agulha vazia nunca: cai no mesmo canário do runner.
     [ -n "$k" ] || k="canario-da-rodada-$$"
     printf '%s\n' "$k"
 }
@@ -517,11 +516,22 @@ for _volta in 1 2 3; do
     SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
 done
 # VAZIO é falha, não "nada achado": sem saída o veredito não entra e a rodada fica
-# verde com o segredo em /tmp (era o verde falso medido sob carga).
+# verde com o segredo em /tmp (era o verde falso medido sob carga). Antes de acusar,
+# uma última varredura BRUTA pelo texto da agulha, que não depende de retrato.
 if [ -z "${SEGREDOS_EM_TMP:-}" ]; then
-    echo "  guarda de segredo não respondeu (saída vazia)"
-    FALHAS+=("guarda-muda")
-    SEGREDOS_EM_TMP=0
+    _agulha="$(_segredos_do_dono)"
+    while IFS= read -r _f; do
+        printf '  segredo do dono em %s\n' "$_f"
+        SEGREDOS_EM_TMP="${SEGREDOS_EM_TMP}${_f}\n"
+    # sem filtro de extensão: o arquivo da rodada pode não ter nenhuma
+    done < <(grep -rlF -- "$_agulha" /tmp 2>/dev/null | head -20)
+    if [ -z "${SEGREDOS_EM_TMP:-}" ]; then
+        echo "  guarda de segredo não respondeu (saída vazia, nem na varredura bruta)"
+        FALHAS+=("guarda-muda")
+        SEGREDOS_EM_TMP=0
+    else
+        SEGREDOS_EM_TMP="${SEGREDOS_EM_TMP}1"
+    fi
 fi
 if [ "${SEGREDOS_EM_TMP%%$'\n'*}" != "0" ]; then
     echo "$SEGREDOS_EM_TMP" | grep -v '^[0-9]*$'
