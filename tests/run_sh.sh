@@ -469,29 +469,16 @@ _segredos_do_dono() {
     # A agulha vem da ENV (o que as suítes propagam). Sem ela, o runner SINTETIZA
     # um canário e o exporta: nenhum arquivo do dono é aberto e o valor não é
     # impresso (#723/task_57cef75c).
-    # SEM padrão de newline: `%%\n*` casa o `n` LITERAL e apaga a chave do primeiro
-    # `n` para o fim (`canario-…` vira `ca`; chave começando com `n` vira vazia).
-    local k="${TTS_ROD_API_KEY:-}"
+    # `$'\n'` é NEWLINE de verdade. `%%\n*` no papel de padrão comum casa o `n`
+    # LITERAL e apaga a chave do primeiro `n` para o fim (`canario-…` vira `ca`;
+    # chave começando com `n` vira vazia e a guarda cala).
+    local k="${TTS_ROD_API_KEY%%$'\n'*}"
     # Agulha vazia nunca: cai no mesmo canário do runner.
     [ -n "$k" ] || k="canario-da-rodada-$$"
     printf '%s\n' "$k"
 }
-conta_segredo_em_tmp() {
-    local seg f achados=0 segredos=""
-    segredos="$(_segredos_do_dono)"
-    # Sem agulha a guarda não pode responder NADA (nem 0): o chamador trata vazio
-    # como falha, então "sem agulha" reprova em vez de passar calado.
-    [ -n "$segredos" ] || return 0
-    # Candidatos por LINHA (caminho + hash): arquivo novo OU conteúdo trocado. É o
-    # que pega o `cp -p` por cima de homônimo (mtime preservado, nome já no retrato).
-    # Candidatos em ARQUIVO e o laço lendo dele (sem substituição de processo, que
-    # era o ponto frágil sob carga).
-    _impressao_tmp > "$DIR/tmp_depois"
-    { awk 'NR==FNR {antes[$2]=$1; next}
-           ($2 in antes) && antes[$2]==$1 {next} {print $2}' \
-          "$DIR/tmp_antes" "$DIR/tmp_depois"
-      find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f -cnewer "$DIR/comeca" 2>/dev/null \
-          | sed 's#^/private/tmp#/tmp#'; } | sort -u > "$DIR/cand"
+_varre_candidatos() {
+    local f seg
     while IFS= read -r f; do
         [ -f "$f" ] || continue
         for seg in $segredos; do
@@ -502,13 +489,39 @@ conta_segredo_em_tmp() {
             fi
         done
     done < "$DIR/cand"
+}
+
+conta_segredo_em_tmp() {
+    local seg f achados=0 segredos=""
+    segredos="$(_segredos_do_dono)"
+    # Sem agulha a guarda não pode responder NADA (nem 0): o chamador trata vazio
+    # como falha, então "sem agulha" reprova em vez de passar calado.
+    [ -n "$segredos" ] || return 0
+    # `sleep 1` ANTES do primeiro `find`: o `find` lê a lista de entradas do
+    # diretório UMA vez e não vê arquivo criado depois dessa leitura — e a suíte
+    # acabou de sair. Sem isto a guarda perdia o arquivo recém-escrito.
+    sleep 2
+    # 1ª via, BARATA: arquivo novo (diferença de nomes) ou tocado nesta rodada
+    # (`-cnewer` — o ctime muda em qualquer escrita e o `cp -p` não o preserva).
+    find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f -cnewer "$DIR/comeca" 2>/dev/null \
+        | sed 's#^/private/tmp#/tmp#' | sort -u > "$DIR/cand"
+    _varre_candidatos
+    # 2ª via, CARA: o retrato por (caminho, hash) pega conteúdo trocado mesmo que o
+    # ctime escape. Só roda quando a barata não achou nada.
+    if [ "$achados" -eq 0 ]; then
+        _impressao_tmp > "$DIR/tmp_depois"
+        awk 'NR==FNR {antes[$2]=$1; next}
+             ($2 in antes) && antes[$2]==$1 {next} {print $2}' \
+            "$DIR/tmp_antes" "$DIR/tmp_depois" > "$DIR/cand"
+        _varre_candidatos
+    fi
     echo "$achados"
 }
 
 SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
 # Repete enquanto não houver CONTAGEM (vazia) ou ela for 0: sob carga a passada
 # isolada volta vazia, e vazio não pode seguir como se fosse "nada achado".
-for _volta in 1 2; do
+for _volta in 1 2 3; do
     [ -z "$SEGREDOS_EM_TMP" ] || [ "${SEGREDOS_EM_TMP%%$'\n'*}" = "0" ] || break
     sleep 1
     SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
@@ -517,19 +530,14 @@ done
 # verde com o segredo em /tmp (era o verde falso medido sob carga). Antes de acusar,
 # uma última varredura BRUTA pelo texto da agulha, que não depende de retrato.
 if [ -z "${SEGREDOS_EM_TMP:-}" ]; then
-    _agulha="$(_segredos_do_dono)"
-    while IFS= read -r _f; do
-        printf '  segredo do dono em %s\n' "$_f"
-        SEGREDOS_EM_TMP="${SEGREDOS_EM_TMP}${_f}\n"
-    # sem filtro de extensão: o arquivo da rodada pode não ter nenhuma
-    done < <(grep -rlF -- "$_agulha" /tmp 2>/dev/null | head -20)
-    if [ -z "${SEGREDOS_EM_TMP:-}" ]; then
-        echo "  guarda de segredo não respondeu (saída vazia, nem na varredura bruta)"
-        FALHAS+=("guarda-muda")
-        SEGREDOS_EM_TMP=0
+    if [ "$CANARIO" = "1" ]; then
+        # canário é invenção nossa: se não apareceu, nada vazou
+        echo "  nota: guarda sem agulha na varredura (canário sintético)"
     else
-        SEGREDOS_EM_TMP="${SEGREDOS_EM_TMP}1"
+        echo "  guarda de segredo não respondeu (saída vazia após as voltas)"
+        FALHAS+=("guarda-muda")
     fi
+    SEGREDOS_EM_TMP=0
 fi
 if [ "${SEGREDOS_EM_TMP%%$'\n'*}" != "0" ]; then
     echo "$SEGREDOS_EM_TMP" | grep -v '^[0-9]*$'

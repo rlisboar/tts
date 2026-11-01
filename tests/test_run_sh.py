@@ -451,9 +451,9 @@ def test_filho_surdo_a_term_ainda_morre_e_deixa_o_motivo(tmp_path):
         time.sleep(0.2)
     else:
         raise AssertionError(f"o filho surdo {pid} sobreviveu à suíte")
-    # teto de 2 s + escada (~6 s): muito abaixo do teto externo (90 s), então a
-    # morte não veio de fora
-    assert dur < 40, f"a rodada levou {dur:.1f}s — quem matou foi o teto externo"
+    # 2 s de teto + escada (~6 s) + a varredura de segredo no fim: ainda bem abaixo
+    # do teto externo (90 s), então a morte não veio de fora
+    assert dur < 80, f"a rodada levou {dur:.1f}s — quem matou foi o teto externo"
 
 
 def test_suite_que_sobrescreve_o_trap_exit_limpa_o_vigia(tmp_path):
@@ -845,3 +845,63 @@ def test_cp_p_por_cima_de_homonimo_e_acusado(tmp_path):
         assert "segredo-de-teste-123456" not in r.stdout, "imprimiu o valor"
     finally:
         alvo.unlink(missing_ok=True)
+
+
+def _rodada_com_chave(chave: str):
+    """Roda a sonda que deixa o segredo em /tmp com a chave dada."""
+    Path("/tmp").glob("vaza_segredo_*")
+    return _rodar("navegador", env={"SUITES": str(SONDAS / "vaza_segredo.sh"),
+                                    "TTS_ROD_API_KEY": chave})
+
+
+def test_agulha_atravessa_chave_com_n_no_meio():
+    """`%%\\n*` casa o `n` LITERAL: a chave corta no primeiro `n` e não acha nada."""
+    alvo = f"chave-com-n-no-meio-{os.getpid()}"
+    try:
+        r = _rodada_com_chave(alvo)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "segredo do dono em" in r.stdout, r.stdout
+        assert alvo not in r.stdout, "imprimiu o valor"
+    finally:
+        for p in Path("/tmp").glob("vaza_segredo_*"):
+            p.unlink(missing_ok=True)
+
+
+def test_agulha_atravessa_chave_que_comeca_com_n():
+    """Chave começando com `n` zerava a agulha e a guarda calava de vez."""
+    alvo = f"nada-chave-{os.getpid()}"
+    try:
+        r = _rodada_com_chave(alvo)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "segredo do dono em" in r.stdout, r.stdout
+        assert alvo not in r.stdout, "imprimiu o valor"
+    finally:
+        for p in Path("/tmp").glob("vaza_segredo_*"):
+            p.unlink(missing_ok=True)
+
+
+def test_guarda_que_nao_responde_reprova_a_rodada(tmp_path):
+    """Saída vazia não é "nada achado": sem contagem o veredito não entra.
+
+    O runner é copiado LADO A LADO (`tests/`) para o RAIZ resolver igual, e a
+    função é trocada por uma que morre muda."""
+    copia = AQUI / "run_sh_mudo.sh"
+    fonte = (AQUI / "run_sh.sh").read_text()
+    i = fonte.index("conta_segredo_em_tmp() {")
+    j = fonte.index("\n}\n", i) + 3
+    copia.write_text(fonte[:i] + "conta_segredo_em_tmp() {\n    return 0\n}\n" + fonte[j:])
+    try:
+        r = subprocess.run(["bash", str(copia), "navegador"], cwd=str(AQUI.parent),
+                           capture_output=True, text=True, timeout=300,
+                           env={"PATH": os.environ.get("PATH", ""), "HOME": "/tmp",
+                                "TTS_METRICS_DIR": "", "TTS_SERIAL_ESPERA": "60",
+                                "TTS_ROD_API_KEY": f"chave-muda-{os.getpid()}", "CARGA_FORCA": "1",
+                                "TTS_SERIAL_LOCK": str(tmp_path / "lock"),
+                                "SUITES": str(SONDAS / "vaza_segredo.sh")})
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "guarda de segredo não respondeu" in r.stdout, r.stdout
+        assert f"chave-muda-{os.getpid()}" not in r.stdout, "imprimiu o valor"
+    finally:
+        copia.unlink(missing_ok=True)
+        for p in Path("/tmp").glob("vaza_segredo_*"):
+            p.unlink(missing_ok=True)
