@@ -518,13 +518,15 @@ conta_segredo_em_tmp() {
     echo "$achados"
 }
 
-SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
+conta_segredo_em_tmp >"$DIR/guarda_saida"
+SEGREDOS_EM_TMP=$(cat "$DIR/guarda_saida")
 # Repete enquanto não houver CONTAGEM (vazia) ou ela for 0: sob carga a passada
 # isolada volta vazia, e vazio não pode seguir como se fosse "nada achado".
 for _volta in 1 2 3; do
     [ -z "$SEGREDOS_EM_TMP" ] || [ "${SEGREDOS_EM_TMP%%$'\n'*}" = "0" ] || break
     sleep 1
-    SEGREDOS_EM_TMP="$(conta_segredo_em_tmp)"
+    conta_segredo_em_tmp >"$DIR/guarda_saida"
+    SEGREDOS_EM_TMP=$(cat "$DIR/guarda_saida")
 done
 # VAZIO é falha, não "nada achado": sem saída o veredito não entra e a rodada fica
 # verde com o segredo em /tmp (era o verde falso medido sob carga).
