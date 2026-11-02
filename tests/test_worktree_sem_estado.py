@@ -352,24 +352,27 @@ def test_verifica_por_conteudo_nao_por_nome(falso):
 
 
 def test_todo_script_que_importa_app_isola_o_estado_em_tmp():
-    """#732: TODO `import app` de smoke/medição executa depois de um `isola()`.
+    """#732: TODO `import app` executa depois de um `isola()` DE VERDADE.
 
     O `conftest` isola o pytest, mas script rodado à mão não passa por ele: um
     `_apply_settings` grava `settings.json` DENTRO do worktree e o diretório passa
-    a ter estado do dono. A varredura é por ARQUIVO e por OCORRÊNCIA: um `isola()`
-    no módulo não cobre um `import app` que já tenha acontecido, e um script com
-    dois caminhos (módulo e função) precisa dos dois cobertos pela posição.
+    a ter estado do dono.
+
+    Duas armadilhas que a varredura tem de pegar sem virar parser:
+    - `isola()` dentro de COMENTÁRIO não isola nada — vale só a parte da linha
+      antes do `#`;
+    - `from app import X` é importação do app igual ao `import app`.
     """
     alvos = sorted(REPO.glob("smoke_*.py")) + sorted((REPO / "tests").glob("mede_*.py"))
     assert len(alvos) >= 4, f"varredura vazia: {alvos}"
     furos = []
     for caminho in alvos:
-        fonte = caminho.read_text()
-        pos_isola = [i for i in range(len(fonte)) if fonte.startswith("isola()", i)]
-        for i in range(len(fonte)):
-            if not fonte.startswith("import app", i):
-                continue
-            if not any(p < i for p in pos_isola):
-                furos.append(f"{caminho.name}: `import app` na posição {i} sem isola() "
-                             f"antes")
+        marcou = False
+        for n, linha in enumerate(caminho.read_text().splitlines(), 1):
+            codigo = linha.split("#", 1)[0]        # comentário fora; heurística de linha
+            if "isola()" in codigo:
+                marcou = True
+            elif "import app" in codigo or "from app import" in codigo:
+                if not marcou:
+                    furos.append(f"{caminho.name}:{n}: importação do app sem isola() antes")
     assert not furos, "\n".join(furos)

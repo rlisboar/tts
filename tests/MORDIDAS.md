@@ -687,7 +687,9 @@ dois caminhos precisa dos dois cobertos pela posição.
 | Sabotagem | Resultado |
 |---|---|
 | tirar a chamada `isola()` de qualquer smoke (testado em `smoke_barge_intencao` e `smoke_worker_persist`) | `test_todo_script_que_importa_app_isola_o_estado_em_tmp` **FAILED** |
-| importar o helper DEPOIS de `import app` | mesma célula **FAILED** |
+| importar o helper DEPOIS do import do app | mesma célula **FAILED** |
+| deixar `isola()` só em COMENTÁRIO (`# isola()`) | mesma célula **FAILED** (nomeia as linhas do import) |
+| pôr `from app import X` antes do `isola()` | mesma célula **FAILED** (`smoke_sintese.py:179`) |
 
 ### #501 — a matriz de intenção (três mordidas)
 

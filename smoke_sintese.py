@@ -34,6 +34,13 @@ from pathlib import Path
 RAIZ = os.path.dirname(os.path.abspath(__file__))
 if RAIZ not in sys.path:
     sys.path.insert(0, RAIZ)
+_TESTS = os.path.join(RAIZ, "tests")
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+
+from _estado_tmp import isola                                    # noqa: E402
+
+isola()          # #732: estado em tmp ANTES do `from app import` (não grava no worktree)
 
 TEXTO_PADRAO = "Teste de síntese do TTS Studio, um dois três, gravando agora."
 # critérios: RMS de fala normal fica bem acima disso; o bug do "áudio zerado"
