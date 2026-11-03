@@ -2061,8 +2061,14 @@
      de baixo do texto; `[hidden]` explícito porque display:flex venceria o da UA */
   #lxHoldAviso { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #lxHoldAviso[hidden] { display: none; }
-  .lx-log-mini.e-erro { color: var(--err); }
-  .lx-log-mini.e-ok { color: var(--ok); }
+  /* #773: descendente — o `obsLog` põe a classe no div FILHO, então o seletor
+     composto não casava e as linhas saíam todas na cor herdada */
+  .lx-log-mini .e-erro { color: var(--err); }
+  .lx-log-mini .e-ok { color: var(--ok); }
+  /* #765: aviso benigno (ex.: pipeline aquecendo) — nem verde de sucesso nem
+     vermelho de erro. O `obsLog` põe a classe no div FILHO, não no container:
+     o seletor é descendente (`.lx-log-mini .e-aviso`), não composto. */
+  .lx-log-mini .e-aviso { color: var(--warn); }
   /* #502 (adendo): painel de filtros da interrupção — recolhido por padrão para o
      OBS não empurrar a conversa para fora da tela. Travado no modo `imediata`,
      onde os filtros não decidem nada (a opacidade diz isso sem sumir com o texto). */
@@ -8370,6 +8376,7 @@ const LX = { ws: null, estado: "desligado", ctxCap: null, noCap: null, stream: n
              // cima dele. `sid` é o id que o `ready` trouxe (base da retomada) e
              // `retoma` conta as tentativas automáticas.
              explicado: "", sid: "", conectando: false, retoma: 0, retomaT: 0, fim: "",
+             prewarmAvisado: false,   // #765: o aviso de pipeline frio já saiu na sessão
              // #502: ganho do duck, marca de abaixado + prazo do teto de 2 s e o
              // modo escolhido nesta tela (null = vale o das settings)
              duck: null, abaixado: false, duckT: 0, interrupcao: null,
@@ -9388,6 +9395,7 @@ function lxRecebe(ev) {
                            // (assíncrona) também pinta "ouvindo" e não pode
                            // apagar o motivo de uma sessão que acabou de morrer
                            LX.explicado = ""; LX.fim = "";
+                           LX.prewarmAvisado = false;   // #765: aviso é por sessão
                            if (LX.estado === "conectando") lxEstado("ouvindo", "🎙 sessão pronta — fale");
                            lxLogEvento("sessão pronta (saída " + ((m.audio || {}).sr || "?") + " Hz)"); break;
     // `prewarm`: informativo (pipeline pré-aquecido). NÃO é turno: não mexe no
@@ -9590,6 +9598,17 @@ function lxRecebe(ev) {
         lxLinha("lxIA", "lx-erro", msgPipe);
         lxLogEvento(msgPipe, "e-erro");
         lxRetomar("pipeline");
+      } else if (m.code === "prewarm_em_curso") {
+        // #765: NÃO é falha — o servidor avisa que o pipeline ainda está frio e o
+        // turno SEGUE assim mesmo (contrato do #315). Pintar isso de erro dava
+        // badge "erro", linha vermelha na coluna IA e "fale de novo" com o turno
+        // em curso. Aqui: status próprio + UMA linha de aviso no log por sessão.
+        lxStatus("pipeline ainda aquecendo — o primeiro turno sai com os modelos frios");
+        if (!LX.prewarmAvisado) {
+          LX.prewarmAvisado = true;
+          lxLogEvento("pipeline ainda aquecendo — o primeiro turno sai com os modelos "
+                      + "frios [prewarm_em_curso]", "e-aviso");
+        }
       } else {
         // erro de pipeline/sessão (ex.: provedor de conversa fora): a sessão
         // segue viva. Além do hint, linha visível na coluna IA — o hint some no

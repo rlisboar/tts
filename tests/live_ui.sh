@@ -484,7 +484,27 @@ try:
             const c = { estado: estadoTxt() };
             lxRecebe({ data: JSON.stringify({ type: 'error', code: 'pipeline', message: 'pipeline não subiu' }) });
             const d = { estado: estadoTxt(), ia: ia(), status: status() };
-            return { a, b, c, d };
+            // #765: `prewarm_em_curso` na sessão VIVA não é falha — o turno segue,
+            // só frio. Não pode virar badge de erro, nem linha na coluna IA, nem
+            // "fale de novo"; no log é aviso e não empilha quando repete.
+            // sai da retomada que o `pipeline` abriu: a precedência da linha é
+            // dela e aqui se cobra o texto do AQUECIMENTO
+            clearTimeout(LX.retomaT); LX.retomaT = 0; LX.retoma = 0; LX.explicado = '';
+            LX.estado = 'conectando'; lxEstado('conectando', 'abrindo sessão…');
+            lxRecebe({ data: JSON.stringify({ type: 'ready' }) });
+            const iaAntes = ia();
+            const prewarm = JSON.stringify({ type: 'error', code: 'prewarm_em_curso',
+                                            message: 'pipeline ainda aquecendo; o turno segue com os modelos frios' });
+            lxRecebe({ data: prewarm });
+            lxRecebe({ data: prewarm });
+            const linhasPre = [...document.querySelectorAll('#lxLog > *')]
+                .filter(n => n.textContent.includes('prewarm_em_curso'));
+            const alvo = linhasPre[0] && linhasPre[0].firstChild;
+            const e = { estado: estadoTxt(), status: status(), iaMudou: ia() !== iaAntes,
+                        linhas: linhasPre.length, classe: (linhasPre[0] || {}).className || '',
+                        // a cor TEM de ser a de aviso: seletor errado deixava sem cor
+                        cor: alvo ? getComputedStyle(linhasPre[0]).color : '' };
+            return { a, b, c, d, e };
         }""")
         print(f"  error{{busy}} antes do ready → ia={r192['a']['ia'][:46]!r} estado={r192['a']['estado']!r}"
               f" · depois do close 1013: estado={r192['b']['estado']!r} status={r192['b']['status']!r}")
@@ -508,6 +528,56 @@ try:
                f"com o pipeline morto a tela segue prometendo fala (estado {r192['d']['estado']!r})")
         cobrar("pipeline" in r192["d"]["status"].lower(),
                f"o pipeline morto não foi dito na linha: {r192['d']['status']!r}")
+        # #765: o aquecimento é aviso, não falha
+        print(f"  error{{prewarm_em_curso}} ×2 → estado={r192['e']['estado']!r}"
+              f" status={r192['e']['status'][:52]!r} linhas={r192['e']['linhas']} classe={r192['e']['classe']!r}")
+        cobrar("ouvindo" in r192["e"]["estado"],
+               f"aquecimento virou estado de erro: {r192['e']['estado']!r}")
+        cobrar("aquecendo" in r192["e"]["status"], f"o aquecimento não foi dito: {r192['e']['status']!r}")
+        cobrar("fale de novo" not in r192["e"]["status"],
+               f"aquecimento pediu 'fale de novo': {r192['e']['status']!r}")
+        cobrar(not r192["e"]["iaMudou"], "o aquecimento sujou a coluna IA")
+        cobrar(r192["e"]["linhas"] == 1, f"o aviso de aquecimento repetiu no log ({r192['e']['linhas']}×)")
+        cobrar("e-erro" not in r192["e"]["classe"],
+               f"o aviso de aquecimento saiu como erro no log ({r192['e']['classe']!r})")
+        # #765: e a classe precisa VALER cor (o `obsLog` põe a classe no filho)
+        cor_erro = pg.evaluate("""() => { const d = document.createElement('div');
+            d.className = 'lx-log-mini'; const f = document.createElement('div');
+            f.className = 'e-erro'; d.appendChild(f);
+            document.body.appendChild(d); const c = getComputedStyle(f).color;
+            d.remove(); return c; }""")
+        cobrar(r192["e"]["cor"] and r192["e"]["cor"] != cor_erro,
+               f"o aviso de aquecimento está com a cor de erro ({r192['e']['cor']!r} vs {cor_erro!r})")
+        # #773: e `e-erro`/`e-ok` precisam PINTAR de fato — o seletor composto não
+        # casava com o filho e as duas saíam na cor herdada. A cor tem de casar com
+        # a variável, não só diferir do aquecimento.
+        varre = pg.evaluate("""() => {
+            const mk = cls => { const d = document.createElement('div');
+                d.className = 'lx-log-mini'; const f = document.createElement('div');
+                f.className = cls; d.appendChild(f); document.body.appendChild(d);
+                const c = getComputedStyle(f).color; d.remove(); return c; };
+            // a variável vira rgb pelo MESMO caminho do navegador, para comparar
+            // valores e não strings (hex x rgb)
+            const cor = v => { const d = document.createElement('div');
+                d.style.color = v; document.body.appendChild(d);
+                const c = getComputedStyle(d).color; d.remove(); return c; };
+            const css = getComputedStyle(document.documentElement);
+            return { erro: mk('e-erro'), ok: mk('e-ok'), aviso: mk('e-aviso'),
+                     cssErro: cor(css.getPropertyValue('--err').trim()),
+                     cssOk: cor(css.getPropertyValue('--ok').trim()),
+                     cssAviso: cor(css.getPropertyValue('--warn').trim()) };
+        }""")
+        print(f"  cores do log: erro={varre['erro']!r} ok={varre['ok']!r} "
+              f"aviso={varre['aviso']!r} · var(--err)={varre['cssErro']!r} "
+              f"var(--ok)={varre['cssOk']!r} var(--warn)={varre['cssAviso']!r}")
+        # #774: a cor tem de ser A DA VARIÁVEL — só "diferente" deixaria um azul
+        # qualquer passar
+        cobrar(varre["erro"] == varre["cssErro"],
+               f"e-erro não pinta com --err ({varre['erro']!r} vs {varre['cssErro']!r})")
+        cobrar(varre["ok"] == varre["cssOk"],
+               f"e-ok não pinta com --ok ({varre['ok']!r} vs {varre['cssOk']!r})")
+        cobrar(varre["aviso"] == varre["cssAviso"],
+               f"e-aviso não pinta com --warn ({varre['aviso']!r} vs {varre['cssAviso']!r})")
         # a simulação deixa um reconnect armado; as fases seguintes dirigem o fluxo
         pg.evaluate("() => { clearTimeout(LX.retomaT); LX.retomaT = 0; LX.retoma = 0; }")
 
