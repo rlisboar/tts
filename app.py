@@ -618,6 +618,43 @@ _SETTINGS_DEFAULTS = {
     "speech_queue": True,             # ligado por padrão (vários clientes na rede)
     "speech_queue_gap_s": 0.35,       # folga extra após a duração da fala (0–5 s)
 }
+class _StreamSeguro:
+    """`sys.stdout`/`sys.stderr` que engolem stdout morto (#770).
+
+    O `print` levanta `BrokenPipeError` quando o fd aponta para um pipe sem leitor
+    (`run.sh` órfão depois de um hang do runner). No job isso já é tratado pelo
+    `_log`; aqui a proteção vale para TODO print — Live, STT, boot e o que vier
+    depois, sem ter de lembrar de usar o helper. Delega o resto ao stream real."""
+
+    def __init__(self, base):
+        self._base = base
+
+    def write(self, texto):
+        try:
+            return self._base.write(texto)
+        except (BrokenPipeError, OSError, ValueError):
+            return len(texto)
+
+    def flush(self):
+        try:
+            self._base.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
+    def __getattr__(self, nome):        # `buffer`, `isatty`, `fileno`…
+        return getattr(self._base, nome)
+
+
+def _protege_streams() -> None:
+    """Envolve stdout/stderr uma vez só (idempotente)."""
+    for nome in ("stdout", "stderr"):
+        atual = getattr(sys, nome)
+        if not isinstance(atual, _StreamSeguro):
+            setattr(sys, nome, _StreamSeguro(atual))
+
+
+_protege_streams()     # stdout morto não pode derrubar boot/Live/STT (#770)
+
 _settings = dict(_SETTINGS_DEFAULTS)
 if SETTINGS_PATH.exists():
     try:
@@ -6358,6 +6395,18 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
         _finish_err(msg)
 
 
+def _log(msg: str) -> None:
+    """`print` que NUNCA derruba quem chamou (#768).
+
+    Com o stdout num pipe sem leitor (`run.sh` órfão), o `print` levanta
+    `BrokenPipeError` — e o do LUFS, dentro do `try` do job, marcava como `error` um
+    áudio JÁ gravado. O log é diagnóstico: se não dá para escrever, segue."""
+    try:
+        print(msg, flush=True)
+    except (BrokenPipeError, OSError, ValueError):
+        pass
+
+
 def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                  language: str, omni: dict, model_override: str | None = None,
                  use_queue: bool = True):
@@ -6493,8 +6542,8 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                     with _gen_lock:          # Metal exclusivo, como o job local
                         m = _get_model(model_override)
                 except Exception as exc:     # noqa: BLE001
-                    print(f"[tts] fallback local não carregou "
-                          f"({type(exc).__name__}: {exc})", flush=True)
+                    _log(f"[tts] fallback local não carregou "
+                          f"({type(exc).__name__}: {exc})")
                     return False
                 local_carregou = True
                 local["model"] = m
@@ -6558,16 +6607,16 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                         break
                     job["retries"] = job.get("retries", 0) + 1
                     anomalias.append(f"trecho {i + 1} (tentativa {tentativa}): {motivo}")
-                    print(f"[tts] trecho {i + 1}/{len(chunks)} anômalo "
-                          f"[{motivo}] — tentativa {tentativa}/2", flush=True)
+                    _log(f"[tts] trecho {i + 1}/{len(chunks)} anômalo "
+                          f"[{motivo}] — tentativa {tentativa}/2")
                     if tentativa == 2:
                         # a 2ª também saiu ruim: o trecho entra assim mesmo, mas
                         # com sinal no job E no meta (nunca mudo silencioso)
                         nao_resolvidas.append(f"trecho {i + 1}: {motivo}")
                         job["warning"] = (f"{len(nao_resolvidas)} trecho(s) saíram "
                                           f"anômalos mesmo após nova tentativa")
-                        print(f"[tts] trecho {i + 1}/{len(chunks)} ENTROU anômalo "
-                              f"[{motivo}] após 2 tentativas", flush=True)
+                        _log(f"[tts] trecho {i + 1}/{len(chunks)} ENTROU anômalo "
+                              f"[{motivo}] após 2 tentativas")
                     # retry: limpa tensores intermediários do generate falho
                     _release_mlx_memory()
                 return audio
@@ -6589,8 +6638,8 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                         except Exception as exc:      # noqa: BLE001
                             audio = None
                             motivo = f"{type(exc).__name__}: {exc}"
-                            print(f"[tts] remoto falhou no trecho {i + 1} "
-                                  f"(tentativa {tentativa}/2): {motivo[:160]}", flush=True)
+                            _log(f"[tts] remoto falhou no trecho {i + 1} "
+                                  f"(tentativa {tentativa}/2): {motivo[:160]}")
                             continue
                         motivo = _motivo_anomalia(
                             audio, sr, chunk, speed=float(omni.get("speed") or 1.0))
@@ -6598,15 +6647,15 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                             break
                         job["retries"] = job.get("retries", 0) + 1
                         anomalias.append(f"trecho {i + 1} remoto (tentativa {tentativa}): {motivo}")
-                        print(f"[tts] trecho {i + 1}/{len(chunks)} REMOTO anômalo "
-                              f"[{motivo}] — tentativa {tentativa}/2", flush=True)
+                        _log(f"[tts] trecho {i + 1}/{len(chunks)} REMOTO anômalo "
+                              f"[{motivo}] — tentativa {tentativa}/2")
                     if audio is None or motivo:
                         if not _fallback_ligado():
                             # desligado: comportamento antigo (erro ou trecho ruim entra)
                             if audio is None:
                                 raise RuntimeError(f"TTS remoto falhou: {motivo}")
-                            print(f"[tts] remoto anômalo e fallback desligado — trecho "
-                                  f"{i + 1} entra assim", flush=True)
+                            _log(f"[tts] remoto anômalo e fallback desligado — trecho "
+                                  f"{i + 1} entra assim")
                         else:
                             # remoto fora (2 erros) ou 2 tentativas anômalas: o job
                             # passa a LOCAL e ESTE trecho é regerado local (nunca error)
@@ -6614,7 +6663,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                             job["remote_fallback"] = True
                             aviso = (f"TTS remoto falhou no trecho {i + 1} ({motivo}) — "
                                      f"job segue LOCAL")
-                            print(f"[tts] {aviso}", flush=True)
+                            _log(f"[tts] {aviso}")
                             job["warning"] = (f"{job['warning']} | {aviso}"
                                               if job.get("warning") else aviso)
                             audio = None
@@ -6678,11 +6727,10 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         lufs_db = _normaliza_loudness(OUTPUTS_DIR / f"{out_id}.wav")
         if lufs_db is None:
             _av = "nível final não medido (ffmpeg indisponível) — arquivo sem ajuste de loudness"
-            print(f"[tts] {_av}", flush=True)
+            _log(f"[tts] {_av}")
             job["warning"] = f"{job['warning']} | {_av}" if job.get("warning") else _av
         elif abs(lufs_db) > 0.05:
-            print(f"[tts] nível final ajustado {lufs_db:+.2f} dB (alvo {LUFS_ALVO:g} LUFS)",
-                  flush=True)
+            _log(f"[tts] nível final ajustado {lufs_db:+.2f} dB (alvo {LUFS_ALVO:g} LUFS)")
         # métricas do ARQUIVO FINAL (pós-ganho): é o que o usuário ouve, e é o que
         # denuncia regressão de nível. Sem isso a única prova era o ouvido (#323).
         medido = _metricas_audio(OUTPUTS_DIR / f"{out_id}.wav")
@@ -6699,7 +6747,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                            f"fonte muito baixa: normalização amplificou até "
                            f"{ganho_max:.1f} dB (aviso acima de {GANHO_AVISO_DB:g} dB)")
         if aviso_nivel:
-            print(f"[tts] {aviso_nivel}", flush=True)
+            _log(f"[tts] {aviso_nivel}")
             job["warning"] = (f"{job['warning']} | {aviso_nivel}"
                               if job.get("warning") else aviso_nivel)
         meta = {
@@ -11286,17 +11334,30 @@ def _live_descarrega_pendente(sess: dict) -> None:
     try:
         while not sess.get("fechar") and (pipe.ocupado or _live_prewarm_pendente(sess)):
             time.sleep(0.1)
-        if sess.get("prewarm_ate") is not None and not sess.get("prewarm_ok"):
-            # o prazo estourou com o pipeline ainda frio: o turno SEGUE (não
-            # descarta), mas o cliente VÊ por que o primeiro áudio vai demorar.
+        # ESTOURO do prazo: consome o aviso e o estado na MESMA seção crítica.
+        # `_live_acorda_pendente` não é atômico e o observador moribundo re-arma o
+        # sucessor: com 2+ observadores acordados no mesmo prazo TODOS passavam o
+        # `while` e cada um mandava o próprio `prewarm_em_curso` — o dono recebeu
+        # vários no mesmo milissegundo (21:26, rev c6f54ea). Quem consome é um só:
+        # `prewarm_ate` vira None para os demais e `prewarm_avisado` é pegajoso,
+        # então o aviso é UM por sessão mesmo que um caminho re-arme o prazo.
+        avisa = False
+        with _live_pend_lock(sess):
+            if (sess.get("prewarm_ate") is not None and not sess.get("prewarm_ok")
+                    and not sess.get("prewarm_avisado")):
+                avisa = True
+                sess["prewarm_avisado"] = True
+            sess["prewarm_ate"] = None
+            # já se esperou o que dava: o próximo `_live_abre_turno` abre direto em
+            # vez de armar outro prazo e prender a fala de novo (senão o pendente
+            # entra em laço: abre, o gate re-arma, guarda, estoura, abre…)
+            sess["prewarm_esperou"] = True
+        if avisa:
+            # o turno SEGUE (não descarta), mas o cliente VÊ por que o primeiro
+            # áudio vai demorar
             _live_envia_json(sess, _live_erro(
                 "prewarm_em_curso",
                 "pipeline ainda aquecendo; o turno segue com os modelos frios"))
-        sess["prewarm_ate"] = None
-        # já se esperou o que dava: o próximo `_live_abre_turno` abre direto em vez
-        # de armar outro prazo e prender a fala de novo (senão o pendente entra em
-        # laço: abre, o gate re-arma, guarda, estoura, abre…)
-        sess["prewarm_esperou"] = True
         # #221: `pop` e contadores na MESMA seção crítica, e só quem LEVOU o
         # pendente os toca. Antes o zero ficava fora do lock e o observador
         # PERDEDOR (pop = None, caso NORMAL quando dois acordam no mesmo

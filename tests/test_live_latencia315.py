@@ -128,6 +128,34 @@ def test_prewarm_estourado_avisa_e_abre_assim_mesmo(monkeypatch):
     assert sess["prewarm_ate"] is None            # não espera de novo
 
 
+def test_prewarm_estourado_avisa_UMA_vez_com_varios_observadores(monkeypatch):
+    """#766: o aviso saía um por observador, no mesmo milissegundo.
+
+    `_live_acorda_pendente` não é atômico e o observador moribundo re-arma o
+    sucessor: com dois ou mais acordados no mesmo prazo, todos passavam o `while`
+    e cada um mandava o próprio `prewarm_em_curso` (repro do dono às 21:26). O
+    turno frio tem de SEGUIR abrindo — o aviso é UM por sessão, não um por
+    observador."""
+    monkeypatch.setattr(app, "_LIVE_ESPERA_PREWARM_S", 0.05)
+    pipe = _PipePrewarm()
+    sess = _sess(pipe=pipe)
+    sess["turno_pendente"] = b"\x00\x01" * 400
+    sess["prewarm_ate"] = time.monotonic() + 0.05
+    observadores = [app.threading.Thread(target=app._live_descarrega_pendente,
+                                         args=(sess,), daemon=True)
+                    for _ in range(3)]
+    for t in observadores:
+        t.start()
+    _espera(lambda: bool(pipe.turnos), 3.0)
+    avisos = [i[1] for i in list(sess["fila"]._q.queue) if isinstance(i[1], dict)
+              and i[1].get("code") == "prewarm_em_curso"]
+    assert len(avisos) == 1, f"{len(avisos)} avisos para o mesmo estouro: {avisos}"
+    assert pipe.turnos, "o turno frio tem de ABRIR mesmo com o prazo estourado"
+    assert sess["prewarm_ate"] is None and sess["prewarm_esperou"] is True
+    for t in observadores:
+        t.join(3)
+
+
 def test_espera_zero_restaura_o_comportamento_antigo(monkeypatch):
     monkeypatch.setattr(app, "_LIVE_ESPERA_PREWARM_S", 0.0)
     pipe = _PipePrewarm()

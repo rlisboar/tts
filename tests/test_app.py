@@ -2113,3 +2113,51 @@ def test_marca_dagua_v1_audio_speech_preaquece_o_marcador(monkeypatch, tmp_path)
                  json={"model": "tts-1", "input": "frase", "voice": voz,
                        "response_format": "wav"})
     assert preaquecidos == []
+
+
+def test_print_quebrado_nao_marca_job_pronto_como_erro(monkeypatch, tmp_path):
+    """stdout morto (`BrokenPipeError`) não pode transformar áudio pronto em erro.
+
+    O `print` do LUFS roda dentro do `try` do job: com fd 1 num pipe sem leitor ele
+    levantava `BrokenPipeError` e o `except` geral marcava `error` — com o wav JÁ em
+    `outputs/`. Todo log do job passa por `_log`, que engole a falha (#768)."""
+    def _gerador(model, texto, *a, **k):
+        return np.full(24000, 0.2, dtype=np.float32)
+
+    job_id = _job_de_render(monkeypatch, tmp_path, _gerador)
+
+    def _print_quebrado(*a, **k):
+        raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr("builtins.print", _print_quebrado)
+    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    job = app._jobs[job_id]
+    assert job["status"] == "done", job
+    assert job.get("output"), "não devolveu o output"
+    assert (app.OUTPUTS_DIR / f"{job['output']['id']}.wav").is_file(), "sem wav"
+
+
+def test_stdout_morto_nao_derruba_print_fora_do_job(monkeypatch):
+    """Live/STT/boot: `print` com stdout morto não levanta (#770).
+
+    A proteção é o stream: `sys.stdout`/`sys.stderr` viram `_StreamSeguro` e a
+    escrita que falha é engolida. Aqui o stream real é trocado por um que sempre
+    levanta, e um print de aviso do app tem de passar."""
+    class _Morto:
+        def write(self, texto):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(app.sys, "stdout", _Morto())
+    monkeypatch.setattr(app.sys, "stderr", _Morto())
+    app._protege_streams()
+    app._protege_streams()          # idempotente: não empilha wrapper
+    assert isinstance(app.sys.stdout, app._StreamSeguro)
+    assert isinstance(app.sys.stderr, app._StreamSeguro)
+    monkeypatch.setattr(app, "_marca_avisada", False)
+    app._avisa_sem_marca("motivo")  # não pode levantar
+    print("segue vivo")             # e o print comum também não
+    assert app.sys.stdout.write("x") == 1
