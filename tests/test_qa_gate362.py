@@ -67,6 +67,7 @@ ELEVADAS = [
 CONSUMO = [
     ("POST", "/api/mic-route"),
     ("POST", "/api/tts"),
+    ("POST", "/api/tts/jobs/abc123/cancel"),   # cancelar é consumo, não admin (#857)
     ("POST", "/api/transcribe"),
     ("POST", "/api/translate-speech"),
     ("POST", "/api/modify-speech"),
@@ -165,7 +166,9 @@ def test_elevada_aceita_admin(client, auth, preparado, verbo, rota):
 @pytest.mark.parametrize("verbo,rota", CONSUMO)
 def test_consumo_aceita_chave_de_uso(client, chave_de_uso, preparado, verbo, rota):
     r = _chama(client, verbo, rota, chave_de_uso)
-    assert r.status_code in (200, 400, 422), (
+    # 404 = passou o guarda e o recurso é que não existe (o job do caminho é
+    # inventado, `abc123`); 401/403 é o que se está medindo aqui
+    assert r.status_code in (200, 400, 404, 422), (
         f"{verbo} {rota} não passou do guarda com chave de uso: {r.status_code} {r.text[:120]}")
 
 
