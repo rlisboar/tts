@@ -2104,6 +2104,10 @@
   /* Campo travado pela política de admin (chave de uso): ver aplicarPoliticaAdmin.
      Fica visível e preenchido, mas não editável — e o title diz o motivo. */
   .cfg-travado { opacity: .55; }
+  /* #791: campo de USO com alcance longo — o aviso não pode sumir no meio da
+     ajuda comum */
+  .cfg-alcance { color: var(--warn); border-left: 3px solid var(--warn);
+                 padding-left: 8px; margin-top: 6px; }
   .cfg-travado input, .cfg-travado select, .cfg-travado textarea { cursor: not-allowed; }
   input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; }
   /* placeholder longo de segredo mascarado precisa de mais espaço/peso */
@@ -2587,6 +2591,9 @@
           <details style="margin-top:10px">
             <summary class="hint" style="cursor:pointer">Instruções da IA (preprompt)</summary>
             <textarea id="cvSystem" style="width:100%; min-height:70px; font-size:12px; margin-top:6px; font-family:var(--mono)" placeholder="instruções da IA…"></textarea>
+            <p class="hint cfg-alcance">⚠ campo de <b>uso</b>: substitui o preprompt de TODO
+              trecho da Conversa (contorna o <code>chat_model</code>, que é admin). “Restaurar
+              padrão” limpa o seu, mas não desfaz o que outra chave gravou.</p>
             <div class="row" style="gap:8px; margin-top:6px">
               <button type="button" id="cvSystemSave" class="small">Salvar instruções</button>
               <button type="button" id="cvSystemReset" class="ghost small">Restaurar padrão</button>
@@ -3166,7 +3173,8 @@
           <input type="range" id="sttBeam" min="1" max="8" step="1" value="5"></label>
         <p class="hint" style="margin-top:0">Beam p/ Whisper remoto (API/RTX); o local no Mac roda greedy — p/ mais precisão, use o large-v3 completo.</p>
         <label class="cfg-label">Histórico de operação: guardar por <output id="metricsTtlOut">14</output> dia(s)
-          <input type="range" id="metricsTtl" min="0" max="90" step="1" value="14"></label>
+          <input type="range" id="metricsTtl" data-admin-setting="metrics_ttl_dias"
+                 min="0" max="90" step="1" value="14"></label>
         <p class="hint" style="margin-top:0">Metadado por requisição (rota, ms, código, estágio) em <code>state/metrics/</code>; nenhum texto ou áudio. 0 apaga na próxima poda. Ver <code>GET /api/metrics</code> (admin).</p>
 
         <div id="sttAdvanced">
@@ -3225,6 +3233,9 @@
         <label class="cfg-label">Extras do LLM (JSON)
           <textarea id="chatExtra" rows="2" style="font-family:var(--mono); font-size:12px" placeholder='{"reasoning_effort": "low"}'></textarea></label>
         <p class="hint">Mesclado no body de cada chamada. Ex.: <code>{"reasoning_effort": "low", "top_p": 0.9}</code>. Vazio = padrão.</p>
+        <p class="hint cfg-alcance">⚠ campo de <b>uso</b>: vale para TODO mundo e sobrepõe o que o
+          modelo manda — inclusive <code>model</code>, que é admin. Um <code>{"model": "…"}</code>
+          aqui troca o modelo por baixo do seletor.</p>
         <p class="hint">Provedor que conduz a aba Conversa. Vazio = herda o de tradução.</p>
         <div class="divider"></div>
         <label class="cfg-label">Biometria de voz — quem pode falar
@@ -3454,6 +3465,7 @@ const ROTULO_SETTING = {
   remote_stt: "transcrição via API", remote_stt_base_url: "URL do STT",
   remote_stt_model: "modelo do STT", remote_stt_key: "chave do STT",
   chat_base_url: "Base URL da Conversa", chat_model: "modelo da Conversa", chat_api_key: "chave da Conversa",
+  metrics_ttl_dias: "retenção do histórico",
 };
 const rotuloSetting = k => ROTULO_SETTING[k] || k;
 // Administrativos que existem no servidor mas ainda não têm input na tela: sem
@@ -3461,7 +3473,11 @@ const rotuloSetting = k => ROTULO_SETTING[k] || k;
 // Campos administrativos que ainda NÃO têm controle na tela. Hoje vazia: os dois
 // que faltavam (`translate_model`, `remote_tts_model`) ganharam input marcado no
 // #586 e o resguardo do `admin_ui_flow` reprova qualquer novo sem marcador.
-const ADMIN_SEM_UI = new Set();
+const ADMIN_SEM_UI = new Set([
+  // protegidos no servidor e SEM controle na tela ainda: o aviso de marcador
+  // faltante acusaria os dois para sempre (#657/#791)
+  "tts_marca_dagua", "speaker_guardar_audio",
+]);
 
 // Trava os campos administrativos e diz POR QUE estão travados: campo travado
 // sem explicação vira "a UI não me deixa mexer".
@@ -8182,10 +8198,11 @@ async function cvLoadSystem() {
 }
 $("cvSystemSave").onclick = async () => {
   try {
-    await api("/api/settings", {
+    const r = await api("/api/settings", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_system: $("cvSystem").value })
     });
+    if (tratarRespostaSettings(r).length) return;     // #791: campo de uso
     toast("Instruções salvas ✔");
   } catch (e) { toast("Erro: " + e.message, 5000); }
 };
@@ -8193,10 +8210,11 @@ $("cvSystemReset").onclick = async () => {
   try {
     const s = await api("/api/settings");
     $("cvSystem").value = s.chat_system_default || "";
-    await api("/api/settings", {
+    const r = await api("/api/settings", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_system: $("cvSystem").value })
     });
+    tratarRespostaSettings(r);                         // #791: campo de uso
     toast("Instruções restauradas (padrão)");
   } catch (e) { toast("Erro: " + e.message, 5000); }
 };

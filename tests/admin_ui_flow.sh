@@ -346,6 +346,24 @@ with sync_playwright() as p:
     cobrar("uso" in selo.lower(), f"selo deveria dizer chave de uso, veio {selo!r}")
     cobrar(len(travados) >= 10, f"poucos campos travados: {travados}")
     cobrar(not cfg_speed_travado, "cfgSpeed (não-admin) não devia estar travado")
+
+    # #791: os três campos de `use` que mexem no que a IA responde/apaga. Os dois
+    # de prompt ficam abertos (é o propósito), mas AVISAM o alcance; o TTL apaga
+    # histórico, então é admin — quando o servidor o proteger, tem de vir travado.
+    avisos = pg.eval_on_selector_all(
+        ".cfg-alcance", "els => els.map(e => e.textContent.replace(/\\s+/g, ' ').trim())")
+    print(f"  avisos de alcance: {len(avisos)}")
+    cobrar(len(avisos) >= 2, f"faltou aviso de alcance nos campos de uso ({avisos})")
+    cobrar(any("uso" in a and "admin" in a for a in avisos),
+           f"o aviso não diz que é campo de uso nem que contorna o admin ({avisos})")
+    marcado = pg.eval_on_selector("#metricsTtl", "el => el.dataset.adminSetting")
+    cobrar(marcado == "metrics_ttl_dias",
+           f"o TTL do histórico não está marcado como admin ({marcado!r})")
+    if "metrics_ttl_dias" in (pg.evaluate("() => [...ADMIN.fields]") or []):
+        cobrar(pg.eval_on_selector("#metricsTtl", "el => el.disabled") is True,
+               "o TTL é admin no servidor mas não veio travado")
+    else:
+        print("  (servidor ainda não lista metrics_ttl_dias em admin_fields)")
     cobrar(criar is True, "Nova chave devia estar desabilitada com chave de uso")
     cobrar(not (segredo.startswith("••••") and "mascarado" not in ph),
            "segredo mascarado sem aviso no placeholder")
