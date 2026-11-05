@@ -8999,3 +8999,50 @@ def test_host_privado_reconhece_as_faixas():
         assert app._host_privado(privado) is True, privado
     for publico in ("8.8.8.8", "abc.trycloudflare.com", "meu.dominio.com.br"):
         assert app._host_privado(publico) is False, publico
+
+
+def test_host_privado_ipv6_e_formas_de_url():
+    """IPv6 (colchetes inclusive), `user@host` e esquema não-HTTP (#784)."""
+    for privado in ("::1", "[::1]", "fc00::1", "[fc00::1]", "fe80::1", "[fe80::1]",
+                    "::ffff:127.0.0.1"):
+        assert app._host_privado(privado) is True, privado
+    assert app._public_proxy_check("ftp://exemplo.com")["ok"] is False
+    # `user@host:porta` — o `hostname` do urlsplit é o que conta
+    from urllib.parse import urlsplit
+
+    assert app._host_privado(urlsplit("http://dono:segredo@127.0.0.1:9").hostname) is True
+    assert app._host_privado(urlsplit("http://dono:segredo@8.8.8.8:9").hostname) is False
+    # IPv6 na URL, colchetes e porta
+    assert app._host_privado(urlsplit("http://[::1]:7860").hostname) is True
+
+
+def test_redirect_nao_e_seguido():
+    """Host público que redireciona para interno não pode furar a checagem.
+
+    Follow desligado: o `ok` fica falso (3xx) em vez de virar 200 do destino."""
+    import threading as _th
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class _Redir(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:9/health")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), _Redir)
+    _th.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        # 127.0.0.1 é privado: usa-se o caminho direto pela função, que não valida
+        r = app._public_proxy_check(f"http://127.0.0.1:{srv.server_address[1]}")
+        assert r["privado"] is True
+        # e o handler de redirect está instalado no opener
+        import urllib.request
+
+        assert any(isinstance(h, app._SemRedirect) for h in
+                   urllib.request.build_opener(app._SemRedirect()).handlers)
+    finally:
+        srv.shutdown()

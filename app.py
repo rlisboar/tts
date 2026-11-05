@@ -4154,6 +4154,9 @@ def _cf_launchd_loaded() -> bool | None:
 def _host_privado(host: str) -> bool:
     """O destino é da própria máquina/LAN? (loopback, RFC1918, link-local, CGNAT)
 
+    Cobre IPv4 e IPv6 (`::1`, `fc00::/7`, `fe80::/10`); a forma com colchetes da URL
+    chega aqui já descolchetada pelo `urlsplit().hostname`.
+
     Sem isso o `?url=` é um scanner da rede interna com oráculo de código/latência
     (#784). Nome que não resolve em IP cai no heurístico de sufixo."""
     import ipaddress
@@ -4161,6 +4164,9 @@ def _host_privado(host: str) -> bool:
     nome = (host or "").strip().strip("[]").lower()
     if not nome:
         return True
+    # NOME que não resolvemos: o heurístico de sufixo pega o caso comum, mas um
+    # domínio público apontando para IP privado (ou o contrário) passa — brecha
+    # conhecida e declarada (#784).
     if nome in ("localhost",) or nome.endswith((".local", ".lan", ".internal",
                                                 ".home.arpa")):
         return True
@@ -4168,6 +4174,7 @@ def _host_privado(host: str) -> bool:
         ip = ipaddress.ip_address(nome)
     except ValueError:
         return False                     # nome público (ou DNS que não resolvemos)
+    # CGNAT (100.64/10) NÃO entra em `is_private` no 3.12 — a linha é necessária
     return (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
             or ip in ipaddress.ip_network("100.64.0.0/10"))
 
