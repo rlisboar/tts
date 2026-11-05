@@ -255,8 +255,21 @@ restore responde 404.
 o que não traz fica. Espelho exato — apagar toda voz fora do pacote — só com
 `?espelho=1`, e aí um pacote sem vozes é recusado a menos que se confirme com
 `?sem_vozes=1`. Antes de publicar qualquer restore, o estado atual é copiado para
-`state/restore-backups/<data-hora>/` (0600, os 10 últimos), então até o engano tem
-volta; a resposta lista `apagados` e `trocados`.
+`state/restore-backups/<data-hora>/` (0600, os 10 últimos, `fsync` antes de
+publicar), então até o engano tem volta; a resposta lista `apagados` e `trocados`.
+
+**Para voltar atrás** (o snapshot tem a MESMA forma do pacote, de propósito): pare
+o app, empacote a pasta do snapshot e restaure —
+
+```bash
+cd "$(./.venv-mlx/bin/python -c 'import app; print(app.STATE_DIR)')/restore-backups"
+(cd 20260101-120000 && zip -qr ../volta.zip .)
+curl -sS -X POST -H "X-API-Key: $CHAVE" -F "arquivo=@../volta.zip" \
+  http://127.0.0.1:7860/api/restore
+```
+
+O `zip` sai da pasta do snapshot (`.`), não da raiz do estado — é o que mantém
+`voices/` no lugar certo dentro do pacote.
 
 `POST .../denoise?previa=true` roda a MESMA cadeia e devolve `200` com WAV da versão
 limpa **sem escrever nada** (nem o `.orig`): os números vão em header (`X-Timbre`,

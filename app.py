@@ -893,6 +893,19 @@ def _role_do_disco(v) -> str | None:
     return None
 
 
+#: Snapshot IMUTÁVEL das chaves (#799): `_exige_chave` roda no event loop e pegava
+#: o `_apikeys_lock`, que rotas do threadpool seguram gravando disco. Quem escreve
+#: chama `_apikeys_publica()`; a leitura vira atribuição, sem lock.
+_apikeys_vivo: tuple = (True, ())
+
+
+def _apikeys_publica() -> None:
+    """Publica o estado atual para leitura sem lock (chamar após toda mutação)."""
+    global _apikeys_vivo
+    _apikeys_vivo = (bool(_apikeys.get("enabled", True)),
+                     tuple(k.get("secret") or "" for k in (_apikeys.get("keys") or [])))
+
+
 def _save_apikeys():
     """Persiste .apikeys.json — inclusive o `role` (a separação admin/use só é
     real se sobreviver ao restart; sem o campo, `_load_apikeys` relia tudo como
@@ -913,6 +926,7 @@ def _save_apikeys():
             if k.get("secret")
         ],
     }
+    _apikeys_publica()
     write_json_atomic(APIKEYS_PATH, payload)
     try:
         os.chmod(APIKEYS_PATH, 0o600)
@@ -985,9 +999,11 @@ def _load_apikeys():
                 "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             })
         _apikeys = {"enabled": True, "keys": keys}
+        _apikeys_publica()
         return
 
     _apikeys = {"enabled": enabled, "keys": keys}
+    _apikeys_publica()
     # o espelho `.apikey` (que o `run.sh` lê no boot) e a migração só vão ao disco
     # na próxima escrita — `_save_apikeys` chama `_sync_legacy_apikey_file`.
 
@@ -998,12 +1014,10 @@ def _auth_enabled() -> bool:
     `TTS_ROD_ADMIN_KEY` conta como chave: quem sobe o app só com ela não pode
     ficar com a rede ABERTA (era o caso: `_key_is_valid` não a conhecia e
     `_auth_enabled` só olhava TTS_ROD_API_KEY/chaves gerenciadas)."""
-    with _apikeys_lock:
-        if not _apikeys.get("enabled", True):
-            return False
-        if _apikeys.get("keys"):
-            return True
-    return bool(_ENV_API_KEY or _ADMIN_API_KEY)
+    ligado, chaves = _apikeys_vivo
+    if not ligado:
+        return False
+    return bool(chaves) or bool(_ENV_API_KEY or _ADMIN_API_KEY)
 
 
 def _extract_request_key(request) -> str:
@@ -1307,9 +1321,7 @@ def _key_is_valid(provided: str) -> bool:
         return True
     if _ADMIN_API_KEY and _secrets_iguais(provided, _ADMIN_API_KEY):
         return True
-    with _apikeys_lock:
-        return any(_secrets_iguais(provided, k.get("secret") or "")
-                   for k in (_apikeys.get("keys") or []))
+    return any(_secrets_iguais(provided, s) for s in _apikeys_vivo[1] if s)
 
 
 def _key_role(provided: str) -> str | None:
@@ -5556,7 +5568,6 @@ async def import_voices(request: Request, zip_file: UploadFile = File(...)):
     — o resto do zip é ignorado. Arquivos órfãos (wav sem json ou vice-versa)
     entram, mas são avisados no response.
     """
-    import zipfile
 
     # Copia em streaming para não depender de UploadFile.size nem carregar o
     # upload inteiro na RAM antes de validar o limite.
@@ -5577,10 +5588,25 @@ async def import_voices(request: Request, zip_file: UploadFile = File(...)):
             incoming_path.unlink(missing_ok=True)
             raise
 
+    # extracao/validacao do zip FORA do loop (#799): ate 512 MB de sha256 e copia
+    from starlette.concurrency import run_in_threadpool
+
+    def _importa():
+        return _importa_vozes_zip(incoming_path)
+
+    try:
+        return await run_in_threadpool(_importa)
+    finally:
+        incoming_path.unlink(missing_ok=True)
+
+
+def _importa_vozes_zip(incoming_path: Path) -> dict:
+    """Corpo sincrono do import (roda na thread). O chamador apaga o temporario."""
+    import zipfile
+
     try:
         zf = zipfile.ZipFile(incoming_path)
     except zipfile.BadZipFile as exc:
-        incoming_path.unlink(missing_ok=True)
         raise HTTPException(400, "Arquivo não é um zip válido") from exc
 
     importados, ignorados, renomeados = [], [], []
@@ -5786,8 +5812,11 @@ async def restore_estado(request: Request, arquivo: UploadFile = File(...),
             raise
 
     try:
-        resultado = _executa_restore(incoming_path, espelho=espelho,
-                                     sem_vozes=sem_vozes)
+        # zip de ate 512 MB: sha256, extracao e publicacao FORA do loop (#799)
+        from starlette.concurrency import run_in_threadpool
+
+        resultado = await run_in_threadpool(
+            _executa_restore, incoming_path, espelho=espelho, sem_vozes=sem_vozes)
     finally:
         incoming_path.unlink(missing_ok=True)
 
@@ -5883,25 +5912,58 @@ def _aplica_restore(incoming_path: Path, espelho: bool = False,
 _RESTORE_BACKUPS_MAX = max(1, int(os.environ.get("TTS_RESTORE_BACKUPS", "10")))
 
 
+def _fsync_arquivo(caminho: Path) -> None:
+    """Leva o conteúdo ao disco de verdade (`copy2` fecha, mas não dura)."""
+    with open(caminho, "rb") as f:
+        os.fsync(f.fileno())
+
+
+def _fsync_dir(caminho: Path) -> None:
+    """Durabilidade da ENTRADA no diretório (o arquivo só existe após o fsync dele)."""
+    try:
+        fd = os.open(caminho, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _snapshot_duravel() -> Path:
     """Cópia do estado ATUAL antes de publicar, em `STATE_DIR/restore-backups/<ts>`.
 
     O rollback em `TemporaryDirectory` morre no sucesso; sem esta cópia um restore
-    errado (ou um pacote só com settings) não tem volta. Poda os mais antigos."""
-    destino = STATE_DIR / "restore-backups" / time.strftime("%Y%m%d-%H%M%S")
-    destino.mkdir(parents=True, exist_ok=True)
+    errado (ou um pacote só com settings) não tem volta. Poda os mais antigos.
+
+    DURÁVEL de verdade (#788): `copy2` fecha o arquivo, o que sobrevive a crash de
+    processo mas NÃO a queda de energia — o conteúdo pode ficar no page cache com
+    `voices/` já reescrito. Por isso `fsync` em cada arquivo e no diretório antes
+    de devolver; se algum falhar, o restore ABORTA (cópia que não dura não serve
+    de volta)."""
+    raiz = STATE_DIR / "restore-backups"
+    # sufixo curto: dois restores no MESMO segundo não podem dividir a pasta (o
+    # segundo sobrescreveria o snapshot do primeiro) — #788
+    carimbo = time.strftime("%Y%m%d-%H%M%S")
+    destino = raiz / carimbo
+    if destino.exists():
+        destino = raiz / f"{carimbo}-{uuid.uuid4().hex[:6]}"
+    destino.mkdir(parents=True)
     try:
         destino.chmod(0o700)
     except OSError:
         pass
     _snapshot_estado(destino)
     for arq in destino.rglob("*"):
+        if not arq.is_file():
+            continue
         try:
-            if arq.is_file():
-                arq.chmod(0o600)
+            arq.chmod(0o600)
         except OSError:
             pass
-    raiz = STATE_DIR / "restore-backups"
+        _fsync_arquivo(arq)          # conteúdo
+    _fsync_dir(destino)              # entradas do snapshot
+    _fsync_dir(raiz)                 # o próprio diretório do snapshot
     antigos = sorted(p for p in raiz.iterdir() if p.is_dir())
     for velho in antigos[:-_RESTORE_BACKUPS_MAX]:
         shutil.rmtree(velho, ignore_errors=True)
@@ -10202,21 +10264,28 @@ async def speaker_enroll(request: Request, name: str = Form(...),
         vecs_antes = list(_antes.get("vecs") or [])
     else:      # só as do espaço novo contam para a consistência
         vecs_antes = list(_pend.get("vecs") or []) if _pend.get("modelo") == efetivo else []
-    tmp = _save_audio_upload(audio, ".voz")
-    try:
-        emb, problemas = await run_in_threadpool(_speaker_avalia, tmp, vecs_antes)
-        # guardado AQUI, antes do unlink, e só se a amostra vai entrar: é o que
-        # permite reextrair sozinho depois de uma troca de extrator (#658)
-        if emb and (forcar or not problemas):
-            _speaker_guarda_audio(nome, tmp)
-    finally:
-        tmp.unlink(missing_ok=True)
+    # ffmpeg + ECAPA FORA do loop (#799)
+    def _extrai():
+        tmp = _save_audio_upload(audio, ".voz")
+        try:
+            emb, problemas = _speaker_avalia(tmp, vecs_antes)
+            # guardado AQUI, antes do unlink, e só se a amostra vai entrar: é o que
+            # permite reextrair sozinho depois de uma troca de extrator (#658)
+            if emb and (forcar or not problemas):
+                _speaker_guarda_audio(nome, tmp)
+            return emb, problemas
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    emb, problemas = await run_in_threadpool(_extrai)
     if not emb:
         raise HTTPException(400, "Não deu para extrair a voz — grave 8s+ falando")
     if problemas and not forcar:
         raise HTTPException(400, "Amostra recusada: " + "; ".join(problemas)
                             + ". Use `forcar=true` para entrar assim mesmo.")
-    with _speaker_lock:
+    def _grava():
+      # o lock (que a reextracao segura por inteiro) e a gravacao saem do loop (#799)
+      with _speaker_lock:
         perfis = _speaker_load()
         p = perfis.get(nome, {"vecs": [], "updated": 0})
         if legado == efetivo:
@@ -10245,7 +10314,9 @@ async def speaker_enroll(request: Request, name: str = Form(...),
         perfis[nome] = p
         _speaker_save(perfis)
         n = len(p["vecs"]) if "pendente" not in p else len(p["pendente"]["vecs"])
-        em_uso = _speaker_modelo_do_perfil(p)
+        return n, _speaker_modelo_do_perfil(p), recadastrando
+
+    n, em_uso, recadastrando = await run_in_threadpool(_grava)
     faltam = max(0, SPEAKER_MIN_AMOSTRAS - n)
     return {"ok": True, "name": nome, "samples": n,
             "modelo": efetivo, "em_uso": em_uso, "recadastro": recadastrando,
@@ -10324,12 +10395,15 @@ async def speaker_avalia(audio: UploadFile = None):
 
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
-    tmp = _save_audio_upload(audio, ".vozav")
-    try:
-        fala, snr = await run_in_threadpool(
-            lambda: (_vad_fala_s(tmp), _snr_estimado(tmp)))
-    finally:
-        tmp.unlink(missing_ok=True)
+    # o `_save_audio_upload` também é ffmpeg: vai junto para a thread (#799)
+    def _mede():
+        tmp = _save_audio_upload(audio, ".vozav")
+        try:
+            return _vad_fala_s(tmp), _snr_estimado(tmp)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    fala, snr = await run_in_threadpool(_mede)
     problemas = []
     if fala is not None and fala < SPEAKER_MIN_FALA_S:
         problemas.append(f"fala curta: {fala:.1f}s de voz (mínimo "
@@ -10353,12 +10427,21 @@ async def speaker_check(audio: UploadFile = None):
     contrariar o gate (#525/#590)."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
-    tmp = _save_audio_upload(audio, ".vozchk")
-    try:
-        perfis = _speaker_load()
-        melhor, sim, houve_emb, _modo_escore = _speaker_pontua(tmp, perfis)
-    finally:
-        tmp.unlink(missing_ok=True)
+    # FORA do event loop (#799): ffmpeg (até 120 s) e o ECAPA (carga no 1º uso)
+    # seguravam TODAS as conexões — o Live incluso, que é quem mais sente.
+    from starlette.concurrency import run_in_threadpool
+
+    def _pontua():
+        tmp = _save_audio_upload(audio, ".vozchk")
+        try:
+            with _speaker_lock:
+                perfis = _speaker_load()
+            return tmp, perfis, _speaker_pontua(tmp, perfis)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    _tmp, perfis, (melhor, sim, houve_emb, _modo_escore) = \
+        await run_in_threadpool(_pontua)
     if not houve_emb:
         raise HTTPException(400, "Áudio curto demais p/ identificar (grave 8s+)")
     modelo = (_speaker_modelo_do_perfil(perfis[melhor]) if melhor

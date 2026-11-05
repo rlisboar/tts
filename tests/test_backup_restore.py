@@ -285,3 +285,70 @@ def test_pacote_sem_vozes_com_espelho_exige_confirmacao(client, auth, estado):
                     files={"arquivo": ("b.zip", so_settings, "application/zip")})
     assert r.status_code == 200, r.text
     assert not list(estado["vozes"].glob("*.wav"))
+
+
+def test_snapshot_do_restore_e_duravel_antes_de_publicar(client, auth, estado,
+                                                         monkeypatch, tmp_path):
+    """O snapshot tem de ir ao DISCO antes de qualquer escrita em `voices/` (#788).
+
+    `copy2` fecha o arquivo — sobrevive a crash de processo, não a queda de energia.
+    Sem `fsync`, o conteúdo pode ficar no page cache com `voices/` já reescrito. A
+    célula conta as duas coisas e exige um `fsync` por arquivo copiado, mais o do
+    diretório, ANTES de o `voices/` ser tocado."""
+    monkeypatch.setattr(app, "STATE_DIR", tmp_path / "estado")
+    eventos: list[tuple[str, str]] = []
+    real_copy2 = app.shutil.copy2
+    real_copyfile = app.shutil.copyfile
+    real_unlink = app.Path.unlink
+
+    def _anota(destino):
+        # só o snapshot DURÁVEL interessa: o rollback efêmero não precisa de fsync
+        if "restore-backups" in str(destino):
+            eventos.append(("copia", str(destino)))
+
+    def _copia(origem, destino, *a, **k):
+        _anota(destino)
+        return real_copy2(origem, destino, *a, **k)
+
+    def _copia1(origem, destino, *a, **k):
+        _anota(destino)
+        return real_copyfile(origem, destino, *a, **k)
+
+    def _fsync(fd):
+        eventos.append(("fsync", str(fd)))
+
+    def _unlink(self, *a, **k):
+        eventos.append(("unlink", self.name))
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(app.shutil, "copy2", _copia)
+    monkeypatch.setattr(app.shutil, "copyfile", _copia1)
+    monkeypatch.setattr(app.os, "fsync", _fsync)
+    monkeypatch.setattr(app.Path, "unlink", _unlink)
+    pacote = client.get("/api/backup", headers=auth).content
+    (estado["vozes"] / "outra.wav").write_bytes(b"lixo")
+    eventos.clear()
+
+    r = client.post("/api/restore?espelho=1", headers=auth,
+                    files={"arquivo": ("b.zip", pacote, "application/zip")})
+    assert r.status_code == 200, r.text
+    # `copy2` chama `copyfile` por dentro: o mesmo destino aparece duas vezes
+    copias = sorted({e[1] for e in eventos if e[0] == "copia"})
+    fsyncs = [e for e in eventos if e[0] == "fsync"]
+    assert copias, "nada foi copiado para o snapshot"
+    assert len(fsyncs) >= len(copias), f"{len(copias)} arquivos e só {len(fsyncs)} fsync"
+    # e tudo isso ANTES de apagar a voz que sobra (a publicação)
+    primeiro_unlink = next((i for i, e in enumerate(eventos) if e[0] == "unlink"), None)
+    if primeiro_unlink is not None:
+        assert len([e for e in eventos[:primeiro_unlink] if e[0] == "fsync"]) >= len(copias), \
+            "publicou antes de o snapshot estar durável"
+
+
+def test_dois_restores_no_mesmo_segundo_nao_dividem_a_pasta(monkeypatch, tmp_path):
+    """Dois snapshots no mesmo segundo têm de ser pastas distintas (#788)."""
+    monkeypatch.setattr(app, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(app, "time", type("T", (), {"strftime": staticmethod(lambda *a: "20260101-120000")}))
+    um = app._snapshot_duravel()
+    dois = app._snapshot_duravel()
+    assert um != dois
+    assert um.is_dir() and dois.is_dir()
