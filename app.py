@@ -4657,6 +4657,9 @@ _SETTINGS_ADMIN = frozenset({
     "remote_tts_extra",
     # limpeza do `outputs/`: APAGA arquivo do dono (#543)
     "auto_cleanup", "auto_cleanup_minutes", "auto_cleanup_max_outputs",
+    # retenção do histórico de operação: APAGA série histórica (#791) — mesma
+    # classe dos `auto_cleanup*`, e o efeito só aparece dias depois
+    "metrics_ttl_dias",
     # marca d'água: muda o áudio de TODO mundo (#657)
     "tts_marca_dagua",
     # guarda áudio do dono em disco (#658)

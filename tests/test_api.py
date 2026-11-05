@@ -2982,19 +2982,22 @@ def test_settings_chave_de_uso_nao_muda_conexao_externa(client, auth, chave_de_u
         # limpeza APAGA arquivo do dono: `use` não decide (#543)
         "auto_cleanup": True, "auto_cleanup_minutes": 7,
         "auto_cleanup_max_outputs": 1,
+        # retenção do histórico APAGA série: mesma classe (#791)
+        "metrics_ttl_dias": 3,
     })
     assert r.status_code == 200, r.text
     body = r.json()
     assert set(body["admin_ignored"]) == {
         "remote_base_url", "remote_tts", "remote_tts_url", "model", "chat_api_key",
-        "auto_cleanup", "auto_cleanup_minutes", "auto_cleanup_max_outputs"}
+        "auto_cleanup", "auto_cleanup_minutes", "auto_cleanup_max_outputs",
+        "metrics_ttl_dias"}
     # o que é de uso passou e foi persistido
     assert body["speed"] == 2.5 and body["pre_prompt"] == "cabeçalho"
     assert app._settings["speed"] == 2.5
     # as conexões e a limpeza ficaram intactas (não é 403: a UI manda blob único)
     for k in ("remote_base_url", "remote_tts", "remote_tts_url", "model",
               "chat_api_key", "auto_cleanup", "auto_cleanup_minutes",
-              "auto_cleanup_max_outputs"):
+              "auto_cleanup_max_outputs", "metrics_ttl_dias"):
         assert app._settings[k] == antes[k], k
 
 
@@ -3083,6 +3086,19 @@ def test_settings_post_nao_devolve_segredo_em_claro_para_chave_de_uso(client, au
     client.post("/api/settings", headers=chave_de_uso, json=corpo)
     assert app._settings["remote_api_key"] == _SEGREDO_REMOTO
     assert app._settings["remote_stt_key"] == _SEGREDO_CHAT
+
+
+def test_settings_metrics_ttl_dias_admin_muda(client, auth, chave_de_uso):
+    """#791: o TTL apaga histórico — `use` não decide, admin decide."""
+    antes = app._settings.get("metrics_ttl_dias")
+    alvo = 3 if antes != 3 else 5
+    r = client.post("/api/settings", headers=chave_de_uso, json={"metrics_ttl_dias": alvo})
+    assert r.status_code == 200, r.text
+    assert "metrics_ttl_dias" in r.json()["admin_ignored"], r.json()
+    assert app._settings.get("metrics_ttl_dias") == antes, "chave de uso mudou a retenção"
+    r = client.post("/api/settings", headers=auth, json={"metrics_ttl_dias": alvo})
+    assert r.status_code == 200, r.text
+    assert app._settings.get("metrics_ttl_dias") == alvo, "chave admin não mudou a retenção"
 
 
 def test_settings_env_admin_key_deixa_chave_comum_de_fora(monkeypatch):
