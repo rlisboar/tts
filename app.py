@@ -5363,6 +5363,13 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
 #: não casar `<id>.wav`, `<id>.json`, `<id>.orig.wav` nem id com ponto no nome.
 _TMP_VOICES_PREFIX = ".tmp-tts-"
 
+#: Watchdog do worker isolado (#800). Sem isto um filho travado deixa o laço de
+#: polling girando para SEMPRE segurando `_gen_lock` — e o app inteiro para de
+#: gerar. Dois cortes: o job morre se o `status.json` não muda por `_JOB_PARADO_S`
+#: (peça pequena não passa disso) e, de qualquer forma, no teto duro.
+_JOB_PARADO_S = float(os.environ.get("TTS_JOB_PARADO_S", "180"))
+_JOB_TETO_S = float(os.environ.get("TTS_JOB_TETO_S", "3600"))
+
 
 def _guarda_original(voice_id: str) -> None:
     """Cópia intocável da referência ANTES da primeira sobrescrita (#443).
@@ -6917,6 +6924,36 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
             _speech_queue_abort(sq)
             return
         last_pieces = 0
+        t0 = time.monotonic()
+        ultimo_sinal = time.time()
+        _visto = [0.0]            # maior mtime já visto do `status.json`
+
+        def _mata_grupo() -> None:
+            """Mata o grupo do worker (o filho tem sessão própria)."""
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except Exception:  # noqa: BLE001
+                try:
+                    proc.terminate()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:  # noqa: BLE001
+                    try:
+                        proc.kill()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+        def _finish_abortido(motivo: str) -> None:
+            """Cancelado ou travado: mesma saída — job em erro e nada segurando."""
+            _speech_queue_abort(sq)
+            job.update(status="error", error=motivo, progress=None, pieces=last_pieces)
+            _jobs_hist_salva()
+            _model_state.update(status="idle", progress=None, error=None)
 
         def _finish_ok(st: dict) -> None:
             out = st.get("output") or {}
@@ -6984,8 +7021,32 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
                         pass
                 if rc is not None:
                     break
+                # CANCELAMENTO do usuário (#800): vale a cada volta, antes do
+                # watchdog — pedido explícito não espera o prazo.
                 if job.get("cancelado"):
+                    _mata_grupo()
                     final = ("err", "cancelado pelo cliente")
+                    break
+                # WATCHDOG (#800): filho vivo mas sem publicar nada há
+                # `_JOB_PARADO_S`, ou passou do teto duro. Sem isto o laço gira
+                # para sempre segurando `_gen_lock` e o app inteiro para de gerar.
+                # O relógio do sinal é o de PAREDE (o `mtime` é); o teto é
+                # `monotonic()`. Misturar os dois faz disparar na hora ou nunca.
+                try:
+                    mtime = status_path.stat().st_mtime
+                    if mtime > _visto[0]:
+                        _visto[0] = mtime
+                        ultimo_sinal = time.time()
+                except OSError:
+                    pass
+                parado = time.time() - ultimo_sinal
+                if parado > _JOB_PARADO_S or (time.monotonic() - t0) > _JOB_TETO_S:
+                    _mata_grupo()
+                    motivo = (f"worker travou: sem progresso há {parado:.0f}s"
+                              if parado > _JOB_PARADO_S
+                              else f"worker passou do teto de {_JOB_TETO_S:.0f}s")
+                    print(f"[tts] {motivo} — job {job_id} abortado", flush=True)
+                    final = ("err", motivo)
                     break
                 time.sleep(0.35)
         finally:
@@ -7269,6 +7330,15 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                     _release_mlx_memory()
                 return audio
             for i, chunk in enumerate(chunks):
+                # cancelamento no caminho LOCAL (#800): o job pode ser parado
+                # entre trechos sem esperar o job inteiro
+                if job.get("cancelado"):
+                    _speech_queue_abort(sq)
+                    job.update(status="error", error="cancelado pelo usuário",
+                               progress=None, pieces=i)
+                    _jobs_hist_salva()
+                    _model_state.update(status="idle", progress=None, error=None)
+                    return
                 job["progress"] = {
                     "current": i + 1, "total": len(chunks),
                     "backend": be.get("id"), "family": family,
@@ -7565,6 +7635,24 @@ def synthesize(request: Request, payload: dict):
         out["model"] = model_override
         out["model_aplicado_global"] = _settings.get("model") == model_override
     return out
+
+
+@app.post("/api/tts/jobs/{job_id}/cancel")
+def job_cancel(job_id: str):
+    """Cancela um job de TTS (#800).
+
+    Marca o job; quem está gerando vê a marca no laço e mata o worker — o
+    cancelamento não espera o watchdog. Job em fila também aceita a marca e não
+    começa. Terminal (done/error) devolve 409 para o cliente não achar que parou
+    algo que já tinha acabado.
+    """
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job não encontrado")
+    if job.get("status") in ("done", "error"):
+        raise HTTPException(409, f"Job já terminou ({job.get('status')})")
+    job["cancelado"] = True
+    return {"ok": True, "job_id": job_id, "status": job.get("status")}
 
 
 @app.get("/api/tts/jobs/{job_id}")
