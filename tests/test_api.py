@@ -9241,3 +9241,38 @@ def test_troca_de_role_na_mao_sempre_publica():
         and "_apikeys_publica" not in "\n".join(linhas[i + 1:i + 3])
     ]
     assert sem_publicar == [], f"role trocado sem publicar nas linhas {sem_publicar}"
+
+
+def test_mexer_em_apikeys_nos_testes_republica_o_snapshot():
+    """Quem mexe em `_apikeys` num teste tem de republicar (#799).
+
+    O leitor sem lock usa o snapshot imutável: mutação no dicionário sem
+    `_apikeys_publica()` deixa o vizinho vendo o estado anterior. A guarda cobre os
+    TRÊS formatos — rebind do dicionário, troca da lista de chaves e troca de um
+    campo —, porque a fixture `estado` faz o rebind inteiro e passou verde até
+    alguém rodar a suíte (o `role` era o único formato que a revisão olhou).
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    # quatro formatos: rebind, troca da lista, troca de um campo e mutação por
+    # método (`clear`/`update`, que a fixture `estado` usa e não é atribuição)
+    mutacao = _re.compile(r"app\._apikeys(\[[^\]]*\])*\s*=(?!=)"
+                          r"|app\._apikeys\.(clear|update|setdefault|pop)\(")
+    aqui = _Path(__file__).resolve()
+    faltando = []
+    for arq in sorted(aqui.parent.glob("test_*.py")):
+        if arq == aqui:
+            continue
+        linhas = arq.read_text().splitlines()
+        for i, linha in enumerate(linhas):
+            if not mutacao.search(linha) or linha.lstrip().startswith("#"):
+                continue
+            # a republicação tem de estar na MESMA linha ou nas 3 seguintes —
+            # cobre o `try/finally` onde a restauração mora
+            vizinhas = " ".join(linhas[i:i + 5])
+            # `_save_apikeys` já publica por dentro
+            if not ("_apikeys_publica()" in vizinhas or "_save_apikeys()" in vizinhas):
+                faltando.append(f"{arq.name}:{i + 1}: {linha.strip()}")
+    assert not faltando, "mutação de `_apikeys` sem `_apikeys_publica()`: " + \
+        "; ".join(faltando)

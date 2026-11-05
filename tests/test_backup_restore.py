@@ -42,6 +42,7 @@ def estado(tmp_path, monkeypatch):
     yield {"base": tmp_path, "vozes": vozes, "settings": settings}
     app._apikeys.clear()
     app._apikeys.update(antes_apikeys)
+    app._apikeys_publica()      # a troca inteira sai do snapshot, não só o role
 
 
 def _hash(estado) -> dict:
