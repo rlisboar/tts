@@ -903,7 +903,8 @@ def _apikeys_publica() -> None:
     """Publica o estado atual para leitura sem lock (chamar após toda mutação)."""
     global _apikeys_vivo
     _apikeys_vivo = (bool(_apikeys.get("enabled", True)),
-                     tuple(k.get("secret") or "" for k in (_apikeys.get("keys") or [])))
+                     tuple((k.get("secret") or "", (k.get("role") or "").strip().lower())
+                           for k in (_apikeys.get("keys") or [])))
 
 
 def _save_apikeys():
@@ -1321,7 +1322,7 @@ def _key_is_valid(provided: str) -> bool:
         return True
     if _ADMIN_API_KEY and _secrets_iguais(provided, _ADMIN_API_KEY):
         return True
-    return any(_secrets_iguais(provided, s) for s in _apikeys_vivo[1] if s)
+    return any(_secrets_iguais(provided, par[0]) for par in _apikeys_vivo[1] if par[0])
 
 
 def _key_role(provided: str) -> str | None:
@@ -1331,10 +1332,11 @@ def _key_role(provided: str) -> str | None:
     chave válida administra enquanto não existir `TTS_ROD_ADMIN_KEY`)."""
     if not provided:
         return None
-    with _apikeys_lock:
-        for k in (_apikeys.get("keys") or []):
-            if _secrets_iguais(provided, k.get("secret") or ""):
-                return (k.get("role") or "").strip().lower() or None
+    # sem lock (#799): `_admin_is_allowed` roda no event loop e o `_apikeys_lock` é
+    # segurado por rotas do threadpool gravando disco
+    for segredo, papel in _apikeys_vivo[1]:
+        if segredo and _secrets_iguais(provided, segredo):
+            return papel or None
     return None
 
 

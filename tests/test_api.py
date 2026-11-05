@@ -4167,11 +4167,13 @@ def test_apikeys_persistir_materializa_o_que_so_esta_na_ram(client, auth):
     # e a chave de USO não materializa (é escrita elevada)
     uso = {"X-API-Key": app._apikeys["keys"][0]["secret"]}
     app._apikeys["keys"][0]["role"] = "use"
+    app._apikeys_publica()
     app.APIKEYS_PATH.unlink()
     try:
         assert client.post("/api/apikeys/persistir", headers=uso).status_code == 403
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
+        app._apikeys_publica()
 
 
 # ---------------------------------------------------------------------------
@@ -6744,12 +6746,14 @@ def test_speaker_alvo_aceita_chave_de_uso(client, auth, monkeypatch):
                         {"text": "oi", "language": "pt", "segments": []})
     segredo = app._apikeys["keys"][0]["secret"]
     app._apikeys["keys"][0]["role"] = "use"
+    app._apikeys_publica()
     try:
         r = client.post("/api/transcribe", headers={"X-API-Key": segredo},
                         data={"speaker_alvo": "eu"},
                         files={"audio": ("a.wav", b"x", "audio/wav")})
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
+        app._apikeys_publica()
     assert r.status_code == 200, r.text
 
 
@@ -6854,11 +6858,13 @@ def test_descartar_recadastro_parcial_mantem_o_legado(client, auth, monkeypatch)
     client.post("/api/speaker/enroll", headers=auth, data={"name": "eu"},
                 files={"audio": ("v.wav", b"x", "audio/wav")})
     app._apikeys["keys"][0]["role"] = "use"
+    app._apikeys_publica()
     try:
         r = client.delete("/api/speaker/eu/pendente", headers={"X-API-Key": segredo})
         assert r.status_code == 403
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
+        app._apikeys_publica()
 
 
 # --- contrato da limpeza de amostra (#523, decisão do PM no card) -------------
@@ -7353,11 +7359,13 @@ def test_avalia_aceita_chave_de_uso(client, monkeypatch):
     monkeypatch.setattr(app, "_snr_estimado", lambda p: 30.0)
     segredo = app._apikeys["keys"][0]["secret"]
     app._apikeys["keys"][0]["role"] = "use"
+    app._apikeys_publica()
     try:
         r = client.post("/api/speaker/avalia", headers={"X-API-Key": segredo},
                         files={"audio": ("a.wav", b"x", "audio/wav")})
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
+        app._apikeys_publica()
     assert r.status_code == 200
 
 
@@ -8407,11 +8415,14 @@ def test_ws_herda_a_allowlist_de_extensao(tickets_limpos, monkeypatch):
         assert _setup_ok(ws)["type"] == "ready"
 
 
-def _req_falso():
+def _req_falso(chave=None, host="127.0.0.1:7860"):
     from starlette.requests import Request
 
+    cab = [(b"host", host.encode())]
+    if chave:
+        cab.append((b"x-api-key", chave.encode()))
     return Request({"type": "http", "path": "/api/x", "method": "GET",
-                    "headers": [(b"host", b"127.0.0.1:7860")], "scheme": "http"})
+                    "headers": cab, "scheme": "http"})
 
 
 def test_porta_local_fora_da_lista_nao_le(monkeypatch):
@@ -8485,6 +8496,7 @@ def test_use_em_rota_admin_nao_le_o_corpo(monkeypatch):
                    client=("203.0.113.99", 50000))
     chave = app._primary_api_key()
     app._apikeys["keys"][0]["role"] = "use"
+    app._apikeys_publica()
     try:
         r = c.post("/api/restore", headers={"X-API-Key": chave,
                                             "Content-Length": str(80 * 1024 * 1024),
@@ -8493,6 +8505,7 @@ def test_use_em_rota_admin_nao_le_o_corpo(monkeypatch):
         assert r.status_code == 403, r.status_code
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
+        app._apikeys_publica()
 
 
 def test_youtube_audio_entra_no_teto_pesado():
@@ -8742,6 +8755,7 @@ def test_post_settings_com_identidade_volta_em_admin_ignored(monkeypatch):
                    client=("203.0.113.99", 50000))
     chave = app._primary_api_key()
     app._apikeys["keys"][0]["role"] = "use"
+    app._apikeys_publica()
     try:
         r = c.post("/api/settings", headers={"X-API-Key": chave},
                    json={"speaker_gate": "off", "speaker_threshold": 0.35,
@@ -8751,6 +8765,7 @@ def test_post_settings_com_identidade_volta_em_admin_ignored(monkeypatch):
             "speaker_far_alvo", "live_so_minha_voz"}, r.json().get("admin_ignored")
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
+        app._apikeys_publica()
 
 
 def test_use_nao_sobrescreve_perfil_existente(client, auth, monkeypatch):
@@ -8767,6 +8782,7 @@ def test_use_nao_sobrescreve_perfil_existente(client, auth, monkeypatch):
     monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [9.0, 9.0])
     antes = hashlib.sha256(_json.dumps(perfis, sort_keys=True).encode()).hexdigest()
     app._apikeys["keys"][0]["role"] = "use"
+    app._apikeys_publica()
     try:
         r = client.post("/api/speaker/enroll?forcar=true", headers=auth,
                         data={"name": "Dono"},
@@ -8780,6 +8796,7 @@ def test_use_nao_sobrescreve_perfil_existente(client, auth, monkeypatch):
         assert r.status_code == 200, r.text
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
+        app._apikeys_publica()
 
 
 def test_admin_key_curta_nao_e_demovida(monkeypatch):
@@ -8810,6 +8827,7 @@ def test_recusa_do_enroll_vem_antes_de_qualquer_escrita(client, auth, monkeypatc
     monkeypatch.setattr(app, "_save_audio_upload",
                         lambda up, prefix=".voz": (uploads.append(1), Path("f.wav"))[1])
     app._apikeys["keys"][0]["role"] = "use"
+    app._apikeys_publica()
     try:
         for forcar in ("", "?forcar=true"):
             r = client.post(f"/api/speaker/enroll{forcar}", headers=auth,
@@ -8819,6 +8837,7 @@ def test_recusa_do_enroll_vem_antes_de_qualquer_escrita(client, auth, monkeypatc
         assert salvos == [] and uploads == [], (salvos, uploads)
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
+        app._apikeys_publica()
 
 
 def _post_cru(host, caminho, cabecalhos, corpo_blocos, limite=60):
@@ -9155,3 +9174,38 @@ def test_rotas_async_nao_chamam_bloqueantes():
             if nome in proibidos:
                 achados.append(f"{no.name}:{nome}")
     assert achados == [], f"chamada bloqueante dentro de async def: {achados}"
+
+
+def test_admin_nao_pega_o_apikeys_lock(monkeypatch):
+    """`_admin_is_allowed`/`_key_role` leem o snapshot, sem o `_apikeys_lock` (#799).
+
+    O caminho de admin é o da LAN e do túnel: se ele pega o lock, o loop volta a
+    esperar quem está gravando disco na thread."""
+    monkeypatch.setattr(app, "_ADMIN_API_KEY", "")
+    monkeypatch.setattr(app, "_ENV_API_KEY", "")
+    app._apikeys["keys"][0]["role"] = "admin"
+    app._apikeys_publica()
+    chave = app._apikeys["keys"][0]["secret"]
+    pedido = _req_falso(chave=chave, host="testserver")
+
+    # lock PRESO por outra thread: se o caminho pegar o lock, o teste pendura
+    preso = threading.Event()
+
+    def _segura():
+        with app._apikeys_lock:
+            preso.set()
+            time.sleep(1.5)
+
+    t = threading.Thread(target=_segura, daemon=True)
+    t.start()
+    preso.wait(2)
+    t0 = time.monotonic()
+    try:
+        assert app._key_role(chave) == "admin"
+        assert app._admin_is_allowed(pedido) is True
+        decorrido = time.monotonic() - t0      # ANTES do join: o join espera o sleep
+    finally:
+        t.join(2)
+    assert decorrido < 1.0, f"pegou o `_apikeys_lock` no caminho de admin ({decorrido:.2f}s)"
+    app._apikeys["keys"][0]["role"] = "admin"
+    app._apikeys_publica()
