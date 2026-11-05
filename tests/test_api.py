@@ -8777,3 +8777,18 @@ def test_use_nao_sobrescreve_perfil_existente(client, auth, monkeypatch):
         assert r.status_code == 200, r.text
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
+
+
+def test_admin_key_curta_nao_e_demovida(monkeypatch):
+    """Assimetria deliberada (#785): só a chave de USO fraca vira `use`.
+
+    Demover também a `TTS_ROD_ADMIN_KEY` deixaria o admin inalcançável pela LAN
+    quando ela fosse a única chave."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    monkeypatch.setattr(app, "_ENV_API_KEY", "")
+    monkeypatch.setattr(app, "_ADMIN_API_KEY", "ab")
+    monkeypatch.setattr(app, "_ENV_CHAVE_FRACA", True)
+    c = TestClient(app.app, raise_server_exceptions=False,
+                   client=("203.0.113.99", 50000))
+    assert c.get("/api/status", headers={"X-API-Key": "ab"}).status_code == 200
+    assert c.post("/api/shutdown", headers={"X-API-Key": "ab"}).status_code == 200

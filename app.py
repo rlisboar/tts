@@ -1339,8 +1339,13 @@ def _admin_is_allowed(request) -> bool:
     if _is_local(request) and not _origem_estrangeira(request):
         return True
     provided = _extract_request_key(request)
+    # ASSIMETRIA DELIBERADA (#785): só a chave de USO fraca é demovida. A
+    # `TTS_ROD_ADMIN_KEY` curta cai no ramo seguinte e administra — se ela for a
+    # única chave, demovê-la deixaria o admin inalcançável pela LAN. Para a de uso,
+    # o pior caso é o aparelho não administrar; para a de admin, seria não haver
+    # admin nenhum.
     if _ENV_CHAVE_FRACA and _ENV_API_KEY and _secrets_iguais(provided, _ENV_API_KEY):
-        return False                     # fraca: autentica, não administra (#785)
+        return False
     if _ADMIN_API_KEY and _secrets_iguais(provided, _ADMIN_API_KEY):
         return True
     papel = _key_role(provided)
