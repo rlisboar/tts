@@ -549,6 +549,15 @@ with sync_playwright() as p:
     print(f"  toast das instruções (uso) com chave de uso: {t[:60]!r}")
     cobrar("Instruções salvas" in t, f"o `chat_system` é de uso e devia aplicar: {t!r}")
 
+    # terceiro handler com o mesmo formato: "restaurar padrão" também não pode
+    # engolir a própria confirmação (e o guard não pode quebrá-la)
+    pg.evaluate("() => { document.getElementById('toast').textContent = ''; }")
+    pg.eval_on_selector("#cvSystemReset", "el => el.click()")
+    pg.wait_for_timeout(1200)
+    t = pg.inner_text("#toast")
+    print(f"  toast do restaurar padrão com chave de uso: {t[:60]!r}")
+    cobrar("restauradas" in t or "padrão" in t, f"o restaurar padrão não confirmou: {t!r}")
+
     # ação administrativa -> 403 com instrução
     r = pg.evaluate("""async () => {
         try { await api('/api/apikeys', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); return {}; }
