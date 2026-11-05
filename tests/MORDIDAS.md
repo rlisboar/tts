@@ -714,10 +714,15 @@ ambíguos). `BARGE_MODELO=0.9` → 20/20; `BARGE_MODELO=0.1` → **0/20, REPROVA
 
 O Starlette tira o `root_path` de novo e a rota protegida casava sem passar pela
 chave: qualquer aparelho da LAN (e a internet, pelo túnel) lia settings/vozes e
-sintetizava com a voz do dono. As duas sondas reprovam o deploy nesse caso.
+sintetizava com a voz do dono.
+
+As duas respostas aceitas têm papéis diferentes, e as células cobrem as duas:
+**401 é a rev corrigida** (`_exige_chave` nega por padrão antes do roteamento);
+**404 é a rev anterior** à correção. **2xx é o furo** e reprova.
 
 | Sabotagem | Resultado |
 |---|---|
-| sonda removida do `deploy_mini.sh` | `test_smoke_falha_quando_o_prefixo_duplo_responde_2xx` **FAILED** |
-| sonda removida do `health_probe.sh` | `test_prefixo_duplo_com_200_acusa_bypass` **FAILED** |
-| alvo responde 2xx no path duplicado | smoke/alerta reprovam (401 = negado, 404 = rev anterior) |
+| sonda removida do `deploy_mini.sh` | as TRÊS células do prefixo **FAILED** (2xx, 401 e 404) |
+| sonda removida do `health_probe.sh` | `…_com_200_acusa_bypass` e `…_401_passa_na_rev_corrigida` **FAILED** |
+| alvo responde 2xx no path duplicado | smoke/alerta reprovam e o deploy cai no rollback |
+| sonda aceitando só 404 | `…_401_passa_na_rev_corrigida` **FAILED** (é o erro que passaria na suíte e quebraria no ar) |

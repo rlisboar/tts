@@ -82,7 +82,7 @@ done
 print -r -- "$metodo $url" >> "$T_CURL_LOG"
 codigo=200; corpo=""; arquivo=""
 case "$url" in
-  */ttsproxy/ttsproxy/*) codigo="${T_CURL_PREFIXO_DUPLO_CODE:-404}" ;;
+  */ttsproxy/ttsproxy/*) codigo="${T_CURL_PREFIXO_DUPLO_CODE:-401}" ;;
   */health)  codigo="${T_CURL_HEALTH_CODE:-200}"; corpo='{"ok":true}' ;;
   */api/voices)
       if [ $tem_chave = 1 ]; then codigo="${T_CURL_CHAVE_CODE:-200}"; else codigo="${T_CURL_SEM_CHAVE_CODE:-401}"; fi ;;
@@ -389,8 +389,20 @@ def test_smoke_falha_quando_o_prefixo_duplo_responde_2xx(amb):
     assert "prefixo duplo sem chave devolveu 200" in r.stdout
 
 
-def test_smoke_aceita_404_do_prefixo_duplo_em_rev_antigo(amb):
-    """Rev anterior à correção responde 404 no path duplicado — não é falha."""
+def test_smoke_aceita_401_do_prefixo_duplo_na_rev_corrigida(amb):
+    """A resposta da rev CORRIGIDA é 401: `_exige_chave` nega por padrão ANTES do
+    roteamento e `_caminho_roteado` tira o prefixo uma vez só (`/ttsproxy/…` cai
+    fora de `_CAMINHOS_PUBLICOS`). Sem esta célula, uma sonda que só aceitasse 404
+    passaria aqui e ficaria vermelha no primeiro deploy real."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    r = _run(amb, "smoke")
+    assert r.returncode == 0, _saida(r)
+    assert "prefixo duplo sem chave → 401" in r.stdout
+
+
+def test_smoke_aceita_404_do_prefixo_duplo_em_rev_antiga(amb):
+    """404 = rev ANTERIOR à correção (o path duplicado nem existia na instância)."""
+    amb["T_CURL_PREFIXO_DUPLO_CODE"] = "404"
     assert _run(amb, "deploy", "--apply").returncode == 0
     r = _run(amb, "smoke")
     assert r.returncode == 0, _saida(r)

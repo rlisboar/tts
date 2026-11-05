@@ -146,9 +146,11 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
     print -r -- "  [FALHA] $rotulo sem chave devolveu $c (esperado 401)"; falhas=1
   fi
   # PREFIXO DUPLO (#778): com `root_path` e a remoção manual do prefixo, o
-  # Starlette tira o `root_path` de novo e o path duplicado casava rota
-  # protegida SEM passar pela chave. 401 = negado; 404 = rev anterior à correção.
-  # Qualquer 2xx aqui é bypass de auth — reprova o deploy e cai no rollback.
+  # Starlette tirava o `root_path` de novo e o path duplicado casava rota
+  # protegida SEM passar pela chave. Na rev corrigida (#777) `_exige_chave` nega
+  # por padrão ANTES do roteamento — a resposta certa é **401**; **404** é a rev
+  # ANTERIOR à correção (o path duplicado nem existia na instância). 2xx é bypass
+  # de auth — reprova o deploy e cai no rollback.
   c="$(codigo_http -o /dev/null -w '%{http_code}' "$base/ttsproxy/ttsproxy/api/build")"
   if [ "$c" = 401 ] || [ "$c" = 404 ]; then
     print -r -- "  [ok] $rotulo prefixo duplo sem chave → $c"

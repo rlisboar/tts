@@ -35,7 +35,7 @@ for ((i = 1; i <= $#; i++)); do
 done
 print -r -- "$url" >> "$T_CURL_LOG"
 case "$url" in
-  *"/ttsproxy/ttsproxy/"*) codigo="${T_PREFIXO_DUPLO:-404}"; corpo='' ;;
+  *"/ttsproxy/ttsproxy/"*) codigo="${T_PREFIXO_DUPLO:-401}"; corpo='' ;;
   *"/api/voices") codigo="${T_AUTH:-401}"; corpo='' ;;
   http://127.0.0.1:*/ready) codigo="${T_CONECTOR:-200}"; corpo='{"status":"ok"}' ;;
   https://*)      codigo="${T_PUB:-200}"; corpo='{"ok":true,"boot_ts":111,"rev":"abc1234"}' ;;
@@ -178,9 +178,20 @@ def test_prefixo_duplo_com_200_acusa_bypass(amb):
     assert "prefixo-duplo(http=200 sem chave — bypass de auth)" in _log(amb)
 
 
-def test_prefixo_duplo_401_ou_404_passa(amb):
-    """401 = negado (corrigido); 404 = rev anterior à correção. Nenhum dos dois é falha."""
+def test_prefixo_duplo_401_passa_na_rev_corrigida(amb):
+    """401 é a resposta da rev CORRIGIDA (negação por padrão antes do roteamento).
+
+    A célula existe para o default do shim ser o contrato certo: sem ela, um shim
+    que só devolvesse 404 deixaria a suíte verde e o primeiro deploy vermelho."""
     assert _run(amb, "check", env={"T_PREFIXO_DUPLO": "401"}).returncode == 0
+    # a sonda tem de ter PEDIDO o path duplicado (sem isto a célula passa sem ela)
+    assert any("/ttsproxy/ttsproxy/" in l for l in
+               Path(amb["env"]["T_CURL_LOG"]).read_text().splitlines()), \
+        "a sonda não requisitou o path duplicado"
+
+
+def test_prefixo_duplo_404_passa_em_rev_antiga(amb):
+    """404 = rev ANTERIOR à correção — não é falha enquanto o mini estiver velho."""
     assert _run(amb, "check", env={"T_PREFIXO_DUPLO": "404"}).returncode == 0
 
 
