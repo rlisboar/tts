@@ -740,3 +740,4 @@ valer mesmo com o túnel caído.
 |---|---|
 | sonda de Host removida do `deploy_mini.sh` | `test_smoke_reprova_quando_o_host_publico_da_421` **FAILED** |
 | sonda de Host removida do `health_probe.sh` | `test_host_publico_fora_da_allowlist_vira_alerta` **FAILED** |
+| `export TTS_ALLOWED_HOSTS` removido do `start-server.sh` | `test_start_server_exporta_o_host_publico` **FAILED** (o plist não chega ao app: sshd não herda) |

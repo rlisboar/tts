@@ -407,6 +407,18 @@ def test_smoke_aceita_401_do_prefixo_duplo_na_rev_corrigida(amb):
     assert "prefixo duplo sem chave → 401" in r.stdout
 
 
+def test_start_server_exporta_o_host_publico():
+    """O ÚNICO lugar que vale é o `start-server.sh` (#837).
+
+    O plist não chega ao app: o agente sobe `ssh ... start-server.sh` e o sshd não
+    herda o ambiente do launchd sem `SendEnv`/`AcceptEnv`. Se o `export` sair do
+    script, a sonda inteira vira decoração — o app responde 421 e ninguém vê."""
+    script = (Path(__file__).resolve().parent.parent
+              / "remote" / "launchd" / "start-server.sh").read_text()
+    assert "TTS_ALLOWED_HOSTS" in script, "o start-server.sh parou de exportar a allowlist"
+    assert "tts.the-dudes.com" in script, "o host público saiu do default do export"
+
+
 def test_smoke_reprova_quando_o_host_publico_da_421(amb):
     """421 = nome público fora de `TTS_ALLOWED_HOSTS` (#779/#837).
 
