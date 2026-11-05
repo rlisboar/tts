@@ -2469,7 +2469,9 @@ def test_passadas_de_comando_nao_rodam_o_whisper_em_paralelo(monkeypatch):
     for t in ths:
         t.join(10)
     assert dentro["pico"] == 1, f"whisper chamado {dentro['pico']}x em paralelo"
-    assert saidas == ["para", "para"], saidas
+    # a passada que esperou a trava pode achar a geração já invalidada e desistir
+    # (é o comportamento pedido); a que rodou entrega o texto
+    assert saidas.count("para") >= 1 and all(s in ("", "para") for s in saidas), saidas
 
 
 def test_janelas_param_no_ponto_seguro(monkeypatch):

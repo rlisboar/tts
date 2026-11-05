@@ -1542,7 +1542,8 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
                                 conds, ref_text, omni, ref_audio=ref_audio,
                                 family=be["family"], meta=be.get("meta"), sr=sr)
     _marco("generate")
-    return r
+    # #805: o modelo dita a taxa (Fish 44,1k, VoxCPM2/MOSS 48k); o fio é 24k
+    return app._reamostra(r, sr, _TTS_SR)
 
 
 def _pos_live(audio):
@@ -1644,6 +1645,10 @@ class _LiveWorker:
         self._fila: Queue = Queue()
         self._ativo = False
         self._n = 0
+        # #805: taxa REAL do modelo do filho (Fish 44,1k, VoxCPM2/MOSS 48k). O fio
+        # e a janela de barge são de `_TTS_SR`; sem guardar isto o áudio saía 2×
+        # lento e uma oitava abaixo.
+        self.sr = _TTS_SR
 
     @property
     def ativo(self) -> bool:
@@ -1700,6 +1705,7 @@ class _LiveWorker:
             erro = r.get("error") or "init falhou"
             self.fecha()
             raise _WorkerMorto(erro)
+        self.sr = int(r.get("sr") or _TTS_SR)
         self._ativo = True
 
     def _envia(self, obj: dict) -> None:
@@ -1779,7 +1785,8 @@ class _LiveWorker:
             rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
         if float(rms) < 0.01:
             raise _WorkerMorto(f"áudio mudo do worker (rms {float(rms):.4f})")
-        return audio
+        # #805: o filho pode ter sintetizado em 44,1/48 kHz — o resto do Live é 24k
+        return app._reamostra(audio, int(r.get("sr") or self.sr), _TTS_SR)
 
     def fecha(self) -> None:
         """Encerra o filho (fim/TTL da sessão). Idempotente e best-effort."""

@@ -801,3 +801,12 @@ o modo remoto: quem paraleliza no servidor de lá é o job, não estes caminhos.
 | Sabotagem | Resultado |
 |---|---|
 | voltar `trava = _NO_LOCK if _use_remote_tts() else _gen_lock` | `test_remoto_tambem_serializa_a_geracao_local` **FAILED** ("gerou local concorrente com o modo remoto") |
+
+### #805 — taxa do modelo × taxa do fio
+
+O filho dita a taxa (Fish 44,1k, VoxCPM2/MOSS 48k); o fio, a janela de barge e o pós
+são de 24 kHz. Sem reamostrar, 1 s vira 2 s no fio (2× lento) e uma oitava abaixo.
+
+| Sabotagem | Resultado |
+|---|---|
+| devolver o áudio do filho sem `_reamostra` | `test_audio_do_filho_em_48k_chega_em_24k_sem_mudar_o_tom` **FAILED** ("48000 amostras") |

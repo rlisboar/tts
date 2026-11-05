@@ -26,6 +26,7 @@ from __future__ import annotations
 import threading
 import time
 
+import numpy as np
 import pytest
 
 import app
@@ -52,7 +53,7 @@ class _GeradorInstrumentado:
                 self.sobrepostas += 1
         try:
             time.sleep(self.dorme)          # alarga a janela: falta de lock aparece
-            return "audio"
+            return np.zeros(8, dtype=np.float32)   # o real devolve PCM (#805 reamostra)
         finally:
             with self._trava:
                 self.dentro -= 1

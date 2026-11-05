@@ -374,3 +374,27 @@ def test_worker_mudo_derruba_para_o_in_process_no_turno(pipeline, filho, monkeyp
     audio = pipeline._tts_live("turno", {})
     assert pipeline._worker_indisponivel is True
     assert _rms(audio) > 0.1, "aceitou mudo"
+
+
+def test_audio_do_filho_em_48k_chega_em_24k_sem_mudar_o_tom(monkeypatch):
+    """#805: o filho dita a taxa (Fish 44,1k, VoxCPM2/MOSS 48k); o fio é 24k.
+
+    Sem reamostrar, 1 s de 440 Hz a 48 kHz vira 2 s no fio (2× lento) e uma
+    oitava abaixo. Aqui o chunk tem de voltar com 24000 amostras e o pico
+    espectral continua em 440 Hz."""
+    import base64
+
+    w = lp._LiveWorker()
+    w._ativo = True
+    monkeypatch.setattr(w, "_envia", lambda obj: None)
+    sr = 48000
+    t = np.arange(sr, dtype=np.float32) / sr
+    tom = (0.5 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+    monkeypatch.setattr(w, "_espera", lambda tipos, timeout: {
+        "type": "ok", "id": 1, "sr": sr, "n": tom.size, "rms": 0.3,
+        "audio_b64": base64.b64encode(tom.tobytes()).decode()})
+    audio = w.gerar("x", {})
+    assert audio.size == pytest.approx(24000, rel=0.02), f"{audio.size} amostras"
+    espectro = np.abs(np.fft.rfft(audio * np.hanning(audio.size)))
+    pico = np.fft.rfftfreq(audio.size, 1 / 24000)[int(np.argmax(espectro))]
+    assert pico == pytest.approx(440, abs=10), f"pico em {pico:.0f} Hz"
