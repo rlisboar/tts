@@ -80,7 +80,11 @@ def test_retorno_remoto_sai_marcado(monkeypatch, tmp_path):
 
 
 def test_fallback_para_local_marca_uma_vez_so(monkeypatch, tmp_path):
-    """`remote_fallback` cai no local: uma marca por peça, não duas (#114)."""
+    """`remote_fallback` cai no local: uma marca por peça, não duas (#114).
+
+    A contagem de `marca_wav` é o que salva esta célula de passar por acidente:
+    marca dupla continua dando detecção 1,0, então só olhar a probabilidade
+    aprovava o defeito. O que se conta é a CHAMADA, por peça."""
     if not marca_dagua.disponivel():
         pytest.skip(f"marca indisponível: {marca_dagua.motivo()}")
 

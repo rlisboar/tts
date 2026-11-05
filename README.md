@@ -461,6 +461,13 @@ O detector alimenta o gate de locutor com `speaker_anticlone` ligado (`anticlone
 `marcado`/`cru`/`indisponivel` + `anticlone_prob`). Detalhe de custo e pino:
 `evidence/657-marca-dagua.txt`.
 
+**Dois lugares ficam SEM marca, de propósito (#845):** a amostra de *voice design*,
+que é referência e contamina a linhagem da voz se for marcada (a saída já sai
+marcada), e o `remote/omni_server.py`, que serve áudio cru — quem marca é o
+CLIENTE, então consumidor direto do servidor recebe sem marca. A saída normal do
+app sai marcada em todos os caminhos (job local, família isolada, retorno remoto e
+Live).
+
 ### Modos do gate
 
 `speaker_gate` em Configurações → Rede & memória, seção *Tradução / STT ·

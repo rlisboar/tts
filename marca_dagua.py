@@ -12,6 +12,19 @@ com o Metal do MLX e pagaria setup no caminho do primeiro áudio. Sem os pesos, 
 
 O detector é a outra ponta: `detecta_prob()` serve o gate de locutor (anti-clone)
 e o filtro de eco do Live. O limiar é do CHAMADOR (0,5 é o que o R3 usou).
+
+DOIS LIMITES DECLARADOS (#845) — não são furo, são desenho:
+
+1. AMOSTRA DE VOICE DESIGN não é marcada. Ela é REFERÊNCIA: condiciona o clone e o
+   modelo copia o timbre dela, então marcar a referência enfia a marca na linhagem
+   da voz sem melhorar detecção nenhuma (a saída já sai marcada). O gancho está no
+   `sf.write` de `save_design_voice` (app.py).
+2. O SERVIDOR REMOTO (`remote/omni_server.py`) não marca: quem marca é o CLIENTE,
+   no trecho que grava (`_marca_peca`, tts_worker.py). Consumidor DIRETO do
+   servidor recebe áudio cru — é contrato do cliente, e o aviso está lá.
+
+Nenhum dos dois vale para a saída normal do app, que sai marcada em todos os
+caminhos: job local, família isolada, retorno remoto e Live.
 """
 
 from __future__ import annotations

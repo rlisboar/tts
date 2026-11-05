@@ -21,6 +21,13 @@ buffer) e a garantia vivia na leitura do código.
 
 Mordida: desligando o bloco de marca, as duas primeiras caem.
 
+## A contagem que salva o teste
+
+`test_fallback_para_local_marca_uma_vez_so` conta **chamadas de `marca_wav`**, não
+probabilidade: marca dupla continua dando detecção 1,0, então olhar só a detecção
+aprovava o defeito. Fica registrado porque é a armadilha que o próximo leitor
+repete.
+
 ## Limite declarado
 
 O servidor continua sem marcar. Quem consumir o `remote/omni_server.py` **direto**

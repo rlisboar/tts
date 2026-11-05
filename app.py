@@ -5286,6 +5286,13 @@ def save_design_voice(payload: dict):
 
     audio = _normalize(_trim_tail_silence(np.asarray(audio, dtype=np.float32), sr))
     voice_id = uuid.uuid4().hex[:10]
+    # SEM marca d'água DE PROPÓSITO (#845): esta amostra é REFERÊNCIA, não saída.
+    # Ela condiciona o clone — o modelo copia o timbre dela —, então marcar aqui
+    # enfia a marca na linhagem da voz e todo áudio futuro herda uma marca que
+    # ninguém pediu, sem que a detecção melhore (a saída já sai marcada no job).
+    # Quem for "consertar" a ausência daqui precisa saber disto: o gancho é este
+    # `sf.write`, e o par dele no caminho remoto é `_tts_remote_chunk` (que também
+    # devolve áudio para o job marcar, não para a referência).
     sf.write(str(VOICES_DIR / f"{voice_id}.wav"), audio, sr, subtype="PCM_16")
     meta = {"id": voice_id, "name": name, "from_design": True,
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
