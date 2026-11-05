@@ -8720,3 +8720,60 @@ def test_chave_fraca_autentica_mas_nao_administra(monkeypatch):
     # e com a flag desligada a MESMA chave administra (é a força que decide)
     monkeypatch.setattr(app, "_ENV_CHAVE_FRACA", False)
     assert c.post("/api/shutdown", headers={"X-API-Key": "ab"}).status_code == 200
+
+
+# --- #786: identidade é admin; `use` não envenena o perfil do dono -----------
+_IDENTIDADE = ("speaker_gate", "speaker_threshold", "speaker_far_alvo",
+               "speaker_anticlone", "live_so_minha_voz")
+
+
+def test_campos_de_identidade_sao_admin():
+    for campo in _IDENTIDADE:
+        assert campo in app._SETTINGS_ADMIN, campo
+
+
+def test_post_settings_com_identidade_volta_em_admin_ignored(monkeypatch):
+    """Chave `use` mexendo em identidade tem de sair em `admin_ignored` (#786)."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    c = TestClient(app.app, raise_server_exceptions=False,
+                   client=("203.0.113.99", 50000))
+    chave = app._primary_api_key()
+    app._apikeys["keys"][0]["role"] = "use"
+    try:
+        r = c.post("/api/settings", headers={"X-API-Key": chave},
+                   json={"speaker_gate": "off", "speaker_threshold": 0.35,
+                         "speaker_anticlone": False})
+        assert r.status_code == 200, r.text
+        assert set(r.json().get("admin_ignored") or []) >= set(_IDENTIDADE) - {
+            "speaker_far_alvo", "live_so_minha_voz"}, r.json().get("admin_ignored")
+    finally:
+        app._apikeys["keys"][0]["role"] = "admin"
+
+
+def test_use_nao_sobrescreve_perfil_existente(client, auth, monkeypatch):
+    """`use` cadastrando num perfil EXISTENTE toma 403 e não toca nos vetores."""
+    import hashlib
+
+    perfis = {"Dono": {"vecs": [[1.0, 0.0]] * 3, "modelo": app.SPEAKER_MODELO_LEGADO,
+                       "updated": 0}}
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_speaker_save", lambda p: None)
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".voz": Path("f.wav"))
+    monkeypatch.setattr(app, "_speaker_avalia",
+                        lambda p, v: ([[9.0, 9.0]], []))
+    monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [9.0, 9.0])
+    antes = hashlib.sha256(_json.dumps(perfis, sort_keys=True).encode()).hexdigest()
+    app._apikeys["keys"][0]["role"] = "use"
+    try:
+        r = client.post("/api/speaker/enroll?forcar=true", headers=auth,
+                        data={"name": "Dono"},
+                        files={"audio": ("a.wav", b"x", "audio/wav")})
+        assert r.status_code == 403, r.status_code
+        depois = hashlib.sha256(_json.dumps(perfis, sort_keys=True).encode()).hexdigest()
+        assert depois == antes, "o perfil mudou mesmo com 403"
+        # perfil NOVO continua livre para `use`
+        r = client.post("/api/speaker/enroll", headers=auth, data={"name": "Novo"},
+                        files={"audio": ("a.wav", b"x", "audio/wav")})
+        assert r.status_code == 200, r.text
+    finally:
+        app._apikeys["keys"][0]["role"] = "admin"

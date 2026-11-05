@@ -4488,6 +4488,11 @@ _SETTINGS_ADMIN = frozenset({
     "tts_marca_dagua",
     # guarda áudio do dono em disco (#658)
     "speaker_guardar_audio",
+    # IDENTIDADE (#786): quem é o dono, com que rigor o gate decide e se ele
+    # existe. Uma chave `use` que mexesse aqui viraria "o dono" para o gate e para
+    # o "só a minha voz" do Live — ou desligaria os dois.
+    "speaker_gate", "speaker_threshold", "speaker_far_alvo", "speaker_anticlone",
+    "live_so_minha_voz",
 })
 _SETTINGS_SECRETS = ("remote_api_key", "remote_stt_key", "chat_api_key")
 # marcador da máscara: começa com "•" e nunca é confundido com chave de verdade.
@@ -10078,7 +10083,7 @@ def _speaker_avalia(tmp: Path, vecs_antes: list) -> tuple[list | None, list[str]
 
 
 @app.post("/api/speaker/enroll")
-async def speaker_enroll(name: str = Form(...),
+async def speaker_enroll(request: Request, name: str = Form(...),
                          audio: UploadFile = None, forcar: bool = False):
     """Cadastra/atualiza um perfil de voz com o áudio enviado (3 s+ de FALA; 8–30 s
     de gravação é o confortável).
@@ -10104,6 +10109,15 @@ async def speaker_enroll(name: str = Form(...),
     with _speaker_lock:
         _perfis_antes = _speaker_load()
     _antes = _perfis_antes.get(nome) or {}
+    # PERFIL EXISTENTE (ou `forcar`) é admin: a chave `use` que cadastra por cima
+    # vira "o dono" para o gate e, com `forcar`, empurra as amostras antigas para
+    # fora (`vecs[-MAX:]`) — 5 enrolls de um aparelho da LAN zeravam o dono (#786).
+    # PERFIL EXISTENTE (ou `forcar`) é admin: a chave `use` que cadastra por cima
+    # vira "o dono" para o gate e, com `forcar`, empurra as amostras antigas para
+    # fora (`vecs[-MAX:]`) — 5 enrolls de um aparelho da LAN zeravam o dono (#786).
+    # Perfil NOVO continua livre: é o aparelho da LAN cadastrando a própria voz.
+    if _antes or forcar:
+        _exige_admin(request)
     legado = _speaker_modelo_do_perfil(_antes) if _antes else efetivo
     _pend = _antes.get("pendente") or {}
     if legado == efetivo:
