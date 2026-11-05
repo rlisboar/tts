@@ -328,3 +328,38 @@ def test_copia_atomica_limpa_uchg_e_nao_perde_o_conteudo_no_erro(tmp_path, monke
     app._copia_atomica(origem, destino)
     assert destino.read_bytes() == b"novo"
     assert oct(destino.stat().st_mode & 0o777) == oct(0o600), "modo não voltou a 0600"
+
+
+def test_voz_de_design_publica_por_temporario(tmp_path, monkeypatch, client, auth):
+    """A rota de VOICE DESIGN também publica por temporário (#795-bis).
+
+    Ela grava a amostra-semente com o mesmo helper da criação de voz, mas nenhuma
+    célula a exercitava: reverter só ela ao `sf.write` direto deixava a suíte
+    verde. A espionagem é no `sf.write` — o que se cobra é o DESTINO, não o
+    resultado."""
+    monkeypatch.setattr(app, "VOICES_DIR", tmp_path / "voices")
+    (tmp_path / "voices").mkdir()
+    monkeypatch.setattr(app, "_use_remote_tts", lambda: False)
+    monkeypatch.setattr(app, "_get_model", lambda *a, **k: type("M", (), {"sample_rate": 16000})())
+    monkeypatch.setattr(app, "_generate_chunk",
+                        lambda *a, **k: np.zeros(16000 * 2, dtype=np.float32) + 0.1)
+    vistos = []
+    real_write = sf.write
+
+    def _espia_write(dst, *a, **k):
+        vistos.append(Path(dst).name)
+        return real_write(dst, *a, **k)
+
+    sf.write = _espia_write
+    try:
+        r = client.post("/api/voices/design", headers=auth,
+                        json={"name": "voz de design", "instruct": "female, young adult"})
+    finally:
+        sf.write = real_write
+    assert r.status_code == 200, r.text
+    vid = r.json()["id"]
+    assert f"{vid}.wav" not in vistos, f"gravou direto no destino: {vistos}"
+    assert any(n.startswith(".tmp-tts-novo-") for n in vistos), \
+        f"o design não passou por temporário: {vistos}"
+    assert (tmp_path / "voices" / f"{vid}.wav").exists()
+    assert not list((tmp_path / "voices").glob(".tmp-tts-novo-*")), "sobrou temporário"
