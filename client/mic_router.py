@@ -22,6 +22,7 @@ import json
 import os
 import threading
 import tkinter as tk
+import ipaddress
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -76,21 +77,20 @@ def start_control_server(get_mode):
 CFG_PATH = Path(__file__).resolve().parent / "config.json"
 
 
-#: hosts em que `http` é aceitável: loopback e rede local (o tráfego não passa
-#: pela internet). O zip do servidor aponta para o IP da LAN justamente.
-_REDE_LOCAL = ("127.", "10.", "192.168.", "localhost", "[::1]", "::1")
-
-
 def _eh_rede_local(host: str) -> bool:
-    """`host` está fora da internet? (loopback, RFC1918, `.local`)"""
-    if host.startswith(_REDE_LOCAL) or host.endswith(".local"):
+    """`host` está fora da internet? (loopback, RFC1918, `.local`)
+
+    Compara por IP de verdade, não por prefixo de texto: `192.168.1.1.exemplo.com`
+    tem cara de LAN mas é domínio público, e `x.local.tld` não é mDNS."""
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".local"):
         return True
-    if host.startswith("172."):
-        try:
-            return 16 <= int(host.split(".")[1]) <= 31
-        except (IndexError, ValueError):
-            return False
-    return False
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private
 
 
 def _normaliza_url(bruta: str) -> str:
@@ -114,7 +114,11 @@ def _normaliza_url(bruta: str) -> str:
     if esquema not in ("http", "https"):
         raise ValueError(f"endereço com esquema {esquema!r}: use http:// (só loopback) "
                          f"ou https:// — recebido {bruta!r}")
-    if esquema == "http" and not _eh_rede_local(host):
+    if esquema == "http" and _eh_rede_local(host):
+        # honestidade: sem TLS nesta rede, e o dono tem de saber
+        print(f"· {url} sem TLS (rede local) — a chave e o áudio de referência "
+              f"vão em claro, sem sair da rede")
+    elif esquema == "http":
         raise ValueError(
             f"o servidor em {url} manda a chave da API e o áudio de referência "
             f"em CLARO — use https:// (ou aponte para 127.0.0.1 se o servidor "

@@ -62,6 +62,14 @@ def test_url_publica_exige_tls_e_rede_local_aceita_http(mod):
     assert mod._normaliza_url("http://mac.local:7860") == "http://mac.local:7860"
     assert mod._normaliza_url("https://tts.exemplo.com") == "https://tts.exemplo.com"
 
+    # falso-positivo do classificador: cara de LAN, mas é domínio público
+    with pytest.raises(ValueError):
+        mod._normaliza_url("http://192.168.1.1.exemplo.com")
+    with pytest.raises(ValueError):
+        mod._normaliza_url("http://x.local.tld")
+    # `https` público segue funcionando (senão o cliente só serviria LAN)
+    assert mod._normaliza_url("https://8.8.8.8:7860") == "https://8.8.8.8:7860"
+
     with pytest.raises(ValueError) as exc:
         mod._normaliza_url("http://8.8.8.8:7860")
     assert "https://" in str(exc.value), "a recusa não diz o que fazer"
@@ -79,3 +87,12 @@ def test_url_publica_recusa_na_carga_antes_de_qualquer_pedido(mod, monkeypatch):
         mod._load_config()
     monkeypatch.setenv("TTS_ROD_URL", "https://tts.exemplo.com:7860")
     assert mod._load_config()["url"] == "https://tts.exemplo.com:7860"
+
+
+def test_http_em_rede_local_avisa_que_vai_sem_tls(mod, capsys):
+    """Sem bloqueio, mas o dono tem de saber que o tráfego vai em claro."""
+    mod._normaliza_url("http://192.168.15.48:7860")
+    saida = capsys.readouterr().out
+    assert "sem TLS" in saida and "192.168.15.48" in saida, saida
+    mod._normaliza_url("https://tts.exemplo.com")
+    assert "sem TLS" not in capsys.readouterr().out

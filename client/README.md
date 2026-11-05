@@ -63,6 +63,7 @@ clique no botão pra falar como você mesmo ou como a voz do app.
   `TTS_ROD_URL=http://IP-da-LAN:7860 TTS_ROD_API_KEY=suachave ./run.command`.
 - Endereço PÚBLICO só por `https`: em `http` a chave (`X-API-Key`) e o áudio de
   referência da biometria vão em claro. Loopback e rede local (`192.168.x`,
-  `10.x`, `172.16–31.x`, `*.local`) seguem `http` — o cliente recusa cedo, na
-  carga da config, dizendo o que corrigir.
+  `10.x`, `172.16–31.x`, `*.local`) seguem `http`, com uma linha avisando que o
+  tráfego vai sem TLS — o cliente recusa cedo, na carga da config, dizendo o que
+  corrigir.
 - Requisitos: macOS, Python 3.10+ (tkinter incluso), `sounddevice`, `numpy`.
