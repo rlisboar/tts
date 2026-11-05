@@ -9151,7 +9151,17 @@ def test_rotas_async_nao_chamam_bloqueantes():
 
     proibidos = {"subprocess.run", "subprocess.check_output", "zipfile.ZipFile",
                  "_speaker_pontua", "_speaker_avalia", "_save_audio_upload",
-                 "sf.read", "_executa_restore"}
+                 "sf.read", "_executa_restore",
+                 # leem o snapshot justamente para NÃO pegar o `_apikeys_lock` no
+                 # loop: voltar a chamá-los dentro de `async def` desfaz o #799
+                 # calado.
+                 "_key_role", "_admin_is_allowed"}
+    # Exceção NOMEADA, não buraco: o `_TetoDeCorpo.__call__` é ASGI e chama
+    # `_admin_is_allowed` ANTES de ler o corpo de propósito (#790) — ali o
+    # snapshot é a propriedade certa e a célula de runtime
+    # `test_admin_nao_pega_o_apikeys_lock` cobra. Qualquer OUTRO `async def`
+    # que chame o nome tem de aparecer.
+    permitido = {("__call__", "_admin_is_allowed")}
     def _chamadas(no):
         """Calls do PRÓPRIO corpo — função interna (que roda na thread) não conta."""
         for filho in _ast.iter_child_nodes(no):
@@ -9171,7 +9181,7 @@ def test_rotas_async_nao_chamam_bloqueantes():
             nome = (f"{alvo.value.id}.{alvo.attr}"
                     if isinstance(alvo, _ast.Attribute) and isinstance(alvo.value, _ast.Name)
                     else getattr(alvo, "id", None))
-            if nome in proibidos:
+            if nome in proibidos and (no.name, nome) not in permitido:
                 achados.append(f"{no.name}:{nome}")
     assert achados == [], f"chamada bloqueante dentro de async def: {achados}"
 
