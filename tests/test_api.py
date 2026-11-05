@@ -3911,10 +3911,13 @@ def test_replace_troca_o_audio_da_voz_e_respeita_o_id(client, auth, vozes_isolad
                     files={"audio": ("a.wav", novo, "audio/wav")})
     assert r.status_code == 200 and r.json()["duration"] > 1.5
     assert vd.joinpath("voz-real.wav").read_bytes() == novo, "o wav da voz foi substituído"
-    # áudio curto demais é 400 e o arquivo NOVO fica (o curto foi gravado)
+    # áudio curto demais é 400 e o arquivo ANTERIOR fica (#795: validar antes de
+    # encostar no destino — antes o curto era gravado e a referência ficava curta)
+    antes = vd.joinpath("voz-real.wav").read_bytes()
     r = client.post("/api/voices/voz-real/replace", headers=auth,
                     files={"audio": ("a.wav", _wav_bytes(0.2), "audio/wav")})
     assert r.status_code == 400 and "curto" in r.json()["detail"]
+    assert vd.joinpath("voz-real.wav").read_bytes() == antes, "o 400 trocou a referência"
     # id inexistente → 404
     assert client.post("/api/voices/naoexiste/replace", headers=auth,
                        files={"audio": ("a.wav", novo, "audio/wav")}).status_code == 404
@@ -9362,3 +9365,33 @@ def test_falha_real_nao_tem_o_campo_cancelado(client, auth):
 
 def test_cancelar_job_inexistente_da_404(client, auth):
     assert client.post("/api/tts/jobs/naoexiste/cancel", headers=auth).status_code == 404
+def test_replace_recusado_deixa_o_wav_anterior_intacto(client, auth, vozes_isoladas):
+    """O 400 não pode deixar a referência trocada nem pela metade (#795).
+
+    A validação tem de acontecer ANTES de encostar no destino: com a referência
+    corrompida, todo TTS daquela voz sai errado sem ninguém ter pedido. O
+    `.orig.wav` também não pode ser criado por um replace que falhou."""
+    vd, _sentinela = vozes_isoladas
+    original = _wav_bytes(1.0)
+    vd.joinpath("voz-real.wav").write_bytes(original)
+    vd.joinpath("voz-real.json").write_text(_json.dumps({"id": "voz-real", "duration": 1.0}))
+
+    for rotulo, conteudo in (("curto", _wav_bytes(0.2)), ("lixo", b"nao e audio")):
+        r = client.post("/api/voices/voz-real/replace", headers=auth,
+                        files={"audio": ("a.wav", conteudo, "audio/wav")})
+        assert r.status_code == 400, f"{rotulo}: esperava 400, veio {r.status_code}"
+        assert vd.joinpath("voz-real.wav").read_bytes() == original, \
+            f"{rotulo}: o arquivo anterior foi tocado"
+        assert not vd.joinpath("voz-real.orig.wav").exists(), \
+            f"{rotulo}: guardou original de um replace que falhou"
+        assert not list(vd.glob(".tmp-tts-*")), "sobrou temporário"
+
+    # o válido troca, guarda o anterior e não deixa temporário
+    novo = _wav_bytes(2.0)
+    r = client.post("/api/voices/voz-real/replace", headers=auth,
+                    files={"audio": ("a.wav", novo, "audio/wav")})
+    assert r.status_code == 200
+    assert vd.joinpath("voz-real.wav").read_bytes() == novo
+    assert vd.joinpath("voz-real.orig.wav").read_bytes() == original, \
+        "o original guardado não é o de antes da troca"
+    assert not list(vd.glob(".tmp-tts-*")), "sobrou temporário do caminho feliz"

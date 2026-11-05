@@ -6184,21 +6184,33 @@ def replace_voice_audio(voice_id: str, audio: UploadFile = File(...)):
     wav = VOICES_DIR / f"{voice_id}.wav"
     if not wav.exists():
         raise HTTPException(404, "Voz não encontrada")
-    tmp = VOICES_DIR / f".rep-{voice_id}"
-    _write_upload_limited(audio, tmp)
+    # VALIDA ANTES DE ENCOSTAR no destino (#795): o 400 de áudio inválido/curto
+    # acontecia DEPOIS do `sf.write` no lugar, então a referência já estava
+    # trocada — e todo TTS daquela voz saía errado sem ninguém ter pedido. O
+    # upload vai para temporário, é decodificado e medido, e só então o destino é
+    # tocado.
+    # sufixo único: dois replaces simultâneos da MESMA voz não compartilham o
+    # temporário (mesma razão do denoise, #690)
+    sufixo = uuid.uuid4().hex[:8]
+    tmp_up = VOICES_DIR / f"{_TMP_VOICES_PREFIX}rep-{voice_id}-{sufixo}.upload"
+    tmp_novo = VOICES_DIR / f"{_TMP_VOICES_PREFIX}rep-{voice_id}-{sufixo}.wav"
     try:
-        a, sr = sf.read(str(tmp), dtype="float32")
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(400, "Áudio inválido")
-    tmp.unlink(missing_ok=True)
-    if a.ndim > 1:
-        a = a.mean(axis=1)
-    _guarda_original(voice_id)          # antes de sobrescrever (#443)
-    sf.write(str(wav), a, sr, subtype="PCM_16")
-    dur = _wav_duration(wav)
-    if dur < 1:
-        raise HTTPException(400, f"Áudio muito curto ({dur}s)")
+        _write_upload_limited(audio, tmp_up)
+        try:
+            a, sr = sf.read(str(tmp_up), dtype="float32")
+        except Exception:
+            raise HTTPException(400, "Áudio inválido")
+        if a.ndim > 1:
+            a = a.mean(axis=1)
+        dur = round(a.size / sr, 3) if sr else 0.0
+        if dur < 1:
+            raise HTTPException(400, f"Áudio muito curto ({dur}s)")
+        sf.write(str(tmp_novo), a, sr, subtype="PCM_16")
+        _guarda_original(voice_id)      # antes de sobrescrever (#443)
+        os.replace(tmp_novo, wav)       # troca ATÔMICA: ninguém lê pela metade
+    finally:
+        tmp_up.unlink(missing_ok=True)
+        tmp_novo.unlink(missing_ok=True)
     jp = VOICES_DIR / f"{voice_id}.json"
     if jp.exists():
         try:
