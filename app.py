@@ -5251,7 +5251,6 @@ def save_design_voice(payload: dict):
     por id/nome (inclusive na API), com timbre estável (clonagem da amostra).
     """
     import numpy as np
-    import soundfile as sf
 
     name = (payload.get("name") or "").strip()
     instruct = _sanitize_instruct(payload.get("instruct") if payload.get("instruct")
@@ -5293,7 +5292,7 @@ def save_design_voice(payload: dict):
     # Quem for "consertar" a ausência daqui precisa saber disto: o gancho é este
     # `sf.write`, e o par dele no caminho remoto é `_tts_remote_chunk` (que também
     # devolve áudio para o job marcar, não para a referência).
-    sf.write(str(VOICES_DIR / f"{voice_id}.wav"), audio, sr, subtype="PCM_16")
+    _grava_wav_atomico(VOICES_DIR / f"{voice_id}.wav", audio, sr)
     meta = {"id": voice_id, "name": name, "from_design": True,
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "duration": round(len(audio) / sr, 1), "ref_text": OMNI_PRESET_SEED,
@@ -5333,7 +5332,7 @@ def create_voice(name: str = Form(...), audio: UploadFile = None, ref_text: str 
     if do_denoise:
         data, recusado, relatorio = _denoise_para_referencia(data, sr, strg)
     data = _referencia_pronta(data, sr)      # nível + fade: o clone copia isso
-    sf.write(str(wav_path), data, sr, subtype="PCM_16")
+    _grava_wav_atomico(wav_path, data, sr)
 
     duration = _wav_duration(wav_path)
     if duration < 3:
@@ -5416,6 +5415,24 @@ def _copia_atomica(origem: Path, destino: Path) -> None:
             destino.chmod(0o600)
         except OSError:
             pass
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _grava_wav_atomico(destino: Path, data, sr: int) -> None:
+    """Grava PCM novo sem publicar arquivo pela metade (#795-bis).
+
+    Voz NOVA não tem referência anterior para corromper, mas um leitor concorrente
+    (listagem, prévia, geração) pegava o `.wav` em construção. Mesmo desenho do
+    `_copia_atomica`: temporário único ao lado do destino e `os.replace`."""
+    import soundfile as sf
+
+    # sufixo `.wav` no FIM: o soundfile tira o formato da extensão
+    tmp = destino.parent / (f"{_TMP_VOICES_PREFIX}novo-{destino.stem}-"
+                            f"{uuid.uuid4().hex[:8]}.wav")
+    try:
+        sf.write(str(tmp), data, sr, subtype="PCM_16")
+        os.replace(tmp, destino)
     finally:
         tmp.unlink(missing_ok=True)
 

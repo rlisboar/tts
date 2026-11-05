@@ -240,3 +240,35 @@ def test_poda_leva_temporario_de_copia_da_raiz(tmp_path, monkeypatch):
 
     assert not antigo.exists(), "órfão da raiz não foi podado"
     assert novo.exists(), "podou temporário recente"
+
+
+def test_criacao_de_voz_publica_por_temporario(tmp_path, monkeypatch, client, auth):
+    """Voz nova também não pode aparecer pela metade (#795-bis).
+
+    O id é novo, então não há referência anterior para corromper — o que se evita é
+    o leitor concorrente (listagem, prévia) pegar o `.wav` em construção."""
+    monkeypatch.setattr(app, "VOICES_DIR", tmp_path / "voices")
+    (tmp_path / "voices").mkdir()
+    vistos = []
+    real_write = sf.write
+
+    def _espia_write(dst, *a, **k):
+        vistos.append(Path(dst).name)
+        return real_write(dst, *a, **k)
+
+    buf = io.BytesIO()
+    sf.write(buf, (np.zeros(16000 * 4, dtype=np.float32) + 0.1), 16000, format="WAV")
+    sf.write = _espia_write
+    try:
+        r = client.post("/api/voices", headers=auth,
+                        files={"audio": ("a.wav", buf.getvalue(), "audio/wav")},
+                        data={"name": "teste atomico"})
+    finally:
+        sf.write = real_write
+    assert r.status_code == 200, r.text
+    vid = r.json()["id"]
+    assert (tmp_path / "voices" / f"{vid}.wav").exists()
+    assert not list((tmp_path / "voices").glob(".tmp-tts-novo-*")), "sobrou temporário"
+    # o fixture escreve outros wavs: o que importa é a voz criada não ser alvo direto
+    assert f"{vid}.wav" not in vistos, f"gravou direto no destino: {vistos}"
+    assert vistos and vistos[-1].startswith(".tmp-tts-novo-"), "não passou por temporário"
