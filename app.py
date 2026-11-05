@@ -10752,7 +10752,7 @@ _LIVE_FECHAMENTO_TIMEOUT_S = 10.0
 #: ainda estava na FILA nunca roda e o `close()` some calado. Com uma vaga por
 #: sessão, todo fechamento ao menos COMEÇA.
 _LIVE_FECHAMENTO_POOL = concurrent.futures.ThreadPoolExecutor(
-    max_workers=max(2, _LIVE_MAX_SESSIONS), thread_name_prefix="live-fecha")
+    max_workers=max(1, _LIVE_MAX_SESSIONS), thread_name_prefix="live-fecha")
 _LIVE_MAX_BUFFER = 2 * 1024 * 1024      # PCM16 16k do turno em curso (~1 min de fala)
 # #126: teto do pendente (fala acumulada com o pipeline ocupado). PCM16 mono
 # 16 kHz = 32 kB/s; 30 s ~ 960 kB. Estourou, sai o trecho MAIS ANTIGO.

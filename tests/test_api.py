@@ -8592,3 +8592,49 @@ def test_fixture_dsh_fecha_cliente_deixado_no_pool(monkeypatch):
     _dsh_fecha_pool()
     # fecha os dois vivos e NÃO derruba a suíte no que já estava morto
     assert len(fechados) == 2
+
+
+def test_quatro_fechamentos_simultaneos_chamam_os_quatro_closes(servidor_vivo,
+                                                               monkeypatch):
+    """4 sessões fechando JUNTAS: os 4 `close` têm de ser CHAMADOS (#798).
+
+    Pool menor que o teto perde fechamento: `wait_for` cancela o future e o
+    `_WorkItem.run` do CPython desiste antes de rodar. A célula do health não via
+    isso — aqui se conta as CHAMADAS."""
+    import httpx
+
+    chamados = []
+    trava = threading.Event()
+
+    class _PipeRegistrador:
+        def __init__(self, n):
+            self.n = n
+
+        def close(self):
+            chamados.append(self.n)
+            trava.wait(10)          # segura a vaga: é o cenário de processo pendurado
+
+    monkeypatch.setattr(app, "_LIVE_FECHAMENTO_TIMEOUT_S", 5.0)
+    sessoes = []
+    for i in range(app._LIVE_MAX_SESSIONS):
+        pipe = _PipeRegistrador(i)
+        monkeypatch.setattr(app, "_live_pipe_start",
+                            lambda sess, _p=pipe: sess.__setitem__("pipe", _p))
+        ws = _ws_setup(f"ws://{servidor_vivo}/api/live/ws")
+        sessoes.append(ws)
+        # o pipe entra por uma thread do prewarm: espera o dublê aparecer
+        limite_pipe = time.time() + 5
+        while time.time() < limite_pipe:
+            if any(p.get("pipe") is pipe for p in app._live_sessions.values()):
+                break
+            time.sleep(0.02)
+        assert any(p.get("pipe") is pipe for p in app._live_sessions.values()), i
+    for ws in sessoes:
+        ws.close()
+    limite = time.time() + 8
+    while len(chamados) < len(sessoes) and time.time() < limite:
+        time.sleep(0.02)
+    trava.set()
+    assert len(chamados) == len(sessoes), (
+        f"só {len(chamados)} de {len(sessoes)} closes rodaram")
+    assert httpx.get(f"http://{servidor_vivo}/health", timeout=2.0).status_code == 200
