@@ -542,7 +542,10 @@ turno — ver a seção Conversa.
 Com admin/loopback a escolha vale para as próximas gerações (é assim que o
 seletor da UI aplica o modelo ao gerar); com **chave de uso** vale só naquele
 pedido — a chave gera com o modelo pedido sem sequestrar a config da instalação
-(`model` é campo admin). Nos dois casos, **só depois de o pedido passar** na
+(`model` é campo admin). Nesse caminho o `model` tem de ser um **id do catálogo**
+(atalho ou backend conhecido): string livre — repo do Hugging Face ou diretório — é
+`403` para a chave de uso, porque cada id novo é um download de GBs e, nos modelos
+com `trust_remote_code`, execução de código de terceiro. Admin segue livre. Nos dois casos, **só depois de o pedido passar** na
 validação: `400` (texto vazio/longo), `404` (voz) ou `429` (fila) devolvem o erro
 sem tocar em `settings.json` nem na memória.
 

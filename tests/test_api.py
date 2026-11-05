@@ -8885,3 +8885,37 @@ def test_content_length_mentindo_para_menos_da_4xx(servidor_vivo):
                        "Content-Length": "1000"},
                       _multipart_cru(4 * 1024 * 1024, chunked=False))
     assert " 4" in linha or "400" in linha, linha
+
+
+# --- #787: `model` livre por pedido é privilégio de admin --------------------
+def _sem_job(monkeypatch):
+    chamadas = []
+    monkeypatch.setattr(app, "_run_tts_job", lambda *a, **k: chamadas.append(a))
+    return chamadas
+
+
+def test_use_com_model_fora_do_catalogo_da_403(client, chave_de_uso, monkeypatch):
+    """String livre vira `snapshot_download` de repo arbitrário (#787)."""
+    chamadas = _sem_job(monkeypatch)
+    for livre in ("atacante/voxcpm-malicioso", "/tmp/modelo-local"):
+        r = client.post("/api/tts", headers=chave_de_uso,
+                        json={"text": "oi", "model": livre})
+        assert r.status_code == 403, (livre, r.status_code, r.text[:120])
+        assert "catálogo" in r.text
+    assert chamadas == [], "criou job com modelo fora do catálogo"
+
+
+def test_use_com_id_do_catalogo_passa(client, chave_de_uso, monkeypatch):
+    _sem_job(monkeypatch)
+    for ok in ("kokoro", "OMNIVOICE"):          # id e caixa alta (normalizada)
+        r = client.post("/api/tts", headers=chave_de_uso,
+                        json={"text": "oi", "model": ok})
+        assert r.status_code == 200, (ok, r.text[:120])
+
+
+def test_admin_segue_livre_para_modelo_arbitrario(client, auth, monkeypatch):
+    """Admin mantém a liberdade: é ele que instala modelo."""
+    _sem_job(monkeypatch)
+    r = client.post("/api/tts", headers=auth,
+                    json={"text": "oi", "model": "atacante/qualquer"})
+    assert r.status_code == 200, r.text[:120]

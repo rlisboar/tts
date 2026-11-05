@@ -143,7 +143,8 @@ _instala_guarda_nofile()
 
 
 import dsh_client
-from backends import generate_with_backend, list_backends, resolve_backend
+from backends import (ALIASES as _CATALOGO_ALIASES, BACKENDS as _CATALOGO_BACKENDS,
+                     generate_with_backend, list_backends, resolve_backend)
 
 try:                                     # cache de áudio por texto (#325)
     import tts_cache as _tts_cache
@@ -2089,6 +2090,12 @@ def _current_backend(model: str | None = None) -> dict:
     `model` opcional resolve SEM tocar nas settings — é o que permite validar um
     pedido com `model` no body antes de aplicá-lo globalmente."""
     return resolve_backend(model or _settings.get("model") or "omnivoice")
+
+
+def _modelo_no_catalogo(modelo: str) -> bool:
+    """O id é um atalho/backend conhecido (não um repo ou caminho livre)?"""
+    chave = str(modelo or "").strip().lower()
+    return bool(chave) and (chave in _CATALOGO_ALIASES or chave in _CATALOGO_BACKENDS)
 
 
 def _is_omnivoice() -> bool:
@@ -7281,6 +7288,14 @@ def synthesize(request: Request, payload: dict):
     if payload.get("model"):
         m = str(payload["model"]).strip()
         if m and m != "__custom__":
+            # CATÁLOGO FECHADO para chave `use` (#787): string livre vira
+            # `snapshot_download` de repo arbitrário (GBs em disco, e com o LFM3
+            # código remoto via `trust_remote_code`). Quem manda string livre
+            # precisa administrar.
+            if not _admin_is_allowed(request) and not _modelo_no_catalogo(m):
+                raise HTTPException(
+                    403, f"Modelo '{m[:80]}' fora do catálogo — com esta chave use "
+                         "um id da lista (ou peça admin para carregar repo/caminho)")
             model_override = m
     be = _current_backend(model_override)
     family = be["family"]
