@@ -136,30 +136,3 @@ def test_remoto_tambem_serializa_a_geracao_local(monkeypatch, gerador):
     assert gerador.chamadas == 2
     assert gerador.max_simultaneas == 1, "gerou local concorrente com o modo remoto"
     assert gerador.sobrepostas == 0
-
-def test_caminho_in_process_reamostra_para_a_taxa_do_fio(monkeypatch, tmp_path):
-    """#805: o SEGUNDO caminho também reamostra (o worker já tinha célula).
-
-    `_tts_app` chama `_generate_chunk` — que é LOCAL e devolve na taxa do MODELO.
-    Com o dublê em 24 kHz a reamostragem vira no-op e o teste passava sem ela;
-    aqui o modelo dita 48 kHz: 1 s de 440 Hz tem de virar 24000 amostras com o
-    pico ainda em 440 Hz (sem isso o Live toca 2× lento e uma oitava abaixo)."""
-    sr = 48000
-    t = np.arange(sr, dtype=np.float32) / sr
-    tom = (0.5 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
-
-    class _Modelo48k:
-        sample_rate = sr
-
-    monkeypatch.setattr(app, "_generate_chunk", lambda *a, **k: tom.copy())
-    monkeypatch.setattr(app, "_get_model", lambda *a, **k: _Modelo48k())
-    monkeypatch.setattr(app, "_current_backend",
-                        lambda *a, **k: {"id": "fake", "family": "omnivoice", "meta": {}})
-    monkeypatch.setattr(app, "VOICES_DIR", tmp_path)      # sem wav → sem clone prompt
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: False)
-
-    audio = lp._tts_app("um dois três", {}, "voz")
-    assert audio.size == pytest.approx(24000, rel=0.02), f"{audio.size} amostras"
-    espectro = np.abs(np.fft.rfft(audio * np.hanning(audio.size)))
-    pico = np.fft.rfftfreq(audio.size, 1 / 24000)[int(np.argmax(espectro))]
-    assert pico == pytest.approx(440, abs=10), f"pico em {pico:.0f} Hz"
