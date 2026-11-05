@@ -145,6 +145,17 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
   else
     print -r -- "  [FALHA] $rotulo sem chave devolveu $c (esperado 401)"; falhas=1
   fi
+  # ALLOWLIST DE HOST (#779/#837): o túnel entrega `Host: <público>`. Se o nome
+  # não estiver em `TTS_ALLOWED_HOSTS` o app responde 421 — e o smoke público só
+  # pega isso com o túnel de pé. Aqui é direto na LAN, então vale mesmo com o
+  # túnel caído. Rev sem o #779 ignora o `Host` e devolve 200: inofensivo.
+  c="$(codigo_http -o /dev/null -w '%{http_code}' -H "Host: $PUBLICO" "$base/health")"
+  if [ "$c" = 200 ]; then
+    print -r -- "  [ok] $rotulo Host público ($PUBLICO) aceito → 200"
+  else
+    print -r -- "  [FALHA] $rotulo Host público ($PUBLICO) devolveu $c (esperado 200; 421 = nome fora de TTS_ALLOWED_HOSTS — #779)"
+    falhas=1
+  fi
   # PREFIXO DUPLO (#778): com `root_path` e a remoção manual do prefixo, o
   # Starlette tirava o `root_path` de novo e o path duplicado casava rota
   # protegida SEM passar pela chave. Na rev corrigida (#777) `_exige_chave` nega

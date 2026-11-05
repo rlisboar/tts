@@ -108,6 +108,18 @@ check() {
     esac
   fi
 
+  # Allowlist de Host (#779/#837): o túnel manda `Host: <público>`; nome fora de
+  # `TTS_ALLOWED_HOSTS` responde 421. Sonda contínua no host público: 421 aqui é
+  # configuração faltando no serviço, e a página fica fora do ar para o mundo.
+  if [ "${TTS_PROBE_HOST_ALLOWLIST:-1}" = 1 ]; then
+    host_code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Host: $PUBLICO" "https://$PUBLICO/health" 2>/dev/null || print -r -- 000)"
+    case "$host_code" in
+      200) _log "ok host-allowlist(200 com Host: $PUBLICO)" ;;
+      421) _log "ALERTA host-allowlist(421 — $PUBLICO fora de TTS_ALLOWED_HOSTS, #779)"; falhas_pub=1 ;;
+      *)   _log "falha host-allowlist(http=$host_code)"; falhas_pub=1 ;;
+    esac
+  fi
+
   # Prefixo duplo (#778): `root_path` + remoção manual faziam o Starlette casar a
   # rota de novo SEM a chave. Na rev corrigida (#777) a negação é por padrão
   # ANTES do roteamento: o certo é **401**.

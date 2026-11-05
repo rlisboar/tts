@@ -83,7 +83,14 @@ print -r -- "$metodo $url" >> "$T_CURL_LOG"
 codigo=200; corpo=""; arquivo=""
 case "$url" in
   */ttsproxy/ttsproxy/*) codigo="${T_CURL_PREFIXO_DUPLO_CODE:-401}" ;;
-  */health)  codigo="${T_CURL_HEALTH_CODE:-200}"; corpo='{"ok":true}' ;;
+  */health)
+      # `T_CURL_HOST_CODE` só vale para a requisição que manda `Host:` — é a
+      # sonda da allowlist do #779, e as outras checagens de /health seguem 200
+      if [ -n "${T_CURL_HOST_CODE:-}" ]; then
+        case "$*" in *"Host: "*) codigo="$T_CURL_HOST_CODE"; corpo='' ;; *) codigo="${T_CURL_HEALTH_CODE:-200}"; corpo='{"ok":true}' ;; esac
+      else
+        codigo="${T_CURL_HEALTH_CODE:-200}"; corpo='{"ok":true}'
+      fi ;;
   */api/voices)
       if [ $tem_chave = 1 ]; then codigo="${T_CURL_CHAVE_CODE:-200}"; else codigo="${T_CURL_SEM_CHAVE_CODE:-401}"; fi ;;
   */api/tts/jobs/*/pieces/*) codigo="${T_CURL_PIECE_CODE:-200}"; corpo="RIFF-fake-audio" ;;
@@ -398,6 +405,19 @@ def test_smoke_aceita_401_do_prefixo_duplo_na_rev_corrigida(amb):
     r = _run(amb, "smoke")
     assert r.returncode == 0, _saida(r)
     assert "prefixo duplo sem chave → 401" in r.stdout
+
+
+def test_smoke_reprova_quando_o_host_publico_da_421(amb):
+    """421 = nome público fora de `TTS_ALLOWED_HOSTS` (#779/#837).
+
+    O túnel entrega `Host: tts.the-dudes.com`; sem o nome na env o app recusa e a
+    página fica fora do ar. O smoke tem de acusar isso mesmo com o túnel caído —
+    por isso a checagem é na LAN, com o `Host` do público."""
+    amb["T_CURL_HOST_CODE"] = "421"
+    r = _run(amb, "smoke")
+    assert r.returncode == 1
+    assert "Host público" in r.stdout and "421" in r.stdout
+    assert "TTS_ALLOWED_HOSTS" in r.stdout
 
 
 def test_smoke_avisa_mas_passa_no_404_da_rev_antiga(amb):

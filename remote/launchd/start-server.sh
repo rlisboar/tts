@@ -13,4 +13,8 @@ pkill -f "zsh \./run\.sh" 2>/dev/null || true
 pkill -f "uvicorn app:app" 2>/dev/null || true
 sleep 1
 cd /Users/lisboa/Documents/tts-rod || exit 1
+# #837: o `EnvironmentVariables` do plist não atravessa o `ssh` do agente (ssh só
+# encaminha com SendEnv/AcceptEnv), então a allowlist de `Host` do #779 mora
+# AQUI. Sem ela o túnel leva 421 e a página pública sai do ar.
+export TTS_ALLOWED_HOSTS="${TTS_ALLOWED_HOSTS:-tts.the-dudes.com}"
 exec /bin/zsh ./run.sh

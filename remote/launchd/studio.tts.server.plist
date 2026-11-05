@@ -35,6 +35,15 @@
     <string>lisboa@127.0.0.1</string>
     <string>/Users/lisboa/.tts-studio/start-server.sh</string>
   </array>
+  <!-- #837/#779: allowlist de `Host` do túnel. ATENÇÃO: este bloco NÃO chega ao
+       app — o agente sobe um `ssh` para 127.0.0.1 e o sshd não herda o ambiente.
+       Quem vale é o `export` em `start-server.sh`; aqui fica a intenção
+       registrada. Nome novo: vírgula, nos DOIS arquivos. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TTS_ALLOWED_HOSTS</key>
+    <string>tts.the-dudes.com</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

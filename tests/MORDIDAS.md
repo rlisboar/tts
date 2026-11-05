@@ -729,3 +729,14 @@ a produção de hoje verde sem a correção. **2xx é o furo** e reprova.
 | sonda aceitando só 404 | `…_401_passa_na_rev_corrigida` **FAILED** (é o erro que passaria na suíte e quebraria no ar) |
 | 404 tratado como `ok` na sonda contínua | `…_404_e_ALERTA_em_rev_antiga` **FAILED** |
 | 404 sem a palavra de aviso no smoke | `…_avisa_mas_passa_no_404_da_rev_antiga` **FAILED** |
+
+## #837 — `Host` público fora de `TTS_ALLOWED_HOSTS` (421)
+
+O túnel entrega `Host: tts.the-dudes.com`; sem o nome na env o app recusa com
+421 e a página sai do ar. A checagem é feita na LAN com o `Host` do público, para
+valer mesmo com o túnel caído.
+
+| Sabotagem | Resultado |
+|---|---|
+| sonda de Host removida do `deploy_mini.sh` | `test_smoke_reprova_quando_o_host_publico_da_421` **FAILED** |
+| sonda de Host removida do `health_probe.sh` | `test_host_publico_fora_da_allowlist_vira_alerta` **FAILED** |

@@ -36,6 +36,12 @@ done
 print -r -- "$url" >> "$T_CURL_LOG"
 case "$url" in
   *"/ttsproxy/ttsproxy/"*) codigo="${T_PREFIXO_DUPLO:-401}"; corpo='' ;;
+  *"/health")
+      if [ -n "${T_HOST_CODE:-}" ]; then
+        case "$*" in *"Host: "*) codigo="$T_HOST_CODE"; corpo='' ;; *) codigo="${T_PUB:-200}"; corpo='{"ok":true,"boot_ts":111,"rev":"abc1234"}' ;; esac
+      else
+        codigo="${T_PUB:-200}"; corpo='{"ok":true,"boot_ts":111,"rev":"abc1234"}'
+      fi ;;
   *"/api/voices") codigo="${T_AUTH:-401}"; corpo='' ;;
   http://127.0.0.1:*/ready) codigo="${T_CONECTOR:-200}"; corpo='{"status":"ok"}' ;;
   https://*)      codigo="${T_PUB:-200}"; corpo='{"ok":true,"boot_ts":111,"rev":"abc1234"}' ;;
@@ -166,6 +172,13 @@ def test_sem_chave_dando_200_acusa_tunel_em_loopback(amb):
     r = _run(amb, "check", env={"T_AUTH": "200"})
     assert r.returncode == 1
     assert "destino do túnel é LOOPBACK" in _log(amb)
+
+
+def test_host_publico_fora_da_allowlist_vira_alerta(amb):
+    """421 com `Host:` público = `TTS_ALLOWED_HOSTS` faltando no serviço (#837)."""
+    r = _run(amb, "check", env={"T_HOST_CODE": "421"})
+    assert r.returncode == 1
+    assert "fora de TTS_ALLOWED_HOSTS" in _log(amb)
 
 
 def test_prefixo_duplo_com_200_acusa_bypass(amb):

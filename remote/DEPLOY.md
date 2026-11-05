@@ -375,6 +375,31 @@ O que ele garante:
   grita `✖ REVERTIDO PARA …, MAS O SMOKE DO ROLLBACK TAMBÉM FALHOU` — o operador
   precisa saber que a produção está de pé num rev e vermelha, não que "deu erro".
 
+### `Host` público: `TTS_ALLOWED_HOSTS` (#837)
+
+O `#779` passou a validar o cabeçalho `Host`. O túnel entrega
+`Host: tts.the-dudes.com`, e esse nome **não** está na allowlist implícita
+(loopback, IPs da máquina, `*.local`) — sem a variável, a página pública responde
+**421** e sai do ar.
+
+Antes de subir um rev com o `#779`, o serviço precisa de:
+
+```
+TTS_ALLOWED_HOSTS=tts.the-dudes.com
+```
+
+no bloco `EnvironmentVariables` do plist do serviço, seguido de
+`launchctl kickstart -k gui/$(id -u)/studio.tts.server` e conferência:
+
+```
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: tts.the-dudes.com' http://127.0.0.1:7860/health
+```
+
+Tem de dar **200** (421 = nome fora da lista). Nome público novo entra na mesma
+env, separado por vírgula. O smoke do `deploy_mini.sh` e o `health_probe.sh`
+acusam 421 — a checagem é feita na LAN com o `Host` do público, então vale mesmo
+com o túnel caído.
+
 ### Atenção em produção (chave legada)
 
 A produção do mini roda hoje com uma chave **sem papel** em `.apikeys.json`. Pela regra
