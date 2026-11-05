@@ -132,3 +132,20 @@ def test_unload_sem_tts_ainda_libera_o_pool(monkeypatch):
     monkeypatch.setattr(app, "_release_mlx_memory", lambda *a, **k: chamou.append(1))
     app._unload_local_models(tts=False, stt=False, mt=False, ser=False)
     assert chamou, "sem TTS o pool do Metal ficou sem liberar"
+
+
+def test_job_status_nao_entrega_o_dict_vivo(monkeypatch):
+    """A rota tem de devolver CÓPIA (#800).
+
+    O job é mutado pela thread que gera enquanto o FastAPI serializa: entregar o
+    dict vivo dá snapshot inconsistente e, com campo trocado no meio, erro de
+    iteração."""
+    app._jobs["vivo"] = {"status": "running", "progress": {"current": 1}}
+    try:
+        r = app.job_status("vivo")
+        r["status"] = "mutado"
+        r["novo"] = 1
+        assert app._jobs["vivo"]["status"] == "running", "devolveu o dict vivo"
+        assert "novo" not in app._jobs["vivo"]
+    finally:
+        app._jobs.pop("vivo", None)

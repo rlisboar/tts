@@ -7660,7 +7660,11 @@ def job_status(job_id: str):
     job = _jobs.get(job_id)
     if job is None:
         raise HTTPException(404, "Job não encontrado")
-    return job
+    # CÓPIA rasa (#800): o job é mutado pela thread que gera enquanto o FastAPI
+    # serializa. Devolver o dict vivo dava snapshot inconsistente (e, em campo
+    # aninhado trocado no meio, `RuntimeError: changed size during iteration`).
+    # `dict()` é barato e o valor aninhado que muda já é substituído inteiro.
+    return dict(job)
 
 
 @app.post("/api/tts/jobs/{job_id}/cancel")
