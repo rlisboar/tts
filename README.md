@@ -651,6 +651,18 @@ TTS_CORS_ORIGINS=https://minha-pagina.example ./run.sh
 
 Sem `Origin` (curl, SDK, bookmark) e a própria UI (same-origin) seguem como antes.
 
+Extensão de navegador é lista SEPARADA e **fechada por padrão**: só entra quem for
+autorizado por origem exata em `TTS_EXTENSOES_PERMITIDAS` (csv). Sem a variável,
+nenhuma extensão é "da casa" — mesmo que esteja instalada e você confie nela:
+
+```sh
+TTS_EXTENSOES_PERMITIDAS=chrome-extension://abcdefghijklmnop ./run.sh
+```
+
+O id sai na própria resposta de recusa (`origin`), para copiar. A mesma lista vale
+para o CORS e para o WebSocket do Live — sem ela a extensão autentica e o navegador
+não deixa ler.
+
 ### No app (já pronto)
 
 O servidor remove o prefixo `/ttsproxy` (configurável via

@@ -4176,10 +4176,11 @@ def _cliente_local():
     return TestClient(app.app, raise_server_exceptions=False, client=("127.0.0.1", 50000))
 
 
-def test_origin_boa_nao_regride_o_fluxo_do_mac(client, auth):
+def test_origin_boa_nao_regride_o_fluxo_do_mac(client, auth, monkeypatch):
     """A UI da própria máquina abre a porta e o `Host` da requisição é o mesmo:
-    origem igual à da requisição, loopback explícito e extensão do dono seguem
-    recebendo segredo como antes."""
+    origem igual à da requisição, loopback explícito e extensão LISTADA seguem
+    recebendo segredo como antes (#813: extensão não é mais aprovada por prefixo)."""
+    monkeypatch.setattr(app, "_EXTENSOES_PERMITIDAS", ("chrome-extension://abc123",))
     c = _cliente_local()
     for origem in ("http://testserver", _ORIGEM_MAQUINA, "http://localhost:7860",
                    "http://[::1]:7860", "chrome-extension://abc123"):
@@ -8314,3 +8315,65 @@ def test_fechar_sessao_lenta_nao_congela_o_health(servidor_vivo, monkeypatch):
     libera.set()
     assert r.status_code == 200
     assert demora < 2.0, f"o health esperou o fechamento ({demora:.2f}s)"
+
+
+# --- #813: extensão só vale por ORIGEM EXATA na lista ------------------------
+_EXT = "chrome-extension://abcdefghijklmnop"          # a que o ambiente lista
+_EXT_FORA = "chrome-extension://zzzzzzzzzzzzzzzz"     # nunca listada
+
+
+def test_extensao_listada_le_com_acao_dela(monkeypatch):
+    """Extensão autorizada lê o reveal E recebe `ACAO` da própria origem (#813).
+
+    O defeito era o par: auth dizia "da casa" (200) e o CORS não a listava, então o
+    navegador bloqueava a leitura. O middleware copia a lista na criação, então a
+    célula checa também que a origem está no `allow_origins` montado."""
+    monkeypatch.setattr(app, "_origens_barradas", {})
+    assert _EXT in app._EXTENSOES_PERMITIDAS, "a variável de ambiente não foi lida"
+    c = _cliente_local()
+    r = c.get("/api/apikeys?reveal=1", headers={"Origin": _EXT})
+    assert r.status_code == 200
+    assert any(k.get("secret") for k in r.json()["keys"])
+    assert r.headers.get("access-control-allow-origin") == _EXT
+
+
+def test_extensao_fora_da_lista_nao_le(monkeypatch):
+    """Extensão NÃO listada é origem estrangeira: 403 e sem `ACAO`."""
+    monkeypatch.setattr(app, "_origens_barradas", {})
+    c = _cliente_local()
+    r = c.get("/api/apikeys?reveal=1", headers={"Origin": _EXT_FORA})
+    assert r.status_code == 403, r.status_code
+    assert not r.headers.get("access-control-allow-origin")
+    # a resposta devolve a origem para o dono COPIAR no hint/variável
+    assert _EXT_FORA in _json.dumps(r.json())
+
+
+def test_extensao_por_origem_exata_nao_por_prefixo(monkeypatch):
+    """`chrome-extension://` sozinho não basta; e o CORS inclui a lista."""
+    assert app._origem_confiavel("chrome-extension://qualquer-um", _req_falso()) is False
+    monkeypatch.setattr(app, "_EXTENSOES_PERMITIDAS", (_EXT,))
+    assert app._origem_confiavel(_EXT, _req_falso()) is True
+    assert app._origem_confiavel(_EXT + "/", _req_falso()) is True      # normaliza
+    assert app._origem_confiavel(_EXT + "x", _req_falso()) is False     # exato
+
+
+def test_ws_herda_a_allowlist_de_extensao(tickets_limpos, monkeypatch):
+    """O WS usa a mesma decisão: extensão listada abre, não listada leva 4403."""
+    monkeypatch.setattr(app, "_origens_barradas", {})
+    c = _ws_cliente("127.0.0.1")
+    with c.websocket_connect("/api/live/ws", headers={"Origin": _EXT_FORA}) as ws:
+        aviso = ws.receive_json()
+        assert aviso["code"] == "unauthorized", aviso
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4403
+    c2 = _ws_cliente("127.0.0.1")
+    with c2.websocket_connect("/api/live/ws", headers={"Origin": _EXT}) as ws:
+        assert _setup_ok(ws)["type"] == "ready"
+
+
+def _req_falso():
+    from starlette.requests import Request
+
+    return Request({"type": "http", "path": "/api/x", "method": "GET",
+                    "headers": [(b"host", b"127.0.0.1:7860")], "scheme": "http"})

@@ -1082,8 +1082,12 @@ def _is_local(request) -> bool:
 # A regra NÃO afrouxa a LAN: só age quando o socket é loopback. Origem ausente
 # (curl, SDK, scripts do repo) e origem da própria máquina seguem como antes.
 # ---------------------------------------------------------------------------
-_ORIGENS_EXTENSAO = ("chrome-extension://", "moz-extension://",
-                     "safari-web-extension://")
+#: Extensões de navegador autorizadas, por ORIGEM EXATA (#813). O prefixo sozinho
+#: confiava em qualquer extensão instalada — inclusive carregada à mão por outra
+#: página. Vazio por padrão: sem lista, extensão nenhuma é "da casa".
+_EXTENSOES_PERMITIDAS = tuple(
+    x.strip().lower().rstrip("/")
+    for x in os.environ.get("TTS_EXTENSOES_PERMITIDAS", "").split(",") if x.strip())
 _HOSTS_DA_MAQUINA = ("127.0.0.1", "localhost", "::1")
 
 #: Nomes de `Host` aceitos além dos da máquina (#779). Lista por ambiente, com o
@@ -1137,8 +1141,8 @@ def _origem_confiavel(origem: str, request) -> bool:
     """A origem é da própria máquina / da UI / de uma extensão / do `TTS_CORS_ORIGINS`?"""
     if not origem:
         return True                      # sem `Origin`: cliente não-browser
-    if origem.lower().startswith(_ORIGENS_EXTENSAO):
-        return True                      # extensão do dono (não há como forjar esquema)
+    if origem.lower().rstrip("/") in _EXTENSOES_PERMITIDAS:
+        return True                      # extensão LISTADA pelo dono, origem exata
     if origem == _mesma_origem(request):
         return True                      # a própria UI, mesma porta
     if "*" in _CORS_ORIGINS or origem in _CORS_ORIGINS:
@@ -1639,8 +1643,9 @@ async def _exige_chave(request, call_next):
                 {"detail": "Origem desconhecida pedindo rota que revela segredo",
                  "origin": (request.headers.get("origin") or "")[:120],
                  "hint": "A página que chamou não é a UI. Mande a chave "
-                         "(Authorization: Bearer ou X-API-Key), ou sirva a UI por "
-                         "esta mesma origem/porta."},
+                         "(Authorization: Bearer ou X-API-Key), sirva a UI por "
+                         "esta mesma origem/porta, ou autorize esta origem em "
+                         "TTS_EXTENSOES_PERMITIDAS (extensão) / TTS_CORS_ORIGINS."},
                 status_code=403, headers={"X-TTS-Origin-Bloqueada": "1"})
         ok = (local and not estrangeira) or _key_is_valid(chave)
         if not ok:
@@ -13169,7 +13174,9 @@ app.add_middleware(
     # sem curinga por padrão (#780): `ACAO: *` no loopback é justamente o que
     # deixava a página de terceiro LER a resposta. A UI é same-origin e não usa
     # CORS; quem é de fora entra em `TTS_CORS_ORIGINS`.
-    allow_origins=list(_CORS_ORIGINS),
+    # a MESMA decisão da auth (#813): o que passa em `_origem_confiavel` também
+    # precisa de `ACAO`, senão o navegador autentica e não deixa LER
+    allow_origins=list(_CORS_ORIGINS) + list(_EXTENSOES_PERMITIDAS),
     allow_methods=["*"],
     allow_headers=["*"],
     # `Retry-After` não é header safelisted de CORS: sem expor, cliente
