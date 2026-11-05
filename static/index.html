@@ -5109,8 +5109,13 @@ if ($("metricsTtl")) {
   $("metricsTtl").oninput = () => { $("metricsTtlOut").textContent = $("metricsTtl").value; };
   $("metricsTtl").onchange = () => api("/api/settings", {
     method: "POST",
+    // sem o `Content-Type` o corpo ia como texto e o servidor devolvia 422 — o
+    // slider do TTL não salvava NEM com chave admin (#799)
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ metrics_ttl_dias: parseInt($("metricsTtl").value, 10) }) })
-    .then(() => toast("Retenção do histórico: " + $("metricsTtl").value + " dia(s)"))
+    // #791/#799: com chave `use` o servidor dropa o campo e o `api()` já avisou —
+    // o sucesso aqui por cima apagava o aviso e a tela mentia "salvo"
+    .then((r) => { if (!tratarRespostaSettings(r).length) toast("Retenção do histórico: " + $("metricsTtl").value + " dia(s)"); })
     .catch((e) => toast("Falha ao salvar retenção: " + e.message));
 }
 if ($("sttBeam")) {
@@ -8234,8 +8239,8 @@ $("cvSystemReset").onclick = async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_system: $("cvSystem").value })
     });
-    tratarRespostaSettings(r);                         // #791: campo de uso
-    toast("Instruções restauradas (padrão)");
+    // mesma precedência do salvar: aviso ganha do sucesso (#799)
+    if (!tratarRespostaSettings(r).length) toast("Instruções restauradas (padrão)");
   } catch (e) { toast("Erro: " + e.message, 5000); }
 };
 async function cvLoadVoices() {

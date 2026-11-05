@@ -529,6 +529,26 @@ with sync_playwright() as p:
     cobrar("precisam de chave admin" in toast, f"toast sem o aviso: {toast!r}")
     cobrar(keybar == "none", "save normal não devia abrir a faixa de chave")
 
+    # #799: o aviso de campo ignorado NÃO pode ser apagado pelo sucesso — o toast é
+    # um só, então quem escreve por último manda. O TTL é campo ADMIN (o `api()`
+    # avisa e o handler não pode escrever "salvo" por cima); `chat_system` é de
+    # USO e aplica, então ali o sucesso é a resposta certa.
+    pg.evaluate("() => { document.getElementById('toast').textContent = ''; }")
+    pg.eval_on_selector("#metricsTtl",
+                        "el => { el.value = 7; el.dispatchEvent(new Event('change')); }")
+    pg.wait_for_timeout(1200)
+    t = pg.inner_text("#toast")
+    print(f"  toast do TTL (admin) com chave de uso: {t[:60]!r}")
+    cobrar("precisam de chave admin" in t, f"o aviso do TTL foi sobrescrito pelo sucesso: {t!r}")
+    cobrar("Retenção do histórico" not in t, f"o TTL disse 'salvo' com o campo dropado: {t!r}")
+
+    pg.evaluate("() => { document.getElementById('toast').textContent = ''; }")
+    pg.eval_on_selector("#cvSystemSave", "el => el.click()")
+    pg.wait_for_timeout(1200)
+    t = pg.inner_text("#toast")
+    print(f"  toast das instruções (uso) com chave de uso: {t[:60]!r}")
+    cobrar("Instruções salvas" in t, f"o `chat_system` é de uso e devia aplicar: {t!r}")
+
     # ação administrativa -> 403 com instrução
     r = pg.evaluate("""async () => {
         try { await api('/api/apikeys', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); return {}; }
