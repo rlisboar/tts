@@ -5240,6 +5240,15 @@ def test_chat_provider_env_vazio_nao_conta(monkeypatch):
 # intacto; aqui o dsh é sempre o fake/`monkeypatch` (sem processo nem Node).
 # ---------------------------------------------------------------------------
 
+def _dsh_fecha_pool() -> None:
+    """Fecha os clientes dsh que sobraram no pool (teardown entre testes)."""
+    for cli in list(getattr(app, "_chat_dsh_livres", None) or []):
+        try:
+            cli.close()
+        except Exception:            # noqa: BLE001 — teardown não derruba a suíte
+            pass
+
+
 @pytest.fixture()
 def dsh_limpo(monkeypatch):
     """Sem env nem cache herdados: cada teste parte do estado de produção limpo.
@@ -5260,6 +5269,10 @@ def dsh_limpo(monkeypatch):
     monkeypatch.setattr(app, "_dsh_models_erro", {})     # cache negativo (#287)
     monkeypatch.setattr(app.dsh_client, "_node_versoes", {})  # memo do node (#373)
     monkeypatch.setattr(app, "_dsh_morto_ate", 0.0)      # latch de processo
+    # FECHA o que o teste anterior deixou no pool: só zerar a lista abandonava o
+    # processo do `fake_acp` até o fim da sessão (6 vivos com 30+ min medidos, mesmo
+    # dano do uvicorn órfão do #688). O `close()` do dsh já tem prazo próprio.
+    _dsh_fecha_pool()
     monkeypatch.setattr(app, "_chat_dsh_livres", [])
     # contador GLOBAL de processos dsh (#287): cliente vazado por um teste não pode
     # consumir o teto do seguinte
@@ -8558,3 +8571,24 @@ def test_corpo_sem_content_length_acima_do_teto_da_413(monkeypatch):
 def test_teto_grande_nao_e_maior_que_o_limite_interno():
     """O teto do middleware não pode ser decorativo: `restore` recusa antes (#790)."""
     assert app._TETO_CORPO_GRANDE <= app._IMPORT_MAX_TOTAL
+
+
+def test_fixture_dsh_fecha_cliente_deixado_no_pool(monkeypatch):
+    """Trocar de teste não pode abandonar o processo do `fake_acp` (#688/#790).
+
+    `dsh_limpo` zerava a lista sem fechar: cada cliente vazado ficava vivo até o fim
+    da sessão (6 medidos, 30+ min)."""
+    fechados = []
+
+    class _Cli:
+        def close(self):
+            fechados.append(1)
+
+    class _Quebrado:
+        def close(self):
+            raise RuntimeError("já morto")
+
+    monkeypatch.setattr(app, "_chat_dsh_livres", [_Cli(), _Quebrado(), _Cli()])
+    _dsh_fecha_pool()
+    # fecha os dois vivos e NÃO derruba a suíte no que já estava morto
+    assert len(fechados) == 2
