@@ -6921,6 +6921,9 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
                         pass
                 if rc is not None:
                     break
+                if job.get("cancelado"):
+                    final = ("err", "cancelado pelo cliente")
+                    break
                 time.sleep(0.35)
         finally:
             if proc.poll() is None:
@@ -7507,6 +7510,23 @@ def job_status(job_id: str):
     if job is None:
         raise HTTPException(404, "Job não encontrado")
     return job
+
+
+@app.post("/api/tts/jobs/{job_id}/cancel")
+def job_cancel(job_id: str):
+    """Pede o cancelamento do job (#857).
+
+    Marca `cancelado` no job e o laço do worker derruba o processo na volta
+    seguinte. O campo evita que a tela case TEXTO de erro para saber que foi o
+    dono quem parou (falha real — OOM, crash — não tem o campo)."""
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job não encontrado")
+    if job.get("status") in ("done", "error"):
+        return {"ok": True, "ja_terminado": True,
+                "cancelado": bool(job.get("cancelado"))}
+    job["cancelado"] = True
+    return {"ok": True, "cancelado": True}
 
 
 @app.get("/api/tts/jobs/{job_id}/pieces/{index}")
