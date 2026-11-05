@@ -1172,7 +1172,8 @@ def _marca_origem_barrada(request) -> None:
                 _origens_barradas.pop(velha, None)
         primeira = reg["n"] == 1
     if primeira:
-        print(f"[origin] barrada {origem!r} em {request.method} {request.url.path}",
+        metodo = getattr(request, "method", None) or "WS"   # WebSocket não tem verbo
+        print(f"[origin] barrada {origem!r} em {metodo} {request.url.path}",
               file=sys.stderr, flush=True)
 
 
@@ -10596,7 +10597,11 @@ def _live_autentica(ws) -> bool:
     a checagem SEGUE para a chave/header (#212) — antes o `return` cortava ali e um
     cliente com credencial boa levava 4401 só porque repetiu o parâmetro. O ticket
     tentado continua sendo consumido: um uso segue um uso."""
-    if _is_local(ws):
+    # Origem de TERCEIRO não herda a isenção do loopback (#781): o navegador não
+    # aplica CORS a WebSocket, então quem confere é aqui — sem isto qualquer site
+    # aberto no Mac abre sessão Live e fala com a voz do dono.
+    estrangeira = _origem_estrangeira(ws)
+    if _is_local(ws) and not estrangeira:
         return True
     if not _auth_enabled():
         return True
@@ -10607,6 +10612,8 @@ def _live_autentica(ws) -> bool:
     chave_query = (ws.query_params.get("key") or "").strip()
     chave = chave_query or _extract_request_key(ws)
     ok = _key_is_valid(chave)
+    if not ok and estrangeira:
+        _marca_origem_barrada(ws)
     if ok and chave_query:
         # chave em query vai para access log do uvicorn/proxy: o ticket existe para
         # isso, então a queda para `?key=` fica REGISTRADA em vez de invisível (#282)
@@ -12524,11 +12531,16 @@ async def live_ws(ws: WebSocket):
     _sub, _motivo_sub = _live_negocia_subprotocolo(ws)
     await ws.accept(subprotocol=_sub)
     if not _live_autentica(ws):
+        de_fora = _origem_estrangeira(ws)
+        # 4403 para origem de terceiro (o cliente entende "não é a UI") e 4401 para
+        # o resto; a mensagem diz o caminho em vez de só negar (#781)
         await ws.send_json(_live_erro(
             "unauthorized",
-            "Sem credencial: pegue um ticket em POST /api/live/ticket e use ?ticket=<t> "
-            "(ou ?key=<chave>); loopback dispensa"))
-        await ws.close(code=4401)
+            ("Origem desconhecida: pegue um ticket em POST /api/live/ticket e use "
+             "?ticket=<t> (ou ?key=<chave>)") if de_fora else
+            ("Sem credencial: pegue um ticket em POST /api/live/ticket e use "
+             "?ticket=<t> (ou ?key=<chave>); loopback dispensa")))
+        await ws.close(code=4403 if de_fora else 4401)
         return
     _live_sweep()
     # o teto NÃO é checado aqui: entre esta linha e o registro há o `await` do setup

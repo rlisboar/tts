@@ -8101,3 +8101,43 @@ def test_origem_listada_em_cors_le_com_chave(monkeypatch):
     r = c.get("/api/status", headers={"Origin": origem, "X-API-Key": chave})
     assert r.status_code == 200
     assert r.headers.get("access-control-allow-origin") == origem
+
+
+# --- #781: WS não herda a isenção do loopback com Origin de fora -------------
+_EVIL_WS = "http://evil.tld"
+
+
+def test_ws_origem_estrangeira_no_loopback_exige_credencial(tickets_limpos,
+                                                             monkeypatch):
+    """Site de terceiro não abre sessão Live só por estar no loopback (#781).
+
+    O navegador não aplica CORS a WebSocket: sem esta checagem, qualquer página
+    aberta no Mac fala com a voz do dono e ocupa o teto de sessões."""
+    monkeypatch.setattr(app, "_origens_barradas", {})
+    c = _ws_cliente("127.0.0.1")
+    with c.websocket_connect("/api/live/ws", headers={"Origin": _EVIL_WS}) as ws:
+        aviso = ws.receive_json()
+        assert aviso["code"] == "unauthorized", aviso
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4403, exc.value.code
+    assert app._origens_barradas, "a recusa não foi contabilizada"
+
+
+def test_ws_origem_estrangeira_com_ticket_abre(tickets_limpos, monkeypatch):
+    """Com ticket válido a página de fora abre normalmente."""
+    monkeypatch.setattr(app, "_origens_barradas", {})
+    t = app._live_ticket_emite()
+    c = _ws_cliente("127.0.0.1")
+    with c.websocket_connect(f"/api/live/ws?ticket={t}",
+                            headers={"Origin": _EVIL_WS}) as ws:
+        assert _setup_ok(ws)["type"] == "ready"
+
+
+def test_ws_sem_origin_e_same_origin_seguem_abertos(ws_client, monkeypatch):
+    """Cliente não-browser (sem `Origin`) e a própria UI não pagam por isso."""
+    with ws_client.websocket_connect("/api/live/ws") as ws:
+        assert _setup_ok(ws)["type"] == "ready"
+    with ws_client.websocket_connect(
+            "/api/live/ws", headers={"Origin": "http://127.0.0.1:7860"}) as ws:
+        assert _setup_ok(ws)["type"] == "ready"
