@@ -190,9 +190,16 @@ def test_prefixo_duplo_401_passa_na_rev_corrigida(amb):
         "a sonda não requisitou o path duplicado"
 
 
-def test_prefixo_duplo_404_passa_em_rev_antiga(amb):
-    """404 = rev ANTERIOR à correção — não é falha enquanto o mini estiver velho."""
-    assert _run(amb, "check", env={"T_PREFIXO_DUPLO": "404"}).returncode == 0
+def test_prefixo_duplo_404_e_ALERTA_em_rev_antiga(amb):
+    """404 é a rev ANTERIOR à correção — e na sonda CONTÍNUA isso é alerta (#806).
+
+    Aceitar 404 como ok deixaria a sonda verde na produção de hoje, que é
+    exatamente o estado sem a correção do #777. Some-se a isso que 404 na rev
+    nova também é o que um deploy quebrado devolveria: o verde mentiria nos dois
+    casos."""
+    r = _run(amb, "check", env={"T_PREFIXO_DUPLO": "404"})
+    assert r.returncode == 1
+    assert "bypass do #777 não coberto" in _log(amb)
 
 
 def test_erro_diferente_de_401_tambem_conta(amb):

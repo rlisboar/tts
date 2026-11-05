@@ -152,8 +152,13 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
   # ANTERIOR à correção (o path duplicado nem existia na instância). 2xx é bypass
   # de auth — reprova o deploy e cai no rollback.
   c="$(codigo_http -o /dev/null -w '%{http_code}' "$base/ttsproxy/ttsproxy/api/build")"
-  if [ "$c" = 401 ] || [ "$c" = 404 ]; then
-    print -r -- "  [ok] $rotulo prefixo duplo sem chave → $c"
+  # 404 passa (é o caminho de ROLLBACK, e o rev antigo não tem a rota), mas NÃO é
+  # prova: no rev antigo o bypass do #777 segue aberto. O aviso impede o operador
+  # de ler o verde como "coberto" (#806).
+  if [ "$c" = 401 ]; then
+    print -r -- "  [ok] $rotulo prefixo duplo sem chave → 401"
+  elif [ "$c" = 404 ]; then
+    print -r -- "  [aviso] $rotulo prefixo duplo sem chave → 404 (rev ANTERIOR: o bypass do #777 NÃO está coberto; 401 é o esperado)"
   else
     print -r -- "  [FALHA] $rotulo prefixo duplo sem chave devolveu $c (esperado 401/404 — bypass de auth)"
     falhas=1

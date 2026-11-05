@@ -110,13 +110,18 @@ check() {
 
   # Prefixo duplo (#778): `root_path` + remoção manual faziam o Starlette casar a
   # rota de novo SEM a chave. Na rev corrigida (#777) a negação é por padrão
-  # ANTES do roteamento: o certo é **401**; **404** é a rev ANTERIOR à correção.
-  # 2xx aqui é bypass de auth servido para a internet.
+  # ANTES do roteamento: o certo é **401**.
+  #
+  # 404 NÃO é "ok" aqui (#806): é o que a rev ANTERIOR à correção responde, e no
+  # host público isso significa que o bypass do #777 NÃO está coberto. Aceitar 404
+  # como sucesso deixaria o smoke verde na produção de hoje — que é justamente o
+  # estado que a sonda existe para acusar. 2xx é bypass servido para a internet.
   if [ "${TTS_PROBE_PREFIXO_DUPLO:-1}" = 1 ]; then
     dup="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "https://$PUBLICO/ttsproxy/ttsproxy/api/build" 2>/dev/null || print -r -- 000)"
     case "$dup" in
-      401|404) _log "ok prefixo-duplo($dup sem chave — sem bypass)" ;;
-      *)       _log "ALERTA prefixo-duplo(http=$dup sem chave — bypass de auth)"; falhas_pub=1 ;;
+      401) _log "ok prefixo-duplo(401 sem chave — negado, #777 coberto)" ;;
+      404) _log "ALERTA prefixo-duplo(404 sem chave — rev ANTERIOR à correção: bypass do #777 não coberto)"; falhas_pub=1 ;;
+      *)   _log "ALERTA prefixo-duplo(http=$dup sem chave — bypass de auth)"; falhas_pub=1 ;;
     esac
   fi
 

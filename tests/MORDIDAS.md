@@ -716,9 +716,10 @@ O Starlette tira o `root_path` de novo e a rota protegida casava sem passar pela
 chave: qualquer aparelho da LAN (e a internet, pelo túnel) lia settings/vozes e
 sintetizava com a voz do dono.
 
-As duas respostas aceitas têm papéis diferentes, e as células cobrem as duas:
-**401 é a rev corrigida** (`_exige_chave` nega por padrão antes do roteamento);
-**404 é a rev anterior** à correção. **2xx é o furo** e reprova.
+**Só 401 é cobertura**: é a rev corrigida (`_exige_chave` nega por padrão antes do
+roteamento). **404 é a rev ANTERIOR** — passa no smoke (é o caminho de rollback)
+mas com AVISO, e na sonda contínua é ALERTA, porque aceitar 404 como ok deixaria
+a produção de hoje verde sem a correção. **2xx é o furo** e reprova.
 
 | Sabotagem | Resultado |
 |---|---|
@@ -726,3 +727,5 @@ As duas respostas aceitas têm papéis diferentes, e as células cobrem as duas:
 | sonda removida do `health_probe.sh` | `…_com_200_acusa_bypass` e `…_401_passa_na_rev_corrigida` **FAILED** |
 | alvo responde 2xx no path duplicado | smoke/alerta reprovam e o deploy cai no rollback |
 | sonda aceitando só 404 | `…_401_passa_na_rev_corrigida` **FAILED** (é o erro que passaria na suíte e quebraria no ar) |
+| 404 tratado como `ok` na sonda contínua | `…_404_e_ALERTA_em_rev_antiga` **FAILED** |
+| 404 sem a palavra de aviso no smoke | `…_avisa_mas_passa_no_404_da_rev_antiga` **FAILED** |

@@ -400,13 +400,14 @@ def test_smoke_aceita_401_do_prefixo_duplo_na_rev_corrigida(amb):
     assert "prefixo duplo sem chave → 401" in r.stdout
 
 
-def test_smoke_aceita_404_do_prefixo_duplo_em_rev_antiga(amb):
-    """404 = rev ANTERIOR à correção (o path duplicado nem existia na instância)."""
+def test_smoke_avisa_mas_passa_no_404_da_rev_antiga(amb):
+    """404 passa (é o caminho de rollback), mas AVISA: no rev antigo o bypass do
+    #777 segue aberto. O operador não pode ler o verde como prova (#806)."""
     amb["T_CURL_PREFIXO_DUPLO_CODE"] = "404"
     assert _run(amb, "deploy", "--apply").returncode == 0
     r = _run(amb, "smoke")
     assert r.returncode == 0, _saida(r)
-    assert "prefixo duplo sem chave → 404" in r.stdout
+    assert "[aviso]" in r.stdout and "NÃO está coberto" in r.stdout
 
 
 def test_smoke_avisa_quando_o_ws_nao_sobe(amb):
