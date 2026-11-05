@@ -5294,10 +5294,9 @@ def dsh_limpo(monkeypatch):
     try:
         yield
     finally:
-        # FECHA o pool DESTE teste (#688). `finally` e não o corpo depois do
-        # `yield`: com o teste FALHANDO o pytest joga a exceção dentro da fixture e
-        # o que está solto depois do `yield` não roda — o cliente vazaria justo no
-        # caso em que se está depurando.
+        # FECHA o pool DESTE teste (#688). `finally` por ser a forma canônica: não
+        # depende de o gerador ser retomado normalmente, e é o que a célula cobra
+        # com `gen.throw()`.
         # Roda ANTES do `monkeypatch` desfazer: aqui `_chat_dsh_livres` ainda é a
         # lista do teste. O `try` por cliente fica no helper.
         _dsh_fecha_pool()
@@ -9306,7 +9305,8 @@ def test_fixture_dsh_limpo_fecha_o_pool_no_teardown(monkeypatch):
     """A fixture tem de fechar o pool DESTE teste no teardown (#688).
 
     Ela é geradora: sem o `yield`+`finally` o `_dsh_fecha_pool()` rodava só no
-    setup, sobre a lista real — a lista do teste morria sem `close()`."""
+    setup, sobre a lista real — a lista do teste morria sem `close()`.
+    O `finally` é a forma canônica e não depende da retomada normal do pytest."""
     import pytest as _pytest
 
     fechados = []
@@ -9318,6 +9318,41 @@ def test_fixture_dsh_limpo_fecha_o_pool_no_teardown(monkeypatch):
     gerador = dsh_limpo.__wrapped__(monkeypatch)
     next(gerador)                       # setup
     app._chat_dsh_livres.append(_Cli())  # cliente que o teste deixou no pool
-    with _pytest.raises(StopIteration):
-        next(gerador)                   # teardown
+    # `throw`, não `next`: é assim que se cobra o `finally`. Com o teste FALHANDO o
+    # pytest RETOMA o gerador normalmente (código solto depois do `yield` rodaria
+    # igual); o `finally` só é carga quando a exceção entra na fixture.
+    with _pytest.raises(RuntimeError):
+        gerador.throw(RuntimeError("teste falhou"))
     assert fechados == [1], "o cliente do teste não foi fechado no teardown"
+
+
+# --- #857: `cancelado` no job em vez de a tela casar texto -------------------
+def test_cancelar_job_marca_cancelado(client, auth):
+    app._jobs["jcancel1"] = {"id": "jcancel1", "text": "oi", "status": "running",
+                             "pieces": 0, "total": 1}
+    try:
+        r = client.post("/api/tts/jobs/jcancel1/cancel", headers=auth)
+        assert r.status_code == 200, r.text
+        assert r.json()["cancelado"] is True
+        assert client.get("/api/tts/jobs/jcancel1", headers=auth).json()["cancelado"] is True
+    finally:
+        app._jobs.pop("jcancel1", None)
+
+
+def test_falha_real_nao_tem_o_campo_cancelado(client, auth):
+    """OOM/crash NÃO é cancelamento: o campo fica ausente (#857)."""
+    app._jobs["jfalha1"] = {"id": "jfalha1", "text": "oi", "status": "error",
+                            "error": "Worker crashou (SIGSEGV)", "pieces": 0, "total": 1}
+    try:
+        corpo = client.get("/api/tts/jobs/jfalha1", headers=auth).json()
+        assert "cancelado" not in corpo
+        # e cancelar job já terminado não inventa o campo
+        assert client.post("/api/tts/jobs/jfalha1/cancel",
+                           headers=auth).json()["ja_terminado"] is True
+        assert "cancelado" not in client.get("/api/tts/jobs/jfalha1", headers=auth).json()
+    finally:
+        app._jobs.pop("jfalha1", None)
+
+
+def test_cancelar_job_inexistente_da_404(client, auth):
+    assert client.post("/api/tts/jobs/naoexiste/cancel", headers=auth).status_code == 404
