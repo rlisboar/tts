@@ -145,6 +145,17 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
   else
     print -r -- "  [FALHA] $rotulo sem chave devolveu $c (esperado 401)"; falhas=1
   fi
+  # PREFIXO DUPLO (#778): com `root_path` e a remoção manual do prefixo, o
+  # Starlette tira o `root_path` de novo e o path duplicado casava rota
+  # protegida SEM passar pela chave. 401 = negado; 404 = rev anterior à correção.
+  # Qualquer 2xx aqui é bypass de auth — reprova o deploy e cai no rollback.
+  c="$(codigo_http -o /dev/null -w '%{http_code}' "$base/ttsproxy/ttsproxy/api/build")"
+  if [ "$c" = 401 ] || [ "$c" = 404 ]; then
+    print -r -- "  [ok] $rotulo prefixo duplo sem chave → $c"
+  else
+    print -r -- "  [FALHA] $rotulo prefixo duplo sem chave devolveu $c (esperado 401/404 — bypass de auth)"
+    falhas=1
+  fi
   if [ -z "$chave" ]; then
     print -r -- "  [aviso] sem a chave do mini (ssh falhou?) — pulando os testes autenticados"
     return 0

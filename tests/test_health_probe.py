@@ -35,6 +35,7 @@ for ((i = 1; i <= $#; i++)); do
 done
 print -r -- "$url" >> "$T_CURL_LOG"
 case "$url" in
+  *"/ttsproxy/ttsproxy/"*) codigo="${T_PREFIXO_DUPLO:-404}"; corpo='' ;;
   *"/api/voices") codigo="${T_AUTH:-401}"; corpo='' ;;
   http://127.0.0.1:*/ready) codigo="${T_CONECTOR:-200}"; corpo='{"status":"ok"}' ;;
   https://*)      codigo="${T_PUB:-200}"; corpo='{"ok":true,"boot_ts":111,"rev":"abc1234"}' ;;
@@ -165,6 +166,22 @@ def test_sem_chave_dando_200_acusa_tunel_em_loopback(amb):
     r = _run(amb, "check", env={"T_AUTH": "200"})
     assert r.returncode == 1
     assert "destino do túnel é LOOPBACK" in _log(amb)
+
+
+def test_prefixo_duplo_com_200_acusa_bypass(amb):
+    """`/ttsproxy/ttsproxy/...` sem chave devolvendo 2xx é bypass de auth (#778).
+
+    O Starlette tira o `root_path` de novo e a rota protegida casa sem passar pela
+    chave — pela internet isso entrega settings, vozes e síntese com a voz do dono."""
+    r = _run(amb, "check", env={"T_PREFIXO_DUPLO": "200"})
+    assert r.returncode == 1
+    assert "prefixo-duplo(http=200 sem chave — bypass de auth)" in _log(amb)
+
+
+def test_prefixo_duplo_401_ou_404_passa(amb):
+    """401 = negado (corrigido); 404 = rev anterior à correção. Nenhum dos dois é falha."""
+    assert _run(amb, "check", env={"T_PREFIXO_DUPLO": "401"}).returncode == 0
+    assert _run(amb, "check", env={"T_PREFIXO_DUPLO": "404"}).returncode == 0
 
 
 def test_erro_diferente_de_401_tambem_conta(amb):

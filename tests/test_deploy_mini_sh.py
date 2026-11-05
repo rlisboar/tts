@@ -82,6 +82,7 @@ done
 print -r -- "$metodo $url" >> "$T_CURL_LOG"
 codigo=200; corpo=""; arquivo=""
 case "$url" in
+  */ttsproxy/ttsproxy/*) codigo="${T_CURL_PREFIXO_DUPLO_CODE:-404}" ;;
   */health)  codigo="${T_CURL_HEALTH_CODE:-200}"; corpo='{"ok":true}' ;;
   */api/voices)
       if [ $tem_chave = 1 ]; then codigo="${T_CURL_CHAVE_CODE:-200}"; else codigo="${T_CURL_SEM_CHAVE_CODE:-401}"; fi ;;
@@ -373,6 +374,27 @@ def test_smoke_falha_se_sem_chave_nao_da_401(amb):
     r = _run(amb, "smoke")
     assert r.returncode == 1
     assert "sem chave devolveu 200" in r.stdout
+
+
+def test_smoke_falha_quando_o_prefixo_duplo_responde_2xx(amb):
+    """Bypass de auth pelo prefixo duplo (#778): 2xx sem chave reprova o deploy.
+
+    Com `root_path` + remoção manual do prefixo, o Starlette tira o `root_path` de
+    novo e a rota protegida casa SEM passar pela chave — qualquer aparelho da LAN
+    lê settings/vozes e sintetiza com a voz do dono. 401 é o certo; 404 é rev
+    anterior à correção; 2xx é o furo."""
+    amb["T_CURL_PREFIXO_DUPLO_CODE"] = "200"
+    r = _run(amb, "smoke")
+    assert r.returncode == 1
+    assert "prefixo duplo sem chave devolveu 200" in r.stdout
+
+
+def test_smoke_aceita_404_do_prefixo_duplo_em_rev_antigo(amb):
+    """Rev anterior à correção responde 404 no path duplicado — não é falha."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    r = _run(amb, "smoke")
+    assert r.returncode == 0, _saida(r)
+    assert "prefixo duplo sem chave → 404" in r.stdout
 
 
 def test_smoke_avisa_quando_o_ws_nao_sobe(amb):

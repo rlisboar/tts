@@ -709,3 +709,15 @@ ambíguos). `BARGE_MODELO=0.9` → 20/20; `BARGE_MODELO=0.1` → **0/20, REPROVA
 |---|---|
 | `BARGE_MODELO=0.1` (o modelo manda continuar) | grupo `ambíguo` **0/20** → REPROVADO |
 | corpus "ambíguo" com casos que as regras já cortam | a checagem "sem o filtro ≤2" reprova |
+
+## #778 — prefixo duplo `/ttsproxy/ttsproxy/` (bypass de auth)
+
+O Starlette tira o `root_path` de novo e a rota protegida casava sem passar pela
+chave: qualquer aparelho da LAN (e a internet, pelo túnel) lia settings/vozes e
+sintetizava com a voz do dono. As duas sondas reprovam o deploy nesse caso.
+
+| Sabotagem | Resultado |
+|---|---|
+| sonda removida do `deploy_mini.sh` | `test_smoke_falha_quando_o_prefixo_duplo_responde_2xx` **FAILED** |
+| sonda removida do `health_probe.sh` | `test_prefixo_duplo_com_200_acusa_bypass` **FAILED** |
+| alvo responde 2xx no path duplicado | smoke/alerta reprovam (401 = negado, 404 = rev anterior) |

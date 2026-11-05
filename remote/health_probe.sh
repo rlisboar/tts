@@ -108,6 +108,17 @@ check() {
     esac
   fi
 
+  # Prefixo duplo (#778): `root_path` + remoção manual faziam o Starlette casar a
+  # rota de novo SEM a chave. 401 = negado; 404 = rev anterior à correção. 2xx
+  # aqui é bypass de auth servido para a internet.
+  if [ "${TTS_PROBE_PREFIXO_DUPLO:-1}" = 1 ]; then
+    dup="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "https://$PUBLICO/ttsproxy/ttsproxy/api/build" 2>/dev/null || print -r -- 000)"
+    case "$dup" in
+      401|404) _log "ok prefixo-duplo($dup sem chave — sem bypass)" ;;
+      *)       _log "ALERTA prefixo-duplo(http=$dup sem chave — bypass de auth)"; falhas_pub=1 ;;
+    esac
+  fi
+
   if [ "${TTS_PROBE_CONECTOR:-1}" = 1 ]; then
     # Queda PARCIAL: o app está de pé na LAN e o conector que publica cai. O
     # público pode continuar 200 por um tempo (cache/DNS) e a LAN nunca vê o
