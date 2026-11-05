@@ -8,6 +8,7 @@ sobrescrita guarda `<id>.orig.wav`, e o admin restaura byte a byte.
 import hashlib
 import io
 import pathlib
+import re
 import zipfile
 
 import numpy as np
@@ -188,6 +189,10 @@ def test_restore_usa_temporario_unico_e_nao_deixa_lixo(tmp_path, monkeypatch, cl
     assert _hash(wav) == original
     assert vistos and all(n.startswith(".tmp-tts-copia-") for n in vistos), \
         f"escreveu direto no destino: {vistos}"
+    # e o nome é ÚNICO: sem o sufixo, dois restauradores voltam a compartilhar o
+    # arquivo (o defeito do `.rest-{id}` fixo) e o prefixo sozinho não acusa
+    assert all(re.search(r"-[0-9a-f]{8}$", n) for n in vistos), \
+        f"temporário sem sufixo único: {vistos}"
     assert not list((tmp_path / "voices").glob(".tmp-tts-*")), "sobrou temporário"
 
 
