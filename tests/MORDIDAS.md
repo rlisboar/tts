@@ -776,3 +776,12 @@ classificador `modelo` decidia com referência vazia.
 | Sabotagem | Resultado |
 |---|---|
 | voltar a cadeia para `sess.get("ultimo_assistente")` | `test_filtro_eco_usa_a_fala_em_reproducao_do_pipeline` **FAILED** (`frase_longa`) e `test_filtro_modelo_recebe_a_referencia_de_eco_do_pipeline` **FAILED** |
+
+### #802 — motor concorrente: RLock e época por suspeita
+
+| Sabotagem | Resultado |
+|---|---|
+| tirar o `with self._lock` de um método público | `test_metodos_publicos_do_motor_tomam_o_lock` **FAILED** (nomeia o método) |
+| tirar a guarda de época do `decidir_barge` | `test_decisao_de_epoca_velha_nao_derruba_a_suspeita_nova` **FAILED** |
+| voltar a zerar `_suspeito_audio` na suspeita nova | `test_segunda_suspeita_antes_da_decisao_preserva_o_audio_das_duas` **FAILED** |
+| tirar o `abrir_turno` atômico | `test_abertura_concorrente_do_pipeline_nao_duplica_nem_perde_trecho` **FAILED** |

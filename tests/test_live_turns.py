@@ -2255,3 +2255,170 @@ def test_texto_em_reproducao_vazio_fora_da_janela(monkeypatch):
     p._render_ate = 0.0
     p._barge_turno = False
     assert p.texto_em_reproducao() == ""
+
+
+# ---------------------------------------------------------------------------
+# #802: motor mutado por 4–5 threads — RLock + época por suspeita
+# ---------------------------------------------------------------------------
+def test_engine_aguenta_feed_concorrente_com_decisao_e_speaking(monkeypatch):
+    """Stress do achado L3: `feed` (loop) × `decidir_barge`/`set_speaking` (outras
+    threads) sem exceção e SEM frame perdido. O scorer dorme 0,2 ms para forçar o
+    entrelaçamento de verdade."""
+    import threading
+    import time
+
+    motor, rel = _motor_inteligente()
+    _tocar(motor, rel, _tom(0.001), 40)
+    motor.set_speaking(True, nivel_dbfs=-18.0, duracao_ms=5000.0)
+    motor._calibrando = False
+    relogio = lambda: rel[0]  # noqa: E731
+    parar = threading.Event()
+    erros = []
+    amostras_antes = motor._proxima_amostra
+
+    def _scorer_lento(frame):
+        time.sleep(0.0002)
+        return 0.9
+
+    motor._scorer = _scorer_lento
+
+    def _lado_b():
+        try:
+            while not parar.is_set():
+                motor.decidir_barge("interrupcao", "para", 300, 0)
+                motor.set_speaking(True, nivel_dbfs=-18.0, duracao_ms=200.0)
+                motor.set_speaking(False)
+        except Exception as exc:                       # noqa: BLE001
+            erros.append(exc)
+
+    th = threading.Thread(target=_lado_b, daemon=True)
+    th.start()
+    try:
+        for _ in range(5000):
+            motor.feed(_tom(0.3))
+            relogio()  # o relógio é do teste; o feed não o move sozinho
+    finally:
+        parar.set()
+        th.join(5)
+    assert not erros, f"o motor estourou sob concorrência: {erros[:1]}"
+    assert motor._proxima_amostra - amostras_antes >= 5000, (
+        "frame perdido: o motor não contou tudo o que entrou")
+
+
+def test_segunda_suspeita_antes_da_decisao_preserva_o_audio_das_duas():
+    """Suspeita nova NÃO pode apagar a anterior: o trecho tem de acumular.
+
+    Sem isso a decisão da 1ª chegava com o áudio zerado (o `_suspeito_audio` era
+    reiniciado na abertura) e a fala do dono sumia no `_reset_turno`."""
+    motor, rel = _motor_inteligente()
+    _tocar(motor, rel, _tom(0.001), 40)
+    motor.set_speaking(True, nivel_dbfs=-18.0, duracao_ms=5000.0)
+    motor._calibrando = False
+    evs1 = [e for e in _tocar(motor, rel, _tom(0.3), lt.Config()._frames_barge + 2)
+            if e.tipo == "barge_suspeito"]
+    assert evs1, "a 1ª suspeita não abriu"
+    audio1 = len(motor.audio_suspeito())
+    # o turno FECHA (silêncio) mas a decisão ainda não rodou: é a janela do achado
+    _tocar(motor, rel, _tom(0.001), 25)
+    assert motor.estado is lt.Estado.OCIOSO
+    evs2 = [e for e in _tocar(motor, rel, _tom(0.3), lt.Config()._frames_barge + 2)
+            if e.tipo == "barge_suspeito"]
+    assert evs2, "a 2ª suspeita devia FUSIONAR (evento novo), não sumir"
+    assert evs2[0].epoca > evs1[0].epoca
+    # o áudio das DUAS está no acumulado (a 2ª não zerou a 1ª)
+    assert len(motor.audio_suspeito()) > audio1, "o áudio da 1ª suspeita foi apagado"
+
+
+def test_decisao_de_epoca_velha_nao_derruba_a_suspeita_nova():
+    motor, rel = _motor_inteligente()
+    _tocar(motor, rel, _tom(0.001), 40)
+    motor.set_speaking(True, nivel_dbfs=-18.0, duracao_ms=5000.0)
+    motor._calibrando = False
+    _tocar(motor, rel, _tom(0.3), lt.Config()._frames_barge + 2)
+    epoca_velha = motor._epoca
+    _tocar(motor, rel, _tom(0.001), 25)                            # fecha o turno
+    _tocar(motor, rel, _tom(0.3), lt.Config()._frames_barge + 2)   # funde → época nova
+    assert motor._epoca > epoca_velha
+    assert motor.decidir_barge("interrupcao", "para", 300, 0, epoca=epoca_velha) == []
+    assert motor._suspeito is True, "a época velha consumiu a suspeita corrente"
+    assert motor.decidir_barge("interrupcao", "para", 300, 0, epoca=motor._epoca)
+
+
+def test_abertura_concorrente_do_pipeline_nao_duplica_nem_perde_trecho():
+    """`push_pcm` + `end_of_speech` atômicos: duas aberturas concorrentes, UMA
+    vence e o turno leva exatamente o trecho de quem venceu."""
+    import threading
+
+    import live_pipeline as lp
+
+    a = b"\x01\x00" * 400
+    b = b"\x02\x00" * 400
+    p = lp.LivePipeline(lambda o: None, lambda pcm: None,
+                        stt=lambda pcm, l: "fala",
+                        llm=lambda msgs: iter([]),
+                        tts=lambda t, o: np.zeros(8, dtype=np.float32),
+                        prewarm=lambda: None)
+    vistos = []
+    p.push_pcm = lambda pcm, substituir=False: (vistos.append(pcm), None)[1]
+    p.end_of_speech = lambda **k: p._em_turno.is_set() is False and (
+        p._em_turno.set() or True) and k.get("barge") is not None
+    resultados = []
+    trava = threading.Lock()
+
+    def _abre(pcm):
+        r = p.abrir_turno(pcm, barge=False)
+        with trava:
+            resultados.append(r)
+
+    ths = [threading.Thread(target=_abre, args=(x,)) for x in (a, b)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join(5)
+    assert sorted(resultados) == [False, True], f"as duas aberturas passaram: {resultados}"
+    assert len(vistos) == 1, f"trecho entregue {len(vistos)}x (devia ser 1)"
+
+
+def test_metodos_publicos_do_motor_tomam_o_lock():
+    """Bite do lock (#802): os métodos que 4–5 threads chamam TÊM de o tomar.
+
+    O stress sozinho não reprova sem lock (o GIL segura as operações curtas), então
+    a prova aqui é a tomada do lock: um proxy conta as entradas e os métodos
+    públicos precisam aparecer nele."""
+    import threading
+
+    class _Contador:
+        def __init__(self):
+            self.n = 0
+            self._r = threading.RLock()
+
+        def __enter__(self):
+            self.n += 1
+            return self._r.__enter__()
+
+        def __exit__(self, *a):
+            return self._r.__exit__(*a)
+
+    motor, rel = _motor_inteligente()
+    contador = _Contador()
+    motor._lock = contador
+    _tocar(motor, rel, _tom(0.001), 4)
+    assert contador.n >= 4, "o `feed` não está tomando o lock"
+    chamadas = {
+        "set_speaking": lambda: motor.set_speaking(True, nivel_dbfs=-18.0, duracao_ms=500.0),
+        "set_turno_aberto": lambda: motor.set_turno_aberto(True),
+        "playback_cortado": motor.playback_cortado,
+        "audio_suspeito": motor.audio_suspeito,
+        "decidir_barge": lambda: motor.decidir_barge("interrupcao", "para", 200, 0),
+        "set_hold": lambda: motor.set_hold(False),
+        "flush": motor.flush,
+        "cancel": motor.cancel,
+        "estatisticas": motor.estatisticas,
+    }
+    sem_lock = []
+    for nome, chama in chamadas.items():
+        antes = contador.n
+        chama()
+        if contador.n == antes:
+            sem_lock.append(nome)
+    assert not sem_lock, f"método público SEM lock: {sem_lock}"

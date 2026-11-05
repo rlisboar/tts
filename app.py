@@ -12052,10 +12052,17 @@ def _live_abre_turno(sess: dict, pcm: bytes = b"", barge_in: bool = False) -> No
     # assinatura, o cliente VÊ o erro em vez de ficar com turno mudo — o modo
     # fantasma que a muleta antiga (`except TypeError` seguindo sem o flag) escondia.
     try:
-        if pcm:
-            pipe.push_pcm(pcm, substituir=True)   # é o turno INTEIRO, não um pedaço
         sess["t_abre_turno"] = time.monotonic()   # #315: origem do `decisao_para_audio_ms`
-        if not pipe.end_of_speech(barge=bool(barge_in)):
+        # #802: entrega e disparo na MESMA trava — em dois passos, o observador do
+        # pendente abria o turno no meio e o trecho saía duplicado ou perdido.
+        _abrir = getattr(pipe, "abrir_turno", None)
+        if _abrir is not None:
+            abriu = _abrir(pcm, barge=bool(barge_in))
+        else:
+            if pcm:
+                pipe.push_pcm(pcm, substituir=True)   # é o turno INTEIRO, não um pedaço
+            abriu = pipe.end_of_speech(barge=bool(barge_in))
+        if not abriu:
             # perdeu a corrida (outro turno abriu entre a checagem e aqui):
             # a fala vira pendente em vez de sumir (mesma política do ocupado)
             if pcm:
@@ -12672,7 +12679,8 @@ def _live_suspeita_barge(sess: dict, ev) -> None:
 
 
 def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
-                       por_prazo: bool = False, so_comando: bool = False) -> None:
+                       por_prazo: bool = False, so_comando: bool = False,
+                       epoca: int | None = None) -> None:
     """Decide a suspeita pelo CONTEÚDO e emite o desfecho (#501).
 
     Segue a ordem do card: fala longa corta sem esperar STT; depois um filtro por
@@ -12680,6 +12688,11 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
     caem no próximo. Sempre emite `barge_decisao` com o tipo."""
     sus = sess.get("barge_suspeito")
     if sus is None:
+        return
+    if epoca is not None and sess.get("barge_epoca") != epoca:
+        # DECISÃO VELHA (#802): a suspeita já foi substituída — não consome nada e
+        # não decide por cima da nova (era a decisão em dobro e a fala sumindo no
+        # `_reset_turno` do `barge_retoma`).
         return
     if so_comando:
         # passo intermediário: só o filtro de COMANDO pode fechar agora
@@ -12786,7 +12799,7 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
     if motor is not None:
         eventos = motor.decidir_barge(tipo, texto=texto, fala_ms=fala_ms,
                                       decisao_ms=decisao_ms, p_cortar=p_cortar,
-                                      modelo_ms=modelo_ms, filtro=filtro)
+                                      modelo_ms=modelo_ms, filtro=filtro, epoca=epoca)
     _live_log_kv("barge_decisao", sess=sess["id"], tipo=tipo, filtro=filtro,
                  fala_ms=fala_ms, decisao_ms=decisao_ms, texto=(texto or "")[:80],
                  # `restante` é o que separa "cortar" de "anotar" (fim_de_resposta):

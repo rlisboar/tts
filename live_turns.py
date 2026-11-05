@@ -61,6 +61,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -420,6 +421,9 @@ class TurnEvent:
     rms_dbfs: float = -120.0
     detalhe: str = ""
     fala_ms: int = 0
+    # #802: época da suspeita. A decisão carrega a sua e o motor descarta a
+    # que chegar de uma suspeita JÁ substituída.
+    epoca: int = 0
     curto: bool = False
     barge_in: bool = False
     barge_falso: bool = False       # barge-in sem fala além da janela de confirmação
@@ -511,6 +515,11 @@ class TurnEngine:
         self._barge_pico = 0         # #707: maior burst desde o último zero
         self._funde_ate = 0.0        # monotonic: até aqui não abre barge novo
         self._cortado = False        # cliente descartou a fila (barge/cancel)
+        # #802: 4–5 threads (loop, envio, timer, passos, barge-decide) mutam o
+        # motor. O RLock serializa os métodos públicos e a ÉPOCA por suspeita
+        # impede que uma decisão VELHA derrube a suspeita nova.
+        self._lock = threading.RLock()
+        self._epoca = 0
         self._suspeito = False          # #501: turno aberto por suspeita, sem decisão
         self._decisao_frames = 0
         self._suspeito_audio = b""
@@ -627,24 +636,25 @@ class TurnEngine:
         return self._base_energia() + margem
 
     def estatisticas(self) -> dict:
-        total = self._stat["barge_in"]
-        taxa = (self._stat["barge_in_falso"] / total) if total else 0.0
-        return {**self._stat,
-                "taxa_falso_barge_in": round(taxa, 4),
-                # #707: maior burst do episódio (de `_frames_barge`). Abaixo do
-                # alvo = a fala não sustentou; no alvo sem barge = outra coisa.
-                "barge_pico": self._barge_pico,
-                "noise_dbfs": round(self._noise_dbfs, 1),
-                "eco_dbfs": round(self._eco_dbfs, 1),
-                "playback_ativo": self._playback_ativo(),
-                "tocando": self._tocando(),
-                "turno_assistente_aberto": self._turno_aberto,
-                "eco_ausente": self._eco_ausente,
-                "hold_to_talk": self._hold or self.config.hold_to_talk,
-                "hold_to_talk_sugerido": bool(
-                    total >= self.config.sugestao_apos_barge_in
-                    and taxa > self.config.taxa_falso_barge_in_limite
-                    and not self.config.hold_to_talk)}
+        with self._lock:
+            total = self._stat["barge_in"]
+            taxa = (self._stat["barge_in_falso"] / total) if total else 0.0
+            return {**self._stat,
+                    "taxa_falso_barge_in": round(taxa, 4),
+                    # #707: maior burst do episódio (de `_frames_barge`). Abaixo do
+                    # alvo = a fala não sustentou; no alvo sem barge = outra coisa.
+                    "barge_pico": self._barge_pico,
+                    "noise_dbfs": round(self._noise_dbfs, 1),
+                    "eco_dbfs": round(self._eco_dbfs, 1),
+                    "playback_ativo": self._playback_ativo(),
+                    "tocando": self._tocando(),
+                    "turno_assistente_aberto": self._turno_aberto,
+                    "eco_ausente": self._eco_ausente,
+                    "hold_to_talk": self._hold or self.config.hold_to_talk,
+                    "hold_to_talk_sugerido": bool(
+                        total >= self.config.sugestao_apos_barge_in
+                        and taxa > self.config.taxa_falso_barge_in_limite
+                        and not self.config.hold_to_talk)}
 
     # -- controle do handler ---------------------------------------------
     def set_speaking(self, ligado: bool, nivel_dbfs: float | None = None,
@@ -658,69 +668,70 @@ class TurnEngine:
         chunk deixou de ser a borda que reabre a janela, e sem isto o
         `_eco_ausente` declarado num VÃO (nada tocando) ficaria preso mesmo com o
         TTS voltando a tocar, derrubando o limiar e convidando barge falso."""
-        janela_antes = self._playback_ativo()
-        borda_audio = bool(ligado) and not self._speaking
-        if ligado and duracao_ms and self.config.playback_por_duracao:
-            # #167: o cliente BUFFERIZA — depois do último envio ele ainda vai tocar
-            # TODO o áudio já mandado. Sem isto a janela expirava no meio do próprio
-            # chunk e um onset ali virava turno novo (medido: falha exatamente
-            # depois de `turn_complete`, com o cliente ainda com áudio na fila).
-            # ACUMULA (o backlog é a soma dos chunks) e escoa em tempo real.
-            # A cauda NÃO entra por chunk (#547): somada a cada envio ela inflava o
-            # backlog em `cauda_ms` por chunk — 40 chunks numa resposta de 25 s
-            # davam ~8 s de fantasma, e o `fim_de_resposta` (que lê este número)
-            # disparava segundos ANTES do fim real (medido: cliente com fila 0 e o
-            # motor dizendo 7,4 s). A cauda real já é coberta no `set_speaking(False)`
-            # abaixo, que arma `_frames_playback` (900 ms) sobre o que restar.
-            self._playback_restante = min(
-                self.config._frames_audio_max,
-                self._playback_restante
-                + int(math.ceil(float(duracao_ms) / FRAME_MS)))
-        if borda_audio:
-            palpite = (nivel_dbfs - self.config.eco_perda_inicial_db
-                       if nivel_dbfs is not None else self._noise_dbfs + 6.0)
-            self._eco_dbfs = float(np.clip(palpite, self.config.piso_ruido_dbfs,
-                                           self.config.teto_ruido_dbfs + 20.0))
-            self._eco_ausente = False
-            if self._cortado:
-                # resposta NOVA depois de um corte: a fusão vale a partir da BORDA
-                # dela. A calibração do eco começa junto e leva
-                # `eco_calibracao_ms` (~1,3 s) com `_avaliar_abertura` parada; sem
-                # esta extensão a janela de fusão expirava DURANTE a calibração e a
-                # continuação da fala caía no braço do barge outra vez — matando a
-                # resposta que acabara de nascer.
-                self._funde_ate = max(self._funde_ate, time.monotonic()
-                                      + self.config.barge_fusao_ms / 1000.0)
-                self._cortado = False
-            # NÃO reinicia a calibração se ela já está em curso (#674): o handler
-            # marca a borda a CADA chunk (a flag `_speaking` cai entre eles), e o
-            # reset apagava as amostras antes de a janela fechar — com chunks
-            # espaçados a calibração nunca convergia e `_avaliar_abertura` nunca
-            # rodava: o turno posterior ao corte só abria ~14 s depois, quando o
-            # TTS parava.
-            if not self._calibrando:
-                self._calibrando = True
-                self._calibracao_vals = []
-            if not self._playback_ativo():
-                # só com a janela FECHADA (episódio novo de playback) o acumulador
-                # de barge zera e o aviso de "barge com turno aberto" rearma —
-                # assim o par True/False por chunk não repete o evento (#115)
-                self._barge_frames = 0
-                self._barge_sem_voz = 0
-                self._barge_no_turno_emitido = False
-        self._speaking = bool(ligado)
-        self._nivel_payload = nivel_dbfs if ligado else None
-        if not ligado:
-            # o stop não fecha a janela na hora: o cliente ainda tem áudio na fila
-            # E ainda vai TOCAR o chunk que acabou de chegar (duração real dele).
-            # Depois de um CORTE não sobra fila nenhuma (`playback_cortado`), e
-            # rearmar a cauda aqui reabria 900 ms de janela para uma fala que não
-            # tem o que interromper — a fala seguinte voltava a ser lida como
-            # barge. O `_cortado` só cai quando chega áudio NOVO (ver a borda).
-            if not self._cortado:
-                self._playback_frames = max(self.config._frames_playback,
-                                            self._playback_restante)
-        self._janela_log("set_speaking", janela_antes)
+        with self._lock:
+            janela_antes = self._playback_ativo()
+            borda_audio = bool(ligado) and not self._speaking
+            if ligado and duracao_ms and self.config.playback_por_duracao:
+                # #167: o cliente BUFFERIZA — depois do último envio ele ainda vai tocar
+                # TODO o áudio já mandado. Sem isto a janela expirava no meio do próprio
+                # chunk e um onset ali virava turno novo (medido: falha exatamente
+                # depois de `turn_complete`, com o cliente ainda com áudio na fila).
+                # ACUMULA (o backlog é a soma dos chunks) e escoa em tempo real.
+                # A cauda NÃO entra por chunk (#547): somada a cada envio ela inflava o
+                # backlog em `cauda_ms` por chunk — 40 chunks numa resposta de 25 s
+                # davam ~8 s de fantasma, e o `fim_de_resposta` (que lê este número)
+                # disparava segundos ANTES do fim real (medido: cliente com fila 0 e o
+                # motor dizendo 7,4 s). A cauda real já é coberta no `set_speaking(False)`
+                # abaixo, que arma `_frames_playback` (900 ms) sobre o que restar.
+                self._playback_restante = min(
+                    self.config._frames_audio_max,
+                    self._playback_restante
+                    + int(math.ceil(float(duracao_ms) / FRAME_MS)))
+            if borda_audio:
+                palpite = (nivel_dbfs - self.config.eco_perda_inicial_db
+                           if nivel_dbfs is not None else self._noise_dbfs + 6.0)
+                self._eco_dbfs = float(np.clip(palpite, self.config.piso_ruido_dbfs,
+                                               self.config.teto_ruido_dbfs + 20.0))
+                self._eco_ausente = False
+                if self._cortado:
+                    # resposta NOVA depois de um corte: a fusão vale a partir da BORDA
+                    # dela. A calibração do eco começa junto e leva
+                    # `eco_calibracao_ms` (~1,3 s) com `_avaliar_abertura` parada; sem
+                    # esta extensão a janela de fusão expirava DURANTE a calibração e a
+                    # continuação da fala caía no braço do barge outra vez — matando a
+                    # resposta que acabara de nascer.
+                    self._funde_ate = max(self._funde_ate, time.monotonic()
+                                          + self.config.barge_fusao_ms / 1000.0)
+                    self._cortado = False
+                # NÃO reinicia a calibração se ela já está em curso (#674): o handler
+                # marca a borda a CADA chunk (a flag `_speaking` cai entre eles), e o
+                # reset apagava as amostras antes de a janela fechar — com chunks
+                # espaçados a calibração nunca convergia e `_avaliar_abertura` nunca
+                # rodava: o turno posterior ao corte só abria ~14 s depois, quando o
+                # TTS parava.
+                if not self._calibrando:
+                    self._calibrando = True
+                    self._calibracao_vals = []
+                if not self._playback_ativo():
+                    # só com a janela FECHADA (episódio novo de playback) o acumulador
+                    # de barge zera e o aviso de "barge com turno aberto" rearma —
+                    # assim o par True/False por chunk não repete o evento (#115)
+                    self._barge_frames = 0
+                    self._barge_sem_voz = 0
+                    self._barge_no_turno_emitido = False
+            self._speaking = bool(ligado)
+            self._nivel_payload = nivel_dbfs if ligado else None
+            if not ligado:
+                # o stop não fecha a janela na hora: o cliente ainda tem áudio na fila
+                # E ainda vai TOCAR o chunk que acabou de chegar (duração real dele).
+                # Depois de um CORTE não sobra fila nenhuma (`playback_cortado`), e
+                # rearmar a cauda aqui reabria 900 ms de janela para uma fala que não
+                # tem o que interromper — a fala seguinte voltava a ser lida como
+                # barge. O `_cortado` só cai quando chega áudio NOVO (ver a borda).
+                if not self._cortado:
+                    self._playback_frames = max(self.config._frames_playback,
+                                                self._playback_restante)
+            self._janela_log("set_speaking", janela_antes)
 
     def set_turno_aberto(self, aberto: bool) -> None:
         """Marca que o assistente AINDA tem turno em voo (mesmo com a fila vazia).
@@ -729,51 +740,55 @@ class TurnEngine:
         chama é o handler: `True` no 1º áudio do turno, `False` em
         `turn_complete`/`interrupted`/cancel/fechamento (idempotente). Sem estas
         chamadas nada muda — a janela segue a fila, como antes."""
-        janela_antes = self._playback_ativo()
-        self._turno_aberto = bool(aberto) and self.config.barge_janela_turno
-        self._turno_aberto_frames = self.config._frames_turno_assistente_max
-        self._janela_log("set_turno_aberto", janela_antes)
-        if aberto:
-            self._cortado = False
-        elif not self._cortado:
-            # fechou o turno: vale a cauda normal (pode haver áudio no cliente).
-            # Depois de um corte não: o cliente descartou a fila (`playback_cortado`).
-            self._playback_frames = max(self._playback_frames,
-                                        self.config._frames_playback)
+        with self._lock:
+            janela_antes = self._playback_ativo()
+            self._turno_aberto = bool(aberto) and self.config.barge_janela_turno
+            self._turno_aberto_frames = self.config._frames_turno_assistente_max
+            self._janela_log("set_turno_aberto", janela_antes)
+            if aberto:
+                self._cortado = False
+            elif not self._cortado:
+                # fechou o turno: vale a cauda normal (pode haver áudio no cliente).
+                # Depois de um corte não: o cliente descartou a fila (`playback_cortado`).
+                self._playback_frames = max(self._playback_frames,
+                                            self.config._frames_playback)
 
     def set_hold(self, pressionado: bool) -> list[TurnEvent]:
         """Fallback de UI "segurar pra falar": abre/fecha o turno no botão,
         ignorando os heurísticos de onset/barge-in."""
-        eventos: list[TurnEvent] = []
-        self._hold = bool(pressionado)
-        if self._hold:
-            if self._estado is Estado.OCIOSO:
-                eventos.extend(self._abrir_turno(self._proxima_amostra, 0,
-                                                 barge=self._speaking, hold=True))
-        elif self._estado is Estado.FALANDO and self._turno_hold:
-            eventos.extend(self._fechar_turno("hold"))
-        return eventos
+        with self._lock:
+            eventos: list[TurnEvent] = []
+            self._hold = bool(pressionado)
+            if self._hold:
+                if self._estado is Estado.OCIOSO:
+                    eventos.extend(self._abrir_turno(self._proxima_amostra, 0,
+                                                     barge=self._speaking, hold=True))
+            elif self._estado is Estado.FALANDO and self._turno_hold:
+                eventos.extend(self._fechar_turno("hold"))
+            return eventos
 
     def cancel(self) -> dict:
         """Descarta o turno aberto sem emitir `speech_end` (o humano
         interrompeu e o handler já decidiu outro caminho)."""
-        if self._estado is Estado.OCIOSO:
-            return {"cancelado": False}
-        fala_ms = self._fala_frames * FRAME_MS
-        info = {"cancelado": True, "fala_ms": fala_ms,
-                "curto": fala_ms < self.config.min_fala_ms,
-                "barge_in": self._turno_barge}
-        self._stat["cancelados"] += 1
-        if self._turno_barge and self._fala_extra_ms() < self.config.min_fala_ms:
-            self._stat["barge_in_falso"] += 1
-        self._reset_turno()
-        return info
+        with self._lock:
+            if self._estado is Estado.OCIOSO:
+                return {"cancelado": False}
+            fala_ms = self._fala_frames * FRAME_MS
+            info = {"cancelado": True, "fala_ms": fala_ms,
+                    "curto": fala_ms < self.config.min_fala_ms,
+                    "barge_in": self._turno_barge}
+            self._stat["cancelados"] += 1
+            if self._turno_barge and self._fala_extra_ms() < self.config.min_fala_ms:
+                self._stat["barge_in_falso"] += 1
+            self._reset_turno()
+            return info
 
     def flush(self) -> list[TurnEvent]:
         """Fecha o turno aberto (fim do stream / desligamento do socket)."""
-        if self._estado is Estado.OCIOSO:
-            return []
-        return self._fechar_turno("flush")
+        with self._lock:
+            if self._estado is Estado.OCIOSO:
+                return []
+            return self._fechar_turno("flush")
 
     def fala_ms_atual(self) -> int:
         """Quanto a fala ABERTA já durou (ms); 0 sem turno.
@@ -804,17 +819,18 @@ class TurnEngine:
         no fio para cobrir) e a calibração em curso (ela mede o eco do playback
         que morreu — e, enquanto `_calibrando`, `_avaliar_abertura` nem roda). O
         `_speaking` cai junto: o chunk em voo foi cancelado no pipeline."""
-        self._playback_restante = 0
-        self._playback_frames = 0
-        self._speaking = False
-        self._cortado = True
-        self._calibrando = False
-        self._calibracao_vals = []
-        self._barge_frames = 0
-        self._barge_sem_voz = 0
-        # `_barge_pico` fica: é do episódio que ACABOU de ser cortado e é o
-        # número que o painel lê logo depois da decisão
-        self._barge_no_turno_emitido = False
+        with self._lock:
+            self._playback_restante = 0
+            self._playback_frames = 0
+            self._speaking = False
+            self._cortado = True
+            self._calibrando = False
+            self._calibracao_vals = []
+            self._barge_frames = 0
+            self._barge_sem_voz = 0
+            # `_barge_pico` fica: é do episódio que ACABOU de ser cortado e é o
+            # número que o painel lê logo depois da decisão
+            self._barge_no_turno_emitido = False
 
     def playback_restante_ms(self) -> int:
         """Quanto o CLIENTE ainda vai tocar (backlog do último chunk), em ms."""
@@ -836,13 +852,14 @@ class TurnEngine:
         """Consome PCM16 mono 16 kHz (bytes) ou float32 em [-1, 1] e devolve os
         eventos do pedaço. Tamanho arbitrário: o alinhamento de 512 amostras é
         feito aqui."""
-        self._pendente = np.concatenate([self._pendente, self._para_float(pcm)])
-        eventos: list[TurnEvent] = []
-        while len(self._pendente) >= FRAME_SAMPLES:
-            frame = self._pendente[:FRAME_SAMPLES]
-            self._pendente = self._pendente[FRAME_SAMPLES:]
-            eventos.extend(self._processar(frame))
-        return eventos
+        with self._lock:
+            self._pendente = np.concatenate([self._pendente, self._para_float(pcm)])
+            eventos: list[TurnEvent] = []
+            while len(self._pendente) >= FRAME_SAMPLES:
+                frame = self._pendente[:FRAME_SAMPLES]
+                self._pendente = self._pendente[FRAME_SAMPLES:]
+                eventos.extend(self._processar(frame))
+            return eventos
 
     @staticmethod
     def _para_float(pcm: bytes | np.ndarray) -> np.ndarray:
@@ -1152,6 +1169,19 @@ class TurnEngine:
                 # #501: abre o turno já (para o áudio ficar bufferizado), mas NÃO
                 # anuncia o corte ainda — o cliente só abaixa o volume. A decisão
                 # vem depois, por `decidir_barge`.
+                self._epoca += 1
+                if self._suspeito:
+                    # FUSÃO (#802): a suspeita anterior ainda não decidiu. Não
+                    # reabre turno nem zera o áudio — o trecho já está em
+                    # `_suspeito_audio` + `_turno`; o handler só precisa do evento
+                    # novo para trocar o timer e passar a época nova.
+                    self._decisao_frames = 0
+                    ev = self._evento("barge_suspeito", self._t_ms(),
+                                      self._proxima_amostra, b"", prob=prob,
+                                      rms_dbfs=dbfs, barge_in=True, epoca=self._epoca,
+                                      detalhe="fusão de suspeita (#802)")
+                    ev.audio = self.audio_suspeito()
+                    return [ev]
                 evs = [e for e in self._abrir_turno(
                     amostra + FRAME_SAMPLES, self._barge_frames,
                     barge=True, prob=prob, dbfs=dbfs) if e.tipo != "speech_start"]
@@ -1160,6 +1190,7 @@ class TurnEngine:
                 self._decisao_frames = 0
                 for e in evs:
                     if e.tipo == "barge_in":
+                        e.epoca = self._epoca
                         e.tipo = "barge_suspeito"
                         # o áudio vai NO EVENTO da suspeita: é dele que o handler
                         # transcreve. Sem isto o `speech_start` (que é filtrado
@@ -1253,14 +1284,16 @@ class TurnEngine:
         "incremental" saía do mesmo buffer congelado nas passadas seguintes e a
         passada 1 (só pré-roll, ~250 ms) não tinha o comando (achado do #547).
         Vazio quando não há suspeita."""
-        if not self._suspeito:
-            return b""
-        return self._suspeito_audio + b"".join(_pcm16(f) for f in self._turno)
+        with self._lock:
+            if not self._suspeito:
+                return b""
+            return self._suspeito_audio + b"".join(_pcm16(f) for f in self._turno)
 
     def decidir_barge(self, tipo: str, texto: str = "", fala_ms: int = 0,
                       decisao_ms: int = 0, p_cortar: float | None = None,
                       modelo_ms: int | None = None,
-                      filtro: str | None = None) -> list[TurnEvent]:
+                      filtro: str | None = None,
+                      epoca: int | None = None) -> list[TurnEvent]:
         """Fecha a SUSPEITA de barge (#501). Chamado pelo handler quando chega o
         `speech_end`, quando a janela de `barge_decisao_ms` estoura, ou direto com
         `tipo` decidido.
@@ -1269,40 +1302,45 @@ class TurnEngine:
         conhece (corta). Os demais tipos emitem `barge_retoma` e DESCARTAM o turno
         bufferizado — a resposta do assistente continua e o backchannel não entra
         no histórico. Devolve vazio se não havia suspeita."""
-        if not self._suspeito:
-            return []
-        self._suspeito = False
-        self._decisao_frames = 0
-        if self._turno:
-            self._suspeito_audio += b"".join(_pcm16(f) for f in self._turno)
-            self._turno = []
-        audio = self._suspeito_audio
-        self._suspeito_audio = b""
-        decisao = self._evento("barge_decisao", self._t_ms(), self._turno_amostra,
-                               b"", texto=texto, tipo_barge=tipo, p_cortar=p_cortar,
-                               modelo_ms=modelo_ms, filtro=filtro,
-                               detalhe=f"decisao em {decisao_ms} ms")
-        if tipo == "interrupcao":
-            self._funde_ate = time.monotonic() + self.config.barge_fusao_ms / 1000.0
-            if self._estado is Estado.OCIOSO:
-                # a decisão chegou DEPOIS de o turno fechar (janela do handler):
-                # reabre para os frames seguintes entrarem no turno certo
-                self._estado = Estado.FALANDO
-                self._turno_barge = True
-                self._silencio_frames = 0
-            self._stat["barge_in"] += 1
-            abrir = [self._evento("barge_in", self._t_ms(), self._turno_amostra, audio,
-                                  barge_in=True, detalhe=f"{tipo} (conteúdo)"),
-                     self._evento("speech_start", self._t_ms(), self._turno_amostra, audio,
-                                  barge_in=True, fala_ms=fala_ms, detalhe="barge_in")]
-            return [decisao, *abrir] if decisao else abrir
-        # retoma: solta o turno e devolve o áudio para o handler decidir (ele pode
-        # anotar a fala sem abrir turno)
-        self._stat["barge_retomado"] = self._stat.get("barge_retomado", 0) + 1
-        retoma = self._evento("barge_retoma", self._t_ms(), self._turno_amostra, audio,
-                              tipo_barge=tipo, texto=texto, fala_ms=fala_ms)
-        self._reset_turno()
-        return [decisao, retoma]
+        with self._lock:
+            if not self._suspeito:
+                return []
+            if epoca is not None and epoca != self._epoca:
+                # decisão VELHA: a suspeita já foi substituída (fusão). Não
+                # consome nada — quem decide é a época corrente.
+                return []
+            self._suspeito = False
+            self._decisao_frames = 0
+            if self._turno:
+                self._suspeito_audio += b"".join(_pcm16(f) for f in self._turno)
+                self._turno = []
+            audio = self._suspeito_audio
+            self._suspeito_audio = b""
+            decisao = self._evento("barge_decisao", self._t_ms(), self._turno_amostra,
+                                   b"", texto=texto, tipo_barge=tipo, p_cortar=p_cortar,
+                                   modelo_ms=modelo_ms, filtro=filtro,
+                                   detalhe=f"decisao em {decisao_ms} ms")
+            if tipo == "interrupcao":
+                self._funde_ate = time.monotonic() + self.config.barge_fusao_ms / 1000.0
+                if self._estado is Estado.OCIOSO:
+                    # a decisão chegou DEPOIS de o turno fechar (janela do handler):
+                    # reabre para os frames seguintes entrarem no turno certo
+                    self._estado = Estado.FALANDO
+                    self._turno_barge = True
+                    self._silencio_frames = 0
+                self._stat["barge_in"] += 1
+                abrir = [self._evento("barge_in", self._t_ms(), self._turno_amostra, audio,
+                                      barge_in=True, detalhe=f"{tipo} (conteúdo)"),
+                         self._evento("speech_start", self._t_ms(), self._turno_amostra, audio,
+                                      barge_in=True, fala_ms=fala_ms, detalhe="barge_in")]
+                return [decisao, *abrir] if decisao else abrir
+            # retoma: solta o turno e devolve o áudio para o handler decidir (ele pode
+            # anotar a fala sem abrir turno)
+            self._stat["barge_retomado"] = self._stat.get("barge_retomado", 0) + 1
+            retoma = self._evento("barge_retoma", self._t_ms(), self._turno_amostra, audio,
+                                  tipo_barge=tipo, texto=texto, fala_ms=fala_ms)
+            self._reset_turno()
+            return [decisao, retoma]
 
     def _fechar_turno(self, motivo: str) -> list[TurnEvent]:
         if self._suspeito and self._turno:

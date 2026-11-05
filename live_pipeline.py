@@ -269,7 +269,9 @@ class LivePipeline:
         self._cancel = threading.Event()
         self._fala = bytearray()          # PCM16 16 kHz do turno em curso
         self._em_turno = threading.Event()
-        self._trava = threading.Lock()
+        # RLock: `abrir_turno` segura a trava e chama `end_of_speech`, que a toma
+        # de novo (#802).
+        self._trava = threading.RLock()
         self._saiu = False
         self._turno_atual = 0
         self._truncado = False
@@ -467,6 +469,20 @@ class LivePipeline:
             return int(app._LIVE_MAX_BUFFER)
         except Exception:                                               # noqa: BLE001
             return 2 * 1024 * 1024
+
+    def abrir_turno(self, pcm: bytes, barge: bool = False) -> bool:
+        """Entrega o turno INTEIRO e o dispara sob a MESMA trava (#802).
+
+        `push_pcm(substituir=True)` + `end_of_speech` eram dois passos soltos: o
+        observador do pendente podia chamar `end_of_speech` no meio e o turno
+        nascia com o trecho duplicado (ou perdido). Devolve o mesmo contrato do
+        `end_of_speech` (False quando já havia turno)."""
+        with self._trava:
+            if self._em_turno.is_set():
+                return False
+            if pcm:
+                self.push_pcm(pcm, substituir=True)
+            return self.end_of_speech(barge=barge)
 
     def end_of_speech(self, inicia_thread: bool = True, barge: bool = False,
                       barge_in: bool | None = None) -> bool:
