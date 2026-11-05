@@ -1174,8 +1174,15 @@ def _origem_confiavel(origem: str, request) -> bool:
     # loopback na MESMA PORTA do servidor: `127.0.0.1:7860` chamado por
     # `localhost:7860` é a mesma máquina e o mesmo serviço — hoje só passava por
     # sorte de grafia. Porta DIFERENTE de loopback é outro servidor e não passa.
-    partes = urlsplit(normalizada)
-    if partes.hostname in _HOSTS_DA_MAQUINA and partes.port == _porta_do_servidor(request):
+    # `Origin` é header de terceiro: porta inválida (`:abc`, `:99999`) faz o
+    # `urlsplit().port` LEVANTAR ValueError — sem o `try` virava 500 em vez de 403
+    try:
+        partes = urlsplit(normalizada)
+        porta = partes.port
+        host = partes.hostname
+    except ValueError:
+        return False
+    if host in _HOSTS_DA_MAQUINA and porta == _porta_do_servidor(request):
         return True
     # `*` desliga a guarda — escolha explícita de quem aceita CSRF de qualquer origem
     return "*" in _ORIGENS_PERMITIDAS

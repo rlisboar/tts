@@ -8508,3 +8508,15 @@ def test_prazo_estourado_avisa_no_stderr(servidor_vivo, monkeypatch, capsys):
     # o health volta a responder mesmo com o close pendurado
     assert httpx.get(f"http://{servidor_vivo}/health", timeout=2.0).status_code == 200
     assert avisou, "o prazo estourou sem aviso no stderr"
+
+
+def test_origem_com_porta_invalida_nao_vira_500(monkeypatch):
+    """Porta inválida no `Origin` cai para "não confiável", não derruba (#789)."""
+    monkeypatch.setattr(app, "_origens_barradas", {})
+    c = _cliente_local()
+    for origem in ("http://localhost:99999", "http://localhost:abc",
+                   "http://[::1]:abc"):
+        r = c.get("/api/apikeys?reveal=1", headers={"Origin": origem})
+        assert r.status_code == 403, (origem, r.status_code)
+    assert app._origem_confiavel("http://localhost:99999", _req_falso()) is False
+    assert app._origem_confiavel("http://localhost:abc", _req_falso()) is False
