@@ -37,7 +37,7 @@ BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-from backends import generate_with_backend, resolve_backend  # noqa: E402
+from backends import generate_with_backend, load_tts_model, resolve_backend  # noqa: E402
 from common import (NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,  # noqa: E402
                     GANHO_AVISO_DB, RMS_AVISO,  # noqa: E402
                     motivo_anomalia,  # noqa: E402
@@ -121,8 +121,6 @@ def _carrega(cfg: dict) -> dict:
     exatamente essa diferença que troca os ~7,5 s do turno isolado por ~0,2 s
     quentes.
     """
-    from mlx_audio.tts.utils import load_model
-
     settings = cfg.get("settings") or {}
     base_dir = Path(cfg.get("base_dir") or BASE)
     voices_dir = Path(cfg["voices_dir"])
@@ -135,7 +133,7 @@ def _carrega(cfg: dict) -> dict:
     omni = dict(cfg.get("omni") or {})
 
     path = _resolve_path(model_setting, settings, base_dir)
-    model = load_model(path)
+    model = load_tts_model(path, family, (be.get("meta") or {}).get("revision"))
     sr = int(getattr(model, "sample_rate", 24000) or 24000)
 
     is_design = voice_id == DESIGN_VOICE_ID
