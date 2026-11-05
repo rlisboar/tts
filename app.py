@@ -6821,6 +6821,9 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
             "audio_eq_mid_db": _settings.get("audio_eq_mid_db", 0.0),
             "audio_eq_high_db": _settings.get("audio_eq_high_db", 0.0),
         },
+        # anti-clone: a marca é do PAI, mas quem grava o trecho é o worker — sem
+        # isto a família isolada saía sem marca e ninguém percebia (#797)
+        "marca": bool(_settings.get("tts_marca_dagua")),
         "piece_dir": str(pdir),
         "outputs_dir": str(OUTPUTS_DIR),
         "voices_dir": str(VOICES_DIR),
