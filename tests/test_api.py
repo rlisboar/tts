@@ -7874,3 +7874,108 @@ def test_log_da_migracao_vai_para_stderr(tmp_path, capsys):
     assert saida.out == "", f"o log vazou para o stdout: {saida.out!r}"
     assert "[estado] copiado settings.json" in saida.err, saida.err
     assert (destino / "settings.json").is_file()      # e a cópia aconteceu
+
+
+# --- #777: prefixo duplo não pode furar a auth -------------------------------
+_PREFIXOS_DO_PROXY = ("", "/ttsproxy", "/ttsproxy/ttsproxy", "//", "/ttsproxy//ttsproxy",
+                      "/ttsproxy/./", "/ttsproxy/%2E")
+
+
+def _rotas_http():
+    """Toda rota HTTP que o app declara (o alvo do teste paramétrico)."""
+    from starlette.routing import Mount, Route
+
+    vistas = set()
+    for rota in app.app.routes:
+        if isinstance(rota, Mount) or not isinstance(rota, Route):
+            continue
+        caminho = getattr(rota, "path", "")
+        metodos = getattr(rota, "methods", None) or set()
+        if not caminho or caminho in vistas:
+            continue
+        vistas.add(caminho)
+        yield caminho, metodos
+
+
+def test_lan_sem_chave_nao_passa_por_prefixo_nenhum(monkeypatch):
+    """LAN sem chave: nenhum prefixo do proxy pode devolver 2xx/3xx (#777).
+
+    Percorre `app.routes`: para cada rota HTTP, todo prefixo tem de dar 401/403/404/
+    405 — nunca 200 nem redirect. Antes o prefixo duplo saía como `/ttsproxy/api/…`
+    e escapava da lista de protegidos."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    cliente = TestClient(app.app, raise_server_exceptions=False,
+                         client=("203.0.113.99", 50000))
+    publicas = app._CAMINHOS_PUBLICOS
+    escaparam = []
+    for caminho, metodos in _rotas_http():
+        if caminho in publicas:
+            continue
+        for prefixo in _PREFIXOS_DO_PROXY:
+            for metodo in sorted(metodos or {"GET"}):
+                if metodo in ("HEAD", "OPTIONS"):
+                    continue
+                alvo = f"{prefixo}{caminho}" or "/"
+                r = cliente.request(metodo, alvo)
+                if r.status_code not in (401, 403, 404, 405):
+                    escaparam.append((metodo, alvo, r.status_code))
+    assert not escaparam, f"passaram sem chave: {escaparam[:15]}"
+
+
+def test_loopback_e_lan_com_chave_seguem_funcionando_com_e_sem_prefixo(monkeypatch):
+    """A correção não pode quebrar cliente legítimo: loopback e chave válida."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    chave = app._primary_api_key()
+    local = TestClient(app.app, raise_server_exceptions=False,
+                       client=("127.0.0.1", 50000))
+    de_fora = TestClient(app.app, raise_server_exceptions=False,
+                         client=("203.0.113.99", 50000))
+    for prefixo in ("", "/ttsproxy"):
+        assert local.get(f"{prefixo}/api/status").status_code == 200, prefixo
+        assert local.get(f"{prefixo}/health").status_code == 200, prefixo
+        r = de_fora.get(f"{prefixo}/api/status", headers={"X-API-Key": chave})
+        assert r.status_code == 200, (prefixo, r.status_code)
+
+
+def test_publicos_continuam_abertos_na_lan(monkeypatch):
+    """A UI e o health não podem exigir chave: é o que o navegador da LAN busca."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    cliente = TestClient(app.app, raise_server_exceptions=False,
+                         client=("203.0.113.99", 50000))
+    for caminho in ("/", "/health", "/live-worklet.js"):
+        for prefixo in ("", "/ttsproxy"):
+            assert cliente.get(f"{prefixo}{caminho}").status_code == 200, (prefixo, caminho)
+
+
+def test_caminho_roteado_normaliza_antes_de_decidir():
+    """A decisão não pode depender da FORMA do path (#777)."""
+    from starlette.requests import Request
+
+    def roteado(caminho):
+        escopo = {"type": "http", "path": caminho, "method": "GET", "headers": []}
+        return app._caminho_roteado(Request(escopo))
+
+    # o prefixo do proxy sai UMA vez; o resto normaliza para o mesmo path
+    for cru in ("/api/status", "//api//status", "/./api/status", "/api/status/",
+                "/ttsproxy/api/status", "/ttsproxy//api/status", "/ttsproxy/./api/status"):
+        assert roteado(cru).rstrip("/") == "/api/status", cru
+    # prefixo DUPLO: sobra um `/ttsproxy` — é o path que o roteador também vê
+    for cru in ("/ttsproxy/ttsproxy/api/status", "/ttsproxy//ttsproxy//api/status"):
+        assert roteado(cru).rstrip("/") == "/ttsproxy/api/status", cru
+
+
+def test_prefixo_duplo_vira_404_e_nao_rota_servida(monkeypatch):
+    """O prefixo é removido UMA vez (#777): o duplo sobra e não casa a rota.
+
+    Sem chave dá 401 (a auth decide antes); COM a chave o roteador mostra o
+    contrato: 404. Se o middleware voltar a reescrever o `scope["path"]`, o
+    Starlette tira o `root_path` de novo e o duplo passa a casar (200)."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    chave = app._primary_api_key()
+    fora = TestClient(app.app, raise_server_exceptions=False,
+                      client=("203.0.113.99", 50000))
+    assert fora.get("/ttsproxy/ttsproxy/api/status").status_code == 401
+    r = fora.get("/ttsproxy/ttsproxy/api/status", headers={"X-API-Key": chave})
+    assert r.status_code == 404, r.status_code
+    # e o caminho normalizado (prefixo uma vez) segue servindo
+    assert fora.get("/ttsproxy/api/status", headers={"X-API-Key": chave}).status_code == 200

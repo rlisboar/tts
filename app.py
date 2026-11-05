@@ -1484,9 +1484,43 @@ def _rate_poda(now: float) -> None:
         _rate_hits.pop(chave, None)
 
 
+#: O que é público SEM chave pela LAN (#777). Lista FECHADA de propósito: o
+#: default é negar, então rota nova nasce protegida em vez de nascer aberta.
+_CAMINHOS_PUBLICOS = frozenset({
+    "/", "/index.html",          # a UI (o HTML traz o nonce da CSP)
+    "/health",                   # liveness de monitoramento
+    "/live-worklet.js",          # AudioWorklet do Live: o navegador busca sozinho
+    "/favicon.ico",
+})
+
+
+def _caminho_roteado(request) -> str:
+    """Path que o ROTEADOR vai casar: prefixo do proxy removido UMA vez, normalizado.
+
+    O `root_path` do FastAPI já é tirado pelo Starlette no roteamento; se o
+    middleware também reescrevesse o `scope["path"]`, o prefixo duplo
+    (`/ttsproxy/ttsproxy/...`) saía como `/ttsproxy/api/...`, não casava a lista de
+    protegidos e passava sem chave (#777). A normalização mata `//`, `/./`, `..` e
+    barra final: o veredito não pode depender da forma do path."""
+    caminho = request.scope.get("path") or "/"
+    if _BASE_PATH and (caminho == _BASE_PATH or caminho.startswith(_BASE_PATH + "/")):
+        caminho = caminho[len(_BASE_PATH):] or "/"
+    partes: list[str] = []
+    for pedaco in caminho.split("/"):
+        if pedaco in ("", "."):
+            continue
+        if pedaco == "..":
+            if partes:
+                partes.pop()
+            continue
+        partes.append(pedaco)
+    return "/" + "/".join(partes)
+
+
 @app.middleware("http")
 async def _rate_limit(request, call_next):
-    if request.method == "OPTIONS" or not request.url.path.startswith(("/api/", "/v1/")):
+    caminho = _caminho_roteado(request)
+    if request.method == "OPTIONS" or not caminho.startswith(("/api/", "/v1/")):
         return await call_next(request)
     if _is_local(request):
         # O limitador existe para proteger a caixa exposta pela internet. O
@@ -1495,14 +1529,14 @@ async def _rate_limit(request, call_next):
         # interno. Vale só para loopback: pela internet (túnel) a origem é o IP LAN
         # do Mac, que continua limitado.
         return await call_next(request)
-    limit = max(0, _rate_limit_for(request.url.path))
+    limit = max(0, _rate_limit_for(caminho))
     if limit:
         # Usa a chave quando presente para não agrupar todos os clientes atrás
         # do mesmo proxy; nunca registra o segredo, apenas um identificador curto.
         raw_identity = request.headers.get("x-api-key") or request.headers.get("authorization") or _peer_host(request) or "unknown"
         identity = hashlib.sha256(raw_identity.encode("utf-8", "ignore")).hexdigest()[:16]
         now = time.monotonic()
-        chave = (identity, _rate_path_normalizado(request.url.path))
+        chave = (identity, _rate_path_normalizado(caminho))
         with _rate_lock:
             # a poda vem ANTES de pegar o bucket: assim o bucket desta requisição
             # não corre o risco de ser evituado no mesmo request (deixaria a
@@ -1527,19 +1561,18 @@ async def _exige_chave(request, call_next):
     # não. `local` deixa de valer como credencial, mas só nos casos que importam —
     # GET que não revela segredo continua livre, para não quebrar bookmark/SDK.
     estrangeira = local and _origem_estrangeira(request)
-    protegido = request.url.path.startswith(("/api/", "/v1/"))
-    # docs/openapi revelam o mapa completo da API: abertos no Mac por conveniência,
-    # mas exigem chave quando o acesso vem pela internet (proxy)
-    if not local and request.url.path in ("/openapi.json", "/docs", "/redoc",
-                                          "/docs/oauth2-redirect"):
-        protegido = True
+    caminho = _caminho_roteado(request)
+    # NEGA POR PADRÃO (#777): só a lista fechada acima é pública. Antes a decisão
+    # era `startswith(("/api/", "/v1/"))`, então qualquer path fora disso — e o
+    # prefixo duplo do proxy caía fora — passava sem chave.
+    protegido = caminho not in _CAMINHOS_PUBLICOS
     if estrangeira and protegido and request.method in ("GET", "HEAD") \
-            and not _rota_revela_segredo(request.url.path):
+            and not _rota_revela_segredo(caminho):
         return await call_next(request)     # simples e sem segredo: segue sem chave
     if protegido and request.method != "OPTIONS" and _auth_enabled():
         from fastapi.responses import JSONResponse
         chave = _extract_request_key(request)
-        if estrangeira and _rota_revela_segredo(request.url.path) \
+        if estrangeira and _rota_revela_segredo(caminho) \
                 and not _key_is_valid(chave):
             # 403 e não 401: a credencial do app não é o ponto — quem chamou foi
             # uma página de fora. O motivo vai no corpo para o dono entender.
@@ -1662,18 +1695,18 @@ async def _strip_base_path(request, call_next):
     if _BASE_PATH and (request.url.path == _BASE_PATH
                        or request.url.path.startswith(_BASE_PATH + "/")):
         # preserva o path ORIGINAL (com prefixo) p/ handlers que precisam
-        # reconstruir URLs absolutas (ex.: zip do mic-router)
+        # reconstruir URLs absolutas (ex.: zip do mic-router). NÃO reescreve
+        # `scope["path"]`: quem tira o `root_path` é o roteador do Starlette, e
+        # reescrever aqui fazia o prefixo duplo sair do `root_path` duas vezes e
+        # escapar da auth (#777). Quem decide path usa `_caminho_roteado`.
         request.scope["tts_prefix_path"] = request.url.path
-        rest = request.url.path[len(_BASE_PATH):] or "/"
-        request.scope["path"] = rest
-        request.scope["raw_path"] = rest.encode()
     resp = await call_next(request)
     # 405 em path de API INEXISTENTE vira 404: quem responde 405 é o `StaticFiles`
     # do mount `/`, que aceita qualquer path. Só converte quando nenhum pattern
     # casa — `GET /api/tts` (path existe, método não) continua 405.
-    if resp.status_code in (404, 405) and request.url.path.startswith("/api/"):
+    caminho = _caminho_roteado(request)
+    if resp.status_code in (404, 405) and caminho.startswith("/api/"):
         from fastapi.responses import JSONResponse
-        caminho = request.url.path
         classificado = _rota_casa(caminho, request.method)
         if classificado is None:
             resp = JSONResponse({"detail": "Rota não encontrada", "path": caminho},
