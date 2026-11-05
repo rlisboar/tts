@@ -7773,6 +7773,18 @@ def _limpa_temporarios_de_voices() -> int:
     ponto), mas fica no disco para sempre sem esta poda."""
     removidos = 0
     corte = time.time() - 6 * 3600
+    # `copia-*` também no diretório de ESTADO: o rollback do import copia para
+    # `settings.json`/`apikeys`/etc., que vivem fora de `voices/` — o temporário
+    # nasce lá (`destino.parent`) e sem esta varredura ficava órfão para sempre
+    # num crash. O prefixo é nosso, então varrer a raiz não pega arquivo alheio.
+    for pasta in (VOICES_DIR, BASE):
+        for tmp in pasta.glob(f"{_TMP_VOICES_PREFIX}copia-*"):
+            try:
+                if tmp.is_file() and tmp.stat().st_mtime < corte:
+                    tmp.unlink(missing_ok=True)
+                    removidos += 1
+            except OSError:
+                pass
     # os dois nomes antigos entram enquanto houver main que os gerou
     for pattern in (_TMP_VOICES_PREFIX + "*", ".denoise-*", ".orig-*"):
         for tmp in VOICES_DIR.glob(pattern):

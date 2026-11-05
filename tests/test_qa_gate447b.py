@@ -216,3 +216,27 @@ def test_copia_atomica_nao_trunca_o_destino_quando_a_origem_falha(tmp_path, monk
     monkeypatch.setattr(app.shutil, "copy2", original_copy2)
     app._copia_atomica(origem, destino)
     assert destino.read_bytes() == b"novo"
+
+
+def test_poda_leva_temporario_de_copia_da_raiz(tmp_path, monkeypatch):
+    """O rollback copia para o diretório de ESTADO — a poda tem de varrer lá (#795-bis).
+
+    `_copia_atomica` cria o temporário em `destino.parent`; para `settings.json` e
+    companhia isso é a raiz, fora de `voices/`. Sem esta varredura o órfão de um
+    crash ficava para sempre."""
+    import os as _os
+    import time as _time
+
+    antigo = tmp_path / ".tmp-tts-copia-settings.json-abc123"
+    novo = tmp_path / ".tmp-tts-copia-settings.json-def456"
+    antigo.write_bytes(b"x")
+    novo.write_bytes(b"x")
+    velho = _time.time() - 7 * 3600
+    _os.utime(antigo, (velho, velho))
+    monkeypatch.setattr(app, "VOICES_DIR", tmp_path / "vazia")
+    monkeypatch.setattr(app, "BASE", tmp_path)
+
+    app._limpa_temporarios_de_voices()
+
+    assert not antigo.exists(), "órfão da raiz não foi podado"
+    assert novo.exists(), "podou temporário recente"
