@@ -2117,9 +2117,19 @@ def _current_backend(model: str | None = None) -> dict:
 
 
 def _modelo_no_catalogo(modelo: str) -> bool:
-    """O id é um atalho/backend conhecido (não um repo ou caminho livre)?"""
+    """O id é do catálogo E pode ser usado por chave `use` (#787/#849).
+
+    Família que executa código remoto (`trust_remote_code`) só entra se tiver
+    `revision` fixa: sem sha o artefato anda e o "catálogo" deixaria de significar
+    "só o que o dono fixou". Entrada marcada `admin_only` também fica de fora."""
     chave = str(modelo or "").strip().lower()
-    return bool(chave) and (chave in _CATALOGO_ALIASES or chave in _CATALOGO_BACKENDS)
+    chave = _CATALOGO_ALIASES.get(chave, chave)
+    meta = _CATALOGO_BACKENDS.get(chave)
+    if not meta or meta.get("admin_only"):
+        return False
+    if meta.get("family") == "lfm3_audio" and not (meta.get("revision") or "").strip():
+        return False
+    return True
 
 
 def _is_omnivoice() -> bool:
