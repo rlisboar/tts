@@ -4180,30 +4180,34 @@ def test_origin_boa_nao_regride_o_fluxo_do_mac(client, auth, monkeypatch):
     """A UI da própria máquina abre a porta e o `Host` da requisição é o mesmo:
     origem igual à da requisição, loopback explícito e extensão LISTADA seguem
     recebendo segredo como antes (#813: extensão não é mais aprovada por prefixo)."""
-    monkeypatch.setattr(app, "_EXTENSOES_PERMITIDAS", ("chrome-extension://abc123",))
+    monkeypatch.setattr(app, "_ORIGENS_PERMITIDAS",
+                        tuple(app._ORIGENS_PERMITIDAS)
+                        + (_ORIGEM_MAQUINA, "http://localhost:7860",
+                           "http://[::1]:7860", "chrome-extension://abc123"))
     c = _cliente_local()
     for origem in ("http://testserver", _ORIGEM_MAQUINA, "http://localhost:7860",
                    "http://[::1]:7860", "chrome-extension://abc123"):
         r = c.get("/api/apikeys?reveal=1", headers={"Origin": origem})
         assert r.status_code == 200, origem
         assert any(k.get("secret") for k in r.json()["keys"]), origem
-    # `TTS_CORS_ORIGINS` é liberação explícita do dono: a mesma origem que sem
-    # liberação tomaria 403 passa a ler
+    # a lista é liberação explícita do dono: a mesma origem que sem liberação
+    # tomaria 403 passa a ler
     c2 = _cliente_local()
-    app._CORS_ORIGINS.append(_ORIGEM_ESTRANGEIRA)
+    app._ORIGENS_PERMITIDAS = tuple(app._ORIGENS_PERMITIDAS) + (_ORIGEM_ESTRANGEIRA,)
     try:
         r = c2.get("/api/apikeys?reveal=1", headers={"Origin": _ORIGEM_ESTRANGEIRA})
         assert r.status_code == 200
         assert any(k.get("secret") for k in r.json()["keys"])
     finally:
-        app._CORS_ORIGINS.remove(_ORIGEM_ESTRANGEIRA)
+        app._ORIGENS_PERMITIDAS = tuple(
+            x for x in app._ORIGENS_PERMITIDAS if x != _ORIGEM_ESTRANGEIRA)
 
 
 def test_tts_cors_origins_listada_libera_e_fora_da_lista_barra():
-    """`TTS_CORS_ORIGINS` é liberação EXPLÍCITA do dono: o que está na lista passa
-    e a guarda só volta a barrar quem ficou de fora (#290, cobertura do #438)."""
-    originais = list(app._CORS_ORIGINS)
-    app._CORS_ORIGINS[:] = ["https://app.exemplo"]
+    """A lista é liberação EXPLÍCITA do dono: o que está nela passa e a guarda
+    barra quem ficou de fora (#290, #438, #813)."""
+    originais = list(app._ORIGENS_PERMITIDAS)
+    app._ORIGENS_PERMITIDAS = ("https://app.exemplo",)
     try:
         c = _cliente_local()
         for rota in ("/api/apikeys?reveal=1", "/api/settings"):
@@ -4213,15 +4217,15 @@ def test_tts_cors_origins_listada_libera_e_fora_da_lista_barra():
         assert r.status_code == 403
         assert r.headers.get("X-TTS-Origin-Bloqueada") == "1"
     finally:
-        app._CORS_ORIGINS[:] = originais
+        app._ORIGENS_PERMITIDAS = tuple(originais)
 
 
 def test_curinga_desliga_a_guarda_de_origem_escolha_consciente():
     """`*` na lista desliga a guarda inteira: é escolha do dono (quem confia em
     qualquer origem já aceita CSRF de qualquer origem) — aqui fica documentado como
     COMPORTAMENTO, não como acidente."""
-    originais = list(app._CORS_ORIGINS)
-    app._CORS_ORIGINS[:] = ["*"]
+    originais = list(app._ORIGENS_PERMITIDAS)
+    app._ORIGENS_PERMITIDAS = ("*",)
     try:
         c = _cliente_local()
         r = c.get("/api/apikeys?reveal=1", headers={"Origin": _ORIGEM_ESTRANGEIRA})
@@ -4231,7 +4235,7 @@ def test_curinga_desliga_a_guarda_de_origem_escolha_consciente():
         assert c.post("/api/models/unload",
                       headers={"Origin": _ORIGEM_ESTRANGEIRA}).status_code in (200, 409)
     finally:
-        app._CORS_ORIGINS[:] = originais
+        app._ORIGENS_PERMITIDAS = tuple(originais)
 
 
 def test_proxy_coerente_reconhece_a_mesma_origem(monkeypatch):
@@ -8088,7 +8092,9 @@ def test_sem_origin_ou_same_origin_segue_livre(monkeypatch):
     c = TestClient(app.app, raise_server_exceptions=False,
                    client=("127.0.0.1", 50000))
     assert c.get("/api/status").status_code == 200
-    r = c.get("/api/status", headers={"Origin": "http://127.0.0.1:7860"})
+    # same-origin é o `Host` da requisição (`testserver` no TestClient): passa sem
+    # `ACAO` (o navegador não precisa de CORS)
+    r = c.get("/api/status", headers={"Origin": "http://testserver"})
     assert r.status_code == 200
     assert not r.headers.get("access-control-allow-origin")   # same-origin não usa
 
@@ -8098,7 +8104,7 @@ def test_origem_listada_em_cors_le_com_chave(monkeypatch):
     chave = app._primary_api_key()
     c = TestClient(app.app, raise_server_exceptions=False,
                    client=("127.0.0.1", 50000))
-    origem = app._CORS_ORIGINS[0]
+    origem = app._ORIGENS_PERMITIDAS[0]
     r = c.get("/api/status", headers={"Origin": origem, "X-API-Key": chave})
     assert r.status_code == 200
     assert r.headers.get("access-control-allow-origin") == origem
@@ -8140,7 +8146,7 @@ def test_ws_sem_origin_e_same_origin_seguem_abertos(ws_client, monkeypatch):
     with ws_client.websocket_connect("/api/live/ws") as ws:
         assert _setup_ok(ws)["type"] == "ready"
     with ws_client.websocket_connect(
-            "/api/live/ws", headers={"Origin": "http://127.0.0.1:7860"}) as ws:
+            "/api/live/ws", headers={"Origin": "http://testserver"}) as ws:
         assert _setup_ok(ws)["type"] == "ready"
 
 
@@ -8329,7 +8335,7 @@ def test_extensao_listada_le_com_acao_dela(monkeypatch):
     navegador bloqueava a leitura. O middleware copia a lista na criação, então a
     célula checa também que a origem está no `allow_origins` montado."""
     monkeypatch.setattr(app, "_origens_barradas", {})
-    assert _EXT in app._EXTENSOES_PERMITIDAS, "a variável de ambiente não foi lida"
+    assert _EXT in app._ORIGENS_PERMITIDAS, "a variável de ambiente não foi lida"
     c = _cliente_local()
     r = c.get("/api/apikeys?reveal=1", headers={"Origin": _EXT})
     assert r.status_code == 200
@@ -8351,7 +8357,8 @@ def test_extensao_fora_da_lista_nao_le(monkeypatch):
 def test_extensao_por_origem_exata_nao_por_prefixo(monkeypatch):
     """`chrome-extension://` sozinho não basta; e o CORS inclui a lista."""
     assert app._origem_confiavel("chrome-extension://qualquer-um", _req_falso()) is False
-    monkeypatch.setattr(app, "_EXTENSOES_PERMITIDAS", (_EXT,))
+    monkeypatch.setattr(app, "_ORIGENS_PERMITIDAS",
+                        tuple(app._ORIGENS_PERMITIDAS) + (_EXT,))
     assert app._origem_confiavel(_EXT, _req_falso()) is True
     assert app._origem_confiavel(_EXT + "/", _req_falso()) is True      # normaliza
     assert app._origem_confiavel(_EXT + "x", _req_falso()) is False     # exato
@@ -8377,3 +8384,20 @@ def _req_falso():
 
     return Request({"type": "http", "path": "/api/x", "method": "GET",
                     "headers": [(b"host", b"127.0.0.1:7860")], "scheme": "http"})
+
+
+def test_porta_local_fora_da_lista_nao_le(monkeypatch):
+    """`http://localhost:<porta>` só vale se a PORTA estiver na lista (#789).
+
+    Antes, qualquer porta de loopback era "da casa" — um servidor qualquer na 3999
+    lia o `reveal` com as chaves em claro."""
+    monkeypatch.setattr(app, "_origens_barradas", {})
+    c = _cliente_local()
+    r = c.get("/api/apikeys?reveal=1", headers={"Origin": "http://localhost:3999"})
+    assert r.status_code == 403, r.status_code
+    assert not r.headers.get("access-control-allow-origin")
+    # listada (a 5198 é o default do cliente de dev) → lê e recebe o ACAO dela
+    ok = c.get("/api/apikeys?reveal=1", headers={"Origin": "http://localhost:5198"})
+    assert ok.status_code == 200
+    assert ok.headers.get("access-control-allow-origin") == "http://localhost:5198"
+    assert any(k.get("secret") for k in ok.json()["keys"])

@@ -54,7 +54,7 @@ os.environ.setdefault("TTS_LIVE_WORKER", "0")
 
 # #813: o CORS copia a lista de extensões na CRIAÇÃO do middleware, então a célula
 # não consegue monkeypatchá-la — o id de teste entra por ambiente, antes do import.
-os.environ["TTS_EXTENSOES_PERMITIDAS"] = "chrome-extension://abcdefghijklmnop"
+os.environ["TTS_ORIGENS_PERMITIDAS"] = "chrome-extension://abcdefghijklmnop"
 
 # ── #721: o estado do dono vive FORA do repositório ─────────────────────────────
 # `~/Library/Application Support/tts-studio` por padrão. Sem exportar um destino

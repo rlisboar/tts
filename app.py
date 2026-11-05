@@ -1082,12 +1082,20 @@ def _is_local(request) -> bool:
 # A regra NÃO afrouxa a LAN: só age quando o socket é loopback. Origem ausente
 # (curl, SDK, scripts do repo) e origem da própria máquina seguem como antes.
 # ---------------------------------------------------------------------------
-#: Extensões de navegador autorizadas, por ORIGEM EXATA (#813). O prefixo sozinho
-#: confiava em qualquer extensão instalada — inclusive carregada à mão por outra
-#: página. Vazio por padrão: sem lista, extensão nenhuma é "da casa".
-_EXTENSOES_PERMITIDAS = tuple(
-    x.strip().lower().rstrip("/")
-    for x in os.environ.get("TTS_EXTENSOES_PERMITIDAS", "").split(",") if x.strip())
+#: Origens de FORA autorizadas, por igualdade EXATA (#813). Cobre extensão
+#: (`chrome-extension://<id>`) e porta local (`http://localhost:5198`): o prefixo e a
+#: porta sozinhos confiavam em qualquer extensão instalada e em qualquer porta de
+#: loopback. Uma decisão só — auth, CORS e WS leem daqui.
+#: Cliente de DESENVOLVIMENTO do repo (`client/`): é o default da lista, não uma
+#: segunda decisão. Sem ele a primeira vítima de fechar a lista seria o próprio dev.
+_CORS_ORIGENS_DEV = ("http://localhost:5198", "http://127.0.0.1:5198")
+#: a lista é o cliente de dev SEMPRE mais o que o dono escrever (união, sem
+#: duplicata): exportar a variável não pode derrubar o `client/` do repo.
+_ORIGENS_PERMITIDAS = tuple(dict.fromkeys(
+    list(_CORS_ORIGENS_DEV)
+    + [x.strip().lower().rstrip("/")
+       for x in (os.environ.get("TTS_ORIGENS_PERMITIDAS")
+                 or os.environ.get("TTS_CORS_ORIGINS") or "").split(",") if x.strip()]))
 _HOSTS_DA_MAQUINA = ("127.0.0.1", "localhost", "::1")
 
 #: Nomes de `Host` aceitos além dos da máquina (#779). Lista por ambiente, com o
@@ -1134,21 +1142,26 @@ def _mesma_origem(request) -> str:
     """Origem da própria requisição (`esquema://host`), para reconhecer a UI."""
     esquema = (request.headers.get("x-forwarded-proto") or request.url.scheme
                or "http").split(",")[0].strip()
+    # WebSocket tem esquema próprio (`ws`/`wss`), mas o `Origin` do navegador vem
+    # sempre em http(s): sem normalizar, a própria UI pareceria origem de fora (#813)
+    esquema = {"ws": "http", "wss": "https"}.get(esquema, esquema)
     return f"{esquema}://{request.headers.get('host') or ''}"
 
 
 def _origem_confiavel(origem: str, request) -> bool:
-    """A origem é da própria máquina / da UI / de uma extensão / do `TTS_CORS_ORIGINS`?"""
+    """A origem é a própria UI ou uma origem da lista `TTS_ORIGENS_PERMITIDAS`?
+
+    Igualdade exata, nunca prefixo nem "é loopback": extensão e porta local só
+    valem se estiverem escritas na lista (#813)."""
     if not origem:
         return True                      # sem `Origin`: cliente não-browser
-    if origem.lower().rstrip("/") in _EXTENSOES_PERMITIDAS:
-        return True                      # extensão LISTADA pelo dono, origem exata
     if origem == _mesma_origem(request):
-        return True                      # a própria UI, mesma porta
-    if "*" in _CORS_ORIGINS or origem in _CORS_ORIGINS:
-        return True                      # o dono liberou explicitamente
-    partes = urlsplit(origem)
-    return partes.scheme in ("http", "https") and (partes.hostname or "") in _HOSTS_DA_MAQUINA
+        return True                      # a própria UI, mesma origem/porta
+    # LISTA FECHADA: extensão listada e porta local listada passam; qualquer outra
+    # porta de loopback e qualquer extensão não listada NÃO (antes o hostname da
+    # máquina em qualquer porta valia como a UI). `*` desliga a guarda — escolha
+    # explícita de quem aceita CSRF de qualquer origem.
+    return "*" in _ORIGENS_PERMITIDAS or origem.lower().rstrip("/") in _ORIGENS_PERMITIDAS
 
 
 def _origem_estrangeira(request) -> bool:
@@ -1441,10 +1454,8 @@ def _instala_rastro_de_sinal() -> list[tuple[int, object]]:
     return anteriores
 #: Origens de fora autorizadas a LER a resposta (#780). Sem curinga: o default é a
 #: UI de desenvolvimento do repo (`client/`, porta 5198), que é outra origem; o
-#: resto entra por `TTS_CORS_ORIGINS`.
-_CORS_ORIGENS_DEV = ("http://localhost:5198", "http://127.0.0.1:5198")
-_CORS_ORIGINS = [x.strip() for x in os.environ.get("TTS_CORS_ORIGINS", "").split(",")
-                 if x.strip()] or list(_CORS_ORIGENS_DEV)
+#: apelido histórico (o CORS lia daqui); agora é a MESMA lista da auth.
+_CORS_ORIGINS = list(_ORIGENS_PERMITIDAS)
 # NOTA: o CORS é registrado no FIM do módulo (depois dos @app.middleware) de
 # propósito. `add_middleware` empilha na frente, então quem é registrado por
 # último fica por FORA — e um 401/429 que sai do middleware de auth precisa
@@ -1645,7 +1656,7 @@ async def _exige_chave(request, call_next):
                  "hint": "A página que chamou não é a UI. Mande a chave "
                          "(Authorization: Bearer ou X-API-Key), sirva a UI por "
                          "esta mesma origem/porta, ou autorize esta origem em "
-                         "TTS_EXTENSOES_PERMITIDAS (extensão) / TTS_CORS_ORIGINS."},
+                         "TTS_ORIGENS_PERMITIDAS."},
                 status_code=403, headers={"X-TTS-Origin-Bloqueada": "1"})
         ok = (local and not estrangeira) or _key_is_valid(chave)
         if not ok:
@@ -13176,7 +13187,7 @@ app.add_middleware(
     # CORS; quem é de fora entra em `TTS_CORS_ORIGINS`.
     # a MESMA decisão da auth (#813): o que passa em `_origem_confiavel` também
     # precisa de `ACAO`, senão o navegador autentica e não deixa LER
-    allow_origins=list(_CORS_ORIGINS) + list(_EXTENSOES_PERMITIDAS),
+    allow_origins=list(_ORIGENS_PERMITIDAS),
     allow_methods=["*"],
     allow_headers=["*"],
     # `Retry-After` não é header safelisted de CORS: sem expor, cliente

@@ -651,17 +651,19 @@ TTS_CORS_ORIGINS=https://minha-pagina.example ./run.sh
 
 Sem `Origin` (curl, SDK, bookmark) e a própria UI (same-origin) seguem como antes.
 
-Extensão de navegador é lista SEPARADA e **fechada por padrão**: só entra quem for
-autorizado por origem exata em `TTS_EXTENSOES_PERMITIDAS` (csv). Sem a variável,
-nenhuma extensão é "da casa" — mesmo que esteja instalada e você confie nela:
+**A confiança é por IDENTIDADE, não por prefixo nem por porta.** Extensão
+(`chrome-extension://<id>`) e porta local (`http://localhost:5198`) só valem se
+estiverem escrita, por origem completa, em `TTS_ORIGENS_PERMITIDAS` (csv). O
+`client/` de desenvolvimento (porta 5198) já vem na lista; qualquer outra porta de
+loopback e qualquer extensão NÃO listada ficam de fora:
 
 ```sh
-TTS_EXTENSOES_PERMITIDAS=chrome-extension://abcdefghijklmnop ./run.sh
+TTS_ORIGENS_PERMITIDAS=chrome-extension://abcdefghijklmnop,http://localhost:8080 ./run.sh
 ```
 
-O id sai na própria resposta de recusa (`origin`), para copiar. A mesma lista vale
-para o CORS e para o WebSocket do Live — sem ela a extensão autentica e o navegador
-não deixa ler.
+A origem recusada volta no corpo (`origin`) para copiar. A MESMA lista vale para o
+CORS e para o WebSocket do Live — sem ela a extensão autentica e o navegador não
+deixa ler. `*` desliga a guarda (aceita CSRF de qualquer origem, escolha explícita).
 
 ### No app (já pronto)
 
