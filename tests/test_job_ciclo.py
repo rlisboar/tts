@@ -107,3 +107,28 @@ def test_rota_de_cancelar_recusa_job_terminado(monkeypatch, tmp_path):
     finally:
         app._jobs.pop("feito", None)
         app._jobs.pop("roda", None)
+
+
+def test_unload_solta_o_pool_de_metal_sob_o_lock(monkeypatch):
+    """O flush do Metal tem de caber no `_gen_lock` (#800).
+
+    Soltar o pool com uma geração já alocando disputa o Metal no pior instante: o
+    modelo acabou de sair e a próxima geração está começando."""
+    monkeypatch.setattr(app, "_model", None)
+    monkeypatch.setattr(app, "_release_mlx_memory", lambda *a, **k: None)
+    dentro = []
+
+    def _espia(*a, **k):
+        dentro.append(app._gen_lock._is_owned())
+
+    monkeypatch.setattr(app, "_release_mlx_memory", _espia)
+    app._unload_local_models(tts=True, stt=False, mt=False, ser=False)
+
+    assert dentro == [True], f"flush fora do lock: {dentro}"
+
+
+def test_unload_sem_tts_ainda_libera_o_pool(monkeypatch):
+    chamou = []
+    monkeypatch.setattr(app, "_release_mlx_memory", lambda *a, **k: chamou.append(1))
+    app._unload_local_models(tts=False, stt=False, mt=False, ser=False)
+    assert chamou, "sem TTS o pool do Metal ficou sem liberar"

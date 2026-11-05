@@ -8043,6 +8043,10 @@ def _unload_local_models(tts=True, stt=True, mt=True, ser=True,
                         # saiu da RAM (unload por ociosidade / troca de precisão).
                         _model_state.update(status="idle", error=None, progress=None,
                                             precision=None, path=None)
+                # o flush tem de caber no MESMO lock (#800): soltar o Metal e
+                # devolver a página com uma geração já alocando disputa o pool —
+                # e é justamente o instante em que o modelo acabou de sair
+                _release_mlx_memory(aggressive=True)
         finally:
             if tomou:
                 _gen_lock.release()
@@ -8053,24 +8057,26 @@ def _unload_local_models(tts=True, stt=True, mt=True, ser=True,
                 _mt["repo"] = None
                 freed.append("tradutor")
     if stt:                                  # mlx-whisper cacheia o modelo em ModelHolder (classe)
-        try:
-            from mlx_whisper.transcribe import ModelHolder
-            if ModelHolder.model is not None:
-                ModelHolder.model = None
-                ModelHolder.model_path = None
-                freed.append("whisper")
-        except Exception:  # noqa: BLE001
-            pass
-        if _pk["model"] is not None:
-            _pk["model"] = None
-            _pk["repo"] = ""
-            freed.append("parakeet")
+        with _stt_lock:                  # transcrição em curso não pode ver o holder sumir
+            try:
+                from mlx_whisper.transcribe import ModelHolder
+                if ModelHolder.model is not None:
+                    ModelHolder.model = None
+                    ModelHolder.model_path = None
+                    freed.append("whisper")
+            except Exception:  # noqa: BLE001
+                pass
+            if _pk["model"] is not None:
+                _pk["model"] = None
+                _pk["repo"] = ""
+                freed.append("parakeet")
     if ser:
         with _ser_lock:
             if _ser.get("clf") is not None:
                 _ser["clf"] = None
                 freed.append("ser")
-    _release_mlx_memory(aggressive=True)
+    if not tts:                      # sem TTS não houve lock: libera aqui mesmo
+        _release_mlx_memory(aggressive=True)
     # pipeline SER / transformers às vezes puxa torch — tenta soltar cache MPS/CPU
     try:
         import torch
