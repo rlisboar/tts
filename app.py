@@ -1400,12 +1400,56 @@ def _normaliza_role(v) -> str | None:
 
 
 def _primary_api_key() -> str:
-    """Chave principal p/ clientes empacotados (mic-router etc.)."""
+    """Chave principal (a do header legado `X-API-Key` e a que abre tudo)."""
     with _apikeys_lock:
         keys = _apikeys.get("keys") or []
         if keys:
             return keys[0]["secret"]
     return _ENV_API_KEY or ""
+
+
+#: nome da chave emitida para o cliente empacotado — reusada se já existir
+_CHAVE_CLIENTE = "mic-router"
+
+
+def _host_do_cliente(request) -> str:
+    """Host do `server_url` do cliente: só nome que a OUTRA máquina alcança.
+
+    O `Host` é o que o cliente mandou, não o que o servidor reconhece. Fora da
+    allowlist o middleware já responde 421 (#779) — o que sobra é o `Host` ACEITO
+    e inútil do outro lado: `localhost`/`127.0.0.1`/`testserver` valem para esta
+    máquina e apontariam para o próprio cliente. Nesses casos, nome de confiança:
+    túnel configurado, senão um IP desta máquina. A porta é sempre a do servidor.
+    """
+    bruto = (request.headers.get("host") or "").strip().lower()
+    porta = bruto.rsplit(":", 1)[1] if bruto.count(":") == 1 else ""
+    nome = _host_da_requisicao(request)
+    inuteis = {*_HOSTS_DA_MAQUINA, "testserver"}
+    if nome and _host_permitido(nome) and nome not in inuteis:
+        return bruto
+    for candidato in (*_ALLOWED_HOSTS, *sorted(_own_ips())):
+        if candidato and _host_permitido(candidato) and candidato not in inuteis:
+            return f"{candidato}:{porta}" if porta else candidato
+    return f"127.0.0.1:{porta}" if porta else "127.0.0.1:7860"
+
+
+def _chave_para_cliente() -> str:
+    """Chave de USO para o zip do cliente (#793).
+
+    `keys[0]` é a primária e costuma ser `admin`: entregá-la no artefato dá ao
+    cliente poder de mexer em conexão externa e ler segredo sem precisar. Aqui
+    sai uma `use`: a primeira que já existir, ou uma criada para isso (nome fixo,
+    então baixar o zip duas vezes não enche a lista)."""
+    with _apikeys_lock:
+        for k in _apikeys.get("keys") or []:
+            if _normaliza_role(k.get("role")) == "use" and (k.get("secret") or ""):
+                return k["secret"]
+        row = {"id": uuid.uuid4().hex[:10], "name": _CHAVE_CLIENTE,
+               "secret": _new_api_secret(),
+               "created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "role": "use"}
+        _apikeys.setdefault("keys", []).append(row)
+        _save_apikeys()
+        return row["secret"]
 
 
 def _public_key_row(k: dict, *, reveal: bool = False) -> dict:
@@ -3193,9 +3237,15 @@ def download_mic_router(request: Request):
     da API, pra o cliente avisar o modo sem config manual. Sob proxy por path
     (ex.: /ttsproxy), o prefixo vem no próprio path e é preservado na URL.
 
-    ADMIN (#282): o zip entrega credencial UTILIZÁVEL em texto claro, e a chave
-    embutida é a PRIMÁRIA (`keys[0]`), que o dono não escolheu e pode ser uma
-    `use`. Listagem mascarada fica aberta a qualquer chave; a credencial não.
+    ADMIN (#282): o zip entrega credencial UTILIZÁVEL em texto claro. A chave é de
+    USO (#793) — quem instala o cliente só gera fala/transcreve, não precisa do
+    poder de admin que a primária (`keys[0]`) costuma ter. Listagem mascarada fica
+    aberta a qualquer chave; a credencial não.
+
+    O `server_url` só usa o `Host` se ele passar pela MESMA allowlist do #779
+    (`_host_permitido`): `Host` é o que o cliente mandou, não o que o servidor
+    reconhece. Reprovado, monta com um nome de confiança (túnel configurado ou IP
+    desta máquina) e mantém a porta.
     """
     import io
     import zipfile
@@ -3205,12 +3255,12 @@ def download_mic_router(request: Request):
     if not src.is_dir():
         raise HTTPException(404, "Cliente não encontrado")
 
-    host = request.headers.get("host") or "127.0.0.1:7860"
+    host = _host_do_cliente(request)
     scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
     url_path = request.scope.get("tts_prefix_path") or request.url.path
     sufixo = "/api/client/mic-router"
     prefixo = url_path[: -len(sufixo)] if url_path.endswith(sufixo) else ""
-    cfg = {"server_url": f"{scheme}://{host}{prefixo}", "api_key": _primary_api_key() or ""}
+    cfg = {"server_url": f"{scheme}://{host}{prefixo}", "api_key": _chave_para_cliente()}
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:

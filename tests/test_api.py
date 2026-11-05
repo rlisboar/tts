@@ -3878,6 +3878,54 @@ def test_zip_do_mic_router_exige_admin(client, auth, chave_de_uso, sem_admin_key
     assert cfg["api_key"], "o zip entrega a chave por desenho (agora só para admin)"
 
 
+def test_zip_do_mic_router_leva_chave_de_uso_e_host_da_allowlist(client, auth, sem_admin_key):
+    """#793: o artefato não pode levar a chave primária nem `Host` não verificado.
+
+    A primária (`keys[0]`) costuma ser admin; quem instala o cliente só precisa de
+    `use`. E o `server_url` vinha do `Host` CRU — que é o que o cliente mandou, não
+    o que o servidor reconhece (o #779 já barra `Host` de fora na porta; aqui o
+    nome não pode vazar para o arquivo que a pessoa vai usar depois).
+    """
+    import io
+    import zipfile
+
+    def _cfg(headers):
+        r = client.get("/api/client/mic-router", headers=headers)
+        assert r.status_code == 200, r.text
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            return _json.loads(z.read("mic-router/config.json"))
+
+    primaria = app._primary_api_key()
+    cfg = _cfg(auth)
+    assert cfg["api_key"] != primaria, "o zip levou a chave PRIMÁRIA (costuma ser admin)"
+    with app._apikeys_lock:
+        papel = next(k.get("role") for k in app._apikeys["keys"] if k["secret"] == cfg["api_key"])
+    assert papel == "use", f"a chave do zip tem papel {papel!r}"
+
+    # baixar de novo NÃO cria outra chave (nome fixo, reaproveita)
+    antes = len(app._apikeys["keys"])
+    assert _cfg(auth)["api_key"] == cfg["api_key"]
+    assert len(app._apikeys["keys"]) == antes
+
+    # `Host` de fora da allowlist nem chega na rota: o #779 responde 421 antes
+    r = client.get("/api/client/mic-router", headers={**auth, "host": "evil.tld:7860"})
+    assert r.status_code == 421, r.text
+
+    # `Host` ACEITO mas inútil do outro lado: `localhost` apontaria para o próprio
+    # cliente instalado. O arquivo tem de sair com nome alcançável, na mesma porta.
+    cfg = _cfg({**auth, "host": "localhost:7860"})
+    assert "localhost" not in cfg["server_url"], cfg["server_url"]
+    assert cfg["server_url"].endswith(":7860"), cfg["server_url"]
+
+    # nome de confiança (túnel em TTS_ALLOWED_HOSTS) é preservado
+    app._ALLOWED_HOSTS = ("meu-tunel.trycloudflare.com",)
+    try:
+        cfg = _cfg({**auth, "host": "meu-tunel.trycloudflare.com"})
+        assert cfg["server_url"] == "http://meu-tunel.trycloudflare.com", cfg["server_url"]
+    finally:
+        app._ALLOWED_HOSTS = ()
+
+
 def test_listagem_de_chaves_segue_aberta_sem_segredo(client, auth, chave_de_uso, sem_admin_key):
     """Decisão: metadado mascarado qualquer chave vê; o segredo só com admin."""
     corpo = client.get("/api/apikeys", headers=chave_de_uso).json()

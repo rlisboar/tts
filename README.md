@@ -760,9 +760,14 @@ próprio (server block dedicado + `location /`) também funciona, sem o
 prefixo. `TTS_TUNNEL_IF=enX` sobrescreve a interface de rede detectada;
 `./tunnel.sh uninstall` remove o agente.
 
-O zip do mic-router carrega a **chave primária em texto claro**, então baixá-lo
-exige chave de **admin** (`403` para `role: "use"`); o `GET /api/apikeys` segue
-acessível a qualquer chave, só que mascarado.
+O zip do mic-router carrega uma **chave `use` em texto claro** — a primeira que
+existir, ou uma criada com o nome `mic-router` (baixar de novo reaproveita). Quem
+instala o cliente só gera fala e transcreve, então não leva o poder de admin da
+chave primária; o download em si exige admin (`403` para `role: "use"`), e o
+`GET /api/apikeys` segue acessível a qualquer chave, só que mascarado. O
+`server_url` do `config.json` só usa o `Host` se ele passar pela allowlist do
+`TTS_ALLOWED_HOSTS`; `localhost`/`127.0.0.1` (que apontariam para a própria
+máquina do cliente) caem para um nome alcançável.
 
 O destino do `-R` é **validado** antes de abrir o ssh: só 10/8, 172.16/12 e
 192.168/16 passam. Se a interface escolhida não tiver endereço (ex.:
