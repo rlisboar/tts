@@ -8440,8 +8440,8 @@ def test_corpo_acima_do_teto_e_recusado_antes_de_espolpar(monkeypatch):
                content=b"")
     assert r.status_code == 413, r.status_code
     assert "teto" in r.json()["detail"].lower()
-    # JSON tem teto menor: 2 MB já não cabe
-    r = c.post("/api/settings", headers={"Content-Length": str(2 * 1024 * 1024),
+    # JSON tem teto menor (8 MB): 9 MB já não cabe
+    r = c.post("/api/settings", headers={"Content-Length": str(9 * 1024 * 1024),
                                          "Content-Type": "application/json"},
                content=b"")
     assert r.status_code == 413
@@ -8520,3 +8520,41 @@ def test_origem_com_porta_invalida_nao_vira_500(monkeypatch):
         assert r.status_code == 403, (origem, r.status_code)
     assert app._origem_confiavel("http://localhost:99999", _req_falso()) is False
     assert app._origem_confiavel("http://localhost:abc", _req_falso()) is False
+
+
+def _multipart_chunked(n_bytes, campo="audio"):
+    """Multipart em pedaços, SEM `Content-Length` (httpx manda chunked)."""
+    yield b'--X\r\nContent-Disposition: form-data; name="name"\r\n\r\nvoz\r\n'
+    yield (f'--X\r\nContent-Disposition: form-data; name="{campo}"; '
+           f'filename="a.wav"\r\n\r\n').encode()
+    resto = n_bytes
+    while resto > 0:
+        bloco = min(1024 * 1024, resto)
+        yield b"\x00\x01" * (bloco // 2)
+        resto -= bloco
+    yield b"\r\n--X--\r\n"
+
+
+def test_corpo_sem_content_length_acima_do_teto_da_413(monkeypatch):
+    """Sem `Content-Length` a recusa tem de ser 413, não corpo truncado (#790).
+
+    Antes o stream era cortado e a rota rodava com o corpo pela metade: o parser
+    devolvia 400 ("áudio obrigatório") e ninguém sabia do teto."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    c = TestClient(app.app, raise_server_exceptions=False,
+                   client=("203.0.113.99", 50000))
+    r = c.post("/api/voices", headers={"Content-Type": "multipart/form-data; boundary=X"},
+               content=_multipart_chunked(app._TETO_CORPO_PADRAO + 4 * 1024 * 1024))
+    assert r.status_code == 413, (r.status_code, r.text[:120])
+    # e abaixo do teto o corpo chega inteiro na rota (400 é o áudio fake inválido,
+    # não "áudio obrigatório" — que seria campo faltando por truncamento)
+    chave = app._primary_api_key()
+    r = c.post("/api/voices", headers={"Content-Type": "multipart/form-data; boundary=X",
+                                       "X-API-Key": chave},
+               content=_multipart_chunked(64 * 1024))
+    assert r.status_code == 400 and "obrigatório" not in r.text, r.text[:120]
+
+
+def test_teto_grande_nao_e_maior_que_o_limite_interno():
+    """O teto do middleware não pode ser decorativo: `restore` recusa antes (#790)."""
+    assert app._TETO_CORPO_GRANDE <= app._IMPORT_MAX_TOTAL
