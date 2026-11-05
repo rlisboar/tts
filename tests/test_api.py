@@ -8874,7 +8874,7 @@ def _post_cru(host, caminho, cabecalhos, corpo_blocos, limite=60):
         pass
     finally:
         sk.close()
-    return dados.split(b"\r\n")[0].decode(errors="replace")
+    return dados.decode(errors="replace")     # cru: status + cabeçalhos + corpo
 
 
 def _multipart_cru(n_bytes, chunked=True):
@@ -8899,21 +8899,27 @@ def test_chunked_acima_do_teto_da_413_em_uvicorn_real(servidor_vivo):
     """Corpo CHUNKED acima do teto -> 413 (não 422), medido no uvicorn (#790).
 
     `TestClient` com gerador não reproduz o uvicorn: por isso socket cru."""
-    linha = _post_cru(servidor_vivo, "/api/voices",
+    # corpo que a ROTA aceitaria (o teto dela é o mesmo número, então o tamanho não
+    # distingue): quem identifica a origem é o texto do middleware. Só "413" passa
+    # verde com o middleware desligado, porque aí o 413 vem do limite da rota,
+    # DEPOIS do spool — que é o caminho que o card substitui.
+    corpo = _post_cru(servidor_vivo, "/api/voices",
                       {"Content-Type": "multipart/form-data; boundary=X",
                        "Transfer-Encoding": "chunked"},
                       _multipart_cru(app._TETO_CORPO_PADRAO + 4 * 1024 * 1024))
-    assert "413" in linha, linha
+    assert "413" in corpo.split("\r\n")[0], corpo[:120]
+    assert "Corpo maior que o teto" in corpo, corpo
+    assert "teto desta rota" in corpo, corpo          # o hint é do middleware
 
 
 def test_content_length_mentindo_para_menos_da_4xx(servidor_vivo):
     """Header mentindo para menos: h11 delimita o corpo por ele, então o excedente
     vira lixo de protocolo — o contrato é 4xx (nunca 2xx), hoje 400."""
-    linha = _post_cru(servidor_vivo, "/api/voices",
-                      {"Content-Type": "multipart/form-data; boundary=X",
-                       "Content-Length": "1000"},
-                      _multipart_cru(4 * 1024 * 1024, chunked=False))
-    assert " 4" in linha or "400" in linha, linha
+    resposta = _post_cru(servidor_vivo, "/api/voices",
+                         {"Content-Type": "multipart/form-data; boundary=X",
+                          "Content-Length": "1000"},
+                         _multipart_cru(4 * 1024 * 1024, chunked=False))
+    assert " 4" in resposta or "400" in resposta, resposta[:120]
 
 
 # --- #787: `model` livre por pedido é privilégio de admin --------------------

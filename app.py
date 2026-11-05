@@ -1720,7 +1720,14 @@ def _teto_do_corpo(caminho: str, content_type: str) -> int:
 
 
 class _TetoDeCorpo:
-    """ASGI puro: 413 sem espoolar o corpo acima do teto da rota."""
+    """ASGI puro: 413 sem espoolar o corpo acima do teto da rota.
+
+    CUSTO DECLARADO: quando o `Content-Length` falta ou mente, o corpo é acumulado
+    em MEMÓRIA até o teto (no pior caso os 70 MB de áudio; os 512 MB de
+    `restore`/`import` só nesse caminho) em vez de ir para o disco. É a troca
+    consciente: o caminho normal, com header honesto, não bufferiza nada, e o
+    anormal precisa de um retrato inteiro para decidir antes de a rota escrever.
+    Espelhar em temporário é o passo seguinte se o pico de RSS incomodar."""
 
     def __init__(self, app):
         self.app = app
@@ -1799,7 +1806,8 @@ class _TetoDeCorpo:
 
         # 2) sem `Content-Length` (ou mentindo): lê até o limite e DECIDE antes de
         # chamar a rota. Cortar e seguir publicava corpo truncado — o parser dava
-        # 400 ("áudio obrigatório") em vez de 413 (#790).
+        # 400 ("áudio obrigatório") em vez de 413 (#790). O corpo fica em `blocos`
+        # (RAM até o teto; ver o custo declarado na docstring da classe).
         blocos, recebidos = [], 0
         while True:
             msg = await receive()
