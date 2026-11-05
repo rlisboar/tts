@@ -43,6 +43,7 @@ COMPARTILHADOS = {
     "dsh-home": "DSH_HOME (cache de sessões) — compartilhar é o ponto",
     "x": "/tmp/x é caminho FALSO de modelo em fake (não precisa existir; só retorno de lambda)",
     "x.sh": "caminho FALSO de script em fake (idem, não precisa existir)",
+    "modelo-local-do-teste": "caminho FALSO de modelo local na célula do #787 (idem; só a string vai na recusa)",
     "pytest-of": "diretório do próprio pytest (o sufixo -<user>/pytest-N é dele)",
     "bak": "receita do tests/limpa_bytecode.sh (só comentário, cópia manual)",
     "deploy-mini-requirements-preview": "nome-base: no script leva -$$; nos scripts de mordida é a forma quebrada DE PROPÓSITO",

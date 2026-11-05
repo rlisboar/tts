@@ -13284,6 +13284,18 @@ async def live_ws(ws: WebSocket):
         # registry do mesmo jeito.
         # O pipe/dsh não definem `__bool__`/`__len__` (sempre verdadeiros), então o
         # `or` cobre o caso "pipeline não nasceu, o dsh é órfão" sem trocar semântica.
+        # PRIMEIRO que tudo: sai do registry (#798). O fechamento pode levar até o
+        # prazo (pool ocupado por outra sessão inclusa), o histórico vai ao disco e
+        # o sender pode esperar 2 s — nada disso deve manter a sessão viva na
+        # contagem do teto nem no sweep.
+        # SÓ sai quem ainda é o dono da entrada: numa retomada o `sid` é o do
+        # cliente, então o pop incondicional da sessão ANTIGA apagava a NOVA (ela
+        # ficava fora do sweep/TTL e fora da contagem do teto). A checagem vai
+        # DENTRO do lock: fora dele, uma retomada que nascesse entre o `get` e o
+        # `pop` inseria a sessão nova e o pop da antiga levava a nova junto (#201).
+        with _live_lock:
+            if _live_sessions.get(sid) is sess:
+                _live_sessions.pop(sid, None)
         alvo = sess.get("pipe") or sess.get("dsh")
         # log ANTES do await: o fechamento pode estourar o prazo e a thread seguir
         # escrevendo em `sess`; lendo aqui o retrato é consistente (e o cliente que
@@ -13315,14 +13327,6 @@ async def live_ws(ws: WebSocket):
                 await asyncio.wait_for(sender, 2.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 sender.cancel()
-        # SÓ sai do registry quem ainda é o dono da entrada: numa retomada o `sid` é
-        # o do cliente, então o pop incondicional da sessão ANTIGA apagava a NOVA
-        # (ela ficava fora do sweep/TTL e fora da contagem do teto). A checagem vai
-        # DENTRO do lock: fora dele, uma retomada que nascesse entre o `get` e o
-        # `pop` inseria a sessão nova e o pop da antiga levava a nova junto (#201).
-        with _live_lock:
-            if _live_sessions.get(sid) is sess:
-                _live_sessions.pop(sid, None)
 
 
 async def _live_loop(sess: dict, ws) -> None:

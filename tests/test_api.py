@@ -8919,7 +8919,8 @@ def _sem_job(monkeypatch):
 def test_use_com_model_fora_do_catalogo_da_403(client, chave_de_uso, monkeypatch):
     """String livre vira `snapshot_download` de repo arbitrário (#787)."""
     chamadas = _sem_job(monkeypatch)
-    for livre in ("atacante/voxcpm-malicioso", "/tmp/modelo-local"):
+    # caminho local de mentira, sem tocar disco: só a string vai na recusa
+    for livre in ("atacante/voxcpm-malicioso", "/tmp/modelo-local-do-teste"):
         r = client.post("/api/tts", headers=chave_de_uso,
                         json={"text": "oi", "model": livre})
         assert r.status_code == 403, (livre, r.status_code, r.text[:120])
