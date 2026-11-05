@@ -9161,6 +9161,9 @@ def test_rotas_async_nao_chamam_bloqueantes():
     # snapshot é a propriedade certa e a célula de runtime
     # `test_admin_nao_pega_o_apikeys_lock` cobra. Qualquer OUTRO `async def`
     # que chame o nome tem de aparecer.
+    # A exceção é por NOME de função: hoje só existe UM `__call__` no arquivo. Se
+    # aparecer um segundo, ele herda a tolerância sem ninguém notar — nesse dia,
+    # qualificar por escopo (classe) em vez de nome.
     permitido = {("__call__", "_admin_is_allowed")}
     def _chamadas(no):
         """Calls do PRÓPRIO corpo — função interna (que roda na thread) não conta."""
