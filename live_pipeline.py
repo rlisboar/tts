@@ -1275,7 +1275,11 @@ def _prewarm_app(voice_id: str | None = None, tts_in_process: bool = True) -> No
                 ref_text = app._voice_ref_text(voice_id)
             elif path and path.exists():
                 ref_audio = str(path)
-            trava = app._NO_LOCK if app._use_remote_tts() else app._gen_lock
+            # SEMPRE o lock local (#804): `_generate_chunk` é a folha LOCAL mesmo
+            # com `remote_tts` ligado — quem fala com o servidor remoto é o job,
+            # não este caminho. Pular a trava deixava o Live gerar MLX concorrente
+            # com a UI e o Metal estourava (`GPU Timeout`, exit 134).
+            trava = app._gen_lock
             with trava:                   # mesmo lock do turno: Metal é serial
                 app._generate_chunk(modelo, "Ok.", "pt", conds, ref_text, omni,
                                     ref_audio=ref_audio, family=be["family"],
@@ -1497,7 +1501,9 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
     Segura o `_gen_lock`, como o job normal faz: sem isso um turno do Live e uma
     geração da UI rodam MLX ao mesmo tempo e o Metal estoura — medido no smoke, o
     servidor MORREU com "Command buffer execution failed: GPU Timeout Error".
-    Remoto não usa o lock (o servidor de lá paraleliza por conta dele).
+
+    O lock vale TAMBÉM com `remote_tts` ligado (#804): esta função gera LOCAL
+    (`_generate_chunk`), então o modo remoto não a paraleliza.
 
     `espera` (#313) é o dict do turno que recebe `lock_espera_ms`: o lock é GLOBAL
     e um job de lote o segura pelo job inteiro, então esse tempo some dentro do
@@ -1525,7 +1531,7 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
         ref_text = app._voice_ref_text(voice_id)
     elif path.exists():
         ref_audio = str(path)
-    trava = app._NO_LOCK if app._use_remote_tts() else app._gen_lock
+    trava = app._gen_lock
     _marco("prep")
     t_trava = _t.perf_counter()
     with trava:
@@ -1672,7 +1678,7 @@ class _LiveWorker:
             "voices_dir": str(app.VOICES_DIR),
             "base_dir": str(app.BASE),
         }
-        trava = app._NO_LOCK if app._use_remote_tts() else app._gen_lock
+        trava = app._gen_lock   # #804: o worker TAMBÉM gera local (filho MLX)
         try:
             with trava:
                 self._proc = subprocess.Popen(
@@ -1747,7 +1753,7 @@ class _LiveWorker:
         if not self._ativo:
             raise _WorkerMorto("worker inativo")
         self._n += 1
-        trava = app._NO_LOCK if app._use_remote_tts() else app._gen_lock
+        trava = app._gen_lock   # #804: o worker TAMBÉM gera local (filho MLX)
         t_trava = time.perf_counter()
         with trava:                      # Metal: uma geração por vez (ver topo)
             if espera is not None:

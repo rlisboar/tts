@@ -125,11 +125,13 @@ def test_turno_live_e_job_da_ui_nao_sobrepoem(gerador, primeiro):
     assert gerador.sobrepostas == 0
 
 
-def test_contraprova_remoto_nao_usa_o_lock_local(monkeypatch, gerador):
-    """Com TTS remoto o Live NÃO toma o lock local — e a sobreposição reaparece.
+def test_remoto_tambem_serializa_a_geracao_local(monkeypatch, gerador):
+    """#804: com `remote_tts` ligado o Live AINDA gera local — e tem de serializar.
 
-    É o que separa 'os casos acima passam' de 'os casos acima passam POR CAUSA do lock'."""
+    `_tts_app` chama `_generate_chunk`, que é a folha LOCAL: pular a trava no modo
+    remoto deixava o MLX concorrente com a UI e o Metal estourava (exit 134)."""
     monkeypatch.setattr(app, "_use_remote_tts", lambda: True)
     _em_threads(lambda: lp._tts_app("turno remoto", {}, "voz"), _job_da_ui)
     assert gerador.chamadas == 2
-    assert gerador.sobrepostas >= 1, "sem lock a sobreposição tinha de aparecer"
+    assert gerador.max_simultaneas == 1, "gerou local concorrente com o modo remoto"
+    assert gerador.sobrepostas == 0

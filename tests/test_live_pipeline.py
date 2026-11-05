@@ -951,7 +951,14 @@ def test_tts_do_turno_segura_o_gen_lock_como_o_job_normal(monkeypatch):
     assert sobrepostas["chamadas"] == 3
     assert sobrepostas["max"] == 1, "com o _gen_lock não pode haver geração concorrente"
 
-    monkeypatch.setattr(app_mod, "_use_remote_tts", lambda: True)   # caminho sem trava
+    # #804: `remote_tts` NÃO dispensa a trava (o caminho gera local)
+    monkeypatch.setattr(app_mod, "_use_remote_tts", lambda: True)
+    sobrepostas.update(agora=0, max=0, chamadas=0)
+    dispara()
+    assert sobrepostas["max"] == 1, "com remote_tts a geração local ainda serializa"
+
+    # contraprova do próprio harness: sem trava a sobreposição APARECE
+    monkeypatch.setattr(app_mod, "_gen_lock", app_mod._NO_LOCK)
     sobrepostas.update(agora=0, max=0, chamadas=0)
     dispara()
     assert sobrepostas["max"] > 1, "sem trava, a contraprova TEM de se sobrepor"

@@ -792,3 +792,12 @@ classificador `modelo` decidia com referência vazia.
 |---|---|
 | tirar o `with _stt_lock` da passada de comando | `test_passadas_de_comando_nao_rodam_o_whisper_em_paralelo` **FAILED** ("whisper chamado 2x em paralelo") |
 | tirar a checagem `desistiu` entre janelas | `test_janelas_param_no_ponto_seguro` **FAILED** ("rodou 3 janelas depois de desistir") |
+
+### #804 — `remote_tts` ligado não pode pular o `_gen_lock`
+
+`_tts_app`, o prewarm e o worker geram LOCAL (`_generate_chunk`/filho MLX) mesmo com
+o modo remoto: quem paraleliza no servidor de lá é o job, não estes caminhos.
+
+| Sabotagem | Resultado |
+|---|---|
+| voltar `trava = _NO_LOCK if _use_remote_tts() else _gen_lock` | `test_remoto_tambem_serializa_a_geracao_local` **FAILED** ("gerou local concorrente com o modo remoto") |
