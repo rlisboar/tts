@@ -527,6 +527,19 @@ def _estado_isolado(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _apikeys_publicadas():
+    """Republica o snapshot de chaves antes de cada teste (#799).
+
+    `_exige_chave` lê o snapshot imutável sem lock; teste que mexe em `_apikeys`
+    na mão (sem passar por `_save_apikeys`) deixaria o vizinho vendo o estado
+    anterior."""
+    import app
+
+    app._apikeys_publica()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _registro_limpo_entre_testes():
     """Zera `_jobs` e o pool do dsh entre testes — o espiao de teardown é sinal.
 

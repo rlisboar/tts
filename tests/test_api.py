@@ -557,6 +557,7 @@ def limiter_limpo(monkeypatch):
     for nome in ("_RATE_DEFAULT", "_RATE_POLL", "_RATE_HEAVY"):
         monkeypatch.setattr(app, nome, 10 ** 9)
     monkeypatch.setattr(app, "_apikeys", {"enabled": False, "keys": []})
+    app._apikeys_publica()          # o leitor sem lock usa o snapshot (#799)
     try:
         yield
     finally:
@@ -776,6 +777,7 @@ def test_settings_clamp_e_restauracao(client):
             "omni_num_steps": 999, "speed": 99, "chunk_max_chars": 10,
             "perf_priority": "invalido", "omni_seed": -50,
         })
+        app._apikeys_publica()
         assert r.status_code == 200
         body = r.json()
         assert body["omni_num_steps"] == 64
@@ -3120,6 +3122,7 @@ def test_admin_key_autentica_e_sustenta_a_auth_sozinha(monkeypatch):
     monkeypatch.setattr(app, "_ADMIN_API_KEY", "adm-do-operador")
     monkeypatch.setattr(app, "_ENV_API_KEY", "")
     monkeypatch.setattr(app, "_apikeys", {"enabled": True, "keys": []})
+    app._apikeys_publica()
     c = TestClient(app.app, raise_server_exceptions=False, client=("203.0.113.9", 50000))
     h = {"X-API-Key": "adm-do-operador"}
     assert app._auth_enabled() is True               # só com a env admin, rede não fica aberta
@@ -9048,3 +9051,107 @@ def test_redirect_nao_e_seguido():
                    urllib.request.build_opener(app._SemRedirect()).handlers)
     finally:
         srv.shutdown()
+
+
+# --- #799: trabalho bloqueante fora do event loop ----------------------------
+def _health_durante(dispara, limite=5.0):
+    """Roda `dispara()` numa thread e mede a latência de `/health` no meio."""
+    import httpx
+    import threading as _th
+
+    pronto = _th.Event()
+
+    def _roda():
+        pronto.set()
+        dispara()
+
+    t = _th.Thread(target=_roda)
+    t.start()
+    pronto.wait(2)
+    time.sleep(0.15)                 # deixa o pedido entrar no servidor
+    t0 = time.monotonic()
+    try:
+        r = httpx.get(f"http://{_health_durante.host}/health", timeout=limite)
+        assert r.status_code == 200
+    finally:
+        decorrido = time.monotonic() - t0
+        t.join(limite)
+    return decorrido
+
+
+_health_durante.host = "127.0.0.1:7860"
+
+
+def test_speaker_check_nao_segura_o_loop(servidor_vivo, auth, monkeypatch):
+    """Extrator de 2 s não pode congelar o servidor (#799)."""
+    import httpx
+
+    _health_durante.host = servidor_vivo
+
+    def _lento(*a, **k):
+        time.sleep(2.0)
+        return None, 0.9, True, "cru"
+
+    monkeypatch.setattr(app, "_speaker_pontua", _lento)
+    monkeypatch.setattr(app, "_save_audio_upload", lambda up, p=".vozchk": Path("f.wav"))
+
+    def _pede():
+        r = httpx.post(f"http://{servidor_vivo}/api/speaker/check", headers=auth,
+                       files={"audio": ("a.wav", b"x" * 64, "audio/wav")}, timeout=10)
+        assert r.status_code in (200, 400), r.text[:120]
+
+    latencia = _health_durante(_pede)
+    assert latencia < 1.0, f"/health levou {latencia:.2f}s com o extrator ocupado"
+
+
+def test_import_nao_segura_o_loop(servidor_vivo, auth, monkeypatch):
+    """Import grande roda na thread: `/health` responde durante (#799)."""
+    import httpx
+
+    _health_durante.host = servidor_vivo
+
+    def _lento(caminho):
+        time.sleep(2.0)
+        return {"ok": True, "importados": [], "ignorados": [], "renomeados": []}
+
+    monkeypatch.setattr(app, "_importa_vozes_zip", _lento)
+
+    def _pede():
+        r = httpx.post(f"http://{servidor_vivo}/api/voices/import", headers=auth,
+                       files={"zip_file": ("v.zip", b"PK\x03\x04" + b"\0" * 128,
+                                           "application/zip")}, timeout=20)
+        assert r.status_code == 200, r.text[:120]
+
+    latencia = _health_durante(_pede)
+    assert latencia < 1.0, f"/health levou {latencia:.2f}s durante o import"
+
+
+def test_rotas_async_nao_chamam_bloqueantes():
+    """Guarda-corpo: `async def` daqui não pode voltar a chamar o que bloqueia."""
+    import ast as _ast
+
+    proibidos = {"subprocess.run", "subprocess.check_output", "zipfile.ZipFile",
+                 "_speaker_pontua", "_speaker_avalia", "_save_audio_upload",
+                 "sf.read", "_executa_restore"}
+    def _chamadas(no):
+        """Calls do PRÓPRIO corpo — função interna (que roda na thread) não conta."""
+        for filho in _ast.iter_child_nodes(no):
+            if isinstance(filho, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                continue
+            if isinstance(filho, _ast.Call):
+                yield filho
+            yield from _chamadas(filho)
+
+    arvore = _ast.parse(Path(app.__file__).read_text())
+    achados = []
+    for no in _ast.walk(arvore):
+        if not isinstance(no, _ast.AsyncFunctionDef):
+            continue
+        for filho in _chamadas(no):
+            alvo = filho.func
+            nome = (f"{alvo.value.id}.{alvo.attr}"
+                    if isinstance(alvo, _ast.Attribute) and isinstance(alvo.value, _ast.Name)
+                    else getattr(alvo, "id", None))
+            if nome in proibidos:
+                achados.append(f"{no.name}:{nome}")
+    assert achados == [], f"chamada bloqueante dentro de async def: {achados}"
