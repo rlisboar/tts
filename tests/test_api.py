@@ -3917,6 +3917,14 @@ def test_zip_do_mic_router_leva_chave_de_uso_e_host_da_allowlist(client, auth, s
     assert "localhost" not in cfg["server_url"], cfg["server_url"]
     assert cfg["server_url"].endswith(":7860"), cfg["server_url"]
 
+    # IPv6 entre colchetes: a porta vem DEPOIS do `]` (`[::1]:7860` tem três
+    # dois-pontos — o parse antigo devolvia porta vazia e o fallback perdia o 7860)
+    assert app._porta_do_host("[::1]:7860") == "7860"
+    assert app._porta_do_host("[::1]") == ""
+    cfg = _cfg({**auth, "host": "[::1]:7860"})
+    assert cfg["server_url"].endswith(":7860"), cfg["server_url"]
+    assert "::1:7860" not in cfg["server_url"], f"IPv6 sem colchetes: {cfg['server_url']}"
+
     # nome de confiança (túnel em TTS_ALLOWED_HOSTS) é preservado
     app._ALLOWED_HOSTS = ("meu-tunel.trycloudflare.com",)
     try:

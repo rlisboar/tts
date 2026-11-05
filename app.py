@@ -1412,6 +1412,13 @@ def _primary_api_key() -> str:
 _CHAVE_CLIENTE = "mic-router"
 
 
+def _porta_do_host(bruto: str) -> str:
+    """Porta do `Host`, inclusive em IPv6 (`[::1]:7860` tem três dois-pontos)."""
+    if bruto.startswith("["):
+        return bruto.rsplit("]:", 1)[1] if "]:" in bruto else ""
+    return bruto.rsplit(":", 1)[1] if bruto.count(":") == 1 else ""
+
+
 def _host_do_cliente(request) -> str:
     """Host do `server_url` do cliente: só nome que a OUTRA máquina alcança.
 
@@ -1422,14 +1429,16 @@ def _host_do_cliente(request) -> str:
     túnel configurado, senão um IP desta máquina. A porta é sempre a do servidor.
     """
     bruto = (request.headers.get("host") or "").strip().lower()
-    porta = bruto.rsplit(":", 1)[1] if bruto.count(":") == 1 else ""
+    porta = _porta_do_host(bruto)
     nome = _host_da_requisicao(request)
     inuteis = {*_HOSTS_DA_MAQUINA, "testserver"}
     if nome and _host_permitido(nome) and nome not in inuteis:
         return bruto
     for candidato in (*_ALLOWED_HOSTS, *sorted(_own_ips())):
         if candidato and _host_permitido(candidato) and candidato not in inuteis:
-            return f"{candidato}:{porta}" if porta else candidato
+            # IPv6 vai entre colchetes quando a porta acompanha (`[::1]:7860`)
+            alvo = f"[{candidato}]" if ":" in candidato else candidato
+            return f"{alvo}:{porta}" if porta else alvo
     return f"127.0.0.1:{porta}" if porta else "127.0.0.1:7860"
 
 
@@ -1437,9 +1446,9 @@ def _chave_para_cliente() -> str:
     """Chave de USO para o zip do cliente (#793).
 
     `keys[0]` é a primária e costuma ser `admin`: entregá-la no artefato dá ao
-    cliente poder de mexer em conexão externa e ler segredo sem precisar. Aqui
-    sai uma `use`: a primeira que já existir, ou uma criada para isso (nome fixo,
-    então baixar o zip duas vezes não enche a lista)."""
+    cliente poder de mexer em conexão externa e ler segredo sem precisar. Aqui sai
+    uma `use` — de baixo privilégio, então REAPROVEITAR a primeira que existir é
+    aceitável; só quando não há nenhuma é criada uma chamada `mic-router`."""
     with _apikeys_lock:
         for k in _apikeys.get("keys") or []:
             if _normaliza_role(k.get("role")) == "use" and (k.get("secret") or ""):
