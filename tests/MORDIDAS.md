@@ -767,3 +767,12 @@ regressão não passar despercebida.
 **A armadilha da célula do fallback**: ela conta CHAMADAS de `marca_wav`, não
 probabilidade. Marca dupla continua dando detecção 1,0 — medir só a probabilidade
 aprovava o defeito. Quem reescrever a célula, conte a chamada.
+
+### #801 — o filtro `eco` lê a fala em reprodução do PIPELINE
+
+`sess["ultimo_assistente"]` nunca era gravada: o filtro `eco` estava MORTO e o
+classificador `modelo` decidia com referência vazia.
+
+| Sabotagem | Resultado |
+|---|---|
+| voltar a cadeia para `sess.get("ultimo_assistente")` | `test_filtro_eco_usa_a_fala_em_reproducao_do_pipeline` **FAILED** (`frase_longa`) e `test_filtro_modelo_recebe_a_referencia_de_eco_do_pipeline` **FAILED** |

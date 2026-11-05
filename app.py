@@ -12354,7 +12354,12 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
                             _palavras, _sem_acento,
                             classifica_barge)
     palavras = _palavras(texto)
-    eco_txt = sess.get("ultimo_assistente") or ""
+    # REFERÊNCIA do eco: vem do PIPELINE (#801), que é quem sabe o que ainda está
+    # tocando. A chave `sess["ultimo_assistente"]` nunca era gravada — o filtro
+    # `eco` estava morto e o `modelo` decidia com `ref` vazia.
+    _pipe_eco = sess.get("pipe")
+    _fn_eco = getattr(_pipe_eco, "texto_em_reproducao", None)
+    eco_txt = (_fn_eco() if _fn_eco is not None else "") or ""
 
     def ligado(nome: str, padrao: bool = True) -> bool:
         cfg = filtros.get(nome)

@@ -2120,7 +2120,12 @@ def test_filtro_identidade_fica_depois_do_eco(monkeypatch):
         raise AssertionError("o eco devia ter decidido antes do extrator")
 
     monkeypatch.setattr(app, "_voz_do_dono", explode)
-    sess = {"id": "s", "ultimo_assistente": "claro, o dia está bonito hoje e amanhã também"}
+    # a referência vem do PIPELINE (#801) — `ultimo_assistente` era chave morta
+    class _Pipe:
+        def texto_em_reproducao(self):
+            return "claro, o dia está bonito hoje e amanhã também"
+
+    sess = {"id": "s", "pipe": _Pipe()}
     filtros = {"identidade": {"on": True}, "eco": {"on": True}}
     _t, _p, _m, filtro = app._live_avalia_filtros(
         sess, "claro o dia está bonito hoje", 900, filtros, audio=b"\x01\x00" * 800)
@@ -2191,3 +2196,62 @@ def test_provedor_dsh_sai_da_oferta_e_cai_no_local(monkeypatch):
                         lambda texto, ms, ref_eco="": 0.2)
     tipo, p = app._live_modelo_decide(sess, "sei", 400, "", _cfg_modelo(provedor="local"))
     assert (tipo, p) == ("backchannel", 0.2)
+
+
+# ---------------------------------------------------------------------------
+# #801: o filtro `eco` tem de ver a fala que está TOCANDO
+# ---------------------------------------------------------------------------
+def _pipe_que_falou(monkeypatch, texto: str):
+    """Pipeline REAL que acabou de falar `texto` (STT/LLM/TTS dublês).
+
+    Nada de injetar a referência na mão: o turno roda pelo caminho de produção e
+    é ele que arma a janela de eco (`_marcar_render`)."""
+    import live_pipeline as lp
+
+    monkeypatch.setattr(lp, "_worker_habilitado", lambda: False)
+    p = lp.LivePipeline(lambda o: None, lambda pcm: None,
+                        stt=lambda pcm, l: "fala do dono",
+                        llm=lambda msgs: iter([texto]),
+                        tts=lambda t, o: np.zeros(64, dtype=np.float32),
+                        prewarm=lambda: None)
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False)
+    return p
+
+
+def test_filtro_eco_usa_a_fala_em_reproducao_do_pipeline(monkeypatch):
+    """#801: `sess["ultimo_assistente"]` nunca era gravada — o filtro estava MORTO.
+
+    O eco do próprio TTS voltava como fala (o transcript do assistente batia em
+    `frase_longa`/`conteudo` e cortava a resposta). A referência agora vem do
+    pipeline, que é quem sabe o que está tocando."""
+    import app
+
+    p = _pipe_que_falou(monkeypatch, "O prazo de entrega é sexta-feira.")
+    assert p.texto_em_reproducao(), "o pipeline devia expor a fala em reprodução"
+    sess = {"id": "s", "pipe": p}
+    tipo, _p, _m, filtro = app._live_avalia_filtros(
+        sess, "prazo de entrega é sexta", 500, {})
+    assert filtro == "eco", f"o eco do TTS não foi reconhecido (veio {filtro})"
+
+
+def test_filtro_modelo_recebe_a_referencia_de_eco_do_pipeline(monkeypatch):
+    """O `decide` não pode receber `ref` vazia: sem ela o modelo julga no escuro."""
+    import app
+
+    p = _pipe_que_falou(monkeypatch, "O prazo de entrega é sexta-feira.")
+    vistas = []
+    monkeypatch.setattr(app, "_live_modelo_decide",
+                        lambda sess, texto, ms, ref, cfg: vistas.append(ref) or (None, None))
+    sess = {"id": "s", "pipe": p}
+    app._live_avalia_filtros(sess, "entrega sexta", 500,
+                             {"eco": {"on": False}, "modelo": {"on": True}})
+    assert vistas and vistas[0], f"referência vazia no classificador: {vistas}"
+
+
+def test_texto_em_reproducao_vazio_fora_da_janela(monkeypatch):
+    """Fora do playback o pipeline não inventa referência (eco falso)."""
+    p = _pipe_que_falou(monkeypatch, "O prazo de entrega é sexta-feira.")
+    p._render_ate = 0.0
+    p._barge_turno = False
+    assert p.texto_em_reproducao() == ""

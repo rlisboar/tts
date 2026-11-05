@@ -30,6 +30,8 @@ import os
 import pathlib
 import queue
 import sys
+import threading
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "tests"))
 from _estado_tmp import isola  # noqa: E402
@@ -115,7 +117,10 @@ def decide(texto: str, ms: int, modelo: bool = False) -> str:
             return p_modelo
 
         app.__dict__["_live_classificador_barge"] = _stub
-    sess = {"id": "smoke", "ultimo_assistente": REF, "pipe": None}
+    # SESSÃO pelo caminho de produção (#801): o pipeline é que carrega a
+    # referência de eco. Antes o smoke injetava `ultimo_assistente` na mão e
+    # media um cenário que a produção não tinha — a chave nunca era gravada.
+    sess = _sessao_do_eco()
     # `so_comando`: só a lista de parar corta (o resto segue a resposta)
     base_f = {}
     if modo == "so_comando":
@@ -132,6 +137,29 @@ def decide(texto: str, ms: int, modelo: bool = False) -> str:
     # devolve o TIPO (não só corta/não corta): com a regra sabotada para "sempre
     # interrupção", o backchannel vira `sem_decisao` e o grupo tem de REPROVAR
     return "corta" if tipo == "interrupcao" else tipo
+
+
+_SESSAO_ECO = {}
+
+
+def _sessao_do_eco() -> dict:
+    """Sessão com um pipeline REAL que está falando `REF` (uma por processo).
+
+    Só a JANELA é armada (`_play_fim` + `_marcar_render`): é o estado em que o
+    filtro `eco` tem de reconhecer o próprio TTS. A referência não é injetada —
+    quem a expõe é o `texto_em_reproducao` do pipeline."""
+    if _SESSAO_ECO:
+        return _SESSAO_ECO
+    sess = {"id": "smoke", "pipe": None, "fila": queue.Queue(), "voice_id": "",
+            "system": "", "history": [], "cancelado": threading.Event(), "turno": 0,
+            "st_stage": "idle", "st_stage_ini": None, "st_erro": None,
+            "visto": time.monotonic()}
+    pipe = app._live_pipe_novo(sess)
+    pipe._play_fim = time.monotonic() + 30.0
+    pipe._marcar_render(REF)
+    sess["pipe"] = pipe
+    _SESSAO_ECO.update(sess)
+    return _SESSAO_ECO
 
 
 def _latencia_do_comando(n: int = 6) -> list[int]:

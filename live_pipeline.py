@@ -799,6 +799,28 @@ class LivePipeline:
             return
         self._render_ate = self._play_fim + _eco_cauda_s()
 
+    def texto_em_reproducao(self) -> str:
+        """Texto do assistente que o cliente AINDA está tocando ("" fora da janela).
+
+        É a REFERÊNCIA do filtro `eco` da cadeia de barge. Antes ela vinha de
+        `sess["ultimo_assistente"]`, chave que nenhum código de produção gravava
+        desde o #501 — o filtro estava morto e o classificador decidia sem
+        referência (#801). As duas janelas são as mesmas do `_parece_eco`: turno
+        nascido de barge (`_fala_em_curso`) e cauda logo depois do playback
+        (`_render_ate`). Fora delas, "" — comparar com fala de minutos atrás daria
+        eco falso."""
+        if not self.detectar_eco:
+            return ""
+        if self._barge_turno:
+            if self._fala_em_curso:
+                return self._fala_em_curso
+            if self.history and self.history[-1].get("role") == "assistant":
+                return self.history[-1].get("content") or ""
+            return ""
+        if self._render_texto and time.monotonic() <= self._render_ate:
+            return self._render_texto
+        return ""
+
     def _parece_eco(self, texto: str) -> bool:
         """Eco da própria voz — no barge-in OU na cauda logo depois do playback.
 
