@@ -85,6 +85,11 @@ POCKET_VOICES = [
     {"value": "cosette", "label": "cosette"},
 ]
 
+LFM3_VOICES = ["female", "male"]
+#: Revisão (commit) do repo do LFM3. O `trust_remote_code` do `mlx_audio.sts` executa
+#: `.py` do snapshot: sem sha, o artefato anda entre execuções (#849).
+LFM3_REVISAO = "b44c493832ce3435ec3c97fe1fa5fb6e7f3e687f"
+
 VOXTRAL_VOICES = [
     {"value": "casual_male", "label": "casual_male"},
     {"value": "casual_female", "label": "casual_female"},
@@ -214,6 +219,11 @@ FAMILY_CONTROLS: dict[str, list[dict]] = {
         _AR_MAX,
         _REF_MAX,
     ],
+    "lfm3_audio": [
+        _s("gen_lfm3_voice", "Voz", LFM3_VOICES, default="female",
+           hint="Preset do LFM3-Audio: female ou male"),
+        _AR_MAX,
+    ],
     "generic": [
         _AR_TEMP, _AR_TOP_P, _AR_REP, _INSTRUCT_FREE, _REF_MAX,
     ],
@@ -233,6 +243,7 @@ FAMILY_DESIGN_MODE: dict[str, str] = {
     "voxtral_tts": "none",
     "moss_nano": "none",
     "indextts": "none",
+    "lfm3_audio": "none",
     "generic": "free_text",
 }
 
@@ -409,6 +420,19 @@ BACKENDS: dict[str, dict[str, Any]] = {
         "license": "varia",
         "notes": "Bom p/ dublagem com controle de duração.",
     },
+    "lfm3-audio": {
+        "label": "LFM3-Audio 2B (8-bit) — fala, 18 idiomas",
+        "repo": "LiquidAI/LFM3-Audio-2B-MLX-8bit",
+        # sha fixo: sem ele a família não carrega (LFM3 exige revisão)
+        "revision": LFM3_REVISAO,
+        "family": "lfm3_audio",
+        "clone": False,
+        "voice_design": False,
+        "langs": "18",
+        "size": "2B / ~2 GB (8-bit)",
+        "license": "LFM Open License 1.0",
+        "notes": "TTS local a 24 kHz. Voz female ou male. Carrega pelo mlx_audio.sts.",
+    },
 }
 
 ALIASES: dict[str, str] = {
@@ -424,6 +448,8 @@ ALIASES: dict[str, str] = {
     "voxtral": "voxtral-tts",
     "moss": "moss-nano",
     "indextts": "indextts2",
+    "lfm3": "lfm3-audio",
+    "lfm3_audio": "lfm3-audio",
 }
 
 
@@ -518,6 +544,8 @@ def _guess_family(path: str) -> str:
         return "moss_nano"
     if "indextts" in p or "index-tts" in p:
         return "indextts"
+    if "lfm3" in p:
+        return "lfm3_audio"
     return "generic"
 
 
@@ -646,6 +674,32 @@ def _patch_kokoro_interpolate() -> bool:
     istftnet.interpolate = _interpolate_kokoro_seguro
     istftnet._rod_interp_seguro = True
     return True
+
+
+def load_tts_model(path: str, family: str, revision: str | None = None):
+    """Carrega o modelo da família. LFM3-Audio é STS, não o loader de TTS.
+
+    LFM3 exige `revision` (sha): o `mlx_audio.sts` executa código remoto do
+    snapshot (`trust_remote_code=True`), então sem sha o artefato muda sozinho
+    entre execuções. Fixar por fora não basta — o processor re-resolve o HEAD
+    quando o caminho não é local, então a revisão tem de vir pelo `load_sts`."""
+    if family == "lfm3_audio":
+        from mlx_audio.sts import load as load_sts
+        if not (revision or "").strip():
+            raise RuntimeError(
+                "LFM3-Audio sem `revision`: fixe o commit do repo no catálogo "
+                "(backends.BACKENDS['lfm3-audio']['revision']) antes de carregar")
+        model = load_sts(path, revision=revision.strip())
+        if not getattr(model, "sample_rate", None):
+            try:
+                # chute: o Live assume 24 kHz e o #805 ataca exatamente isso —
+                # Fish (44,1k), VoxCPM2 e MOSS (48k) já tocam errado hoje
+                model.sample_rate = 24000
+            except Exception:  # noqa: BLE001
+                pass
+        return model
+    from mlx_audio.tts.utils import load_model
+    return load_model(path)
 
 
 def generate_with_backend(
@@ -891,6 +945,25 @@ def generate_with_backend(
         if ref_audio:
             kwargs["ref_audio"] = ref_audio
         audio = _collect_audio(model.generate(**_filter_kwargs(model.generate, kwargs)))
+
+    elif family == "lfm3_audio":
+        voz = str(o.get("lfm3_voice") or "female").strip().lower()
+        if voz not in LFM3_VOICES:
+            voz = "female"
+        kwargs = {"text": text, "task": "tts", "voice": voz, "max_new_tokens": max_tokens}
+        if lang_code:
+            kwargs["language"] = lang_code
+        gen = getattr(model, "generate", None)
+        if gen is None:
+            raise RuntimeError("LFM3-Audio não expõe generate()")
+        result = gen(**_filter_kwargs(gen, kwargs))
+        sr = getattr(result, "sample_rate", None)
+        if sr:
+            try:
+                model.sample_rate = int(sr)
+            except Exception:  # noqa: BLE001
+                pass
+        audio = _collect_audio(result)
 
     else:
         kwargs = {"text": text, "temperature": temperature}
