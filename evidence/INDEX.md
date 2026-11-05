@@ -306,6 +306,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `663-separar-so-com-sobreposicao.txt` | #663 | 2026-10-28 | 663 — `speaker_alvo` decide POR SEGMENTO DE FALA: separa só com sobreposição |
 | `687-marca-nivel.md` | #687 | 2026-10-31 | Marca d'água audível em fala baixa (#687) — diagnóstico e correção |
 | `796-mordida.txt` | #796 | 2026-11-05 | MORDIDA #796 — a entrega da fala tem de esperar a fila FORA do `_gen_lock` |
+| `812-marca-remoto.md` | #812 | — | Marca d'água no caminho remoto (#812) |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |
