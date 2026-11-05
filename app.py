@@ -1148,6 +1148,17 @@ def _mesma_origem(request) -> str:
     return f"{esquema}://{request.headers.get('host') or ''}"
 
 
+def _porta_do_servidor(request) -> int | None:
+    """Porta em que o servidor foi chamado (do `Host`), com o default do esquema."""
+    host = (request.headers.get("host") or "").strip()
+    if ":" in host.rsplit("]", 1)[-1]:
+        try:
+            return int(host.rsplit(":", 1)[1])
+        except ValueError:
+            return None
+    return 443 if (request.url.scheme or "").endswith("s") else 80
+
+
 def _origem_confiavel(origem: str, request) -> bool:
     """A origem é a própria UI ou uma origem da lista `TTS_ORIGENS_PERMITIDAS`?
 
@@ -1157,11 +1168,17 @@ def _origem_confiavel(origem: str, request) -> bool:
         return True                      # sem `Origin`: cliente não-browser
     if origem == _mesma_origem(request):
         return True                      # a própria UI, mesma origem/porta
-    # LISTA FECHADA: extensão listada e porta local listada passam; qualquer outra
-    # porta de loopback e qualquer extensão não listada NÃO (antes o hostname da
-    # máquina em qualquer porta valia como a UI). `*` desliga a guarda — escolha
-    # explícita de quem aceita CSRF de qualquer origem.
-    return "*" in _ORIGENS_PERMITIDAS or origem.lower().rstrip("/") in _ORIGENS_PERMITIDAS
+    normalizada = origem.lower().rstrip("/")
+    if normalizada in _ORIGENS_PERMITIDAS:
+        return True                      # lista explícita do dono (inclui extensão)
+    # loopback na MESMA PORTA do servidor: `127.0.0.1:7860` chamado por
+    # `localhost:7860` é a mesma máquina e o mesmo serviço — hoje só passava por
+    # sorte de grafia. Porta DIFERENTE de loopback é outro servidor e não passa.
+    partes = urlsplit(normalizada)
+    if partes.hostname in _HOSTS_DA_MAQUINA and partes.port == _porta_do_servidor(request):
+        return True
+    # `*` desliga a guarda — escolha explícita de quem aceita CSRF de qualquer origem
+    return "*" in _ORIGENS_PERMITIDAS
 
 
 def _origem_estrangeira(request) -> bool:
@@ -1454,7 +1471,8 @@ def _instala_rastro_de_sinal() -> list[tuple[int, object]]:
     return anteriores
 #: Origens de fora autorizadas a LER a resposta (#780). Sem curinga: o default é a
 #: UI de desenvolvimento do repo (`client/`, porta 5198), que é outra origem; o
-#: apelido histórico (o CORS lia daqui); agora é a MESMA lista da auth.
+#: ALIAS histórico de `TTS_ORIGENS_PERMITIDAS` (o CORS lia daqui). É a MESMA tupla:
+#: duas listas com a mesma semântica voltariam a divergir.
 _CORS_ORIGINS = list(_ORIGENS_PERMITIDAS)
 # NOTA: o CORS é registrado no FIM do módulo (depois dos @app.middleware) de
 # propósito. `add_middleware` empilha na frente, então quem é registrado por

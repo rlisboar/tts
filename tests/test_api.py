@@ -8401,3 +8401,23 @@ def test_porta_local_fora_da_lista_nao_le(monkeypatch):
     assert ok.status_code == 200
     assert ok.headers.get("access-control-allow-origin") == "http://localhost:5198"
     assert any(k.get("secret") for k in ok.json()["keys"])
+
+
+def test_loopback_mesma_porta_do_servidor_passa(monkeypatch):
+    """Loopback na MESMA porta do servidor é a própria UI (#789).
+
+    `127.0.0.1:7860` chamado por `localhost:7860` é a mesma máquina e o mesmo
+    serviço — passar só por igualdade de string era sorte de grafia."""
+    monkeypatch.setattr(app, "_origens_barradas", {})
+    from starlette.requests import Request
+
+    def req(host):
+        return Request({"type": "http", "path": "/api/x", "method": "GET",
+                        "headers": [(b"host", host.encode())], "scheme": "http"})
+
+    assert app._origem_confiavel("http://127.0.0.1:7860", req("localhost:7860")) is True
+    assert app._origem_confiavel("http://localhost:7860", req("127.0.0.1:7860")) is True
+    # porta diferente, mesmo host: outro serviço, não passa
+    assert app._origem_confiavel("http://localhost:3999", req("localhost:7860")) is False
+    # host de fora, mesma porta: também não
+    assert app._origem_confiavel("http://evil.tld:7860", req("localhost:7860")) is False
