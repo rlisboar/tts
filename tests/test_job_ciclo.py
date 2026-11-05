@@ -206,3 +206,47 @@ def test_cancelar_quem_esta_atras_e_pulado_na_vez(monkeypatch):
     finally:
         for j in ("x", "y"):
             app._jobs.pop(j, None)
+
+
+class _ProcSaudavel(_ProcMudo):
+    """Worker que demora, mas publica `done` — o watchdog não pode matá-lo."""
+
+    def __init__(self, atraso: float = 0.5):
+        super().__init__()
+        self.atraso = atraso
+        self.escrita_em = None
+
+    def escreve_status(self, pdir: Path) -> None:
+        import json as _json
+
+        self.escrita_em = time.monotonic() + self.atraso
+        alvo = pdir / "status.json"
+
+        def _faz():
+            time.sleep(self.atraso)
+            alvo.write_text(_json.dumps({
+                "status": "done", "pieces": 1, "total": 1,
+                "output": {"id": "x", "duration": 1.0}}))
+
+        threading.Thread(target=_faz, daemon=True).start()
+
+
+def test_job_que_termina_nao_e_morto_pelo_watchdog(monkeypatch, tmp_path):
+    """Relógio misturado não pode matar job SAUDÁVEL (#800).
+
+    O watchdog compara `mtime` (relógio de PAREDE) com o instante do último sinal.
+    Com o instante em `monotonic()`, `time.time() - monotonic()` dá ~1,7e9 e um job
+    que ia terminar morre com "sem progresso há 1793016490s" — e a célula da morte
+    não acusa, porque ela espera a morte."""
+    proc = _ProcSaudavel(atraso=0.5)
+    _prepara(monkeypatch, tmp_path, proc)
+    monkeypatch.setattr(app, "_JOB_PARADO_S", 5.0)      # folgado: não é ele que mata
+    monkeypatch.setattr(app, "_JOB_TETO_S", 60.0)
+    proc.escreve_status(tmp_path / "j")
+
+    _roda()
+
+    # o `finally` sempre termina o processo; o que separa é o STATUS: morto pelo
+    # watchdog o job vira `error` com o motivo do travamento
+    assert app._jobs["j"]["status"] == "done", app._jobs["j"].get("error")
+    assert "travou" not in (app._jobs["j"].get("error") or "")
