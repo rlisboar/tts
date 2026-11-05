@@ -741,3 +741,29 @@ valer mesmo com o túnel caído.
 | sonda de Host removida do `deploy_mini.sh` | `test_smoke_reprova_quando_o_host_publico_da_421` **FAILED** |
 | sonda de Host removida do `health_probe.sh` | `test_host_publico_fora_da_allowlist_vira_alerta` **FAILED** |
 | `export TTS_ALLOWED_HOSTS` removido do `start-server.sh` | `test_start_server_exporta_o_host_publico` **FAILED** (o plist não chega ao app: sshd não herda) |
+
+## #797 — marca d'água nas famílias isoladas
+
+O caminho isolado grava o trecho DENTRO do worker e o pai só publica status: a
+marca que o caminho in-process faz no pai nunca acontecia ali, e as 11 famílias
+saíam cruas.
+
+| Sabotagem | Resultado |
+|---|---|
+| remover a chamada de `_marca_peca` no worker | **11 FAILED**, exatamente as 11 famílias de `_ISOLATED_FAMILIES`; negativo, desligado e ordem seguem verdes |
+
+O negativo (`test_trecho_cru_nao_acusa_marca`) e o desligado existem para o caso
+oposto: se a marca passasse a ser aplicada sempre, eles caem.
+
+## #812 — retorno remoto: onde a marca é contada
+
+O caminho remoto já marcava (compartilha o laço do job); a célula existe para a
+regressão não passar despercebida.
+
+| Sabotagem | Resultado |
+|---|---|
+| desligar o bloco de marca (`if False`) | `test_retorno_remoto_sai_marcado` e `test_fallback_para_local_marca_uma_vez_so` **FAILED** |
+
+**A armadilha da célula do fallback**: ela conta CHAMADAS de `marca_wav`, não
+probabilidade. Marca dupla continua dando detecção 1,0 — medir só a probabilidade
+aprovava o defeito. Quem reescrever a célula, conte a chamada.
