@@ -100,7 +100,9 @@ def test_rota_de_cancelar_recusa_job_terminado(monkeypatch, tmp_path):
     c = TestClient(app.app, raise_server_exceptions=False, client=("127.0.0.1", 1))
     try:
         assert c.post("/api/tts/jobs/naoexiste/cancel").status_code == 404
-        assert c.post("/api/tts/jobs/feito/cancel").status_code == 409
+        # #857: job terminal responde 200 com `ja_terminado` (o cliente não erra)
+        r = c.post("/api/tts/jobs/feito/cancel")
+        assert r.status_code == 200 and r.json()["ja_terminado"] is True
         r = c.post("/api/tts/jobs/roda/cancel")
         assert r.status_code == 200
         assert app._jobs["roda"]["cancelado"] is True

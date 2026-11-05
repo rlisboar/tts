@@ -7693,7 +7693,6 @@ def synthesize(request: Request, payload: dict):
     return out
 
 
-@app.post("/api/tts/jobs/{job_id}/cancel")
 @app.get("/api/tts/jobs/{job_id}")
 def job_status(job_id: str):
     job = _jobs.get(job_id)
@@ -7706,6 +7705,7 @@ def job_status(job_id: str):
     return dict(job)
 
 
+@app.post("/api/tts/jobs/{job_id}/cancel")
 @app.post("/api/tts/jobs/{job_id}/cancel")
 def job_cancel(job_id: str):
     """Pede o cancelamento do job (#857).
