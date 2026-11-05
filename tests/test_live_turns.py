@@ -2497,3 +2497,87 @@ def test_janelas_param_no_ponto_seguro(monkeypatch):
     r = app._transcreve_em_janelas(audio, "pt", desistiu=lambda: len(chamadas) >= 1)
     assert len(chamadas) == 1, f"rodou {len(chamadas)} janelas depois de desistir"
     assert r["text"] == "para"
+
+
+def test_comando_e_turno_disputam_a_MESMA_trava_do_whisper(monkeypatch):
+    """#803: a trava do passo tem de ser a `_stt_lock` COMPARTILHADA.
+
+    A célula anterior dispara duas passadas de COMANDO — uma trava nova de módulo
+    passaria. Aqui uma passada de comando corre contra o STT do TURNO: se cada um
+    tiver a sua trava, o whisper é chamado duas vezes em paralelo."""
+    import threading
+    import time
+
+    import app
+
+    dentro = {"agora": 0, "pico": 0}
+    trava = threading.Lock()
+
+    def whisper_falso(audio, lang, sr=16000, desistiu=None):
+        with trava:
+            dentro["agora"] += 1
+            dentro["pico"] = max(dentro["pico"], dentro["agora"])
+        try:
+            time.sleep(0.3)
+            return {"text": "para", "language": "pt", "segments": []}
+        finally:
+            with trava:
+                dentro["agora"] -= 1
+
+    monkeypatch.setattr(app, "_transcreve_em_janelas", whisper_falso)
+    monkeypatch.setattr(app, "_use_remote_stt", lambda: False)
+    monkeypatch.setattr(app, "_vad_tem_fala", lambda *a, **k: True)
+    monkeypatch.setattr(app, "_wav_to_mono16k", lambda *a, **k: np.zeros(1600, np.float32))
+    monkeypatch.setattr(app, "_release_mlx_memory", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_touch_use", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_settings", {**app._settings, "stt_local_engine": "whisper"})
+
+    sess = {"id": "s", "pipe": type("P", (), {"language": "pt", "_stt": None})()}
+    audio = b"\x01\x00" * 8000
+    ths = [threading.Thread(target=lambda: app._transcribe(__import__("pathlib").Path("/x.wav"))),
+           threading.Thread(target=lambda: app._live_transcreve_trecho(
+               sess, audio, cru=True, prazo_s=5.0))]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join(10)
+    assert dentro["pico"] == 1, f"whisper chamado {dentro['pico']}x (trava não é a mesma)"
+
+
+def test_rota_do_comando_adianta_o_desistiu_ate_as_janelas(monkeypatch):
+    """#803: o `desistiu` tem de atravessar a ROTA até `_transcreve_em_janelas`.
+
+    A célula do ponto seguro chama a função direto; esta passa por
+    `_live_transcreve_trecho` e o dublê EXIGE o parâmetro — sem o repasse, ele
+    estoura e a célula cai."""
+    import threading
+    import time
+
+    import app
+
+    janelas = []
+
+    def janelas_que_exigem(audio, lang, sr=16000, desistiu=None):
+        if desistiu is None:
+            raise AssertionError("a rota não passou o `desistiu` adiante")
+        for _ in range(3):                 # 3 janelas; o desistiu corta antes
+            janelas.append(1)
+            time.sleep(0.15)
+            if desistiu():
+                return {"text": "", "language": "pt", "segments": []}
+        return {"text": "para", "language": "pt", "segments": []}
+
+    monkeypatch.setattr(app, "_transcreve_em_janelas", janelas_que_exigem)
+    sess = {"id": "s", "pipe": type("P", (), {"language": "pt", "_stt": None})()}
+    audio = b"\x01\x00" * 8000
+    velha = []
+    th = threading.Thread(target=lambda: velha.append(
+        app._live_transcreve_trecho(sess, audio, cru=True, prazo_s=5.0)))
+    th.start()
+    time.sleep(0.05)                       # a 1ª já está dentro da 1ª janela
+    nova = app._live_transcreve_trecho(sess, audio, cru=True, prazo_s=5.0)
+    th.join(10)
+    # 3 janelas da nova + 1 da velha (que desiste na 1ª); sem o repasse a velha
+    # rodaria as 3 e o total iria a 6
+    assert len(janelas) <= 4, f"a abandonada não desistiu: {len(janelas)} janelas no total"
+    assert nova == "para"

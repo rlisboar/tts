@@ -792,6 +792,8 @@ classificador `modelo` decidia com referência vazia.
 |---|---|
 | tirar o `with _stt_lock` da passada de comando | `test_passadas_de_comando_nao_rodam_o_whisper_em_paralelo` **FAILED** ("whisper chamado 2x em paralelo") |
 | tirar a checagem `desistiu` entre janelas | `test_janelas_param_no_ponto_seguro` **FAILED** ("rodou 3 janelas depois de desistir") |
+| usar uma trava NOVA de módulo no passo (não a `_stt_lock`) | `test_comando_e_turno_disputam_a_MESMA_trava_do_whisper` **FAILED** ("whisper chamado 2x") |
+| parar de repassar `desistiu=` na rota | `test_rota_do_comando_adianta_o_desistiu_ate_as_janelas` **FAILED** |
 
 ### #804 — `remote_tts` ligado não pode pular o `_gen_lock`
 
