@@ -144,7 +144,8 @@ _instala_guarda_nofile()
 
 import dsh_client
 from backends import (ALIASES as _CATALOGO_ALIASES, BACKENDS as _CATALOGO_BACKENDS,
-                     generate_with_backend, list_backends, resolve_backend)
+                     generate_with_backend, list_backends, load_tts_model,
+                     resolve_backend)
 
 try:                                     # cache de áudio por texto (#325)
     import tts_cache as _tts_cache
@@ -513,6 +514,7 @@ _SETTINGS_DEFAULTS = {
     "gen_kokoro_voice": "af_heart",
     "gen_pocket_voice": "alba",
     "gen_voxtral_voice": "casual_male",
+    "gen_lfm3_voice": "female",
     "voice_denoise": True,            # limpa ruído de fundo da amostra ao salvar a voz
     "voice_denoise_strength": 0.7,    # agressividade do spectral gating (0–1)
     "voice_limpar_motor": "dfn3",     # "dfn3" (ONNX) ou "gating"; cai no gating sozinho
@@ -2187,9 +2189,8 @@ def _get_model(model: str | None = None):
         try:
             del old
             _release_mlx_memory(aggressive=True)
-            from mlx_audio.tts.utils import load_model
-
-            _model = load_model(path)
+            _model = load_tts_model(path, be["family"],
+                                    (be.get("meta") or {}).get("revision"))
             # quantização in-place só faz sentido no OmniVoice (backbone próprio)
             if be["family"] == "omnivoice" and prec in ("q8", "q4"):
                 import mlx.core as mx
@@ -4775,6 +4776,8 @@ def _resolve_omni(payload: dict, family: str | None = None) -> dict:
                             or _settings.get("gen_pocket_voice") or "alba"),
         "voxtral_voice": str(payload.get("voxtral_voice") or payload.get("gen_voxtral_voice")
                              or _settings.get("gen_voxtral_voice") or "casual_male"),
+        "lfm3_voice": str(payload.get("lfm3_voice") or payload.get("gen_lfm3_voice")
+                          or _settings.get("gen_lfm3_voice") or "female"),
     }
 
 
@@ -5028,6 +5031,9 @@ def _apply_settings(payload: dict):
         _settings["gen_pocket_voice"] = str(payload["gen_pocket_voice"] or "alba").strip()[:64]
     if "gen_voxtral_voice" in payload:
         _settings["gen_voxtral_voice"] = str(payload["gen_voxtral_voice"] or "casual_male").strip()[:64]
+    if "gen_lfm3_voice" in payload:
+        voz = str(payload["gen_lfm3_voice"] or "female").strip().lower()[:16]
+        _settings["gen_lfm3_voice"] = voz if voz in ("female", "male") else "female"
     if "voice_denoise" in payload:
         _settings["voice_denoise"] = bool(payload["voice_denoise"])
     if "voice_denoise_strength" in payload:
