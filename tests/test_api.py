@@ -1505,7 +1505,7 @@ def test_cors_expoe_retry_after_no_429(client, monkeypatch, voices_tmp, tmp_path
         assert r.status_code == 429
         exposto = (r.headers.get("access-control-expose-headers") or "").lower()
         assert "retry-after" in exposto, exposto
-        assert r.headers.get("access-control-allow-origin") == "*"
+        assert r.headers.get("access-control-allow-origin") == "http://localhost:5198"
         assert r.headers.get("Retry-After") == "5"
     finally:
         solta.set()
@@ -1520,14 +1520,17 @@ def test_cors_nas_respostas_de_erro(client):
     quem respondia era o CORS, mas a resposta real saía de fora dele)."""
     r = client.get("/api/status", headers={"Origin": "http://localhost:5198"})
     assert r.status_code == 401
-    assert r.headers.get("access-control-allow-origin") == "*"
+    # #780: sem curinga — o CORS ECOA a origem autorizada (a UI de dev do repo)
+    assert r.headers.get("access-control-allow-origin") == "http://localhost:5198"
     r = client.get("/api/status", headers={"Origin": "http://localhost:5198",
                                            "X-API-Key": "chave-errada"})
-    assert r.status_code == 401 and r.headers.get("access-control-allow-origin") == "*"
+    assert r.status_code == 401
+    assert r.headers.get("access-control-allow-origin") == "http://localhost:5198"
     # preflight segue respondendo
     r = client.options("/api/status", headers={"Origin": "http://localhost:5198",
                                                "Access-Control-Request-Method": "GET"})
-    assert r.status_code == 200 and r.headers.get("access-control-allow-origin") == "*"
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "http://localhost:5198"
 
 
 def test_tunnel_status_estrutura(client, auth, monkeypatch):
@@ -4267,7 +4270,7 @@ def test_origin_ausente_continua_valendo_como_o_mac(client, auth):
 
 
 def test_origin_estrangeira_nao_le_segredo_sem_chave(client, auth):
-    """Origem de terceiro (CSRF): rota que revela segredo passa a exigir chave."""
+    """Origem de terceiro (CSRF): qualquer GET de /api exigе chave (#282, #780)."""
     c = _cliente_local()
     h = {"Origin": _ORIGEM_ESTRANGEIRA}
     for rota in ("/api/apikeys?reveal=1", "/api/settings", "/api/client/mic-router"):
@@ -4275,11 +4278,12 @@ def test_origin_estrangeira_nao_le_segredo_sem_chave(client, auth):
         assert r.status_code == 403, rota
         assert r.headers.get("X-TTS-Origin-Bloqueada") == "1", rota
         assert _ORIGEM_ESTRANGEIRA in r.json()["origin"]
-    # sem segredo no corpo (o 403 não vaza nada) e o GET simples não é revelador
+    # sem segredo no corpo (o 403 não vaza nada) e, desde o #780, TODO GET de
+    # origem estrangeira exige chave — não só as rotas que revelam segredo
     corpo = c.get("/api/apikeys?reveal=1", headers=h).json()
     assert corpo["detail"] and "keys" not in corpo
-    assert c.get("/api/status", headers=h).status_code == 200
-    assert c.get("/api/voices", headers=h).status_code == 200
+    assert c.get("/api/status", headers=h).status_code == 401
+    assert c.get("/api/voices", headers=h).status_code == 401
 
     # COM a chave, a mesma origem lê normalmente
     r = c.get("/api/apikeys?reveal=1", headers={**h, **auth})
@@ -4318,7 +4322,9 @@ def test_origin_barrada_aparece_no_status(client, auth, monkeypatch):
     monkeypatch.setattr(app, "_origens_barradas", {})
     c = _cliente_local()
     assert c.get("/api/apikeys?reveal=1", headers={"Origin": _ORIGEM_ESTRANGEIRA}).status_code == 403
-    painel = c.get("/api/status", headers={"Origin": _ORIGEM_ESTRANGEIRA}).json()["origens_barradas"]
+    # desde o #780 o próprio /api/status também exige chave para origem de fora
+    painel = c.get("/api/status", headers={"Origin": _ORIGEM_ESTRANGEIRA,
+                                           **auth}).json()["origens_barradas"]
     assert painel["total"] == 1
     assert any(_ORIGEM_ESTRANGEIRA in k for k in painel["recentes"])
 
@@ -8038,3 +8044,60 @@ def test_allowlist_de_host_vem_do_ambiente(monkeypatch):
     finally:
         monkeypatch.delenv("TTS_ALLOWED_HOSTS", raising=False)
         importlib.reload(app)
+
+
+# --- #780: origem estrangeira não lê a API sem chave -------------------------
+_EVIL = "https://evil.example"
+
+
+def _gets_de_api():
+    from starlette.routing import Mount, Route
+
+    for rota in app.app.routes:
+        if isinstance(rota, Mount) or not isinstance(rota, Route):
+            continue
+        caminho = getattr(rota, "path", "")
+        metodos = getattr(rota, "methods", set()) or set()
+        if caminho.startswith(("/api/", "/v1/")) and "GET" in metodos:
+            yield caminho
+
+
+def test_get_de_origem_estrangeira_exige_chave_e_nao_ecoa_cors(monkeypatch):
+    """Página de terceiro no loopback não lê nada sem chave, e sem `ACAO` (#780).
+
+    O `ACAO: *` era o que deixava a página LER lista de vozes, saídas e a amostra
+    da voz do dono. Sem chave: 401/403 e nenhum `access-control-allow-origin`."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    c = TestClient(app.app, raise_server_exceptions=False,
+                   client=("127.0.0.1", 50000))
+    escaparam = []
+    for caminho in _gets_de_api():
+        alvo = caminho.replace("{", "").replace("}", "")
+        r = c.get(alvo, headers={"Origin": _EVIL})
+        if r.status_code not in (401, 403, 404, 405):
+            escaparam.append((alvo, r.status_code))
+        if r.headers.get("access-control-allow-origin"):
+            escaparam.append((alvo, "ACAO"))
+    assert not escaparam, f"vazaram sem chave: {escaparam[:10]}"
+
+
+def test_sem_origin_ou_same_origin_segue_livre(monkeypatch):
+    """curl/SDK/bookmark (sem `Origin`) e a própria UI não pagam por isso."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    c = TestClient(app.app, raise_server_exceptions=False,
+                   client=("127.0.0.1", 50000))
+    assert c.get("/api/status").status_code == 200
+    r = c.get("/api/status", headers={"Origin": "http://127.0.0.1:7860"})
+    assert r.status_code == 200
+    assert not r.headers.get("access-control-allow-origin")   # same-origin não usa
+
+
+def test_origem_listada_em_cors_le_com_chave(monkeypatch):
+    """Quem o dono autorizou em `TTS_CORS_ORIGINS` continua lendo (com chave)."""
+    chave = app._primary_api_key()
+    c = TestClient(app.app, raise_server_exceptions=False,
+                   client=("127.0.0.1", 50000))
+    origem = app._CORS_ORIGINS[0]
+    r = c.get("/api/status", headers={"Origin": origem, "X-API-Key": chave})
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == origem

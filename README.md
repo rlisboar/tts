@@ -639,6 +639,18 @@ TTS_ALLOWED_HOSTS=tts.the-dudes.com,mini.local ./run.sh
 
 Sintoma de nome faltando: **421 Host não permitido** — inclusive na UI.
 
+### Quem pode LER a API de outra origem (`TTS_CORS_ORIGINS`)
+
+Não há mais `Access-Control-Allow-Origin: *`. Página servida de OUTRA origem (o
+cliente de desenvolvimento em `client/`, porta 5198, já vem liberado) precisa estar
+em `TTS_CORS_ORIGINS` **e** mandar chave:
+
+```sh
+TTS_CORS_ORIGINS=https://minha-pagina.example ./run.sh
+```
+
+Sem `Origin` (curl, SDK, bookmark) e a própria UI (same-origin) seguem como antes.
+
 ### No app (já pronto)
 
 O servidor remove o prefixo `/ttsproxy` (configurável via

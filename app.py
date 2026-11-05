@@ -1434,7 +1434,12 @@ def _instala_rastro_de_sinal() -> list[tuple[int, object]]:
         except (ValueError, OSError):
             continue          # fora da thread principal (ex.: import em thread)
     return anteriores
-_CORS_ORIGINS = [x.strip() for x in os.environ.get("TTS_CORS_ORIGINS", "").split(",") if x.strip()]
+#: Origens de fora autorizadas a LER a resposta (#780). Sem curinga: o default é a
+#: UI de desenvolvimento do repo (`client/`, porta 5198), que é outra origem; o
+#: resto entra por `TTS_CORS_ORIGINS`.
+_CORS_ORIGENS_DEV = ("http://localhost:5198", "http://127.0.0.1:5198")
+_CORS_ORIGINS = [x.strip() for x in os.environ.get("TTS_CORS_ORIGINS", "").split(",")
+                 if x.strip()] or list(_CORS_ORIGENS_DEV)
 # NOTA: o CORS é registrado no FIM do módulo (depois dos @app.middleware) de
 # propósito. `add_middleware` empilha na frente, então quem é registrado por
 # último fica por FORA — e um 401/429 que sai do middleware de auth precisa
@@ -1617,9 +1622,10 @@ async def _exige_chave(request, call_next):
     # era `startswith(("/api/", "/v1/"))`, então qualquer path fora disso — e o
     # prefixo duplo do proxy caía fora — passava sem chave.
     protegido = caminho not in _CAMINHOS_PUBLICOS
-    if estrangeira and protegido and request.method in ("GET", "HEAD") \
-            and not _rota_revela_segredo(caminho):
-        return await call_next(request)     # simples e sem segredo: segue sem chave
+    # Origem ESTRANGEIRA pede chave em TODO método, GET incluído (#780): com o
+    # atalho do #282, qualquer site lia vozes, saídas e a amostra da voz do dono
+    # (biometria) por fetch no loopback — e o `ACAO: *` deixava LER. Bookmark e
+    # curl/SDK não mandam `Origin`, então seguem livres.
     if protegido and request.method != "OPTIONS" and _auth_enabled():
         from fastapi.responses import JSONResponse
         chave = _extract_request_key(request)
@@ -13095,7 +13101,10 @@ threading.Thread(target=_idle_unload_loop, daemon=True).start()
 # navegador cross-origin exige — sem eles o fetch vira "Failed to fetch".
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_CORS_ORIGINS or ["*"],
+    # sem curinga por padrão (#780): `ACAO: *` no loopback é justamente o que
+    # deixava a página de terceiro LER a resposta. A UI é same-origin e não usa
+    # CORS; quem é de fora entra em `TTS_CORS_ORIGINS`.
+    allow_origins=list(_CORS_ORIGINS),
     allow_methods=["*"],
     allow_headers=["*"],
     # `Retry-After` não é header safelisted de CORS: sem expor, cliente
