@@ -4285,6 +4285,11 @@ if ($("vdSaveBtn")) $("vdSaveBtn").onclick = async () => {
 };
 
 /* ───────── Status do modelo ───────── */
+// #799: job CANCELADO também chega com `status: "error"` (contrato do servidor) —
+// quem parou a geração não quer caçar defeito. O sinal disponível é o texto:
+// `cancelad*`/`abortad*`/`morto por sinal`. Se o servidor um dia mandar um campo
+// próprio, é aqui que ele entra.
+const ehCancelamento = (msg) => /cancelad|abortad|morto por sinal/i.test(String(msg || ""));
 // (badge no rodapé da sidebar)
 async function refreshStatus() {
   const setDual = (text, cls, title, backend) => {
@@ -4317,6 +4322,8 @@ async function refreshStatus() {
       setDual(`${short}${prec} · pronto`, "ok", detalhe, beShort);
     } else if (s.status === "loading") {
       setDual(s.progress || `carregando ${short}…`, "warn", s.path || label, beShort);
+    } else if (s.status === "error" && ehCancelamento(s.error)) {
+      setDual("geração cancelada", "warn", s.error || "", beShort);
     } else if (s.status === "error") {
       setDual("erro no modelo", "err", s.error || "", beShort);
     } else {
@@ -5238,7 +5245,11 @@ async function pollPieces(job_id, pl, opts = {}) {
   let buscados = 0, tries = 0, j, ocioso = 0;
   while (!pl.stopped && tries++ < maxTries) {
     j = await api(`/api/tts/jobs/${job_id}`);
-    if (j.status === "error") throw new Error(j.error || "falha na geração");
+    if (j.status === "error") {
+      const e = new Error(j.error || "falha na geração");
+      if (ehCancelamento(j.error)) e.cancelado = true;
+      throw e;
+    }
     const antes = buscados;
     if (buscados < j.pieces) {
       // Busca em lote, ordem preservada. Em série cada trecho custa um round-trip:
@@ -5318,10 +5329,12 @@ async function streamJob(job_id, statusEl) {
     obsTtsM.log("job " + idCurto + " concluído — " + j.pieces + " trecho(s) em " + Math.round((Date.now() - obsT0) / 1000) + "s");
     return j;
   } catch (e) {
-    obsTtsM.setEstado("✖ erro", "err");
-    obsTtsM.setInfo("status", "error");
+    // cancelado não é falha: nem estado de erro nem linha vermelha (#799)
+    obsTtsM.setEstado(e.cancelado ? "⏹ cancelado" : "✖ erro", e.cancelado ? "warn" : "err");
+    obsTtsM.setInfo("status", e.cancelado ? "cancelado" : "error");
     obsTtsM.setInfo("tempo", Math.round((Date.now() - obsT0) / 1000) + "s");
-    obsTtsM.log("job " + idCurto + " falhou: " + e.message, "e-erro");
+    obsTtsM.log("job " + idCurto + (e.cancelado ? " cancelado" : " falhou") + ": " + e.message,
+                e.cancelado ? null : "e-erro");
     throw e;
   } finally {
     if (player === meu && !meu.stopped) {
