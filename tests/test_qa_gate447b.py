@@ -14,6 +14,7 @@ import numpy as np
 import soundfile as sf
 
 import app
+from pathlib import Path
 
 pytest_plugins = ["test_api"]
 
@@ -159,3 +160,59 @@ def test_backup_com_orig_volta_no_restore(client, auth, estado):
     assert hashlib.sha256(orig.read_bytes()).hexdigest() == sha
     assert r.json()["vozes"] == 1, "o `.orig` foi contado como voz nova"
 
+
+
+def test_restore_usa_temporario_unico_e_nao_deixa_lixo(tmp_path, monkeypatch, client, auth,
+                                                       chave_de_uso):
+    """Duas restaurações simultâneas não podem compartilhar o temporário (#795-bis).
+
+    O `.rest-{id}` era de nome FIXO: as duas escreviam no mesmo arquivo e o
+    `os.replace` publicava o conteúdo de uma por cima da outra — voz truncada."""
+    wav = _voz(tmp_path, monkeypatch)
+    original = _hash(wav)
+    client.post("/api/voices/v1/denoise", headers=chave_de_uso, json={"strength": 0.8})
+
+    vistos = []
+    real = app.shutil.copy2
+
+    def _espia(orig, dst, *a, **k):
+        vistos.append(Path(dst).name)
+        return real(orig, dst, *a, **k)
+
+    app.shutil.copy2 = _espia
+    try:
+        r = client.post("/api/voices/v1/restore-original", headers=auth)
+    finally:
+        app.shutil.copy2 = real
+    assert r.status_code == 200
+    assert _hash(wav) == original
+    assert vistos and all(n.startswith(".tmp-tts-copia-") for n in vistos), \
+        f"escreveu direto no destino: {vistos}"
+    assert not list((tmp_path / "voices").glob(".tmp-tts-*")), "sobrou temporário"
+
+
+def test_copia_atomica_nao_trunca_o_destino_quando_a_origem_falha(tmp_path, monkeypatch):
+    """Falha no meio da cópia deixa o destino ANTERIOR inteiro, não pela metade."""
+    import shutil as _sh
+
+    destino = tmp_path / "voz.wav"
+    destino.write_bytes(b"anterior-inteiro")
+    origem = tmp_path / "novo.wav"
+    origem.write_bytes(b"novo")
+
+    def _explode(orig, dst, *a, **k):
+        Path(dst).write_bytes(b"pela-metade")   # escreve e SÓ ENTÃO falha
+        raise OSError("disco cheio no meio")
+
+    original_copy2 = _sh.copy2          # `_sh` É `app.shutil`: guardar antes de trocar
+    monkeypatch.setattr(app.shutil, "copy2", _explode)
+    try:
+        app._copia_atomica(origem, destino)
+    except OSError:
+        pass
+    assert destino.read_bytes() == b"anterior-inteiro"
+    assert not list(tmp_path.glob(".tmp-tts-copia-*")), "temporário órfão"
+
+    monkeypatch.setattr(app.shutil, "copy2", original_copy2)
+    app._copia_atomica(origem, destino)
+    assert destino.read_bytes() == b"novo"

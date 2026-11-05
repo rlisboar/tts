@@ -5394,6 +5394,32 @@ def _guarda_original(voice_id: str) -> None:
         raise
 
 
+def _copia_atomica(origem: Path, destino: Path) -> None:
+    """Copia `origem` sobre `destino` sem publicar arquivo pela metade (#795-bis).
+
+    Temporário de nome ÚNICO no diretório de DESTINO (mesmo sistema de arquivos,
+    senão o `os.replace` vira cópia) e troca por `os.replace`. Dois restaurações
+    simultâneas da mesma voz deixam de compartilhar o mesmo temporário — era o
+    defeito do nome fixo `.rest-{id}`."""
+    # arquivo vivo com `uchg` recusa o `os.replace` (rename de imutável): limpa a
+    # flag antes, como o dono faria à mão, e devolve 0600 sem flag depois (#721)
+    try:
+        if destino.exists() and getattr(destino.stat(), "st_flags", 0) & 0x2:
+            os.chflags(destino, 0)
+    except OSError:
+        pass
+    tmp = destino.parent / f"{_TMP_VOICES_PREFIX}copia-{destino.name}-{uuid.uuid4().hex[:8]}"
+    try:
+        shutil.copy2(origem, tmp)
+        os.replace(tmp, destino)
+        try:
+            destino.chmod(0o600)
+        except OSError:
+            pass
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _com_dnsmos_motivo(relatorio: dict) -> dict:
     """Marca o DNSMOS como NÃO MEDIDO só quando os modelos faltam (#523, #655).
 
@@ -5493,9 +5519,7 @@ def restore_voice_original(request: Request, voice_id: str):
     orig = VOICES_DIR / f"{voice_id}.orig.wav"
     if not orig.exists():
         raise HTTPException(404, "Esta voz não tem original guardado")
-    tmp = VOICES_DIR / f".rest-{voice_id}"
-    shutil.copy2(orig, tmp)
-    os.replace(tmp, VOICES_DIR / f"{voice_id}.wav")
+    _copia_atomica(orig, VOICES_DIR / f"{voice_id}.wav")
     _conds_cache.clear()
     _cache_limpa()
     duration = _wav_duration(VOICES_DIR / f"{voice_id}.wav")
@@ -6039,15 +6063,7 @@ def _restaura_estado(rollback: Path) -> None:
     for nome in _ESTADO_SIMPLES:
         origem, destino = rollback / nome, _caminho_estado(nome)
         if origem.exists():
-            # arquivo vivo com `uchg` recusa a escrita: limpa a flag antes de copiar
-            # (o que o dono faria à mão) e devolve 0600 sem flag (#721)
-            try:
-                if destino.exists() and getattr(destino.stat(), "st_flags", 0) & 0x2:
-                    os.chflags(destino, 0)
-            except OSError:
-                pass
-            shutil.copyfile(origem, destino)      # idem: sem flag/mtime (#721)
-            destino.chmod(0o600)
+            _copia_atomica(origem, destino)   # falha no meio não trunca a voz
         else:
             destino.unlink(missing_ok=True)
     if VOICES_DIR.exists():
@@ -6056,7 +6072,7 @@ def _restaura_estado(rollback: Path) -> None:
                 p.unlink()
     if (rollback / "voices").exists():
         for p in (rollback / "voices").iterdir():
-            shutil.copy2(p, VOICES_DIR / p.name)
+            _copia_atomica(p, VOICES_DIR / p.name)
 
 
 def _recarrega_settings() -> None:
