@@ -10549,6 +10549,11 @@ _LIVE_SETUP_TIMEOUT_S = 10.0
 #: até 65 s; aqui é o event loop — estourou, a thread segue e a sessão sai do
 #: registry do mesmo jeito (nada fica preso no loop).
 _LIVE_FECHAMENTO_TIMEOUT_S = 10.0
+#: Executor PRÓPRIO do fechamento (#798): `to_thread` usa o default do loop e um
+#: `close()` pendurado seguraria vaga por até 65 s, atrasando até o `pega()` do
+#: classificador. 2 vagas bastam: o fechamento é curto quando o processo responde.
+_LIVE_FECHAMENTO_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="live-fecha")
 _LIVE_MAX_BUFFER = 2 * 1024 * 1024      # PCM16 16k do turno em curso (~1 min de fala)
 # #126: teto do pendente (fala acumulada com o pipeline ocupado). PCM16 mono
 # 16 kHz = 32 kB/s; 30 s ~ 960 kB. Estourou, sai o trecho MAIS ANTIGO.
@@ -12807,18 +12812,26 @@ async def live_ws(ws: WebSocket):
         sess["fechar"] = True
         sess["cancelado"].set()
         # FORA do event loop (#798): `close()` espera processo até 65 s e uma
-        # sessão fechando congelava TODAS as outras. Com prazo: estourou, a thread
-        # segue e a sessão sai do registry do mesmo jeito.
+        # sessão fechando congelava TODAS as outras. Executor PRÓPRIO (não o
+        # default do loop) e com prazo: estourou, a thread segue e a sessão sai do
+        # registry do mesmo jeito.
+        # O pipe/dsh não definem `__bool__`/`__len__` (sempre verdadeiros), então o
+        # `or` cobre o caso "pipeline não nasceu, o dsh é órfão" sem trocar semântica.
         alvo = sess.get("pipe") or sess.get("dsh")
-        if alvo is not None:
-            try:
-                await asyncio.wait_for(asyncio.to_thread(alvo.close),
-                                       _LIVE_FECHAMENTO_TIMEOUT_S)
-            except (asyncio.TimeoutError, Exception):   # noqa: BLE001
-                pass
+        # log ANTES do await: o fechamento pode estourar o prazo e a thread seguir
+        # escrevendo em `sess`; lendo aqui o retrato é consistente (e o cliente que
+        # fecha não corre com o log)
         _live_log_kv("fecha", sess=sid, idade_s=int(time.time() - sess["criada"]),
                      frames=sess.get("st_frames", 0), bytes=sess.get("st_bytes", 0),
                      chunks=sess.get("st_chunks", 0), turnos=sess.get("turno", 0))
+        if alvo is not None:
+            try:
+                await asyncio.wait_for(
+                    asyncio.get_running_loop().run_in_executor(
+                        _LIVE_FECHAMENTO_POOL, alvo.close),
+                    _LIVE_FECHAMENTO_TIMEOUT_S)
+            except Exception:            # noqa: BLE001 — inclui o TimeoutError
+                pass
         try:
             _live_hist_guarda(sess)       # retomável pelo session_id
         except Exception:                 # noqa: BLE001
