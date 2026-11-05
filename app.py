@@ -5408,9 +5408,16 @@ def _copia_atomica(origem: Path, destino: Path) -> None:
     simultâneas da mesma voz deixam de compartilhar o mesmo temporário — era o
     defeito do nome fixo `.rest-{id}`."""
     # arquivo vivo com `uchg` recusa o `os.replace` (rename de imutável): limpa a
-    # flag antes, como o dono faria à mão, e devolve 0600 sem flag depois (#721)
+    # flag antes, como o dono faria à mão (#721), e devolve 0600 sem flag depois.
+    # Limpar ANTES é seguro no caminho de erro: se a cópia/o replace falhar o
+    # conteúdo anterior fica intacto, só a flag sai — e o 0600 vem do próprio #721,
+    # não é aperto novo. `chflags`/`st_flags` são de BSD/macOS: em Linux o `if` é
+    # falso e a limpeza some CALADA (lá o imutável é `chattr +i`, outro mecanismo);
+    # o `hasattr` evita `AttributeError` se algum dia `st_flags` existir sem
+    # `chflags` — `except OSError` NÃO pega `AttributeError`.
     try:
-        if destino.exists() and getattr(destino.stat(), "st_flags", 0) & 0x2:
+        if (destino.exists() and hasattr(os, "chflags")
+                and getattr(destino.stat(), "st_flags", 0) & 0x2):
             os.chflags(destino, 0)
     except OSError:
         pass
@@ -5419,7 +5426,7 @@ def _copia_atomica(origem: Path, destino: Path) -> None:
         shutil.copy2(origem, tmp)
         os.replace(tmp, destino)
         try:
-            destino.chmod(0o600)
+            destino.chmod(0o600)      # mesmo modo que o #721 deixava
         except OSError:
             pass
     finally:

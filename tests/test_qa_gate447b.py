@@ -272,3 +272,54 @@ def test_criacao_de_voz_publica_por_temporario(tmp_path, monkeypatch, client, au
     # o fixture escreve outros wavs: o que importa é a voz criada não ser alvo direto
     assert f"{vid}.wav" not in vistos, f"gravou direto no destino: {vistos}"
     assert vistos and vistos[-1].startswith(".tmp-tts-novo-"), "não passou por temporário"
+
+
+def _tem_chflags() -> bool:
+    import os as _os
+
+    return hasattr(_os, "chflags") and hasattr(_os.stat("."), "st_flags")
+
+
+def _preso(caminho) -> bool:
+    import os as _os
+
+    return bool(getattr(_os.stat(caminho), "st_flags", 0) & 0x2)
+
+
+def test_copia_atomica_limpa_uchg_e_nao_perde_o_conteudo_no_erro(tmp_path, monkeypatch):
+    """Arquivo imutável recusa o `os.replace`: a flag tem de sair ANTES (#721/#795-bis).
+
+    No caminho de erro a flag já saiu e o conteúdo anterior fica intacto — limpar
+    antes não pode custar o arquivo. E o sucesso devolve 0600."""
+    import os as _os
+    import shutil as _sh
+
+    if not _tem_chflags():
+        import pytest as _pytest
+
+        _pytest.skip("sem chflags/st_flags neste sistema")
+
+    destino = tmp_path / "voz.wav"
+    destino.write_bytes(b"anterior-inteiro")
+    _os.chmod(destino, 0o600)
+    _os.chflags(destino, 0x2)                     # uchg
+    origem = tmp_path / "novo.wav"
+    origem.write_bytes(b"novo")
+
+    def _explode(orig, dst, *a, **k):
+        Path(dst).write_bytes(b"pela-metade")
+        raise OSError("disco cheio no meio")
+
+    real = _sh.copy2
+    monkeypatch.setattr(app.shutil, "copy2", _explode)
+    try:
+        app._copia_atomica(origem, destino)
+    except OSError:
+        pass
+    assert destino.read_bytes() == b"anterior-inteiro", "perdeu o conteúdo no erro"
+    assert not _preso(destino), "a flag continuou presa"
+
+    monkeypatch.setattr(app.shutil, "copy2", real)
+    app._copia_atomica(origem, destino)
+    assert destino.read_bytes() == b"novo"
+    assert oct(destino.stat().st_mode & 0o777) == oct(0o600), "modo não voltou a 0600"
