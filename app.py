@@ -10571,9 +10571,12 @@ _LIVE_SETUP_TIMEOUT_S = 10.0
 _LIVE_FECHAMENTO_TIMEOUT_S = 10.0
 #: Executor PRÓPRIO do fechamento (#798): `to_thread` usa o default do loop e um
 #: `close()` pendurado seguraria vaga por até 65 s, atrasando até o `pega()` do
-#: classificador. 2 vagas bastam: o fechamento é curto quando o processo responde.
+#: classificador. Vagas = teto de sessões: `wait_for` CANCELA o future no prazo e o
+#: `_WorkItem.run` do CPython começa com `if self.fut.cancelled(): return` — item que
+#: ainda estava na FILA nunca roda e o `close()` some calado. Com uma vaga por
+#: sessão, todo fechamento ao menos COMEÇA.
 _LIVE_FECHAMENTO_POOL = concurrent.futures.ThreadPoolExecutor(
-    max_workers=2, thread_name_prefix="live-fecha")
+    max_workers=max(2, _LIVE_MAX_SESSIONS), thread_name_prefix="live-fecha")
 _LIVE_MAX_BUFFER = 2 * 1024 * 1024      # PCM16 16k do turno em curso (~1 min de fala)
 # #126: teto do pendente (fala acumulada com o pipeline ocupado). PCM16 mono
 # 16 kHz = 32 kB/s; 30 s ~ 960 kB. Estourou, sai o trecho MAIS ANTIGO.
@@ -12850,7 +12853,13 @@ async def live_ws(ws: WebSocket):
                     asyncio.get_running_loop().run_in_executor(
                         _LIVE_FECHAMENTO_POOL, alvo.close),
                     _LIVE_FECHAMENTO_TIMEOUT_S)
-            except Exception:            # noqa: BLE001 — inclui o TimeoutError
+            except asyncio.TimeoutError:
+                # o future cancelado pode nem ter começado (o `run` desiste antes):
+                # sem esta linha o processo órfão não aparece em lugar nenhum
+                print(f"[live] fechamento de {sid} passou de "
+                      f"{_LIVE_FECHAMENTO_TIMEOUT_S:g}s — worker pode ficar órfão",
+                      file=sys.stderr, flush=True)
+            except Exception:            # noqa: BLE001
                 pass
         try:
             _live_hist_guarda(sess)       # retomável pelo session_id

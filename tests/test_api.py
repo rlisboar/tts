@@ -8471,3 +8471,40 @@ def test_use_em_rota_admin_nao_le_o_corpo(monkeypatch):
 
 def test_youtube_audio_entra_no_teto_pesado():
     assert app._rate_limit_for("/api/youtube-audio") == app._RATE_HEAVY
+
+
+def test_pool_de_fechamento_cobre_o_teto_de_sessoes(monkeypatch):
+    """Uma vaga por sessão: item que ainda não começou seria cancelado calado (#798).
+
+    `wait_for` cancela o future e o `_WorkItem.run` do CPython desiste antes de
+    rodar quando já está cancelado — com pool menor que o teto, fechamentos somem."""
+    assert app._LIVE_FECHAMENTO_POOL._max_workers >= app._LIVE_MAX_SESSIONS
+
+
+def test_prazo_estourado_avisa_no_stderr(servidor_vivo, monkeypatch, capsys):
+    """Estourar o prazo tem de aparecer: senão o órfão não fica em lugar nenhum."""
+    import httpx
+
+    libera = threading.Event()
+
+    class _PipeTravado:
+        def close(self):
+            libera.wait(30)
+
+    lento = _PipeTravado()
+    monkeypatch.setattr(app, "_live_pipe_start",
+                        lambda sess: sess.__setitem__("pipe", lento))
+    monkeypatch.setattr(app, "_LIVE_FECHAMENTO_TIMEOUT_S", 0.2)
+    ws = _ws_setup(f"ws://{servidor_vivo}/api/live/ws")
+    ws.close()
+    limite = time.time() + 5
+    avisou = False
+    while time.time() < limite:
+        if "passou de" in capsys.readouterr().err:
+            avisou = True
+            break
+        time.sleep(0.05)
+    libera.set()
+    # o health volta a responder mesmo com o close pendurado
+    assert httpx.get(f"http://{servidor_vivo}/health", timeout=2.0).status_code == 200
+    assert avisou, "o prazo estourou sem aviso no stderr"
