@@ -661,6 +661,36 @@ def test_csp_vai_no_header_e_com_nonce_no_script_inline(client):
     assert r.text.count("integrity=") == 2, "SRI dos bundles de CDN intacto"
 
 
+def test_csp_nao_libera_o_host_inteiro_do_cdn(client):
+    """#792: `script-src` fecha no CAMINHO EXATO dos três arquivos do jsDelivr.
+
+    Host sozinho (`https://cdn.jsdelivr.net`) deixa qualquer injeção de HTML puxar
+    script de um pacote arbitrário do CDN — o nonce não cobre `<script src>`. Os
+    três caminhos são os que a página realmente usa: os dois bundles com SRI e o
+    worklet do VAD. E o `connect-src` acompanha (o VAD busca `.onnx` e `.wasm`).
+    """
+    csp = client.get("/").headers.get("content-security-policy")
+    script = next(d for d in csp.split(";") if d.strip().startswith("script-src"))
+    fontes = script.split()[1:]
+    # nenhuma fonte é o HOST puro: toda entrada do CDN termina em arquivo/pasta
+    for fonte in fontes:
+        if "cdn.jsdelivr.net" in fonte:
+            assert fonte.rstrip("/").count("/") > 3, f"fonte larga demais: {fonte!r}"
+    assert ("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"
+            in fontes)
+    assert ("https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/bundle.min.js"
+            in fontes)
+    assert ("https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/"
+            "vad.worklet.bundle.min.js" in fontes)
+    conecta = next(d for d in csp.split(";") if d.strip().startswith("connect-src"))
+    assert "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/" in conecta
+    assert "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/" in conecta
+    # /docs monta a página com o Swagger do MESMO CDN: também fecha no caminho
+    docs = client.get("/docs").headers.get("content-security-policy")
+    assert "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js" in docs
+    assert "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css" in docs
+
+
 def test_csp_nonce_nao_depende_da_forma_da_tag(tmp_path, monkeypatch):
     """A injeção do nonce não pode depender de a tag ser a linha exata `<script>`.
 

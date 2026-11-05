@@ -1946,20 +1946,32 @@ async def _exige_chave(request, call_next):
 # (clickjacking no botão Revelar da chave) e o console nascia com erro em toda
 # carga. Texto IDÊNTICO ao do meta enquanto os dois existirem; o frontend remove o
 # meta depois deste header entrar (aí ESTE vira a fonte da verdade).
+#: os DOIS bundles que a página carrega do jsDelivr — caminho exato, versão
+#: cravada. O host sozinho deixava qualquer injeção de HTML puxar script de um
+#: pacote arbitrário do CDN e rodar com o nonce contornado (#792).
+_JSDELIVR_VAD = "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist"
+_JSDELIVR_ORT = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist"
 _CSP_POLICY = (
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' "
-    "https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' "
+    f"{_JSDELIVR_ORT}/ort.min.js {_JSDELIVR_VAD}/bundle.min.js "
+    f"{_JSDELIVR_VAD}/vad.worklet.bundle.min.js; "
+    "style-src 'self' 'unsafe-inline' "
     "https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src "
     "'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' "
-    "http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net; object-src 'none'; "
+    "http://127.0.0.1:* http://localhost:* "          # o VAD busca o .onnx e o .wasm
+    f"{_JSDELIVR_VAD}/ {_JSDELIVR_ORT}/; object-src 'none'; "
     "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 )
 # /docs e /redoc montam a própria página com CSS/JS de CDN: precisam de policy
 # PRÓPRIA (a da UI não cobre o CDN no style-src) e não têm script inline nosso,
 # então vão sem nonce. Antes ficavam SEM CSP nenhuma (#282).
+#: o Swagger UI monta a página com UM bundle e UM css daquele caminho (#792)
+_JSDELIVR_SWAGGER = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5"
 _CSP_DOCS = (
-    "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net "
-    "'unsafe-inline'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net "
+    "default-src 'self'; script-src 'self' "
+    f"{_JSDELIVR_SWAGGER}/swagger-ui-bundle.js "
+    "'unsafe-inline'; style-src 'self' 'unsafe-inline' "
+    f"{_JSDELIVR_SWAGGER}/swagger-ui.css "
     "https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com "
     "data:; img-src 'self' data: https://fastapi.tiangolo.com; connect-src 'self'; "
     "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
