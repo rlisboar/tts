@@ -2,34 +2,52 @@ MORDIDA #796 — a entrega da fala tem de esperar a fila FORA do `_gen_lock`
 
 O fix do #796 tirou `_finish_ok`/`_finish_err` (que chamam `_speech_queue_deliver`,
 o qual espera a vez do ticket) de dentro do `with _gen_lock`. A sabotagem devolve a
-chamada para dentro do lock — uma linha de contexto, sem tocar em mais nada:
+chamada para dentro do lock.
 
-    # FORA do `_gen_lock` (#796): aqui se espera a vez na fila
-    if final is not None:
-        if final[0] == "ok":
-            _finish_ok(final[1])
+Abaixo o `git diff` LITERAL da sabotagem. Ele APLICA com `git apply` — o `else` vai
+junto e indentado; colar só o ramo `ok` (como na primeira versão deste arquivo)
+deixa o `app.py` sem compilar:
 
-vira
-
-    # MORDIDA (#796): a espera na fila volta a ser feita SEGURANDO o `_gen_lock`
-    if final is not None:
-        with _gen_lock:
-            if final[0] == "ok":
-                _finish_ok(final[1])
+```diff
+diff --git a/app.py b/app.py
+index 2b23018..184c9ce 100644
+--- a/app.py
++++ b/app.py
+@@ -6969,12 +6969,13 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
+                 msg += " | " + err_tail.replace("\n", " ")[:300]
+             final = ("err", msg)
+ 
+-    # FORA do `_gen_lock` (#796): aqui se espera a vez na fila
++    # MORDIDA (#796): a espera na fila volta a ser feita SEGURANDO o `_gen_lock`
+     if final is not None:
+-        if final[0] == "ok":
+-            _finish_ok(final[1])
+-        else:
+-            _finish_err(str(final[1]))
++        with _gen_lock:
++            if final[0] == "ok":
++                _finish_ok(final[1])
++            else:
++                _finish_err(str(final[1]))
+ 
+ 
+ def _log(msg: str) -> None:
+```
 
 Comando:
 
     ./.venv-mlx/bin/python -m pytest tests/test_api.py -q \
         -k "fila_nao_trava_quando_ticket_maior"
 
-Resultado com a sabotagem (10,5 s, trava até o join de 10 s):
+Resultado com a sabotagem (trava até o `join` de 10 s):
 
     >           assert not th.is_alive(), "a fila travou (deadlock do #796)"
     E           AssertionError: a fila travou (deadlock do #796)
     E           assert not True
     FAILED tests/test_api.py::test_fila_nao_trava_quando_ticket_maior_pega_o_lock_antes
 
-Com o código como está: 2 passed (a célula e a vizinha `fila_pula_ticket_de_job_que_morreu`).
+Com o código como está: 2 passed (a célula e a vizinha
+`fila_pula_ticket_de_job_que_morreu`).
 
 Por que a ordem importa: o ticket 1 pega o `_gen_lock` e chama `deliver`, que espera
 o ticket 0 — dono do lock, ainda gerando. Segurando o lock na espera, ninguém solta
