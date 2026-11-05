@@ -8816,3 +8816,72 @@ def test_recusa_do_enroll_vem_antes_de_qualquer_escrita(client, auth, monkeypatc
         assert salvos == [] and uploads == [], (salvos, uploads)
     finally:
         app._apikeys["keys"][0]["role"] = "admin"
+
+
+def _post_cru(host, caminho, cabecalhos, corpo_blocos, limite=60):
+    """POST HTTP/1.1 por socket CRU — httpx não reproduz o uvicorn no chunked."""
+    import socket as _socket
+
+    host_, porta = host.split(":")
+    linhas = [f"POST {caminho} HTTP/1.1", f"Host: {host_}"]
+    linhas += [f"{k}: {v}" for k, v in cabecalhos.items()]
+    linhas += ["Connection: close", "", ""]
+    sk = _socket.create_connection((host_, int(porta)), timeout=limite)
+    sk.sendall("\r\n".join(linhas).encode())
+    dados = b""
+    try:
+        for bloco in corpo_blocos:
+            sk.sendall(bloco)
+    except OSError:
+        pass                        # servidor pode fechar no meio: é o esperado
+    sk.settimeout(limite)
+    try:
+        while True:
+            pedaco = sk.recv(65536)
+            if not pedaco:
+                break
+            dados += pedaco
+    except OSError:
+        pass
+    finally:
+        sk.close()
+    return dados.split(b"\r\n")[0].decode(errors="replace")
+
+
+def _multipart_cru(n_bytes, chunked=True):
+    """Corpo multipart em blocos; com `chunked`, cada bloco vai com o tamanho."""
+    def _e(dados):
+        return b"%x\r\n" % len(dados) + dados + b"\r\n" if chunked else dados
+
+    yield _e(b'--X\r\nContent-Disposition: form-data; name="name"\r\n\r\nvoz\r\n')
+    yield _e(b'--X\r\nContent-Disposition: form-data; name="audio"; filename="a.wav"'
+             b'\r\n\r\n')
+    resto = n_bytes
+    bloco = b"\x00\x01" * (1024 * 1024 // 2)
+    while resto > 0:
+        yield _e(bloco)
+        resto -= len(bloco)
+    yield _e(b"\r\n--X--\r\n")
+    if chunked:
+        yield b"0\r\n\r\n"
+
+
+def test_chunked_acima_do_teto_da_413_em_uvicorn_real(servidor_vivo):
+    """Corpo CHUNKED acima do teto -> 413 (não 422), medido no uvicorn (#790).
+
+    `TestClient` com gerador não reproduz o uvicorn: por isso socket cru."""
+    linha = _post_cru(servidor_vivo, "/api/voices",
+                      {"Content-Type": "multipart/form-data; boundary=X",
+                       "Transfer-Encoding": "chunked"},
+                      _multipart_cru(app._TETO_CORPO_PADRAO + 4 * 1024 * 1024))
+    assert "413" in linha, linha
+
+
+def test_content_length_mentindo_para_menos_da_4xx(servidor_vivo):
+    """Header mentindo para menos: h11 delimita o corpo por ele, então o excedente
+    vira lixo de protocolo — o contrato é 4xx (nunca 2xx), hoje 400."""
+    linha = _post_cru(servidor_vivo, "/api/voices",
+                      {"Content-Type": "multipart/form-data; boundary=X",
+                       "Content-Length": "1000"},
+                      _multipart_cru(4 * 1024 * 1024, chunked=False))
+    assert " 4" in linha or "400" in linha, linha
