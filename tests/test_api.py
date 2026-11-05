@@ -9209,3 +9209,15 @@ def test_admin_nao_pega_o_apikeys_lock(monkeypatch):
     assert decorrido < 1.0, f"pegou o `_apikeys_lock` no caminho de admin ({decorrido:.2f}s)"
     app._apikeys["keys"][0]["role"] = "admin"
     app._apikeys_publica()
+
+
+def test_troca_de_role_na_mao_sempre_publica():
+    """Guarda: escrever `role` direto sem republicar deixa o vizinho vendo o papel
+    anterior (#799). Cobre o arquivo inteiro, não um caso."""
+    linhas = Path(__file__).read_text().split("\n")
+    sem_publicar = [
+        i + 1 for i, linha in enumerate(linhas)
+        if 'app._apikeys["keys"][0]["role"] =' in linha
+        and "_apikeys_publica" not in "\n".join(linhas[i + 1:i + 3])
+    ]
+    assert sem_publicar == [], f"role trocado sem publicar nas linhas {sem_publicar}"
