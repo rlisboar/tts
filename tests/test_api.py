@@ -8235,3 +8235,82 @@ def test_fila_pula_ticket_de_job_que_morreu(monkeypatch, tmp_path):
     app._run_tts_job_isolated("vivo", "oi", "voz-x", tmp_path / "v.wav", "pt", {},
                               be, sq=token)
     assert app._jobs["vivo"]["status"] == "done", app._jobs["vivo"].get("error")
+
+
+# --- #798: fechar uma sessão Live não pode congelar as outras ----------------
+@pytest.fixture()
+def servidor_vivo():
+    """Sobe o app num uvicorn de verdade (porta livre) — o loop é o de produção."""
+    import socket as _socket
+
+    import uvicorn
+
+    s = _socket.socket()
+    s.bind(("127.0.0.1", 0))
+    porta = s.getsockname()[1]
+    s.close()
+    cfg = uvicorn.Config(app.app, host="127.0.0.1", port=porta, log_level="error",
+                         lifespan="off")
+    srv = uvicorn.Server(cfg)
+    th = threading.Thread(target=srv.run, daemon=True)
+    th.start()
+    limite = time.time() + 15
+    while time.time() < limite and not srv.started:
+        time.sleep(0.02)
+    assert srv.started, "o servidor de teste não subiu"
+    try:
+        yield f"127.0.0.1:{porta}"
+    finally:
+        srv.should_exit = True
+        th.join(timeout=10)
+
+
+def _ws_setup(url, headers=None):
+    import json as _json
+
+    import websockets.sync.client as _wsc
+
+    ws = _wsc.connect(url, additional_headers=headers or {})
+    ws.send(_json.dumps({"type": "setup", "vad": {}, "voz": "vd-narrador"}))
+    pronto = _json.loads(ws.recv())
+    assert pronto.get("type") == "ready", pronto
+    return ws
+
+
+def test_fechar_sessao_lenta_nao_congela_o_health(servidor_vivo, monkeypatch):
+    """`close()` lento não pode segurar o event loop (#798).
+
+    Dublê o `close` do pipe para demorar 3 s; durante o fechamento, `/health` tem de
+    responder em milissegundos. No código antigo (close síncrono no `finally`) o
+    health só voltava depois do dublê."""
+    import httpx
+
+    libera = threading.Event()
+
+    class _PipeLento:
+        def __init__(self):
+            self.fechado = False
+
+        def close(self):
+            self.fechado = True
+            libera.wait(10)          # segura o fechamento até o teste mandar
+
+    lento = _PipeLento()
+    # o prewarm real trocaria o `pipe` dublado: ele vira o próprio pipe da sessão
+    monkeypatch.setattr(app, "_live_pipe_start",
+                        lambda sess: sess.__setitem__("pipe", lento))
+    url = f"ws://{servidor_vivo}/api/live/ws"
+    ws = _ws_setup(url)
+    sess = list(app._live_sessions.values())[0]
+    t0 = time.monotonic()
+    ws.close()                        # dispara o `finally` do handler
+    while not lento.fechado and time.monotonic() - t0 < 8:
+        time.sleep(0.02)
+    assert lento.fechado, (f"o fechamento nem começou (fechar={sess.get('fechar')}, "
+                           f"no_registro={sess in app._live_sessions.values()})")
+    # o loop tem de estar LIVRE com o close ainda pendurado
+    r = httpx.get(f"http://{servidor_vivo}/health", timeout=2.0)
+    demora = time.monotonic() - t0
+    libera.set()
+    assert r.status_code == 200
+    assert demora < 2.0, f"o health esperou o fechamento ({demora:.2f}s)"

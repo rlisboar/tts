@@ -10529,6 +10529,10 @@ def _live_stats(sess: dict) -> dict:
 _LIVE_MAX_SESSIONS = max(1, int(os.environ.get("TTS_LIVE_MAX_SESSIONS", "4")))
 _LIVE_TTL_S = max(30, int(os.environ.get("TTS_LIVE_TTL_S", "300")))
 _LIVE_SETUP_TIMEOUT_S = 10.0
+#: Teto do FECHAMENTO da sessão (#798). `pipe.close()`/`dsh.close()` podem esperar
+#: até 65 s; aqui é o event loop — estourou, a thread segue e a sessão sai do
+#: registry do mesmo jeito (nada fica preso no loop).
+_LIVE_FECHAMENTO_TIMEOUT_S = 10.0
 _LIVE_MAX_BUFFER = 2 * 1024 * 1024      # PCM16 16k do turno em curso (~1 min de fala)
 # #126: teto do pendente (fala acumulada com o pipeline ocupado). PCM16 mono
 # 16 kHz = 32 kB/s; 30 s ~ 960 kB. Estourou, sai o trecho MAIS ANTIGO.
@@ -12692,7 +12696,8 @@ async def live_ws(ws: WebSocket):
         try:
             import live_intencao
 
-            sess["intencao"] = live_intencao.pega()
+            # `pega()` sobe worker e pode esperar 60 s: fora do loop (#798)
+            sess["intencao"] = await asyncio.to_thread(live_intencao.pega)
             sess["intencao_ref"] = True      # `solta()` sai no fechamento
         except Exception as exc:             # noqa: BLE001 — sem filtro, segue
             _live_log_kv("barge_modelo_indisponivel", sess=sid, erro=str(exc)[:100])
@@ -12785,15 +12790,15 @@ async def live_ws(ws: WebSocket):
                 pass
         sess["fechar"] = True
         sess["cancelado"].set()
-        if sess.get("pipe") is not None:
+        # FORA do event loop (#798): `close()` espera processo até 65 s e uma
+        # sessão fechando congelava TODAS as outras. Com prazo: estourou, a thread
+        # segue e a sessão sai do registry do mesmo jeito.
+        alvo = sess.get("pipe") or sess.get("dsh")
+        if alvo is not None:
             try:
-                sess["pipe"].close()
-            except Exception:            # noqa: BLE001
-                pass
-        elif sess.get("dsh") is not None:     # pipeline não nasceu: o dsh é órfão
-            try:
-                sess["dsh"].close()
-            except Exception:            # noqa: BLE001
+                await asyncio.wait_for(asyncio.to_thread(alvo.close),
+                                       _LIVE_FECHAMENTO_TIMEOUT_S)
+            except (asyncio.TimeoutError, Exception):   # noqa: BLE001
                 pass
         _live_log_kv("fecha", sess=sid, idade_s=int(time.time() - sess["criada"]),
                      frames=sess.get("st_frames", 0), bytes=sess.get("st_bytes", 0),
