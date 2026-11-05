@@ -60,5 +60,9 @@ clique no botão pra falar como você mesmo ou como a voz do app.
 - Mic real e BlackHole rodam a 48 kHz num stream duplex (sem drift de clock). Se
   seu mic não suportar 48 kHz, troque a fonte ou ajuste `SR` em `mic_router.py`.
 - Servidor errado no rótulo? Sobrescreva com variáveis de ambiente:
-  `TTS_ROD_URL=http://IP:7860 TTS_ROD_API_KEY=suachave ./run.command`.
+  `TTS_ROD_URL=http://IP-da-LAN:7860 TTS_ROD_API_KEY=suachave ./run.command`.
+- Endereço PÚBLICO só por `https`: em `http` a chave (`X-API-Key`) e o áudio de
+  referência da biometria vão em claro. Loopback e rede local (`192.168.x`,
+  `10.x`, `172.16–31.x`, `*.local`) seguem `http` — o cliente recusa cedo, na
+  carga da config, dizendo o que corrigir.
 - Requisitos: macOS, Python 3.10+ (tkinter incluso), `sounddevice`, `numpy`.

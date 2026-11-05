@@ -47,3 +47,35 @@ def test_save_config_sobre_arquivo_0644_existente_reaperta(mod):
     mod.CFG_PATH.chmod(0o644)
     mod.save_config()
     assert (mod.CFG_PATH.stat().st_mode & 0o777) == 0o600
+
+
+def test_url_publica_exige_tls_e_rede_local_aceita_http(mod):
+    """#794: em `http` o Bearer e o WAV de referência viajam em claro.
+
+    Host público tem de ser `https`. Loopback e rede local seguem `http` — é o que
+    o zip entrega (IP da LAN) e o caso de servidor na mesma máquina.
+    """
+    assert mod._normaliza_url("http://127.0.0.1:7860") == "http://127.0.0.1:7860"
+    assert mod._normaliza_url("http://[::1]:7860") == "http://[::1]:7860"
+    assert mod._normaliza_url("http://192.168.15.48:7860") == "http://192.168.15.48:7860"
+    assert mod._normaliza_url("http://172.20.1.1:7860") == "http://172.20.1.1:7860"
+    assert mod._normaliza_url("http://mac.local:7860") == "http://mac.local:7860"
+    assert mod._normaliza_url("https://tts.exemplo.com") == "https://tts.exemplo.com"
+
+    with pytest.raises(ValueError) as exc:
+        mod._normaliza_url("http://8.8.8.8:7860")
+    assert "https://" in str(exc.value), "a recusa não diz o que fazer"
+    with pytest.raises(ValueError):
+        mod._normaliza_url("http://tts.exemplo.com")
+    # esquema desconhecido também para
+    with pytest.raises(ValueError):
+        mod._normaliza_url("ftp://127.0.0.1")
+
+
+def test_url_publica_recusa_na_carga_antes_de_qualquer_pedido(mod, monkeypatch):
+    """A recusa é CEDO: `_load_config` já valida (não cai para http depois)."""
+    monkeypatch.setenv("TTS_ROD_URL", "http://tts.exemplo.com:7860")
+    with pytest.raises(ValueError):
+        mod._load_config()
+    monkeypatch.setenv("TTS_ROD_URL", "https://tts.exemplo.com:7860")
+    assert mod._load_config()["url"] == "https://tts.exemplo.com:7860"

@@ -76,6 +76,52 @@ def start_control_server(get_mode):
 CFG_PATH = Path(__file__).resolve().parent / "config.json"
 
 
+#: hosts em que `http` é aceitável: loopback e rede local (o tráfego não passa
+#: pela internet). O zip do servidor aponta para o IP da LAN justamente.
+_REDE_LOCAL = ("127.", "10.", "192.168.", "localhost", "[::1]", "::1")
+
+
+def _eh_rede_local(host: str) -> bool:
+    """`host` está fora da internet? (loopback, RFC1918, `.local`)"""
+    if host.startswith(_REDE_LOCAL) or host.endswith(".local"):
+        return True
+    if host.startswith("172."):
+        try:
+            return 16 <= int(host.split(".")[1]) <= 31
+        except (IndexError, ValueError):
+            return False
+    return False
+
+
+def _normaliza_url(bruta: str) -> str:
+    """Valida e normaliza o endereço do servidor (#794).
+
+    Host PÚBLICO só por TLS: em `http` o `X-API-Key` (Bearer) e o WAV de
+    referência da biometria viajam em claro. A recusa é CEDO, na carga da
+    config — antes de o primeiro pedido sair e de o dono achar que está seguro.
+
+    O `http` continua valendo para loopback e para a rede local (o zip aponta para
+    o IP da LAN), onde o tráfego não passa pela internet."""
+    url = (bruta or "").strip().rstrip("/")
+    if not url:
+        return "http://127.0.0.1:7860"
+    if "://" not in url:
+        url = "http://" + url
+    esquema, resto = url.split("://", 1)
+    esquema = esquema.lower()
+    host = resto.split("/", 1)[0].rsplit(":", 1)[0].lower() if not resto.startswith("[") \
+        else resto.split("]", 1)[0].lstrip("[").lower()
+    if esquema not in ("http", "https"):
+        raise ValueError(f"endereço com esquema {esquema!r}: use http:// (só loopback) "
+                         f"ou https:// — recebido {bruta!r}")
+    if esquema == "http" and not _eh_rede_local(host):
+        raise ValueError(
+            f"o servidor em {url} manda a chave da API e o áudio de referência "
+            f"em CLARO — use https:// (ou aponte para 127.0.0.1 se o servidor "
+            f"está nesta máquina)")
+    return url
+
+
 def _load_config():
     """Endereço + chave do server TTS-STUDIO. Prioridade: env > config.json > default.
     O config.json vem do download (com o IP do server + a chave) e é editável."""
@@ -88,10 +134,16 @@ def _load_config():
             key = key or c.get("api_key", "")
         except Exception:
             pass
-    return {"url": (url or "http://127.0.0.1:7860").rstrip("/"), "key": key}
+    return {"url": _normaliza_url(url), "key": key}
 
 
-CFG = _load_config()
+try:
+    CFG = _load_config()
+except ValueError as _exc:            # endereço inseguro: falha cedo, sem GUI (#794)
+    if __name__ == "__main__":
+        print(f"✖ {_exc}")
+        raise SystemExit(1)
+    raise
 
 
 def save_config():
