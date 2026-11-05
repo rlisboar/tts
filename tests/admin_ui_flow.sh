@@ -79,11 +79,20 @@ if [ -z "$BASE_ORIGINAL" ]; then
   # `.apikey` (legado) também é espelho de `_save_apikeys`: sem isto a rodada
   # reescrevia o arquivo do DONO mesmo com `APIKEYS_PATH` em /tmp (#535).
   LEG="$(mktemp -t apikey-adminui.XXXXXX 2>/dev/null || echo "/tmp/apikey-adminui.$$")"
+  # VOZ PRÓPRIA (#786): sem `voices/` a lista nasce vazia e a checagem da troca
+  # de chave morre em "as listas nem renderizaram". Worktree não tem `voices/` (não
+  # é versionado), então a instância da rodada ganha a fixture — nada do dono.
+  VOZES="$(mktemp -d -t voices-adminui.XXXXXX 2>/dev/null || echo "/tmp/voices-adminui.$$")"
+  mkdir -p "$VOZES"
+  cp "$(dirname "${BASH_SOURCE[0]}")/fixtures/voz_fala_5s_16k.wav" "$VOZES/fala.wav"
+  printf '{"id":"fala","name":"fala","duration":5.0,"created_at":"2026-01-01 00:00:00"}' \
+    > "$VOZES/fala.json"
   # ENV **ANTES** do import (#591): `import app` já roda `_save_settings()`
   # (materializa chave default) e `_load_apikeys()`. Patchear o ATRIBUTO depois do
   # import deixava essas duas escritas no arquivo do DONO — o caminho tem de estar
   # no ambiente quando o módulo resolve `TTS_*_PATH` (app.py:188-191).
   TTS_SETTINGS_PATH="$SET" TTS_APIKEYS_PATH="$APK" TTS_LEGACY_APIKEY_PATH="$LEG" \
+  TTS_VOICES_DIR="$VOZES" \
   "$PY" - "$PORTA" > "$LOG" 2>&1 <<'PY' &
 import sys, uvicorn, app
 app._load_apikeys()
@@ -93,7 +102,7 @@ PY
   BASE="http://127.0.0.1:$PORTA"
   limpa_servidor() {
     [ -n "$SERVIDOR_PID" ] && kill "$SERVIDOR_PID" 2>/dev/null || true
-    rm -f "$APK" "$SET" "$LEG"
+    rm -rf "$APK" "$SET" "$LEG" "$VOZES"
   }
   # o trap ÚNICO entra mais abaixo (`trap encerra`): dois traps se sobrescrevem
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -539,6 +548,12 @@ with sync_playwright() as p:
     print(f"  contraprova admin: selo={selo!r} travados={travados} segredo_revelado={not segredo.startswith('••••')}")
     cobrar("admin" in selo.lower(), f"selo de admin errado: {selo!r}")
     cobrar(travados == 0, f"admin não devia ter campo travado ({travados})")
+    # …e o `data-sempre-travado` (anti-clone "em breve") tem de segurar o
+    # `disabled` também na fase ADMIN: sem o atributo o JS destrava o controle e a
+    # pessoa liga algo que ainda não existe (#791)
+    anti = pg.eval_on_selector("#spAntiClone", "el => el.disabled")
+    print(f"  anti-clone com chave admin: disabled={anti}")
+    cobrar(anti is True, "o anti-clone ('em breve') foi destravado pela chave admin")
     cobrar(not segredo.startswith("••••"), "admin deveria ver o segredo, não a máscara")
     cobrar(not pg.evaluate("() => document.getElementById('autoCleanMax').disabled"),
            "com chave admin o teto de áudios devia estar destravado")
