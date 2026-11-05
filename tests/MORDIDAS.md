@@ -785,3 +785,10 @@ classificador `modelo` decidia com referência vazia.
 | tirar a guarda de época do `decidir_barge` | `test_decisao_de_epoca_velha_nao_derruba_a_suspeita_nova` **FAILED** |
 | voltar a zerar `_suspeito_audio` na suspeita nova | `test_segunda_suspeita_antes_da_decisao_preserva_o_audio_das_duas` **FAILED** |
 | tirar o `abrir_turno` atômico | `test_abertura_concorrente_do_pipeline_nao_duplica_nem_perde_trecho` **FAILED** |
+
+### #803 — passo de comando: uma passada por vez no whisper
+
+| Sabotagem | Resultado |
+|---|---|
+| tirar o `with _stt_lock` da passada de comando | `test_passadas_de_comando_nao_rodam_o_whisper_em_paralelo` **FAILED** ("whisper chamado 2x em paralelo") |
+| tirar a checagem `desistiu` entre janelas | `test_janelas_param_no_ponto_seguro` **FAILED** ("rodou 3 janelas depois de desistir") |

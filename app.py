@@ -8750,8 +8750,12 @@ def _duracao_audio(path) -> float:
     return float(info.frames) / float(info.samplerate or 1)
 
 
-def _transcreve_em_janelas(audio, lang, sr: int = 16000):
-    """Transcreve em janelas de `JANELA_STT_S` e junta texto + segmentos."""
+def _transcreve_em_janelas(audio, lang, sr: int = 16000, desistiu=None):
+    """Transcreve em janelas de `JANELA_STT_S` e junta texto + segmentos.
+
+    `desistiu` é consultado ENTRE janelas (#803): a passada de comando abandonada
+    (o passo estourou o prazo) tem de desistir no próximo ponto seguro em vez de
+    rodar a inferência inteira segurando o modelo."""
     import mlx_whisper
 
     passo = int((JANELA_STT_S - SOBREPOSICAO_STT_S) * sr)
@@ -8759,6 +8763,8 @@ def _transcreve_em_janelas(audio, lang, sr: int = 16000):
     textos, segmentos = [], []
     anterior = ""
     for ini in range(0, max(1, len(audio)), passo):
+        if desistiu is not None and desistiu():
+            break
         pedaco = audio[ini:ini + janela]
         if not len(pedaco):
             continue
@@ -11804,6 +11810,9 @@ def _live_rnnoise_derruba(sess: dict, motivo: str) -> None:
 # volta ao caminho antigo (é a mordida) e `TTS_LIVE_RNNOISE=0` desliga o filtro todo.
 _TTS_LIVE_RNNOISE_STT = (os.environ.get("TTS_LIVE_RNNOISE_STT") or "cru").strip().lower()
 _CRU_CAUDA_S = 10.0                  # pré-roll do motor + folga; ~320 kB por sessão
+#: geração das passadas de comando (#803): a nova invalida a anterior, que desiste
+#: no próximo ponto seguro — sem isso a abandonada seguia segurando o MLX.
+_STT_CMD_GERACAO = 0
 _CRU_MAX_BYTES = int(_CRU_CAUDA_S * 32000)
 
 
@@ -12315,10 +12324,29 @@ def _live_transcreve_trecho(sess: dict, audio: bytes, cru: bool = False,
             # decorativo e cada passo levava o tempo todo, atrasando a decisão em
             # até 76 s medidos. Abandonar de verdade é devolver na hora e deixar a
             # passada morrer sozinha.
+            # UMA passada por vez (#803): o MLX é single-thread e duas passadas
+            # concorrentes derrubam o servidor com `GPU Timeout` (exit 134). A
+            # trava é a MESMA do whisper do turno (`_stt_lock`), e a geração
+            # compartilhada faz a passada ABANDONADA desistir no próximo ponto
+            # seguro em vez de rodar a inferência inteira segurando o modelo.
+            global _STT_CMD_GERACAO
+            _STT_CMD_GERACAO += 1
+            geracao = _STT_CMD_GERACAO
+
+            def _desistiu() -> bool:
+                return geracao != _STT_CMD_GERACAO
+
+            def _roda():
+                with _stt_lock:
+                    if _desistiu():
+                        return ""
+                    return _transcreve_em_janelas(a, idioma,
+                                                  desistiu=_desistiu).get("text") or ""
+
             pool = _cf.ThreadPoolExecutor(max_workers=1)
-            fut = pool.submit(_transcreve_em_janelas, a, idioma)
+            fut = pool.submit(_roda)
             try:
-                return (fut.result(timeout=prazo_s).get("text") or "").strip()
+                return (fut.result(timeout=prazo_s) or "").strip()
             except _cf.TimeoutError:
                 st = sess.setdefault("barge_stats", {"tipos": {}, "decisoes": [],
                                                      "modelo": []})

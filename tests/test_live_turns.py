@@ -1701,7 +1701,7 @@ def test_prazo_da_passada_abandona_DE_VERDADE(monkeypatch):
 
     import app
 
-    def stt_lento(a, idioma):
+    def stt_lento(a, idioma, desistiu=None):
         time.sleep(2.0)
         return {"text": "para"}
 
@@ -2260,6 +2260,7 @@ def test_texto_em_reproducao_vazio_fora_da_janela(monkeypatch):
 # ---------------------------------------------------------------------------
 # #802: motor mutado por 4–5 threads — RLock + época por suspeita
 # ---------------------------------------------------------------------------
+@pytest.mark.timeout(600)     # 5k frames com o scorer dormindo não cabem em 90 s
 def test_engine_aguenta_feed_concorrente_com_decisao_e_speaking(monkeypatch):
     """Stress do achado L3: `feed` (loop) × `decidir_barge`/`set_speaking` (outras
     threads) sem exceção e SEM frame perdido. O scorer dorme 0,2 ms para forçar o
@@ -2422,3 +2423,75 @@ def test_metodos_publicos_do_motor_tomam_o_lock():
         if contador.n == antes:
             sem_lock.append(nome)
     assert not sem_lock, f"método público SEM lock: {sem_lock}"
+
+
+# ---------------------------------------------------------------------------
+# #803: passo de comando — UMA passada por vez no whisper (MLX é single-thread)
+# ---------------------------------------------------------------------------
+def test_passadas_de_comando_nao_rodam_o_whisper_em_paralelo(monkeypatch):
+    """Duas passadas concorrentes, a primeira LENTA: sem `_stt_lock` o whisper é
+    chamado duas vezes ao mesmo tempo e o MLX cai com `GPU Timeout` (exit 134)."""
+    import threading
+    import time
+
+    import app
+
+    dentro = {"agora": 0, "pico": 0}
+    trava = threading.Lock()
+    libera_primeira = threading.Event()
+
+    def whisper_falso(audio, lang, sr=16000, desistiu=None):
+        with trava:
+            dentro["agora"] += 1
+            dentro["pico"] = max(dentro["pico"], dentro["agora"])
+        try:
+            if not libera_primeira.is_set():
+                libera_primeira.set()
+                time.sleep(0.4)          # a 1ª passada segura o modelo
+            else:
+                time.sleep(0.05)
+            return {"text": "para", "language": "pt", "segments": []}
+        finally:
+            with trava:
+                dentro["agora"] -= 1
+
+    monkeypatch.setattr(app, "_transcreve_em_janelas", whisper_falso)
+    sess = {"id": "s", "pipe": type("P", (), {"language": "pt", "_stt": None})()}
+    audio = b"\x01\x00" * 8000
+    saidas = []
+
+    def _passada():
+        saidas.append(app._live_transcreve_trecho(sess, audio, cru=True, prazo_s=5.0))
+
+    ths = [threading.Thread(target=_passada) for _ in range(2)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join(10)
+    assert dentro["pico"] == 1, f"whisper chamado {dentro['pico']}x em paralelo"
+    assert saidas == ["para", "para"], saidas
+
+
+def test_janelas_param_no_ponto_seguro(monkeypatch):
+    """A passada abandonada desiste ENTRE janelas, não no fim da inferência.
+
+    `_transcreve_em_janelas` consulta `desistiu` a cada janela: com 3 janelas de
+    áudio, o aviso na 1ª tem de parar o laço ali (senão a velha roda tudo e
+    segura o modelo)."""
+    import sys
+    import types
+
+    import app
+
+    chamadas = []
+
+    def transcribe(pedaco, **k):
+        chamadas.append(len(pedaco))
+        return {"text": "para", "segments": []}
+
+    monkeypatch.setitem(sys.modules, "mlx_whisper",
+                        types.SimpleNamespace(transcribe=transcribe))
+    audio = np.zeros(int(16000 * 65), dtype=np.float32)      # 3 janelas de 30 s
+    r = app._transcreve_em_janelas(audio, "pt", desistiu=lambda: len(chamadas) >= 1)
+    assert len(chamadas) == 1, f"rodou {len(chamadas)} janelas depois de desistir"
+    assert r["text"] == "para"
