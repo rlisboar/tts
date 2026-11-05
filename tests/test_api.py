@@ -2795,7 +2795,8 @@ def test_youtube_audio_nao_estoura_com_ipv6_malformada(client, auth, monkeypatch
     assert app._url_parse("http://[::1") is None
 
 
-def test_youtube_redirect_q_tambem_entra_na_allowlist(client, auth, monkeypatch):
+def test_youtube_redirect_q_tambem_entra_na_allowlist(client, auth, monkeypatch,
+                                                      limiter_limpo):
     """#47: `youtube.com/redirect?q=<fora>` baixava de fora — o host final nem sempre
     aparece no info do yt-dlp, então a checagem pós-download passava batido. O alvo
     agora é validado ANTES do yt-dlp (400 imediato, sem baixar e descartar)."""
@@ -2825,7 +2826,8 @@ def test_youtube_redirect_q_tambem_entra_na_allowlist(client, auth, monkeypatch)
         assert chamadas == [url], url
 
 
-def test_youtube_audio_400_quando_sai_da_allowlist(client, auth, monkeypatch):
+def test_youtube_audio_400_quando_sai_da_allowlist(client, auth, monkeypatch,
+                                                   limiter_limpo):
     _fake_yt_dlp(monkeypatch, "https://naogravadora.com/v/abc")
     r = client.post("/api/youtube-audio", headers=auth,
                     json={"url": "https://www.youtube.com/redirect?q=https://naogravadora.com/v/abc",
@@ -8421,3 +8423,51 @@ def test_loopback_mesma_porta_do_servidor_passa(monkeypatch):
     assert app._origem_confiavel("http://localhost:3999", req("localhost:7860")) is False
     # host de fora, mesma porta: também não
     assert app._origem_confiavel("http://evil.tld:7860", req("localhost:7860")) is False
+
+
+# --- #790: teto de corpo ANTES do spool --------------------------------------
+def test_corpo_acima_do_teto_e_recusado_antes_de_espolpar(monkeypatch):
+    """413 pelo `Content-Length`, sem o formparser tocar o disco (#790).
+
+    O parser espolava o corpo inteiro e só então a rota pedia admin/tamanho: 80 MB
+    anônimos viravam arquivo para terminar em 403."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    c = TestClient(app.app, raise_server_exceptions=False,
+                   client=("203.0.113.99", 50000))
+    teto = app._TETO_CORPO_PADRAO
+    r = c.post("/api/voices", headers={"Content-Length": str(teto + 1),
+                                       "Content-Type": "multipart/form-data; boundary=x"},
+               content=b"")
+    assert r.status_code == 413, r.status_code
+    assert "teto" in r.json()["detail"].lower()
+    # JSON tem teto menor: 2 MB já não cabe
+    r = c.post("/api/settings", headers={"Content-Length": str(2 * 1024 * 1024),
+                                         "Content-Type": "application/json"},
+               content=b"")
+    assert r.status_code == 413
+    # rota de zip grande aceita o que o teto padrão recusaria
+    r = c.post("/api/restore", headers={"Content-Length": str(200 * 1024 * 1024),
+                                        "Content-Type": "multipart/form-data; boundary=x"},
+               content=b"")
+    assert r.status_code != 413, r.status_code
+
+
+def test_use_em_rota_admin_nao_le_o_corpo(monkeypatch):
+    """Chave `use` em `/api/restore` dá 403 antes de qualquer leitura (#790)."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    c = TestClient(app.app, raise_server_exceptions=False,
+                   client=("203.0.113.99", 50000))
+    chave = app._primary_api_key()
+    app._apikeys["keys"][0]["role"] = "use"
+    try:
+        r = c.post("/api/restore", headers={"X-API-Key": chave,
+                                            "Content-Length": str(80 * 1024 * 1024),
+                                            "Content-Type": "multipart/form-data; boundary=x"},
+                   content=b"")
+        assert r.status_code == 403, r.status_code
+    finally:
+        app._apikeys["keys"][0]["role"] = "admin"
+
+
+def test_youtube_audio_entra_no_teto_pesado():
+    assert app._rate_limit_for("/api/youtube-audio") == app._RATE_HEAVY

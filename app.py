@@ -1491,7 +1491,9 @@ _RATE_DEFAULT = int(os.environ.get("TTS_RATE_LIMIT", "120"))
 _RATE_HEAVY = int(os.environ.get("TTS_HEAVY_RATE_LIMIT", "20"))
 _RATE_HEAVY_PATHS = ("/v1/audio/speech", "/api/transcribe",
                      "/api/stt-partial", "/api/translate-speech", "/api/modify-speech",
-                     "/api/voices/import")
+                     "/api/voices/import",
+                     # baixa e transcodifica de fora, até 300 MB por chamada (#790)
+                     "/api/youtube-audio")
 _RATE_HEAVY_EXATAS = ("/api/tts",)          # o POST que gera; consultar o job não é
 # Caminhos que a própria UI polla de propósito (andamento do job, chat, fila do
 # mic, status): 120/min derrubava o polling do próprio job numa geração longa e
@@ -13203,6 +13205,115 @@ def openai_speech(payload: dict):
     # velocidade já aplicada nativamente pelo modelo; aqui ffmpeg só converte o formato
     data, mime = _encode_audio(wav_path, fmt, 1.0)
     return Response(content=data, media_type=mime)
+
+
+# ---------------------------------------------------------------------------
+# Teto de corpo ANTES do spool (#790)
+#
+# O formparser do Starlette espolava o corpo inteiro em disco e só então a rota
+# pedia admin/tamanho: 80 MB anônimos viravam arquivo para terminar em 403. Aqui a
+# recusa sai pelo `Content-Length` (sem ler nada) e, quando ele falta ou mente, o
+# stream é cortado no limite. Os tetos são por rota: `restore`/`import` recebem zip
+# grande de propósito, JSON é pequeno e abusável.
+# ---------------------------------------------------------------------------
+_TETO_CORPO_PADRAO = 70 * 1024 * 1024
+_TETO_CORPO_GRANDE = 600 * 1024 * 1024
+_TETO_CORPO_JSON = 1024 * 1024
+#: rotas que aceitam corpo GRANDE (zip) de propósito
+_CORPO_GRANDE = ("/api/restore", "/api/voices/import")
+#: rotas `admin` que recebem corpo: a credencial é checada ANTES de ler o corpo
+_ADMIN_COM_CORPO = ("/api/restore", "/api/voices/import", "/api/apikeys", "/api/shutdown",
+                    "/api/models/unload")
+
+
+def _teto_do_corpo(caminho: str, content_type: str) -> int:
+    if caminho.startswith(_CORPO_GRANDE):
+        return _TETO_CORPO_GRANDE
+    if "json" in (content_type or "").lower():
+        return _TETO_CORPO_JSON
+    return _TETO_CORPO_PADRAO
+
+
+class _TetoDeCorpo:
+    """ASGI puro: 413 sem espoolar o corpo acima do teto da rota."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") in (None, "GET", "HEAD",
+                                                              "OPTIONS"):
+            return await self.app(scope, receive, send)
+        from starlette.requests import Request
+
+        request = Request(scope)
+        caminho = _caminho_roteado(request)
+        teto = _teto_do_corpo(caminho, request.headers.get("content-type", ""))
+
+        async def _recusa(motivo: str):
+            from starlette.responses import JSONResponse
+
+            resp = JSONResponse({"detail": motivo,
+                                 "hint": f"teto desta rota: {teto // (1024 * 1024)} MB"},
+                                status_code=413)
+            await resp(scope, receive, send)
+
+        # 1) recusa barata: o `Content-Length` já diz que não cabe
+        bruto = request.headers.get("content-length")
+        if bruto:
+            try:
+                if int(bruto) > teto:
+                    return await _recusa(
+                        f"Corpo maior que o teto de {teto // (1024 * 1024)} MB")
+            except ValueError:
+                pass
+
+        # 2) sem `Content-Length` (ou mentindo): corta o stream no limite
+        recebidos = 0
+        estourou = False
+
+        async def _receive():
+            nonlocal recebidos, estourou
+            msg = await receive()
+            if msg.get("type") == "http.request":
+                recebidos += len(msg.get("body") or b"")
+                if recebidos > teto:
+                    estourou = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+            return msg
+
+        # 3) `Host` fora da allowlist antes de qualquer leitura (#779): o 421 tem
+        # de sair na frente do 401/403 daqui, senão a ordem dos middlewares muda o
+        # veredito que o cliente vê
+        if not _host_permitido(_host_da_requisicao(request)):
+            from starlette.responses import JSONResponse
+
+            return await JSONResponse(
+                {"detail": f"Host não permitido: {_host_da_requisicao(request) or '(vazio)'}"},
+                status_code=421)(scope, receive, send)
+
+        # 4) admin ANTES do corpo: `use` em rota admin não pode pagar o spool
+        if caminho.startswith(_ADMIN_COM_CORPO) and _auth_enabled() \
+                and not _admin_is_allowed(request):
+            # mesma régua do `_exige_chave`: sem credencial nenhuma é 401; com
+            # credencial que não administra é 403 (o corpo nem é lido)
+            from starlette.responses import JSONResponse
+
+            sem_chave = not _extract_request_key(request)
+            detalhe = ("Não autorizado" if sem_chave
+                       else "Chave administrativa necessária (papel admin)")
+            return await JSONResponse({"detail": detalhe},
+                                      status_code=401 if sem_chave else 403)(
+                scope, receive, send)
+
+        await self.app(scope, _receive, send)
+        if estourou:
+            # o handler já respondeu com o corpo truncado; o corte fica no log
+            print(f"[corpo] {caminho}: stream passou de {teto} bytes", file=sys.stderr,
+                  flush=True)
+
+
+app.add_middleware(_TetoDeCorpo)
 
 
 # descarrega TTS/STT/tradutor/SER ociosos (idle_unload_minutes; 0 = off)

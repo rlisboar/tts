@@ -639,6 +639,15 @@ TTS_ALLOWED_HOSTS=tts.the-dudes.com,mini.local ./run.sh
 
 Sintoma de nome faltando: **421 Host não permitido** — inclusive na UI.
 
+### Teto de corpo por rota
+
+O corpo é recusado com **413 antes de ir para o disco**: teto de 1 MB para JSON, 70 MB
+para upload de áudio e 600 MB para `restore`/`import` de pacote. A checagem usa o
+`Content-Length` e, quando ele falta ou mente, corta o stream no limite. Rotas
+`admin` conferem a credencial **antes** de ler o corpo, então chave `use` num
+`/api/restore` de 80 MB leva 403 sem espoolar nada. O teto do áudio é ajustável por
+`TTS_MAX_UPLOAD_MB` (até 2048).
+
 ### Quem pode LER a API de outra origem (`TTS_CORS_ORIGINS`)
 
 Não há mais `Access-Control-Allow-Origin: *`. Página servida de OUTRA origem (o
