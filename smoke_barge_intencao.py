@@ -207,7 +207,8 @@ def _latencia_do_comando(n: int = 6) -> list[int]:
         pipe = type("P", (), {"language": "pt", "cancel": lambda self=None: None,
                               "ocupado": False})()
         pipe._stt = lambda pcm, lang: _stt_app(pcm, lang)
-        sess = {"id": "smoke", "ultimo_assistente": "", "pipe": pipe,
+        # sem `ultimo_assistente`: a referência vem do pipe (#801)
+        sess = {"id": "smoke", "pipe": pipe,
                 "cancelado": threading.Event(), "turno": 0, "fila": queue.Queue()}
         sess["engine"] = lt.TurnEngine(lt.Config(interrupcao="inteligente"),
                                        scorer=lambda f: 0.95)
