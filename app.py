@@ -791,8 +791,27 @@ LANG_DISPLAY = {
 # Authorization: Bearer ou X-API-Key. Persistidas em
 # .apikeys.json; migra de .apikey / TTS_ROD_API_KEY. Gestão na UI (Acesso).
 # ---------------------------------------------------------------------------
-_ENV_API_KEY = (os.environ.get("TTS_ROD_API_KEY") or "").strip()
-_ADMIN_API_KEY = (os.environ.get("TTS_ROD_ADMIN_KEY") or "").strip()
+#: Piso de força para chave vinda do AMBIENTE (#785): abaixo disto a chave não
+#: autentica. O `run.sh` exportava o `.apikey` da raiz (3 bytes, arquivo que desde o
+#: #721 nem é mais atualizado) e a instância aceitava como ADMIN uma chave quebrável
+#: por força bruta na LAN.
+_CHAVE_MIN_CHARS = 32
+
+
+def _chave_de_ambiente(nome: str, valor: str) -> str:
+    """Chave de ambiente, recusada (com aviso) se for curta demais."""
+    if not valor or len(valor) >= _CHAVE_MIN_CHARS:
+        return valor
+    print(f"[auth] {nome} tem {len(valor)} caractere(s) (< {_CHAVE_MIN_CHARS}): "
+          f"não autentica — rotacione (UI → Acesso) ou use uma chave maior",
+          file=sys.stderr, flush=True)
+    return ""
+
+
+_ENV_API_KEY = _chave_de_ambiente("TTS_ROD_API_KEY",
+                                  (os.environ.get("TTS_ROD_API_KEY") or "").strip())
+_ADMIN_API_KEY = _chave_de_ambiente("TTS_ROD_ADMIN_KEY",
+                                    (os.environ.get("TTS_ROD_ADMIN_KEY") or "").strip())
 # RLock (#419, achado no gate do shutdown): o handler de ROTATE segura este lock e
 # chama `_primary_api_key()`, que o toma de novo — com `Lock` comum era
 # AUTO-DEADLOCK determinístico (o request ficava pendurado e nada mais entrava).
@@ -1146,6 +1165,40 @@ def _mesma_origem(request) -> str:
     # sempre em http(s): sem normalizar, a própria UI pareceria origem de fora (#813)
     esquema = {"ws": "http", "wss": "https"}.get(esquema, esquema)
     return f"{esquema}://{request.headers.get('host') or ''}"
+
+
+#: Freio de força bruta (#785): N falhas de auth por IP em 60 s → 429. A
+#: identidade é o IP de ORIGEM, não a chave apresentada (com a chave como
+#: identidade cada chute caía num balde novo e nunca dava 429).
+_AUTH_FALHAS_MAX = max(1, int(os.environ.get("TTS_AUTH_FALHAS_MAX", "20")))
+_AUTH_FALHAS_JANELA_S = 60.0
+_auth_falhas: dict[str, list] = {}          # ip → [n, inicio_da_janela]
+_auth_falhas_lock = threading.Lock()
+
+
+def _auth_freio(ip: str) -> float:
+    """Segundos de espera se o IP estourou as falhas; 0 = liberado."""
+    agora = time.monotonic()
+    with _auth_falhas_lock:
+        reg = _auth_falhas.get(ip)
+        if not reg or agora - reg[1] > _AUTH_FALHAS_JANELA_S:
+            return 0.0
+        if reg[0] < _AUTH_FALHAS_MAX:
+            return 0.0
+        return max(1.0, _AUTH_FALHAS_JANELA_S - (agora - reg[1]))
+
+
+def _auth_falhou(ip: str) -> None:
+    agora = time.monotonic()
+    with _auth_falhas_lock:
+        reg = _auth_falhas.get(ip)
+        if not reg or agora - reg[1] > _AUTH_FALHAS_JANELA_S:
+            _auth_falhas[ip] = [1, agora]
+            if len(_auth_falhas) > 512:             # teto: poda os mais antigos
+                for velho in sorted(_auth_falhas, key=lambda k: _auth_falhas[k][1])[:128]:
+                    _auth_falhas.pop(velho, None)
+        else:
+            reg[0] += 1
 
 
 def _porta_do_servidor(request) -> int | None:
@@ -1640,6 +1693,19 @@ class _TetoDeCorpo:
     def __init__(self, app):
         self.app = app
 
+    async def _com_freio(self, scope, receive, send, ip: str):
+        """Roda o app e conta 401/403 como falha de auth daquele IP."""
+        status = {"codigo": 0}
+
+        async def _send(msg):
+            if msg.get("type") == "http.response.start":
+                status["codigo"] = int(msg.get("status") or 0)
+            await send(msg)
+
+        await self.app(scope, receive, _send)
+        if status["codigo"] in (401, 403):
+            _auth_falhou(ip)
+
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
@@ -1657,9 +1723,22 @@ class _TetoDeCorpo:
                  "hint": "Abra por 127.0.0.1/localhost, pelo IP da máquina ou por um "
                          "nome em TTS_ALLOWED_HOSTS."},
                 status_code=421)(scope, receive, send)
+        # freio de força bruta ANTES da auth (#785): passou do teto de falhas do
+        # IP, 429 com `Retry-After` sem nem conferir a chave
+        ip = _peer_host(request) or "?"
+        espera = _auth_freio(ip)
+        if espera > 0:
+            from starlette.responses import JSONResponse
+
+            return await JSONResponse(
+                {"detail": f"Muitas falhas de autenticação deste IP — tente em "
+                           f"{espera:.0f}s"},
+                status_code=429, headers={"Retry-After": str(int(espera) + 1)})(
+                scope, receive, send)
+
         # GET/HEAD/OPTIONS não têm corpo: o teto não se aplica
         if scope.get("method") in (None, "GET", "HEAD", "OPTIONS"):
-            return await self.app(scope, receive, send)
+            return await self._com_freio(scope, receive, send, ip)
         teto = _teto_do_corpo(caminho, request.headers.get("content-type", ""))
 
         async def _recusa(motivo: str):
@@ -1726,7 +1805,7 @@ class _TetoDeCorpo:
                                       status_code=401 if sem_chave else 403)(
                 scope, receive, send)
 
-        await self.app(scope, _replay, send)
+        await self._com_freio(scope, _replay, send, ip)
 
 
 

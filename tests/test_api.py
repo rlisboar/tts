@@ -532,6 +532,16 @@ def _identidade(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+@pytest.fixture()
+def auth_freio_folgado(monkeypatch):
+    """Sem o freio de força bruta no caminho (#785): as células paramétricas fazem
+    dezenas de 401 e passariam a receber 429 no meio."""
+    monkeypatch.setattr(app, "_AUTH_FALHAS_MAX", 10 ** 6)
+    app._auth_falhas.clear()
+    yield
+    app._auth_falhas.clear()
+
+
 def _limiter_de_rede(ip="203.0.113.9"):
     """TestClient que NÃO é loopback (loopback é isento do limitador)."""
     return TestClient(app.app, raise_server_exceptions=False, client=(ip, 50000))
@@ -7927,7 +7937,7 @@ def _rotas_http():
         yield caminho, metodos
 
 
-def test_lan_sem_chave_nao_passa_por_prefixo_nenhum(monkeypatch):
+def test_lan_sem_chave_nao_passa_por_prefixo_nenhum(monkeypatch, auth_freio_folgado):
     """LAN sem chave: nenhum prefixo do proxy pode devolver 2xx/3xx (#777).
 
     Percorre `app.routes`: para cada rota HTTP, todo prefixo tem de dar 401/403/404/
@@ -7952,7 +7962,7 @@ def test_lan_sem_chave_nao_passa_por_prefixo_nenhum(monkeypatch):
     assert not escaparam, f"passaram sem chave: {escaparam[:15]}"
 
 
-def test_loopback_e_lan_com_chave_seguem_funcionando_com_e_sem_prefixo(monkeypatch):
+def test_loopback_e_lan_com_chave_seguem_funcionando_com_e_sem_prefixo(monkeypatch, auth_freio_folgado):
     """A correção não pode quebrar cliente legítimo: loopback e chave válida."""
     monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
     chave = app._primary_api_key()
@@ -8082,7 +8092,7 @@ def _gets_de_api():
             yield caminho
 
 
-def test_get_de_origem_estrangeira_exige_chave_e_nao_ecoa_cors(monkeypatch):
+def test_get_de_origem_estrangeira_exige_chave_e_nao_ecoa_cors(monkeypatch, auth_freio_folgado):
     """Página de terceiro no loopback não lê nada sem chave, e sem `ACAO` (#780).
 
     O `ACAO: *` era o que deixava a página LER lista de vozes, saídas e a amostra
@@ -8638,3 +8648,55 @@ def test_quatro_fechamentos_simultaneos_chamam_os_quatro_closes(servidor_vivo,
     assert len(chamados) == len(sessoes), (
         f"só {len(chamados)} de {len(sessoes)} closes rodaram")
     assert httpx.get(f"http://{servidor_vivo}/health", timeout=2.0).status_code == 200
+
+
+# --- #785: chave fraca e freio de força bruta --------------------------------
+def test_chave_de_ambiente_curta_nao_autentica(capsys):
+    """`TTS_ROD_API_KEY=ab` não vale: recusa e avisa (#785).
+
+    Sem reload: a função é pura e a célula não depende de estado de import."""
+    assert app._chave_de_ambiente("TTS_ROD_API_KEY", "ab") == ""
+    assert "2 caractere" in capsys.readouterr().err
+
+
+def test_chave_de_ambiente_longa_autentica():
+    forte = "k" * 40
+    assert app._chave_de_ambiente("TTS_ROD_API_KEY", forte) == forte
+    assert app._chave_de_ambiente("TTS_ROD_API_KEY", "") == ""
+
+
+def test_chave_curta_no_ambiente_nao_autentica(monkeypatch):
+    """O fio completo: ambiente curto → `_ENV_API_KEY` vazio → não autentica."""
+    monkeypatch.setenv("TTS_ROD_API_KEY", "ab")
+    import importlib
+
+    recarregado = importlib.reload(app)
+    try:
+        assert recarregado._ENV_API_KEY == ""
+        assert recarregado._key_is_valid("ab") is False
+    finally:
+        monkeypatch.delenv("TTS_ROD_API_KEY", raising=False)
+        importlib.reload(app)
+
+
+def test_forca_bruta_toma_429_depois_do_teto(monkeypatch):
+    """N falhas do MESMO IP → 429 com `Retry-After` (#785).
+
+    A identidade é o IP de origem: com a chave como identidade cada chute abria um
+    balde novo e o 429 nunca vinha."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    monkeypatch.setattr(app, "_AUTH_FALHAS_MAX", 5)
+    app._auth_falhas.clear()
+    c = TestClient(app.app, raise_server_exceptions=False,
+                   client=("203.0.113.99", 50000))
+    for _ in range(5):
+        r = c.get("/api/status", headers={"X-API-Key": "chute"})
+        assert r.status_code == 401, r.status_code
+    r = c.get("/api/status", headers={"X-API-Key": "chute"})
+    assert r.status_code == 429, r.status_code
+    assert int(r.headers["retry-after"]) >= 1
+    # outro IP não herdou o freio
+    outro = TestClient(app.app, raise_server_exceptions=False,
+                       client=("203.0.113.98", 50000))
+    assert outro.get("/api/status", headers={"X-API-Key": "chute"}).status_code == 401
+    app._auth_falhas.clear()

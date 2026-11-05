@@ -53,10 +53,20 @@ if ! ./.venv-mlx/bin/python -c "import yt_dlp; v=tuple(int(x) for x in yt_dlp.ve
 fi
 
 # Chaves de API: geridas na UI (Configurações → Acesso) e em .apikeys.json.
-# .apikey / TTS_ROD_API_KEY ainda bootstrapam na 1ª subida e valem como chave extra.
-if [ -z "$TTS_ROD_API_KEY" ] && [ -f .apikey ]; then
-  export TTS_ROD_API_KEY="$(tr -d '[:space:]' < .apikey)"
+# `.apikey` / `TTS_ROD_API_KEY` ainda bootstrapam na 1ª subida e valem como chave
+# extra — mas desde o #721 o estado mora FORA do repo: lê do `STATE_DIR`, senão o
+# arquivo da raiz fica velho e vira uma chave fraca esquecida no ambiente (#785).
+_DIR_ESTADO="${TTS_STATE_DIR:-$HOME/Library/Application Support/tts-studio}"
+if [ -z "$TTS_ROD_API_KEY" ]; then
+  for _f in "$_DIR_ESTADO/.apikey" .apikey; do
+    if [ -f "$_f" ]; then
+      export TTS_ROD_API_KEY="$(tr -d '[:space:]' < "$_f")"
+      break
+    fi
+  done
+  unset _f
 fi
+unset _DIR_ESTADO
 LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
 echo "UI local:  http://127.0.0.1:7860"
 if [ -n "$LAN_IP" ]; then
