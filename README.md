@@ -622,6 +622,23 @@ internet ─▶ https://seu-dominio/ttsproxy/... (nginx na VPS)
 > — via loopback, a internet entraria **sem chave**. Aponte o túnel pelo
 > `tunnel.sh` (ele resolve o IP da LAN sozinho) e mantenha as chaves ativas.
 
+### Nomes de `Host` aceitos (`TTS_ALLOWED_HOSTS`)
+
+O servidor confere o cabeçalho `Host` antes de qualquer rota (**421** fora da
+lista). É a defesa contra *DNS rebinding*: sem isso, um site do atacante que passe a
+resolver para `127.0.0.1` conversaria com a API como se fosse a UI e leria as chaves
+em claro.
+
+Já aceitos, sem configurar: `127.0.0.1`, `localhost`, `[::1]`, os IPs desta máquina
+e `<algo>.local`. Para um nome público (túnel/Cloudflare) ou outro apelido, liste em
+`TTS_ALLOWED_HOSTS` (vírgula separa, porta é ignorada):
+
+```sh
+TTS_ALLOWED_HOSTS=tts.the-dudes.com,mini.local ./run.sh
+```
+
+Sintoma de nome faltando: **421 Host não permitido** — inclusive na UI.
+
 ### No app (já pronto)
 
 O servidor remove o prefixo `/ttsproxy` (configurável via

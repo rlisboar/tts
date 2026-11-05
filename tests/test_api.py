@@ -4230,9 +4230,13 @@ def test_curinga_desliga_a_guarda_de_origem_escolha_consciente():
         app._CORS_ORIGINS[:] = originais
 
 
-def test_proxy_coerente_reconhece_a_mesma_origem():
+def test_proxy_coerente_reconhece_a_mesma_origem(monkeypatch):
     """Atrás do `/ttsproxy` (Cloudflare), `x-forwarded-proto` + `host` coerentes
-    descrevem a mesma origem e a UI não é barrada por acidente."""
+    descrevem a mesma origem e a UI não é barrada por acidente.
+
+    O nome do túnel tem de estar em `TTS_ALLOWED_HOSTS` (#779): socket loopback com
+    `Host` de fora não é mais isento por si só."""
+    monkeypatch.setattr(app, "_ALLOWED_HOSTS", ("tts.exemplo",))
     c = _cliente_local()
     r = c.get("/api/apikeys?reveal=1", headers={
         "Origin": "https://tts.exemplo", "x-forwarded-proto": "https",
@@ -7979,3 +7983,58 @@ def test_prefixo_duplo_vira_404_e_nao_rota_servida(monkeypatch):
     assert r.status_code == 404, r.status_code
     # e o caminho normalizado (prefixo uma vez) segue servindo
     assert fora.get("/ttsproxy/api/status", headers={"X-API-Key": chave}).status_code == 200
+
+
+# --- #779: DNS rebinding — Host fora da allowlist não fala com a API ---------
+def _cliente_loopback_host(host, monkeypatch):
+    """Socket loopback (é o que o rebinding usa) com um `Host` escolhido."""
+    from starlette.testclient import TestClient as _TC
+
+    class _ComHost(_TC):
+        def request(self, method, url, **kw):
+            cab = dict(kw.pop("headers", None) or {})
+            cab.setdefault("host", host)
+            return super().request(method, url, headers=cab, **kw)
+
+    return _ComHost(app.app, raise_server_exceptions=False,
+                    client=("127.0.0.1", 50000))
+
+
+def test_dns_rebinding_host_desconhecido_nao_herda_isenção(monkeypatch):
+    """`evil.tld:7860` no loopback não lê segredo nem cria chave (#779)."""
+    c = _cliente_loopback_host("evil.tld:7860", monkeypatch)
+    for cab in ({}, {"Origin": "http://evil.tld:7860"}):
+        assert c.get("/api/apikeys?reveal=1", headers=cab).status_code == 421, cab
+        assert c.post("/api/apikeys", headers=cab,
+                      json={"name": "invasor"}).status_code == 421, cab
+        assert c.post("/api/shutdown", headers=cab).status_code == 421, cab
+        assert c.get("/api/status", headers=cab).status_code == 421, cab
+    # síntese: 421 (nem chega a validar corpo)
+    assert c.post("/v1/audio/speech", json={}).status_code == 421
+
+
+def test_hosts_da_maquina_seguem_passando(monkeypatch):
+    """Os nomes da própria máquina e os configurados continuam servindo."""
+    for host in ("127.0.0.1:7860", "localhost:7860", "[::1]:7860", "testserver"):
+        c = _cliente_loopback_host(host, monkeypatch)
+        assert c.get("/api/status").status_code == 200, host
+    monkeypatch.setattr(app, "_ALLOWED_HOSTS", ("tts.the-dudes.com",))
+    c = _cliente_loopback_host("tts.the-dudes.com", monkeypatch)
+    assert c.get("/api/status").status_code == 200
+    # e o `.local` da máquina também (Bonjour)
+    assert app._host_permitido("mac-do-dono.local")
+
+
+def test_allowlist_de_host_vem_do_ambiente(monkeypatch):
+    monkeypatch.setenv("TTS_ALLOWED_HOSTS", "a.exemplo, B.exemplo:8443")
+    import importlib
+
+    recarregado = importlib.reload(app)
+    try:
+        assert "a.exemplo" in recarregado._ALLOWED_HOSTS
+        assert "b.exemplo" in recarregado._ALLOWED_HOSTS
+        assert recarregado._host_permitido("a.exemplo")
+        assert not recarregado._host_permitido("evil.tld")
+    finally:
+        monkeypatch.delenv("TTS_ALLOWED_HOSTS", raising=False)
+        importlib.reload(app)

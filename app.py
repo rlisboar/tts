@@ -1058,9 +1058,14 @@ def _is_local(request) -> bool:
     em uma requisição "local".
     """
     host = _peer_host(request)
-    if host in ("127.0.0.1", "::1", "localhost"):
-        return True
-    return False
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        return False
+    # DNS rebinding (#779): socket loopback com `Host` de fora NÃO é a UI — uma
+    # página em `evil.tld` que resolve para 127.0.0.1 chega assim e não pode
+    # herdar a isenção de chave.
+    host = _host_da_requisicao(request)
+    # nome do túnel/proxy configurado também conta como a própria UI (#779)
+    return _host_de_loopback(host) or host in _ALLOWED_HOSTS
 
 
 # ---------------------------------------------------------------------------
@@ -1080,6 +1085,40 @@ def _is_local(request) -> bool:
 _ORIGENS_EXTENSAO = ("chrome-extension://", "moz-extension://",
                      "safari-web-extension://")
 _HOSTS_DA_MAQUINA = ("127.0.0.1", "localhost", "::1")
+
+#: Nomes de `Host` aceitos além dos da máquina (#779). Lista por ambiente, com o
+#: túnel/Cloudflare e o proxy por path; vírgula separa. Sem isto, uma página em
+#: `evil.tld:7860` que resolve para 127.0.0.1 fala com a API como se fosse a UI.
+_ALLOWED_HOSTS = tuple(
+    x.strip().lower().rsplit(":", 1)[0] if x.strip().count(":") == 1 else x.strip().lower()
+    for x in os.environ.get("TTS_ALLOWED_HOSTS", "").split(",") if x.strip())
+
+
+def _host_da_requisicao(request) -> str:
+    """`Host` normalizado: sem porta, sem colchetes de IPv6, minúsculo."""
+    bruto = (request.headers.get("host") or "").strip().lower()
+    if bruto.startswith("["):                       # [::1]:7860
+        return bruto[1:bruto.find("]")] if "]" in bruto else bruto
+    return bruto.rsplit(":", 1)[0] if bruto.count(":") == 1 else bruto
+
+
+def _host_permitido(host: str) -> bool:
+    """O `Host` é desta máquina (ou de um nome configurado)?"""
+    if not host:
+        return False
+    if _host_de_loopback(host) or host in _ALLOWED_HOSTS:
+        return True
+    if host in _own_ips():
+        return True
+    if host.endswith(".local"):                     # Bonjour da própria máquina
+        return True
+    return False
+
+
+def _host_de_loopback(host: str) -> bool:
+    # `testserver` é o host padrão do `TestClient` (e só dele): sem isto a suíte
+    # inteira viraria "LAN" e passaria a exigir chave (#779).
+    return host in ("127.0.0.1", "localhost", "::1", "testserver")
 #: rotas que REVELAM segredo para quem está no próprio Mac (a vista de admin):
 #: com origem estrangeira elas passam a exigir chave em vez de 200 mudo.
 _ROTAS_REVELAM_SEGREDO = ("/api/apikeys", "/api/settings", "/api/client/mic-router")
@@ -1555,6 +1594,18 @@ async def _rate_limit(request, call_next):
 
 @app.middleware("http")
 async def _exige_chave(request, call_next):
+    # ANTES de tudo: `Host` fora da allowlist não fala com a API (#779). É a defesa
+    # de DNS rebinding — sem ela, página em `evil.tld` que resolve para 127.0.0.1
+    # chega pelo loopback e herda a isenção de chave.
+    host = _host_da_requisicao(request)
+    if not _host_permitido(host):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            {"detail": f"Host não permitido: {host or '(vazio)'}",
+             "hint": "Abra por 127.0.0.1/localhost, pelo IP da máquina ou por um "
+                     "nome em TTS_ALLOWED_HOSTS."},
+            status_code=421)
     # somente loopback dispensa chave; qualquer acesso pela LAN exige autenticação
     local = _is_local(request)
     # página de TERCEIRO chamando pelo loopback (#282): o socket é local, a origem
