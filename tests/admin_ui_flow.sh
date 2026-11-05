@@ -362,12 +362,14 @@ with sync_playwright() as p:
         "#speakerGate, #spThr, #spFarAlvo, #spAntiClone",
         "els => els.map(e => [e.id, e.dataset.adminSetting, e.disabled])")
     print(f"  campos de identidade: {ident}")
+    protegidos = set(pg.evaluate("() => [...ADMIN.fields]") or [])
     for cid, campo, desab in ident:
         cobrar(bool(campo), f"#{cid} sem data-admin-setting (seria dropado em silêncio)")
-        # o anti-clone nasce inerte de propósito ("em breve"), então só é travado
-        # por admin se o servidor o listar; os outros três travam sempre
+        if not campo or campo not in protegidos:
+            continue          # servidor ainda não lista o campo (#786 sem merge)
+        # o anti-clone nasce inerte de propósito ("em breve"): travado nos dois papéis
+        cobrar(desab is True, f"#{cid} devia estar travado com chave de uso")
         if cid != "spAntiClone":
-            cobrar(desab is True, f"#{cid} devia estar travado com chave de uso")
             titulo = pg.eval_on_selector(f"#{cid}", "el => el.title")
             cobrar("administrativa" in (titulo or "").lower(),
                    f"#{cid} travado sem dizer o motivo ({titulo!r})")
@@ -529,7 +531,10 @@ with sync_playwright() as p:
     # --- chave admin: contraprova + papel da chave pela UI ---
     ctx, pg, erros = abrir(adm)
     selo = pg.inner_text("#cfgAdminBadge")
-    travados = pg.eval_on_selector_all("[data-admin-setting]:disabled", "els => els.length")
+    # `[data-sempre-travado]` (anti-clone "em breve") fica desabilitado nos DOIS
+    # papéis por desenho: não conta como trava de admin
+    travados = pg.eval_on_selector_all(
+        "[data-admin-setting]:not([data-sempre-travado]):disabled", "els => els.length")
     segredo = pg.input_value("#chatApiKey")
     print(f"  contraprova admin: selo={selo!r} travados={travados} segredo_revelado={not segredo.startswith('••••')}")
     cobrar("admin" in selo.lower(), f"selo de admin errado: {selo!r}")
