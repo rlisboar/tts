@@ -2174,3 +2174,41 @@ def test_stdout_morto_nao_derruba_print_fora_do_job(monkeypatch):
     app._avisa_sem_marca("motivo")  # não pode levantar
     print("segue vivo")             # e o print comum também não
     assert app.sys.stdout.write("x") == 1
+
+
+def test_semente_do_roteiro_do_piso_reproduz_o_mesmo_audio(tmp_path):
+    """A semente tem de REPRODUZIR: mesmo índice, mesmo áudio (#706).
+
+    Sem esta célula a semente é enfeite — o piso é folgado o bastante para a
+    célula de detecção passar sem ela, então apagá-la não derruba nada. Dois
+    processos com a MESMA semente têm de gerar bytes idênticos."""
+    import hashlib
+    import subprocess
+
+    import soundfile as sf
+
+    import marca_dagua
+
+    if not marca_dagua.disponivel():
+        pytest.skip(f"marca indisponível: {marca_dagua.motivo()}")
+
+    t = np.arange(16000 * 2) / 16000
+    x = (np.sin(2 * np.pi * 180 * t) + 0.4 * np.sin(2 * np.pi * 460 * t)).astype(np.float32)
+    x = (x / np.abs(x).max() * 0.012).astype(np.float32)
+
+    hashes = []
+    for n in range(2):
+        carimbo, saida = tmp_path / f"fixo{n}.wav", tmp_path / f"fixo_saida{n}.wav"
+        sf.write(str(carimbo), x, 16000, subtype="PCM_16")
+        roteiro = tmp_path / f"fixo{n}.py"
+        roteiro.write_text(ROTEIRO_PISO.format(
+            semente=20261031,          # a MESMA nos dois
+            raiz=str(Path(__file__).resolve().parents[1]),
+            gerador=str(marca_dagua.MODELO_DIR / marca_dagua.GERADOR),
+            detector=str(marca_dagua.MODELO_DIR / marca_dagua.DETECTOR),
+            wav=str(carimbo), saida=str(saida)))
+        r = subprocess.run([sys.executable, str(roteiro)], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr[-300:]
+        hashes.append(hashlib.sha256(saida.read_bytes()).hexdigest())
+
+    assert hashes[0] == hashes[1], "mesma semente gerou áudios diferentes"
