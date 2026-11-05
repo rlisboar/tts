@@ -39,7 +39,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `167-turno-true.txt` | #167 | 2026-09-29 | servidor http://127.0.0.1:61278 · stub :61277 · repetições=20 |
 | `174-latencia-provedor.png` | #174 | 2026-09-29 | (imagem) |
 | `178-backend-live-app-real.png` | #178 | 2026-09-29 | (imagem) |
-| `178-backend-live-heranca.png` | #178 | 2026-10-27 | (imagem) |
+| `178-backend-live-heranca.png` | #178 | 2026-10-31 | (imagem) |
 | `179-barge-vao-rep20.txt` | #179 | 2026-09-29 | [serial] live_barge_rep.sh esperando a trava de modelo (dona: live_ui.sh)… |
 | `179-controle-resumo.txt` | #179 | 2026-09-29 | normal                       EXIT=0  avisos=0  log=/tmp/179-normal.log |
 | `179-controle.sh` | #179 | 2026-10-01 | !/usr/bin/env bash |
@@ -289,9 +289,9 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `502-live-filtros-painel.png` | #502 | 2026-10-27 | (imagem) |
 | `502-live-interrupcao-duck.png` | #502 | 2026-10-27 | (imagem) |
 | `502-live-interrupcao-suites.txt` | #502 | 2026-10-28 | 502 — LIVE UI da interrupção inteligente: medições da suíte e das mordidas |
-| `520-bakeoff-ruido.md` | #520 | — | Bake-off de redução de ruído (#520) — medido e decidido |
+| `520-bakeoff-ruido.md` | #520 | 2026-10-31 | Bake-off de redução de ruído (#520) — medido e decidido |
 | `521-bakeoff-identidade.md` | #521 | 2026-10-28 | Bake-off de identidade de voz (#521) — veredito |
-| `522-anticlone.md` | #522 | 2026-10-28 | Anti-clone (#522) — marca d'água medida; AASIST reprovado como portão solo |
+| `522-anticlone.md` | #522 | 2026-10-31 | Anti-clone (#522) — marca d'água medida; AASIST reprovado como portão solo |
 | `523-limitedor-onnx.md` | #523 | 2026-10-28 | Limpar amostra pelo DFN3 em ONNX (#523) — medição refeita |
 | `532-bakeoff-locutor-alvo.md` | #532 | 2026-10-28 | Locutor-alvo (#532) — bake-off: seleção por janela × separação |
 | `534-separacao-alvo.txt` | #534 | 2026-10-28 | 534 — rodada REAL do filtro `speaker_alvo` (VOZ-I6), 2026-10-28 |
@@ -305,6 +305,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `657-marca-dagua.txt` | #657 | 2026-10-28 | 657 — marca d'água AudioSeal: custo por segundo e carga (2026-10-28) |
 | `663-separar-so-com-sobreposicao.txt` | #663 | 2026-10-28 | 663 — `speaker_alvo` decide POR SEGMENTO DE FALA: separa só com sobreposição |
 | `687-marca-nivel.md` | #687 | 2026-10-31 | Marca d'água audível em fala baixa (#687) — diagnóstico e correção |
+| `796-mordida.txt` | #796 | — | MORDIDA #796 — a entrega da fala tem de esperar a fila FORA do `_gen_lock` |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |
