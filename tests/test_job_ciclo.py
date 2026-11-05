@@ -149,3 +149,60 @@ def test_job_status_nao_entrega_o_dict_vivo(monkeypatch):
         assert "novo" not in app._jobs["vivo"]
     finally:
         app._jobs.pop("vivo", None)
+
+
+def test_cancelar_na_fila_libera_o_lugar_na_hora(monkeypatch):
+    """Cancelar um job NA FILA não pode esperar a vez dele (#835).
+
+    O ticket só era resolvido quando o job chegava ao topo — a fila atrás ficava
+    presa por um job que já não ia tocar nada."""
+    gate = app._SpeechGate()
+    monkeypatch.setattr(app, "_speech_gate", gate)   # o wrapper usa o GLOBAL
+    app._jobs["a"] = {"status": "queued"}
+    app._jobs["b"] = {"status": "queued"}
+    app._jobs["c"] = {"status": "queued"}
+    try:
+        ta = gate.begin("a")
+        tb = gate.begin("b")
+        tc = gate.begin("c")
+        # "a" entrega e reserva 10 s: "b" e "c" ficam na fila
+        gate.deliver(ta, duration_s=10.0)
+
+        assert gate.depth == 2
+        # cancela o "b" PELA ROTA, que é o PRÓXIMO: tem de sair agora, sem 10 s
+        from fastapi.testclient import TestClient
+
+        c = TestClient(app.app, raise_server_exceptions=False, client=("127.0.0.1", 1))
+        r = c.post("/api/tts/jobs/b/cancel")
+        assert r.status_code == 200 and r.json()["lugar_liberado"] is True, r.text
+        assert gate.depth == 1, "o lugar do cancelado não foi liberado"
+        assert tb["done"] is True
+
+        # e o "c" passa a ser o próximo
+        assert gate._next_ticket == tc["ticket"]
+    finally:
+        for j in ("a", "b", "c"):
+            app._jobs.pop(j, None)
+
+
+def test_cancelar_quem_esta_atras_e_pulado_na_vez(monkeypatch):
+    """Quem está atrás é marcado e pulado quando chega a vez, sem travar."""
+    gate = app._SpeechGate()
+    monkeypatch.setattr(app, "_speech_gate", gate)
+    app._jobs["x"] = {"status": "queued"}
+    app._jobs["y"] = {"status": "queued"}
+    try:
+        tx = gate.begin("x")
+        ty = gate.begin("y")
+        app._speech_queue_cancela("y")
+        assert ty.get("cancelado") is True
+        # quando o "x" entrega, o "y" (já cancelado) é pulado na chamada dele
+        gate.deliver(tx, duration_s=0.0)
+        t = threading.Thread(target=gate.deliver, args=(ty,), kwargs={"duration_s": 0.0})
+        t.start()
+        t.join(timeout=2)
+        assert not t.is_alive(), "o job cancelado ficou pendurado na fila"
+        assert ty["done"] is True
+    finally:
+        for j in ("x", "y"):
+            app._jobs.pop(j, None)

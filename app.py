@@ -6450,6 +6450,7 @@ class _SpeechGate:
             self._donos[ticket] = job_id
         job = _jobs.get(job_id)
         if job is not None:
+            job["queue_token"] = token      # o cancelamento precisa achar o ticket
             job["queued"] = True
             job["status"] = "queued"
             job["queue_ticket"] = ticket
@@ -6491,9 +6492,12 @@ class _SpeechGate:
             # 1) ordem FIFO — com PRAZO (#796): ticket de job que morreu ou que
             # espera demais é pulado, senão a fila inteira trava
             while token["ticket"] != self._next_ticket:
-                if self._pula_morto(self._next_ticket):
+                if token.get("cancelado"):      # #835: cancelado sai na hora
+                    self._avanca(token)
+                    return
+                if self._pula_morto(self._next_ticket):   # #796: ticket morto
                     continue
-                if time.monotonic() > limite:
+                if time.monotonic() > limite:             # #796: prazo da espera
                     print(f"[fila] ticket {token['ticket']} esperou "
                           f"{_SPEECH_FILA_ESPERA_S:.0f}s — seguindo", flush=True)
                     break
@@ -6529,6 +6533,28 @@ class _SpeechGate:
                 job["speech_duration_s"] = round(dur, 3)
             self._cv.notify_all()
 
+    def _avanca(self, token) -> None:
+        """Passa o ticket adiante SEM reservar tempo de áudio (chamado já na vez)."""
+        self._next_ticket += 1
+        self._depth = max(0, self._depth - 1)
+        token["done"] = True
+        self._cv.notify_all()
+
+    def cancel(self, token) -> None:
+        """Marca o ticket como cancelado e acorda quem espera (#835).
+
+        Não bloqueia: quem está na vez avança na hora; quem está atrás é pulado
+        quando chegar a vez (o `deliver` dele vê a marca). Sem isto o lugar só era
+        liberado quando o job chegava ao topo — a fila atrás esperava por um job
+        que já não ia tocar nada."""
+        if not token or token.get("done"):
+            return
+        with self._cv:
+            token["cancelado"] = True
+            if token["ticket"] == self._next_ticket:
+                self._avanca(token)
+            self._cv.notify_all()
+
     def abort(self, token) -> None:
         """Erro: avança o ticket sem reservar tempo de áudio."""
         if not token or token.get("done"):
@@ -6552,6 +6578,7 @@ class _SpeechGate:
         job = _jobs.get(job_id)
         if job is not None:
             job.pop("queued", None)
+            job.pop("queue_token", None)
 
 
 #: Prazo máximo esperando a vez na fila (#796). Passou disso, o ticket segue — é
@@ -6571,6 +6598,16 @@ def _speech_queue_deliver(token, duration_s: float = 0.0,
 
 def _speech_queue_abort(token) -> None:
     _speech_gate.abort(token)
+
+
+def _speech_queue_cancela(job_id: str) -> bool:
+    """Tira o job da fila de falas sem bloquear (#835). Devolve se havia lugar."""
+    job = _jobs.get(job_id) or {}
+    token = job.get("queue_token")
+    if not token or token.get("done"):
+        return False
+    _speech_gate.cancel(token)
+    return True
 
 
 def _piece_dir(job_id: str) -> Path:
@@ -6964,6 +7001,12 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
                 job["progress"] = {"stage": "aguardando vez na fila…"}
                 _speech_queue_deliver(sq, out.get("duration"), output_meta=out)
             job["pieces"] = pieces
+            if job.get("cancelado"):      # saiu da fila sem tocar (#835)
+                job.update(status="error", error="cancelado pelo usuário",
+                           output=out, progress=None)
+                _jobs_hist_salva()
+                _model_state.update(status="idle", progress=None, error=None)
+                return
             job.update(status="done", output=out, progress=None, error=None)
             _jobs_hist_salva()
             _model_state.update(status="ready", progress=None,
@@ -7505,6 +7548,12 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             job["progress"] = {"stage": "aguardando vez na fila…"}
             _speech_queue_deliver(sq, duration, output_meta=meta)
             job["pieces"] = len(chunks)
+            if job.get("cancelado"):      # saiu da fila sem tocar (#835)
+                job.update(status="error", error="cancelado pelo usuário",
+                           output=meta, progress=None)
+                _jobs_hist_salva()
+                _schedule_job_cleanup(job_id, delay_s=90)
+                return
         job.update(status="done", output=meta)
         _jobs_hist_salva()
         # trechos já gravados no final: limpa após graça p/ o cliente terminar o stream
@@ -7638,23 +7687,6 @@ def synthesize(request: Request, payload: dict):
 
 
 @app.post("/api/tts/jobs/{job_id}/cancel")
-def job_cancel(job_id: str):
-    """Cancela um job de TTS (#800).
-
-    Marca o job; quem está gerando vê a marca no laço e mata o worker — o
-    cancelamento não espera o watchdog. Job em fila também aceita a marca e não
-    começa. Terminal (done/error) devolve 409 para o cliente não achar que parou
-    algo que já tinha acabado.
-    """
-    job = _jobs.get(job_id)
-    if job is None:
-        raise HTTPException(404, "Job não encontrado")
-    if job.get("status") in ("done", "error"):
-        raise HTTPException(409, f"Job já terminou ({job.get('status')})")
-    job["cancelado"] = True
-    return {"ok": True, "job_id": job_id, "status": job.get("status")}
-
-
 @app.get("/api/tts/jobs/{job_id}")
 def job_status(job_id: str):
     job = _jobs.get(job_id)
@@ -7681,7 +7713,10 @@ def job_cancel(job_id: str):
         return {"ok": True, "ja_terminado": True,
                 "cancelado": bool(job.get("cancelado"))}
     job["cancelado"] = True
-    return {"ok": True, "cancelado": True}
+    # job na FILA de falas: o lugar tem de sair AGORA, senão a fila atrás espera
+    # por um job que já não vai tocar nada (#835)
+    liberou = _speech_queue_cancela(job_id)
+    return {"ok": True, "cancelado": True, "lugar_liberado": liberou}
 
 
 @app.get("/api/tts/jobs/{job_id}/pieces/{index}")
