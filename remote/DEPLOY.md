@@ -438,8 +438,15 @@ Instalação, uma vez, **dentro do mini** (não por ssh):
 ./remote/ci_runner.sh uninstall
 ```
 
-Enquanto o runner não estiver instalado, o job `testes` fica enfileirado — não
-vermelho. Instale-o antes de tornar o check obrigatório no branch protection.
+Enquanto o runner não estiver instalado, os jobs `testes` e `testes-lentos` ficam
+enfileirados — não vermelhos. Instale-o antes de tornar o check obrigatório no
+branch protection.
+
+**Dois jobs, dois tetos (#783):** `testes` roda a suíte menos os `slow` (teto 15
+min) e `testes-lentos` roda `-m slow` (teto 45 min). A separação existe porque o
+job único encostava no teto de 30 e era cancelado — e cancelamento não diz se o
+código quebrou. Se um teste novo passar de ~1 min, ele vai para `slow` com
+`@pytest.mark.slow`; o artefato `duracoes-*` de cada job mostra a cauda.
 
 O que o script garante, e por quê:
 

@@ -36,6 +36,7 @@ _sem_venv = pytest.mark.skipif(not PY.is_file(), reason="precisa da .venv-mlx")
 
 @_sem_git
 @_sem_venv
+@pytest.mark.slow
 def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
     wt = tmp_path / "wt"
     git = ["git", "-C", str(REPO)]
@@ -78,6 +79,9 @@ def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
         # `state/metrics` DENTRO do worktree e a guarda do conftest (que olha
         # `app.BASE`) acusa no teardown da sessão filha.
         env = {**os.environ, "PATH": os.environ.get("PATH", ""),
+               # #783: a fatia roda `run_sh.sh` várias vezes; sem o modo rápido
+               # cada invocação paga a varredura de /tmp inteira
+               "GUARDA_RAPIDA": "1",
                "HOME": os.environ.get("HOME", "/tmp"), "PYTHONDONTWRITEBYTECODE": "1",
                "TTS_METRICS_DIR": str(tmp_path / "metricas")}
         for arq in ("SETTINGS_PATH", "APIKEYS_PATH", "LEGACY_APIKEY_PATH", "VOICES_DIR"):

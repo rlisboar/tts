@@ -21,6 +21,11 @@ REPO = Path(__file__).resolve().parent.parent
 PASTA = REPO / "models" / "dnsmos"
 OVRL = PASTA / "sig_bak_ovr.onnx"
 
+# #783: no runner de CI os pesos não existem (são gitignored) — a célula
+# vira skip COM MOTIVO em vez de vermelho de ambiente.
+if not (OVRL.is_file() or OVRL.is_symlink()):
+    pytest.skip("sem peso em models/ (gitignored) — rode tools/baixa_modelos.sh", allow_module_level=True)
+
 _OFFLINE = {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1",
             "TTS_MODELOS_URL": "http://127.0.0.1:9"}
 

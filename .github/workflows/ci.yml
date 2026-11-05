@@ -46,11 +46,11 @@ concurrency:
 jobs:
   estatica:
     name: pyflakes (lista do hook)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       # Só o ruff: o estágio não importa nada do app (nem `pytest`, cujo
@@ -82,7 +82,12 @@ jobs:
     # ENQUANTO o runner não estiver instalado este job fica ENFILEIRADO (não
     # vermelho); instale-o antes de tornar o check obrigatório.
     runs-on: [self-hosted, tts-mini]
-    timeout-minutes: 30
+    # #783: o rápido NÃO pode encostar no teto. Medido 27 min com o job único;
+    # a cauda longa foi para o `testes-lentos` e a guarda ganhou o modo rápido.
+    # 12m55 medidos COM a máquina carregada por outro gate, e o job usa
+    # `--reruns 1`: um único flake dobra o pior caso. 20 min é o teto com a
+    # folga real de um retry inteiro, não 1,16x em cima do medido.
+    timeout-minutes: 20
     needs: estatica
     env:
       TTS_TEST_WORKER: '0'      # '0' continua RODANDO (só string vazia skippa)
@@ -97,7 +102,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       # SEM `setup-python`: no macOS ele crava `/Users/runner` mesmo com
@@ -131,6 +136,7 @@ jobs:
         # máquina e passou 3/3 isolada — 1 retry absorve isso sem mascarar erro
         # determinístico.
         run: |
+          set -o pipefail
           # PR roda só os GATES (contract tests): 241 testes, 39 s aqui contra
           # 5m19 da suíte inteira — no mini isso é ~2 min contra 15. Medido que
           # `-x`, retry, `os._exit` e o freio de prioridade NÃO mudam o tempo
@@ -138,24 +144,72 @@ jobs:
           # A suíte INTEIRA continua obrigatória no push/main (e antes de fechar
           # card). `-x` fica no PR para falhar na primeira.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            python -m pytest tests/test_qa_gate*.py -q --timeout=180 -x
+            python -m pytest tests/test_qa_gate*.py -q --timeout=180 -x \
+              --durations=25 2>&1 | tee duracoes.txt
           else
-            python -m pytest tests/ -q --timeout=180 --reruns 1 --reruns-delay 2
+            python -m pytest tests/ -q -m "not slow" --timeout=180 --reruns 1 \
+              --reruns-delay 2 --durations=25 2>&1 | tee duracoes.txt
           fi
+      - name: durações (artefato)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: duracoes-rapido
+          path: duracoes.txt
+          if-no-files-found: ignore
+
+  testes-lentos:
+    name: pytest lento (marcados `slow`)
+    # #783: a cauda longa saiu do job rápido e ganhou teto próprio. São os testes
+    # de MINUTOS (worktree inteiro, varredura de /tmp, ecapa) — juntos passavam
+    # de 8 min e eram o motivo do job único encostar no teto de 30. O teto aqui é
+    # folgado de propósito: é job que roda em paralelo, não bloqueia PR.
+    runs-on: [self-hosted, tts-mini]
+    timeout-minutes: 45
+    needs: estatica
+    env:
+      TTS_TEST_WORKER: '0'
+      HF_HUB_OFFLINE: '0'
+      TTS_REAL_BASE: origin/${{ github.base_ref || 'main' }}...HEAD
+      PYTHONDONTWRITEBYTECODE: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: venv do CI (preparado fora do job)
+        run: |
+          V="$HOME/actions-runner/venv"
+          [ -x "$V/bin/python" ] || { echo "✖ sem venv do CI em $V"; exit 1; }
+          echo "$V/bin" >> "$GITHUB_PATH"
+          [ -x /opt/homebrew/bin/node ] && echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          "$V/bin/python" -V
+      - name: pytest (só os `slow`)
+        run: |
+          set -o pipefail
+          python -m pytest tests/ -q -m slow --timeout=600 --reruns 1 \
+            --reruns-delay 2 --durations=25 2>&1 | tee duracoes.txt
+      - name: durações (artefato)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: duracoes-lento
+          path: duracoes.txt
+          if-no-files-found: ignore
 
   suites-sh:
     name: suítes .sh sem navegador nem modelo
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: estatica
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Um comando só: o runner das .sh sabe a CLASSIFICAÇÃO por estágio, roda em
       # paralelo (-j 3, 19-22 s), tem teto portátil (o `timeout` do coreutils não
       # existe no macOS) e falha UMA vez se faltar dependência — em vez de cada
       # job repetir a lista e o teto à mão. `instancia` exige app de pé e fica
       # fora do CI; `navegador` pode virar job próprio depois.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: dependências (a suíte importa o app)

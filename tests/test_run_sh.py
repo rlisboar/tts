@@ -101,6 +101,10 @@ def _rodar(*args: str, env: dict[str, str] | None = None) -> subprocess.Complete
             # as sondas sobem app: sem isso elas escrevem no `state/metrics` da
             # árvore (o app herda o ambiente mínimo e o guard do conftest acusa)
             "TTS_METRICS_DIR": os.environ.get("TTS_METRICS_DIR", "")}
+    # #783: a guarda de segredo varre /tmp no fim de TODO estágio (26 invocações
+    # aqui) e sozinha respondia por ~20 s de cada uma. `GUARDA_RAPIDA=1` faz uma
+    # passada e não hasheia /tmp; as células da própria guarda voltam a 0.
+    base.setdefault("GUARDA_RAPIDA", "1")
     base.update(env or {})
     return subprocess.run(["bash", str(RUNNER), *args], cwd=str(AQUI.parent),
                           # 300: a guarda de segredo varre /tmp no fim do estágio e
@@ -358,6 +362,7 @@ def _arvore_descartavel(tmp_path: Path) -> Path:
     return wt
 
 
+@pytest.mark.slow
 def test_live_lock_freeze_muta_uma_copia_e_deixa_a_arvore_intacta(tmp_path):
     """A suíte reverte o `app.py` para medir a mordida. Feita na árvore
     COMPARTILHADA, a reversão fica visível por ~10 s e um commit de terceiro a
@@ -697,6 +702,7 @@ def test_varredura_de_orfao_nao_mata_rodada_viva(tmp_path):
                 pass
 
 
+@pytest.mark.slow
 def test_freeze_nao_liga_o_voices_real_e_duas_rodadas_seguidas(tmp_path):
     """`voices` é estado do DONO: a cópia do freeze não pode ligá-lo (#703).
 
@@ -840,6 +846,9 @@ def test_cp_p_por_cima_de_homonimo_e_acusado(tmp_path):
         r = _rodar("navegador", env={
             "SUITES": str(SONDAS / "cp_p_segredo.sh"),
             "TTS_ROD_API_KEY": "segredo-de-teste-123456",
+            # esta célula cobre o caminho LENTO (retrato por hash): é a mordida do
+            # `cp -p` e não pode rodar no modo rápido
+            "GUARDA_RAPIDA": "0",
             "ALVO": str(alvo), "FONTE": str(fonte)})
         assert r.returncode == 1, r.stdout + r.stderr
         assert "segredo do dono em" in r.stdout, r.stdout

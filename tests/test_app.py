@@ -856,6 +856,10 @@ def test_render_anomalo_nas_duas_tentativas_avisa(monkeypatch, tmp_path):
     def _gerador(model, texto, *a, **k):
         return np.full(24000, np.nan, dtype=np.float32)
 
+    # #783: sem os pesos da marca (`models/audioseal/gerador.pt`) o áudio sai sem
+    # resíduo e a asserção de rms vira ruído de ambiente.
+    if not (app.BASE / "models" / "audioseal" / "gerador.pt").is_file():
+        pytest.skip("pesos da marca d'água ausentes (models/audioseal)")
     monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
     job_id = _job_de_render(monkeypatch, tmp_path, _gerador)
     try:
@@ -1280,6 +1284,13 @@ def _exige_pesos_reais() -> None:
     pytest.importorskip("demucs")
     if not (app._DEMUCS_DIR / "htdemucs.yaml").is_file():
         pytest.skip("pesos do Demucs ausentes (models/demucs)")
+    # #783: o `demucs` resolve o `.th` pelo cache do `torch.hub`, NÃO pelo
+    # diretório do app — máquina sem o arquivo lá falha por AMBIENTE ("Could not
+    # find pre-trained model with signature"), e isso não pode ser vermelho de CI.
+    import torch
+
+    if not (Path(torch.hub.get_dir()) / "checkpoints" / "955717e8.th").is_file():
+        pytest.skip("modelo do Demucs fora do cache do torch.hub (ambiente)")
 
 
 def test_separa_musica_tira_o_acompanhamento(tmp_path, monkeypatch):

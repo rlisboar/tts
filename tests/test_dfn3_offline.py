@@ -24,6 +24,11 @@ PASTA_RUNTIME = Path(os.environ.get("TTS_DFN3_DIR") or PASTA)
 GRAFO_REPO = PASTA / "deepfilter.onnx"
 GRAFO = PASTA_RUNTIME / "deepfilter.onnx"   # só para o skip e a carga
 
+# #783: no runner de CI os pesos não existem (são gitignored) — a célula
+# vira skip COM MOTIVO em vez de vermelho de ambiente.
+if not (GRAFO.is_file() or GRAFO.is_symlink()):
+    pytest.skip("sem peso em models/ (gitignored) — rode tools/baixa_modelos.sh", allow_module_level=True)
+
 _OFFLINE = {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1",
             "TTS_MODELOS_URL": "http://127.0.0.1:9"}
 

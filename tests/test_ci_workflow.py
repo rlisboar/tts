@@ -19,11 +19,16 @@ a instalar `requirements.txt`, ele deixa de ficar vermelho em segundos — que �
 única razão de existir separado.
 """
 
+import re
+import subprocess
+import sys
+
 import yaml
 
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+REPO = BASE
 WORKFLOW = BASE / ".github" / "workflows" / "ci.yml"
 
 
@@ -92,10 +97,51 @@ def test_suite_roda_no_runner_do_mini_nao_no_hospedado():
 
 def test_estatica_continua_hospedada_e_barata():
     """A estática não pode virar self-hosted: ela é a que fica vermelha em
-    segundos, e o mini é produção."""
-    assert _wf()["jobs"]["estatica"]["runs-on"] == "ubuntu-latest"
+    segundos, e o mini é produção.
+
+    #783: a imagem é FIXA (`ubuntu-24.04`), não `-latest` — o runner hospedado
+    troca de versão sem aviso e o job de segundos vira surpresa."""
+    alvo = _wf()["jobs"]["estatica"]["runs-on"]
+    assert alvo.startswith("ubuntu-"), alvo
+    assert alvo != "ubuntu-latest", "imagem do runner voltou a ser móvel"
 
 
 def test_sem_credencial_do_dono():
     assert "secrets." not in WORKFLOW.read_text(), \
         "o CI é hermético: credencial do dono não entra (nem versionada, nem em secret)"
+
+
+def _coleta(*markexpr: str) -> set[str]:
+    """Node ids de uma coleta; `markexpr` vazio = suíte inteira."""
+    cmd = [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q"]
+    if markexpr:
+        cmd += ["-m", markexpr[0]]
+    r = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-1000:]
+    return {l.strip() for l in r.stdout.splitlines() if "::" in l and not l.startswith(" ")}
+
+
+def _seletor(job: str) -> str:
+    """A expressão `-m` que o job passa ao pytest (o YAML é a fonte, não o teste)."""
+    passos = _wf()["jobs"][job]["steps"]
+    texto = "\n".join(p.get("run", "") for p in passos)
+    # depois de `pytest`, o `-m` é o do seletor (antes dele vem `python -m pytest`)
+    achado = re.search(r"""pytest[^\n]*?-m +"([^"]+)"|pytest[^\n]*?-m +([^\s"']+)""", texto)
+    if not achado:
+        raise AssertionError(f"o job {job} não tem seletor `-m` — a partição virou decorativa")
+    return achado.group(1) or achado.group(2)
+
+
+def test_os_dois_jobs_particionam_a_suite():
+    """Os seletores dos DOIS jobs têm de particionar a suíte (#783).
+
+    O rápido roda o seletor de `testes`, o lento o de `testes-lentos`. Se um
+    deles for editado (um `-m` a mais, um `-k` que escapa), testes somem dos
+    dois jobs e a suíte fica verde por ausência — o pior tipo de gate quebrado."""
+    todos = _coleta()
+    rapidos = _coleta(_seletor("testes"))
+    lentos = _coleta(_seletor("testes-lentos"))
+    assert rapidos | lentos == todos, (
+        f"fora dos dois jobs: {sorted(todos - (rapidos | lentos))[:10]}")
+    assert not (rapidos & lentos), (
+        f"nos dois jobs ao mesmo tempo: {sorted(rapidos & lentos)[:10]}")

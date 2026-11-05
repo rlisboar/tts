@@ -1113,8 +1113,32 @@ três jobs, nesta ordem:
 | job | onde | o que roda | por quê |
 |---|---|---|---|
 | `estatica` | hospedado | `python tests/_pyflakes_gate.py` (lista derivada do hook; a contraprova de que ela não virou no-op é um teste do job seguinte) | é o primeiro estágio do hook e o mais barato; tem de ficar vermelho em segundos |
-| `testes` | runner do mini | `pytest tests/ -q` com `--timeout=180` e 1 retry | o default hermético já é o sem modelo (`worker_real` fica fora, como no hook) |
+| `testes` | runner do mini | `pytest tests/ -q -m "not slow"` com `--timeout=180` e 1 retry | o default hermético já é o sem modelo (`worker_real` fica fora, como no hook) |
+| `testes-lentos` | runner do mini | `pytest tests/ -q -m slow --timeout=600` | os testes de MINUTOS (worktree inteiro, varredura de `/tmp`, ecapa) não podem ditar o teto do job rápido |
 | `suites-sh` | hospedado | `limpa_bytecode.sh` e `serial_lock.sh` com `timeout` | não precisam de navegador nem de modelo |
+
+**O `testes-lentos` tem de ser check EXIGIDO**, junto com `testes`: ele é
+paralelo e não está no `needs` de ninguém, então sem isso um vermelho em `slow`
+passa invisível. Em Settings → Branches → regra da `main`, marque os dois como
+required. A partição é cobrada por `tests/test_ci_workflow.py`
+(`not slow` ∪ `slow` = coleta inteira, sem interseção): teste novo só pode cair
+num dos dois lados.
+
+**Por que o job rápido não roda a suíte inteira (#783):** a suíte levava 27 min na
+máquina do mini e o job único era cancelado no teto de 30 — push da main nascia
+vermelho e ninguém separava regressão de ruído. O que sobrava era cauda de
+minutos: `test_worktree_sem_estado` (305 s), duas células de freeze (115 s e 59 s)
+e `test_ecapa_offline` (58 s). Elas levam `@pytest.mark.slow` e foram para o job
+`testes-lentos`, com teto próprio; a suíte rápida mantém teto de 20 min — o
+pior caso medido (12m55 com a máquina carregada) mais um retry inteiro. Junto, a guarda de segredo ganhou o modo `GUARDA_RAPIDA=1`
+nas suítes (uma passada, sem hashear `/tmp`) e a varredura deixou de visitar
+`/tmp` duas vezes quando `TMPDIR` é o próprio `/tmp` — as duas coisas juntas
+cortam ~58% do tempo de cada invocação do runner.
+
+**Pesos fora do CI:** os arquivos de `models/` são gitignored, então as células de
+peso viram `skip` **com motivo** no runner limpo (`tools/baixa_modelos.sh`) em vez
+de vermelho de ambiente. O artefato `duracoes-*` de cada job guarda o
+`--durations=25` da rodada, inclusive quando ela falha.
 
 **REGRA:** push/PR só vale com o check verde. `--no-verify` só com motivo dito em
 voz alta (ex.: commit intermediário de WIP que vai ser reescrito) — o check do PR

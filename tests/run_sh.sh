@@ -292,10 +292,20 @@ _amostra() {
 # Retrato de `/tmp` por (caminho, HASH do conteúdo): mtime e tamanho não bastam —
 # um `cp -p` do arquivo do dono por cima de um homônimo já existente preserva o
 # mtime e o nome já está no retrato, e a rodada passava limpa (#723).
+# `/tmp` e `$TMPDIR` costumam ser o MESMO caminho (macOS): sem dedupe o `find`
+# varre a árvore duas vezes e dobra o custo da guarda em cada passada (#783).
+_raizes_tmp() {
+    _RAIZES_TMP=(/tmp)
+    if [ -n "${TMPDIR:-}" ] && [ "${TMPDIR%/}" != /tmp ] && [ "${TMPDIR%/}" != /private/tmp ]; then
+        _RAIZES_TMP+=("$TMPDIR")
+    fi
+}
+_raizes_tmp
+
 _impressao_tmp() {
     # `|| true`: num /tmp mexido, arquivo some entre o `find` e o `shasum` e o
     # `xargs` sai 123; sem isto o pipefail devolve retrato VAZIO e a guarda cala.
-    find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f -size -256k -print0 2>/dev/null \
+    find -H "${_RAIZES_TMP[@]}" -maxdepth 2 -type f -size -256k -print0 2>/dev/null \
         | xargs -0 shasum -a 256 2>/dev/null \
         | sed 's#  /private/tmp#  /tmp#' | sort || true
 }
@@ -503,12 +513,14 @@ conta_segredo_em_tmp() {
     sleep 1
     # 1ª via, BARATA: arquivo novo (diferença de nomes) ou tocado nesta rodada
     # (`-cnewer` — o ctime muda em qualquer escrita e o `cp -p` não o preserva).
-    find -H /tmp "${TMPDIR:-/tmp}" -maxdepth 2 -type f -cnewer "$DIR/comeca" 2>/dev/null \
+    find -H "${_RAIZES_TMP[@]}" -maxdepth 2 -type f -cnewer "$DIR/comeca" 2>/dev/null \
         | sed 's#^/private/tmp#/tmp#' | sort -u > "$DIR/cand"
     _varre_candidatos
     # 2ª via, CARA: o retrato por (caminho, hash) pega conteúdo trocado mesmo que o
     # ctime escape. Só roda quando a barata não achou nada.
-    if [ "$achados" -eq 0 ]; then
+    if [ "$achados" -eq 0 ] && [ "${GUARDA_RAPIDA:-0}" = 1 ]; then
+        :   # #783: modo rápido das suítes — a via barata (`-cnewer`) basta
+    elif [ "$achados" -eq 0 ]; then
         _impressao_tmp > "$DIR/tmp_depois"
         awk 'NR==FNR {antes[$2]=$1; next}
              ($2 in antes) && antes[$2]==$1 {next} {print $2}' \
