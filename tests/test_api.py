@@ -5284,15 +5284,21 @@ def dsh_limpo(monkeypatch):
     monkeypatch.setattr(app, "_dsh_models_erro", {})     # cache negativo (#287)
     monkeypatch.setattr(app.dsh_client, "_node_versoes", {})  # memo do node (#373)
     monkeypatch.setattr(app, "_dsh_morto_ate", 0.0)      # latch de processo
-    # FECHA o que o teste anterior deixou no pool: só zerar a lista abandonava o
-    # processo do `fake_acp` até o fim da sessão (6 vivos com 30+ min medidos, mesmo
-    # dano do uvicorn órfão do #688). O `close()` do dsh já tem prazo próprio.
+    # Fecha o que o teste anterior deixou no pool ANTES de trocar a lista.
     _dsh_fecha_pool()
     monkeypatch.setattr(app, "_chat_dsh_livres", [])
     # contador GLOBAL de processos dsh (#287): cliente vazado por um teste não pode
     # consumir o teto do seguinte
     monkeypatch.setattr(app, "_dsh_procs", 0)
     monkeypatch.setattr(app, "_chat_dsh_prewarm_thread", None)
+    yield
+    # FECHA o pool DESTE teste (#688): sem o `yield`+`finally` o `_dsh_fecha_pool`
+    # rodava só no setup, sobre a lista real (vazia) — a lista do teste morria sem
+    # `close()` e o processo do `fake_acp` ficava até o fim da sessão (6 vivos com
+    # 30+ min medidos, mesmo dano do uvicorn órfão).
+    # Roda ANTES do `monkeypatch` desfazer: aqui `_chat_dsh_livres` ainda é a lista
+    # do teste. O `try` por cliente fica no helper.
+    _dsh_fecha_pool()
 
 
 @pytest.fixture(scope="session")
@@ -9263,7 +9269,7 @@ def test_mexer_em_apikeys_nos_testes_republica_o_snapshot():
     faltando = []
     for arq in sorted(aqui.parent.glob("test_*.py")):
         if arq == aqui:
-            continue
+            continue    # a guarda cita os formatos no próprio corpo
         linhas = arq.read_text().splitlines()
         for i, linha in enumerate(linhas):
             if not mutacao.search(linha) or linha.lstrip().startswith("#"):
@@ -9276,3 +9282,40 @@ def test_mexer_em_apikeys_nos_testes_republica_o_snapshot():
                 faltando.append(f"{arq.name}:{i + 1}: {linha.strip()}")
     assert not faltando, "mutação de `_apikeys` sem `_apikeys_publica()`: " + \
         "; ".join(faltando)
+
+
+def test_guarda_de_apikeys_nao_casa_o_que_nao_e_mutacao():
+    """A regex da guarda não pode casar `_apikeys_publica()` nem comparação (#799).
+
+    Falso positivo aqui vira ruído e alguém "conserta" a guarda afrouxando-a."""
+    import re as _re
+
+    mutacao = _re.compile(r"app\._apikeys(\[[^\]]*\])*\s*=(?!=)"
+                          r"|app\._apikeys\.(clear|update|setdefault|pop)\(")
+    for linha in ("app._apikeys_publica()", "app._apikeys == outro",
+                  "x = app._apikeys[\"keys\"]"):
+        assert not mutacao.search(linha), linha
+    for linha in ("app._apikeys = x", "app._apikeys[\"keys\"] = []",
+                  "app._apikeys.clear()", "app._apikeys.update(d)"):
+        assert mutacao.search(linha), linha
+
+
+def test_fixture_dsh_limpo_fecha_o_pool_no_teardown(monkeypatch):
+    """A fixture tem de fechar o pool DESTE teste no teardown (#688).
+
+    Ela é geradora: sem o `yield`+`finally` o `_dsh_fecha_pool()` rodava só no
+    setup, sobre a lista real — a lista do teste morria sem `close()`."""
+    import pytest as _pytest
+
+    fechados = []
+
+    class _Cli:
+        def close(self):
+            fechados.append(1)
+
+    gerador = dsh_limpo.__wrapped__(monkeypatch)
+    next(gerador)                       # setup
+    app._chat_dsh_livres.append(_Cli())  # cliente que o teste deixou no pool
+    with _pytest.raises(StopIteration):
+        next(gerador)                   # teardown
+    assert fechados == [1], "o cliente do teste não foi fechado no teardown"
