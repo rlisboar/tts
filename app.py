@@ -10117,10 +10117,9 @@ async def speaker_enroll(request: Request, name: str = Form(...),
     # PERFIL EXISTENTE (ou `forcar`) é admin: a chave `use` que cadastra por cima
     # vira "o dono" para o gate e, com `forcar`, empurra as amostras antigas para
     # fora (`vecs[-MAX:]`) — 5 enrolls de um aparelho da LAN zeravam o dono (#786).
-    # PERFIL EXISTENTE (ou `forcar`) é admin: a chave `use` que cadastra por cima
-    # vira "o dono" para o gate e, com `forcar`, empurra as amostras antigas para
-    # fora (`vecs[-MAX:]`) — 5 enrolls de um aparelho da LAN zeravam o dono (#786).
     # Perfil NOVO continua livre: é o aparelho da LAN cadastrando a própria voz.
+    # A recusa vem ANTES de qualquer escrita (upload, `pendente`, `vecs`): o 403 não
+    # pode deixar rastro no arquivo de perfis.
     if _antes or forcar:
         _exige_admin(request)
     legado = _speaker_modelo_do_perfil(_antes) if _antes else efetivo

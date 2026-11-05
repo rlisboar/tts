@@ -8792,3 +8792,27 @@ def test_admin_key_curta_nao_e_demovida(monkeypatch):
                    client=("203.0.113.99", 50000))
     assert c.get("/api/status", headers={"X-API-Key": "ab"}).status_code == 200
     assert c.post("/api/shutdown", headers={"X-API-Key": "ab"}).status_code == 200
+
+
+def test_recusa_do_enroll_vem_antes_de_qualquer_escrita(client, auth, monkeypatch):
+    """O 403 não pode tocar no disco: nem upload, nem `pendente`, nem `vecs` (#786).
+
+    A guarda fica ANTES de `_save_audio_upload` e de qualquer `_speaker_save`; aqui
+    se conta as duas coisas para o teste não depender só do sha."""
+    salvos, uploads = [], []
+    perfis = {"Dono": {"vecs": [[1.0, 0.0]] * 3, "modelo": app.SPEAKER_MODELO_LEGADO,
+                       "updated": 0}}
+    monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
+    monkeypatch.setattr(app, "_speaker_save", lambda p: salvos.append(1))
+    monkeypatch.setattr(app, "_save_audio_upload",
+                        lambda up, prefix=".voz": (uploads.append(1), Path("f.wav"))[1])
+    app._apikeys["keys"][0]["role"] = "use"
+    try:
+        for forcar in ("", "?forcar=true"):
+            r = client.post(f"/api/speaker/enroll{forcar}", headers=auth,
+                            data={"name": "Dono"},
+                            files={"audio": ("a.wav", b"x", "audio/wav")})
+            assert r.status_code == 403, (forcar, r.status_code)
+        assert salvos == [] and uploads == [], (salvos, uploads)
+    finally:
+        app._apikeys["keys"][0]["role"] = "admin"
