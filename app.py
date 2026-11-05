@@ -798,14 +798,24 @@ LANG_DISPLAY = {
 _CHAVE_MIN_CHARS = 32
 
 
+#: Alguma chave de ambiente é curta? Ela CONTINUA valendo (senão a LAN cai para
+#: aberta se a instância depender só dela), mas deixa de dar admin (#785).
+_ENV_CHAVE_FRACA = False
+
+
 def _chave_de_ambiente(nome: str, valor: str) -> str:
-    """Chave de ambiente, recusada (com aviso) se for curta demais."""
+    """Chave de ambiente: aceita, mas curta demais avisa e não vale como admin.
+
+    Descartá-la fecharia o furo da chave fraca abrindo a rede — `_auth_enabled()`
+    ficaria falso e a LAN passaria sem credencial. Fraca vira `use`."""
+    global _ENV_CHAVE_FRACA
     if not valor or len(valor) >= _CHAVE_MIN_CHARS:
         return valor
+    _ENV_CHAVE_FRACA = True
     print(f"[auth] {nome} tem {len(valor)} caractere(s) (< {_CHAVE_MIN_CHARS}): "
-          f"não autentica — rotacione (UI → Acesso) ou use uma chave maior",
+          f"autentica, mas NÃO vale como admin — rotacione (UI → Acesso)",
           file=sys.stderr, flush=True)
-    return ""
+    return valor
 
 
 _ENV_API_KEY = _chave_de_ambiente("TTS_ROD_API_KEY",
@@ -1329,6 +1339,8 @@ def _admin_is_allowed(request) -> bool:
     if _is_local(request) and not _origem_estrangeira(request):
         return True
     provided = _extract_request_key(request)
+    if _ENV_CHAVE_FRACA and _ENV_API_KEY and _secrets_iguais(provided, _ENV_API_KEY):
+        return False                     # fraca: autentica, não administra (#785)
     if _ADMIN_API_KEY and _secrets_iguais(provided, _ADMIN_API_KEY):
         return True
     papel = _key_role(provided)

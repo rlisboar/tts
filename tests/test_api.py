@@ -8651,12 +8651,12 @@ def test_quatro_fechamentos_simultaneos_chamam_os_quatro_closes(servidor_vivo,
 
 
 # --- #785: chave fraca e freio de força bruta --------------------------------
-def test_chave_de_ambiente_curta_nao_autentica(capsys):
-    """`TTS_ROD_API_KEY=ab` não vale: recusa e avisa (#785).
+def test_chave_de_ambiente_curta_avisa_e_nao_vira_admin(capsys):
+    """`TTS_ROD_API_KEY=ab` autentica, mas NÃO administra (#785).
 
-    Sem reload: a função é pura e a célula não depende de estado de import."""
-    assert app._chave_de_ambiente("TTS_ROD_API_KEY", "ab") == ""
-    assert "2 caractere" in capsys.readouterr().err
+    Descartá-la abriria a LAN: `_auth_enabled()` ficaria falso. Fraca vira `use`."""
+    assert app._chave_de_ambiente("TTS_ROD_API_KEY", "ab") == "ab"
+    assert "NÃO vale como admin" in capsys.readouterr().err
 
 
 def test_chave_de_ambiente_longa_autentica():
@@ -8672,8 +8672,11 @@ def test_chave_curta_no_ambiente_nao_autentica(monkeypatch):
 
     recarregado = importlib.reload(app)
     try:
-        assert recarregado._ENV_API_KEY == ""
-        assert recarregado._key_is_valid("ab") is False
+        # continua valendo (senão a LAN cai para aberta) e a auth segue ligada
+        assert recarregado._ENV_API_KEY == "ab"
+        assert recarregado._key_is_valid("ab") is True
+        assert recarregado._auth_enabled() is True
+        assert recarregado._ENV_CHAVE_FRACA is True
     finally:
         monkeypatch.delenv("TTS_ROD_API_KEY", raising=False)
         importlib.reload(app)
@@ -8700,3 +8703,20 @@ def test_forca_bruta_toma_429_depois_do_teto(monkeypatch):
                        client=("203.0.113.98", 50000))
     assert outro.get("/api/status", headers={"X-API-Key": "chute"}).status_code == 401
     app._auth_falhas.clear()
+
+
+def test_chave_fraca_autentica_mas_nao_administra(monkeypatch):
+    """Ponta a ponta: chave fraca de ambiente dá 200 e toma 403 no admin (#785).
+
+    Fechar o furo da chave fraca abrindo a LAN seria pior: ela continua valendo."""
+    monkeypatch.setattr(app, "_own_ips", lambda: {"203.0.113.10"})
+    monkeypatch.setattr(app, "_ENV_API_KEY", "ab")
+    monkeypatch.setattr(app, "_ADMIN_API_KEY", "")
+    monkeypatch.setattr(app, "_ENV_CHAVE_FRACA", True)
+    c = TestClient(app.app, raise_server_exceptions=False,
+                   client=("203.0.113.99", 50000))
+    assert c.get("/api/status", headers={"X-API-Key": "ab"}).status_code == 200
+    assert c.post("/api/shutdown", headers={"X-API-Key": "ab"}).status_code == 403
+    # e com a flag desligada a MESMA chave administra (é a força que decide)
+    monkeypatch.setattr(app, "_ENV_CHAVE_FRACA", False)
+    assert c.post("/api/shutdown", headers={"X-API-Key": "ab"}).status_code == 200
