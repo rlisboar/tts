@@ -9162,10 +9162,9 @@ def test_rotas_async_nao_chamam_bloqueantes():
     # snapshot é a propriedade certa e a célula de runtime
     # `test_admin_nao_pega_o_apikeys_lock` cobra. Qualquer OUTRO `async def`
     # que chame o nome tem de aparecer.
-    # A exceção é por NOME de função: hoje só existe UM `__call__` no arquivo. Se
-    # aparecer um segundo, ele herda a tolerância sem ninguém notar — nesse dia,
-    # qualificar por escopo (classe) em vez de nome.
-    permitido = {("__call__", "_admin_is_allowed")}
+    # A exceção é qualificada por ESCOPO (`Classe.método`), não por nome: um
+    # segundo `__call__` no arquivo não herda a tolerância sem ninguém notar.
+    permitido = {("_TetoDeCorpo.__call__", "_admin_is_allowed")}
     def _chamadas(no):
         """Calls do PRÓPRIO corpo — função interna (que roda na thread) não conta."""
         for filho in _ast.iter_child_nodes(no):
@@ -9176,17 +9175,24 @@ def test_rotas_async_nao_chamam_bloqueantes():
             yield from _chamadas(filho)
 
     arvore = _ast.parse(Path(app.__file__).read_text())
+    # dono de cada `async def` (classe quando houver) — a exceção é qualificada
+    escopo = {}
+    for classe in (n for n in _ast.walk(arvore) if isinstance(n, _ast.ClassDef)):
+        for filho in classe.body:
+            if isinstance(filho, _ast.AsyncFunctionDef):
+                escopo[id(filho)] = f"{classe.name}.{filho.name}"
     achados = []
     for no in _ast.walk(arvore):
         if not isinstance(no, _ast.AsyncFunctionDef):
             continue
+        qual = escopo.get(id(no), no.name)
         for filho in _chamadas(no):
             alvo = filho.func
             nome = (f"{alvo.value.id}.{alvo.attr}"
                     if isinstance(alvo, _ast.Attribute) and isinstance(alvo.value, _ast.Name)
                     else getattr(alvo, "id", None))
-            if nome in proibidos and (no.name, nome) not in permitido:
-                achados.append(f"{no.name}:{nome}")
+            if nome in proibidos and (qual, nome) not in permitido:
+                achados.append(f"{qual}:{nome}")
     assert achados == [], f"chamada bloqueante dentro de async def: {achados}"
 
 
