@@ -8967,6 +8967,8 @@ def test_admin_com_destino_privado_da_400(client, auth):
         r = client.get(f"/api/tunnel/status?url=http://127.0.0.1:{porta}", headers=auth)
         assert r.status_code == 400, r.text[:120]
         assert "interno" in r.text
+        # o 400 diz COMO reativar a checagem (#784)
+        assert "public_url" in r.text
         assert hits == [], "seguiu para destino interno"
     finally:
         srv.shutdown()

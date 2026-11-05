@@ -6757,6 +6757,10 @@ if ($("proxyTunnelStatus")) $("proxyTunnelStatus").onclick = async () => {
     if (d.public_check) {
       const c = d.public_check;
       parts.push(c.ok ? `✔ internet OK (${c.latency_ms} ms)` : `✖ internet falhou: ${c.error || "?"}`);
+    } else {
+      // `null` = o backend não checou (chave de uso não manda `?url=`). Sem esta
+      // linha o painel lê como defeito em vez de "sem verificação" (#784).
+      parts.push("– sem verificação (chave de uso)");
     }
     setProxyStatus(parts.join(" · "));
   } catch (e) { setProxyStatus(`✖ Erro: ${e.message}`); }

@@ -4245,7 +4245,10 @@ def tunnel_status(request: Request, url: str = ""):
         url = str(_settings.get("public_url") or "")
     pub = _public_proxy_check(url) if url.strip() else None
     if pub and pub.get("privado"):
-        raise HTTPException(400, pub.get("error") or "destino interno")
+        raise HTTPException(
+            400, f"{pub.get('error') or 'destino interno'} — para checar uma URL "
+                 "pública, defina `public_url` nas Configurações (ou mande `?url=` "
+                 "com chave admin)")
     tunel = _destino_do_tunel()
     conector = _cf_estado()
     return {
