@@ -5291,14 +5291,16 @@ def dsh_limpo(monkeypatch):
     # consumir o teto do seguinte
     monkeypatch.setattr(app, "_dsh_procs", 0)
     monkeypatch.setattr(app, "_chat_dsh_prewarm_thread", None)
-    yield
-    # FECHA o pool DESTE teste (#688): sem o `yield`+`finally` o `_dsh_fecha_pool`
-    # rodava só no setup, sobre a lista real (vazia) — a lista do teste morria sem
-    # `close()` e o processo do `fake_acp` ficava até o fim da sessão (6 vivos com
-    # 30+ min medidos, mesmo dano do uvicorn órfão).
-    # Roda ANTES do `monkeypatch` desfazer: aqui `_chat_dsh_livres` ainda é a lista
-    # do teste. O `try` por cliente fica no helper.
-    _dsh_fecha_pool()
+    try:
+        yield
+    finally:
+        # FECHA o pool DESTE teste (#688). `finally` e não o corpo depois do
+        # `yield`: com o teste FALHANDO o pytest joga a exceção dentro da fixture e
+        # o que está solto depois do `yield` não roda — o cliente vazaria justo no
+        # caso em que se está depurando.
+        # Roda ANTES do `monkeypatch` desfazer: aqui `_chat_dsh_livres` ainda é a
+        # lista do teste. O `try` por cliente fica no helper.
+        _dsh_fecha_pool()
 
 
 @pytest.fixture(scope="session")
