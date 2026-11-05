@@ -4151,12 +4151,49 @@ def _cf_launchd_loaded() -> bool | None:
     return _launchd_loaded(CF_LABEL)
 
 
+def _host_privado(host: str) -> bool:
+    """O destino é da própria máquina/LAN? (loopback, RFC1918, link-local, CGNAT)
+
+    Sem isso o `?url=` é um scanner da rede interna com oráculo de código/latência
+    (#784). Nome que não resolve em IP cai no heurístico de sufixo."""
+    import ipaddress
+
+    nome = (host or "").strip().strip("[]").lower()
+    if not nome:
+        return True
+    if nome in ("localhost",) or nome.endswith((".local", ".lan", ".internal",
+                                                ".home.arpa")):
+        return True
+    try:
+        ip = ipaddress.ip_address(nome)
+    except ValueError:
+        return False                     # nome público (ou DNS que não resolvemos)
+    return (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
+            or ip in ipaddress.ip_network("100.64.0.0/10"))
+
+
+import urllib.request  # noqa: E402  (só aqui embaixo; ver uso)
+
+
+class _SemRedirect(urllib.request.HTTPRedirectHandler):
+    """Não segue redirect: senão a allowlist de destino vira porta de entrada."""
+
+    def redirect_request(self, req, fp, codigo, msg, headers, novo):
+        return None
+
+
 def _public_proxy_check(url: str, timeout: float = 6.0) -> dict:
     """Checa a URL pública do proxy a partir daqui (ida e volta completa:
-    Mac → VPS → túnel → Mac). Responde {ok, status_code, latency_ms, error}."""
+    Mac → VPS → túnel → Mac). Responde {ok, status_code, latency_ms, error}.
+
+    Destino privado/loopback NÃO é seguido: devolve `privado=True` (#784)."""
     url = (url or "").strip().rstrip("/")
     if not url.startswith(("http://", "https://")):
         return {"ok": False, "error": "URL inválida (use http/https)"}
+    partes = urlsplit(url)
+    if _host_privado(partes.hostname or ""):
+        return {"ok": False, "privado": True,
+                "error": f"destino interno ({partes.hostname}) — não é URL pública"}
     try:
         import urllib.request
         req = urllib.request.Request(f"{url}/health", method="GET")
@@ -4171,7 +4208,9 @@ def _public_proxy_check(url: str, timeout: float = 6.0) -> dict:
         except Exception:  # noqa: BLE001 — sem certifi, trust store padrão
             ctx = ssl.create_default_context()
         t0 = time.monotonic()
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        aberto = urllib.request.build_opener(
+            _SemRedirect(), urllib.request.HTTPSHandler(context=ctx))
+        with aberto.open(req, timeout=timeout) as resp:
             body = resp.read(200)
             lat = round((time.monotonic() - t0) * 1000)
             ok = resp.status == 200 and b'"ok"' in body
@@ -4182,7 +4221,7 @@ def _public_proxy_check(url: str, timeout: float = 6.0) -> dict:
 
 
 @app.get("/api/tunnel/status")
-def tunnel_status(url: str = ""):
+def tunnel_status(request: Request, url: str = ""):
     """Status do acesso pela internet: agentes instalados/carregados (SSH e
     Cloudflare) e checagem fim a fim da URL pública (passada pela UI).
 
@@ -4191,7 +4230,15 @@ def tunnel_status(url: str = ""):
     `conector` diz por que o cloudflared está "parado" (sem agente, plist sem
     token, conector parado) em vez de só um booleano.
     """
+    # `?url=` na query é SSRF de graça: o Mac busca o destino e devolve código e
+    # latência (#784). Só admin manda destino; o resto usa a URL CONFIGURADA.
+    if url.strip():
+        _exige_admin(request)
+    else:
+        url = str(_settings.get("public_url") or "")
     pub = _public_proxy_check(url) if url.strip() else None
+    if pub and pub.get("privado"):
+        raise HTTPException(400, pub.get("error") or "destino interno")
     tunel = _destino_do_tunel()
     conector = _cf_estado()
     return {
@@ -4500,6 +4547,8 @@ _SETTINGS_ADMIN = frozenset({
     "tts_marca_dagua",
     # guarda áudio do dono em disco (#658)
     "speaker_guardar_audio",
+    # destino público do túnel: é o que o status checa sem `?url=` (#784)
+    "public_url",
     # IDENTIDADE (#786): quem é o dono, com que rigor o gate decide e se ele
     # existe. Uma chave `use` que mexesse aqui viraria "o dono" para o gate e para
     # o "só a minha voz" do Live — ou desligaria os dois.

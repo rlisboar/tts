@@ -8919,3 +8919,83 @@ def test_admin_segue_livre_para_modelo_arbitrario(client, auth, monkeypatch):
     r = client.post("/api/tts", headers=auth,
                     json={"text": "oi", "model": "atacante/qualquer"})
     assert r.status_code == 200, r.text[:120]
+
+
+# --- #784: SSRF no /api/tunnel/status ---------------------------------------
+def _listener_local():
+    """Listener HTTP em 127.0.0.1 que conta os hits e responde `{"ok": true}`."""
+    import http.server
+    import socketserver
+    import threading as _th
+
+    hits = []
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            corpo = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(corpo)))
+            self.end_headers()
+            self.wfile.write(corpo)
+
+        def log_message(self, *a):
+            pass
+
+    srv = socketserver.TCPServer(("127.0.0.1", 0), _H)
+    _th.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, hits
+
+
+def test_use_com_url_na_query_da_403_e_nao_bate_no_destino(client, chave_de_uso):
+    srv, hits = _listener_local()
+    try:
+        porta = srv.server_address[1]
+        r = client.get(f"/api/tunnel/status?url=http://127.0.0.1:{porta}",
+                       headers=chave_de_uso)
+        assert r.status_code == 403, r.status_code
+        assert hits == [], f"bateu no destino com chave use: {hits}"
+    finally:
+        srv.shutdown()
+
+
+def test_admin_com_destino_privado_da_400(client, auth):
+    srv, hits = _listener_local()
+    try:
+        porta = srv.server_address[1]
+        r = client.get(f"/api/tunnel/status?url=http://127.0.0.1:{porta}", headers=auth)
+        assert r.status_code == 400, r.text[:120]
+        assert "interno" in r.text
+        assert hits == [], "seguiu para destino interno"
+    finally:
+        srv.shutdown()
+
+
+def test_admin_com_destino_publico_bate_e_devolve_ok(client, auth, monkeypatch):
+    """Destino público de mentira: a checagem roda e o resultado volta."""
+    vistos = []
+    monkeypatch.setattr(app, "_public_proxy_check",
+                        lambda u, timeout=6.0: (vistos.append(u), {"ok": True})[1])
+    r = client.get("/api/tunnel/status?url=https://exemplo.trycloudflare.com",
+                   headers=auth)
+    assert r.status_code == 200, r.text[:120]
+    assert vistos == ["https://exemplo.trycloudflare.com"]
+    assert r.json()["public_check"]["ok"] is True
+
+
+def test_sem_url_usa_a_configurada(client, auth, monkeypatch):
+    vistos = []
+    monkeypatch.setattr(app, "_public_proxy_check",
+                        lambda u, timeout=6.0: (vistos.append(u), {"ok": True})[1])
+    monkeypatch.setitem(app._settings, "public_url", "https://fixo.exemplo")
+    assert client.get("/api/tunnel/status", headers=auth).status_code == 200
+    assert vistos == ["https://fixo.exemplo"]
+
+
+def test_host_privado_reconhece_as_faixas():
+    for privado in ("127.0.0.1", "::1", "10.1.2.3", "192.168.0.1", "172.16.5.4",
+                    "169.254.169.254", "100.64.0.1", "localhost", "mac.local"):
+        assert app._host_privado(privado) is True, privado
+    for publico in ("8.8.8.8", "abc.trycloudflare.com", "meu.dominio.com.br"):
+        assert app._host_privado(publico) is False, publico
