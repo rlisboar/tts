@@ -363,6 +363,7 @@ def _arvore_descartavel(tmp_path: Path) -> Path:
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(600)   # #783: o teto default é 90 s; estes passam de 100
 def test_live_lock_freeze_muta_uma_copia_e_deixa_a_arvore_intacta(tmp_path):
     """A suíte reverte o `app.py` para medir a mordida. Feita na árvore
     COMPARTILHADA, a reversão fica visível por ~10 s e um commit de terceiro a
@@ -703,6 +704,7 @@ def test_varredura_de_orfao_nao_mata_rodada_viva(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(600)   # #783: o teto default é 90 s; estes passam de 100
 def test_freeze_nao_liga_o_voices_real_e_duas_rodadas_seguidas(tmp_path):
     """`voices` é estado do DONO: a cópia do freeze não pode ligá-lo (#703).
 

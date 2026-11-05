@@ -94,6 +94,7 @@ def test_sem_o_label_encoder_derivado_o_load_offline_falha(tmp_path):
 
 @pytest.mark.skipif(shutil.which("zsh") is None, reason="precisa de zsh")
 @pytest.mark.slow
+@pytest.mark.timeout(600)   # #783: o teto default é 90 s; estes passam de 100
 def test_clone_cru_deriva_do_arquivo_versionado_sem_rede(tmp_path):
     """Clone limpo: `models/` só com o que está no git. O script materializa o
     derivado a partir do `.txt` (sem rede) e aí o load offline passa."""

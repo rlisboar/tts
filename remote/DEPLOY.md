@@ -385,10 +385,10 @@ O `#779` passou a validar o cabeçalho `Host`. O túnel entrega
 Antes de subir um rev com o `#779`, o serviço precisa de:
 
 ```
-TTS_ALLOWED_HOSTS=tts.the-dudes.com
+export TTS_ALLOWED_HOSTS="${TTS_ALLOWED_HOSTS:-tts.the-dudes.com}"
 ```
 
-no bloco `EnvironmentVariables` do plist do serviço, seguido de
+em **`~/.tts-studio/start-server.sh`**, seguido de
 `launchctl kickstart -k gui/$(id -u)/studio.tts.server` e conferência:
 
 ```
@@ -396,8 +396,15 @@ curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: tts.the-dudes.com' http://127
 ```
 
 Tem de dar **200** (421 = nome fora da lista). Nome público novo entra na mesma
-env, separado por vírgula. O smoke do `deploy_mini.sh` e o `health_probe.sh`
-acusam 421 — a checagem é feita na LAN com o `Host` do público, então vale mesmo
+env, separado por vírgula.
+
+**Não ponha isso no `EnvironmentVariables` do plist** — ele não chega ao app: o
+agente sobe `ssh ... start-server.sh` e o sshd não herda o ambiente do launchd
+sem `SendEnv`/`AcceptEnv`. O plist traz o bloco só como registro; quem vale é o
+script. (Custou uma hora de diagnóstico; o comentário no plist avisa.)
+
+O smoke do `deploy_mini.sh` e o `health_probe.sh` acusam 421 — a checagem é
+feita na LAN com o `Host` do público, então vale mesmo
 com o túnel caído.
 
 ### Atenção em produção (chave legada)

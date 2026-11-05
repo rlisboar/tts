@@ -37,6 +37,7 @@ _sem_venv = pytest.mark.skipif(not PY.is_file(), reason="precisa da .venv-mlx")
 @_sem_git
 @_sem_venv
 @pytest.mark.slow
+@pytest.mark.timeout(600)   # #783: o teto default é 90 s; estes passam de 100
 def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
     wt = tmp_path / "wt"
     git = ["git", "-C", str(REPO)]
