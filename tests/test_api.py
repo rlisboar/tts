@@ -8141,3 +8141,97 @@ def test_ws_sem_origin_e_same_origin_seguem_abertos(ws_client, monkeypatch):
     with ws_client.websocket_connect(
             "/api/live/ws", headers={"Origin": "http://127.0.0.1:7860"}) as ws:
         assert _setup_ok(ws)["type"] == "ready"
+
+
+# --- #796: deliver/abort NÃO podem esperar a fila segurando o `_gen_lock` -----
+def _jobs_isolados_falsos(monkeypatch, tmp_path, atrasos):
+    """`Popen` falso: cada job escreve `done` no status depois do seu atraso."""
+    import json as _json
+    import subprocess as _sub
+
+    class _PopenFalso:
+        def __init__(self, argv, **kw):
+            self.pid = 4242
+            self.returncode = None
+            cfg = _json.loads(Path(argv[2]).read_text())
+            self._status = Path(cfg["status_path"])
+            self._atraso = atrasos.pop(0)
+            threading.Thread(target=self._roda, daemon=True).start()
+
+        def _roda(self):
+            time.sleep(self._atraso)
+            self._status.write_text(_json.dumps(
+                {"status": "done", "pieces": 1, "total": 1,
+                 "output": {"id": "abc", "duration": 0.5}}))
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(app, "OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(_sub, "Popen", _PopenFalso)
+    monkeypatch.setattr(app, "_unload_local_tts", lambda: None)
+    monkeypatch.setattr(app, "_release_mlx_memory", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_schedule_job_cleanup", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_jobs_hist_salva", lambda: None)
+    monkeypatch.setitem(app._settings, "speech_queue", True)
+    monkeypatch.setitem(app._settings, "speech_queue_gap_s", 0.0)
+    monkeypatch.setattr(app, "_SPEECH_FILA_ESPERA_S", 30.0)
+
+
+def _job_falso(job_id):
+    app._jobs[job_id] = {"id": job_id, "text": "oi", "status": "running",
+                         "pieces": 0, "total": 1}
+    return app._speech_queue_begin(job_id)
+
+
+def test_fila_nao_trava_quando_ticket_maior_pega_o_lock_antes(monkeypatch, tmp_path):
+    """Ticket 1 não pode esperar a fila SEGURANDO o `_gen_lock` (#796).
+
+    Ordem que trava o código antigo: o ticket 1 pega o lock e chama `deliver`, que
+    espera o ticket 0 — dono do lock, ainda gerando. Ninguém solta nada."""
+    _jobs_isolados_falsos(monkeypatch, tmp_path, atrasos=[0.6, 0.05])
+    be = {"id": "omnivoice", "family": "omnivoice", "meta": {"label": "Omni"}}
+    t0 = _job_falso("j0")
+    t1 = _job_falso("j1")
+    erros = []
+
+    def _roda(job_id, token):
+        try:
+            app._run_tts_job_isolated(job_id, "oi", "voz-x", tmp_path / "v.wav",
+                                      "pt", {}, be, sq=token)
+        except Exception as exc:  # noqa: BLE001
+            erros.append(exc)
+
+    # o de ticket MAIOR primeiro: é ele que pega o lock
+    th1 = threading.Thread(target=_roda, args=("j1", t1), daemon=True)
+    th1.start()
+    time.sleep(0.1)
+    th0 = threading.Thread(target=_roda, args=("j0", t0), daemon=True)
+    th0.start()
+    for th in (th0, th1):
+        th.join(timeout=10)
+        assert not th.is_alive(), "a fila travou (deadlock do #796)"
+    assert not erros, erros
+    assert app._jobs["j0"]["status"] == "done" and app._jobs["j1"]["status"] == "done"
+
+
+def test_fila_pula_ticket_de_job_que_morreu(monkeypatch, tmp_path):
+    """Ticket órfão (job fora de running/queued) não segura a fila."""
+    _jobs_isolados_falsos(monkeypatch, tmp_path, atrasos=[0.05])
+    be = {"id": "omnivoice", "family": "omnivoice", "meta": {"label": "Omni"}}
+    _job_falso("morto")
+    app._jobs["morto"]["status"] = "error"        # dono do ticket 0 sumiu
+    token = _job_falso("vivo")
+    app._run_tts_job_isolated("vivo", "oi", "voz-x", tmp_path / "v.wav", "pt", {},
+                              be, sq=token)
+    assert app._jobs["vivo"]["status"] == "done", app._jobs["vivo"].get("error")

@@ -5892,6 +5892,23 @@ class _SpeechGate:
         self._free_at = 0.0
         self._last_dur = 0.0
         self._depth = 0
+        #: ticket → job dono, para detectar ticket órfão na espera FIFO (#796)
+        self._donos: dict[int, str] = {}
+
+    def _pula_morto(self, ticket: int) -> bool:
+        """O dono do ticket sumiu (saiu de running/queued)? Avança e devolve True."""
+        job_id = self._donos.get(ticket)
+        if job_id is None:
+            return True
+        job = _jobs.get(job_id)
+        if job is None or job.get("status") not in ("running", "queued"):
+            self._donos.pop(ticket, None)
+            self._next_ticket += 1
+            self._depth = max(0, self._depth - 1)
+            self._cv.notify_all()
+            print(f"[fila] ticket {ticket} (job {job_id}) sumiu — pulando", flush=True)
+            return True
+        return False
 
     @property
     def depth(self) -> int:
@@ -5919,6 +5936,8 @@ class _SpeechGate:
             last = self._last_dur
             ahead = ticket - self._next_ticket
         token = {"ticket": ticket, "job_id": job_id, "done": False}
+        with self._cv:
+            self._donos[ticket] = job_id
         job = _jobs.get(job_id)
         if job is not None:
             job["queued"] = True
@@ -5957,13 +5976,22 @@ class _SpeechGate:
         if dur > 0:
             dur = max(dur, 0.4)
 
+        limite = time.monotonic() + _SPEECH_FILA_ESPERA_S
         with self._cv:
-            # 1) ordem FIFO estrita
+            # 1) ordem FIFO — com PRAZO (#796): ticket de job que morreu ou que
+            # espera demais é pulado, senão a fila inteira trava
             while token["ticket"] != self._next_ticket:
+                if self._pula_morto(self._next_ticket):
+                    continue
+                if time.monotonic() > limite:
+                    print(f"[fila] ticket {token['ticket']} esperou "
+                          f"{_SPEECH_FILA_ESPERA_S:.0f}s — seguindo", flush=True)
+                    break
                 if job is not None:
                     pos = token["ticket"] - self._next_ticket + 1
                     job["progress"] = {"stage": f"na fila (posição {max(1, pos)})…"}
                 self._cv.wait(timeout=0.4)
+            self._donos.pop(token["ticket"], None)
 
             # 2) espera o fim da fala anterior (duração medida na entrega anterior)
             while True:
@@ -5996,9 +6024,17 @@ class _SpeechGate:
         if not token or token.get("done"):
             return
         job_id = token.get("job_id") or ""
+        limite = time.monotonic() + _SPEECH_FILA_ESPERA_S
         with self._cv:
             while token["ticket"] != self._next_ticket:
+                if self._pula_morto(self._next_ticket):
+                    continue
+                if time.monotonic() > limite:
+                    print(f"[fila] abort do ticket {token['ticket']} esperou "
+                          f"{_SPEECH_FILA_ESPERA_S:.0f}s — seguindo", flush=True)
+                    break
                 self._cv.wait(timeout=0.4)
+            self._donos.pop(token["ticket"], None)
             self._next_ticket += 1
             self._depth = max(0, self._depth - 1)
             token["done"] = True
@@ -6008,6 +6044,9 @@ class _SpeechGate:
             job.pop("queued", None)
 
 
+#: Prazo máximo esperando a vez na fila (#796). Passou disso, o ticket segue — é
+#: melhor um overlap do que a fila inteira presa. 0 = sem prazo.
+_SPEECH_FILA_ESPERA_S = max(0.0, float(os.environ.get("TTS_SPEECH_FILA_ESPERA_S", "120")))
 _speech_gate = _SpeechGate()
 
 
@@ -6344,6 +6383,9 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
     worker = str(BASE / "tts_worker.py")
 
     log_path = pdir / "worker.log"
+    # desfecho resolvido SOB o lock e aplicado FORA dele (#796): `deliver`/`abort`
+    # esperam a vez na fila, e esperar segurando o `_gen_lock` congelava TTS e Live.
+    final: tuple[str, object] | None = None
     # serializa workers (um modelo pesado por vez no Metal)
     with _gen_lock:
         log_f = open(log_path, "w", encoding="utf-8")  # noqa: SIM115
@@ -6360,14 +6402,14 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
             (pdir / "worker.pid").write_text(str(proc.pid))
         except Exception as exc:  # noqa: BLE001
             log_f.close()
-            _speech_queue_abort(sq)
-            job.update(status="error", error=f"falha ao iniciar worker: {exc}", progress=None)
+            job.update(status="error", error=f"falha ao iniciar worker: {exc}",
+                       progress=None)
             _model_state.update(status="idle", progress=None)
-            return
+            final = ("err", f"falha ao iniciar worker: {exc}")
             _jobs_hist_salva()
-
-        # poll status do filho enquanto gera (UI recebe pieces progressivos;
-        # com fila de falas só publica trechos na entrega)
+            # abort do Popen FORA do lock (#796)
+            _speech_queue_abort(sq)
+            return
         last_pieces = 0
 
         def _finish_ok(st: dict) -> None:
@@ -6423,15 +6465,15 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
                                 proc.wait(timeout=30)
                             except Exception:  # noqa: BLE001
                                 pass
-                            _finish_ok(st)
-                            return
+                            final = ("ok", st)
+                            break
                         if st.get("status") == "error":
                             try:
                                 proc.wait(timeout=10)
                             except Exception:  # noqa: BLE001
                                 pass
-                            _finish_err(st.get("error") or "erro no worker")
-                            return
+                            final = ("err", st.get("error") or "erro no worker")
+                            break
                     except Exception:  # noqa: BLE001
                         pass
                 if rc is not None:
@@ -6466,24 +6508,30 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
             try:
                 st = json.loads(status_path.read_text())
                 if st.get("status") == "done" and st.get("output"):
-                    _finish_ok(st)
-                    return
-                if st.get("status") == "error":
-                    _finish_err(st.get("error") or "erro no worker")
-                    return
+                    final = ("ok", st)
+                elif st.get("status") == "error":
+                    final = ("err", st.get("error") or "erro no worker")
             except Exception:  # noqa: BLE001
                 pass
-        if rc == -11 or rc == 139:  # SIGSEGV
-            msg = ("Worker crashou (SIGSEGV / Metal-MLX) ao gerar com "
-                   f"{label}. O servidor continua no ar — tente qwen3-0.6b, "
-                   "PocketTTS ou OmniVoice, ou reinicie e tente de novo.")
-        elif rc and rc < 0:
-            msg = f"Worker morto por sinal {-rc} ({label}). Servidor OK."
+        if final is None:
+            if rc == -11 or rc == 139:  # SIGSEGV
+                msg = ("Worker crashou (SIGSEGV / Metal-MLX) ao gerar com "
+                       f"{label}. O servidor continua no ar — tente qwen3-0.6b, "
+                       "PocketTTS ou OmniVoice, ou reinicie e tente de novo.")
+            elif rc and rc < 0:
+                msg = f"Worker morto por sinal {-rc} ({label}). Servidor OK."
+            else:
+                msg = f"Worker saiu com código {rc} ({label})."
+            if err_tail:
+                msg += " | " + err_tail.replace("\n", " ")[:300]
+            final = ("err", msg)
+
+    # FORA do `_gen_lock` (#796): aqui se espera a vez na fila
+    if final is not None:
+        if final[0] == "ok":
+            _finish_ok(final[1])
         else:
-            msg = f"Worker saiu com código {rc} ({label})."
-        if err_tail:
-            msg += " | " + err_tail.replace("\n", " ")[:300]
-        _finish_err(msg)
+            _finish_err(str(final[1]))
 
 
 def _log(msg: str) -> None:
