@@ -251,6 +251,13 @@ O `.orig.wav` entra no export de vozes e no backup do estado (e volta no import 
 no restore, byte a byte), e some junto com a voz. Sem ele (voz nunca editada) o
 restore responde 404.
 
+**`POST /api/restore` MESCLA por padrão** (admin): o pacote sobrescreve o que traz e
+o que não traz fica. Espelho exato — apagar toda voz fora do pacote — só com
+`?espelho=1`, e aí um pacote sem vozes é recusado a menos que se confirme com
+`?sem_vozes=1`. Antes de publicar qualquer restore, o estado atual é copiado para
+`state/restore-backups/<data-hora>/` (0600, os 10 últimos), então até o engano tem
+volta; a resposta lista `apagados` e `trocados`.
+
 `POST .../denoise?previa=true` roda a MESMA cadeia e devolve `200` com WAV da versão
 limpa **sem escrever nada** (nem o `.orig`): os números vão em header (`X-Timbre`,
 `X-Dnsmos-Antes/Depois`) e a recusa sai com o WAV original e `X-Recusado: 1`. A

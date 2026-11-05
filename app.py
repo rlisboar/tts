@@ -5469,7 +5469,8 @@ def _monta_backup():
 
 
 @app.post("/api/restore")
-async def restore_estado(request: Request, arquivo: UploadFile = File(...)):
+async def restore_estado(request: Request, arquivo: UploadFile = File(...),
+                         espelho: bool = False, sem_vozes: bool = False):
     """Restaura um pacote do `GET /api/backup` — staging, validação e rollback.
 
     Recusa schema desconhecido e sha256 divergente ANTES de tocar em qualquer
@@ -5495,7 +5496,8 @@ async def restore_estado(request: Request, arquivo: UploadFile = File(...)):
             raise
 
     try:
-        resultado = _executa_restore(incoming_path)
+        resultado = _executa_restore(incoming_path, espelho=espelho,
+                                     sem_vozes=sem_vozes)
     finally:
         incoming_path.unlink(missing_ok=True)
 
@@ -5505,13 +5507,15 @@ async def restore_estado(request: Request, arquivo: UploadFile = File(...)):
     return resultado
 
 
-def _executa_restore(incoming_path: Path) -> dict:
+def _executa_restore(incoming_path: Path, espelho: bool = False,
+                     sem_vozes: bool = False) -> dict:
     """Restore sob a trava — serializa com o backup e com outro restore."""
     with _restore_lock:
-        return _aplica_restore(incoming_path)
+        return _aplica_restore(incoming_path, espelho=espelho, sem_vozes=sem_vozes)
 
 
-def _aplica_restore(incoming_path: Path) -> dict:
+def _aplica_restore(incoming_path: Path, espelho: bool = False,
+                    sem_vozes: bool = False) -> dict:
     """Valida o pacote e publica; devolve o resumo. Roda sob `_restore_lock`."""
     import zipfile
 
@@ -5557,19 +5561,61 @@ def _aplica_restore(incoming_path: Path) -> dict:
                                          f"— pacote corrompido, nada foi tocado")
             preparados.append((nome, alvo))
 
-        # rollback: cópia do estado atual antes de mexer
+        tem_vozes_hoje = VOICES_DIR.is_dir() and any(
+            p.suffix == ".wav" for p in VOICES_DIR.iterdir() if p.is_file())
+        vozes_pacote = [n for n in esperados
+                        if n.endswith(".wav") and not _eh_satelite(n)]
+        # pacote só com settings apagava TODAS as vozes no espelho (#788)
+        if espelho and tem_vozes_hoje and not vozes_pacote and not sem_vozes:
+            raise HTTPException(
+                400, "O pacote não tem nenhuma voz e o `espelho=1` apagaria as "
+                     f"{sum(1 for _ in VOICES_DIR.glob('*.wav'))} vozes atuais — "
+                     "repita com `sem_vozes=1` para confirmar")
+
+        # rollback (efêmero, para falha no meio) + SNAPSHOT DURÁVEL (#788): o
+        # rollback some quando dá certo, então sem o durável o engano não tem volta
         rollback = stag / ".rollback"
         rollback.mkdir()
         _snapshot_estado(rollback)
+        backup = _snapshot_duravel()
         try:
-            _publica_estado(preparados, rollback)
+            apagados, trocados = _publica_estado(preparados, rollback, espelho=espelho)
         except Exception:
             _restaura_estado(rollback)
             raise
     return {"ok": True, "schema": schema, "restaurados": len(preparados),
-            "vozes": len([n for n in esperados
-                          if n.endswith(".wav") and not _eh_satelite(n)]),
-            "build_do_pacote": manifest.get("build")}
+            "vozes": len(vozes_pacote), "espelho": bool(espelho),
+            "apagados": apagados, "trocados": trocados,
+            "backup": str(backup), "build_do_pacote": manifest.get("build")}
+
+
+#: Quantos snapshots duráveis de restore ficam guardados (#788)
+_RESTORE_BACKUPS_MAX = max(1, int(os.environ.get("TTS_RESTORE_BACKUPS", "10")))
+
+
+def _snapshot_duravel() -> Path:
+    """Cópia do estado ATUAL antes de publicar, em `STATE_DIR/restore-backups/<ts>`.
+
+    O rollback em `TemporaryDirectory` morre no sucesso; sem esta cópia um restore
+    errado (ou um pacote só com settings) não tem volta. Poda os mais antigos."""
+    destino = STATE_DIR / "restore-backups" / time.strftime("%Y%m%d-%H%M%S")
+    destino.mkdir(parents=True, exist_ok=True)
+    try:
+        destino.chmod(0o700)
+    except OSError:
+        pass
+    _snapshot_estado(destino)
+    for arq in destino.rglob("*"):
+        try:
+            if arq.is_file():
+                arq.chmod(0o600)
+        except OSError:
+            pass
+    raiz = STATE_DIR / "restore-backups"
+    antigos = sorted(p for p in raiz.iterdir() if p.is_dir())
+    for velho in antigos[:-_RESTORE_BACKUPS_MAX]:
+        shutil.rmtree(velho, ignore_errors=True)
+    return destino
 
 
 def _caminho_estado(nome: str) -> Path:
@@ -5594,8 +5640,11 @@ def _snapshot_estado(destino: Path) -> None:
                 shutil.copy2(p, destino / "voices" / p.name)
 
 
-def _publica_estado(preparados, rollback: Path) -> None:
-    """Troca o estado pelo do pacote; vozes fora do pacote saem (espelho exato)."""
+def _publica_estado(preparados, rollback: Path,
+                    espelho: bool = False) -> tuple[list, list]:
+    """Publica o pacote; sem `espelho` MESCLA, com `espelho` apaga o que sobra.
+
+    Devolve `(apagados, trocados)` para a resposta dizer o que mudou de verdade."""
     for nome, origem in preparados:
         destino = (_caminho_estado(nome) if nome in _ESTADO_SIMPLES
                    else VOICES_DIR / Path(nome).name)
@@ -5605,11 +5654,15 @@ def _publica_estado(preparados, rollback: Path) -> None:
             destino.chmod(0o600)
         except OSError:
             pass
-    no_pacote = {Path(n).name for n, _o in preparados if n.startswith("voices/")}
-    if VOICES_DIR.exists():
+    trocados = [nome for nome, _o in preparados]
+    apagados: list[str] = []
+    if espelho and VOICES_DIR.exists():
+        no_pacote = {Path(n).name for n, _o in preparados if n.startswith("voices/")}
         for p in VOICES_DIR.iterdir():
             if p.is_file() and p.suffix in (".wav", ".json") and p.name not in no_pacote:
                 p.unlink()
+                apagados.append(p.name)
+    return apagados, trocados
 
 
 def _restaura_estado(rollback: Path) -> None:

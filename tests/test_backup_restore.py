@@ -51,8 +51,9 @@ def _hash(estado) -> dict:
     return {str(p.name): hashlib.sha256(p.read_bytes()).hexdigest() for p in alvos}
 
 
-def _reembala(zip_bytes: bytes, *, schema=None, corromper=None) -> bytes:
-    """Reescreve o pacote mudando o schema ou um byte de um arquivo (sha quebra)."""
+def _reembala(zip_bytes: bytes, *, schema=None, corromper=None,
+              tirar_vozes=False) -> bytes:
+    """Reescreve o pacote mudando o schema, um byte ou tirando as vozes."""
     origem = zipfile.ZipFile(io.BytesIO(zip_bytes))
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as novo:
@@ -64,6 +65,13 @@ def _reembala(zip_bytes: bytes, *, schema=None, corromper=None) -> bytes:
                 dados = json.dumps(man).encode()
             if info.filename == corromper:
                 dados = bytes([dados[0] ^ 0xFF]) + dados[1:]
+            if tirar_vozes and info.filename.startswith("voices/"):
+                continue
+            if tirar_vozes and info.filename == "manifest.json":
+                man = json.loads(dados)
+                man["arquivos"] = {k: v for k, v in man["arquivos"].items()
+                                   if not k.startswith("voices/")}
+                dados = json.dumps(man).encode()
             novo.writestr(info.filename, dados)
     return buf.getvalue()
 
@@ -81,7 +89,9 @@ def test_round_trip_devolve_os_blocos_identicos(client, auth, estado):
     (estado["vozes"] / "outra.wav").write_bytes(b"lixo")
 
     aflito = TestClient(app.app, client=("127.0.0.1", 50000))
-    r = aflito.post("/api/restore", headers=auth,
+    # espelho explícito: o padrão agora MESCLA (#788), então a voz intrusa só sai
+    # quando o dono pede o espelho
+    r = aflito.post("/api/restore?espelho=1", headers=auth,
                     files={"arquivo": ("b.zip", pacote, "application/zip")})
     assert r.status_code == 200, r.text
     assert _hash(estado) == antes, "round-trip não devolveu o mesmo conteúdo"
@@ -195,13 +205,14 @@ def test_restores_concorrentes_nao_misturam_estado(client, auth, estado):
 
     # publica devagar ARQUIVO A ARQUIVO: sem a trava as duas publicações se
     # entrelaçam e o estado final mistura os pacotes
-    def devagar(preparados, rollback):
+    def devagar(preparados, rollback, espelho=False):
         for nome, origem in preparados:
             destino = (app._caminho_estado(nome) if nome in app._ESTADO_SIMPLES
                        else app.VOICES_DIR / origem.name)
             destino.parent.mkdir(exist_ok=True)
             origem.replace(destino)
             time.sleep(0.05)
+        return [], [n for n, _o in preparados]
 
     import pytest as _pytest
     with _pytest.MonkeyPatch.context() as mp:
@@ -228,3 +239,49 @@ def test_restores_concorrentes_nao_misturam_estado(client, auth, estado):
     # v1.wav e settings têm de ser do MESMO pacote (A: zeros, B: 0xff)
     assert (marca == "A") == (wav.endswith(b"\x00" * 4)), (marca, wav[-4:])
     assert (estado["vozes"] / "v1.json").exists()
+
+
+# --- #788: padrão MESCLA, espelho é explícito e tudo tem volta ----------------
+def test_padrao_mescla_e_preserva_voz_fora_do_pacote(client, auth, estado):
+    """Restore só com settings não pode zerar o `voices/` (#788)."""
+    pacote = client.get("/api/backup", headers=auth).content
+    intrusa = estado["vozes"] / "outra.wav"
+    intrusa.write_bytes(b"lixo")
+    r = client.post("/api/restore", headers=auth,
+                    files={"arquivo": ("b.zip", pacote, "application/zip")})
+    assert r.status_code == 200, r.text
+    assert intrusa.exists(), "o padrão apagou voz fora do pacote"
+    assert r.json()["espelho"] is False and r.json()["apagados"] == []
+
+
+def test_espelho_lista_o_que_apagou_e_guarda_snapshot(client, auth, estado,
+                                                       monkeypatch, tmp_path):
+    """`espelho=1` apaga — mas antes grava snapshot durável com o que saiu."""
+    backup_dir = tmp_path / "backups"
+    monkeypatch.setattr(app, "STATE_DIR", tmp_path)
+    pacote = client.get("/api/backup", headers=auth).content
+    intrusa = estado["vozes"] / "outra.wav"
+    intrusa.write_bytes(b"lixo")
+    r = client.post("/api/restore?espelho=1", headers=auth,
+                    files={"arquivo": ("b.zip", pacote, "application/zip")})
+    assert r.status_code == 200, r.text
+    assert not intrusa.exists()
+    assert "outra.wav" in r.json()["apagados"]
+    snap = app.Path(r.json()["backup"])
+    assert (snap / "voices" / "outra.wav").read_bytes() == b"lixo"
+    assert (snap / "voices" / "outra.wav").stat().st_mode & 0o777 == 0o600
+    assert backup_dir  # o diretório é o `STATE_DIR`
+
+
+def test_pacote_sem_vozes_com_espelho_exige_confirmacao(client, auth, estado):
+    """Espelho com pacote sem vozes apagaria tudo: recusa até `sem_vozes=1`."""
+    pacote = client.get("/api/backup", headers=auth).content
+    so_settings = _reembala(pacote, tirar_vozes=True)
+    r = client.post("/api/restore?espelho=1", headers=auth,
+                    files={"arquivo": ("b.zip", so_settings, "application/zip")})
+    assert r.status_code == 400 and "sem_vozes" in r.text
+    assert (estado["vozes"] / "v1.wav").exists()
+    r = client.post("/api/restore?espelho=1&sem_vozes=1", headers=auth,
+                    files={"arquivo": ("b.zip", so_settings, "application/zip")})
+    assert r.status_code == 200, r.text
+    assert not list(estado["vozes"].glob("*.wav"))
