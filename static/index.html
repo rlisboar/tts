@@ -3571,6 +3571,11 @@ function travarAcoesElevadas() {
   }
 }
 
+// #799: o aviso de campo ignorado tem PRECEDÊNCIA sobre o sucesso — o toast é um
+// só, então quem escreve por último manda. `api()` já avisou (chama o
+// `tratarRespostaSettings`); aqui só se decide se o sucesso pode ser dito.
+const sucessoPodeFalar = (r) => tratarRespostaSettings(r).length === 0;
+
 // Resposta de POST /api/settings: pode ter campo administrativo descartado pelo
 // servidor (blob único, sem 403 — ver _settings_payload_adm no app.py). Sem
 // avisar, a tela dizia "salvo ✔" com os campos de conexão intactos.
@@ -5115,7 +5120,7 @@ if ($("metricsTtl")) {
     body: JSON.stringify({ metrics_ttl_dias: parseInt($("metricsTtl").value, 10) }) })
     // #791/#799: com chave `use` o servidor dropa o campo e o `api()` já avisou —
     // o sucesso aqui por cima apagava o aviso e a tela mentia "salvo"
-    .then((r) => { if (!tratarRespostaSettings(r).length) toast("Retenção do histórico: " + $("metricsTtl").value + " dia(s)"); })
+    .then((r) => { if (sucessoPodeFalar(r)) toast("Retenção do histórico: " + $("metricsTtl").value + " dia(s)"); })
     .catch((e) => toast("Falha ao salvar retenção: " + e.message));
 }
 if ($("sttBeam")) {
@@ -8227,8 +8232,7 @@ $("cvSystemSave").onclick = async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_system: $("cvSystem").value })
     });
-    if (tratarRespostaSettings(r).length) return;     // #791: campo de uso
-    toast("Instruções salvas ✔");
+    if (sucessoPodeFalar(r)) toast("Instruções salvas ✔");
   } catch (e) { toast("Erro: " + e.message, 5000); }
 };
 $("cvSystemReset").onclick = async () => {
@@ -8239,8 +8243,7 @@ $("cvSystemReset").onclick = async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_system: $("cvSystem").value })
     });
-    // mesma precedência do salvar: aviso ganha do sucesso (#799)
-    if (!tratarRespostaSettings(r).length) toast("Instruções restauradas (padrão)");
+    if (sucessoPodeFalar(r)) toast("Instruções restauradas (padrão)");
   } catch (e) { toast("Erro: " + e.message, 5000); }
 };
 async function cvLoadVoices() {

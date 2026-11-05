@@ -549,14 +549,28 @@ with sync_playwright() as p:
     print(f"  toast das instruções (uso) com chave de uso: {t[:60]!r}")
     cobrar("Instruções salvas" in t, f"o `chat_system` é de uso e devia aplicar: {t!r}")
 
-    # terceiro handler com o mesmo formato: "restaurar padrão" também não pode
-    # engolir a própria confirmação (e o guard não pode quebrá-la)
-    pg.evaluate("() => { document.getElementById('toast').textContent = ''; }")
-    pg.eval_on_selector("#cvSystemReset", "el => el.click()")
-    pg.wait_for_timeout(1200)
-    t = pg.inner_text("#toast")
-    print(f"  toast do restaurar padrão com chave de uso: {t[:60]!r}")
-    cobrar("restauradas" in t or "padrão" in t, f"o restaurar padrão não confirmou: {t!r}")
+    # Os dois handlers de instruções mandam campo de USO, então o servidor real
+    # nunca devolve `admin_ignored` para eles — a fiação do guard fica sem prova.
+    # Aqui o POST é stubbado devolvendo o ignorado: o aviso (escrito pelo `api()`)
+    # NÃO pode ser apagado pelo sucesso. O helper em si é provado pelo TTL acima,
+    # com o servidor de verdade.
+    def com_ignorado(seletor, rotulo, confirma):
+        pg.route("**/api/settings", lambda r: r.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"ok": True, "is_admin": False,
+                             "admin_ignored": ["chat_system"]})))
+        pg.evaluate("() => { document.getElementById('toast').textContent = ''; }")
+        pg.eval_on_selector(seletor, "el => el.click()")
+        pg.wait_for_timeout(1200)
+        t = pg.inner_text("#toast")
+        pg.unroute("**/api/settings")
+        print(f"  toast do {rotulo} (admin_ignored forçado): {t[:60]!r}")
+        cobrar("precisam de chave admin" in t,
+               f"o aviso do {rotulo} foi sobrescrito pelo sucesso: {t!r}")
+        cobrar(confirma not in t, f"o {rotulo} confirmou com o campo dropado: {t!r}")
+
+    com_ignorado("#cvSystemSave", "salvar instruções", "Instruções salvas")
+    com_ignorado("#cvSystemReset", "restaurar padrão", "restauradas")
 
     # ação administrativa -> 403 com instrução
     r = pg.evaluate("""async () => {
