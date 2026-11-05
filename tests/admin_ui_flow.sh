@@ -214,6 +214,12 @@ CRIADAS=()
 # falha aborta o resto do trap (mesma classe do kill do cfg_sujo).
 encerra() {
   limpar
+  # `limpa_servidor` derruba o servidor E apaga as chaves/settings/vozes da rodada
+  # — tem de valer na rodada VERMELHA também, senão sobra `/tmp/voices-adminui.*`
+  # a cada falha. Só existe no modo de instância própria.
+  if declare -F limpa_servidor >/dev/null; then
+    limpa_servidor || true
+  fi
   [ -n "${SERVIDOR_PID:-}" ] && { kill "$SERVIDOR_PID" 2>/dev/null || true; }
   [ -n "${APK:-}" ] && rm -f "$APK" "$SET"
   # Este trap SOBRESCREVE o do `serial.sh`: sem estas duas o vigia do teto
