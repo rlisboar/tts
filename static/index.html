@@ -3239,13 +3239,13 @@
         <p class="hint">Provedor que conduz a aba Conversa. Vazio = herda o de tradução.</p>
         <div class="divider"></div>
         <label class="cfg-label">Biometria de voz — quem pode falar
-          <select id="speakerGate">
+          <select id="speakerGate" data-admin-setting="speaker_gate">
             <option value="off">Todos (desligado)</option>
             <option value="enforce">Só vozes cadastradas</option>
             <option value="label">Todos, etiquetando quem fala</option>
           </select></label>
         <label class="cfg-label">Rigor por alvo de erro (FAR)
-          <select id="spFarAlvo">
+          <select id="spFarAlvo" data-admin-setting="speaker_far_alvo">
             <option value="">Pelo número abaixo (modo cru)</option>
             <option value="1">1 erro a cada 100 falas — FAR 1 %</option>
             <option value="0.1">1 erro a cada 1000 falas — FAR 0,1 %</option>
@@ -3259,10 +3259,10 @@
         <details class="sp-avancado" id="spAvancado">
           <summary>Número cru do rigor</summary>
           <label class="cfg-label">Rigor <output id="spThrOut">0.60</output>
-            <input type="range" id="spThr" min="0.35" max="0.9" step="0.05" value="0.6" aria-describedby="spThrNota"></label>
+            <input type="range" id="spThr" data-admin-setting="speaker_threshold" min="0.35" max="0.9" step="0.05" value="0.6" aria-describedby="spThrNota"></label>
           <p class="hint" style="margin-top:0">Sua voz costuma dar <b>0.65–0.85</b>; outra pessoa, <b>0.40–0.55</b>. Padrão 0.60 — rejeita intrusos sem rejeitar você (resfriado/afastado do mic). Só vale no modo cru.</p>
         </details>
-        <label class="check" title="Marca d'água em toda saída do TTS, com detector — ainda não implementado (#522)"><input type="checkbox" id="spAntiClone" disabled> Anti-clone (marca d'água) <span class="hint">— em breve</span></label>
+        <label class="check" title="Marca d'água em toda saída do TTS, com detector — ainda não implementado (#522)"><input type="checkbox" id="spAntiClone" data-admin-setting="speaker_anticlone" data-sempre-travado="1" disabled> Anti-clone (marca d'água) <span class="hint">— em breve</span></label>
         <!-- o app pode cair para o extrator legado quando faltam os pesos do
              atual; quem diz é o servidor (`extrator_efetivo`) e aqui só se avisa
              — sem o campo (servidor anterior) o parágrafo fica oculto -->
@@ -3466,6 +3466,8 @@ const ROTULO_SETTING = {
   remote_stt_model: "modelo do STT", remote_stt_key: "chave do STT",
   chat_base_url: "Base URL da Conversa", chat_model: "modelo da Conversa", chat_api_key: "chave da Conversa",
   metrics_ttl_dias: "retenção do histórico",
+  speaker_gate: "gate de locutor", speaker_threshold: "rigor do locutor",
+  speaker_far_alvo: "alvo de erro (FAR)", speaker_anticlone: "anti-clone",
 };
 const rotuloSetting = k => ROTULO_SETTING[k] || k;
 // Administrativos que existem no servidor mas ainda não têm input na tela: sem
@@ -3477,6 +3479,9 @@ const ADMIN_SEM_UI = new Set([
   // protegidos no servidor e SEM controle na tela ainda: o aviso de marcador
   // faltante acusaria os dois para sempre (#657/#791)
   "tts_marca_dagua", "speaker_guardar_audio",
+  // o toggle "só a minha voz" do Live ainda não tem controle (#528, espera o
+  // speech); entra aqui para o aviso de marcador faltante não acusar (#791)
+  "live_so_minha_voz",
 ]);
 
 // Trava os campos administrativos e diz POR QUE estão travados: campo travado
@@ -3484,7 +3489,9 @@ const ADMIN_SEM_UI = new Set([
 function aplicarPoliticaAdmin() {
   document.querySelectorAll("[data-admin-setting]").forEach(el => {
     const travado = !ADMIN.is && ADMIN.fields.has(el.dataset.adminSetting);
-    el.disabled = travado;
+    // `data-sempre-travado`: controle que nasce sem função (ex.: anti-clone "em
+    // breve") não pode ser LIGADO só porque a chave é admin (#791)
+    el.disabled = travado || el.dataset.sempreTravado === "1";
     if (el.dataset.tituloOriginal === undefined) el.dataset.tituloOriginal = el.title || "";
     el.title = travado
       ? `Travado: só a chave administrativa altera ${rotuloSetting(el.dataset.adminSetting)}`

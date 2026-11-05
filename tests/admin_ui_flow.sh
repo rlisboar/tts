@@ -356,6 +356,21 @@ with sync_playwright() as p:
     cobrar(len(avisos) >= 2, f"faltou aviso de alcance nos campos de uso ({avisos})")
     cobrar(any("uso" in a and "admin" in a for a in avisos),
            f"o aviso não diz que é campo de uso nem que contorna o admin ({avisos})")
+    # #786/#791: os campos de identidade também são admin — a tela não pode
+    # oferecer controle que o servidor dropa em silêncio
+    ident = pg.eval_on_selector_all(
+        "#speakerGate, #spThr, #spFarAlvo, #spAntiClone",
+        "els => els.map(e => [e.id, e.dataset.adminSetting, e.disabled])")
+    print(f"  campos de identidade: {ident}")
+    for cid, campo, desab in ident:
+        cobrar(bool(campo), f"#{cid} sem data-admin-setting (seria dropado em silêncio)")
+        # o anti-clone nasce inerte de propósito ("em breve"), então só é travado
+        # por admin se o servidor o listar; os outros três travam sempre
+        if cid != "spAntiClone":
+            cobrar(desab is True, f"#{cid} devia estar travado com chave de uso")
+            titulo = pg.eval_on_selector(f"#{cid}", "el => el.title")
+            cobrar("administrativa" in (titulo or "").lower(),
+                   f"#{cid} travado sem dizer o motivo ({titulo!r})")
     marcado = pg.eval_on_selector("#metricsTtl", "el => el.dataset.adminSetting")
     cobrar(marcado == "metrics_ttl_dias",
            f"o TTL do histórico não está marcado como admin ({marcado!r})")
