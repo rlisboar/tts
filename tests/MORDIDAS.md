@@ -812,3 +812,4 @@ são de 24 kHz. Sem reamostrar, 1 s vira 2 s no fio (2× lento) e uma oitava aba
 | Sabotagem | Resultado |
 |---|---|
 | devolver o áudio do filho sem `_reamostra` | `test_audio_do_filho_em_48k_chega_em_24k_sem_mudar_o_tom` **FAILED** ("48000 amostras") |
+| tirar a reamostragem do caminho IN-PROCESS (`return r`) | `test_caminho_in_process_reamostra_para_a_taxa_do_fio` **FAILED** ("48000 amostras") |
