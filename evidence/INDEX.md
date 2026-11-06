@@ -307,6 +307,8 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `687-marca-nivel.md` | #687 | 2026-10-31 | Marca d'água audível em fala baixa (#687) — diagnóstico e correção |
 | `796-mordida.txt` | #796 | 2026-11-05 | MORDIDA #796 — a entrega da fala tem de esperar a fila FORA do `_gen_lock` |
 | `812-marca-remoto.md` | #812 | 2026-11-05 | Marca d'água no caminho remoto (#812) |
+| `869-live-vad-cru.md` | #869 | — | 869 — Live descarta turno com fala real (`motivo=vad` / "sem fala") |
+| `869-repro-cru.py` | #869 | — | """#869 — reproduz o descarte `motivo=vad` do Live com áudio gravado. |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |

@@ -753,3 +753,175 @@ def test_default_do_filtro_no_stt_e_CRU_travado():
     # a opção `filtrado` (a mordida) é lida no call site, não na constante
     assert '_TTS_LIVE_RNNOISE_STT != "cru"' in fonte, (
         "o desvio para o caminho filtrado (a mordida) sumiu de `_live_audio_cru`")
+
+
+# ── #869: o `speech_end` do motor REAL leva o CRU ao STT, alinhado ────────────
+_FALA = Path(__file__).resolve().parent / "fixtures" / "voz_fala_5s_16k.wav"
+
+
+def _fala_com_pausas(seg_fala_s: float = 1.5) -> np.ndarray:
+    import soundfile as sf
+
+    voz, sr = sf.read(str(_FALA), dtype="float32")
+    assert sr == SR
+    voz = voz[: int(seg_fala_s * SR)]
+    piso = np.random.default_rng(7).normal(0, 10 ** (-55 / 20), SR * 6).astype(np.float32)
+    x = piso.copy()
+    x[SR: SR + len(voz)] += voz                       # 1 s de piso, fala, piso
+    return x
+
+
+class _NsInverte:
+    """Filtro de mentira que INVERTE a fase: o motor decide igual (energia e
+    Silero não ligam para o sinal), mas os bytes do filtrado ≠ cru — dá para
+    provar de qual caminho o STT recebeu."""
+    ativo = True
+    atraso_amostras = 0
+
+    def processa(self, pcm):
+        return (-np.frombuffer(pcm, "<i2").astype(np.int32)).clip(-32768, 32767) \
+            .astype("<i2").tobytes()
+
+
+def _igual(a: bytes, b: bytes) -> bool:
+    """Mesmo trecho, a menos do arredondamento do motor (float → PCM16: ±1 LSB)."""
+    x, y = np.frombuffer(a, "<i2").astype(int), np.frombuffer(b, "<i2").astype(int)
+    return len(x) == len(y) and int(np.max(np.abs(x - y), initial=0)) <= 1
+
+
+def _roda_motor(sess: dict, x: np.ndarray, filtro) -> list:
+    import app
+    import live_turns
+
+    eng = live_turns.TurnEngine()
+    fins = []
+    pcm = _pcm(x)
+    for i in range(0, len(pcm) - 1024 + 1, 1024):     # 512 amostras, o frame do navegador
+        cru = pcm[i:i + 1024]
+        app._live_cru_guarda(sess, cru)
+        for ev in eng.feed(filtro(cru)):
+            if ev.tipo == "speech_end":
+                fins.append((ev, app._live_audio_cru(sess, ev)))
+    return fins
+
+
+def test_speech_end_do_motor_real_entrega_o_CRU_e_nao_o_filtrado():
+    """A mordida do #869: `speech_end` carimba o FIM em `amostra`; lido como
+    início, o recorte caía além do ring e o STT recebia SEMPRE o filtrado — a
+    híbrida do #481 nunca valeu em produção."""
+    ns = _NsInverte()
+    sess = {"id": "s", "rnnoise": ns}
+    fins = _roda_motor(sess, _fala_com_pausas(1.5), ns.processa)
+    assert len(fins) == 1, f"esperava 1 turno, veio {len(fins)}"
+    ev, stt = fins[0]
+    assert len(stt) == len(ev.audio)
+    assert not _igual(stt, bytes(ev.audio)), "o STT recebeu o FILTRADO (o recorte do cru caiu fora)"
+    assert _igual(stt, ns.processa(bytes(ev.audio))), "o cru recortado não é o trecho do turno"
+
+
+def test_recorte_do_cru_desconta_o_atraso_do_filtro():
+    """Com o filtro atrasando D amostras, o motor conta o filtrado: o trecho cru
+    certo começa D antes. Sem descontar, perde o ataque da 1ª palavra."""
+    D = 1776
+
+    class _NsAtrasa(_NsInverte):
+        atraso_amostras = D
+
+        def __init__(self):
+            self._fila = b"\x00\x00" * D
+
+        def processa(self, pcm):
+            self._fila += bytes(pcm)
+            sai, self._fila = self._fila[:len(pcm)], self._fila[len(pcm):]
+            return _NsInverte.processa(self, sai)       # atrasa E inverte a fase
+
+    x = _fala_com_pausas(1.5)
+    ns = _NsAtrasa()
+    sess = {"id": "s", "rnnoise": ns}
+    fins = _roda_motor(sess, x, ns.processa)
+    assert len(fins) == 1
+    ev, stt = fins[0]
+    assert not _igual(stt, bytes(ev.audio)), "o STT recebeu o FILTRADO"
+    assert _igual(stt, _NsInverte().processa(bytes(ev.audio))), (
+        "cru recortado fora de fase com o turno do motor (atraso do filtro não descontado)")
+
+
+def test_atraso_declarado_bate_com_o_ffmpeg_real():
+    """`ATRASO_AMOSTRAS` é medida, não chute: o filtro real tem de concordar
+    dentro de 1 ms. Sem ffmpeg/modelo, pula (a CI sem ffmpeg não prova nada)."""
+    import pytest
+
+    ns = RnnoiseAoVivo()
+    if not ns.abrir():
+        pytest.skip("ffmpeg/arnndn indisponível")
+    try:
+        x = _fala_com_pausas(3.0)
+        pcm = _pcm(x)
+        y = b"".join(ns.processa(pcm[i:i + 1024]) for i in range(0, len(pcm) - 1023, 1024))
+        assert ns.faltas == 0
+        assert ns.atraso_amostras == live_rnnoise.ATRASO_AMOSTRAS
+    finally:
+        ns.fechar()
+    a, b = np.abs(_f32(pcm[:len(y)])), np.abs(_f32(y))
+    env = lambda v: np.convolve(v, np.ones(160) / 160, "same")  # noqa: E731
+    ea, eb = env(a), env(b)
+    meio = slice(SR, 4 * SR)
+    lag = max(range(0, 4000, 16), key=lambda d: float(np.dot(ea[meio], eb[SR + d:4 * SR + d])))
+    assert abs(lag - live_rnnoise.ATRASO_AMOSTRAS) <= 16, f"atraso medido {lag} amostras"
+
+
+def test_turno_de_1500ms_de_fala_real_passa_no_vad_do_stt():
+    """Aceite do #869: 1,5 s de fala real que o motor fecha como turno NÃO pode
+    sair `motivo=vad` — o portão do STT (`_vad_tem_fala`) roda no que o turno
+    entrega (aqui, o cru recortado pelo ring)."""
+    import tempfile
+    import wave
+
+    import app
+
+    ns = _NsInverte()
+    sess = {"id": "s", "rnnoise": ns}
+    fins = _roda_motor(sess, _fala_com_pausas(1.5), ns.processa)
+    assert len(fins) == 1
+    ev, stt = fins[0]
+    assert ev.fala_ms >= 1200
+    with tempfile.NamedTemporaryFile(suffix=".wav") as f:
+        with wave.open(f.name, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SR)
+            w.writeframes(stt)
+        assert app._vad_tem_fala(Path(f.name)), "turno de 1,5 s de fala descartado pelo VAD"
+
+
+def test_dump_opt_in_grava_wav_e_veredito(tmp_path, monkeypatch):
+    """`TTS_LIVE_DUMP_DIR` (#869): o turno vira `.wav` + `.json` com o motivo."""
+    import json
+
+    import live_pipeline
+
+    monkeypatch.setattr(live_pipeline, "_LIVE_DUMP_DIR", str(tmp_path))
+
+    def _julga(pcm, lang, julga):
+        julga["motivo"] = "vad"
+        return ""
+
+    monkeypatch.setattr(live_pipeline, "_stt_julga", _julga)
+    pcm = _pcm(_fala_com_pausas(1.5)[:SR])
+    julga: dict = {}
+    assert live_pipeline._stt_app(pcm, "pt", julga) == ""
+    assert julga["motivo"] == "vad"
+    wavs, jsons = list(tmp_path.glob("*.wav")), list(tmp_path.glob("*.json"))
+    assert len(wavs) == 1 and len(jsons) == 1
+    meta = json.loads(jsons[0].read_text())
+    assert meta["motivo"] == "vad" and meta["ms"] == 1000
+
+
+def test_dump_desligado_nao_escreve_nada(tmp_path, monkeypatch):
+    import live_pipeline
+
+    monkeypatch.setattr(live_pipeline, "_LIVE_DUMP_DIR", "")
+    monkeypatch.setattr(live_pipeline, "_stt_julga", lambda p, l, j: "oi")
+    monkeypatch.chdir(tmp_path)
+    assert live_pipeline._stt_app(b"\x00\x00" * 160, "pt", {}) == "oi"
+    assert not list(tmp_path.iterdir())

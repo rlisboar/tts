@@ -1352,8 +1352,49 @@ def _casa_comando(texto: str) -> bool:
     return palavras[0] in cadastradas or palavras[-1] in cadastradas
 
 
+#: #869: INSTRUMENTO opt-in — com `TTS_LIVE_DUMP_DIR` apontando para um diretório,
+#: cada turno grava o PCM que o STT recebeu (`.wav`) e o veredito (`.json`). É o
+#: único jeito de reproduzir um descarte do Live com o áudio REAL do navegador
+#: (o log só tem metadados, por invariante de privacidade). Desligado por padrão;
+#: liga-se à mão, numa sessão de diagnóstico do dono, e o diretório é dele.
+_LIVE_DUMP_DIR = (os.environ.get("TTS_LIVE_DUMP_DIR") or "").strip()
+
+
+def _stt_dump(pcm: bytes, julga: dict, texto: str) -> None:
+    """Grava o turno no `TTS_LIVE_DUMP_DIR` (nunca levanta: é diagnóstico)."""
+    try:
+        base = pathlib.Path(_LIVE_DUMP_DIR)
+        base.mkdir(parents=True, exist_ok=True)
+        nome = base / time.strftime("%Y%m%d-%H%M%S")
+        nome = nome.with_name(f"{nome.name}-{int(time.monotonic() * 1000) % 100000:05d}")
+        with wave.open(str(nome.with_suffix(".wav")), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(pcm)
+        a = np.frombuffer(pcm[:len(pcm) - len(pcm) % 2], dtype="<i2").astype(np.float32)
+        rms = float(np.sqrt((a * a).mean())) / 32768.0 if a.size else 0.0
+        meta = {"ms": len(pcm) // 32, "dbfs": round(20 * float(np.log10(max(rms, 1e-7))), 1),
+                "motivo": julga.get("motivo") or "", "detalhe": julga.get("detalhe") or "",
+                "texto": texto}
+        nome.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False))
+    except Exception as exc:  # noqa: BLE001 — instrumento não derruba turno
+        print(f"[live] dump do turno falhou: {exc}", flush=True)
+
+
 def _stt_app(pcm16_le_16k: bytes, language: str | None,
              julga: dict | None = None) -> str:
+    """STT do turno (`_stt_julga`) + o dump opt-in do #869."""
+    if not _LIVE_DUMP_DIR:
+        return _stt_julga(pcm16_le_16k, language, julga)
+    julga = {} if julga is None else julga
+    texto = _stt_julga(pcm16_le_16k, language, julga)
+    _stt_dump(pcm16_le_16k, julga, texto)
+    return texto
+
+
+def _stt_julga(pcm16_le_16k: bytes, language: str | None,
+               julga: dict | None = None) -> str:
     """STT do turno pelo caminho do app (VAD + anti-alucinação inclusos).
 
     Vem o `_stt_ok` junto (#314): o Live chamava `_transcribe` direto e o filtro

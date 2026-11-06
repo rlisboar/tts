@@ -11914,8 +11914,21 @@ def _live_audio_cru(sess: dict, ev) -> bytes:
     ring = sess.get("cru")
     if not ring or not ring[0]:
         return audio
-    inicio = int(getattr(ev, "amostra", 0) or 0) - ring[1]
-    desloc = max(0, inicio) * 2
+    # #869: `amostra` é o INÍCIO do áudio só nos eventos de abertura; no
+    # `speech_end` o motor carimba o FIM (`_fechar_turno`). Ler o fim como início
+    # recortava o trecho DEPOIS da fala — que ainda nem tinha chegado, então o
+    # tamanho não batia e o turno caía SEMPRE no filtrado: a híbrida do #481
+    # nunca entregou o cru ao STT. E o motor conta amostras do FILTRADO, que
+    # anda `atraso_amostras` atrás do cru: sem descontar, o recorte perdia o
+    # ataque da 1ª palavra.
+    n = len(audio) // 2
+    inicio = int(getattr(ev, "amostra", 0) or 0)
+    if getattr(ev, "tipo", "") == "speech_end":
+        inicio -= n
+    inicio -= int(getattr(sess.get("rnnoise"), "atraso_amostras", 0) or 0)
+    desloc = (inicio - ring[1]) * 2
+    if desloc < 0:
+        return audio                     # o começo já saiu do ring: o filtrado serve
     pedaco = bytes(ring[0][desloc:desloc + len(audio)])
     return pedaco if len(pedaco) == len(audio) else audio
 

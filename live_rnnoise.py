@@ -38,6 +38,13 @@ _PRIME_MS = 300
 # frames de 100 ms): 40 ms já cobre o buraco; 50 ms deixa folga sem somar
 # outro frame inteiro ao barge-in.
 _RESERVA_MS = 50
+#: atraso do PCM filtrado em relação ao cru, em amostras @16 kHz (#869): a reserva
+#: (50 ms) mais o atraso próprio do `arnndn` + dois resamples. MEDIDO com fala real
+#: (envelope, frames de 512 e de 1600 amostras: os dois dão 1776 = 111 ms) e
+#: travado por `tests/test_live_rnnoise.py`. O ring CRU do app recorta o turno
+#: por amostra do motor, que conta o FILTRADO — sem descontar isto o STT recebe
+#: o trecho 111 ms atrasado (perde o ataque da 1ª palavra).
+ATRASO_AMOSTRAS = 1776
 # sem byte novo por este tempo, a rajada desta escrita acabou
 _ESTANCA_S = 0.04
 _PRIME_TETO_S = 0.6
@@ -124,6 +131,16 @@ class RnnoiseAoVivo:
     @property
     def ativo(self) -> bool:
         return self._ok
+
+    @property
+    def atraso_amostras(self) -> int:
+        """Quanto o filtrado está atrás do cru, AGORA (amostras @16 kHz).
+
+        Filtro desligado (devolve o cru) = 0. Cada byte completado com zero
+        (`faltas`) empurra a saída real para depois — o atraso cresce junto."""
+        if not self._ok or self._morto:
+            return 0
+        return ATRASO_AMOSTRAS + self.faltas // 2
 
     @property
     def morto(self) -> bool:
