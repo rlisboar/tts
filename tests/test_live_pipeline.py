@@ -804,7 +804,10 @@ def test_barge_durante_a_sintese_usa_o_texto_em_voo_como_referencia():
     p.push_pcm(b"\x00\x01" * 400)
     p.end_of_speech()                      # turno 1 (sem barge)
     assert ja_falou.wait(5)
-    assert p._fala_em_curso == "olha, o dia "        # texto em voo, já na referência
+    # o espaço final pode ficar RETIDO no limpador do #871 (ele segura o espaço
+    # para o ponto da lista não sair afastado) — para a referência do eco o que
+    # conta é o conteúdo, não o espaço
+    assert p._fala_em_curso.strip() == "olha, o dia"  # texto em voo, já na referência
     assert p.history == []                            # history ainda vazio
 
     p.cancel()                             # barge-in: derruba o turno em curso
