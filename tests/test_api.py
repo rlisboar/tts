@@ -7224,8 +7224,8 @@ def _marca_stub(monkeypatch, ok=True):
     monkeypatch.setattr(marca_dagua, "disponivel", lambda: ok)
     monkeypatch.setattr(marca_dagua, "motivo", lambda: "" if ok else "pesos ausentes")
     monkeypatch.setattr(marca_dagua, "marca_wav",
-                        lambda p: _marca_fake.__setitem__("chamadas",
-                                                          _marca_fake["chamadas"] + 1) or p)
+                        lambda p, prazo_s=None: _marca_fake.__setitem__(
+                            "chamadas", _marca_fake["chamadas"] + 1) or p)
 
 
 def _sess_live_fila():

@@ -148,9 +148,13 @@ def fecha() -> None:
     _fecha(proc)
 
 
-def _pede(pedido: dict) -> dict:
-    """Manda um pedido e devolve a resposta dele (protocolo serial sob trava)."""
+def _pede(pedido: dict, prazo_s: float | None = None) -> dict:
+    """Manda um pedido e devolve a resposta dele (protocolo serial sob trava).
+
+    `prazo_s` None usa `TIMEOUT_S` (o job, 60 s). O Live passa o prazo curto.
+    """
     global _ultima, _contador
+    prazo = TIMEOUT_S if prazo_s is None else float(prazo_s)
     if not disponivel():
         raise RuntimeError(motivo() or "marca indisponível")
     proc = _pega()
@@ -161,7 +165,7 @@ def _pede(pedido: dict) -> dict:
         try:
             proc.stdin.write(json.dumps(pedido) + "\n")
             proc.stdin.flush()
-            linha = _le_ate(proc, _contador)
+            linha = _le_ate(proc, _contador, prazo)
         finally:
             _ultima = time.monotonic()
     dados = json.loads(linha)
@@ -234,25 +238,28 @@ def _mata_filho(proc: subprocess.Popen) -> None:
             _proc = None
 
 
-def _filho_mudo(proc: subprocess.Popen) -> None:
+def _filho_mudo(proc: subprocess.Popen, prazo: float) -> None:
     pid = getattr(proc, "pid", None)
     print(
-        f"[marca] filho mudo (pid={pid}) não respondeu em {TIMEOUT_S:g}s; "
+        f"[marca] filho mudo (pid={pid}) não respondeu em {prazo:g}s; "
         "matei e o áudio sai sem marca",
         flush=True,
     )
     _mata_filho(proc)
-    raise RuntimeError(f"marca passou de {TIMEOUT_S:g}s (filho mudo)")
+    raise RuntimeError(f"marca passou de {prazo:g}s (filho mudo)")
 
 
-def _le_ate(proc: subprocess.Popen, ident: int) -> str:
-    """Linha JSON deste id. Cada espera no fd respeita o que falta de TIMEOUT_S.
+def _le_ate(proc: subprocess.Popen, ident: int, prazo: float | None = None) -> str:
+    """Linha JSON deste id. Cada espera no fd respeita o que falta do prazo.
 
     O `readline` bloqueava sem prazo. No job local essa leitura corre dentro
     do `_gen_lock`: filho mudo travava o servidor. No estouro o filho morre,
     `_proc` zera e a exceção sobe — o chamador entrega o áudio sem marca.
+    `prazo` None é o teto do job (`TIMEOUT_S`).
     """
-    limite = time.monotonic() + TIMEOUT_S
+    if prazo is None:
+        prazo = TIMEOUT_S
+    limite = time.monotonic() + prazo
     fd = _fd_leitura(proc)
     buf = bytearray()
     while True:
@@ -261,7 +268,7 @@ def _le_ate(proc: subprocess.Popen, ident: int) -> str:
             return achada
         restante = limite - time.monotonic()
         if restante <= 0:
-            _filho_mudo(proc)
+            _filho_mudo(proc, prazo)
         # Filho já morto: drena o que houver no pipe e não espera o teto.
         espera = 0.0 if proc.poll() is not None else restante
         try:
@@ -272,7 +279,7 @@ def _le_ate(proc: subprocess.Popen, ident: int) -> str:
         if not pronto:
             if proc.poll() is not None:
                 raise RuntimeError(f"worker da marca morreu (rc={proc.returncode})")
-            _filho_mudo(proc)
+            _filho_mudo(proc, prazo)
         try:
             pedaco = os.read(fd, 65536)
         except BlockingIOError:
@@ -285,11 +292,16 @@ def _le_ate(proc: subprocess.Popen, ident: int) -> str:
         buf.extend(pedaco)
 
 
-def marca_wav(entrada: Path) -> Path:
-    """Marca o wav NO LUGAR (arquivo de saída do job/Live). Devolve o caminho."""
+def marca_wav(entrada: Path, prazo_s: float | None = None) -> Path:
+    """Marca o wav NO LUGAR. Devolve o caminho.
+
+    `prazo_s` None é o teto do job (60 s). O Live passa um prazo curto para
+    o turno não ficar mudo se o filho não responder.
+    """
     saida = Path(tempfile.mkstemp(prefix="marca-", suffix=".wav")[1])
     try:
-        _pede({"op": "marca", "wav": str(entrada), "saida": str(saida)})
+        _pede({"op": "marca", "wav": str(entrada), "saida": str(saida)},
+              prazo_s=prazo_s)
         saida.replace(entrada)
     finally:
         saida.unlink(missing_ok=True)

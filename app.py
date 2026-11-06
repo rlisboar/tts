@@ -12267,6 +12267,11 @@ def _live_conta_underrun(sess: dict, nbytes: int) -> None:
     sess["st_ultimo_dur_ms"] = nbytes / 48.0
 
 
+# Quente ~90 ms (#908). 1,5 s de folga: filho mudo no Live não congela o
+# turno os 60 s do job. Estouro devolve o PCM cru.
+_LIVE_MARCA_PRAZO_S = 1.5
+
+
 def _marca_pcm(pcm: bytes, sr: int = 16000) -> bytes:
     """Devolve o PCM marcado (AudioSeal), ou o MESMO pcm se a marca estiver fora.
 
@@ -12276,7 +12281,10 @@ def _marca_pcm(pcm: bytes, sr: int = 16000) -> bytes:
     com cabeçalho 16 kHz, a conferência passa e a marca some no playback.
 
     Nunca levanta: marca é higiene anti-clone, não pode derrubar geração. O aviso
-    de indisponibilidade sai uma vez por processo (`marca_dagua.motivo`)."""
+    de indisponibilidade sai uma vez por processo (`marca_dagua.motivo`).
+
+    O prazo desta leitura é `_LIVE_MARCA_PRAZO_S`, não os 60 s do job. Se o
+    filho não responde, o trecho sai cru e o log traz esse prazo."""
     if not pcm or not _settings.get("tts_marca_dagua"):
         return pcm
     import marca_dagua
@@ -12293,9 +12301,11 @@ def _marca_pcm(pcm: bytes, sr: int = 16000) -> bytes:
         try:
             x = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
             sf.write(str(caminho), x, sr, subtype="PCM_16")
-            # Fora do `_gen_lock` (#915). A taxa e o tamanho ficam os do PCM
-            # de entrada: o worker desce a 16 kHz e volta (#908).
-            _corre_sem_gen_lock(lambda: marca_dagua.marca_wav(caminho))
+            # Fora do `_gen_lock` (#915), com o prazo curto do Live (1,5 s).
+            # A taxa e o tamanho ficam os do PCM de entrada: o worker desce a
+            # 16 kHz e volta (#908).
+            _corre_sem_gen_lock(lambda: marca_dagua.marca_wav(
+                caminho, prazo_s=_LIVE_MARCA_PRAZO_S))
             y = np.asarray(sf.read(str(caminho), dtype="int16")[0], dtype="<i2").reshape(-1)
             n = len(pcm) // 2
             # O contrato do Live é 48 bytes/ms a 24 kHz. A reamostra não pode

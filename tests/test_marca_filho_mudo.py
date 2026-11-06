@@ -154,3 +154,57 @@ def test_resposta_com_id_volta_antes_do_prazo(tmp_path, monkeypatch, isola_marca
     assert isinstance(dados["id"], int)
     assert dt < PRAZO_S
     assert _vivo(isola_marca[-1].pid)
+
+
+def test_live_pcm_mudo_sai_cru_no_prazo_curto(tmp_path, monkeypatch, capsys):
+    """O `_marca_pcm` do Live não espera os 60 s do job. O trecho sai cru."""
+    import numpy  # noqa: F401 — paga o import fora do cronômetro
+    import soundfile  # noqa: F401
+    import app
+
+    script = tmp_path / "filho_mudo.py"
+    script.write_text("import time\ntime.sleep(3600)\n", encoding="utf-8")
+    anterior = marca_dagua._proc
+    marca_dagua._proc = None
+    monkeypatch.setattr(marca_dagua, "disponivel", lambda: True)
+    monkeypatch.setattr(marca_dagua, "TIMEOUT_S", 60.0)
+    monkeypatch.setattr(marca_dagua, "WORKER", script)
+    monkeypatch.setattr(marca_dagua, "_vigia", lambda: None)
+    monkeypatch.setattr(app, "_LIVE_MARCA_PRAZO_S", PRAZO_S)
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    pids: list[int] = []
+    real = marca_dagua._pega
+
+    def espiar():
+        proc = real()
+        pids.append(proc.pid)
+        return proc
+
+    monkeypatch.setattr(marca_dagua, "_pega", espiar)
+    pcm = b"\x00\x00" * 240
+
+    def chama():
+        t0 = time.monotonic()
+        out = app._marca_pcm(pcm, app._LIVE_AUDIO_SR)
+        return out, time.monotonic() - t0
+
+    try:
+        out, dt = _em_ate(chama, TETO_S + 1)
+        assert out == pcm
+        assert PRAZO_S - 0.05 <= dt < TETO_S
+        assert pids and not _vivo(pids[0])
+        assert marca_dagua._proc is None
+        aviso = capsys.readouterr().out
+        assert "filho mudo" in aviso
+        assert "sem marca" in aviso
+        assert f"em {PRAZO_S:g}s" in aviso
+        assert "em 60" not in aviso
+    finally:
+        proc = marca_dagua._proc
+        marca_dagua._proc = anterior
+        if proc is not None and proc is not anterior and proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except Exception:  # noqa: BLE001
+                pass
