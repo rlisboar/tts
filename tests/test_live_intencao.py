@@ -388,3 +388,62 @@ def test_worker_unico_conta_referencias_e_fecha_tudo(tmp_path):
     live_intencao.solta()
     live_intencao.fecha_tudo()
     assert live_intencao.estado()["vivo"] is False
+
+
+# -- liberação da sessão (#890) ----------------------------------------------
+#
+# O fechamento LIMPO do WS não passava pelo `_live_solta_slot` (que só roda na
+# morte da task de envio): `intencao_ref` ficava True, `solta()` nunca era
+# chamado e o worker de 3,8 GB só saía pelo TTL. Estes testes fixam a devolução.
+
+def _sess_890(sid: str = "s-890") -> dict:
+    import app
+
+    return {"id": sid, "intencao_ref": False, "fila": app._LiveFila(1000),
+            "cancelado": threading.Event(), "visto": 1.0}
+
+
+def test_libera_sessao_devolve_referencia_e_e_idempotente(tmp_path):
+    import app
+
+    live_intencao.WORKER = _stub(tmp_path)
+    sess = _sess_890()
+    live_intencao.pega()
+    sess["intencao_ref"] = True
+    with app._live_lock:
+        app._live_sessions[sess["id"]] = sess
+
+    app._live_libera_sessao(sess, "teste")
+    assert live_intencao.estado()["refs"] == 0, "a referência tem de voltar"
+    assert sess["id"] not in app._live_sessions, "a sessão tem de sair do registry"
+
+    app._live_libera_sessao(sess, "teste")      # o `finally` e o sender podem os dois
+    assert live_intencao.estado()["refs"] == 0, "devolver duas vezes não pode ir a -1"
+
+
+def test_finally_do_ws_libera_a_referencia():
+    """MORDIDA: sem a chamada no `finally`, o cliente que fecha limpo vaza a ref."""
+    import app
+
+    fonte = Path(app.__file__).read_text()
+    i = fonte.index("async def live_ws(")
+    fim = fonte.find("\nasync def ", i + 1)
+    corpo = fonte[i:fim if fim != -1 else len(fonte)]
+    assert "_live_libera_sessao(sess, " in corpo, (
+        "o `finally` do WS tem de devolver a referência do classificador (#890)")
+
+
+def test_aquecimento_preso_nao_segura_o_ttl(tmp_path, monkeypatch):
+    """`_aquecendo` que não volta não pode deixar o worker residente para sempre."""
+    live_intencao.WORKER = _stub(tmp_path)
+    monkeypatch.setattr(live_intencao, "TTL_S", 0.1)
+    monkeypatch.setattr(live_intencao, "INTERVALO_VIGIA_S", 0.02)
+    monkeypatch.setattr(live_intencao, "AQUECIMENTO_MAX_S", 0.05)
+    inc = live_intencao.pega()
+    assert _espera(lambda: inc.ativo)
+    vistos = []
+    inc.fecha = lambda: vistos.append(1) or inc.__class__.fecha(inc)
+    monkeypatch.setattr(live_intencao, "_aquecendo", True)   # marca presa
+    live_intencao.solta()
+    assert _espera(lambda: vistos), (
+        "com o aquecimento preso, o TTL tem de vencer mesmo assim")

@@ -13322,6 +13322,33 @@ def _live_motivo_fechamento(sess: dict) -> tuple[str, str] | None:
     return None
 
 
+def _live_libera_sessao(sess: dict, motivo: str) -> None:
+    """Devolve o que a sessão tomou emprestado e a tira do registry.
+
+    É a parte COMUM entre a morte da task de envio (`_live_solta_slot`) e o
+    `finally` do WS (cliente que fecha limpo) — antes só a primeira existia, e no
+    fechamento normal a referência do classificador de intenção NUNCA voltava:
+    `_refs` ficava acima de zero e o worker de 3,8 GB só saía pelo TTL.
+
+    Idempotente: o pop de `intencao_ref` e a checagem de dono do registry
+    garantem que duas chamadas não devolvem duas vezes nem apagam a sessão nova
+    de uma retomada (#201)."""
+    if sess.pop("intencao_ref", False):
+        # devolve a referência do classificador compartilhado (#595): o worker
+        # único só fecha quando a última sessão sai (ou pelo TTL)
+        try:
+            import live_intencao
+            live_intencao.solta()
+        except Exception:                 # noqa: BLE001 — fechar é best-effort
+            pass
+    with _live_lock:
+        if _live_sessions.get(sess["id"]) is sess:
+            _live_sessions.pop(sess["id"], None)
+            _live_log_kv("solta_slot", sess=sess["id"], motivo=motivo,
+                         fila_bytes=getattr(sess["fila"], "bytes", 0),
+                         descartados=getattr(sess["fila"], "descartados", 0))
+
+
 def _live_solta_slot(sess: dict, motivo: str) -> None:
     """Tira a sessão do registry AGORA e fecha a porta do lado de cá (#300).
 
@@ -13342,20 +13369,7 @@ def _live_solta_slot(sess: dict, motivo: str) -> None:
             pipe.cancel()
         except Exception:                 # noqa: BLE001 — cancelar é best-effort
             pass
-    if sess.pop("intencao_ref", False):
-        # devolve a referência do classificador compartilhado (#595): o worker
-        # único só fecha quando a última sessão sai (ou pelo TTL)
-        try:
-            import live_intencao
-            live_intencao.solta()
-        except Exception:                 # noqa: BLE001 — fechar é best-effort
-            pass
-    with _live_lock:
-        if _live_sessions.get(sess["id"]) is sess:
-            _live_sessions.pop(sess["id"], None)
-            _live_log_kv("solta_slot", sess=sess["id"], motivo=motivo,
-                         fila_bytes=getattr(sess["fila"], "bytes", 0),
-                         descartados=getattr(sess["fila"], "descartados", 0))
+    _live_libera_sessao(sess, motivo)
 
 
 async def _live_manda_stats(sess: dict, ws) -> bool:
@@ -13836,9 +13850,10 @@ async def live_ws(ws: WebSocket):
         # ficava fora do sweep/TTL e fora da contagem do teto). A checagem vai
         # DENTRO do lock: fora dele, uma retomada que nascesse entre o `get` e o
         # `pop` inseria a sessão nova e o pop da antiga levava a nova junto (#201).
-        with _live_lock:
-            if _live_sessions.get(sid) is sess:
-                _live_sessions.pop(sid, None)
+        # Aqui também se DEVOLVE a referência do classificador de intenção: o
+        # cliente que fecha limpo não passa pelo `_live_solta_slot`, e sem isto o
+        # worker de 3,8 GB só saía pelo TTL (e podia nunca sair).
+        _live_libera_sessao(sess, "cliente_fechou")
         alvo = sess.get("pipe") or sess.get("dsh")
         # log ANTES do await: o fechamento pode estourar o prazo e a thread seguir
         # escrevendo em `sess`; lendo aqui o retrato é consistente (e o cliente que

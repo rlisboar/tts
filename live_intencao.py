@@ -231,6 +231,10 @@ class Intencao:
 TTL_S = float(os.environ.get("TTS_INTENCAO_TTL_S", "600"))
 #: cadência do vigia (o custo é um `monotonic` a cada N segundos)
 INTERVALO_VIGIA_S = 5.0
+#: teto do "estou aquecendo": passado isto o vigia reapera mesmo com a marca
+#: ligada. Sem ele, um aquecimento que não volta (ou sessão que sumiu no meio)
+#: deixava o worker de 3,8 GB residente para sempre.
+AQUECIMENTO_MAX_S = float(os.environ.get("TTS_INTENCAO_AQUECIMENTO_MAX_S", "60"))
 
 _unico: Intencao | None = None
 _refs = 0
@@ -238,6 +242,15 @@ _ultima = 0.0
 _trava = threading.Lock()
 _janitor: threading.Thread | None = None
 _aquecendo = False
+_aquecendo_desde = 0.0
+
+
+def _log(msg: str) -> None:
+    """Rastro do ciclo de vida — o worker é mudo por construção (stderr=DEVNULL)."""
+    try:
+        print(f"[intencao] {msg}", flush=True)
+    except Exception:       # noqa: BLE001 — log nunca derruba
+        pass
 
 
 def _rss_mb(pid: int) -> float:
@@ -251,7 +264,13 @@ def _rss_mb(pid: int) -> float:
 
 
 def _vigia() -> None:
-    """Fecha o worker quando ninguém usa ou o TTL venceu (checa a cada 5 s)."""
+    """Fecha o worker quando ninguém usa ou o TTL venceu (checa a cada 5 s).
+
+    `_aquecendo` NÃO pode ser um `continue` seco: um aquecimento que estoure o
+    prazo, ou uma sessão que suma no meio dele, deixava o vigia pulando para
+    sempre e o worker residente sem ninguém. Passado `AQUECIMENTO_MAX_S`, a
+    marca deixa de segurar o TTL — o pior caso vira um `fecha()` a mais, e
+    `pega()` re-arma."""
     global _unico, _refs
     while True:
         time.sleep(INTERVALO_VIGIA_S)
@@ -259,19 +278,24 @@ def _vigia() -> None:
             inc = _unico
             if inc is None:
                 return
-            if _aquecendo:            # a carga leva segundos e não é ociosidade
+            aquecendo = _aquecendo and (
+                time.monotonic() - _aquecendo_desde) < AQUECIMENTO_MAX_S
+            if aquecendo:             # a carga leva segundos e não é ociosidade
                 continue
-            vencido = _refs <= 0 or (time.monotonic() - _ultima) > TTL_S
+            ocioso = time.monotonic() - _ultima
+            vencido = _refs <= 0 or ocioso > TTL_S
             if vencido:
+                motivo = "sem referência" if _refs <= 0 else f"TTL, {ocioso:.0f}s ocioso"
                 _unico = None
                 _refs = 0
         if vencido:
+            _log(f"worker fechado pelo vigia ({motivo})")
             inc.fecha()
 
 
 def pega() -> Intencao:
     """Sessão passa a usar o classificador (sobe o worker se preciso)."""
-    global _unico, _refs, _ultima, _janitor  # noqa: PLW0603
+    global _unico, _refs, _ultima, _janitor, _aquecendo, _aquecendo_desde  # noqa: PLW0603
     with _trava:
         _refs += 1
         _ultima = time.monotonic()
@@ -283,8 +307,8 @@ def pega() -> Intencao:
             _janitor.start()
         inc = _unico
     if not inc.ativo:
-        global _aquecendo
         _aquecendo = True
+        _aquecendo_desde = time.monotonic()
         try:
             # segunda tentativa: com outra sessão fechando, o 1º aquecimento pode
             # bater em memória/Metal e voltar False sem o modelo estar quebrado
@@ -309,13 +333,14 @@ def _rearma(inc: "Intencao | None") -> None:
     """Tenta ressuscitar o worker EM SEGUNDO PLANO (o turno não espera 3 s).
 
     Só depois do cooldown do próprio `aquece`, e uma tentativa por vez."""
-    global _aquecendo
+    global _aquecendo, _aquecendo_desde
     if inc is None or inc.ativo:
         return
     with _trava:
         if _aquecendo:
             return
         _aquecendo = True
+        _aquecendo_desde = time.monotonic()
 
     def _roda():
         global _aquecendo, _ultima
