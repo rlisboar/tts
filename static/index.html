@@ -8097,11 +8097,13 @@ async function cvSend(text, _retry = true, quem = null) {
         cvAdd("IA", "✅ " + d.text);
         cvFinalShow(d.text);
         cvStatus("✅ texto aprovado — a conversa continua (fale para ajustar)");
-        await cvSpeak(d.text, gen, ac.signal);
+        // #872: o TTS fala a versão LIMPA (`text_fala`/`reply_fala`, do #871);
+        // a tela segue mostrando o texto cru. `??` cobre servidor antigo.
+        await cvSpeak(d.text_fala ?? d.text, gen, ac.signal);
         return;
       }
       cvAddIA(d.reply);
-      await cvSpeak(d.reply, gen, ac.signal);
+      await cvSpeak(d.reply_fala ?? d.reply, gen, ac.signal);
       if (!vivo()) return;
       cvStatus("🎧 ouvindo…");
       cvBusy = false;
