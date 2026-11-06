@@ -338,7 +338,13 @@ class Cliente:
                     self.voz_fim.set()
             pcm = (np.clip(quadro, -1, 1) * 32767).astype("<i2").tobytes()
             try:
-                await self.ws.send(pcm)
+                # o app trava o loop por minutos em máquina sem memória e o
+                # `send` fica pendurado sem timeout: o ciclo nunca fecha.
+                await asyncio.wait_for(self.ws.send(pcm), 15)
+            except asyncio.TimeoutError:
+                self.erro = "send: 15 s sem o servidor ler"
+                self.vivo = False
+                return
             except Exception as exc:                               # noqa: BLE001
                 self.erro = f"send: {exc}"
                 self.vivo = False
