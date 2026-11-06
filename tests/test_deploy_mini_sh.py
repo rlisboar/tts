@@ -97,6 +97,8 @@ case "$url" in
   */api/tts/jobs/*)
       if [ $tem_chave = 1 ]; then corpo="{\\"status\\":\\"${T_CURL_JOB_STATUS:-done}\\"}"; else codigo=401; fi ;;
   */api/tts)
+      # o job de síntese é quem escreveria o aviso de marca d'água no log (#938)
+      [ -n "${T_CURL_LOG_MARCA:-}" ] && print -r -- "$T_CURL_LOG_MARCA" >> "$T_MINI_LOG"
       if [ $tem_chave = 1 ] && [ "$metodo" = POST ]; then corpo='{"job_id":"j1"}'
       elif [ $tem_chave = 1 ]; then corpo='{"job_id":"j1"}'
       else codigo=401; fi ;;
@@ -168,6 +170,8 @@ def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
         T_PIP_LOG=str(tmp_path / "pip.log"),
         T_PIP_FREEZE_N=str(tmp_path / "freeze.n"),
         T_MINI_DIR=str(tmp_path / "mini"),
+        T_MINI_LOG=str(tmp_path / "mini.log"),
+        TTS_MINI_LOG=str(tmp_path / "mini.log"),
         T_MODULOS=" ".join(MODULOS),
         TTS_MINI_HOST="mini-fake",
         TTS_MINI_DIR=str(tmp_path / "mini"),
@@ -980,3 +984,78 @@ def test_smoke_fora_do_pos_deploy_avisa_sem_afirmar(amb):
     assert r.returncode == 0, _saida(r)
     assert "só no pós-deploy" in r.stdout
     assert "instância antiga" not in r.stdout
+
+
+# --- #938: o deploy confere os pesos do manifesto (models/ NÃO é versionado).
+# Um mini sem peso sobe degradado e silencioso: a marca d'água desliga e o smoke
+# passava verde. O deploy tem de achar o que falta, sincronizar e, se não der,
+# parar ANTES do restart.
+def _publica_manifesto(env: dict[str, str], arquivos: dict[str, bytes]) -> None:
+    """Põe no rev alvo (dev) um manifesto com os arquivos dados e os commita."""
+    dev = Path(env["TTS_MINI_REPO"])
+    (dev / "models").mkdir(exist_ok=True)
+    linhas = []
+    for nome, conteudo in arquivos.items():
+        (dev / "models" / nome).write_bytes(conteudo)
+        linhas.append(f"{hashlib.sha256(conteudo).hexdigest()}  models/{nome}")
+    (dev / "models" / "sha256sums.txt").write_text("\n".join(linhas) + "\n")
+    _git("add", "models", cwd=dev, env=env)
+    _git("commit", "-qm", "manifesto de pesos", cwd=dev, env=env)
+
+
+def _peso_fora_do_git(env: dict[str, str], nome: str) -> Path:
+    """Tira o peso do índice (models/ é gitignored de verdade) e devolve o caminho."""
+    dev = Path(env["TTS_MINI_REPO"])
+    _git("rm", "--cached", "-q", f"models/{nome}", cwd=dev, env=env)
+    _git("commit", "-qm", f"{nome} fora do git", cwd=dev, env=env)
+    return dev / "models" / nome
+
+
+def test_peso_ausente_no_mini_e_sincronizado_antes_do_restart(amb):
+    _publica_manifesto(amb, {"peso.bin": b"peso-de-teste"})
+    origem_local = _peso_fora_do_git(amb, "peso.bin")
+    assert origem_local.exists()
+    assert not (Path(amb["TTS_MINI_DIR"]) / "models" / "peso.bin").exists()
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode == 0, _saida(r)
+    assert "sincronizando" in r.stdout, _saida(r)
+    assert (Path(amb["TTS_MINI_DIR"]) / "models" / "peso.bin").read_bytes() == b"peso-de-teste"
+    assert len(_log(amb, "launch")) == 1, "reiniciou mesmo com o peso recuperado"
+
+
+def test_peso_que_nao_da_para_recuperar_para_antes_do_restart(amb):
+    _publica_manifesto(amb, {"peso.bin": b"x"})
+    origem_local = _peso_fora_do_git(amb, "peso.bin")
+    origem_local.unlink()                      # nem no mini, nem na árvore local
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode != 0, _saida(r)
+    assert "NÃO reiniciei" in _saida(r), _saida(r)
+    assert _log(amb, "launch") == [], "não podia ter reiniciado sem o peso"
+
+
+def test_smoke_reprova_quando_o_log_acusa_sem_marca(amb):
+    """Peso ausente = áudio sem marca; o log avisa e o smoke NÃO pode passar."""
+    Path(amb["T_MINI_LOG"]).write_text("boot\n")
+    amb["T_CURL_LOG_MARCA"] = "[marca] áudio saindo SEM marca d'água"
+
+    r = _run(amb, "deploy", "--apply")
+
+    print("LOG:", Path(amb["T_MINI_LOG"]).read_text())
+    print("SAIDA:", _saida(r)[-1500:])
+    assert r.returncode != 0, _saida(r)
+    assert "SEM marca" in _saida(r), _saida(r)
+    assert "REVERTIDO" in r.stdout, "smoke vermelho tem de reverter (o deploy já reiniciou)"
+
+
+def test_smoke_nao_reprova_por_aviso_anterior_ao_restart(amb):
+    """A âncora é o tamanho do log no restart: aviso velho não reprova deploy novo."""
+    Path(amb["T_MINI_LOG"]).write_text("[marca] áudio saindo SEM marca d'água\n")
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode == 0, _saida(r)
+    assert "[ok] marca d'água aplicada" in r.stdout, _saida(r)

@@ -55,6 +55,8 @@ BOOT_MS_MAX="${TTS_MINI_BOOT_MS:-120000}"         # pós-deploy: processo novo, 
 TTS_TIMEOUT="${TTS_MINI_TTS_TIMEOUT:-120}"        # teto do job de síntese real no smoke
 ESTADO=".deploy-mini-estado"                      # no repo do mini (untracked; só o --apply escreve)
 BOOT_MARKER=".deploy-mini-boot"                   # instantâneo (epoch) do restart, no repo do mini
+LOG_MARKER=".deploy-mini-logmarca"                # tamanho do log no restart (âncora da marca d'água)
+LOG_MINI="${TTS_MINI_LOG:-/tmp/tts-studio.log}"   # log de produção (StandardOutPath do plist)
 # O preview de deps vai para o /tmp DO MINI, não para a árvore do repo: sem isso o
 # dry-run sujava a árvore de produção (F1 do gate #232 — o script promete "nada muda").
 # E o nome leva $$: com caminho FIXO, dois deploys/suítes ao mesmo tempo reescrevem e
@@ -102,6 +104,31 @@ sem_nonce() { sed -E 's/ nonce="[^"]*"//g'; }
 # A rota existe no CÓDIGO DO REV ALVO? (rota ausente ≠ falha do smoke)
 tem_rota() { git -C "$LOCAL_REPO" show "${1}:app.py" 2>/dev/null | grep -qF "$2"; }
 git_remoto() { distante "cd $(cd_remoto) && git $1"; }
+
+#: Pesos do manifesto que NÃO conferem no mini (ausentes ou com sha errado).
+#: `models/` NÃO é versionado — sem esta conferência o mini sobe sem o AudioSeal
+#: e a marca d'água desliga em silêncio, com o smoke verde (#938).
+pesos_faltando() {
+  # O manifesto vem do REV ALVO (o mini pode estar num rev anterior, sem ele) e o
+  # hash de lá é comparado com o do mini — arquivo ausente simplesmente não sai.
+  local manifesto arqs remoto sha arq
+  manifesto="$(git -C "$LOCAL_REPO" show "${ALVO_SHA:-HEAD}:models/sha256sums.txt" 2>/dev/null)" || return 0
+  [ -n "$manifesto" ] || return 0
+  arqs="$(print -r -- "$manifesto" | awk 'NF >= 2 {print $2}')"
+  [ -n "$arqs" ] || return 0
+  remoto="$(distante "cd $(cd_remoto) && shasum -a 256 $arqs 2>/dev/null")"
+  print -r -- "$manifesto" | while read -r sha arq; do
+    [ -n "${arq:-}" ] || continue
+    print -r -- "$remoto" | grep -qx "$sha  $arq" || print -r -- "$arq"
+  done
+}
+
+#: Copia os pesos que faltam da árvore local. `tar` pelo ssh (sem rsync no
+#: caminho, e binário passa intacto).
+sincroniza_pesos() { # $1 = lista, uma por linha
+  print -r -- "$1" | tar -cf - -C "$LOCAL_REPO" -T - 2>/dev/null \
+    | distante "cd $(cd_remoto) && tar -xf -" 2>/dev/null
+}
 
 # `codigo` do /api/build: sha256-8 da CONCATENAÇÃO dos módulos, na ordem em que o
 # app os lista. Arquivo ausente vira b"<ausente>", como no app.
@@ -326,6 +353,21 @@ smoke() {
   # ATENÇÃO: sem este `return` o `smoke` devolvia SEMPRE 0 — o último comando era
   # um `if` com condição falsa, que sai 0. O rollback automático (#345) e o
   # `smoke && ...` do deploy dependem deste código.
+  # MARCA D'ÁGUA (#938): com o peso do AudioSeal ausente o job sai SEM marca e o
+  # log avisa — antes isso passava verde. Só no pós-deploy (é lá que a âncora
+  # existe) e só no que o processo novo escreveu.
+  if [ "$POS_DEPLOY" = 1 ]; then
+    local marca_log
+    marca_log="$(distante "cd $(cd_remoto) 2>/dev/null && cat $LOG_MARKER 2>/dev/null" | tr -d '[:space:]')"
+    if [ -n "$marca_log" ]; then
+      if distante "tail -c +$((marca_log + 1)) $LOG_MINI 2>/dev/null | grep -q 'SEM marca'"; then
+        print -r -- "  [FALHA] log acusa 'SEM marca d'água' — peso do AudioSeal ausente/incompatível (#938)"
+        falhas=1
+      else
+        print -r -- "  [ok] marca d'água aplicada (sem aviso de 'SEM marca' no log)"
+      fi
+    fi
+  fi
   return $falhas
 }
 
@@ -483,11 +525,36 @@ deploy() {
   else
     print -r -- "  deps: pulado (--sem-deps)"
   fi
+  # PESOS (#938): `models/` NÃO é versionado (só o manifesto). Mini sem peso
+  # sobe degradado e SILENCIOSO — a marca d'água desliga e os filtros caem, e o
+  # smoke antigo não via. A conferência é read-only e roda até no dry-run; a
+  # sincronização, só no --apply, sempre ANTES do restart.
+  local faltando
+  faltando="$(pesos_faltando)"
+  if [ -n "$faltando" ]; then
+    print -r -- "  pesos: $(print -r -- "$faltando" | wc -l | tr -d ' ') ausente(s)/divergente(s) no manifesto:"
+    print -r -- "$faltando" | sed 's/^/    /'
+  else
+    print -r -- "  pesos: todos conferem com models/sha256sums.txt"
+  fi
   if [ "$APPLY" = 0 ]; then
+    [ -n "$faltando" ] && print -r -- "    (o --apply sincroniza esses pesos da árvore local antes do restart)"
     print -r -- "  (dry-run: rode com --apply para push + backup + switch + deps + restart + smoke)"
     # o arquivo fica (o caminho sai no output): é o que prova que o preview usou o
     # requirements DO REV ALVO, não o do mini. O --apply limpa no fim.
     return 0
+  fi
+  if [ -n "$faltando" ]; then
+    print -r -- "  pesos: sincronizando da árvore local…"
+    sincroniza_pesos "$faltando" \
+      || { print -r -- "  [PARA] o tar dos pesos falhou — NÃO reiniciei"; return 1; }
+    faltando="$(pesos_faltando)"
+    if [ -n "$faltando" ]; then
+      print -r -- "  [PARA] pesos ainda divergentes depois da sincronização — NÃO reiniciei:"
+      print -r -- "$faltando" | sed 's/^/    /'
+      return 1
+    fi
+    print -r -- "  pesos: ok depois da sincronização"
   fi
 
   # --- a partir daqui muda a produção
@@ -574,6 +641,9 @@ deploy() {
   # novo (boot ≥ marcador); escrito depois, o próprio atraso do ssh acusava
   # FALHA de 1 s no processo genuinamente novo.
   distante "cd $(cd_remoto) && date +%s > $BOOT_MARKER"   # âncora do smoke pós-deploy (#252)
+  # âncora da MARCA D'ÁGUA (#938): só o que o processo novo escrever interessa —
+  # aviso antigo no log não pode reprovar deploy novo, nem passar batido
+  distante "cd $(cd_remoto) && { stat -f%z $LOG_MINI 2>/dev/null || echo 0; } > $LOG_MARKER"
   distante "launchctl kickstart -k gui/\$(id -u)/$LABEL && echo kickstart-ok" | sed 's/^/    /'
   print -r -- "  esperando ${ESPERA}s o run.sh subir a porta…"
   sleep "$ESPERA"
@@ -597,6 +667,9 @@ _volta_para() { # $1 = sha alvo da volta
     || return 1
   print -r -- "  reiniciando $LABEL…"
   distante "cd $(cd_remoto) && date +%s > $BOOT_MARKER"   # âncora do smoke pós-deploy (#252)
+  # âncora da MARCA D'ÁGUA (#938): só o que o processo novo escrever interessa —
+  # aviso antigo no log não pode reprovar deploy novo, nem passar batido
+  distante "cd $(cd_remoto) && { stat -f%z $LOG_MINI 2>/dev/null || echo 0; } > $LOG_MARKER"
   distante "launchctl kickstart -k gui/\$(id -u)/$LABEL && echo kickstart-ok" | sed 's/^/  /'
   print -r -- "  [nota] deps NÃO voltam sozinhas: o freeze do deploy está em .deploy-mini-freeze-* no mini"
   sleep "$ESPERA"
