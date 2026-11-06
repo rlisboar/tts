@@ -80,7 +80,7 @@ FRAME_MS = FRAME_SAMPLES * 1000 // SAMPLE_RATE
 # mistura em nível parecido cai para ~0,7. O atraso procurado cobre o eco de
 # 100 ms da bancada mais a folga do chunk.
 _CORR_MS = 96
-_CORR_LAG_MAX_MS = 220
+_CORR_LAG_MAX_MS = 500
 _CORR_LAG_PASSO_MS = 10
 _CORR_LIMIAR = 0.75
 _CORR_ENERGIA_DBFS = -45.0          # abaixo disto é silêncio, não o usuário

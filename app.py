@@ -13701,6 +13701,11 @@ def _live_ref_16k(pcm: bytes):
     A bancada reamostra o playback com `resample_poly(..., 2, 3)` antes de
     reinjetar o eco. A mesma razão aqui: sem isso a correlação não casa com o
     que volta no microfone. Vazio se não houver amostra.
+
+    Passo 1,5 EXATO por chunk (2400 → 1600) em vez de `_reamostra`: o
+    `resample_poly` reinicia a fase do filtro a cada chunk de 100 ms e a
+    correlação do eco com a referência cai para ~0,5 (medido) — o duck então
+    trata a sílaba do próprio TTS como voz.
     """
     import numpy as np
 
@@ -13708,7 +13713,11 @@ def _live_ref_16k(pcm: bytes):
         return np.zeros(0, dtype=np.float32)
     n = len(pcm) - (len(pcm) % 2)
     a = np.frombuffer(pcm[:n], dtype="<i2").astype(np.float32) / 32768.0
-    return _reamostra(a, _LIVE_TTS_RATE, 16000)
+    if len(a) >= 3 and _LIVE_TTS_RATE != 16000:
+        pos = np.arange(int(len(a) * 16000 / _LIVE_TTS_RATE),
+                        dtype=np.float32) * (_LIVE_TTS_RATE / 16000.0)
+        return np.interp(pos, np.arange(len(a), dtype=np.float32), a).astype(np.float32)
+    return a
 
 
 def _live_pipe_novo(sess: dict):
