@@ -589,15 +589,15 @@ def _servidor_proc(porta: int | None = None) -> dict:
     try:
         if porta:
             out = subprocess.run(["lsof", "-nP", f"-iTCP:{porta}", "-sTCP:LISTEN", "-t"],
-                                 capture_output=True, text=True).stdout.split()
+                                 capture_output=True, text=True, timeout=15).stdout.split()
         else:
             out = subprocess.run(["pgrep", "-f", "uvicorn app:app"],
-                                 capture_output=True, text=True).stdout.split()
+                                 capture_output=True, text=True, timeout=15).stdout.split()
         if not out:
             return {}
         pid = out[0]
         ps = subprocess.run(["ps", "-o", "rss=,%cpu=", "-p", pid],
-                            capture_output=True, text=True).stdout.split()
+                            capture_output=True, text=True, timeout=15).stdout.split()
         nth = subprocess.run(["ps", "-M", "-p", pid], capture_output=True,
                              text=True).stdout.count("\n") - 1
         filhos = subprocess.run(["pgrep", "-P", pid], capture_output=True,
