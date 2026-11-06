@@ -110,7 +110,11 @@ codigo_esperado() { # $1 = rev (padrão HEAD)
   { for m in $MODULOS; do git -C "$LOCAL_REPO" show "${1:-HEAD}:$m" 2>/dev/null || print -rn -- '<ausente>'; done } \
     | shasum -a 256 | cut -c1-8
 }
-chave_do_mini() { distante "cat $(cd_remoto)/.apikey 2>/dev/null" | tr -d '\n'; }
+# #721: o estado do dono saiu do repo; o espelho `.apikey` vive no diretório de
+# estado (Application Support). O da raiz do repo ficou velho e dá 401 no smoke.
+chave_do_mini() {
+    distante "cat \"\$HOME/Library/Application Support/tts-studio/.apikey\" 2>/dev/null || cat $(cd_remoto)/.apikey 2>/dev/null" | tr -d '\n'
+}
 # curl sempre com -o /dev/null -w '%{http_code}'; tail -1 porque curl imprime 000 e
 # sai != 0 quando a conexão falha (não queremos "000\n000" na comparação).
 codigo_http() { curl -s -m 8 "$@" 2>/dev/null | tail -1; }
