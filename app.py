@@ -11181,7 +11181,8 @@ def _live_observa(sess: dict, obj) -> None:
         # `turno` fazia todo `interrupted` sair `turno=None` (achado #4 do
         # RELATORIO-app.py.md e #8 do relatório de auditoria).
         _live_log_kv("interrupted", sess=sess["id"],
-                     turno=obj.get("turn", obj.get("turno")))
+                     turno=obj.get("turn", obj.get("turno")),
+                     motivo=obj.get("motivo") or None)
         _live_stage(sess, "idle")
     elif tipo == "speech_start":
         # FONTE ÚNICA do número do turno (#313): quem numera é o pipeline, que é

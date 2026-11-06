@@ -134,21 +134,25 @@ def _pipeline_real(deltas, ao_gerar=None):
 
 def test_cancel_de_continuacao_nao_grava_a_metade_no_history():
     caixa = {}
-    p, _ev = _pipeline_real(("Claro, ", "o que ", "você quer?"),
-                            ao_gerar=lambda: caixa["p"].cancel(sem_historico=True))
+    p, ev = _pipeline_real(("Claro, ", "o que ", "você quer?"),
+                           ao_gerar=lambda: caixa["p"].cancel(sem_historico=True))
     caixa["p"] = p
     p.end_of_speech(inicia_thread=False)
     assert p.history == [], f"a 1ª metade ficou no contexto do LLM: {p.history}"
+    inter = [e for e in ev if e.get("type") == "interrupted"]
+    assert inter and inter[-1].get("motivo") == "continuacao", inter
 
 
 def test_cancel_comum_segue_gravando_history():
     """Barge/`cancel` do cliente: o que foi dito fica no contexto (sem mudança)."""
     caixa = {}
-    p, _ev = _pipeline_real(("Claro, ", "o que ", "você quer?"),
-                            ao_gerar=lambda: caixa["p"].cancel())
+    p, ev = _pipeline_real(("Claro, ", "o que ", "você quer?"),
+                           ao_gerar=lambda: caixa["p"].cancel())
     caixa["p"] = p
     p.end_of_speech(inicia_thread=False)
     assert [m["role"] for m in p.history] == ["user", "assistant"]
+    inter = [e for e in ev if e.get("type") == "interrupted"]
+    assert inter and "motivo" not in inter[-1], inter
 
 
 def test_sem_historico_nao_gruda_no_turno_seguinte():

@@ -1080,9 +1080,14 @@ class LivePipeline:
         lat = {**lat, "total_ms": _ms(t0), "cancelado": True}
         self.ultima_latencia = lat
         self.emit_json({"type": "latency", **lat})
-        self.emit_json({"type": "interrupted", "turn": turno,
-                        "audio_bytes": estado.get("audio_bytes", 0),
-                        "truncated": self._truncado})
+        frame = {"type": "interrupted", "turn": turno,
+                 "audio_bytes": estado.get("audio_bytes", 0),
+                 "truncated": self._truncado}
+        # #877: continuação retira o turno antes de qualquer chunk. Sem este
+        # motivo a tela mostra "interrompido" numa pausa de respiração.
+        if getattr(self, "_sem_historico", False):
+            frame["motivo"] = "continuacao"
+        self.emit_json(frame)
         self._truncado = False
 
 

@@ -856,5 +856,6 @@ sem gravar history e o áudio dele vai na frente do turno seguinte.
 |---|---|
 | sem o conserto (app + pipeline do `99a2e76`) | `test_fala_que_recomeca_antes_da_resposta_funde_no_mesmo_turno`, `..._vai_inteira_ao_pendente`, `test_fora_da_janela_e_fala_nova`, `test_sem_historico_nao_gruda_no_turno_seguinte` **FAILED** |
 | gravar history mesmo com `sem_historico` | `test_cancel_de_continuacao_nao_grava_a_metade_no_history` **FAILED** |
+| `interrupted` de continuação sem `motivo` | `test_cancel_de_continuacao_nao_grava_a_metade_no_history` **FAILED** (o campo some e a tela mostra "interrompido") |
 | tirar o guarda "nenhum áudio de resposta saiu" | `test_depois_do_primeiro_audio_da_resposta_nao_ha_continuacao` **FAILED** |
 | tratar `speech_start` de barge como continuação | `test_speech_start_de_barge_nao_e_continuacao` **FAILED** |
