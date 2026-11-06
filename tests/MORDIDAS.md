@@ -768,6 +768,19 @@ tira o ticket. Sem dono, espera curto e o prazo vale.
 
 `abort` é o mesmo ramo de `_pula_morto`. Com o conserto, deliver e abort voltam no prazo (CPU da thread abaixo de 0,25 s) e `status()` lê `speech_queue_depth == 2` com o buraco aberto.
 
+## #915 — watchdog C sem a GIL
+
+`dump_traceback_later(repeat=True)` corre numa thread C. O laço e cada
+`/health` cancelam e armam de novo; com a GIL presa numa chamada C ninguém
+rearma e o log nasce em 0600 com `Timeout (`. A célula segura a GIL com
+`ctypes.PyDLL.nanosleep` (um `time.sleep` soltaria a GIL e o laço rearmaria).
+
+| Sabotagem | Resultado |
+|---|---|
+| `_saude_rearma` volta na hora, sem armar | `test_watchdog_c_despeja_com_a_gil_presa` **FAILED**: `o rearme não criou o log` |
+
+Com o rearme, o mesmo `nanosleep` de 1,2 s (prazo 0,4 s) faz o arquivo crescer com `Timeout (` e o nome da célula, modo 0600, sem o cabeçalho `[watchdog]` da trilha Python.
+
 ## #812 — retorno remoto: onde a marca é contada
 
 O caminho remoto já marcava (compartilha o laço do job); a célula existe para a

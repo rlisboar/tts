@@ -2866,6 +2866,12 @@ def health():
 # Python girando em lookup de dict com a GIL. O probe síncrono não tem worker
 # e estoura os 5 s; um timer DENTRO de health() não arma, porque a rota nem
 # começa. O relógio fica no ASGI, antes do salto para o pool.
+#
+# Um vigia em thread Python não despeja se a GIL está presa numa chamada C
+# (medido: 705 s sem uma linha). O prazo vive na thread C do faulthandler
+# (`dump_traceback_later`), que não precisa da GIL para escrever. O laço e
+# cada /health cancelam e armam de novo: se nenhum dos dois roda, o prazo
+# estoura e o arquivo nasce.
 # ---------------------------------------------------------------------------
 class _SaudeEmVoo:
     """Pedidos de /health que entraram no ASGI e ainda não responderam."""
@@ -2956,9 +2962,19 @@ class _SaudeWatchdog:
             return
         token = _saude_voo.entra()
         try:
+            # Cada /health rearma o prazo C. Se a rota não volta e o laço
+            # também não roda, ninguém cancela e o faulthandler despeja.
+            try:
+                _saude_rearma()
+            except Exception:  # noqa: BLE001
+                pass
             await self.app(scope, receive, send)
         finally:
             _saude_voo.sai(token)
+            try:
+                _saude_rearma()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _saude_despeja(atraso: float) -> None:
@@ -2975,6 +2991,7 @@ def _saude_despeja(atraso: float) -> None:
             faulthandler.dump_traceback(fh, all_threads=True)
             fh.write("\n")
             fh.flush()
+        os.chmod(arq, 0o600)
     except Exception:  # noqa: BLE001 — o watchdog não pode derrubar o processo
         return
     try:
@@ -2997,13 +3014,84 @@ def _saude_watchdog_passo() -> None:
     _saude_despeja(atraso)
 
 
+# fd do dump_traceback_later. Tem de continuar aberto: o faulthandler guarda
+# o número e escreve nele sem a GIL. Fechar reusa o número noutro arquivo.
+_saude_log_fh = None
+_saude_log_path = ""
+_saude_arma_lock = threading.Lock()
+
+
+def _saude_fh_trocou(caminho: str) -> bool:
+    if (_saude_log_fh is None or _saude_log_path != caminho
+            or _saude_log_fh.closed):
+        return True
+    try:
+        no_fd = os.fstat(_saude_log_fh.fileno())
+        no_path = os.stat(caminho)
+    except OSError:
+        return True
+    return no_fd.st_ino != no_path.st_ino or no_fd.st_dev != no_path.st_dev
+
+
+def _saude_garante_log():
+    """Abre o log em 0600 e o segura. O modo não herda umask nem um unlink."""
+    global _saude_log_fh, _saude_log_path
+    caminho = _SAUDE_WATCHDOG_ARQ
+    if not _saude_fh_trocou(caminho):
+        try:
+            os.chmod(caminho, 0o600)
+        except OSError:
+            pass
+        return _saude_log_fh
+    faulthandler.cancel_dump_traceback_later()
+    if _saude_log_fh is not None:
+        try:
+            _saude_log_fh.close()
+        except OSError:
+            pass
+        _saude_log_fh = None
+    fd = os.open(
+        caminho,
+        os.O_CREAT | os.O_APPEND | os.O_WRONLY | os.O_CLOEXEC,
+        0o600,
+    )
+    try:
+        os.chmod(caminho, 0o600)
+    except OSError:
+        pass
+    _saude_log_fh = open(fd, "ab", buffering=0, closefd=True)
+    _saude_log_path = caminho
+    return _saude_log_fh
+
+
+def _saude_rearma() -> None:
+    """Cancela e arma o watchdog C com o prazo lido agora.
+
+    Chamar de novo zera o relógio. Quem chama é o laço (heartbeat) e cada
+    /health. Sem essas chamadas — GIL presa numa função C — a thread do
+    faulthandler despeja sozinha, com `repeat=True`.
+    """
+    with _saude_arma_lock:
+        timeout = _SAUDE_TRAVADO_S
+        if timeout <= 0:
+            faulthandler.cancel_dump_traceback_later()
+            return
+        fh = _saude_garante_log()
+        faulthandler.cancel_dump_traceback_later()
+        faulthandler.dump_traceback_later(timeout, repeat=True, file=fh)
+
+
 def _loop_saude_watchdog() -> None:
     while True:
-        time.sleep(0.25)
         try:
             _saude_watchdog_passo()
+            _saude_rearma()
         except Exception:  # noqa: BLE001
             pass
+        # Bem abaixo do prazo: um teto de teste curto (0,3 s) não pode
+        # disparar o watchdog C só porque o laço dormiu 0,25 s.
+        pausa = min(0.25, max(0.05, _SAUDE_TRAVADO_S / 4.0))
+        time.sleep(pausa)
 
 
 if not any(t.name == "health-watchdog" for t in threading.enumerate()):
