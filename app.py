@@ -7,6 +7,7 @@ Tudo local: nenhum áudio ou texto sai da máquina.
 
 import asyncio
 import concurrent.futures
+import faulthandler
 import gc
 import hashlib
 import json
@@ -2847,8 +2848,168 @@ def health():
     pé no código de ontem": o probe guarda o `boot_ts` que viu (reinício aparece
     como mudança, instância travada não) e `rev` diz em qual commit. O
     fingerprint `codigo` continua só no `/api/build` (autenticado).
+
+    Continua síncrona de propósito (#915): no pool do anyio, um /health async
+    responderia com os workers presos e o monitor acharia o processo vivo.
     """
+    # None em produção. A célula do watchdog pendura o worker AQUI para a pilha
+    # despejada nomear esta função — tirar o gancho faz o teste morrer.
+    gancho = _SAUDE_GANCHO
+    if gancho is not None:
+        gancho()
     return {"ok": True, "boot_ts": int(_BUILD_TS), "rev": _VERSION}
+
+
+# ---------------------------------------------------------------------------
+# Watchdog do /health (#915). O sample do pid 88948 (08:24) mostrou o loop no
+# kevent, 39 dos 40 workers do anyio parados em rlock_acquire e uma thread
+# Python girando em lookup de dict com a GIL. O probe síncrono não tem worker
+# e estoura os 5 s; um timer DENTRO de health() não arma, porque a rota nem
+# começa. O relógio fica no ASGI, antes do salto para o pool.
+# ---------------------------------------------------------------------------
+class _SaudeEmVoo:
+    """Pedidos de /health que entraram no ASGI e ainda não responderam."""
+
+    def __init__(self) -> None:
+        self._trava = threading.Lock()
+        self._em_voo: dict[int, float] = {}
+        self._seq = 0
+        self._ultimo_despejo = 0.0
+
+    def entra(self) -> int:
+        with self._trava:
+            self._seq += 1
+            token = self._seq
+            self._em_voo[token] = time.monotonic()
+            return token
+
+    def sai(self, token: int) -> None:
+        with self._trava:
+            self._em_voo.pop(token, None)
+            if not self._em_voo:
+                # o intervalo cobre o MESMO pedido preso; o próximo hang despeja já
+                self._ultimo_despejo = 0.0
+
+    def atraso(self) -> float:
+        with self._trava:
+            if not self._em_voo:
+                return 0.0
+            agora = time.monotonic()
+            return max(agora - inicio for inicio in self._em_voo.values())
+
+    def reserva_despejo(self, intervalo: float) -> bool:
+        """True no máximo uma vez por `intervalo` enquanto houver pedido preso."""
+        with self._trava:
+            agora = time.monotonic()
+            if agora - self._ultimo_despejo < intervalo:
+                return False
+            self._ultimo_despejo = agora
+            return True
+
+
+def _saude_float(nome: str, padrao: float) -> float:
+    bruto = os.environ.get(nome)
+    if not bruto:
+        return padrao
+    try:
+        return float(bruto)
+    except ValueError:
+        return padrao
+
+
+# Lidos a cada passo do laço, não congelados no import: a célula baixa o teto
+# sem reimportar o módulo. 3 s fica abaixo do timeout de 5 s do probe.
+_SAUDE_TRAVADO_S = _saude_float("TTS_HEALTH_TRAVADO_S", 3.0)
+_SAUDE_DESPEJO_INTERVALO_S = _saude_float("TTS_HEALTH_DESPEJO_S", 30.0)
+# Fora do estado do dono e fora do repo: a pilha não leva local (o faulthandler
+# não imprime variável) e o arquivo não mistura com settings.
+_SAUDE_WATCHDOG_ARQ = os.environ.get("TTS_WATCHDOG_LOG") or str(
+    Path("/tmp") / "tts-watchdog.log")
+_SAUDE_GANCHO = None
+_saude_voo = _SaudeEmVoo()
+
+
+def _saude_e_health(scope) -> bool:
+    """Só o liveness. Casa o path cru e o mesmo path com o prefixo do proxy.
+
+    Sem `endswith`: `/api/health` e `/healthz` não são o probe. Sem normalizar
+    `..` — quem reescreve o path é o middleware de prefixo, mais para dentro.
+    """
+    if scope.get("type") != "http":
+        return False
+    caminho = scope.get("path") or "/"
+    if caminho == "/health":
+        return True
+    base = _BASE_PATH
+    return bool(base) and caminho == f"{base}/health"
+
+
+class _SaudeWatchdog:
+    """ASGI puro. Anota /health e segue; não lê o corpo nem responde no lugar."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if not _saude_e_health(scope):
+            await self.app(scope, receive, send)
+            return
+        token = _saude_voo.entra()
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _saude_voo.sai(token)
+
+
+def _saude_despeja(atraso: float) -> None:
+    """Cabeçalho + pilhas de todas as threads. Sem valor de variável local."""
+    arq = _SAUDE_WATCHDOG_ARQ
+    linha = (
+        f"[watchdog] {time.strftime('%Y-%m-%dT%H:%M:%S%z')} "
+        f"pid={os.getpid()} /health sem resposta ha {atraso:.1f}s\n"
+    )
+    try:
+        with open(arq, "a", encoding="utf-8") as fh:
+            fh.write(linha)
+            fh.flush()
+            faulthandler.dump_traceback(fh, all_threads=True)
+            fh.write("\n")
+            fh.flush()
+    except Exception:  # noqa: BLE001 — o watchdog não pode derrubar o processo
+        return
+    try:
+        print(
+            f"[watchdog] /health sem resposta ha {atraso:.0f}s — pilhas em {arq}",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _saude_watchdog_passo() -> None:
+    limite = _SAUDE_TRAVADO_S
+    atraso = _saude_voo.atraso()
+    if atraso < limite:
+        return
+    if not _saude_voo.reserva_despejo(_SAUDE_DESPEJO_INTERVALO_S):
+        return
+    _saude_despeja(atraso)
+
+
+def _loop_saude_watchdog() -> None:
+    while True:
+        time.sleep(0.25)
+        try:
+            _saude_watchdog_passo()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+if not any(t.name == "health-watchdog" for t in threading.enumerate()):
+    threading.Thread(
+        target=_loop_saude_watchdog, name="health-watchdog", daemon=True,
+    ).start()
 
 
 # ---------------------------------------------------------------------------
@@ -14406,3 +14567,6 @@ app.mount("/", StaticFiles(directory=BASE / "static", html=True), name="static")
 # primeiro): o 421 de `Host` e o 413 de corpo precisam sair ANTES da auth (#790). O
 # CORS fica por dentro e o `_recusa` devolve o `ACAO` à mão.
 app.add_middleware(_TetoDeCorpo)
+# Por FORA do teto (#915): o relógio inclui a espera na fila do anyio. É
+# pass-through — não responde, então o 421/413 do `_TetoDeCorpo` continua saindo.
+app.add_middleware(_SaudeWatchdog)
