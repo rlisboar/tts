@@ -11,7 +11,9 @@ sem esperar o frame inteiro (teto de 40 ms). O relógio do VAD não anda. O
 atraso que fica é o da reserva mais o do filtro — da ordem de um frame.
 
 Se o modelo ou o ffmpeg não abrirem, `processa` devolve o PCM cru e o Live
-segue — uma linha no log, não um silêncio.
+segue — uma linha no log, não um silêncio. O mesmo vale se o filho emudece:
+a leitura tem prazo (`_LEITURA_PRAZO_S`); no estouro o processo morre, os
+fds fecham e o PCM sai cru.
 
 Modelo: `models/rnnoise/sh.rnnn` (ver NOTICE ao lado). Não baixa nada no boot.
 """
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import select
 import shutil
 import signal
 import subprocess
@@ -51,6 +54,10 @@ _PRIME_TETO_S = 0.6
 # o que não saiu neste teto não sai esperando: está preso até a próxima
 # entrada. Esperar 160 ms só atrasava o VAD e completava com zero.
 _ESPERA_S = 0.04
+# Rajada quente ~10–80 ms; o prime aceita até 0,6 s. 1,5 s mata o filho
+# mudo (read sem teto segurava a thread do filtro e o frame seguia com
+# silêncio). O `processa` saudável continua saindo em `_ESPERA_S`.
+_LEITURA_PRAZO_S = 1.5
 
 _avisou: set[str] = set()
 # stdin já fechado pelo `_mata` chega como ValueError ("I/O operation on
@@ -127,6 +134,11 @@ class RnnoiseAoVivo:
         self.faltas = 0          # bytes completados com zero (não deu tempo)
         self._leitor: threading.Thread | None = None
         self._erros: threading.Thread | None = None
+        # relógio do silêncio: arma na escrita, zera quando sai byte. None =
+        # não há resposta pendente (pausa do microfone não é filho mudo).
+        self._desde_mudo: float | None = None
+        self._mudo_feito = False
+        self._mudo_lock = threading.Lock()
 
     @property
     def ativo(self) -> bool:
@@ -224,11 +236,52 @@ class RnnoiseAoVivo:
         return True
 
     def _escreve(self, proc: subprocess.Popen, pcm: bytes) -> None:
-        assert proc.stdin is not None
-        proc.stdin.write(pcm)
-        proc.stdin.flush()
+        """Manda o frame. Filho que não consome dentro do prazo é mudo.
+
+        `write` no pipe cheio bloqueava o `processa` (é a thread do frame).
+        O `select` limita a escrita ao mesmo prazo da leitura.
+        """
+        entrada = proc.stdin
+        if entrada is None:
+            raise BrokenPipeError("rnnoise sem stdin")
+        try:
+            fd = entrada.fileno()
+            os.set_blocking(fd, False)
+        except (ValueError, OSError) as exc:
+            raise BrokenPipeError(str(exc)) from exc
+        view = memoryview(pcm)
+        i = 0
+        limite = time.monotonic() + _LEITURA_PRAZO_S
+        while i < len(view):
+            restante = limite - time.monotonic()
+            if restante <= 0:
+                self._filho_mudo(proc)
+                raise BrokenPipeError("rnnoise mudo na escrita")
+            try:
+                _, pronto, _ = select.select([], [fd], [], restante)
+            except (ValueError, OSError) as exc:
+                raise BrokenPipeError(str(exc)) from exc
+            if not pronto:
+                self._filho_mudo(proc)
+                raise BrokenPipeError("rnnoise mudo na escrita")
+            try:
+                n = os.write(fd, view[i:])
+            except BlockingIOError:
+                continue
+            except OSError as exc:
+                raise BrokenPipeError(str(exc)) from exc
+            if n <= 0:
+                raise BrokenPipeError("rnnoise escrita vazia")
+            i += n
+        if self._desde_mudo is None:
+            self._desde_mudo = time.monotonic()
 
     def _falhou_abrir(self, proc: subprocess.Popen, extra: str = "") -> None:
+        # O stderr chega numa thread. Sem esperá-la, o aviso sai "reserva não
+        # encheu" e perde o motivo que o ffmpeg escreveu antes de morrer.
+        erros = self._erros
+        if erros is not None:
+            erros.join(0.4)
         err = bytes(self._err).decode("utf-8", "replace").strip().replace("\n", " ")
         detalhe = (err or extra or f"rc={proc.returncode}")[:180]
         _avisa(f"rnnoise não abriu ({detalhe}) — Live segue sem o filtro")
@@ -275,35 +328,145 @@ class RnnoiseAoVivo:
                 del self._out[:sobra]
         return True
 
+    def _filho_mudo(self, proc: subprocess.Popen) -> None:
+        """Estouro do prazo: mata, fecha os fds, e o PCM seguinte sai cru.
+
+        Não sobe outro aqui. O `processa` está no frame do VAD; um ffmpeg
+        novo nesse caminho atrasaria o turno. O próximo `abrir` (a sessão
+        nova, depois que o app derruba o filtro) é quem re-sobe.
+        """
+        if self._fechado:
+            return
+        with self._mudo_lock:
+            if self._mudo_feito:
+                return
+            self._mudo_feito = True
+        prazo = _LEITURA_PRAZO_S
+        pid = getattr(proc, "pid", None)
+        self._ok = False
+        self._morto = True
+        self._vivo = False
+        if self._proc is proc:
+            self._proc = None
+        _avisa(
+            f"rnnoise filho mudo (pid={pid}) não respondeu em {prazo:g}s "
+            "— matei e o PCM sai cru"
+        )
+        with self._cv:
+            self._cv.notify_all()
+        self._mata(proc)
+
     def _ler(self, proc: subprocess.Popen) -> None:
-        if proc.stdout is None:
+        """Lê o stdout com `select`. O `read` puro não voltava se o filho calasse.
+
+        A thread é do filtro, não do laço do Live: o `processa` já desistia
+        em `_ESPERA_S`. Sem este prazo o ffmpeg mudo ficava vivo e o frame
+        seguia completado com silêncio.
+        """
+        saida = proc.stdout
+        if saida is None:
+            self._vivo = False
             return
         try:
-            while True:
-                bloco = proc.stdout.read(4096)
+            fd = saida.fileno()
+            os.set_blocking(fd, False)
+        except (ValueError, OSError):
+            self._vivo = False
+            return
+        try:
+            while self._proc is proc and not self._fechado:
+                desde = self._desde_mudo
+                if desde is None:
+                    espera = 0.2
+                else:
+                    falta = _LEITURA_PRAZO_S - (time.monotonic() - desde)
+                    if falta <= 0:
+                        if proc.poll() is None and not self._fechado:
+                            self._filho_mudo(proc)
+                            return
+                        break
+                    espera = min(0.2, falta)
+                try:
+                    pronto, _, _ = select.select([fd], [], [], espera)
+                except (ValueError, OSError):
+                    break
+                if self._fechado or self._proc is not proc:
+                    break
+                if not pronto:
+                    if proc.poll() is not None:
+                        break
+                    continue
+                try:
+                    bloco = os.read(fd, 4096)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    break
                 if not bloco:
                     break
+                self._desde_mudo = None
                 with self._cv:
                     self._out.extend(bloco)
                     self._cv.notify_all()
         except Exception:  # noqa: BLE001 — o pipe fechou no meio
             pass
-        self._vivo = False
-        with self._cv:
-            self._cv.notify_all()
+        finally:
+            self._vivo = False
+            with self._cv:
+                self._cv.notify_all()
+
+    def _acumula_err(self, bloco: bytes) -> None:
+        if bloco and len(self._err) < 2000:
+            self._err.extend(bloco[: 2000 - len(self._err)])
+
+    def _drena_err(self, fd: int) -> None:
+        """O que já está no pipe quando o filho morre. O `select` pode ter
+        voltado vazio no instante anterior e o `poll()` já é o do cadáver."""
+        while True:
+            try:
+                bloco = os.read(fd, 256)
+            except BlockingIOError:
+                return
+            except OSError:
+                return
+            if not bloco:
+                return
+            self._acumula_err(bloco)
 
     def _ler_err(self, proc: subprocess.Popen) -> None:
-        if proc.stderr is None:
+        err = proc.stderr
+        if err is None:
             return
         try:
-            while True:
-                bloco = proc.stderr.read(256)
+            fd = err.fileno()
+            os.set_blocking(fd, False)
+        except (ValueError, OSError):
+            return
+        try:
+            while not self._fechado and not self._morto:
+                try:
+                    pronto, _, _ = select.select([fd], [], [], 0.2)
+                except (ValueError, OSError):
+                    break
+                if self._fechado or self._morto:
+                    break
+                if not pronto:
+                    if proc.poll() is not None:
+                        break
+                    continue
+                try:
+                    bloco = os.read(fd, 256)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    break
                 if not bloco:
                     break
-                if len(self._err) < 2000:
-                    self._err.extend(bloco)
+                self._acumula_err(bloco)
         except Exception:  # noqa: BLE001
             pass
+        finally:
+            self._drena_err(fd)
 
     def processa(self, pcm: bytes) -> bytes:
         """PCM16 mono 16 kHz entra e sai com o mesmo tamanho. Cru se o filtro caiu."""
@@ -312,10 +475,10 @@ class RnnoiseAoVivo:
         cru = bytes(pcm)
         if not self._pronto.is_set():
             self._pronto.wait(0.7)
-        if not self._ok or len(cru) < 2 or len(cru) % 2:
+        if not self._ok or self._morto or len(cru) < 2 or len(cru) % 2:
             return cru
         with self._lock:
-            if self._fechado:
+            if self._fechado or self._morto:
                 return cru
             proc = self._proc
             if proc is None or proc.poll() is not None or proc.stdin is None:
@@ -324,9 +487,13 @@ class RnnoiseAoVivo:
             try:
                 self._escreve(proc, cru)
             except _ERRO_PIPE:
-                self._caiu()
+                if not self._morto:
+                    self._caiu()
                 return cru
-            return self._tira(len(cru))
+            sai = self._tira(len(cru))
+            if self._morto:
+                return cru
+            return sai
 
     def _tira(self, n: int) -> bytes:
         prazo = time.monotonic() + _ESPERA_S
@@ -379,24 +546,37 @@ class RnnoiseAoVivo:
 
     @staticmethod
     def _mata(proc: subprocess.Popen) -> None:
+        """Mata o filho e fecha stdin, stdout e stderr. Idempotente."""
         try:
-            if proc.stdin:
+            if proc.stdin is not None and not proc.stdin.closed:
                 proc.stdin.close()
         except Exception:  # noqa: BLE001
             pass
         try:
             proc.wait(timeout=0.25)
-            return
         except subprocess.TimeoutExpired:
-            pass
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except Exception:  # noqa: BLE001
             try:
-                proc.kill()
+                os.killpg(proc.pid, signal.SIGKILL)
             except Exception:  # noqa: BLE001
-                return
-        try:
-            proc.wait(timeout=0.2)
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                proc.wait(timeout=0.2)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001
             pass
+        finally:
+            # getattr: o dublê de `test_qa_gate441b` só tem stdin. Popen real
+            # tem os três, e o estouro do prazo fecha todos (#921).
+            for nome in ("stdin", "stdout", "stderr"):
+                fluxo = getattr(proc, nome, None)
+                if fluxo is None:
+                    continue
+                try:
+                    if not fluxo.closed:
+                        fluxo.close()
+                except Exception:  # noqa: BLE001
+                    pass

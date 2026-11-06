@@ -645,6 +645,160 @@ def test_nao_abriu_avisa(caplog, tmp_path):
     ns.fechar()
 
 
+def _vivo(pid: int) -> bool:
+    import os
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _filho_que_nao_responde():
+    """Consome o stdin e não escreve nada. O `read` do pai não volta sozinho."""
+    import subprocess
+    import sys
+
+    codigo = (
+        "import os, sys, time\n"
+        "fd = sys.stdin.fileno()\n"
+        "os.set_blocking(fd, False)\n"
+        "while True:\n"
+        "    try:\n"
+        "        b = os.read(fd, 65536)\n"
+        "    except BlockingIOError:\n"
+        "        time.sleep(0.01)\n"
+        "        continue\n"
+        "    if not b:\n"
+        "        break\n"
+        "time.sleep(3600)\n"
+    )
+    return subprocess.Popen(
+        [sys.executable, "-c", codigo],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        bufsize=0, start_new_session=True,
+    )
+
+
+def _amarra(ns: RnnoiseAoVivo, proc) -> None:
+    ns._proc = proc
+    ns._ok = True
+    ns._vivo = True
+    ns._morto = False
+    ns._pronto.set()
+    ns._leitor = threading.Thread(target=ns._ler, args=(proc,),
+                                  name="rnnoise-stdout", daemon=True)
+    ns._erros = threading.Thread(target=ns._ler_err, args=(proc,),
+                                 name="rnnoise-stderr", daemon=True)
+    ns._leitor.start()
+    ns._erros.start()
+
+
+def _cru_antes_do_teto(ns: RnnoiseAoVivo, cru: bytes, teto: float) -> tuple[bytes, float]:
+    """Se o `read` voltar a bloquear, a célula falha em vez de pendurar."""
+    caixa: dict = {}
+
+    def corre() -> None:
+        t0 = time.monotonic()
+        try:
+            sai = ns.processa(cru)
+            limite = t0 + teto
+            while sai != cru and time.monotonic() < limite:
+                time.sleep(0.02)
+                sai = ns.processa(cru)
+            caixa["sai"] = sai
+            caixa["dt"] = time.monotonic() - t0
+        except BaseException as exc:  # noqa: BLE001
+            caixa["erro"] = exc
+
+    fio = threading.Thread(target=corre, daemon=True)
+    fio.start()
+    fio.join(teto + 1)
+    if fio.is_alive():
+        proc = ns._proc
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+        fio.join(1)
+        raise AssertionError(f"o frame não voltou em {teto + 1:g}s")
+    if "erro" in caixa:
+        raise caixa["erro"]
+    return caixa["sai"], caixa["dt"]
+
+
+def test_filho_mudo_devolve_o_cru_dentro_do_prazo(monkeypatch, caplog):
+    """Filho que não escreve: o PCM sai cru, o pid morre, o log cita o prazo.
+
+    O `TIMEOUT` do job não entra aqui. O próximo `abrir` é quem sobe outro
+    filho — o `processa` não re-sobe no frame.
+    """
+    import logging
+
+    prazo = 0.35
+    monkeypatch.setattr(live_rnnoise, "_LEITURA_PRAZO_S", prazo)
+    live_rnnoise._avisou.clear()
+    proc = _filho_que_nao_responde()
+    ns = RnnoiseAoVivo()
+    cru = b"\x01\x02" * 160
+    try:
+        _amarra(ns, proc)
+        with caplog.at_level(logging.WARNING, logger="live"):
+            sai, dt = _cru_antes_do_teto(ns, cru, prazo + 2.0)
+        assert sai == cru
+        assert prazo * 0.8 <= dt < prazo + 2.0, dt
+        assert ns.morto is True
+        assert ns._proc is None
+        # o frame volta antes do SIGKILL: quem mata é a thread leitora
+        assert ns._leitor is not None
+        ns._leitor.join(2)
+        assert not _vivo(proc.pid)
+        assert proc.poll() is not None
+        textos = [r.message for r in caplog.records]
+        assert any("filho mudo" in m and "cru" in m and f"{prazo:g}s" in m
+                   for m in textos), textos
+        # o frame seguinte continua cru e não nasce processo nenhum
+        assert ns.processa(cru) == cru
+        chamadas: list = []
+
+        def _nao_sobe(*_a, **_k):
+            chamadas.append(1)
+            raise OSError("não sobe de verdade")
+
+        monkeypatch.setattr(live_rnnoise.subprocess, "Popen", _nao_sobe)
+        assert ns.abrir() is False
+        assert chamadas == [1], chamadas
+    finally:
+        ns.fechar()
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_filho_mudo_fecha_os_fds(monkeypatch):
+    """O estouro fecha stdin, stdout e stderr (#921; o P3 do #920)."""
+    prazo = 0.35
+    monkeypatch.setattr(live_rnnoise, "_LEITURA_PRAZO_S", prazo)
+    live_rnnoise._avisou.clear()
+    proc = _filho_que_nao_responde()
+    ns = RnnoiseAoVivo()
+    cru = b"\x03\x04" * 80
+    try:
+        _amarra(ns, proc)
+        _cru_antes_do_teto(ns, cru, prazo + 2.0)
+        assert ns._leitor is not None and ns._erros is not None
+        ns._leitor.join(2)
+        ns._erros.join(2)
+        assert not ns._leitor.is_alive()
+        assert not ns._erros.is_alive()
+        assert proc.stdin is not None and proc.stdin.closed
+        assert proc.stdout is not None and proc.stdout.closed
+        assert proc.stderr is not None and proc.stderr.closed
+        assert proc.poll() is not None
+    finally:
+        ns.fechar()
+        if proc.poll() is None:
+            proc.kill()
+
+
 def test_caiu_avisa_e_recolhe(caplog):
     """`_caiu` avisa com o stderr e recolhe o processo (estado e aviso juntos)."""
     live_rnnoise._avisou.clear()
