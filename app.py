@@ -2492,6 +2492,8 @@ def _dfn3_limpa(audio, sr: int):
 #: NUNCA baixa: nada sai da máquina por padrão.
 _DEMUCS_DIR = _caminho_estado_env("TTS_DEMUCS_DIR", BASE / "models" / "demucs")
 _MUSICA_MOTIVO = ""
+#: teto do worker de música. Filho mudo segurava o `_gen_lock` para sempre (#924).
+_MUSICA_TIMEOUT_S = float(os.environ.get("TTS_MUSICA_TIMEOUT_S", "120"))
 
 
 def _musica_motivo() -> str:
@@ -2506,7 +2508,9 @@ def _separa_musica(audio, sr: int):
 
     Roda em WORKER (`musica_worker.py`): o Demucs é torch e o app é MLX; no mesmo
     processo as duas pilhas de Metal se misturam, e o pai só lê o wav pronto. O
-    chamador segura a trava de Metal enquanto isto roda."""
+    filho usa MPS, então a trava fica em volta do `subprocess.run` — soltar,
+    como a marca (CPU), poria as duas pilhas juntas. O `timeout` é o que devolve
+    a trava: filho mudo morre e a limpeza segue sem separar (#924)."""
     import numpy as np
 
     try:
@@ -2531,12 +2535,26 @@ def _separa_musica(audio, sr: int):
             saida = Path(pasta) / "voz.wav"
             sf.write(str(entrada), np.asarray(audio, dtype=np.float32), sr, subtype="PCM_16")
             # MESMA exclusividade de Metal do TTS e do separador de voz: o worker
-            # usa MPS. A trava fica no PAI, em volta da chamada — nunca no filho
+            # usa MPS. A trava fica no PAI, em volta da chamada — nunca no filho.
+            # O timeout mata o filho mudo; sem ele o `_gen_lock` não voltava (#924).
             with _gen_lock:
-                r = subprocess.run([sys.executable, str(BASE / "musica_worker.py"),
-                                    str(entrada), str(saida)], capture_output=True,
-                                   env={**os.environ, "TTS_DEMUCS_DIR": str(pesos),
-                                        "HF_HUB_OFFLINE": "1"})
+                try:
+                    r = subprocess.run(
+                        [sys.executable, str(BASE / "musica_worker.py"),
+                         str(entrada), str(saida)],
+                        capture_output=True, timeout=_MUSICA_TIMEOUT_S,
+                        env={**os.environ, "TTS_DEMUCS_DIR": str(pesos),
+                             "HF_HUB_OFFLINE": "1"})
+                except subprocess.TimeoutExpired:
+                    motivo = f"filho mudo não respondeu em {_MUSICA_TIMEOUT_S:g}s"
+                    globals()["_MUSICA_MOTIVO"] = motivo
+                    print(
+                        "[voice] separação de música: filho mudo "
+                        f"não respondeu em {_MUSICA_TIMEOUT_S:g}s; "
+                        "matei e o áudio segue sem separação",
+                        flush=True,
+                    )
+                    return None
             if r.returncode != 0 or not saida.exists():
                 motivo = (r.stderr or b"").decode().strip()[-160:] or "worker falhou"
                 globals()["_MUSICA_MOTIVO"] = motivo
@@ -9511,7 +9529,7 @@ def _aplica_speaker_alvo(tmp: Path, alvo: str) -> tuple[Path, dict]:
     if not separa_voz.disponivel():
         return tmp, {"separacao": "indisponivel", "separacao_motivo": separa_voz.motivo()}
     try:
-        with _gen_lock:                      # Metal: sem geração local em paralelo
+        with _gen_lock:                      # MPS: prazo em separa_voz (#924)
             # o extrator é o DO PERFIL, não o efetivo: perfil legado tem vetor
             # 256-d e o ECAPA devolve 192-d (#534)
             novo, info = separa_voz.separa_alvo(
@@ -9553,7 +9571,7 @@ def _separacao_do_turno(tmp: Path) -> tuple[Path, dict]:
         return tmp, {"separacao": "indisponivel", "separacao_motivo": separa_voz.motivo()}
     t0 = time.monotonic()
     try:
-        with _gen_lock:                  # Metal: nada de geração local em paralelo
+        with _gen_lock:                  # MPS: prazo em separa_voz (#924)
             # extrator DO PERFIL (perfil legado tem 256-d; o ECAPA devolve 192-d)
             novo, info = separa_voz.separa_alvo(tmp, vecs, _speaker_modelo_do_perfil(perfil))
     except Exception as exc:             # noqa: BLE001 — o STT não cai pelo filtro
@@ -9595,7 +9613,7 @@ def _separa_prewarm() -> None:
                 w.setframerate(16000)
                 t = np.arange(8000) / 16000.0
                 w.writeframes((np.sin(2 * np.pi * 180 * t) * 8000).astype("<i2").tobytes())
-            with _gen_lock:
+            with _gen_lock:              # MPS: prazo em separa_voz (#924)
                 separa_voz.separa(tmp, tmp.parent)
             tmp.unlink(missing_ok=True)
         except Exception as exc:         # noqa: BLE001 — prewarm não derruba sessão

@@ -9,7 +9,8 @@ próximo do centróide do dono — o outro é o que se descarta.
 O modelo (MossFormer2_SS_16K, 670 MB, Apache-2.0) roda em PROCESSO FILHO e em MPS
 (`separa_worker.py`): se estourar, morre só ele e o chamador segue com o áudio
 original. Enquanto o filho roda, o pai segura a trava de Metal (`app._gen_lock`) —
-é a mesma arbitragem que a geração local usa.
+é a mesma arbitragem que a geração local usa. A leitura tem prazo (#924):
+filho mudo é morto e a trava volta. Soltar a trava não dá — o worker usa MPS.
 
 Sem os pesos (`disponivel()` False), nada muda: o chamador recebe
 `separacao="indisponivel"` e transcreve o áudio original. O contrato só aparece
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import subprocess
 import sys
 import tempfile
@@ -148,15 +150,25 @@ def separa(wav: Path, dir_saida: Path) -> list[Path]:
     return [Path(p) for p in dados["fluxos"]]
 
 
-def _le_ate_resposta(proc: subprocess.Popen, ident: int) -> str:
-    """Lê até a resposta de `ident` (ignora linhas de aquecimento/outras)."""
-    limite = time.monotonic() + TIMEOUT_S
+def _fd_leitura(proc: subprocess.Popen) -> int:
+    saida = proc.stdout
+    if saida is None or saida.closed:
+        raise RuntimeError("worker da separação sem stdout")
+    fd = saida.fileno()
+    # readline no TextIOWrapper não aceita prazo. O fd solto + select acorda
+    # no teto; os bytes não passam pelo buffer do wrapper (ele não é lido).
+    os.set_blocking(fd, False)
+    return fd
+
+
+def _casa_id(buf: bytearray, ident: int) -> str | None:
+    """Linha JSON deste id. Ignora aquecimento e lixo no stdout."""
     while True:
-        if proc.poll() is not None:
-            raise RuntimeError(f"worker da separação morreu (rc={proc.returncode})")
-        if time.monotonic() > limite:
-            raise RuntimeError(f"separação passou de {TIMEOUT_S:.0f}s")
-        linha = proc.stdout.readline()
+        nl = buf.find(b"\n")
+        if nl < 0:
+            return None
+        linha = bytes(buf[:nl]).decode("utf-8", "replace").strip()
+        del buf[: nl + 1]
         if not linha:
             continue
         try:
@@ -165,6 +177,96 @@ def _le_ate_resposta(proc: subprocess.Popen, ident: int) -> str:
             continue
         if dados.get("id") == ident:
             return linha
+
+
+def _mata_filho(proc: subprocess.Popen) -> None:
+    """Mata e esquece. Já corre sob `_trava` — não pega a trava de novo.
+
+    Não sobe outro aqui: a carga do MossFormer seguraria o `_gen_lock` de
+    novo. O próximo `_pega` é quem re-sobe.
+    """
+    global _proc
+    try:
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                proc.wait(timeout=2)
+            except Exception:  # noqa: BLE001
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    proc.wait(timeout=2)
+                except Exception:  # noqa: BLE001
+                    pass
+        for stream in (proc.stdin, proc.stdout):
+            if stream is None:
+                continue
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        if _proc is proc:
+            _proc = None
+
+
+def _filho_mudo(proc: subprocess.Popen, prazo: float) -> None:
+    pid = getattr(proc, "pid", None)
+    print(
+        f"[separa] filho mudo (pid={pid}) não respondeu em {prazo:g}s; "
+        "matei e o áudio segue sem separação",
+        flush=True,
+    )
+    _mata_filho(proc)
+    raise RuntimeError(f"separação passou de {prazo:g}s (filho mudo)")
+
+
+def _le_ate_resposta(proc: subprocess.Popen, ident: int, prazo: float | None = None) -> str:
+    """Linha JSON deste id. Cada espera no fd respeita o que falta do prazo.
+
+    O `readline` bloqueava sem olhar o teto. Essa leitura corre dentro do
+    `_gen_lock` (o worker usa MPS): filho mudo travava o servidor. No estouro
+    o filho morre, `_proc` zera e a exceção sobe — o chamador segue com o
+    áudio original. `prazo` None é o teto do job (`TIMEOUT_S`).
+    """
+    if prazo is None:
+        prazo = TIMEOUT_S
+    limite = time.monotonic() + prazo
+    fd = _fd_leitura(proc)
+    buf = bytearray()
+    while True:
+        achada = _casa_id(buf, ident)
+        if achada is not None:
+            return achada
+        restante = limite - time.monotonic()
+        if restante <= 0:
+            _filho_mudo(proc, prazo)
+        # Filho já morto: drena o que houver no pipe e não espera o teto.
+        espera = 0.0 if proc.poll() is not None else restante
+        try:
+            pronto, _, _ = select.select([fd], [], [], espera)
+        except (ValueError, OSError) as exc:
+            raise RuntimeError(
+                f"worker da separação morreu (rc={proc.returncode})") from exc
+        if not pronto:
+            if proc.poll() is not None:
+                raise RuntimeError(f"worker da separação morreu (rc={proc.returncode})")
+            _filho_mudo(proc, prazo)
+        try:
+            pedaco = os.read(fd, 65536)
+        except BlockingIOError:
+            continue
+        except OSError as exc:
+            raise RuntimeError(
+                f"worker da separação morreu (rc={proc.returncode})") from exc
+        if not pedaco:
+            raise RuntimeError(f"worker da separação morreu (rc={proc.poll()})")
+        buf.extend(pedaco)
 
 
 #: janela de decisão. Separar um bloco que já é de UM falante atrapalha (R4:
