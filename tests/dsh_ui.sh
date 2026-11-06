@@ -63,9 +63,15 @@ class Stub(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(b'{"choices":[{"message":{"content":"ok"}}]}')
 
+# Fora da faixa de controle do mic-router (7861-7865, #898): se o servidor do
+# teste cair ali, a sonda do painel OBS fala com ele no lugar do roteador e
+# leva CORS — vermelho que não existe.
 def porta_livre():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
+    while True:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0)); porta = s.getsockname()[1]
+        if not 7861 <= porta <= 7865:
+            return porta
 
 # Sobras de rodadas mortas (a verde apaga o diretório dela no fim): mesma varredura
 # por idade das suítes de Live (#562/#608). 1 h é folgado para depurar uma vermelha.

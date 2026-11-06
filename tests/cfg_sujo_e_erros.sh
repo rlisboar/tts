@@ -29,7 +29,10 @@ command -v curl >/dev/null || { echo "curl não encontrado"; exit 1; }
 # `:7860` é recusado sem `NO_DONO=1`.
 SERVIDOR_PID=""
 if [ -z "$BASE_ORIGINAL" ]; then
-  PORTA="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"
+  PORTA="$(python3 -c 'import socket
+while True:
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close()
+    if not 7861 <= p <= 7865: print(p); break')"
   APK="$(mktemp -t apikeys-cfgsujo.XXXXXX 2>/dev/null || echo "/tmp/apikeys-cfgsujo.$$")"
   SET="$(mktemp -t settings-cfgsujo.XXXXXX 2>/dev/null || echo "/tmp/settings-cfgsujo.$$")"
   rm -f "$APK" "$SET"

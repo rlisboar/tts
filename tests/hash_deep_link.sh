@@ -36,9 +36,15 @@ falhas = []
 def cobrar(c, m):
     if not c: falhas.append(m)
 
+# Fora da faixa de controle do mic-router (7861-7865, #898): se o servidor do
+# teste cair ali, a sonda do painel OBS fala com ele no lugar do roteador e
+# leva CORS — vermelho que não existe.
 def porta_livre():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
+    while True:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0)); porta = s.getsockname()[1]
+        if not 7861 <= porta <= 7865:
+            return porta
 
 porta = porta_livre()
 # settings em CÓPIA (#535): o boot/save do app não pode mexer no arquivo do dono

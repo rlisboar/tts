@@ -58,9 +58,15 @@ class Stub(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
         self.wfile.write(b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n')
 
+# Fora da faixa de controle do mic-router (7861-7865, #898): se o servidor do
+# teste cair ali, a sonda do painel OBS fala com ele no lugar do roteador e
+# leva CORS — vermelho que não existe.
 def porta_livre():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
+    while True:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0)); porta = s.getsockname()[1]
+        if not 7861 <= porta <= 7865:
+            return porta
 
 stub_porta = porta_livre()
 threading.Thread(target=HTTPServer(("127.0.0.1", stub_porta), Stub).serve_forever, daemon=True).start()

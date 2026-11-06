@@ -263,12 +263,17 @@ def falha(m):
     falhas.append(m)
     print(f"  ✘ {m}")
 
+# Fora da faixa de controle do mic-router (7861-7865, #898): se o servidor do
+# teste cair ali, a sonda do painel OBS fala com ele no lugar do roteador e
+# leva CORS — vermelho que não existe.
 def porta_livre():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
+    while True:
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        if not 7861 <= p <= 7865:
+            return p
 
 # ------------------------------------------------- launcher do servidor (patched)
 # Arquivo próprio porque o patch tem de viver no processo do SERVIDOR.

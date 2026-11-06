@@ -193,9 +193,12 @@ class Stub(BaseHTTPRequestHandler):
             self.wfile.write(corpo.encode())
 
 def sobe_stub():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        porta = s.getsockname()[1]
+    # também fora da faixa do mic-router: a página sonda 7861-7865 (#898)
+    while True:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0)); porta = s.getsockname()[1]
+        if not 7861 <= porta <= 7865:
+            break
     srv = HTTPServer(("127.0.0.1", porta), Stub)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return porta
@@ -264,10 +267,15 @@ def _chave_da_instalacao() -> str:
     return (os.environ.get("LIVE_WS_KEY") or os.environ.get("TTS_CHAVE") or "").strip()
 
 
+# Fora da faixa de controle do mic-router (7861-7865, #898): se o servidor do
+# teste cair ali, a sonda do painel OBS fala com ele no lugar do roteador e
+# leva CORS — vermelho que não existe.
 def porta_livre():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    while True:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0)); porta = s.getsockname()[1]
+        if not 7861 <= porta <= 7865:
+            return porta
 
 
 def sobe_servidor(porta, stub_porta):

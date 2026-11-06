@@ -71,7 +71,10 @@ LANURL=""   # definido depois (no modo próprio a porta só existe mais adiante)
 # Chaves e settings em /tmp: a rodada não deixa rastro no estado do dono.
 SERVIDOR_PID=""
 if [ -z "$BASE_ORIGINAL" ]; then
-  PORTA="$(command -v python3 >/dev/null && python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"
+  PORTA="$(command -v python3 >/dev/null && python3 -c 'import socket
+while True:
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close()
+    if not 7861 <= p <= 7865: print(p); break')"
   APK="$(mktemp -t apikeys-adminui.XXXXXX 2>/dev/null || echo "/tmp/apikeys-adminui.$$")"
   SET="$(mktemp -t settings-adminui.XXXXXX 2>/dev/null || echo "/tmp/settings-adminui.$$")"
   rm -f "$APK" "$SET"      # o mktemp cria vazio; o app gera a chave padrão sozinho

@@ -187,9 +187,15 @@ elif BLOCO in ("comando", "backchannel", "misto"):
     Stub.FRASES = Stub.FRASES[:2]
 
 
+# Fora da faixa de controle do mic-router (7861-7865, #898): se o servidor do
+# teste cair ali, a sonda do painel OBS fala com ele no lugar do roteador e
+# leva CORS — vermelho que não existe.
 def porta_livre():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
+    while True:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0)); porta = s.getsockname()[1]
+        if not 7861 <= porta <= 7865:
+            return porta
 
 def _dbfs(x: float) -> float:
     return 20.0 * math.log10(x) if x > 1e-9 else -120.0
