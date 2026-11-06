@@ -168,11 +168,13 @@ def synth(text, language=None, speed=None, voice=None, instruct=None, ref_text=N
     return (a/pk*0.95).astype(np.float32)
 
 def wav_bytes(a):
-    # SEM marca d'água DE PROPÓSITO (#845): quem marca é o CLIENTE, no trecho que
-    # grava — o app faz isso em `_marca_peca` (tts_worker.py). Consequência que
-    # vale saber: consumidor DIRETO deste servidor (curl, outro app) recebe áudio
-    # cru. Se um dia marcar aqui, o app passa a marcar duas vezes — inofensivo para
-    # a detecção, mas some com o custo zero atual, então decida de propósito.
+    # SEM marca d'água DE PROPÓSITO (#845): quem marca é o CLIENTE, ao gravar.
+    # O app faz isso em `_marca_arquivo` (trecho) e `_marca_saida_isolada`
+    # (filho isolado, depois que ele sai); o Live usa `_marca_pcm`. Tudo em
+    # app.py. Consequência que vale saber: consumidor DIRETO deste servidor
+    # (curl, outro app) recebe áudio cru. Se um dia marcar aqui, o app passa a
+    # marcar duas vezes — inofensivo para a detecção, mas some com o custo zero
+    # atual, então decida de propósito.
     buf=io.BytesIO(); sf.write(buf, a, SR, format="WAV", subtype="PCM_16"); return buf.getvalue()
 
 def _to_wav24(b):

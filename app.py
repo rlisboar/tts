@@ -6691,10 +6691,15 @@ class _SpeechGate:
         self._donos: dict[int, str] = {}
 
     def _pula_morto(self, ticket: int) -> bool:
-        """O dono do ticket sumiu (saiu de running/queued)? Avança e devolve True."""
+        """Dono saiu de running/queued? Avança o ticket e devolve True.
+
+        True só quando o ticket andou. Sem dono (buraco) devolve False: quem
+        espera faz `wait` curto e o prazo segue valendo. Continuar seco
+        segurava o Condition num lookup de dict (#915).
+        """
         job_id = self._donos.get(ticket)
         if job_id is None:
-            return True
+            return False
         job = _jobs.get(job_id)
         if job is None or job.get("status") not in ("running", "queued"):
             self._donos.pop(ticket, None)
@@ -6730,9 +6735,10 @@ class _SpeechGate:
             free_in = max(0.0, self._free_at - time.time())
             last = self._last_dur
             ahead = ticket - self._next_ticket
-        token = {"ticket": ticket, "job_id": job_id, "done": False}
-        with self._cv:
+            # Mesma seção do ticket: a janela entre dois `with` deixava o
+            # próximo ver ticket sem dono e girar no dict (#915).
             self._donos[ticket] = job_id
+        token = {"ticket": ticket, "job_id": job_id, "done": False}
         job = _jobs.get(job_id)
         if job is not None:
             job["queue_token"] = token      # o cancelamento precisa achar o ticket
@@ -6780,7 +6786,7 @@ class _SpeechGate:
                 if token.get("cancelado"):      # #835: cancelado sai na hora
                     self._avanca(token)
                     return
-                if self._pula_morto(self._next_ticket):   # #796: ticket morto
+                if self._pula_morto(self._next_ticket):   # #796: True só se andou
                     continue
                 if time.monotonic() > limite:             # #796: prazo da espera
                     print(f"[fila] ticket {token['ticket']} esperou "
@@ -6848,7 +6854,7 @@ class _SpeechGate:
         limite = time.monotonic() + _SPEECH_FILA_ESPERA_S
         with self._cv:
             while token["ticket"] != self._next_ticket:
-                if self._pula_morto(self._next_ticket):
+                if self._pula_morto(self._next_ticket):   # #796: True só se andou
                     continue
                 if time.monotonic() > limite:
                     print(f"[fila] abort do ticket {token['ticket']} esperou "

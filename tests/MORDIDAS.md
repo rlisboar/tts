@@ -755,6 +755,19 @@ No job local e no Live, `marca_wav` solta a trava e a repega antes de publicar.
 
 O negativo (`test_trecho_cru_nao_acusa_marca`) segue: áudio cru não pode acusar marca.
 
+## #915 — buraco do `_SpeechGate` (ticket sem dono)
+
+`_pula_morto` devolvia True quando o ticket não tinha dono, e o `deliver`/`abort`
+faziam `continue` sem `wait` e sem avançar. O Condition ficava preso num lookup
+de dict; `/api/status` usa a mesma trava. O dono agora entra na mesma seção que
+tira o ticket. Sem dono, espera curto e o prazo vale.
+
+| Sabotagem | Resultado |
+|---|---|
+| `if job_id is None: return True` (continue seco) | `test_gate_buraco_sem_dono_espera_e_status_responde[deliver]` **FAILED**: `status não respondeu com o buraco aberto` |
+
+`abort` é o mesmo ramo de `_pula_morto`. Com o conserto, deliver e abort voltam no prazo (CPU da thread abaixo de 0,25 s) e `status()` lê `speech_queue_depth == 2` com o buraco aberto.
+
 ## #812 — retorno remoto: onde a marca é contada
 
 O caminho remoto já marcava (compartilha o laço do job); a célula existe para a

@@ -145,6 +145,56 @@ def test_gate_duracao_estimada_por_texto(gate_rapido):
         app._jobs.pop("job-x", None)
 
 
+@pytest.mark.parametrize("acao", ["deliver", "abort"])
+def test_gate_buraco_sem_dono_espera_e_status_responde(monkeypatch, acao):
+    """Ticket sem dono espera no Condition e o /api/status responde (#915).
+
+    Mordida: `_pula_morto` voltar a `return True` no buraco (continue seco,
+    sem wait e sem avançar) prende o status e o deliver/abort não volta.
+    """
+    espera = 0.9
+    monkeypatch.setattr(app, "_SPEECH_FILA_ESPERA_S", espera)
+    monkeypatch.setitem(app._settings, "speech_queue", True)
+    gate = app._SpeechGate()
+    monkeypatch.setattr(app, "_speech_gate", gate)
+    app.status()  # aquece DNS; a leitura do buraco só disputa o Condition
+
+    atras = gate.begin("job-atras")
+    eu = gate.begin("job-eu")
+    assert gate._donos[atras["ticket"]] == "job-atras"
+    assert gate._donos[eu["ticket"]] == "job-eu"
+    with gate._cv:
+        gate._donos.pop(atras["ticket"])  # buraco: ticket da vez sem dono
+
+    cpu = {}
+
+    def trabalha():
+        t0 = time.thread_time()
+        if acao == "deliver":
+            gate.deliver(eu, duration_s=0.0)
+        else:
+            gate.abort(eu)
+        cpu["s"] = time.thread_time() - t0
+
+    th = threading.Thread(target=trabalha, daemon=True)
+    th.start()
+    time.sleep(0.12)
+    visto = {}
+
+    def le_status():
+        visto["st"] = app.status()
+
+    th_st = threading.Thread(target=le_status, daemon=True)
+    th_st.start()
+    th_st.join(timeout=1.0)
+    assert not th_st.is_alive(), "status não respondeu com o buraco aberto"
+    assert visto["st"]["speech_queue_depth"] == 2
+
+    th.join(timeout=espera + 0.4 + 0.8)
+    assert not th.is_alive(), f"{acao} não voltou no prazo"
+    assert cpu["s"] < 0.25, f"{acao} girou: CPU {cpu['s']:.3f}s"
+
+
 # ---------------------------------------------------------------------------
 # Evict de jobs
 # ---------------------------------------------------------------------------
