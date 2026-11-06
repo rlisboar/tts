@@ -72,6 +72,53 @@ def test_chunker_flush_devolve_resto_sem_pontuacao():
     assert c.flush() == []
 
 
+def test_primeira_clausula_sai_na_virgula_sem_esperar_o_ponto():
+    """#942: a vírgula entrega a 1ª cláusula com o buffer ainda curto."""
+    c = lp.SentenceChunker(first_max=48, clausula_palavras=20)
+    assert c.push("Claro") == []
+    assert c.push(", ") == ["Claro,"]
+    assert c.primeiro is False
+
+
+def test_primeira_clausula_sai_no_ponto_e_virgula():
+    c = lp.SentenceChunker(first_max=48, clausula_palavras=20)
+    assert c.push("Olha; ") == ["Olha;"]
+
+
+def test_virgula_decimal_e_dois_pontos_nao_cortam_a_clausula():
+    c = lp.SentenceChunker(first_max=80, clausula_palavras=20)
+    assert c.push("são 1,5 metros ") == []
+    assert c.push("Atenção: cuidado ") == []
+
+
+def test_n_palavras_da_clausula_e_ajustavel_e_so_vale_na_primeira():
+    texto = "um dois tres quatro cinco "
+    curta = lp.SentenceChunker(first_max=200, clausula_palavras=3)
+    longa = lp.SentenceChunker(first_max=200, clausula_palavras=12)
+    assert curta.push(texto) == ["um dois tres"]
+    assert longa.push(texto) == []
+    # o que passou das N palavras fica no buffer e sai com a frase
+    assert curta.buf.strip() == "quatro cinco"
+    resto = lp.SentenceChunker(first_max=80, clausula_palavras=20)
+    assert resto.push("Claro, ") == ["Claro,"]
+    assert resto.push("posso ir; sem ponto ainda. ") == ["posso ir; sem ponto ainda."]
+
+
+def test_setting_da_clausula_cede_ao_argumento_do_pipeline(monkeypatch):
+    """N vem do setting e o argumento do pipeline ganha dele."""
+    import app
+    monkeypatch.setitem(app._settings, "live_clausula_palavras", 4)
+    assert lp._clausula_palavras(None) == 4
+    assert lp._clausula_palavras(9) == 9
+
+
+def test_n_palavras_acima_do_teto_nao_segura_o_corte_por_chars():
+    """N que não cabe em `first_max` não passa do teto medido."""
+    c = lp.SentenceChunker(first_max=20, clausula_palavras=8)
+    saida = c.push("palavra palavra palavra ")
+    assert saida and len(saida[0]) <= 21
+
+
 # ---------------------------------------------------------------------------
 # Dublês
 # ---------------------------------------------------------------------------
@@ -188,9 +235,70 @@ def test_latencia_por_estagio_e_instrumentada():
     p.end_of_speech(inicia_thread=False)
     lat = [e for _, e in fala.eventos if e["type"] == "latency"]
     assert len(lat) == 1
-    for campo in ("stt_ms", "first_token_ms", "first_chunk_ms", "first_audio_ms", "total_ms"):
+    for campo in ("stt_ms", "first_token_ms", "first_chunk_ms", "first_audio_ms",
+                  "first_clause_ms", "tts_start_ms", "tts_first_pcm_ms",
+                  "marca_ms", "send_ms", "total_ms"):
         assert isinstance(lat[0][campo], int), campo
     assert lat[0]["first_audio_ms"] <= lat[0]["total_ms"]
+
+
+def test_latencia_parte_o_primeiro_token_ate_o_audio():
+    """#942: os cinco estágios saem no evento e na ordem do relógio."""
+    fala = Fala()
+    caixa = {}
+
+    def audio(b):
+        pipe = caixa["p"]
+        pipe.relogio_pcm["marca"] = time.perf_counter()
+        time.sleep(0.02)
+        pipe.relogio_pcm["send"] = time.perf_counter()
+
+    def tts(chunk, omni):
+        time.sleep(0.01)
+        return np.zeros(240, dtype=np.float32)
+
+    p = lp.LivePipeline(
+        fala.json, audio, stt=lambda pcm, lang: "oi",
+        llm=lambda msgs: iter(["Bom dia! ", "Tudo bem? "]),
+        tts=tts, prewarm=lambda: None)
+    caixa["p"] = p
+    p.push_pcm(b"\x00\x00" * 1600)
+    assert p.end_of_speech(inicia_thread=False) is True
+    lat = [e for _, e in fala.eventos if e["type"] == "latency"][0]
+    ordem = ["first_token_ms", "first_clause_ms", "tts_start_ms", "tts_first_pcm_ms",
+             "marca_ms", "send_ms", "first_audio_ms", "total_ms"]
+    vals = [lat[k] for k in ordem]
+    assert vals == sorted(vals), vals
+    # o carimbo do emit entra na conta: ignorá-lo colava marca em send
+    assert lat["send_ms"] - lat["marca_ms"] >= 15
+
+
+def test_envia_audio_carimba_marca_e_send(monkeypatch):
+    """#942: `_marca_pcm` e o handoff da fila viram carimbos do 1º PCM."""
+    import app
+
+    def marca(pcm, sr=16000):
+        marca.sr = sr
+        time.sleep(0.01)
+        return pcm
+
+    monkeypatch.setattr(app, "_marca_pcm", marca)
+    pcm = b"\x01\x00" * 24
+    sess = {"fila": app._LiveFila(), "audio_pendente": 0}
+    relogio = {}
+    app._live_envia_audio(sess, pcm, marcar=True, relogio=relogio)
+    assert marca.sr == app._LIVE_AUDIO_SR
+    assert relogio["marca"] < relogio["send"]
+    tipo, payload = sess["fila"].get(timeout=1)
+    assert tipo == "audio" and payload == pcm
+
+    def nao_marca(pcm, sr=16000):
+        raise AssertionError("marca pulada")
+
+    relogio = {}
+    monkeypatch.setattr(app, "_marca_pcm", nao_marca)
+    app._live_envia_audio(sess, b"\x00\x00", marcar=False, relogio=relogio)
+    assert "marca" in relogio and relogio["marca"] <= relogio["send"]
 
 
 def test_historico_recebe_o_turno():

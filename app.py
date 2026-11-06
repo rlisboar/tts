@@ -486,6 +486,10 @@ _SETTINGS_DEFAULTS = {
     # #315: passos do 2º chunk do LIVE (o 1º tem teto próprio, 12). Do 3º em diante
     # vale o `omni_num_steps`. Menor = menos engasgo no começo da resposta.
     "live_num_steps": 16,
+    # #942: palavras da 1ª cláusula quando o LLM ainda não pôs vírgula nem
+    # ponto e vírgula. Quem chega primeiro corta (isto, a vírgula, ou
+    # `first_max`). O resto do turno continua por frase.
+    "live_clausula_palavras": 6,
     "omni_guidance_scale": 2.0,       # força do CFG (0–10): + = mais aderente ao texto/voz
     "omni_class_temperature": 0.0,    # temp. de amostragem de token (0 = greedy/estável)
     "omni_position_temperature": 5.0, # temp. da escolha de posição a revelar (0–20)
@@ -5367,6 +5371,9 @@ def _apply_settings(payload: dict):
         _settings["omni_num_steps"] = int(_clamp(payload["omni_num_steps"], 4, 64, 16))
     if "live_num_steps" in payload:
         _settings["live_num_steps"] = int(_clamp(payload["live_num_steps"], 4, 64, 16))
+    if "live_clausula_palavras" in payload:
+        _settings["live_clausula_palavras"] = int(
+            _clamp(payload["live_clausula_palavras"], 1, 40, 6))
     if "omni_guidance_scale" in payload:
         _settings["omni_guidance_scale"] = _clamp(payload["omni_guidance_scale"], 0.0, 10.0, 2.0)
     if "omni_class_temperature" in payload:
@@ -12383,18 +12390,27 @@ def _live_marca_este_pcm(primeiro: bool) -> bool:
     return bool(_settings.get("live_marca_primeiro_trecho", True))
 
 
-def _live_envia_audio(sess: dict, pcm: bytes, *, marcar: bool = True) -> None:
+def _live_envia_audio(sess: dict, pcm: bytes, *, marcar: bool = True,
+                      relogio: dict | None = None) -> None:
     """Enfileira o PCM do Live. `marcar=False` só quando
-    `live_marca_primeiro_trecho` está desligada no 1º PCM do turno (#901)."""
+    `live_marca_primeiro_trecho` está desligada no 1º PCM do turno (#901).
+
+    `relogio`, se vier, recebe `marca` (fim do `_marca_pcm`, ou o instante em
+    que a marca foi pulada) e `send` (handoff na fila da sessão). O pipeline
+    transforma isso em `marca_ms`/`send_ms` do evento `latency` (#942)."""
     if pcm:
         if marcar:
             pcm = _marca_pcm(pcm, _LIVE_AUDIO_SR)  # 24 kHz, grade 16 kHz por dentro (#908)
+        if relogio is not None and relogio.get("marca") is None:
+            relogio["marca"] = time.perf_counter()
         _live_janela_turno(sess, True)   # #167: turno do assistente com áudio em voo
         sess["audio_pendente"] = sess.get("audio_pendente", 0) + 1
         # #877: contador MONOTÔNICO de áudio da resposta — a continuação só vale
         # enquanto o turno em curso não mandou nenhum chunk (depois disso é barge)
         sess["audio_enviado"] = sess.get("audio_enviado", 0) + 1
         derrubados = sess["fila"].put(("audio", pcm))
+        if relogio is not None and relogio.get("send") is None:
+            relogio["send"] = time.perf_counter()
         if derrubados:
             # teto da fila: o áudio derrubado não vai mais ao ar, então sai da
             # conta de "em voo" — senão `falando`/`stats.playback.chunks` mentem
@@ -13911,7 +13927,9 @@ def _live_pipe_novo(sess: dict):
     def _envia_pcm(pcm, _caixa=caixa):
         pipe = _caixa.get("pipe")
         primeiro = bool(getattr(pipe, "_primeiro_pcm", False)) if pipe is not None else False
-        _live_envia_audio(sess, pcm, marcar=_live_marca_este_pcm(primeiro))
+        relogio = getattr(pipe, "relogio_pcm", None) if pipe is not None else None
+        _live_envia_audio(sess, pcm, marcar=_live_marca_este_pcm(primeiro),
+                          relogio=relogio)
 
     pipe = _live_mod.LivePipeline(
         lambda obj: _live_envia_json(sess, obj),

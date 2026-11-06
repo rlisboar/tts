@@ -119,25 +119,35 @@ def _fechar_cliente_dsh(cliente) -> None:
 # ---------------------------------------------------------------------------
 
 _FIM_SENTENCA = re.compile(r"(?<=[.!?…])[\s\"')\]]+|\n+")
+# 1ª cláusula (#942): vírgula ou ponto e vírgula seguidos de espaço. A vírgula
+# decimal ("1,5") não casa — falta o espaço. Dois-pontos não é cláusula.
+_CLAUSULA = re.compile(r"[,;][\s\"')\]]+")
 # Abreviações curtas que NÃO terminam sentença (evita picar "Sr. Silva").
 _ABREV = {"sr", "sra", "dr", "dra", "etc", "ex", "p", "prof", "sta", "st", "vs", "obs"}
+# Palavras da 1ª cláusula quando não há vírgula. Ajustável (`live_clausula_palavras`).
+# Não segura o 1º áudio além de `first_max`: quem chega primeiro, corta.
+_CLAUSULA_PALAVRAS_PADRAO = 6
 
 
 class SentenceChunker:
-    """Acumula deltas do LLM e devolve sentenças COMPLETAS.
+    """Acumula deltas do LLM e devolve o que já pode ir ao TTS.
 
-    Regra do primeiro chunk: sai assim que a 1ª sentença fecha; se ela passar de
-    `first_max` chars, sai no último separador (vírgula/espaço) que couber — o
-    primeiro áudio não espera uma frase inteira longa.
+    1ª cláusula (#942): sai na vírgula, no ponto e vírgula ou nas N palavras,
+    sem esperar o ponto. O resto do turno segue por sentença.
+
+    Se nada disso chegou e o buffer passa de `first_max`, sai no último
+    separador (vírgula/espaço) que couber — o mesmo teto de antes.
 
     `first_max` é 18 por medição: a geração de UM chunk custa ~0,45 s (16 passos)
     e o alvo de fim-de-fala→1º áudio é 1,5 s. Com 48 chars o
     primeiro chunk gastava ~1,1 s e o total batia 1,55 s (estourava por 50 ms).
     """
 
-    def __init__(self, first_max: int = 18, max_chars: int = 160):
+    def __init__(self, first_max: int = 18, max_chars: int = 160,
+                 clausula_palavras: int = _CLAUSULA_PALAVRAS_PADRAO):
         self.first_max = first_max
         self.max_chars = max_chars
+        self.clausula_palavras = max(1, int(clausula_palavras))
         self.buf = ""
         self.primeiro = True
 
@@ -146,6 +156,12 @@ class SentenceChunker:
         saida = []
         pos = 0
         while True:
+            if self.primeiro:
+                clausula = self._solta_primeira_clausula()
+                if clausula:
+                    saida.append(clausula)
+                    pos = 0
+                    continue
             limite = self.first_max if self.primeiro else self.max_chars
             m = _FIM_SENTENCA.search(self.buf, pos)
             while m and self._abreviacao(m.end()):   # "Sr. " não fecha sentença
@@ -171,6 +187,38 @@ class SentenceChunker:
                     continue
             break
         return [s for s in saida if s]
+
+    def _solta_primeira_clausula(self) -> str | None:
+        """Vírgula, ponto e vírgula, ou N palavras completas. None = ainda não.
+
+        Só a PRIMEIRA. Quem chama já conferiu `self.primeiro`.
+        """
+        m = _CLAUSULA.search(self.buf)
+        if m:
+            trecho = self.buf[:m.end()].strip()
+            if re.search(r"\w", trecho):
+                self.buf = self.buf[m.end():]
+                self.primeiro = False
+                return trecho
+        n = self.clausula_palavras
+        completas = 0
+        fim = 0
+        for w in re.finditer(r"\S+", self.buf):
+            if w.end() < len(self.buf) and self.buf[w.end()].isspace():
+                completas += 1
+                fim = w.end()
+                if completas >= n:
+                    trecho = self.buf[:fim].strip()
+                    # N palavras maiores que `first_max` não seguram nem
+                    # estouram o teto medido: o corte por chars resolve.
+                    if trecho and len(trecho) <= self.first_max:
+                        self.buf = self.buf[fim:]
+                        self.primeiro = False
+                        return trecho
+                    break
+            else:
+                break
+        return None
 
     def flush(self) -> list[str]:
         """Fim do texto: o que sobrou vira um chunk (mesmo sem pontuação)."""
@@ -203,6 +251,7 @@ class LivePipeline:
                  language: str | None = "pt", system: str | None = None,
                  history: list | None = None, stt=None, llm=None, tts=None,
                  first_max_chars: int = 18, max_chars: int = 160,
+                 clausula_palavras: int | None = None,
                  first_chunk_max_steps: int = 12, prewarm=None,
                  detectar_eco: bool = True, dsh=None, ao_morrer_dsh=None,
                  teto_primeiro_delta=None, bridge_estado=None):
@@ -250,6 +299,11 @@ class LivePipeline:
         self._prewarm = prewarm or _prewarm_app
         self.first_max_chars = first_max_chars
         self.max_chars = max_chars
+        # None = lê `live_clausula_palavras` no turno (o POST vale no próximo).
+        self.clausula_palavras = clausula_palavras
+        # #942: o emit do app carimba o fim do `_marca_pcm` e o handoff da fila.
+        # Sem isso (dublê), o pipeline fecha os dois no retorno do emit.
+        self.relogio_pcm: dict = {}
         self.first_chunk_max_steps = max(1, int(first_chunk_max_steps))
         self.detectar_eco = detectar_eco
         self._barge_turno = False
@@ -885,7 +939,9 @@ class LivePipeline:
         tts_thread = None
         erro_worker: list = []
         lat: dict = {"stt_ms": None, "first_token_ms": None, "first_chunk_ms": None,
-                     "first_audio_ms": None}
+                     "first_audio_ms": None, "first_clause_ms": None,
+                     "tts_start_ms": None, "tts_first_pcm_ms": None,
+                     "marca_ms": None, "send_ms": None}
         self._play_fim = 0.0          # speech_start no cliente zera a fila
         try:
             self.emit_json({"type": "speech_start", "turn": turno,
@@ -944,8 +1000,9 @@ class LivePipeline:
                 args=(fila, lat, t0, erro_worker, estado), daemon=True)
             tts_thread.start()
 
-            chunker = SentenceChunker(first_max=self.first_max_chars,
-                                      max_chars=self.max_chars)
+            chunker = SentenceChunker(
+                first_max=self.first_max_chars, max_chars=self.max_chars,
+                clausula_palavras=_clausula_palavras(self.clausula_palavras))
             # #871: a regra de FALA abre o `system`; o do dono vem DEPOIS e
             # intacto (#799) — em conflito, a instrução dele é a última. Uma
             # mensagem só: há provedor que recusa `system` fora da 1ª posição.
@@ -974,11 +1031,15 @@ class LivePipeline:
                 self._fala_em_curso = "".join(falado)
                 self.emit_json({"type": "assistant_text", "delta": delta})
                 for pedaco in chunker.push(fala):
+                    if lat["first_clause_ms"] is None:
+                        lat["first_clause_ms"] = _ms(t0)
                     fila.put(pedaco)
             if not self.cancelado:
                 fala = limpador.flush()
                 falado.append(fala)
                 for pedaco in chunker.push(fala) + chunker.flush():
+                    if lat["first_clause_ms"] is None:
+                        lat["first_clause_ms"] = _ms(t0)
                     fila.put(pedaco)
             fila.put(None)                      # fim para o worker de TTS
             if tts_thread:
@@ -1049,15 +1110,20 @@ class LivePipeline:
                     perfil = omni_normal
                 n_chunk += 1
                 t_tts = time.perf_counter()
+                if primeiro:
+                    lat["tts_start_ms"] = _ms(t0)
                 audio = self._tts(pedaco, perfil)
                 if primeiro:
                     lat["first_tts_ms"] = _ms(t_tts)
+                    lat["tts_first_pcm_ms"] = _ms(t0)
                 if self.cancelado:              # caiu durante a síntese: não manda
                     break
                 pcm = _pcm16(audio)
                 # #901: o app lê durante o emit. Só tira o AudioSeal deste PCM se
                 # `live_marca_primeiro_trecho` estiver False (default True marca).
                 self._primeiro_pcm = primeiro
+                if primeiro:
+                    self.relogio_pcm.clear()
                 try:
                     self.emit_audio(pcm)
                 finally:
@@ -1065,6 +1131,13 @@ class LivePipeline:
                 estado["audio_bytes"] += len(pcm)
                 self._agendar_chunk(len(pcm))
                 if primeiro:
+                    lat["marca_ms"] = _offset_ms(t0, self.relogio_pcm.get("marca"))
+                    lat["send_ms"] = _offset_ms(t0, self.relogio_pcm.get("send"))
+                    # dublê não carimba: o emit é a entrega e a marca não rodou
+                    if lat["marca_ms"] is None:
+                        lat["marca_ms"] = _ms(t0)
+                    if lat["send_ms"] is None:
+                        lat["send_ms"] = lat["marca_ms"]
                     lat["first_chunk_ms"] = _ms(t0)
                     lat["first_audio_ms"] = _ms(t0)
                     if espera.get("lock_espera_ms") is not None:
@@ -1197,6 +1270,26 @@ def _parece_eco(transcript: str, ultimo_assistente: str, minimo: float = 0.6) ->
 
 def _ms(t0: float) -> int:
     return int((time.perf_counter() - t0) * 1000)
+
+
+def _offset_ms(t0: float, marca: float | None) -> int | None:
+    """ms desde `t0`. None se o estágio não carimbou."""
+    if marca is None:
+        return None
+    return int((marca - t0) * 1000)
+
+
+def _clausula_palavras(explicito: int | None) -> int:
+    """N da 1ª cláusula. Argumento do pipeline ganha do setting."""
+    if explicito is not None:
+        return max(1, int(explicito))
+    try:
+        import app
+        n = int(app._settings.get("live_clausula_palavras")
+                or _CLAUSULA_PALAVRAS_PADRAO)
+    except Exception:                       # noqa: BLE001 — sem app, vale o padrão
+        n = _CLAUSULA_PALAVRAS_PADRAO
+    return max(1, n)
 
 
 def _pcm16(audio) -> bytes:
