@@ -540,11 +540,19 @@ def respostas(c: Cliente) -> list[dict]:
     return out
 
 
-def _servidor_proc() -> dict:
-    """RSS/threads do processo do app (no mini, via ps)."""
+def _servidor_proc(porta: int | None = None) -> dict:
+    """RSS/threads do processo do app (no mini, via ps).
+
+    Com a porta, acha o DONO do listener (`lsof`): `pgrep -f app.py` casa
+    qualquer processo cujo comando cite o arquivo (inclusive o agente que
+    escreveu o prompt) e o RSS saía de outro processo."""
     try:
-        out = subprocess.run(["pgrep", "-f", "uvicorn app:app|app.py"],
-                             capture_output=True, text=True).stdout.split()
+        if porta:
+            out = subprocess.run(["lsof", "-nP", f"-iTCP:{porta}", "-sTCP:LISTEN", "-t"],
+                                 capture_output=True, text=True).stdout.split()
+        else:
+            out = subprocess.run(["pgrep", "-f", "uvicorn app:app"],
+                                 capture_output=True, text=True).stdout.split()
         if not out:
             return {}
         pid = out[0]
@@ -567,8 +575,10 @@ async def sessao(args, corpus: list[dict]) -> dict:
     except ImportError:                                            # websockets < 13
         connect = websockets.connect
 
+    from urllib.parse import urlparse
+    porta = urlparse(args.url).port
     random.seed(args.seed)
-    proc_ini = _servidor_proc()
+    proc_ini = _servidor_proc(porta)
     linhas: list[dict] = []
     t_ini = time.time()
     async with connect(args.url, max_size=None, open_timeout=30,
@@ -609,7 +619,7 @@ async def sessao(args, corpus: list[dict]) -> dict:
         mic.cancel()
         await ws.close()
         rx.cancel()
-    proc_fim = _servidor_proc()
+    proc_fim = _servidor_proc(porta)
     resps = respostas(c)
     erros = [e.get("code") for _, ty, e in c.eventos if ty == "error"]
     textos = {"falas": [{"fala": l["fala"], "voz": l["voz"], "hip": l.pop("_hip", "")}
