@@ -9343,6 +9343,58 @@ def test_sem_url_usa_a_configurada(client, auth, monkeypatch):
     assert vistos == ["https://fixo.exemplo"]
 
 
+def test_public_url_admin_persiste_use_nao_grava_e_url_ruim_da_400(
+        client, auth, chave_de_uso, monkeypatch):
+    """#950: o POST de admin grava `public_url` na RAM e no disco.
+
+    https com host público. http, sem host, destino privado, usuário na URL
+    e query voltam 400 e não mexem no que já estava. Chave `use` cai em
+    `admin_ignored`. Sem o ramo no apply, o 200 deixava o campo como estava.
+    """
+    antes = app._settings.get("public_url") or ""
+    speed_antes = app._settings.get("speed")
+    try:
+        r = client.post("/api/settings", headers=auth, json={
+            "public_url": "https://exemplo.trycloudflare.com/tts/"})
+        assert r.status_code == 200, r.text
+        assert r.json().get("admin_ignored") == []
+        guardada = "https://exemplo.trycloudflare.com/tts"
+        assert app._settings["public_url"] == guardada
+        assert r.json()["public_url"] == guardada
+        assert _json.loads(app.SETTINGS_PATH.read_text())["public_url"] == guardada
+
+        vistos = []
+        monkeypatch.setattr(app, "_public_proxy_check",
+                            lambda u, timeout=6.0: (vistos.append(u), {"ok": True})[1])
+        assert client.get("/api/tunnel/status", headers=auth).status_code == 200
+        assert vistos == [guardada]
+
+        r = client.post("/api/settings", headers=chave_de_uso, json={
+            "public_url": "https://vazou.example"})
+        assert r.status_code == 200, r.text
+        assert "public_url" in r.json()["admin_ignored"]
+        assert app._settings["public_url"] == guardada
+        assert "vazou.example" not in r.text
+
+        for ruim in ("http://exemplo.com", "https://", "https://127.0.0.1",
+                     "https://10.1.2.3", "https://localhost", "ftp://exemplo.com",
+                     "https://user:x@exemplo.com", "exemplo.com",
+                     "https://exemplo.com?x=1"):
+            r = client.post("/api/settings", headers=auth, json={
+                "public_url": ruim, "speed": 3})
+            assert r.status_code == 400, (ruim, r.status_code, r.text[:160])
+            assert app._settings["public_url"] == guardada, ruim
+            assert app._settings["speed"] == speed_antes, ruim
+            assert _json.loads(app.SETTINGS_PATH.read_text())["public_url"] == guardada, ruim
+
+        r = client.post("/api/settings", headers=auth, json={"public_url": "  "})
+        assert r.status_code == 200, r.text
+        assert app._settings["public_url"] == ""
+        assert _json.loads(app.SETTINGS_PATH.read_text())["public_url"] == ""
+    finally:
+        client.post("/api/settings", headers=auth, json={"public_url": antes})
+
+
 def test_host_privado_reconhece_as_faixas():
     for privado in ("127.0.0.1", "::1", "10.1.2.3", "192.168.0.1", "172.16.5.4",
                     "169.254.169.254", "100.64.0.1", "localhost", "mac.local"):

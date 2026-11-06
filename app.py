@@ -642,6 +642,9 @@ _SETTINGS_DEFAULTS = {
     # extra (silêncio) entre uma fala e a próxima.
     "speech_queue": True,             # ligado por padrão (vários clientes na rede)
     "speech_queue_gap_s": 0.35,       # folga extra após a duração da fala (0–5 s)
+    # URL https do túnel (#784/#950). Vazio = o status não checa destino fixo.
+    # Tem de estar nos defaults: `_save_settings` só grava chave conhecida.
+    "public_url": "",
 }
 class _StreamSeguro:
     """`sys.stdout`/`sys.stderr` que engolem stdout morto (#770).
@@ -4581,6 +4584,29 @@ def _host_privado(host: str) -> bool:
             or ip in ipaddress.ip_network("100.64.0.0/10"))
 
 
+def _public_url_normaliza(valor) -> str:
+    """URL pública gravável (#950). Vazio limpa. https, com host, sem destino privado.
+
+    O GET `/api/tunnel/status` sem `?url=` lê este campo. Sem ramo no apply o POST
+    de admin respondia 200 e o valor não ia para a RAM nem para o disco.
+    """
+    cru = str(valor or "").strip()
+    if not cru:
+        return ""
+    if len(cru) > 300:
+        raise HTTPException(400, "public_url inválida (use https:// e um host público)")
+    partes = urlsplit(cru)
+    host = partes.hostname or ""
+    if (partes.scheme.lower() != "https" or not host or partes.username
+            or partes.password or partes.query or partes.fragment
+            or _host_privado(host)):
+        raise HTTPException(400, "public_url inválida (use https:// e um host público)")
+    porta = f":{partes.port}" if partes.port else ""
+    host_txt = f"[{host}]" if ":" in host else host
+    caminho = (partes.path or "").rstrip("/")
+    return f"https://{host_txt}{porta}{caminho}"
+
+
 import urllib.request  # noqa: E402  (só aqui embaixo; ver uso)
 
 
@@ -5537,6 +5563,10 @@ def _apply_settings(payload: dict):
         _settings["remote_tts_extra"] = str(payload["remote_tts_extra"] or "").strip()[:2000]
     if "remote_base_url" in payload:
         _settings["remote_base_url"] = str(payload["remote_base_url"] or "").strip()[:300]
+    if "public_url" in payload:
+        # #950: o campo já era admin e o status do túnel já lia `_settings`,
+        # mas este ramo não existia — o POST não persistia.
+        _settings["public_url"] = _public_url_normaliza(payload["public_url"])
     if "remote_api_key" in payload:
         _settings["remote_api_key"] = str(payload["remote_api_key"] or "").strip()[:300]
     if "remote_stt_base_url" in payload:
