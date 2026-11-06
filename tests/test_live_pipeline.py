@@ -912,9 +912,15 @@ def test_barge_durante_a_sintese_usa_o_texto_em_voo_como_referencia():
     Cenário: turno 1 falando, barge-in enquanto o 1º chunk toca — o `history`
     ainda NÃO tem nada desse turno (só é escrito no fim), então a checagem de eco
     tem de usar o texto que o LLM já produziu (`_fala_em_curso`, delta a delta).
+
+    A 1ª cláusula sai na vírgula (#942), então o áudio pode já ter sido emitido
+    quando o texto em voo aparece. O barge espera ESSE evento. Cancelar no meio
+    da síntese, antes do emit, continua sem áudio — é a outra célula
+    (`test_cancel_com_thread_de_tts_nao_deixa_thread_pendurada`).
     """
     fala = Fala()
     ja_falou = threading.Event()
+    saiu_audio = threading.Event()
     solta = threading.Event()
     textos = ["olha o dia", "olha o dia"]      # turno 1 e o barge-in (eco)
 
@@ -927,7 +933,11 @@ def test_barge_durante_a_sintese_usa_o_texto_em_voo_como_referencia():
     def stt(pcm, lang):
         return textos.pop(0) if textos else "olha o dia"
 
-    p = lp.LivePipeline(fala.json, fala.audio, stt=stt, llm=llm,
+    def audio(b):
+        fala.audio(b)
+        saiu_audio.set()
+
+    p = lp.LivePipeline(fala.json, audio, stt=stt, llm=llm,
                         tts=lambda t, o: np.zeros(20, dtype=np.float32),
                         prewarm=lambda: None)
     p.push_pcm(b"\x00\x01" * 400)
@@ -939,6 +949,12 @@ def test_barge_durante_a_sintese_usa_o_texto_em_voo_como_referencia():
     assert p._fala_em_curso.strip() == "olha, o dia"  # texto em voo, já na referência
     assert p.history == []                            # history ainda vazio
 
+    # evento do emit, não um prazo: a cláusula já saiu, o barge aceita esse áudio
+    assert saiu_audio.wait(2), "a 1ª cláusula tinha de sair antes do barge"
+    with fala.trava:
+        ja_saiu = len(fala.audios)
+    assert ja_saiu >= 1
+
     p.cancel()                             # barge-in: derruba o turno em curso
     solta.set()
     for _ in range(200):
@@ -949,13 +965,16 @@ def test_barge_durante_a_sintese_usa_o_texto_em_voo_como_referencia():
     # referência do eco continua sendo o texto em voo
     assert [m["role"] for m in p.history] == ["user", "assistant"]
     assert p._fala_em_curso.startswith("olha, o dia")
+    with fala.trava:
+        assert len(fala.audios) == ja_saiu     # o cancel não manda o resto
 
     fala.eventos.clear()
     p.push_pcm(b"\x00\x01" * 400)
     p.end_of_speech(inicia_thread=False, barge_in=True)
     fim = [e for _, e in fala.eventos if e["type"] == "turn_complete"][0]
     assert fim["eco"] is True and fim["descartado"] is True   # casou com o texto em voo
-    assert fala.audios == []                                  # não sintetizou de novo
+    with fala.trava:
+        assert len(fala.audios) == ja_saiu     # o eco não sintetizou de novo
 
 
 def test_push_pcm_substituir_nao_acumula_o_mesmo_audio_duas_vezes(monkeypatch):
