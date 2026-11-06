@@ -381,6 +381,8 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
         await asyncio.wait_for(c.falar(audio_a).wait(), args.teto_turno_s)
     except asyncio.TimeoutError:
         la["timeout_fala"] = True
+        la.setdefault("aceito", False)
+        la.setdefault("cobertura", 0.0)
         linhas.append(la)
         return
     a_ini, a_fim = c.voz_t_ini, c.voz_t_fim
@@ -408,6 +410,8 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
         await asyncio.wait_for(fim_b.wait(), args.teto_turno_s)
     except asyncio.TimeoutError:
         la["timeout_fala"] = True
+        la.setdefault("aceito", False)
+        la.setdefault("cobertura", 0.0)
         linhas.append(la)
         return
     b_ini, b_fim = c.voz_t_ini, c.voz_t_fim
@@ -688,9 +692,9 @@ def resumo(res: dict, args) -> dict:
     eco = [l for l in L if "eco_falso_corte" in l]
     resp = [r for r in res["respostas"] if r["chars"]]
     r = {
-        "S1": {"falas": len(L), "aceitas": sum(l["aceito"] for l in L),
-               "pct_aceitas": round(100 * sum(l["aceito"] for l in L) / max(1, len(L)), 1),
-               "aceitas_ic95": _ic95(sum(l["aceito"] for l in L), len(L)),
+        "S1": {"falas": len(L), "aceitas": sum(l.get("aceito", False) for l in L),
+               "pct_aceitas": round(100 * sum(l.get("aceito", False) for l in L) / max(1, len(L)), 1),
+               "aceitas_ic95": _ic95(sum(l.get("aceito", False) for l in L), len(L)),
                "cobertura_media": (round(statistics.mean(
                    l["cobertura"] for l in L if "cobertura" in l), 3)
                    if any("cobertura" in l for l in L) else None),
@@ -698,7 +702,7 @@ def resumo(res: dict, args) -> dict:
                "wer_ciclo_medio": round(statistics.mean(wers), 3) if wers else None,
                "wer_ciclo_mediana": round(statistics.median(wers), 3) if wers else None,
                "ciclos_wer_ok_10": sum(w <= 0.10 for w in wers),
-               "falas_ge_0_8s_perdidas": sum(not l["aceito"] for l in longas),
+               "falas_ge_0_8s_perdidas": sum(not l.get("aceito", False) for l in longas),
                "turnos_descartados_srv": sum(l.get("turnos_descartados", 0) for l in L),
                "meta": "≥95 % aceitas, WER ≤10 %, 0 descarte ≥0,8 s"},
         "S2": {"n": len(s2), "p50_ms": pct(s2, .5), "p95_ms": pct(s2, .95),
@@ -790,7 +794,7 @@ def main(argv=None):
     ap.add_argument("--ruido-dbfs", type=float, default=-60.0)
     ap.add_argument("--pausa-min-s", type=float, default=1.0)
     ap.add_argument("--pausa-max-s", type=float, default=4.0)
-    ap.add_argument("--teto-turno-s", type=float, default=30.0)
+    ap.add_argument("--teto-turno-s", type=float, default=300.0)
     ap.add_argument("--prewarm-s", type=float, default=20.0)
     ap.add_argument("--seed", type=int, default=875)
     ap.add_argument("--out", type=Path, help="JSON de métricas (sem texto/áudio)")
