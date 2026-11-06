@@ -1,0 +1,27 @@
+{
+ "n": 20,
+ "carga": false,
+ "maquina": "Rodrigos-MacBook-Pro.local",
+ "res": {
+  "mlx-community/whisper-large-v3-mlx": {
+   "wer_medio": 0.0442,
+   "wer_mediano": 0.0,
+   "ms_1s_p50": 258,
+   "ms_3s_p50": 358,
+   "ms_6s_p50": 482,
+   "ms_1s_p90": 322,
+   "ms_3s_p90": 428,
+   "ms_6s_p90": 545
+  },
+  "mlx-community/whisper-large-v3-turbo": {
+   "wer_medio": 0.0507,
+   "wer_mediano": 0.0218,
+   "ms_1s_p50": 178,
+   "ms_3s_p50": 197,
+   "ms_6s_p50": 228,
+   "ms_1s_p90": 195,
+   "ms_3s_p90": 203,
+   "ms_6s_p90": 247
+  }
+ }
+}
