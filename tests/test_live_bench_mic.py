@@ -106,3 +106,34 @@ def test_ciclo_sem_morte_ainda_espera_o_teto():
     assert dt >= 0.12, dt
     assert linhas and linhas[0]["timeout_fala"] is True
     assert "erro_ws" not in linhas[0]
+
+
+def test_leitor_do_ws_morto_tambem_acorda_o_ciclo():
+    """`recebe` que cai (ou o WS que fecha) acorda o ciclo igual à morte do mic."""
+    class _WSQuebrado:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise ConnectionResetError("ws caiu")
+
+    c = _cliente(_WSQuebrado())
+    asyncio.run(asyncio.wait_for(c.recebe(), 1.0))
+    assert c.vivo is False
+    assert c.erro is not None and "ws caiu" in c.erro
+    assert c.morreu.is_set()
+
+
+def test_leitor_que_fecha_limpo_marca_morte_sem_erro():
+    class _WSVazio:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    c = _cliente(_WSVazio())
+    asyncio.run(asyncio.wait_for(c.recebe(), 1.0))
+    assert c.vivo is False
+    assert c.erro is None
+    assert c.morreu.is_set()

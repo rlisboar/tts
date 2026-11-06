@@ -292,9 +292,12 @@ class Cliente:
                 elif tipo == "pausa_teto":
                     self.pausado = False
         except Exception as exc:                                  # noqa: BLE001
-            self.erro = f"{type(exc).__name__}: {exc}"
+            self._morre(f"{type(exc).__name__}: {exc}")
         finally:
+            # leitor morto (ou WS fechado) também não manda mais frame: acorda
+            # quem espera a fala em vez de deixar o teto correr (#941).
             self.vivo = False
+            self.morreu.set()
 
     # ---- mic ----
     def falar(self, audio: np.ndarray) -> asyncio.Event:
