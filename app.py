@@ -4976,6 +4976,9 @@ _SETTINGS_ADMIN = frozenset({
     # marca d'água: muda o áudio de TODO mundo (#657). A do 1º PCM do Live
     # também: desligar tira a marca de uma saída do TTS.
     "tts_marca_dagua", "live_marca_primeiro_trecho",
+    # #946: controla o tamanho do 1º trecho de voz do Live (latência ×
+    # naturalidade) — o ajuste é global, não de um pedido.
+    "live_clausula_palavras",
     # guarda áudio do dono em disco (#658)
     "speaker_guardar_audio",
     # destino público do túnel: é o que o status checa sem `?url=` (#784)

@@ -2668,6 +2668,13 @@
             <div class="field-group"><span>Silêncio (ms)</span>
               <input type="number" id="lxSilencio" min="200" max="2000" step="50" value="600" style="width:88px"
                      title="ms de silêncio que fecham o turno — vai no setup"></div>
+            <!-- #946: palavras antes do 1º trecho de voz quando não há vírgula.
+                 Campo do SERVIDOR (`settings.live_clausula_palavras`): o POST
+                 vale no próximo turno. Só admin, como os irmãos de settings. -->
+            <div class="field-group"><span>1ª cláusula (palavras)</span>
+              <input type="number" id="lxClausula" min="1" max="40" step="1" value="6" style="width:110px"
+                     data-admin-setting="live_clausula_palavras"
+                     title="palavras antes do 1º trecho de voz quando não há vírgula; menor = responde mais rápido, maior = soa mais natural"></div>
             <label class="check"><input type="checkbox" id="lxPtt"
               title="Se o barge-in automático estiver cortando você sem querer"> segurar para falar</label>
             <!-- #502: como o assistente reage quando você fala por cima dele.
@@ -3485,6 +3492,9 @@ const ADMIN_SEM_UI = new Set([
   // o toggle "só a minha voz" do Live ainda não tem controle (#528, espera o
   // speech); entra aqui para o aviso de marcador faltante não acusar (#791)
   "live_so_minha_voz",
+  // #946: vermelhos da suíte de admin no rebase — protegidos no servidor e ainda
+  // sem controle na tela. Saem daqui quando o input marcado existir.
+  "live_stt_whisper_repo", "public_url",
 ]);
 
 // Trava os campos administrativos e diz POR QUE estão travados: campo travado
@@ -7123,6 +7133,9 @@ async function loadSettings() {
       LX.interrupcao = s.live_interrupcao;
       lxPintaInterrupcao();
     }
+    // #946: palavras da 1ª cláusula. Escolha feita nesta tela vence o load atrasado.
+    if ($("lxClausula") && !LX.clausulaSuja)
+      $("lxClausula").value = s.live_clausula_palavras ?? 6;
     // #502 (adendo): os filtros vêm do servidor; o que faltar cai no padrão
     lxFiltrosAplica(s.live_barge_filtros, s.live_barge_sem_decisao);
     // ANTES de escrever o effort: o select nasce vazio, e `value=` num select sem
@@ -9045,6 +9058,28 @@ function lxDefineInterrupcao(modo) {
                           + ") — vale só nesta tela", "e-erro"));
 }
 
+/* #946: palavras da 1ª cláusula. O servidor clampa em 1–40 e o valor vale no
+   próximo turno; a tela obedece o número daqui, mas um POST recusado (chave
+   `use`, servidor antigo) não pode passar calado. */
+function lxDefineClausula(bruto) {
+  const n = Math.min(40, Math.max(1, Math.round(Number(bruto) || 6)));
+  const el = $("lxClausula");
+  if (el) el.value = n;
+  LX.clausulaSuja = true;
+  api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
+                         body: JSON.stringify({ live_clausula_palavras: n }) })
+    .then(r => {
+      const gravado = (r || {}).live_clausula_palavras;
+      if (gravado == null) {
+        lxLogEvento("⚠ o servidor ainda não conhece a 1ª cláusula — vale só nesta tela", "e-erro");
+      } else if (Number(gravado) !== n) {
+        lxLogEvento("⚠ o servidor ficou com “" + gravado + "” no lugar de “" + n + "”", "e-erro");
+      }
+    })
+    .catch(e => lxLogEvento("⚠ não consegui gravar a 1ª cláusula (" + e.message
+                          + ") — vale só nesta tela", "e-erro"));
+}
+
 /* ───── Filtros da interrupção (#502, adendo do dono) ────────────────────────
    Schema do servidor (comentário de task_d93ddd0c): `on` por filtro, `palavras`
    (≤100 itens, ≤40 chars, minúsculas e sem acento), `min_palavras` 1–20,
@@ -9875,6 +9910,7 @@ if ($("lxPtt")) $("lxPtt").onchange = () => lxHoldRender();
 // #502: o seletor de interrupção grava na hora (settings) — não passa pelo "Salvar"
 // de Configurações, que é de outra tela e de outro assunto.
 if ($("lxInterrupcao")) $("lxInterrupcao").onchange = () => lxDefineInterrupcao($("lxInterrupcao").value);
+if ($("lxClausula")) $("lxClausula").onchange = () => lxDefineClausula($("lxClausula").value);
 /* #502 (adendo): filtros — cada controle manda SÓ o seu caminho (merge parcial).
    Painel sem estado carregado nasce com os padrões do schema. */
 if (!LX.filtros) lxFiltrosAplica();
