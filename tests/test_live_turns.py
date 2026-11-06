@@ -2764,3 +2764,190 @@ def test_fala_decidida_depois_do_fim_da_resposta_vira_pendente(monkeypatch):
     motor2._playback_restante = 300
     app._live_decide_barge(sess2, b"\x01\x00" * 800, 672)
     assert not sess2.get("turno_pendente")
+
+
+# --- #870 item 2 / S3: duck rápido (flag) ------------------------------------
+
+def _playback_calibrado(duck: bool = True, modo: str = "inteligente"):
+    """Eco estável e playback ligado. A voz ainda não entrou."""
+    motor, rel = _motor_inteligente(modo, duck_rapido=duck)
+    _tocar(motor, rel, _tom(0.001), 40)
+    _tocar(motor, rel, ECO, 40)
+    motor.set_speaking(True, nivel_dbfs=-18.0)
+    _tocar(motor, rel, ECO, 40)
+    return motor, rel
+
+
+def _voz_sobre_eco():
+    return _mistura(ECO, _tom(0.3))
+
+
+def test_duck_rapido_desligado_nao_abaixa_no_burst_curto():
+    """Sem a flag, 160 ms de voz no playback não emite nada (contrato antigo)."""
+    motor, rel = _playback_calibrado(duck=False)
+    assert _tocar(motor, rel, _voz_sobre_eco(), 5) == []
+    assert motor.estatisticas()["barge_in"] == 0
+
+
+def test_duck_rapido_no_terceiro_frame_sem_abrir_suspeita():
+    """Flag ligada: um `barge_suspeito` com detalhe de duck aos 3 frames (~96 ms).
+
+    Não marca `_suspeito` e não conta `barge_in` — quem arma o STT continua
+    sendo a suspeita de `barge_in_ms`. O cliente já abaixa neste tipo."""
+    motor, rel = _playback_calibrado()
+    voz = _voz_sobre_eco()
+    antes = []
+    for _ in range(2):
+        antes += _tocar(motor, rel, voz, 1)
+    assert antes == [], "abaixou antes dos 3 frames"
+    no_terceiro = _tocar(motor, rel, voz, 1)
+    ducks = [e for e in no_terceiro if e.detalhe == "duck rapido"]
+    assert len(ducks) == 1 and ducks[0].tipo == "barge_suspeito"
+    assert ducks[0].audio == b"", "o duck não pode carregar áudio para o STT"
+    assert not motor._suspeito
+    assert motor.estatisticas()["barge_in"] == 0
+    # o frame seguinte não repete o duck
+    assert not any(e.detalhe == "duck rapido"
+                   for e in _tocar(motor, rel, voz, 1))
+
+
+def test_duck_rapido_sem_confirmacao_retoma_uma_vez():
+    """Burst que não chega em `barge_in_ms`: a folga (#707) solta o volume uma vez."""
+    motor, rel = _playback_calibrado()
+    evs = _tocar(motor, rel, _voz_sobre_eco(), 4)
+    assert any(e.detalhe == "duck rapido" for e in evs)
+    assert not motor._suspeito
+    retomas = [e for e in _tocar(motor, rel, SILENCIO, 8)
+               if e.tipo == "barge_retoma"]
+    assert len(retomas) == 1
+    assert retomas[0].detalhe == "duck rapido sem confirmação"
+    assert motor.estado is lt.Estado.OCIOSO
+    assert not any(e.tipo == "barge_retoma"
+                   for e in _tocar(motor, rel, SILENCIO, 6))
+
+
+def test_duck_rapido_pausa_dentro_do_slo():
+    """Voz sustentada: duck ≤300 ms e pausa reversível ≤800 ms (S3).
+
+    A parada é `barge_pausa`, não `barge_in`. A suspeita continua aberta para
+    a decisão por conteúdo. 1,9 s medido não passa."""
+    motor, rel = _playback_calibrado()
+    voz = _voz_sobre_eco()
+    t0 = motor._t_ms()
+    evs = []
+    duck_no = pausa_no = None
+    for i in range(1, 26):
+        got = _tocar(motor, rel, voz, 1)
+        evs += got
+        if duck_no is None and any(e.detalhe == "duck rapido" for e in got):
+            duck_no = i
+        if pausa_no is None and any(e.tipo == "barge_pausa" for e in got):
+            pausa_no = i
+            break
+    assert duck_no == 3, duck_no
+    duck = next(e for e in evs if e.detalhe == "duck rapido")
+    assert duck.t_decisao_ms - t0 <= 300
+    assert pausa_no is not None and pausa_no * lt.FRAME_MS <= 800
+    assert pausa_no * lt.FRAME_MS >= 480
+    pausa = next(e for e in evs if e.tipo == "barge_pausa")
+    assert pausa.filtro == "duck_rapido"
+    assert 480 <= pausa.fala_ms <= 800
+    assert pausa.epoca >= 1
+    assert pausa.audio == b""
+    assert not any(e.tipo == "barge_in" for e in evs)
+    assert not any(e.tipo == "barge_decisao" for e in evs)
+    assert motor._suspeito, "a pausa fechou a suspeita: o conteúdo não decide mais"
+    assert not any(e.tipo == "barge_pausa" for e in _tocar(motor, rel, voz, 4))
+
+
+def test_eco_puro_nao_abaixa_com_duck_rapido():
+    """Eco no nível calibrado não é voz: a flag não pode abaixar o próprio TTS."""
+    motor, rel = _motor_inteligente(duck_rapido=True)
+    _tocar(motor, rel, _tom(0.001), 40)
+    _tocar(motor, rel, ECO, 80)
+    motor.set_speaking(True, nivel_dbfs=-18.0)
+    evs = _tocar(motor, rel, ECO, 60)
+    assert not any(e.tipo in ("barge_suspeito", "barge_in", "barge_retoma") for e in evs)
+
+
+def test_so_comando_nao_corta_por_energia():
+    """`so_comando` abaixa e pausa, mas o cancel continua esperando o comando."""
+    motor, rel = _playback_calibrado(modo="so_comando")
+    evs = _tocar(motor, rel, _voz_sobre_eco(), 20)
+    assert any(e.detalhe == "duck rapido" for e in evs)
+    assert any(e.tipo == "barge_pausa" for e in evs)
+    assert not any(e.tipo == "barge_in" for e in evs)
+    assert not any(e.tipo == "barge_decisao" for e in evs)
+    assert motor._suspeito
+
+
+def test_depois_da_pausa_o_cancel_sai_do_conteudo():
+    """A pausa não decide. `interrupcao` cancela; ruído retoma."""
+    motor, rel = _playback_calibrado()
+    evs = _tocar(motor, rel, _voz_sobre_eco(), 20)
+    assert any(e.tipo == "barge_pausa" for e in evs)
+    assert motor._suspeito
+    corte = motor.decidir_barge("interrupcao", "para", motor.fala_ms_atual(), 10,
+                                filtro="palavras_corte")
+    assert any(e.tipo == "barge_in" for e in corte)
+    assert not any(e.tipo == "barge_pausa" for e in corte)
+    bi = next(e for e in corte if e.tipo == "barge_in")
+    assert bi.fala_ms >= 480
+
+    motor2, rel2 = _playback_calibrado()
+    evs2 = _tocar(motor2, rel2, _voz_sobre_eco(), 20)
+    assert any(e.tipo == "barge_pausa" for e in evs2)
+    ret = motor2.decidir_barge("ruido", "", motor2.fala_ms_atual(), 10,
+                               filtro="sem_decisao")
+    assert any(e.tipo == "barge_retoma" for e in ret)
+    assert not any(e.tipo == "barge_in" for e in ret)
+    assert not motor2._suspeito
+
+
+def test_duck_rapido_nao_arma_stt_e_a_pausa_nao_cancela(monkeypatch):
+    """O detalhe `duck rapido` não entra em `_live_suspeita_barge`.
+
+    A suspeita de verdade arma o timer. A `barge_pausa` não cancela e não
+    desarma — o whisper ainda decide o conteúdo."""
+    import app
+    monkeypatch.setitem(app._settings, "live_barge_filtros", _TUDO_DESLIGADO)
+    enviados = []
+    monkeypatch.setattr(app, "_live_envia_json",
+                        lambda sess, obj, **k: enviados.append(obj))
+    chamadas = []
+    monkeypatch.setattr(app, "_live_transcreve_trecho",
+                        lambda *a, **k: chamadas.append(1) or "")
+    vistos = []
+    real = app._live_suspeita_barge
+
+    def _marca(sess, ev):
+        vistos.append(getattr(ev, "detalhe", ""))
+        real(sess, ev)
+
+    monkeypatch.setattr(app, "_live_suspeita_barge", _marca)
+    motor, rel = _playback_calibrado()
+    evs = _tocar(motor, rel, _voz_sobre_eco(), 20)
+    assert any(e.detalhe == "duck rapido" for e in evs)
+    assert any(e.tipo == "barge_pausa" for e in evs)
+    sess = _sess_870(motor)
+    try:
+        app._live_trata_eventos(sess, evs)
+        assert vistos and all(d != "duck rapido" for d in vistos), vistos
+        assert "barge_suspeito" in sess
+        timer = sess.get("barge_timer")
+        assert timer is not None and not timer.finished.is_set()
+        assert chamadas == []
+        assert not sess["cancelado"].is_set()
+        pausas = [d for d in enviados if d.get("type") == "barge_pausa"]
+        assert len(pausas) == 1
+        assert pausas[0]["turn"] == sess["turno"]
+        assert 480 <= pausas[0]["fala_ms"] <= 800
+        assert pausas[0]["epoca"] >= 1
+        assert not any(d.get("type") == "interrupted" for d in enviados)
+    finally:
+        t = sess.get("barge_timer")
+        if t is not None:
+            t.cancel()
+        p = sess.get("barge_parar")
+        if p is not None:
+            p.set()

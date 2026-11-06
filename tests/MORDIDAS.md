@@ -856,6 +856,28 @@ duas decisões de 13 s com o whisper em laço ("Tch-tch-tch…") e "Tchau." deci
 | tirar o `sample_len` do `_transcreve_em_janelas` | `test_whisper_tem_teto_de_tokens_pela_duracao` **FAILED** ("sem teto") |
 | tirar o resgate `playback_acabou` | `test_fala_decidida_depois_do_fim_da_resposta_vira_pendente` **FAILED** |
 
+### #870 item 2 — duck rápido (S3), flag `TTS_LIVE_BARGE_DUCK_RAPIDO`
+
+O cliente já abaixa em `barge_suspeito` (rampa 50 ms) e devolve em `barge_retoma`.
+O motor, com a flag, emite esse tipo aos 3 frames (~96 ms) com `detalhe="duck rapido"`
+e, aos ~480 ms, `barge_pausa` (`filtro="duck_rapido"`, com `fala_ms` e `epoca`).
+A pausa não cancela e não fecha a suspeita. O `barge_in` / `interrupted` só sai
+de `decidir_barge("interrupcao")`; eco, ruído e backchannel saem `barge_retoma`.
+Default OFF. Não mexe na folga (#707) nem na janela do STT (#547).
+
+| Sabotagem | Resultado |
+|---|---|
+| nascer com `duck_rapido=True` no `Config` / no app sem env | `test_duck_rapido_desligado_nao_abaixa_no_burst_curto` e `test_engine_do_live_nasce_com_as_alavancas_do_167_ligadas` **FAILED** |
+| não emitir o duck aos 3 frames | `test_duck_rapido_no_terceiro_frame_sem_abrir_suspeita` **FAILED** |
+| tratar o duck como suspeita (`_live_suspeita_barge`) | `test_duck_rapido_nao_arma_stt_e_a_pausa_nao_cancela` **FAILED** (detalhe `duck rapido` na lista) |
+| pausa virar corte (`barge_in` / `interrupted`) | `test_duck_rapido_pausa_dentro_do_slo` **FAILED** |
+| não pausar dentro de 800 ms | `test_duck_rapido_pausa_dentro_do_slo` **FAILED** (`pausa_no is None`) |
+| cortar `so_comando` por energia | `test_so_comando_nao_corta_por_energia` **FAILED** |
+| duck no eco calibrado | `test_eco_puro_nao_abaixa_com_duck_rapido` **FAILED** |
+| não soltar o volume quando o burst morre na folga | `test_duck_rapido_sem_confirmacao_retoma_uma_vez` **FAILED** |
+| pausa desarmar o timer ou cancelar | `test_duck_rapido_nao_arma_stt_e_a_pausa_nao_cancela` **FAILED** |
+| conteúdo não cancelar / não retomar depois da pausa | `test_depois_da_pausa_o_cancel_sai_do_conteudo` **FAILED** |
+
 ### #871 — markdown fora do TTS (Live em streaming e Conversa)
 
 O `LimpadorFala` só solta o texto até antes do último espaço (o espaço fica

@@ -6715,13 +6715,15 @@ def test_engine_do_live_nasce_com_as_alavancas_do_167_ligadas(monkeypatch):
     entram ligadas, a terceira fica fora. Sem ele, um `os.environ.get(..., "0")`
     reintroduzido em silêncio devolve o comportamento antigo sem quebrar nada."""
     for k in ("TTS_LIVE_BARGE_JANELA_TURNO", "TTS_LIVE_PLAYBACK_DURACAO",
-              "TTS_LIVE_ECO_SO_TOCANDO"):
+              "TTS_LIVE_ECO_SO_TOCANDO", "TTS_LIVE_BARGE_DUCK_RAPIDO"):
         monkeypatch.delenv(k, raising=False)
     sess = {"vad": {"prefix_ms": 300, "silence_ms": 500}}
     cfg = app._live_engine_novo(sess).config
     assert cfg.barge_janela_turno is True
     assert cfg.playback_por_duracao is True
     assert cfg.eco_so_tocando is False
+    # #870 S3: o dono não recebe o duck rápido até a bancada medir falso corte
+    assert cfg.duck_rapido is False
     # e cada uma continua desligável pelo env (o A/B do harness depende disso)
     monkeypatch.setenv("TTS_LIVE_BARGE_JANELA_TURNO", "0")
     monkeypatch.setenv("TTS_LIVE_PLAYBACK_DURACAO", "0")
@@ -6729,6 +6731,10 @@ def test_engine_do_live_nasce_com_as_alavancas_do_167_ligadas(monkeypatch):
     cfg2 = app._live_engine_novo({"vad": {"prefix_ms": 300, "silence_ms": 500}}).config
     assert (cfg2.barge_janela_turno, cfg2.playback_por_duracao,
             cfg2.eco_so_tocando) == (False, False, True)
+    assert cfg2.duck_rapido is False
+    monkeypatch.setenv("TTS_LIVE_BARGE_DUCK_RAPIDO", "1")
+    cfg3 = app._live_engine_novo({"vad": {"prefix_ms": 300, "silence_ms": 500}}).config
+    assert cfg3.duck_rapido is True
 
 
 def test_live_ws_stats_para_ao_fechar_a_sessao(ws_client, live_limpo, monkeypatch, caplog):

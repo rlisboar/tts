@@ -12529,7 +12529,11 @@ def _live_engine_novo(sess: dict):
             # audível. Fica DESLIGADA: medida em COMBINAÇÃO (#216) ela piora os
             # dois sentidos (ver Config.eco_so_tocando).
             eco_so_tocando=os.environ.get(
-                "TTS_LIVE_ECO_SO_TOCANDO", "0") != "0")
+                "TTS_LIVE_ECO_SO_TOCANDO", "0") != "0",
+            # #870 S3: duck em ~96 ms e pausa reversível em ~480 ms. OFF até a
+            # bancada medir falso corte. Env, não settings — a chave não pode
+            # parar no estado do dono.
+            duck_rapido=os.environ.get("TTS_LIVE_BARGE_DUCK_RAPIDO", "0") == "1")
     except Exception:                    # noqa: BLE001 — config inválida: usa o padrão
         cfg = None
     return _live_turns_mod.TurnEngine(config=cfg)
@@ -12550,7 +12554,7 @@ def _live_turno_em_curso(sess: dict) -> bool:
 
 
 def _live_cancela(sess: dict, do_cliente: bool = False, *,
-                  forcar: bool = False) -> None:
+                  forcar: bool = False, fala_ms: int | None = None) -> None:
     """Derruba o turno em curso (barge-in ou `cancel` do cliente).
 
     `do_cliente` (comando `cancel`) limpa TAMBÉM o pendente: o usuário abortou
@@ -12608,7 +12612,11 @@ def _live_cancela(sess: dict, do_cliente: bool = False, *,
         # ela não pode ficar setada depois de um cancel que não cancelou nada.
         sess["cancelado"].clear()
         return
-    _live_envia_json(sess, {"type": "interrupted", "turn": sess["turno"]})
+    aviso = {"type": "interrupted", "turn": sess["turno"]}
+    # #881: ms desde o onset do VAD. Ausente no cancel do cliente e no ocioso.
+    if fala_ms is not None:
+        aviso["fala_ms"] = int(fala_ms)
+    _live_envia_json(sess, aviso)
 
 
 _DEBUG_LIVE = os.environ.get("LIVE_DEBUG_TTS") == "1"
@@ -13420,7 +13428,7 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         _live_log_kv("barge_decisao", sess=sess["id"], tipo=tipo, filtro=filtro,
                      fala_ms=fala_ms, decisao_ms=0, texto=(texto or "")[:80])
         if tipo == "interrupcao":
-            _live_cancela(sess, forcar=True)
+            _live_cancela(sess, forcar=True, fala_ms=int(fala_ms))
         if eventos:
             _live_trata_eventos(sess, eventos)
         _live_conta_barge(sess, tipo, 0, None)
@@ -13521,7 +13529,7 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         # perdendo a fala do dono (#674)
         if audio:
             sess["barge_audio"] = audio
-        _live_cancela(sess, forcar=True)
+        _live_cancela(sess, forcar=True, fala_ms=int(fala_ms))
     if eventos:
         _live_trata_eventos(sess, eventos)
     elif tipo != "interrupcao" and sess.get("turno"):
@@ -13589,17 +13597,38 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
             dados = ev.to_json()
         except Exception:                # noqa: BLE001 — evento de outro tipo
             continue
+        if ev.tipo in ("barge_pausa", "barge_retoma"):
+            # #870 S3 / #881: `turn` é o da RESPOSTA que está tocando, não um
+            # turno novo do usuário. `fala_ms` e `epoca` vêm do motor.
+            dados["turn"] = sess.get("turno", 0)
+            dados["fala_ms"] = int(getattr(ev, "fala_ms", 0) or 0)
+            epoca = int(getattr(ev, "epoca", 0) or 0)
+            if epoca:
+                dados["epoca"] = epoca
         _live_envia_json(sess, dados)
         _live_marca_prov(sess, getattr(ev, "prob", 0.0))
         if ev.tipo == "barge_suspeito":
             # #501: só avisa o cliente (duck). O corte vem na decisão.
-            _live_log_kv("barge_suspeito", sess=sess["id"], t_ms=ev.t_ms)
-            _live_suspeita_barge(sess, ev)
+            # #870 S3: o duck rápido usa o MESMO tipo (o cliente já abaixa), mas
+            # não é suspeita — armar timer e whisper aqui reabria a rajada e a
+            # janela incremental (#547). A suspeita de verdade não traz este detalhe.
+            _live_log_kv("barge_suspeito", sess=sess["id"], t_ms=ev.t_ms,
+                         detalhe=getattr(ev, "detalhe", None))
+            if getattr(ev, "detalhe", "") != "duck rapido":
+                _live_suspeita_barge(sess, ev)
+        elif ev.tipo == "barge_pausa":
+            # Pausa reversível. O timer e o whisper seguem: o cancel só sai
+            # da decisão por conteúdo.
+            _live_log_kv("barge_pausa", sess=sess["id"], t_ms=ev.t_ms,
+                         fala_ms=getattr(ev, "fala_ms", None),
+                         epoca=getattr(ev, "epoca", None))
         elif ev.tipo == "barge_in":
             _live_log_kv("barge_in", sess=sess["id"], t_ms=ev.t_ms)
             # `forcar`: o barge do motor é prova de interrupção (o evento chega
-            # antes de qualquer áudio no fio; ver `_live_cancela`)
-            _live_cancela(sess, forcar=True)
+            # antes de qualquer áudio no fio; ver `_live_cancela`).
+            # `fala_ms` só no corte por conteúdo (#881); o caminho antigo omite.
+            fala = int(getattr(ev, "fala_ms", 0) or 0)
+            _live_cancela(sess, forcar=True, fala_ms=fala or None)
         elif ev.tipo == "speech_start":
             _live_log_kv("speech_start", sess=sess["id"], t_ms=ev.t_ms,
                          prob=getattr(ev, "prob", None))

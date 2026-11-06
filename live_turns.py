@@ -242,6 +242,16 @@ class Config:
     # passa o modo do setting, cujo default é `inteligente`.
     interrupcao: str = "imediata"
     barge_decisao_ms: int = 700                   # janela de escuta antes de decidir
+    # #870 S3: abaixar em ~96 ms e PAUSAR em ~480 ms, sem esperar o whisper
+    # (1,9 s medido não cabe nos 800 ms). O MOTOR nasce desligado — o contrato
+    # dos testes antigos não muda. O app liga com `TTS_LIVE_BARGE_DUCK_RAPIDO=1`
+    # (env, não settings: não entra no estado do dono). A parada é `barge_pausa`
+    # reversível (`barge_retoma` se o conteúdo não for interrupção). O cancel
+    # definitivo continua saindo só de `decidir_barge("interrupcao")`. Não mexe
+    # na folga do burst (#707) nem na janela do STT (#547).
+    duck_rapido: bool = False
+    duck_rapido_ms: int = 96                      # 3 frames; cabe no 1º chunk de 100 ms
+    duck_parada_ms: int = 480                     # acima do barge_in_ms, até 800 ms
     cauda_ms: int = 200                           # silêncio guardado no áudio do turno
     turno_max_ms: int = 30000
     piso_ruido_dbfs: float = -60.0
@@ -309,7 +319,7 @@ class Config:
         if self.interrupcao not in ("inteligente", "imediata", "so_comando"):
             object.__setattr__(self, "interrupcao", "inteligente")
         for nome in ("prefix_ms", "silence_ms", "onset_ms", "barge_in_ms", "min_fala_ms",
-                     "barge_decisao_ms", "barge_folga_ms",
+                     "barge_decisao_ms", "barge_folga_ms", "duck_rapido_ms", "duck_parada_ms",
                      "cauda_ms", "turno_max_ms", "playback_janela_ms", "eco_calibracao_ms",
                      "envelope_ms", "eco_pre_janela_ms"):
             if int(getattr(self, nome)) < 0:
@@ -346,6 +356,11 @@ class Config:
     @property
     def _frames_barge(self) -> int:
         return max(1, math.ceil(self.barge_in_ms / FRAME_MS))
+
+    @property
+    def _frames_duck(self) -> int:
+        """Frames de voz para o duck rápido. Estritamente antes do barge."""
+        return max(1, math.ceil(self.duck_rapido_ms / FRAME_MS))
 
     @property
     def _frames_barge_folga(self) -> int:
@@ -447,6 +462,12 @@ class TurnEvent:
         if self.tipo == "speech_end":
             d["fala_ms"] = self.fala_ms
             d["barge_falso"] = self.barge_falso
+        if self.tipo in ("barge_pausa", "barge_retoma"):
+            # #870 S3 / #881: ms desde o onset. `turn` entra no handler (é o
+            # turno da RESPOSTA). Época 0 fica de fora: ausente = não conferir.
+            d["fala_ms"] = self.fala_ms
+            if self.epoca:
+                d["epoca"] = self.epoca
         if self.tipo_barge is not None:
             d["tipo"] = self.tipo_barge
         if self.texto is not None:
@@ -523,6 +544,8 @@ class TurnEngine:
         self._suspeito = False          # #501: turno aberto por suspeita, sem decisão
         self._decisao_frames = 0
         self._suspeito_audio = b""
+        self._duck_emitido = False      # #870 S3: um duck rápido por episódio de burst
+        self._pausa_emitida = False     # #870 S3: uma pausa reversível por episódio
         self._nivel_payload: float | None = None
         self._pre_env: deque[float] = deque(maxlen=self.config._frames_pre)
         self._env: deque[float] = deque(maxlen=self.config._frames_envelope)
@@ -719,6 +742,8 @@ class TurnEngine:
                     self._barge_frames = 0
                     self._barge_sem_voz = 0
                     self._barge_no_turno_emitido = False
+                    self._duck_emitido = False
+                    self._pausa_emitida = False
             self._speaking = bool(ligado)
             self._nivel_payload = nivel_dbfs if ligado else None
             if not ligado:
@@ -828,6 +853,8 @@ class TurnEngine:
             self._calibracao_vals = []
             self._barge_frames = 0
             self._barge_sem_voz = 0
+            self._duck_emitido = False
+            self._pausa_emitida = False
             # `_barge_pico` fica: é do episódio que ACABOU de ser cortado e é o
             # número que o painel lê logo depois da decisão
             self._barge_no_turno_emitido = False
@@ -1162,6 +1189,16 @@ class TurnEngine:
                    or self._degrau_sobre_eco(dbfs, prob))
             self._conta_barge(voz)
             self._onset_frames = 0
+            # Duck que não confirmou: o burst zerou na folga (#707) sem abrir
+            # suspeita. Um frame quieto não entra — o contador só zera depois
+            # de `barge_folga_ms`. Solta o volume uma vez.
+            if (self.config.duck_rapido and self._duck_emitido and not self._suspeito
+                    and self._barge_frames == 0):
+                self._duck_emitido = False
+                self._pausa_emitida = False
+                return [self._evento("barge_retoma", self._t_ms(), self._proxima_amostra,
+                                      b"", barge_in=True,
+                                      detalhe="duck rapido sem confirmação")]
             if self._barge_frames >= self.config._frames_barge:
                 if self.config.interrupcao == "imediata":
                     return self._abrir_turno(amostra + FRAME_SAMPLES, self._barge_frames,
@@ -1204,6 +1241,17 @@ class TurnEngine:
                         e.audio = b"".join(_pcm16(f) for f in self._turno)
                         e.detalhe = f"onset durante playback ({self.config.interrupcao})"
                 return evs
+            # Duck ANTES da suspeita. Não abre turno, não zera o burst e não
+            # marca `_suspeito`. O handler vê `detalhe="duck rapido"` e só
+            # repassa ao cliente — não arma timer nem STT (#547/#870). A
+            # suspeita de verdade, em `barge_in_ms`, continua sendo quem arma.
+            if (self.config.duck_rapido and not self._suspeito and not self._duck_emitido
+                    and self.config._frames_duck < self.config._frames_barge
+                    and self._barge_frames >= self.config._frames_duck):
+                self._duck_emitido = True
+                return [self._evento("barge_suspeito", self._t_ms(), self._proxima_amostra,
+                                      b"", prob=prob, rms_dbfs=dbfs, barge_in=True,
+                                      detalhe="duck rapido")]
             return []
 
         voz = self._voz(dbfs, prob, self.limiar_energia_dbfs)
@@ -1223,6 +1271,19 @@ class TurnEngine:
             self._silencio_frames = 0
         else:
             self._silencio_frames += 1
+
+        # S3: fala que segurou além de `duck_parada_ms` PAUSA o playback. Não
+        # fecha `_suspeito` e não emite `barge_in` — o cancel só sai depois, de
+        # `decidir_barge("interrupcao")`. `imediata` já cortou em `barge_in_ms`.
+        if (self.config.duck_rapido and self.config.interrupcao != "imediata"
+                and self._suspeito and not self._pausa_emitida
+                and self._fala_frames * FRAME_MS >= self.config.duck_parada_ms):
+            self._pausa_emitida = True
+            return [self._evento("barge_pausa", self._t_ms(), self._turno_amostra,
+                                  b"", barge_in=True, epoca=self._epoca,
+                                  fala_ms=self._fala_frames * FRAME_MS,
+                                  filtro="duck_rapido",
+                                  detalhe="pausa por energia")]
 
         if len(self._turno) >= self.config._frames_turno_max:
             return self._fechar_turno("turno_max")
@@ -1335,7 +1396,8 @@ class TurnEngine:
                     self._silencio_frames = 0
                 self._stat["barge_in"] += 1
                 abrir = [self._evento("barge_in", self._t_ms(), self._turno_amostra, audio,
-                                      barge_in=True, detalhe=f"{tipo} (conteúdo)"),
+                                      barge_in=True, fala_ms=fala_ms,
+                                      detalhe=f"{tipo} (conteúdo)"),
                          self._evento("speech_start", self._t_ms(), self._turno_amostra, audio,
                                       barge_in=True, fala_ms=fala_ms, detalhe="barge_in")]
                 return [decisao, *abrir] if decisao else abrir
@@ -1387,6 +1449,8 @@ class TurnEngine:
         self._onset_frames = 0
         self._barge_frames = 0
         self._barge_sem_voz = 0
+        self._duck_emitido = False
+        self._pausa_emitida = False
         # `_barge_pico` NÃO zera aqui: ele é do EPISÓDIO de playback (a leitura do
         # painel acontece depois da decisão, com o turno já fechado) — zerar no
         # `_reset_turno` fazia o campo sair 0 em toda rodada
