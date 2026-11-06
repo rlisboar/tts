@@ -408,6 +408,10 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
         la.setdefault("aceito", False)
         la.setdefault("cobertura", 0.0)
         linhas.append(la)
+        # mic morto não precisa esperar o teto do ciclo: o erro já está gravado
+        # e a rodada vai sair 2 (#934).
+        if c.erro:
+            la["erro_ws"] = c.erro
         return
     a_ini, a_fim = c.voz_t_ini, c.voz_t_fim
     # espera o 1º áudio da resposta (ou o turno fechar sem áudio)
@@ -437,6 +441,8 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
         la.setdefault("aceito", False)
         la.setdefault("cobertura", 0.0)
         linhas.append(la)
+        if c.erro:                 # idem: não espera o teto com o mic morto
+            la["erro_ws"] = c.erro
         return
     b_ini, b_fim = c.voz_t_ini, c.voz_t_fim
     lb = {"fala": 2 * k + 1, "tipo": "interrupcao" if interrompeu else "longa",
