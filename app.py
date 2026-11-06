@@ -624,6 +624,10 @@ _SETTINGS_DEFAULTS = {
     "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
     # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
     "idle_unload_minutes": 10,
+    # Whisper de ARQUIVO (large-v3) sai sozinho; o turbo do Live não entra neste
+    # relógio (#891). Segundos: o de arquivo é pesado e o Live não precisa dele.
+    # 0 = fica residente.
+    "whisper_arquivo_ttl_s": 600,
     # Fila de falas: vários sistemas pedem TTS ao mesmo tempo sem sobrepor o áudio.
     # A espera principal = duração real do último áudio entregue; gap é só folga
     # extra (silêncio) entre uma fala e a próxima.
@@ -2298,6 +2302,9 @@ _CONDS_CACHE_MAX = 4
 
 # Último uso de cada motor (timestamp) — idle unload descarrega o ocioso.
 _last_use = {"tts": 0.0, "stt": 0.0, "mt": 0.0, "ser": 0.0}
+# Relógio SÓ da transcrição de arquivo quando o repo não é o do Live (#891).
+# Um turno do Live não mexe aqui: senão o turbo renovaria o large-v3 para sempre.
+_whisper_arquivo_uso = 0.0
 
 
 def _touch_use(*keys: str):
@@ -5564,6 +5571,11 @@ def _apply_settings(payload: dict):
     if "idle_unload_minutes" in payload:
         # 0 = nunca descarrega por ociosidade; máx. 24 h
         _settings["idle_unload_minutes"] = int(_clamp(payload["idle_unload_minutes"], 0, 1440, 10))
+    if "whisper_arquivo_ttl_s" in payload:
+        # 0 = o large-v3 de arquivo fica residente; máx. 24 h. Não é admin:
+        # mesma classe do idle_unload (política de RAM, não de modelo).
+        _settings["whisper_arquivo_ttl_s"] = int(
+            _clamp(payload["whisper_arquivo_ttl_s"], 0, 86400, 600))
     if "speech_queue" in payload:
         _settings["speech_queue"] = bool(payload["speech_queue"])
     if "speech_queue_gap_s" in payload:
@@ -8613,11 +8625,64 @@ def _schedule_job_cleanup(job_id: str, delay_s: float = 90):
     threading.Thread(target=_clean, daemon=True).start()
 
 
+def _whisper_de_arquivo(caminho: str | None) -> bool:
+    """True se este caminho é um Whisper que o Live não usa.
+
+    O turbo (ou o repo que `live_stt_whisper_repo` apontar) fica. O large-v3
+    da transcrição de arquivo, e qualquer outro repo diferente do Live, sai."""
+    if not caminho:
+        return False
+    return str(caminho) != _whisper_repo(live=True)
+
+
+def _whisper_arquivo_marca() -> None:
+    """Marca o uso do Whisper de arquivo. O Live não entra neste relógio."""
+    global _whisper_arquivo_uso
+    if getattr(_stt_ctx, "live", False):
+        return
+    if not _whisper_de_arquivo(_whisper_repo(live=False)):
+        return
+    _whisper_arquivo_uso = time.monotonic()
+
+
+def _whisper_arquivo_passo() -> bool:
+    """Uma checagem do TTL do Whisper de arquivo. True = liberou agora.
+
+    Separado do laço para a célula chamar direto (#891). `whisper_arquivo_ttl_s`
+    0 desliga. O holder só é solto quando o caminho carregado não é o do Live,
+    então o turbo residente do turno não sai por este relógio."""
+    ttl = float(_settings.get("whisper_arquivo_ttl_s") or 0)
+    if ttl <= 0:
+        return False
+    with _stt_lock:
+        try:
+            from mlx_whisper.transcribe import ModelHolder
+        except Exception:  # noqa: BLE001 — sem a lib não há modelo a soltar
+            return False
+        if ModelHolder.model is None or not _whisper_de_arquivo(ModelHolder.model_path):
+            return False
+        if _whisper_arquivo_uso <= 0:
+            return False
+        if time.monotonic() - _whisper_arquivo_uso < ttl:
+            return False
+        modelo = ModelHolder.model
+        ModelHolder.model = None
+        ModelHolder.model_path = None
+    del modelo
+    gc.collect()
+    _release_mlx_memory(aggressive=True)
+    return True
+
+
 def _idle_unload_loop():
-    """Descarrega motores ociosos após idle_unload_minutes (0 = desligado)."""
+    """Descarrega motores ociosos após idle_unload_minutes (0 = desligado).
+
+    O large-v3 de arquivo tem relógio próprio e corre mesmo com o idle geral
+    desligado: o Live renova `_last_use["stt"]` e seguraria o pesado (#891)."""
     while True:
         time.sleep(30)
         try:
+            _whisper_arquivo_passo()
             mins = float(_settings.get("idle_unload_minutes") or 0)
             if mins <= 0:
                 continue
@@ -9343,6 +9408,9 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
         # janelas de 30 s (com 1 s de sobreposição): o Whisper roda nativamente em
         # janelas desse tamanho, e passar a gravação inteira de uma vez fazia a
         # memória e o tempo crescerem com o arquivo (#329)
+        # Antes da inferência: um passo no meio da transcrição não pode ver o
+        # relógio velho e soltar o modelo que esta chamada está usando.
+        _whisper_arquivo_marca()
         r = _transcreve_em_janelas(audio, lang)
     del audio
     _touch_use("stt")

@@ -3310,6 +3310,9 @@
         <label class="cfg-label">Descarregar por ociosidade (min)
           <input type="number" id="idleUnloadMin" min="0" max="1440" step="1" value="10"></label>
         <p class="hint" style="margin-top:0">Após N min sem uso, libera a RAM. <b>0 = nunca</b>. Padrão 10.</p>
+        <label class="cfg-label">Whisper de arquivo ocioso (s)
+          <input type="number" id="whisperArquivoTtl" min="0" max="86400" step="1" value="600"></label>
+        <p class="hint" style="margin-top:0">O large-v3 da transcrição de arquivo sai após N s sem uso. O turbo do Live fica. <b>0 = nunca</b>. Padrão 600.</p>
         <div class="row2">
           <button id="unloadModelsBtn" class="ghost small" type="button" title="descarrega agora os modelos locais (MLX) da memória">🧹 Descarregar locais agora</button>
           <span id="unloadStatus" class="hint"></span>
@@ -7144,6 +7147,7 @@ async function loadSettings() {
     prevSttEngine = $("sttEngine").value;
     cfgChk("freeLocalOnRemote", s.free_local_on_remote);
     cfgNum("idleUnloadMin", s.idle_unload_minutes, 10);
+    cfgNum("whisperArquivoTtl", s.whisper_arquivo_ttl_s, 600);
     // speech_queue: default true se a API ainda não mandar a chave
     if ($("speechQueue")) $("speechQueue").checked = (s.speech_queue === undefined || s.speech_queue === null)
       ? true : !!s.speech_queue;
@@ -7628,7 +7632,7 @@ const CFG_DIRTY_IDS = ["cfgModel","cfgModelCustom","cfgPrePrompt","cfgLang","cfg
   "remoteTts","remoteTtsUrl","remoteTtsVoice","remoteTtsExtra","remoteBaseUrl","remoteApiKey",
   "remoteTranslate","remoteTranslateModel","translateModel","remoteTtsModel",
   "vdGender","vdAge","vdPitch","vdAccent","vdWhisper",
-  "freeLocalOnRemote","idleUnloadMin","speechQueue","speechQueueGap",
+  "freeLocalOnRemote","idleUnloadMin","whisperArquivoTtl","speechQueue","speechQueueGap",
   "sttFiltros","sttDenoise",
   // faltavam: editar estes não marcava nada (B6). `sttBeam` fica de fora porque
   // já persiste no onchange, como o `oSeed`.
@@ -7712,6 +7716,7 @@ $("cfgSave").onclick = async () => {
       stt_denoise: $("sttDenoise")?.checked !== false,
       free_local_on_remote: $("freeLocalOnRemote").checked,
       idle_unload_minutes: parseInt($("idleUnloadMin")?.value, 10) || 0,
+      whisper_arquivo_ttl_s: parseInt($("whisperArquivoTtl")?.value, 10) || 0,
       speech_queue: !!$("speechQueue")?.checked,
       speech_queue_gap_s: parseFloat($("speechQueueGap")?.value) || 0,
       live_interrupcao: lxModoInterrupcao(),   // #502: o "Salvar" daqui também o leva
