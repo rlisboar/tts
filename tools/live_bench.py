@@ -115,7 +115,17 @@ def carrega_corpus(pasta: Path) -> list[dict]:
         wav = js.with_suffix(".wav")
         if meta.get("preset") or not wav.exists() or not meta.get("ref_text"):
             continue
-        a = _normaliza_rms(_apara(_carrega(wav)))
+        a = _carrega(wav)
+        # o `ref_text` tem de ser a transcrição DESTE áudio. Em voices/ há par
+        # cruzado (JSON da Andrea com o WAV da Valentina): o WER do ciclo vira 1
+        # sem o servidor ter errado nada. `duration` é o comprimento pretendido.
+        dur_meta = float(meta.get("duration") or 0)
+        dur_wav = len(a) / SR_MIC
+        if dur_meta and abs(dur_wav - dur_meta) > 1.0:
+            print(f"[corpus] {js.name}: WAV de {dur_wav:.1f}s contra "
+                  f"duration {dur_meta:.1f}s — par cruzado, fora", file=sys.stderr)
+            continue
+        a = _normaliza_rms(_apara(a))
         out.append({"id": meta.get("id") or js.stem, "audio": a,
                     "ref": str(meta["ref_text"])})
     if len(out) < 2:
@@ -319,6 +329,7 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
                 args, linhas: list[dict]):
     """Uma fala A (resposta interrompida por B) + fala B (resposta toca com eco)."""
     audio_a = fa["audio"][: int(CURTA_S * SR_MIC)] if curta else fa["audio"]
+    ref_a = ref_injetada(fa, audio_a)      # cortou o áudio: corta a referência junto
     # ---------- fala A ----------
 
     await c.falar(audio_a).wait()
@@ -390,9 +401,12 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
         sobra = len(_palavras(hip)) - _lcs(_palavras(fb["ref"]), _palavras(hip))
         la.update({"aceito": sobra >= 1, "sobra_palavras": sobra})
     else:
-        ra = cobertura(fa["ref"], hip)
+        ra = cobertura(ref_a, hip)
         la.update({"cobertura": ra, "aceito": ra >= ACEITE_COBERTURA})
-        lb["wer_ciclo"] = round(min(1.0, wer(fa["ref"] + " " + fb["ref"], hip)), 3)
+    # WER em TODO ciclo, com a referência do áudio INJETADO (curta = começo da
+    # gravação). Antes só ciclo longo tinha WER e a referência curta era a
+    # transcrição inteira.
+    lb["wer_ciclo"] = round(min(1.0, wer(ref_a + " " + fb["ref"], hip)), 3)
     lb["turnos_descartados"] = len(descartes)
     lb["pendente"] = bool(c.evs(a_ini, ("turno_pendente",)))
     if t_audio_b is not None and "eco_falso_corte" in lb:
@@ -425,6 +439,23 @@ def _lcs(a: list[str], b: list[str]) -> int:
 def cobertura(ref: str, hip: str) -> float:
     r = _palavras(ref)
     return round(_lcs(r, _palavras(hip)) / len(r), 3) if r else 1.0
+
+
+def ref_injetada(fa: dict, audio: "np.ndarray") -> str:
+    """Referência da fala A que REALMENTE entrou no mic.
+
+    A fala curta é o COMEÇO da gravação (corte em `CURTA_S`), mas a referência
+    era o texto inteiro: comparar 0,9 s de áudio com a transcrição completa dava
+    WER ~1 em todo ciclo curto (mediana 0,98 na linha de base). O `ref_text` não
+    tem timestamps, então a fração de palavras acompanha a fração de áudio —
+    aproximação de ritmo, mas some com o viés de ordem de grandeza.
+    """
+    total = len(fa["audio"])
+    palavras = _palavras(fa["ref"])
+    if total <= 0 or len(audio) >= total or not palavras:
+        return " ".join(palavras)
+    n = max(1, round(len(palavras) * len(audio) / total))
+    return " ".join(palavras[:n])
 
 
 def _hipotese(c: Cliente, ini: float, fim: float) -> str:
