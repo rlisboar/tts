@@ -1,7 +1,7 @@
 """#876 — latência e WER do STT local do Live por modelo, com e sem TTS em paralelo.
 
 Fala pt REAL: FLEURS pt_br test (CC BY 4.0), 40 locutores, montado por
-`tools/bakeoff/wer_pt_real.py --monta` em /tmp/tts-bakeoff/fala_pt. Nada do dono.
+`tools/bakeoff/wer_pt_real.py --monta` em `comum.BASE/fala_pt` (env `BAKEOFF_DIR`). Nada do dono.
 
 - WER: fala inteira (~8–15 s) contra a transcrição do corpus.
 - Latência: recortes de 1/3/6 s do começo de cada fala, pelo MESMO caminho do
@@ -19,7 +19,9 @@ import numpy as np, soundfile as sf
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ))
-CORPUS = pathlib.Path("/tmp/tts-bakeoff/fala_pt")
+sys.path.insert(0, str(RAIZ / "tools" / "bakeoff"))
+import comum  # noqa: E402  — mesmo corpus do `wer_pt_real.py --monta`
+CORPUS = comum.BASE / "fala_pt"
 MODELOS = ["mlx-community/whisper-large-v3-mlx", "mlx-community/whisper-large-v3-turbo"]
 
 
