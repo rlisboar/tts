@@ -829,3 +829,20 @@ duas decisões de 13 s com o whisper em laço ("Tch-tch-tch…") e "Tchau." deci
 | transcrever com a cadeia sem filtro de texto | `test_cadeia_sem_filtro_de_texto_decide_sem_stt` **FAILED** |
 | tirar o `sample_len` do `_transcreve_em_janelas` | `test_whisper_tem_teto_de_tokens_pela_duracao` **FAILED** ("sem teto") |
 | tirar o resgate `playback_acabou` | `test_fala_decidida_depois_do_fim_da_resposta_vira_pendente` **FAILED** |
+
+### #871 — markdown fora do TTS (Live em streaming e Conversa)
+
+O `LimpadorFala` só solta o texto até antes do último espaço (o espaço fica
+pendente, para o ponto da lista não sair afastado): a última palavra (que pode
+ser URL, `_ênfase_` ou `**` ainda aberto) espera o próximo delta. O `flush()` fecha
+o resto no fim da resposta; na Conversa o campo `_fala` é o limpo e o cru fica na UI.
+
+| Sabotagem | Resultado |
+|---|---|
+| cortar em `len(p)-1` em vez do último espaço (sem buffer de fronteira) | `test_link_partido_entre_chunks_nao_vaza_url` e `test_streaming_qualquer_corte_da_o_mesmo_texto` (link e URL nua) **FAILED** |
+| não chamar o `flush()` no fim do turno do Live | `test_live_tts_recebe_limpo_e_ui_recebe_markdown` **FAILED** (a última palavra some) |
+| mandar o `assistant_text` cru ao chunker | `test_live_tts_recebe_limpo_e_ui_recebe_markdown` **FAILED** (`*`, `http`, emoji) |
+| limpar o `reply`/`text` e devolver o limpo também na UI | `test_chat_reply_fala_limpo_e_instrucao_do_dono_intacta` **FAILED** (`reply != resposta`) |
+| destino do link sem parênteses (`[^()]`) | `test_link_com_parenteses_nao_vaza` **FAILED** (`(city)` falado) |
+| segurar todo `[` e falar o colchete no `flush` | `test_colchete_sem_url_nao_e_falado` **FAILED** (`[` na fala) |
+| emitir o espaço da lista e pendurar o ponto depois | `test_lista_longa_nao_deixa_espaco_antes_do_ponto` **FAILED** (`fim .`) |

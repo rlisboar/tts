@@ -30,6 +30,17 @@ TABELA = [
      "Veja a doc e link."),
     ("![logo](img.png) acima", "logo acima."),
     ("site www.exemplo.com.br, ok", "site link, ok."),
+    # URL com parênteses e colchete que não é ](url) (P3 do gate)
+    ("Veja [a doc](https://en.wikipedia.org/wiki/Sao_Paulo_(city)) agora.",
+     "Veja a doc agora."),
+    ('Veja [wiki](https://ex.com/Foo_(bar) "t") hoje.', "Veja wiki hoje."),
+    ("![logo](https://ex.com/a_(b).png) acima", "logo acima."),
+    ("Link nu https://en.wikipedia.org/wiki/Sao_Paulo_(city) fim.",
+     "Link nu link fim."),
+    ("Veja [nota] no fim.", "Veja nota no fim."),
+    ("Use [este texto] sem url.", "Use este texto sem url."),
+    ("array[i] vale 3.", "array i vale 3."),
+    ("[só colchete]", "só colchete."),
     # código
     ("Código:\n```python\nprint('oi')\n```\nFim.", "Código: Código omitido. Fim."),
     ("use `npm install` agora", "use npm install agora."),
@@ -116,6 +127,54 @@ def test_streaming_qualquer_corte_da_o_mesmo_texto(entrada, _):
 def test_palavra_gigante_sem_espaco_nao_trava():
     lim = LimpadorFala()
     assert lim.push("a" * 500) != ""            # passou do teto: sai
+
+
+def test_colchete_sem_url_nao_e_falado():
+    """`[` sem `](url)` não trava a linha nem sai no flush."""
+    texto = "Veja [nota] no fim da frase e array[i] vale 3."
+    assert texto_para_fala(texto) == "Veja nota no fim da frase e array i vale 3."
+    saida = _stream(texto, list(range(1, len(texto))))
+    assert "[" not in saida and "]" not in saida
+    assert _norm(saida) == _norm("Veja nota no fim da frase e array i vale 3.")
+    lim = LimpadorFala()
+    antes = lim.push("Frase antes ")
+    meio = lim.push("[abre e continua muito texto sem fechar o link de jeito nenhum ")
+    fim = lim.flush()
+    junto = antes + meio + fim
+    assert "[" not in junto and "]" not in junto
+    assert "abre e continua" in junto
+
+
+def test_lista_longa_nao_deixa_espaco_antes_do_ponto():
+    """Item longo emitido antes do \\n: o ponto cola na palavra, sem `fim .`."""
+    for item in (
+        "- " + ("palavra " * 40) + "fim \n",
+        "- " + ("palavra " * 40) + "fim  \n",
+        "- " + ("palavra " * 40) + "fim\n",
+        "# " + ("palavra " * 20) + "fim \n",
+    ):
+        cheio = texto_para_fala(item)
+        assert cheio.endswith("fim.")
+        assert " ." not in cheio
+        for passo in (1, 3, 5):
+            saida = _stream(item, list(range(passo, len(item), passo)))
+            assert " ." not in saida, (passo, saida)
+            assert saida.rstrip().endswith("fim.")
+            assert _norm(saida) == _norm(cheio)
+
+
+def test_link_com_parenteses_nao_vaza():
+    texto = "Veja [a doc](https://en.wikipedia.org/wiki/Sao_Paulo_(city)) agora."
+    assert texto_para_fala(texto) == "Veja a doc agora."
+    saida = _stream(texto, list(range(1, len(texto))))
+    assert "http" not in saida and "[" not in saida and "(city)" not in saida
+    assert _norm(saida) == "Veja a doc agora"
+    meio = _stream(texto, [10, 20, 40, 55])
+    assert "http" not in meio and "[" not in meio and "(city)" not in meio
+    assert _norm(meio) == "Veja a doc agora"
+    nua = "Link nu https://en.wikipedia.org/wiki/Sao_Paulo_(city). Fim"
+    assert texto_para_fala(nua) == "Link nu link. Fim."
+    assert "(city)" not in _stream(nua, list(range(1, len(nua))))
 
 
 # ── fiação no Live ─────────────────────────────────────────────────────────

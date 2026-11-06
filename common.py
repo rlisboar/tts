@@ -717,8 +717,13 @@ REGRA_FALA = (
     "enumerar, use palavras (primeiro, depois, por fim)."
 )
 
-_FALA_LINK = re.compile(r"!?\[([^\]\n]*)\]\(([^()\s]*)(?:\s+\"[^\"\n]*\")?\)")
-_FALA_URL = re.compile(r"(?:https?://|www\.)[^\s<>()\[\]]*[^\s<>()\[\].,;:!?\"']")
+# Um nível de parênteses no destino (`Sao_Paulo_(city)`). Sem isso o `)` da URL
+# fecha o link cedo e o resto (`(city)`) vaza para a fala.
+_FALA_DESTINO = r"[^()\s]*(?:\([^()\s]*\)[^()\s]*)*"
+_FALA_LINK = re.compile(
+    r"!?\[([^\]\n]*)\]\(" + _FALA_DESTINO + r"(?:\s+\"[^\"\n]*\")?\)")
+_FALA_URL = re.compile(
+    r"(?:https?://|www\.)(?:[^\s<>()\[\]]+|\([^()\s]*\))+(?<![.,;:!?\"'])")
 # `_x_`/`__x__` somem; `snake_case` (sublinhado ENTRE letras) fica
 _FALA_SUBLINHADO = re.compile(r"(?<!\w)_+|_+(?!\w)")
 _FALA_HTML = re.compile(r"</?[A-Za-z][^<>\n]{0,80}>")
@@ -741,14 +746,16 @@ _FALA_CODIGO = "Código omitido."
 
 
 def _fala_inline(s: str) -> str:
-    """Limpeza que não depende de início de linha. Estável sob corte em espaço:
-    limpar `a ` e `b` separados dá o mesmo que limpar `a b`."""
+    """Limpeza que não depende de início de linha. Estável sob corte antes do
+    espaço: limpar `a` e ` b` separados dá o mesmo que limpar `a b`."""
     s = _FALA_LINK.sub(lambda m: m.group(1), s)
     s = _FALA_URL.sub("link", s)
     s = _FALA_HTML.sub(" ", s)
     s = s.replace("*", "").replace("`", "").replace("~~", "")
     s = _FALA_SUBLINHADO.sub("", s)
     s = _FALA_EMOJI.sub("", s)
+    # `[nota]` / `array[i]` / `[` sem fechar não são `](url)`: o colchete não se fala
+    s = re.sub(r"!\[|\[|\]", " ", s)
     return re.sub(r"[ \t]{2,}", " ", s)
 
 
@@ -764,11 +771,12 @@ class LimpadorFala:
     `push(delta)` devolve o trecho JÁ SEGURO para falar; o resto fica pendente
     até que o contexto que falta chegue:
       - a última palavra (pode ser URL, `_ênfase_` ou `**` ainda aberto) espera
-        o próximo espaço — o corte é sempre em espaço, e a limpeza inline é
-        estável sob esse corte;
+        o próximo espaço — o espaço fica pendente (o ponto da lista cola na
+        palavra) e a limpeza inline é estável sob esse corte;
       - o início da linha espera a 1ª palavra completa (`1.`, `##`, `-`, `>`,
         `|` e a cerca de código só se decidem com ela);
-      - `[texto` espera o `](url)` (até `_FALA_TETO_LINK` chars);
+      - `[texto` espera o `](url)` (até `_FALA_TETO_LINK` chars); `]` sem `(`
+        logo depois não é link e segue;
       - linha de tabela e linha de cerca esperam o `\\n`.
     Lista, cabeçalho e linha de tabela viram FRASE: sem o marcador e com ponto
     no fim se não tinham pontuação. Bloco de código vira "Código omitido."
@@ -818,7 +826,7 @@ class LimpadorFala:
         txt = _fala_inline(seg).strip() if inicio else _fala_inline(seg).rstrip()
         fim = (txt.rstrip() or ultimo)[-1:] if (txt.strip() or ultimo) else ""
         if estrutural and fim and fim not in _FALA_FIM:
-            txt += "."
+            txt = txt.rstrip() + "."
         return txt
 
     @staticmethod
@@ -860,25 +868,46 @@ class LimpadorFala:
         self._pend, self._inicio = self._sem_prefixo(self._pend)[0], False
         return self._emite_ate_espaco()
 
+    def _limite_colchete(self, p: str) -> int:
+        """Até onde emitir sem partir um `[` que ainda pode ser `](url)`.
+
+        `]` seguido de outra coisa que não `(` não é link: não segura. `]` no
+        fim do buffer continua suspenso — o próximo delta pode ser `(url)`."""
+        pos = 0
+        achados = list(_FALA_LINK.finditer(p))
+        if achados:
+            pos = achados[-1].end()
+        while True:
+            abre = p.find("[", pos)
+            if abre < 0:
+                return len(p)
+            fecha = p.find("]", abre + 1)
+            if fecha < 0 or fecha + 1 >= len(p) or p[fecha + 1] == "(":
+                if len(p) - abre <= _FALA_TETO_LINK:
+                    return abre - 1 if abre > 0 and p[abre - 1] == "!" else abre
+                return len(p)
+            pos = fecha + 1
+
     def _emite_ate_espaco(self) -> str:
         p = self._pend
-        limite = len(p)
-        # `[texto` sem o `](url)` ainda: segura a partir do `[` (ou do `![`)
-        links = [m.span() for m in _FALA_LINK.finditer(p)]
-        abre = p.find("[", links[-1][1] if links else 0)
-        if abre >= 0 and len(p) - abre <= _FALA_TETO_LINK:
-            limite = abre - 1 if abre > 0 and p[abre - 1] == "!" else abre
+        limite = self._limite_colchete(p)
         corte = max(p.rfind(" ", 0, limite), p.rfind("\t", 0, limite))
         # nunca corta DENTRO de um link já fechado (`[a doc](url)` tem espaço)
-        for ini, fim in reversed(links):
+        for m in reversed(list(_FALA_LINK.finditer(p))):
+            ini, fim = m.span()
             if ini <= corte < fim:
                 corte = max(p.rfind(" ", 0, ini), p.rfind("\t", 0, ini))
-        if corte < 0:
+        if corte <= 0:
+            # sem espaço, ou só um espaço na frente: a palavra ainda está aberta
             if len(p) <= _FALA_TETO_PENDENTE:
                 return ""
             corte = len(p) - 1
-        sai, self._pend = p[: corte + 1], p[corte + 1:]
-        txt = _fala_inline(sai)
+            sai, self._pend = p[: corte + 1], p[corte + 1:]
+        else:
+            # o espaço fica pendente. Se a linha da lista acabar nele, o ponto
+            # cola na palavra (`fim.`) em vez de sair `fim .`
+            sai, self._pend = p[:corte], p[corte:]
+        txt = _fala_inline(sai).rstrip()
         if txt.strip():
             self._ultimo = txt.strip()[-1]
         return txt
