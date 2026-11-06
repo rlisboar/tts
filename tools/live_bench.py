@@ -245,11 +245,19 @@ class Cliente:
         self.rng = np.random.default_rng(7)
         self.vivo = True
         self.erro: str | None = None
+        self.morreu = asyncio.Event()                   # task do mic caiu (#941)
         self.pausado = False                            # #881: contexto suspenso
         self.pausa_desde = 0.0
 
     def agora(self) -> float:
         return time.monotonic() - self.t0
+
+    def _morre(self, motivo: str) -> None:
+        """Marca a morte UMA vez: `erro` para o relatório, evento para acordar
+        quem espera a fala (o `ciclo` não pode dormir o teto inteiro)."""
+        self.erro = motivo
+        self.vivo = False
+        self.morreu.set()
 
     # ---- recepção ----
     async def recebe(self):
@@ -307,8 +315,7 @@ class Cliente:
         except asyncio.CancelledError:
             raise
         except BaseException as exc:                               # noqa: BLE001
-            self.erro = f"mic: {type(exc).__name__}: {exc}"
-            self.vivo = False
+            self._morre(f"mic: {type(exc).__name__}: {exc}")
 
     async def _mic_loop(self):
         prox = time.monotonic() + FRAME_S
@@ -360,12 +367,10 @@ class Cliente:
                 # `send` fica pendurado sem timeout: o ciclo nunca fecha.
                 await asyncio.wait_for(self.ws.send(pcm), 15)
             except asyncio.TimeoutError:
-                self.erro = "send: 15 s sem o servidor ler"
-                self.vivo = False
+                self._morre("send: 15 s sem o servidor ler")
                 return
             except Exception as exc:                               # noqa: BLE001
-                self.erro = f"send: {exc}"
-                self.vivo = False
+                self._morre(f"send: {exc}")
                 return
             prox += FRAME_S
 
@@ -389,6 +394,23 @@ class Cliente:
         return cond()
 
 
+async def _fala_ou_morte(c: Cliente, evento: asyncio.Event, teto_s: float) -> bool:
+    """True se a fala entrou; False na morte do mic ou no teto.
+
+    A morte acorda na hora — só o teto de verdade espera os `teto_s`.
+    """
+    fala = asyncio.ensure_future(evento.wait())
+    morreu = asyncio.ensure_future(c.morreu.wait())
+    try:
+        feitos, _ = await asyncio.wait({fala, morreu}, timeout=teto_s,
+                                       return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for t in (fala, morreu):
+            t.cancel()
+        await asyncio.gather(fala, morreu, return_exceptions=True)
+    return fala in feitos
+
+
 async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
                 args, linhas: list[dict]):
     """Uma fala A (resposta interrompida por B) + fala B (resposta toca com eco)."""
@@ -398,20 +420,15 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
 
     la = {"fala": 2 * k, "tipo": "curta" if curta else "longa", "voz": fa["id"],
           "dur_s": round(len(audio_a) / SR_MIC, 2), "papel": "A"}
-    try:
-        # `falar()` só resolve quando o áudio TODO entrou; se a task do mic
-        # morrer no meio (WS caído, app travado) o evento nunca vem e a rodada
-        # fica pendurada para sempre.
-        await asyncio.wait_for(c.falar(audio_a).wait(), args.teto_turno_s)
-    except asyncio.TimeoutError:
+    # `falar()` só resolve quando o áudio TODO entrou. Corremos o evento contra
+    # a morte do mic: task morta não faz o ciclo esperar o teto inteiro (#941).
+    if not await _fala_ou_morte(c, c.falar(audio_a), args.teto_turno_s):
         la["timeout_fala"] = True
         la.setdefault("aceito", False)
         la.setdefault("cobertura", 0.0)
-        linhas.append(la)
-        # mic morto não precisa esperar o teto do ciclo: o erro já está gravado
-        # e a rodada vai sair 2 (#934).
         if c.erro:
             la["erro_ws"] = c.erro
+        linhas.append(la)
         return
     a_ini, a_fim = c.voz_t_ini, c.voz_t_fim
     # espera o 1º áudio da resposta (ou o turno fechar sem áudio)
@@ -434,15 +451,13 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
     la["interrupcao_valida"] = interrompeu
     await asyncio.sleep(0)
     fim_b = c.falar(fb["audio"])
-    try:
-        await asyncio.wait_for(fim_b.wait(), args.teto_turno_s)
-    except asyncio.TimeoutError:
+    if not await _fala_ou_morte(c, fim_b, args.teto_turno_s):
         la["timeout_fala"] = True
         la.setdefault("aceito", False)
         la.setdefault("cobertura", 0.0)
-        linhas.append(la)
-        if c.erro:                 # idem: não espera o teto com o mic morto
+        if c.erro:
             la["erro_ws"] = c.erro
+        linhas.append(la)
         return
     b_ini, b_fim = c.voz_t_ini, c.voz_t_fim
     lb = {"fala": 2 * k + 1, "tipo": "interrupcao" if interrompeu else "longa",

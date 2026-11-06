@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
+import types
 from pathlib import Path
 
 import numpy as np
@@ -71,3 +73,36 @@ def test_excecao_no_mic_vira_erro_ws(monkeypatch):
     asyncio.run(corre())
     assert c.vivo is False
     assert c.erro is not None and "mic:" in c.erro and "interp" in c.erro, c.erro
+
+
+def _args(teto: float):
+    return types.SimpleNamespace(teto_turno_s=teto, interrompe_apos_ms=1500)
+
+
+def _fala(i: str) -> dict:
+    return {"audio": np.zeros(1600, np.float32), "ref": "", "id": i}
+
+
+def test_ciclo_nao_espera_o_teto_com_o_mic_morto():
+    """Mic morto acorda o ciclo na hora; o teto é só do servidor lento (#941)."""
+    c = _cliente(_WS())
+    c._morre("mic: morreu antes")
+    linhas: list[dict] = []
+    t0 = time.monotonic()
+    asyncio.run(lb.ciclo(c, 0, _fala("a"), _fala("b"), False, _args(0.5), linhas))
+    dt = time.monotonic() - t0
+    assert dt < 0.2, f"o ciclo esperou o teto com o mic morto: {dt:.3f}s"
+    assert linhas and linhas[0]["timeout_fala"] is True
+    assert linhas[0].get("erro_ws") == "mic: morreu antes"
+
+
+def test_ciclo_sem_morte_ainda_espera_o_teto():
+    """Sem erro de mic o caminho é o de antes: espera o teto e marca timeout."""
+    c = _cliente(_WS())
+    linhas: list[dict] = []
+    t0 = time.monotonic()
+    asyncio.run(lb.ciclo(c, 0, _fala("a"), _fala("b"), False, _args(0.15), linhas))
+    dt = time.monotonic() - t0
+    assert dt >= 0.12, dt
+    assert linhas and linhas[0]["timeout_fala"] is True
+    assert "erro_ws" not in linhas[0]
