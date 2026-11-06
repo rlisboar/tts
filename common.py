@@ -120,12 +120,14 @@ def apply_audio_fx(audio, sr: int, g_low: float = 0.0, g_mid: float = 0.0,
                    g_high: float = 0.0, gain_db: float = 0.0):
     """EQ 3 bandas (grave 150 Hz / médio 1.5 kHz / agudo 5 kHz) + ganho de
     saída. Limiter de segurança só se o resultado empurrar além de 0 dBFS.
-    App (settings) e worker (cfg do job) chamam com os valores explícitos."""
-    import numpy as np
-    from scipy.signal import sosfilt
+    App (settings) e worker (cfg do job) chamam com os valores explícitos.
 
+    O scipy fica depois do retorno sem EQ: no Live o ganho é zero e o primeiro
+    `import scipy.signal` do processo custava ~0,47 s no 1º post (#901)."""
     if max(abs(g_low), abs(g_mid), abs(g_high), abs(gain_db)) < 0.05:
         return audio
+    import numpy as np
+    from scipy.signal import sosfilt
     y = np.asarray(audio, dtype=np.float32)
     bands = []
     if abs(g_low) >= 0.05:
