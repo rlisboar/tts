@@ -13,7 +13,8 @@ também desligado por padrão, grava durante a sessão:
 
 Teto de 15 min por fluxo. Passou disso, para de acrescentar E de registrar
 o relógio: um playhead além do arquivo pareceria um eco que não casa.
-Não cria pasta se nada foi escrito. Nunca levanta — falha de disco marca
+Diretório 0700 e cada arquivo 0600, como o dump do turno: a umask 022
+nasceria 0755/0644. Não cria pasta se nada foi escrito. Nunca levanta — falha de disco marca
 o estado como quebrado e as chamadas seguintes não escrevem, para o índice
 não ficar com um buraco silencioso.
 
@@ -44,6 +45,16 @@ _NOTA = (
 
 def _dir() -> str:
     return (os.environ.get("TTS_LIVE_DUMP_DIR") or "").strip()
+
+
+def _modo_dir(pasta: Path) -> None:
+    """0700 de verdade. `mkdir(mode=0o700)` não vence a umask nem o exist_ok."""
+    pasta.chmod(0o700)
+
+
+def _modo_arq(caminho: Path) -> None:
+    """0600. O `open` nasce 0666 & ~umask — com 022 fica 0644, legível na máquina."""
+    caminho.chmod(0o600)
 
 
 # Só a CRIAÇÃO da pasta é global. O miolo (mic no loop, referência no sender)
@@ -77,13 +88,18 @@ class _Dump:
     def _abre_pasta(self) -> None:
         if self._pasta_ok:
             return
-        self.pasta.parent.mkdir(parents=True, exist_ok=True)
+        # Mesmo contrato do dump do turno (`live_pipeline._stt_dump`): a voz
+        # do dono não pode nascer 0755/0644. O chmod é depois do mkdir porque
+        # a umask 022 mascara o mode e o exist_ok não reaplica.
+        self.pasta.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _modo_dir(self.pasta.parent)
         try:
-            self.pasta.mkdir(exist_ok=False)
+            self.pasta.mkdir(exist_ok=False, mode=0o700)
         except FileExistsError:
             self.pasta = self.pasta.with_name(
                 self.pasta.name + "-" + secrets.token_hex(2))
-            self.pasta.mkdir(exist_ok=False)
+            self.pasta.mkdir(exist_ok=False, mode=0o700)
+        _modo_dir(self.pasta)
         self._pasta_ok = True
 
     def _cabe(self, ja: int, quero: int) -> int:
@@ -112,6 +128,7 @@ class _Dump:
                     w.setsampwidth(2)
                     w.setframerate(_SR)
                     self._mic = w
+                    _modo_arq(self.pasta / "mic.wav")
                 self._mic.writeframes(pcm[:n_cabe * 2])
                 self.mic_n += n_cabe
                 if parcial:
@@ -130,7 +147,9 @@ class _Dump:
             try:
                 self._abre_pasta()
                 if self._ref is None:
-                    self._ref = open(self.pasta / "ref.f32", "wb")
+                    caminho = self.pasta / "ref.f32"
+                    self._ref = open(caminho, "wb")
+                    _modo_arq(caminho)
                 bloco = np.ascontiguousarray(x[:n_cabe], dtype="<f4")
                 bloco.tofile(self._ref)
                 self._ref.flush()
@@ -147,7 +166,9 @@ class _Dump:
                 return
             try:
                 if self._rel is None:
-                    self._rel = open(self.pasta / "relogio.jsonl", "a", encoding="utf-8")
+                    caminho = self.pasta / "relogio.jsonl"
+                    self._rel = open(caminho, "a", encoding="utf-8")
+                    _modo_arq(caminho)
                 self._rel.write(json.dumps(linha, ensure_ascii=False,
                                            separators=(",", ":")) + "\n")
                 self._rel.flush()
@@ -185,9 +206,17 @@ class _Dump:
                         "quebrado": self.quebrado,
                         "nota": _NOTA,
                     }
-                    (self.pasta / "meta.json").write_text(
+                    meta_path = self.pasta / "meta.json"
+                    meta_path.write_text(
                         json.dumps(meta, ensure_ascii=False, indent=2),
                         encoding="utf-8")
+                    _modo_arq(meta_path)
+                    for nome in ("mic.wav", "ref.f32", "relogio.jsonl"):
+                        arq = self.pasta / nome
+                        if arq.is_file():
+                            _modo_arq(arq)
+                    _modo_dir(self.pasta)
+                    _modo_dir(self.pasta.parent)
                 except Exception as exc:  # noqa: BLE001
                     self._falha(exc)
                 return

@@ -12553,6 +12553,16 @@ def _live_turno_em_curso(sess: dict) -> bool:
     return bool(sess.get("audio_pendente"))
 
 
+def _live_fala_ms_corte(sess: dict, fala_ms) -> int | None:
+    """`interrupted.fala_ms` só com o duck rápido. Flag off: o fio é o da main."""
+    eng = sess.get("engine")
+    if not getattr(getattr(eng, "config", None), "duck_rapido", False):
+        return None
+    if fala_ms is None:
+        return None
+    return int(fala_ms)
+
+
 def _live_cancela(sess: dict, do_cliente: bool = False, *,
                   forcar: bool = False, fala_ms: int | None = None) -> None:
     """Derruba o turno em curso (barge-in ou `cancel` do cliente).
@@ -13428,7 +13438,8 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         _live_log_kv("barge_decisao", sess=sess["id"], tipo=tipo, filtro=filtro,
                      fala_ms=fala_ms, decisao_ms=0, texto=(texto or "")[:80])
         if tipo == "interrupcao":
-            _live_cancela(sess, forcar=True, fala_ms=int(fala_ms))
+            _live_cancela(sess, forcar=True,
+                          fala_ms=_live_fala_ms_corte(sess, fala_ms))
         if eventos:
             _live_trata_eventos(sess, eventos)
         _live_conta_barge(sess, tipo, 0, None)
@@ -13529,7 +13540,8 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         # perdendo a fala do dono (#674)
         if audio:
             sess["barge_audio"] = audio
-        _live_cancela(sess, forcar=True, fala_ms=int(fala_ms))
+        _live_cancela(sess, forcar=True,
+                      fala_ms=_live_fala_ms_corte(sess, fala_ms))
     if eventos:
         _live_trata_eventos(sess, eventos)
     elif tipo != "interrupcao" and sess.get("turno"):
@@ -13613,7 +13625,7 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
             # não é suspeita — armar timer e whisper aqui reabria a rajada e a
             # janela incremental (#547). A suspeita de verdade não traz este detalhe.
             _live_log_kv("barge_suspeito", sess=sess["id"], t_ms=ev.t_ms,
-                         detalhe=getattr(ev, "detalhe", None))
+                         detalhe=getattr(ev, "detalhe", None) or None)
             if getattr(ev, "detalhe", "") != "duck rapido":
                 _live_suspeita_barge(sess, ev)
         elif ev.tipo == "barge_pausa":
@@ -13626,9 +13638,11 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
             _live_log_kv("barge_in", sess=sess["id"], t_ms=ev.t_ms)
             # `forcar`: o barge do motor é prova de interrupção (o evento chega
             # antes de qualquer áudio no fio; ver `_live_cancela`).
-            # `fala_ms` só no corte por conteúdo (#881); o caminho antigo omite.
+            # `fala_ms` só no corte por conteúdo (#881) e só com a flag.
+            # Flag off, ou o caminho antigo (fala_ms 0): o fio omite o campo.
             fala = int(getattr(ev, "fala_ms", 0) or 0)
-            _live_cancela(sess, forcar=True, fala_ms=fala or None)
+            _live_cancela(sess, forcar=True,
+                          fala_ms=_live_fala_ms_corte(sess, fala or None))
         elif ev.tipo == "speech_start":
             _live_log_kv("speech_start", sess=sess["id"], t_ms=ev.t_ms,
                          prob=getattr(ev, "prob", None))
@@ -13761,6 +13775,31 @@ def _live_eco_marca(sess: dict, eng) -> None:
         live_eco_dump.marca(sess, eng)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _live_anota_ref_envio(sess: dict, eng, payload: bytes) -> None:
+    """Referência do que saiu no fio. Sem flag e sem dump, não roda.
+
+    O reamostrado e o ring de 60 s só existem para o duck ou para o dump
+    do eco. Nos dois desligados o sender fica o da main: sem interp, sem
+    lock extra no motor.
+    """
+    if eng is None:
+        return
+    if not (getattr(getattr(eng, "config", None), "duck_rapido", False)
+            or _live_eco_dir()):
+        return
+    anota = getattr(eng, "anota_referencia", None)
+    if anota is None:
+        return
+    try:
+        ref16 = _live_ref_16k(payload)
+        anota(ref16)
+    except Exception:  # noqa: BLE001 — sem referência vale o nível
+        pass
+    else:
+        # o dump grava o MESMO float, e só se o motor aceitou
+        _live_eco_ref(sess, ref16)
 
 
 def _live_eco_fecha(sess: dict) -> None:
@@ -14043,18 +14082,8 @@ async def _live_sender(sess: dict, ws) -> None:
                     eng.set_speaking(True, nivel_dbfs=_dbfs16(payload),
                                      duracao_ms=_live_chunk_ms(payload))
                     # #870: a referência é o que SAI no fio (já com a marca).
-                    # O motor só usa isto com o duck rápido ligado; sem o
-                    # método, o caminho de nível segue igual.
-                    anota = getattr(eng, "anota_referencia", None)
-                    if anota is not None:
-                        try:
-                            ref16 = _live_ref_16k(payload)
-                            anota(ref16)
-                        except Exception:  # noqa: BLE001 — sem referência vale o nível
-                            pass
-                        else:
-                            # o dump grava o MESMO float, e só se o motor aceitou
-                            _live_eco_ref(sess, ref16)
+                    # Sem a flag e sem TTS_LIVE_DUMP_DIR isto não roda.
+                    _live_anota_ref_envio(sess, eng, payload)
                     sess["audio_pendente"] = max(0, sess.get("audio_pendente", 1) - 1)
                     if sess["audio_pendente"] == 0:
                         sess["falando"] = False

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import threading
 import wave
 from pathlib import Path
@@ -241,6 +242,99 @@ def test_ref_24k_casa_com_o_app():
             np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0)
         assert y.shape == y_app.shape
         assert np.allclose(y, y_app, atol=1e-6)
+
+
+def test_dump_de_eco_nasce_0700_0600(tmp_path, monkeypatch):
+    """Mesmo contrato do dump do turno: umask 022 não deixa a voz em 0755/0644."""
+    monkeypatch.setenv("TTS_LIVE_DUMP_DIR", str(tmp_path))
+    tmp_path.chmod(0o755)
+    antes = os.umask(0o022)
+    try:
+        sess = {"id": "t"}
+        live_eco_dump.anota_mic(sess, b"\x00\x01" * 160)
+        live_eco_dump.anota_ref(sess, np.zeros(32, dtype=np.float32))
+        eng = _Eng()
+        eng._ref_n = 32
+        eng._proxima_amostra = 512
+        eng._ref_play = 512
+        live_eco_dump.marca(sess, eng)
+        live_eco_dump.fecha(sess)
+        pastas = list(tmp_path.glob("eco-*"))
+        assert len(pastas) == 1, pastas
+        pasta = pastas[0]
+        assert tmp_path.stat().st_mode & 0o777 == 0o700
+        assert pasta.stat().st_mode & 0o777 == 0o700
+        for nome in ("mic.wav", "ref.f32", "relogio.jsonl", "meta.json"):
+            modo = (pasta / nome).stat().st_mode & 0o777
+            assert modo == 0o600, (nome, oct(modo))
+    finally:
+        os.umask(antes)
+
+
+def test_flag_off_sem_dump_nao_anota_nem_poe_fala_ms(monkeypatch):
+    """Flag off e sem TTS_LIVE_DUMP_DIR: sem ring e o `interrupted` é o da main."""
+    import app
+
+    monkeypatch.delenv("TTS_LIVE_DUMP_DIR", raising=False)
+    monkeypatch.delenv("TTS_LIVE_BARGE_DUCK_RAPIDO", raising=False)
+
+    class Cfg:
+        duck_rapido = False
+
+    class Eng:
+        def __init__(self) -> None:
+            self.config = Cfg()
+            self.anotou = 0
+
+        def anota_referencia(self, x) -> None:
+            self.anotou += 1
+
+    eng = Eng()
+    sess = {"id": "s", "fila": app._LiveFila(1 << 20),
+            "cancelado": app.threading.Event(), "turno": 3,
+            "engine": eng, "pipe": None, "audio_pendente": 0}
+    app._live_anota_ref_envio(sess, eng, b"\x01\x00" * 48)
+    assert eng.anotou == 0
+    assert "_eco_dump" not in sess
+    app._live_cancela(sess, forcar=True, fala_ms=app._live_fala_ms_corte(sess, 480))
+    msgs = [item[1] for item in list(sess["fila"]._q.queue)]
+    assert msgs == [{"type": "interrupted", "turn": 3}]
+
+    eng.config.duck_rapido = True
+    sess2 = {"id": "s", "fila": app._LiveFila(1 << 20),
+             "cancelado": app.threading.Event(), "turno": 3,
+             "engine": eng, "pipe": None, "audio_pendente": 0}
+    app._live_cancela(sess2, forcar=True, fala_ms=app._live_fala_ms_corte(sess2, 480))
+    msgs2 = [item[1] for item in list(sess2["fila"]._q.queue)]
+    assert msgs2 == [{"type": "interrupted", "turn": 3, "fala_ms": 480}]
+
+
+def test_dump_ligado_anota_mesmo_com_flag_off(tmp_path, monkeypatch):
+    """O 2º deploy grava a referência com a flag off, se o dump estiver ligado."""
+    import app
+
+    monkeypatch.setenv("TTS_LIVE_DUMP_DIR", str(tmp_path))
+
+    class Cfg:
+        duck_rapido = False
+
+    class Eng:
+        def __init__(self) -> None:
+            self.config = Cfg()
+            self.visto = None
+
+        def anota_referencia(self, x) -> None:
+            self.visto = x
+
+    eng = Eng()
+    sess = {"id": "s"}
+    pcm = np.full(48, 1000, dtype="<i2").tobytes()
+    app._live_anota_ref_envio(sess, eng, pcm)
+    assert eng.visto is not None and len(eng.visto) > 0
+    app._live_eco_fecha(sess)
+    pastas = list(tmp_path.glob("eco-*"))
+    assert len(pastas) == 1
+    assert (pastas[0] / "ref.f32").stat().st_size > 0
 
 
 def test_gancho_desligado_nao_abre_dump(monkeypatch):
