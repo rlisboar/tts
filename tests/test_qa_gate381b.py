@@ -91,10 +91,14 @@ def test_loudness_final_no_alvo(monkeypatch, tmp_path):
 
 def test_bordas_rampeadas_e_pico_limitado(monkeypatch, tmp_path):
     jid, _job = _roda(monkeypatch, tmp_path)
+    # 5e-3 (era 2e-3): o caminho da marca no Live desce para a grade de 16 kHz do
+    # AudioSeal e reamostra de volta (#908), e o filtro do `resample_poly` espalha
+    # a rampa — a borda deixa de ser exatamente zero. Ainda é ~1 % do pico, então
+    # segue provando que `_fade_edges` atuou.
     for i in range(4):
         y, _ = sf.read(str(app._piece_dir(jid) / f"{i}.wav"), dtype="float32")
-        assert abs(float(y[0])) < 2e-3 and abs(float(y[-1])) < 2e-3, (
-            f"borda crua no trecho {i}")   # 2e-3 = piso da marca d'água (#657)
+        assert abs(float(y[0])) < 5e-3 and abs(float(y[-1])) < 5e-3, (
+            f"borda crua no trecho {i}")
         assert float(np.abs(y).max()) <= 1.0 + 1e-6
 
 
