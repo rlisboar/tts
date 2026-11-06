@@ -398,6 +398,45 @@ def test_cancel_antes_do_stt_terminar_nao_emite_transcript():
     assert "interrupted" in fala.tipos()
 
 
+def test_cancel_no_meio_do_stt_sai_sem_esperar_o_whisper():
+    """Mordida #943: sem a saída antecipada o `ocupado` só cai quando o STT solta."""
+    fala = Fala()
+    entrou = threading.Event()
+    segue = threading.Event()
+    saiu = threading.Event()
+
+    def stt(pcm16, language):
+        entrou.set()
+        segue.wait(2.0)
+        saiu.set()
+        return "nao devia sair"
+
+    p = lp.LivePipeline(fala.json, fala.audio, stt=stt, llm=lambda m: iter(["ok. "]),
+                        tts=lambda t, o: np.zeros(10, dtype=np.float32),
+                        prewarm=lambda: None)
+    p.push_pcm(b"\x00\x00" * 800)
+    p.end_of_speech()
+    assert entrou.wait(2), "o STT não chegou a começar"
+    try:
+        t0 = time.perf_counter()
+        p.cancel()
+        for _ in range(40):
+            if not p.ocupado:
+                break
+            time.sleep(0.01)
+        assert not p.ocupado, "o turno ficou preso no STT depois do cancel"
+        assert time.perf_counter() - t0 < 0.4
+        tipos = fala.tipos()
+        assert "speech_start" in tipos
+        assert "transcript_user" not in tipos
+        assert tipos.count("interrupted") == 1
+    finally:
+        segue.set()
+        assert saiu.wait(2)
+    assert fala.tipos().count("interrupted") == 1
+    assert "transcript_user" not in fala.tipos()
+
+
 def test_cancel_com_thread_de_tts_nao_deixa_thread_pendurada():
     fala = Fala()
     entrou_tts = threading.Event()

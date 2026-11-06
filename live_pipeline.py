@@ -950,10 +950,33 @@ class LivePipeline:
             # caminho REAL de produção o preenche; com `stt` injetado o dict fica
             # vazio e nada muda.
             julga: dict = {}
-            if self._stt is _stt_app:
-                texto = _stt_app(pcm, self.language, julga)
-            else:
-                texto = self._stt(pcm, self.language)
+            # #943: continuação cancela aos ~100 ms e o whisper de uma janela
+            # ainda levava segundos. O turno sai quando `cancelado` arma; o
+            # mlx segue até devolver (segura o `_stt_lock`), sem transcript.
+            if self.cancelado:
+                return self._interrompido(lat, t0, turno, estado)
+            caixa_stt: dict = {"texto": "", "erro": None}
+            stt_pronto = threading.Event()
+
+            def _roda_stt() -> None:
+                try:
+                    if self._stt is _stt_app:
+                        caixa_stt["texto"] = _stt_app(pcm, self.language, julga)
+                    else:
+                        caixa_stt["texto"] = self._stt(pcm, self.language)
+                except Exception as exc:  # noqa: BLE001 — sobe na thread do turno
+                    caixa_stt["erro"] = exc
+                finally:
+                    stt_pronto.set()
+
+            threading.Thread(target=_roda_stt, name="stt-turno", daemon=True).start()
+            while not stt_pronto.is_set():
+                if self.cancelado:
+                    return self._interrompido(lat, t0, turno, estado)
+                stt_pronto.wait(0.05)
+            if caixa_stt["erro"] is not None:
+                raise caixa_stt["erro"]
+            texto = caixa_stt["texto"]
             lat["stt_ms"] = _ms(t0)
             # a separação do turno (#533) vai no `latency` e nos `turn_complete`
             # de descarte: é o instrumento do aceite (`stats.motor.voz`)

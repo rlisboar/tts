@@ -11656,6 +11656,12 @@ def _live_observa(sess: dict, obj) -> None:
             n = None
         if n is not None:
             sess["turno"] = n
+        # Relógio do estágio `stt` (#943): só o speech_start do PIPELINE. Ele
+        # traz `buffer_bytes` e não traz `t_ms` (o do motor traz `t_ms` e chega
+        # no onset, antes de `abrir_turno`). speech_end que só enfileira
+        # pendente, espera prewarm ou perde a corrida não é STT.
+        if "buffer_bytes" in obj and "t_ms" not in obj:
+            _live_stage(sess, "stt")
     elif tipo in ("latency", "turn_complete") and obj.get("separacao"):
         # separação do turno (#533): o `stats` é o instrumento do aceite; o
         # caminho do TURNO não tem sessão no pipeline, então os campos vêm no
@@ -13721,7 +13727,8 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
                     target=_live_decide_barge, args=(sess, _audio_sus, _fala_ms_sus),
                     name="barge-decide", daemon=True).start()
                 continue
-            _live_stage(sess, "stt")
+            # estágio `stt` não abre aqui (#943): este speech_end pode só
+            # enfileirar. O relógio começa no speech_start do pipeline.
             sess["t_decisao_ms"] = int(getattr(ev, "t_decisao_ms", 0) or 0)
             # #315: relógio da DECISÃO. O alvo do épico é "fim-de-fala → 1º áudio",
             # e o `latency` do pipeline conta de outro zero (o início da thread) —
