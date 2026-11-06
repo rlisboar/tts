@@ -115,7 +115,7 @@ def test_setting_da_clausula_cede_ao_argumento_do_pipeline(monkeypatch):
 def test_n_palavras_acima_do_teto_nao_segura_o_corte_por_chars():
     """N que não cabe em `first_max` não passa do teto medido."""
     c = lp.SentenceChunker(first_max=20, clausula_palavras=8)
-    saida = c.push("palavra palavra palavra ")
+    saida = c.push("palavra " * 8)
     assert saida and len(saida[0]) <= 21
 
 
