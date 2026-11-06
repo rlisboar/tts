@@ -87,7 +87,7 @@ def test_continuacao_com_pipeline_ainda_desenrolando_vai_inteira_ao_pendente(mon
 
 
 def test_depois_do_primeiro_audio_da_resposta_nao_ha_continuacao(monkeypatch):
-    monkeypatch.setattr(app, "_marca_pcm", lambda pcm: pcm)
+    monkeypatch.setattr(app, "_marca_pcm", lambda pcm, sr=16000: pcm)
     monkeypatch.setattr(app, "_live_janela_turno", lambda s, on: None)
     pipe = CanalFalso()
     sess = _sessao(pipe)
