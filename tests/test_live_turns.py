@@ -2671,6 +2671,41 @@ def test_timer_da_suspeita_leva_a_epoca(monkeypatch):
     assert vistos == [7]
 
 
+def test_timer_dispara_a_decisao_sem_speech_end(monkeypatch):
+    """#936: o prazo carrega a época, mas `sess["barge_epoca"]` nunca era escrito.
+
+    `_live_decide_barge` via no `!=` e voltava antes de decidir. O corte só saía
+    na thread do `speech_end`. Sem o write esta célula fica vermelha: o prazo
+    não emite `barge_decisao`."""
+    import dataclasses
+
+    import app
+    monkeypatch.setitem(app._settings, "live_barge_filtros", _TUDO_DESLIGADO)
+    monkeypatch.setitem(app._settings, "live_barge_sem_decisao", "continua")
+    monkeypatch.setitem(app._settings, "live_so_minha_voz", {"on": False})
+    monkeypatch.setattr(app, "_live_transcreve_trecho", lambda *a, **k: "")
+    tratados = []
+    monkeypatch.setattr(app, "_live_trata_eventos", lambda s, evs: tratados.extend(evs))
+    monkeypatch.setattr(app, "_live_cancela", lambda *a, **k: None)
+
+    motor, rel = _motor_inteligente()
+    motor.config = dataclasses.replace(motor.config, barge_decisao_ms=1)
+    sus = next(e for e in _abrir_por_barge(motor, rel) if e.tipo == "barge_suspeito")
+    assert sus.epoca, "a suspeita real saiu sem época"
+    sess = _sess_870(motor)
+    app._live_suspeita_barge(sess, sus)
+    try:
+        assert sess.get("barge_epoca") == sus.epoca
+        sess["barge_timer"].join(2)
+    finally:
+        timer = sess.get("barge_timer")
+        if timer is not None:
+            timer.cancel()
+    assert any(getattr(e, "tipo", None) == "barge_decisao" for e in tratados), (
+        "o timer não decidiu sem speech_end")
+    assert "barge_suspeito" not in sess
+
+
 def test_sem_filtro_de_comando_nao_ha_passadas_de_stt(monkeypatch):
     """#870: as passadas só servem ao `palavras_corte`; desligado, eram whisper a
     cada 150 ms disputando a GPU sem poder decidir nada."""

@@ -13395,8 +13395,11 @@ def _live_suspeita_barge(sess: dict, ev) -> None:
     sess["barge_cru_ate"] = 0
     motor = sess.get("engine")
     prazo = getattr(getattr(motor, "config", None), "barge_decisao_ms", 700) / 1000.0
-    # a época vai junto: o timer de uma suspeita já fundida não decide pela nova
+    # a época vai junto: o timer de uma suspeita já fundida não decide pela nova.
+    # #936: a chave era só lida. Sem este write o prazo caía no `!=` e voltava
+    # cedo — a decisão só saía na thread do speech_end.
     epoca = getattr(ev, "epoca", None)
+    sess["barge_epoca"] = epoca
     can = threading.Timer(prazo, lambda: _live_decide_barge(
         sess, b"", _live_fala_ms(sess, ev), por_prazo=True, epoca=epoca))
     can.daemon = True
