@@ -1080,8 +1080,9 @@ def test_turno_de_1500ms_de_fala_real_passa_no_vad_do_stt():
 def test_dump_opt_in_grava_wav_e_veredito(tmp_path, monkeypatch):
     """`TTS_LIVE_DUMP_DIR` (#869): o turno vira `.wav` + `.json` com o motivo.
 
-    O diretório nasce 0700 e os arquivos 0600 — a umask padrão (0755/0644)
-    deixaria a voz e o texto do dono legíveis por outros usuários da máquina."""
+    Arquivo nasce 0600. Diretório que já existia não muda de modo: a umask
+    022 deixaria o wav/json em 0644, e um chmod no pai (às vezes `/tmp`)
+    trancaria a máquina."""
     import json
     import os
 
@@ -1106,9 +1107,36 @@ def test_dump_opt_in_grava_wav_e_veredito(tmp_path, monkeypatch):
         assert len(wavs) == 1 and len(jsons) == 1
         meta = json.loads(jsons[0].read_text())
         assert meta["motivo"] == "vad" and meta["ms"] == 1000
-        assert pasta.stat().st_mode & 0o777 == 0o700
+        assert pasta.stat().st_mode & 0o777 == 0o755
         assert wavs[0].stat().st_mode & 0o777 == 0o600
         assert jsons[0].stat().st_mode & 0o777 == 0o600
+    finally:
+        os.umask(umask_antes)
+
+
+def test_dump_do_turno_nao_chmod_pai_que_ja_existia(tmp_path, monkeypatch):
+    """Dump do turno em /tmp não pode deixar /tmp em 0700.
+
+    Elo que este processo criou sai 0700; o pai que já existia fica."""
+    import os
+
+    import live_pipeline
+
+    pai = tmp_path
+    pai.chmod(0o1777)
+    alvo = pai / "ainda-nao" / "dump"
+    monkeypatch.setattr(live_pipeline, "_LIVE_DUMP_DIR", str(alvo))
+    monkeypatch.setattr(live_pipeline, "_stt_julga", lambda p, l, j: "")
+    umask_antes = os.umask(0o022)
+    try:
+        live_pipeline._stt_app(b"\x00\x01" * 160, "pt", {})
+        assert pai.stat().st_mode & 0o7777 == 0o1777
+        assert (pai / "ainda-nao").stat().st_mode & 0o777 == 0o700
+        assert alvo.stat().st_mode & 0o777 == 0o700
+        wavs = list(alvo.glob("*.wav"))
+        assert len(wavs) == 1
+        assert wavs[0].stat().st_mode & 0o777 == 0o600
+        assert list(alvo.glob("*.json"))[0].stat().st_mode & 0o777 == 0o600
     finally:
         os.umask(umask_antes)
 

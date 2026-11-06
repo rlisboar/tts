@@ -1401,17 +1401,38 @@ def _casa_comando(texto: str) -> bool:
 _LIVE_DUMP_DIR = (os.environ.get("TTS_LIVE_DUMP_DIR") or "").strip()
 
 
+def _cria_dir_0700(pasta: pathlib.Path) -> None:
+    """Cria `pasta` e os pais que faltam, cada um em 0700.
+
+    Elo que já existia não leva chmod. Com o dump em `/tmp` o alvo é o
+    `/tmp`: apertá-lo para 0700 tranca a máquina. A umask 022 mascara o
+    mode do mkdir, então o 0700 é o chmod — e só na peça nova.
+    """
+    faltam: list[pathlib.Path] = []
+    cur = pasta
+    while not cur.exists():
+        faltam.append(cur)
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    for elo in reversed(faltam):
+        try:
+            elo.mkdir(mode=0o700)
+        except FileExistsError:
+            continue               # outro processo criou; não é nosso
+        elo.chmod(0o700)
+
+
 def _stt_dump(pcm: bytes, julga: dict, texto: str) -> None:
     """Grava o turno no `TTS_LIVE_DUMP_DIR` (nunca levanta: é diagnóstico).
 
-    Diretório 0700 e cada `.wav`/`.json` 0600. `mkdir(..., exist_ok=True)` não
-    reaplica o mode, e a umask 022 nasceria 0755/0644 — a voz do dono ficaria
-    legível por outros usuários da máquina.
+    Diretório que este processo criou sai 0700; cada `.wav`/`.json` sai 0600.
+    Pai que já existia — o `/tmp`, o diretório que o dono apontou — não muda
+    de modo. `mkdir(mode=0o700)` não vence a umask 022 (nasceria 0755/0644).
     """
     try:
         base = pathlib.Path(_LIVE_DUMP_DIR)
-        base.mkdir(parents=True, exist_ok=True, mode=0o700)
-        base.chmod(0o700)             # exist_ok não reaplica o mode; umask também não
+        _cria_dir_0700(base)
         nome = base / time.strftime("%Y%m%d-%H%M%S")
         nome = nome.with_name(f"{nome.name}-{int(time.monotonic() * 1000) % 100000:05d}")
         wav = nome.with_suffix(".wav")
