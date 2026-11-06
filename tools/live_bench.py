@@ -366,18 +366,8 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
     # resposta falando POR CIMA da própria fala (turno cortado numa pausa natural)
     la["audio_durante_fala"] = any(a_ini + FRAME_S <= t < a_fim for t, _ in c.bin)
     la["s2_ms"] = round((t_audio_a - a_fim) * 1000) if t_audio_a else None
-    # S2 DECOMPOSTO: o `latency` do turno já separa o 1º token da LLM do resto
-    # (TTS + fila). `first_token_ms` conta do início da thread do turno, que é
-    # logo depois do fim da fala — o resíduo é a decisão do VAD, não a LLM.
-    if t_audio_a is not None:
-        for _t, _ty, _e in c.evs(a_fim, ("latency",)):
-            if _e.get("cancelado") or _e.get("first_audio_ms") is None:
-                continue                   # turno cancelado pela continuação
-            la["s2_llm_ttft_ms"] = _e.get("first_token_ms")
-            if la["s2_llm_ttft_ms"] is not None:
-                la["s2_pos_llm_ms"] = max(
-                    0, la["s2_ms"] - la["s2_llm_ttft_ms"])
-            break
+    # (a decomposição do S2 é preenchida mais abaixo: o `latency` do turno só
+    # chega no FECHAMENTO, depois do 1º áudio.)
     # ---------- interrupção (fala B por cima da resposta de A) ----------
     interrompeu = False
     if t_audio_a is not None:
@@ -418,6 +408,17 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
     await c.espera(lambda: c.evs(b_fim, ("turn_complete", "error")) and len(c.play) == 0,
                    args.teto_turno_s * 3)
     eco_fim = c.agora()
+    # S2 DECOMPOSTO: o `latency` do turno chega no FECHAMENTO e separa o 1º
+    # token da LLM (TTS + fila). `first_token_ms` conta do início da thread do
+    # turno, logo depois do fim da fala — o resíduo é a decisão do VAD.
+    if t_audio_a is not None:
+        for _t, _ty, _e in c.evs(a_fim, ("latency",)):
+            if _e.get("cancelado") or _e.get("first_audio_ms") is None:
+                continue                   # turno cancelado pela continuação
+            la["s2_llm_ttft_ms"] = _e.get("first_token_ms")
+            if la["s2_llm_ttft_ms"] is not None:
+                la["s2_pos_llm_ms"] = max(0, la["s2_ms"] - la["s2_llm_ttft_ms"])
+            break
     lb["eco_tocado_s"] = round(c.tocado_s, 1) if t_audio_b else 0.0
     if t_audio_b is not None:
         lb["eco_falso_corte"] = bool([e for _, _, e in c.evs(
