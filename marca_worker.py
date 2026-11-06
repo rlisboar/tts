@@ -114,6 +114,23 @@ def _mesmo_tamanho(y: np.ndarray, n: int) -> np.ndarray:
     return np.pad(y, (0, n - y.size))
 
 
+def _rampa_borda(audio: np.ndarray, sr: int, ms: float = 8.0) -> np.ndarray:
+    """Mesma rampa linear de `common.fade_edges` (8 ms).
+
+    O ida e volta 24→16→24 do resample_poly espalha o zero que o fade de
+    antes da marca tinha escrito. Sem reaplicar DEPOIS da volta, a borda
+    crua passa de 0,002 e vira clique entre trechos. Fica neste filho para
+    não puxar `common` (e o app) para o processo do AudioSeal."""
+    n = int(sr * ms / 1000.0)
+    if n < 1 or audio.size < 2 * n:
+        return audio
+    a = np.asarray(audio, dtype=np.float32).copy()
+    ramp = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    a[:n] *= ramp
+    a[-n:] *= ramp[::-1]
+    return a
+
+
 def main() -> int:
     import numpy as np
     import soundfile as sf
@@ -182,6 +199,10 @@ def main() -> int:
                     gerador, detector, x16, 16000, fator, wav_original=wav)
                 if sr != 16000:
                     y = _mesmo_tamanho(_regrade(y, 16000, sr), n)
+                    # A reamostragem é a última coisa que mexe na amostra.
+                    # A rampa volta aqui, no sinal que o cliente ouve. Em
+                    # 16 kHz não houve ida e volta: a rampa de antes fica.
+                    y = _rampa_borda(y, sr)
                 sf.write(pedido["saida"], y, sr, subtype="PCM_16")
                 print(json.dumps({"id": pedido.get("id"),
                                   "ms": int((time.perf_counter() - t0) * 1000),
