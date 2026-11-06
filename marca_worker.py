@@ -5,7 +5,10 @@
 tem de ficar FORA do processo do app: o app já convive com MLX no Metal e o
 `first_audio_ms` não pode pagar setup de torch a cada trecho.
 
-Modo único, NDJSON em stdin/stdout:
+Modo único, NDJSON em stdin/stdout. Antes de importar o torch o filho avisa
+`{"tipo": "subindo"}`: a carga (~2,6 s) não pode parecer mudez para o prazo
+curto do Live. `{"tipo": "pronto"}` sai depois do aquecimento e devolve o
+relógio da operação.
 
     {"id": 1, "op": "marca", "wav": "<entrada>", "saida": "<saída>"}
     {"id": 2, "op": "detecta", "wav": "<entrada>"}
@@ -132,6 +135,9 @@ def _rampa_borda(audio: np.ndarray, sr: int, ms: float = 8.0) -> np.ndarray:
 
 
 def main() -> int:
+    # Antes do torch. Sem isto o pai, no prazo de 1,5 s do Live, mata a carga
+    # (~2,6 s) e o áudio sai cru. O `pronto` continua no fim do aquecimento.
+    print(json.dumps({"tipo": "subindo"}), flush=True)
     import numpy as np
     import soundfile as sf
     import torch

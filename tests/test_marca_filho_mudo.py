@@ -156,11 +156,74 @@ def test_resposta_com_id_volta_antes_do_prazo(tmp_path, monkeypatch, isola_marca
     assert _vivo(isola_marca[-1].pid)
 
 
+def test_filho_frio_que_avisa_subindo_nao_morre_no_prazo_curto(
+        tmp_path, monkeypatch, isola_marca):
+    """`subindo` segura a carga. O prazo curto não mata filho que ainda sobe."""
+    script = tmp_path / "filho_frio.py"
+    script.write_text(
+        "import json, sys, time\n"
+        "sys.stdout.write(json.dumps({'tipo': 'subindo'}) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(0.8)\n"
+        "sys.stdout.write(json.dumps({'tipo': 'pronto'}) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "pedido = json.loads(sys.stdin.readline())\n"
+        "sys.stdout.write(json.dumps({'id': pedido['id'], 'ok': 1}) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(3600)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(marca_dagua, "WORKER", script)
+    t0 = time.monotonic()
+    dados = _em_ate(
+        lambda: marca_dagua._pede(
+            {"op": "marca", "wav": "x", "saida": "y"}, prazo_s=PRAZO_S),
+        5.0)
+    dt = time.monotonic() - t0
+    assert dados["ok"] == 1
+    assert dt > PRAZO_S
+    assert _vivo(isola_marca[-1].pid)
+
+
+def test_subindo_estende_a_carga_e_o_mudo_morre_nesse_teto(
+        tmp_path, monkeypatch, isola_marca, capsys):
+    """Avisou `subindo` e calou: morre no teto da carga, não no prazo curto."""
+    script = tmp_path / "filho_some.py"
+    script.write_text(
+        "import json, sys, time\n"
+        "sys.stdout.write(json.dumps({'tipo': 'subindo'}) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(3600)\n",
+        encoding="utf-8",
+    )
+    carga = 0.8
+    monkeypatch.setattr(marca_dagua, "WORKER", script)
+    monkeypatch.setattr(marca_dagua, "CARGA_S", carga)
+
+    def chama():
+        marca_dagua._pede(
+            {"op": "marca", "wav": "x", "saida": "y"}, prazo_s=PRAZO_S)
+
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="filho mudo"):
+        _em_ate(chama, carga + 2.5)
+    dt = time.monotonic() - t0
+    assert PRAZO_S < dt < carga + 2.0
+    assert not _vivo(isola_marca[-1].pid)
+    aviso = capsys.readouterr().out
+    assert f"em {carga:g}s" in aviso
+    assert f"em {PRAZO_S:g}s" not in aviso
+    assert "em 60" not in aviso
+
+
 def test_live_pcm_mudo_sai_cru_no_prazo_curto(tmp_path, monkeypatch, capsys):
     """O `_marca_pcm` do Live não espera os 60 s do job. O trecho sai cru."""
-    import numpy  # noqa: F401 — paga o import fora do cronômetro
-    import soundfile  # noqa: F401
+    import numpy
+    import soundfile
     import app
+
+    # Fora do cronômetro: `_marca_pcm` importa os dois dentro da janela medida.
+    assert numpy.__name__ and soundfile.__name__
 
     script = tmp_path / "filho_mudo.py"
     script.write_text("import time\ntime.sleep(3600)\n", encoding="utf-8")

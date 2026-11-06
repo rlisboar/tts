@@ -4850,6 +4850,24 @@ def _encerra_tudo(motivo: str = "shutdown") -> dict:
     return feito
 
 
+def _marca_prewarm_no_boot() -> None:
+    """Sobe o filho da marca no boot. A abertura da sessão chega tarde.
+
+    Um turno antes do `pronto` saía sem marca, e a decisão do dono é marca em
+    tudo. Sob pytest o `TestClient` entra neste lifespan: não sobe o torch.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    if not _settings.get("tts_marca_dagua"):
+        return
+    try:
+        import marca_dagua
+
+        marca_dagua.prewarm()
+    except Exception:  # noqa: BLE001 — sem marca o servidor segue
+        pass
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
     """Recarrega o histórico no start e faz o teardown limpo no SIGTERM/stop.
@@ -4872,6 +4890,8 @@ async def _lifespan(_app):
     # encaminha para o dele (guardado em `_RASTRO_DE_SINAL`), preservando o
     # shutdown gracioso.
     globals()["_RASTRO_DE_SINAL"] = _instala_rastro_de_sinal()
+    # Boot, não a abertura da sessão: turno com o AudioSeal frio saía sem marca.
+    _marca_prewarm_no_boot()
     yield
     await asyncio.get_running_loop().run_in_executor(None, _encerra_tudo, "lifespan")
 
@@ -12268,7 +12288,8 @@ def _live_conta_underrun(sess: dict, nbytes: int) -> None:
 
 
 # Quente ~90 ms (#908). 1,5 s de folga: filho mudo no Live não congela o
-# turno os 60 s do job. Estouro devolve o PCM cru.
+# turno os 60 s do job. Estouro devolve o PCM cru. Filho ainda carregando
+# manda `subindo`; essa espera não é este prazo (teto `CARGA_S` no pai).
 _LIVE_MARCA_PRAZO_S = 1.5
 
 

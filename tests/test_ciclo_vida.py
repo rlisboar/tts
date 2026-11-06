@@ -306,6 +306,45 @@ def test_lifespan_instala_o_rastro_de_sinal(isolado, monkeypatch):
     assert instalou, "o lifespan não instalou o rastro do sinal"
 
 
+def _espia_prewarm_da_marca(monkeypatch) -> list:
+    import marca_dagua
+
+    chamadas: list = []
+    monkeypatch.setattr(marca_dagua, "prewarm", lambda: chamadas.append(1))
+    monkeypatch.setattr(app, "_encerra_tudo", lambda m="shutdown": {})
+    monkeypatch.setattr(app, "_instala_rastro_de_sinal", lambda: [])
+    return chamadas
+
+
+def test_boot_aquece_o_filho_da_marca(isolado, monkeypatch):
+    """Fora do pytest, o lifespan sobe a marca antes de aceitar turno."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    chamadas = _espia_prewarm_da_marca(monkeypatch)
+    with TestClient(app.app) as cliente:
+        cliente.get("/health")
+    assert chamadas == [1]
+
+
+def test_boot_nao_aquece_a_marca_sob_pytest(isolado, monkeypatch):
+    """`with TestClient` entra no lifespan. A suíte não pode pagar o torch."""
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    assert os.environ.get("PYTEST_CURRENT_TEST")
+    chamadas = _espia_prewarm_da_marca(monkeypatch)
+    with TestClient(app.app) as cliente:
+        cliente.get("/health")
+    assert chamadas == []
+
+
+def test_boot_nao_aquece_a_marca_desligada(isolado, monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", False)
+    chamadas = _espia_prewarm_da_marca(monkeypatch)
+    with TestClient(app.app) as cliente:
+        cliente.get("/health")
+    assert chamadas == []
+
+
 # ------------------------------------- killpg só no worker do PRÓPRIO dono (#423)
 
 def _worker_falso(isolado, nome: str, dono: int) -> subprocess.Popen:

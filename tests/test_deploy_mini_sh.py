@@ -469,8 +469,13 @@ def test_ws_probe_faz_handshake_h1_como_o_navegador(amb):
     assert r.stdout.count("WebSocket 101") == 2
 
 
-def test_smoke_avisa_sem_a_chave_do_mini(amb):
+def test_smoke_avisa_sem_a_chave_do_mini(amb, tmp_path):
+    """#721 lê primeiro a chave do estado. No dono esse arquivo existe, e
+    apagar só o `.apikey` do repo não tira a chave — o aviso não saía."""
     (Path(amb["TTS_MINI_DIR"]) / ".apikey").unlink()
+    casa = tmp_path / "home-sem-chave"
+    casa.mkdir()
+    amb["HOME"] = str(casa)
     r = _run(amb, "smoke")
     assert "[aviso] sem a chave do mini" in r.stdout
 

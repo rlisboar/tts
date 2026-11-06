@@ -53,6 +53,9 @@ DETECTOR = "detector.pt"
 TIMEOUT_S = float(os.environ.get("TTS_MARCA_TIMEOUT_S", "60"))
 #: TTL de ociosidade do filho (mesma política do #507/#612)
 TTL_S = float(os.environ.get("TTS_MARCA_TTL_S", "600"))
+#: teto da CARGA, só quando o filho avisou `subindo` antes de responder.
+#: O prazo curto do Live (1,5 s) segue matando filho mudo. O job (60 s) não encolhe.
+CARGA_S = float(os.environ.get("TTS_MARCA_CARGA_S", "20"))
 INTERVALO_VIGIA_S = 5.0
 
 _trava = threading.Lock()
@@ -133,8 +136,10 @@ def _pega() -> subprocess.Popen:
 def prewarm() -> None:
     """Sobe o filho em segundo plano (o load custa ~2,6 s e o 1º áudio não paga).
 
-    Chamado na abertura da sessão do Live: o `first_audio_ms` não pode incluir a
-    carga do modelo."""
+    No boot do servidor e de novo na abertura da sessão do Live. Filho já vivo
+    não sobe outro. Quem ainda carrega avisa `subindo`; o prazo curto do turno
+    não mata essa carga.
+    """
     if not disponivel():
         return
     threading.Thread(target=lambda: _pega(), name="marca-prewarm", daemon=True).start()
@@ -185,11 +190,16 @@ def _fd_leitura(proc: subprocess.Popen) -> int:
     return fd
 
 
-def _casa_id(buf: bytearray, ident: int) -> str | None:
+def _casa_id(buf: bytearray, ident: int) -> tuple[str | None, list[dict]]:
+    """Consome linhas completas. Devolve a do `ident` e os avisos sem id.
+
+    `subindo` e `pronto` não são a resposta. Linha com outro id é resto.
+    """
+    avisos: list[dict] = []
     while True:
         nl = buf.find(b"\n")
         if nl < 0:
-            return None
+            return None, avisos
         linha = bytes(buf[:nl]).decode("utf-8", "replace").strip()
         del buf[: nl + 1]
         if not linha:
@@ -199,7 +209,28 @@ def _casa_id(buf: bytearray, ident: int) -> str | None:
         except Exception:  # noqa: BLE001
             continue
         if dados.get("id") == ident:
-            return linha
+            return linha, avisos
+        if dados.get("id") is None and dados.get("tipo"):
+            avisos.append(dados)
+
+
+def _ajusta_prazo(dados: dict, limite: float, prazo: float, prazo_log: float,
+                  carregando: bool) -> tuple[float, float, bool]:
+    """`subindo` estende uma vez, até `CARGA_S`, e só se isso alonga o teto.
+
+    `pronto` devolve o relógio da operação (`prazo`). Um segundo `subindo` não
+    empurra de novo: filho tagarela não escapa do mudo.
+    """
+    tipo = dados.get("tipo")
+    agora = time.monotonic()
+    if tipo == "subindo" and not carregando:
+        novo = agora + CARGA_S
+        if novo > limite:
+            return novo, CARGA_S, True
+        return limite, prazo_log, True
+    if tipo == "pronto":
+        return agora + prazo, prazo, carregando
+    return limite, prazo_log, carregando
 
 
 def _mata_filho(proc: subprocess.Popen) -> None:
@@ -255,20 +286,26 @@ def _le_ate(proc: subprocess.Popen, ident: int, prazo: float | None = None) -> s
     O `readline` bloqueava sem prazo. No job local essa leitura corre dentro
     do `_gen_lock`: filho mudo travava o servidor. No estouro o filho morre,
     `_proc` zera e a exceção sobe — o chamador entrega o áudio sem marca.
-    `prazo` None é o teto do job (`TIMEOUT_S`).
+    `prazo` None é o teto do job (`TIMEOUT_S`). `subindo` alonga só a carga;
+    `pronto` reinicia este prazo. O log do mudo usa o teto que de fato venceu.
     """
     if prazo is None:
         prazo = TIMEOUT_S
+    prazo_log = prazo
     limite = time.monotonic() + prazo
+    carregando = False
     fd = _fd_leitura(proc)
     buf = bytearray()
     while True:
-        achada = _casa_id(buf, ident)
+        achada, avisos = _casa_id(buf, ident)
+        for dados in avisos:
+            limite, prazo_log, carregando = _ajusta_prazo(
+                dados, limite, prazo, prazo_log, carregando)
         if achada is not None:
             return achada
         restante = limite - time.monotonic()
         if restante <= 0:
-            _filho_mudo(proc, prazo)
+            _filho_mudo(proc, prazo_log)
         # Filho já morto: drena o que houver no pipe e não espera o teto.
         espera = 0.0 if proc.poll() is not None else restante
         try:
@@ -279,7 +316,7 @@ def _le_ate(proc: subprocess.Popen, ident: int, prazo: float | None = None) -> s
         if not pronto:
             if proc.poll() is not None:
                 raise RuntimeError(f"worker da marca morreu (rc={proc.returncode})")
-            _filho_mudo(proc, prazo)
+            _filho_mudo(proc, prazo_log)
         try:
             pedaco = os.read(fd, 65536)
         except BlockingIOError:

@@ -285,6 +285,10 @@ def test_pcm_final_do_live_detecta_no_audio_que_o_cliente_ouve(tmp_path, monkeyp
 
     monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
     monkeypatch.setitem(app._settings, "live_marca_primeiro_trecho", True)
+    # Filho frio leva ~2,6 s para carregar. Sozinha (`-k`), o prazo de 1,5 s
+    # matava essa carga e o PCM saía cru — a célula só passava se outra tivesse
+    # deixado o filho quente. O prewarm sobrepõe a carga à montagem do PCM.
+    marca_dagua.prewarm()
     fala, sr = sf.read(RAIZ / "tests/fixtures/voz_fala_5s_16k.wav", dtype="float32")
     assert sr == 16000
     from scipy.signal import resample_poly
