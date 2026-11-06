@@ -1914,6 +1914,37 @@ def test_speech_404_quando_wav_sumiu_e_limpeza_poupam_job_no_historico(
     assert tarde.json()["detail"] == "Áudio não encontrado"
 
 
+def test_wav_de_job_expurgado_volta_a_ser_limpavel(monkeypatch, tmp_path):
+    """#884, item 3: o `presos` não pode ser uma âncora permanente.
+
+    Enquanto o job está em `_jobs` o WAV é protegido; quando o teto do histórico
+    o expulsa (`_evict_jobs`), o id sai do `presos` e a limpeza por idade volta a
+    levar o arquivo. Sem isto o disco só cresceria.
+    """
+    d = tmp_path / "outputs"
+    d.mkdir()
+    monkeypatch.setattr(app, "OUTPUTS_DIR", d)
+    monkeypatch.setitem(app._settings, "auto_cleanup_minutes", 15)
+    velho = time.time() - 3600
+    jid, oid = "jobvelho9", "wavvelho9"
+    for nome in (f"{oid}.wav", f"{oid}.json"):
+        (d / nome).write_bytes(b"x")
+        os.utime(d / nome, (velho, velho))
+    monkeypatch.setattr(app, "_jobs", {jid: {"status": "done",
+                                             "output": {"id": oid}}})
+
+    app._auto_cleanup_once()
+    assert (d / f"{oid}.wav").is_file(), "job ainda no histórico: protegido"
+
+    app._jobs.update({f"j{i}": {"status": "done"} for i in range(app._JOBS_MAX + 1)})
+    app._evict_jobs()
+    assert jid not in app._jobs, "o teto tinha de expulsar o done mais antigo"
+
+    app._auto_cleanup_once()
+    assert not (d / f"{oid}.wav").exists(), "expurgado do histórico: a limpeza leva"
+    assert not (d / f"{oid}.json").exists()
+
+
 def test_tradutor_e_modificador_recusam_antes_do_stt(client, auth, monkeypatch):
     """Sem slot, o 429 sai antes do STT: o cliente não espera a transcrição (e a
     tradução) inteiras para receber um erro que já era previsível — nem reenvia
