@@ -1792,6 +1792,128 @@ def test_speech_queue_bypass(client, auth, monkeypatch, tmp_path):
     assert vistos == [True, False]
 
 
+def test_speech_404_quando_wav_sumiu_e_limpeza_poupam_job_no_historico(
+        client, auth, monkeypatch, tmp_path):
+    """#884: WAV publicado sumiu → 404 (a mesma frase do GET), não 500.
+
+    Limpeza por tempo, DELETE da coleção, DELETE de um id e a poda por
+    quantidade pulam o áudio de um job ainda em `_jobs`. O stem do WAV NÃO é
+    o job_id — proteger só a chave deixa o arquivo do `done` sair, que é o
+    500 do card. Sem a guarda, o wav ausente estoura no read_bytes (500) e o
+    mp3 cai no ffmpeg ("Conversão de áudio falhou").
+    """
+    d = tmp_path / "outputs"
+    d.mkdir()
+    monkeypatch.setattr(app, "OUTPUTS_DIR", d)
+    monkeypatch.setitem(app._settings, "auto_cleanup_minutes", 15)
+    monkeypatch.setattr(app, "_resolve_voice", lambda v: "voz-teste")
+
+    job_id = "jobvivo884"
+    out_id = "wavpreso88"             # diferente do job_id de propósito
+    solto = "wavsolto88"
+    presente = "wavok884xx"
+    velho = time.time() - 3600
+
+    def _grava(oid, quando):
+        wav = d / f"{oid}.wav"
+        with wave.open(str(wav), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
+            w.writeframes(b"\x00\x00" * 240)
+        (d / f"{oid}.json").write_text('{"id": "%s"}' % oid)
+        os.utime(wav, (quando, quando))
+        os.utime(d / f"{oid}.json", (quando, quando))
+
+    _grava(out_id, velho)
+    _grava(solto, velho)
+    _grava(presente, time.time())
+    vivo = d / f".job-{job_id}"
+    vivo.mkdir()
+    (vivo / "0.wav").write_bytes(b"RIFF")
+    os.utime(vivo, (velho, velho))
+    orfao = d / ".job-orfao884"
+    orfao.mkdir()
+    (orfao / "0.wav").write_bytes(b"RIFF")
+    os.utime(orfao, (velho, velho))
+
+    monkeypatch.setattr(app, "_jobs", {
+        job_id: {"status": "done", "output": {"id": out_id}},
+        "jobok884": {"status": "done", "output": {"id": presente}},
+    })
+
+    def _publica(oid):
+        def _fake(jid, *a, **kw):
+            app._jobs[jid].update(status="done", output={"id": oid})
+        return _fake
+
+    corpo = {"model": "tts-1", "input": "oi", "response_format": "wav"}
+    monkeypatch.setattr(app, "_run_tts_job", _publica(presente))
+    ok = client.post("/v1/audio/speech", headers=auth, json=corpo)
+    assert ok.status_code == 200, ok.text
+    assert ok.headers["content-type"].startswith("audio/wav")
+
+    monkeypatch.setattr(app, "_run_tts_job", _publica("naoexiste1"))
+    faltou = client.post("/v1/audio/speech", headers=auth, json=corpo)
+    assert faltou.status_code == 404, faltou.text
+    assert faltou.json()["detail"] == "Áudio não encontrado"
+    mp3 = client.post("/v1/audio/speech", headers=auth,
+                      json={**corpo, "response_format": "mp3"})
+    assert mp3.status_code == 404, mp3.text
+    assert mp3.json()["detail"] == "Áudio não encontrado"
+    assert "Conversão" not in mp3.json()["detail"]
+
+    assert app._auto_cleanup_once() >= 1
+    assert (d / f"{out_id}.wav").is_file() and (d / f"{out_id}.json").is_file()
+    assert not (d / f"{solto}.wav").exists() and not (d / f"{solto}.json").exists()
+    assert vivo.is_dir(), "limpeza comeu o .job- de um done ainda em _jobs"
+    assert not orfao.exists(), "órfão fora de _jobs tinha de sair por idade"
+
+    _grava(solto, velho)
+    apagou = client.delete("/api/outputs", headers=auth)
+    assert apagou.status_code == 200, apagou.text
+    assert (d / f"{out_id}.wav").is_file() and (d / f"{presente}.wav").is_file()
+    assert not (d / f"{solto}.json").exists()
+    assert apagou.json()["preservados"] >= 1
+    assert apagou.json()["removidos"] >= 1
+
+    um = client.delete(f"/api/outputs/{out_id}", headers=auth)
+    assert um.status_code == 409, um.text
+    assert (d / f"{out_id}.wav").is_file()
+
+    # o preso é o MAIS ANTIGO: a poda antiga (`oid in _jobs`) comia ele primeiro
+    antigo = 1_600_000_000.0
+    os.utime(d / f"{out_id}.wav", (antigo, antigo))
+    os.utime(d / f"{out_id}.json", (antigo, antigo))
+    for i in range(3):
+        _grava(f"extra{i}", antigo + 100 + i)
+    assert app._poda_outputs_por_quantidade(2) >= 1
+    assert (d / f"{out_id}.wav").is_file(), "poda comeu o WAV cujo id não é o job_id"
+    assert not (d / "extra0.wav").exists()
+
+    real_read = Path.read_bytes
+
+    def _some(self):
+        if self.name == f"{out_id}.wav":
+            raise FileNotFoundError(str(self))
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _some)
+    monkeypatch.setattr(app, "_run_tts_job", _publica(out_id))
+    corrida = client.post("/v1/audio/speech", headers=auth, json=corpo)
+    assert corrida.status_code == 404, corrida.text
+    assert corrida.json()["detail"] == "Áudio não encontrado"
+    monkeypatch.setattr(Path, "read_bytes", real_read)
+
+    def _ffmpeg_tarde(path, fmt, speed):
+        path.unlink(missing_ok=True)
+        raise HTTPException(500, "Conversão de áudio falhou: sumiu")
+
+    monkeypatch.setattr(app, "_encode_audio", _ffmpeg_tarde)
+    tarde = client.post("/v1/audio/speech", headers=auth,
+                        json={**corpo, "response_format": "mp3"})
+    assert tarde.status_code == 404, tarde.text
+    assert tarde.json()["detail"] == "Áudio não encontrado"
+
+
 def test_tradutor_e_modificador_recusam_antes_do_stt(client, auth, monkeypatch):
     """Sem slot, o 429 sai antes do STT: o cliente não espera a transcrição (e a
     tradução) inteiras para receber um erro que já era previsível — nem reenvia

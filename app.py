@@ -6779,6 +6779,25 @@ def _jobs_snapshot() -> list:
         return list(_jobs.values())
 
 
+def _outputs_presos() -> set[str]:
+    """Ids que a limpeza e o DELETE não podem apagar enquanto o job está em `_jobs`.
+
+    Inclui a chave do job (o diretório `.job-<id>`) e o `output.id`. O stem do
+    WAV publicado NÃO é o job_id: a síntese grava outro uuid. Comparar o stem
+    só com a chave deixava o arquivo de um job `done` sair, e o
+    `/v1/audio/speech` lia esse path e respondia 500 (#884). `done` e `error`
+    entram: o 500 aconteceu com o job já terminado, ainda na janela do histórico.
+    """
+    presos: set[str] = set()
+    with _jobs_lock:
+        for jid, j in _jobs.items():
+            presos.add(str(jid))
+            out = j.get("output") if isinstance(j, dict) else None
+            if isinstance(out, dict) and out.get("id"):
+                presos.add(str(out["id"]))
+    return presos
+
+
 def _jobs_admit(extra: dict | None = None) -> str:
     """Registra um job novo com admissão controlada; devolve o job_id.
 
@@ -7968,8 +7987,14 @@ def output_audio(out_id: str):
 def delete_all_outputs(request: Request):
     _exige_admin(request)
     removidos = 0
+    preservados = 0
     falhas = []
+    # job ainda em `_jobs` (inclusive done): o speech pode estar lendo o WAV (#884)
+    presos = _outputs_presos()
     for meta in OUTPUTS_DIR.glob("*.json"):
+        if meta.stem in presos:
+            preservados += 1
+            continue
         try:
             meta.with_suffix(".wav").unlink(missing_ok=True)
             meta.unlink(missing_ok=True)
@@ -7979,6 +8004,8 @@ def delete_all_outputs(request: Request):
             # apagado o resto: acumula e devolve o balanço (#282)
             falhas.append(f"{meta.name}: {exc.strerror or exc}")
     corpo = {"ok": True, "removidos": removidos}
+    if preservados:
+        corpo["preservados"] = preservados
     if falhas:
         corpo["falhas"] = falhas[:20]
         corpo["falhas_total"] = len(falhas)
@@ -7988,21 +8015,26 @@ def delete_all_outputs(request: Request):
 def _auto_cleanup_once():
     """Apaga áudios gerados mais antigos que o limite configurado."""
     limite = time.time() - _settings["auto_cleanup_minutes"] * 60
+    # qualquer entrada ainda em `_jobs`, não só running/queued: o WAV de um
+    # done na janela do histórico é o que o `/v1/audio/speech` lê (#884)
+    presos = _outputs_presos()
     removidos = 0
     for meta in OUTPUTS_DIR.glob("*.json"):
+        if meta.stem in presos:
+            continue
         if meta.stat().st_mtime < limite:
             meta.with_suffix(".wav").unlink(missing_ok=True)
             meta.unlink(missing_ok=True)
             removidos += 1
     # diretórios de jobs (sínteses longas): a limpeza de *.json/*.wav não os
-    # alcança e órfãos se acumulam. Pula jobs ativos (apagar trechos no meio
-    # da síntese quebraria o stream) e o resto sai por idade.
+    # alcança e órfãos se acumulam. Pula quem ainda está em `_jobs` (apagar
+    # trechos no meio da síntese quebraria o stream; done sai pela limpeza
+    # agendada de 90 s, não por esta) e o resto sai por idade.
     for d in OUTPUTS_DIR.glob(".job-*"):
         if not d.is_dir() or d.stat().st_mtime >= limite:
             continue
         jid = d.name[len(".job-"):]
-        j = _jobs.get(jid)
-        if j and (j.get("status") == "running" or j.get("status") == "queued"):
+        if jid in presos:
             continue
         shutil.rmtree(d, ignore_errors=True)
         removidos += 1
@@ -8073,7 +8105,8 @@ def _poda_outputs_por_quantidade(teto: int | None = None) -> int:
     gerações antigas que nem aparecem na listagem. Aqui o corte é por EXCESSO
     (os recentes sempre ficam) sobre TODO `.wav` do diretório, com ou sem meta, e
     o que está em `_jobs` (job ativo ou ainda na janela do histórico) nunca sai,
-    senão o trecho sumiria debaixo de quem está ouvindo. `teto` 0/negativo = desliga.
+    senão o trecho sumiria debaixo de quem está ouvindo. O id publicado é
+    `output.id`, não a chave do job (#884). `teto` 0/negativo = desliga.
 
     Cada candidato é um id: sai o `.wav`, o `.json` par e o diretório de trechos.
     Temporários de upload (`.algo`) têm função própria e não entram na conta.
@@ -8109,11 +8142,12 @@ def _poda_outputs_por_quantidade(teto: int | None = None) -> int:
     excesso = len(idades) - teto
     if excesso <= 0:
         return 0
+    presos = _outputs_presos()
     removidos = 0
     for oid, _mtime in sorted(idades.items(), key=lambda par: par[1]):
         if removidos >= excesso:
             break
-        if oid in _jobs:           # job ativo ou ainda no histórico: preserva
+        if oid in presos:          # job_id ou output.id (#884): preserva
             continue
         for nome in (f"{oid}.wav", f"{oid}.json"):
             (OUTPUTS_DIR / nome).unlink(missing_ok=True)
@@ -8146,6 +8180,9 @@ threading.Thread(target=_auto_cleanup_loop, daemon=True).start()
 def delete_output(request: Request, out_id: str):
     _exige_admin(request)
     out_id = _safe_id(out_id)
+    # 409, não um 200 que mente: o arquivo continua porque um job ainda o cita (#884)
+    if out_id in _outputs_presos():
+        raise HTTPException(409, "Áudio ainda referenciado por um job")
     removed = False
     for ext in ("wav", "json"):
         path = OUTPUTS_DIR / f"{out_id}.{ext}"
@@ -14266,8 +14303,22 @@ def openai_speech(payload: dict):
         raise HTTPException(500, f"Falha na síntese: {job.get('error')}")
 
     wav_path = OUTPUTS_DIR / f"{job['output']['id']}.wav"
-    # velocidade já aplicada nativamente pelo modelo; aqui ffmpeg só converte o formato
-    data, mime = _encode_audio(wav_path, fmt, 1.0)
+    # limpeza ou DELETE podem ter levado o arquivo depois do status done (#884).
+    # A irmã GET /api/outputs/{id}/audio já responde 404; sem isto era 500
+    # (read_bytes) ou "Conversão de áudio falhou" (ffmpeg).
+    if not wav_path.is_file():
+        raise HTTPException(404, "Áudio não encontrado")
+    try:
+        # velocidade já aplicada nativamente pelo modelo; aqui ffmpeg só converte o formato
+        data, mime = _encode_audio(wav_path, fmt, 1.0)
+    except FileNotFoundError:
+        # sumiu entre o is_file e o read_bytes
+        raise HTTPException(404, "Áudio não encontrado") from None
+    except HTTPException as exc:
+        # o mesmo buraco no caminho do ffmpeg: o 500 só vale se o arquivo ainda está lá
+        if exc.status_code == 500 and not wav_path.is_file():
+            raise HTTPException(404, "Áudio não encontrado") from None
+        raise
     return Response(content=data, media_type=mime)
 
 
