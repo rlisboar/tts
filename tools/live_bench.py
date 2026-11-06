@@ -31,8 +31,10 @@ SLOs medidos:
   S2 fim real da fala → 1º áudio da resposta (p50/p95);
   S3 início da fala por cima → duck (evento + rampa de 50 ms) e → `interrupted`;
      falso corte = `interrupted` durante resposta só com eco;
-  S4 respostas com símbolo de markdown/emoji/URL no texto que vai ao TTS
-     (`assistant_text`: no 9b0230c os deltas vão crus ao chunker do TTS);
+  S4 respostas com símbolo de markdown/emoji/URL no texto que vai ao TTS —
+     `texto_para_fala(assistant_text)` (#871; o `assistant_text` cru segue
+     medido em `cru_com_simbolo`). Sem `common.py` no diretório do app, cai no
+     texto cru e o relatório marca `limpador: null`;
   S5 (`--sessao-min N`) repete os ciclos por N minutos e compara RSS/threads do
      servidor e a saúde no fim.
 
@@ -158,6 +160,29 @@ _SIMBOLOS = {
 def simbolos(texto: str) -> dict[str, int]:
     return {k: len(rx.findall(texto or "")) for k, rx in _SIMBOLOS.items()
             if rx.findall(texto or "")}
+
+
+def _carrega_limpador():
+    """`texto_para_fala` do APP — o MESMO limpador que o servidor usa (#871).
+
+    Carrega `common.py` por caminho (o script roda de /tmp, com `-I`): nada de
+    `sys.path`. Sem o arquivo — build anterior ao #871 — devolve identidade e o
+    relatório sai com `limpador: null`, para o número não ser lido como prova de
+    que o servidor limpou."""
+    import importlib.util
+
+    base = Path(os.environ.get("TTS_APP_DIR") or os.getcwd())
+    alvo = base / "common.py"
+    try:
+        spec = importlib.util.spec_from_file_location("_bench_common", alvo)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return getattr(mod, "texto_para_fala"), str(alvo)
+    except Exception:                   # noqa: BLE001 — bench não cai por isso
+        return (lambda t: t), None
+
+
+_PARA_FALA, _LIMPA_DE = _carrega_limpador()
 
 
 def pct(xs: list[float], p: float) -> float | None:
@@ -417,22 +442,28 @@ def _hipotese(c: Cliente, ini: float, fim: float) -> str:
 
 def respostas(c: Cliente) -> list[dict]:
     """Respostas da sessão: deltas de `assistant_text` até `turn_complete`,
-    `interrupted` ou `error` (S4 é por resposta, não por fala)."""
+    `interrupted` ou `error` (S4 é por resposta, não por fala).
+
+    O S4 conta no texto LIMPO (`_PARA_FALA`, o mesmo do servidor); `s4_cru`
+    guarda o cru para a comparação antes/depois continuar possível no mesmo
+    relatório."""
     out, buf, t_ini = [], [], None
+
+    def _fecha(txt: str, fim: str) -> dict:
+        return {"t": round(t_ini, 2), "fim": fim, "chars": len(txt),
+                "s4_simbolos": simbolos(_PARA_FALA(txt)),
+                "s4_cru": simbolos(txt), "_resp": txt}
+
     for t, ty, e in c.eventos:
         if ty == "assistant_text":
             if t_ini is None:
                 t_ini = t
             buf.append(e.get("delta") or e.get("text") or "")
         elif ty in ("turn_complete", "interrupted", "error") and buf:
-            txt = "".join(buf)
-            out.append({"t": round(t_ini, 2), "fim": ty, "chars": len(txt),
-                        "s4_simbolos": simbolos(txt), "_resp": txt})
+            out.append(_fecha("".join(buf), ty))
             buf, t_ini = [], None
     if buf:
-        txt = "".join(buf)
-        out.append({"t": round(t_ini, 2), "fim": "aberta", "chars": len(txt),
-                    "s4_simbolos": simbolos(txt), "_resp": txt})
+        out.append(_fecha("".join(buf), "aberta"))
     return out
 
 
@@ -555,7 +586,10 @@ def resumo(res: dict, args) -> dict:
         "S4": {"respostas": len(resp),
                "com_simbolo": sum(bool(r["s4_simbolos"]) for r in resp),
                "por_tipo": _soma([r["s4_simbolos"] for r in resp]),
-               "meta": "0 em 50 respostas"},
+               "cru_com_simbolo": sum(bool(r["s4_cru"]) for r in resp),
+               "cru_por_tipo": _soma([r["s4_cru"] for r in resp]),
+               "limpador": _LIMPA_DE,
+               "meta": "0 em 50 respostas (texto LIMPO, o que vai ao TTS)"},
         "S5": {"sessao_s": res["sessao_s"], "ciclos": res["ciclos"],
                "ws_vivo_no_fim": res["ws_vivo_no_fim"], "erro_ws": res["erro_ws"],
                "proc_ini": res["proc_ini"], "proc_fim": res["proc_fim"],
