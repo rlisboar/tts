@@ -22,7 +22,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/serial.sh"; serial_pega || exit 1
 
 cd "$RAIZ"
 "$PY" - "$RAIZ" <<'PYEOF'
-import base64, json, os, pathlib, socket, subprocess, sys, threading, time, urllib.request
+import base64, json, os, pathlib, re, socket, subprocess, sys, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 RAIZ = pathlib.Path(sys.argv[1])
@@ -30,6 +30,16 @@ SUF = str(os.getpid())
 falhas = []
 def cobrar(c, m):
     if not c: falhas.append(m)
+
+#: portas OPCIONAIS que a página sonda (mic-router). Outra suíte — ou um servidor
+#: do dono — pode estar ali, sem CORS; o fetch cross-origin vira console.error e
+#: não é regressão desta tela. As suítes agora rodam em paralelo (#890) e essa
+#: colisão já deu falso vermelho em três hooks seguidos.
+_PROBE_OPCIONAL = re.compile(r"127\.0\.0\.1:786[1-5]/")
+
+def ruido_de_ambiente(texto: str) -> bool:
+    return (texto.startswith("Failed to load resource")
+            or ("CORS policy" in texto and _PROBE_OPCIONAL.search(texto)))
 
 # ─── stub OpenAI-compatível (o settings.json do dono fica intocado, #103) ────
 class Stub(BaseHTTPRequestHandler):
@@ -106,7 +116,7 @@ try:
         pg = ctx.new_page()
         erros = []; pg.on("pageerror", lambda e: erros.append(str(e)))
         cons = []; pg.on("console", lambda m: cons.append(m.text)
-                         if m.type == "error" and not m.text.startswith("Failed to load resource") else None)
+                         if m.type == "error" and not ruido_de_ambiente(m.text) else None)
         ruins = []
         pg.on("requestfailed", lambda r: ruins.append((r.url[:110], r.failure)))
         pg.on("response", lambda r: ruins.append((r.url[:110], r.status)) if r.status >= 400 else None)
