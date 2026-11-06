@@ -1000,6 +1000,8 @@ curl -s -X POST $BASE/api/chat/$SID -H "X-API-Key: $KEY" \
 # → {"reply":"...","status":"chatting"|"confirmed","text":"..."}
 
 # 3) status "confirmed" traz o texto final aprovado em "text"
+#    para o TTS use "text_fala"/"reply_fala": a mesma coisa sem markdown,
+#    emoji, URL nem código (#871)
 # GET /api/chat/$SID (estado/histórico) · DELETE encerra a sessão
 ```
 

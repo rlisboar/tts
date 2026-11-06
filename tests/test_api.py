@@ -9508,3 +9508,51 @@ def test_replace_recusado_deixa_o_wav_anterior_intacto(client, auth, vozes_isola
     assert vd.joinpath("voz-real.orig.wav").read_bytes() == original, \
         "o original guardado não é o de antes da troca"
     assert not list(vd.glob(".tmp-tts-*")), "sobrou temporário do caminho feliz"
+
+
+# ── #871: Conversa entrega a versão FALADA (sem markdown) ao lado da exibida ──
+def _chat_espera(client, auth, sid):
+    import time as _t
+    d = {}
+    for _ in range(80):
+        d = client.get(f"/api/chat/{sid}", headers=auth).json()
+        if d["status"] != "thinking":
+            break
+        _t.sleep(0.05)
+    return d
+
+
+def test_chat_reply_fala_limpo_e_instrucao_do_dono_intacta(client, auth, monkeypatch):
+    import json as _json
+    from common import REGRA_FALA
+    vistos = []
+    resposta = "**Rascunho:** veja [aqui](https://x.y) 👍\n- item um"
+
+    def falso(msgs):
+        vistos.append(msgs)
+        return _json.dumps({"final": False, "reply": resposta})
+
+    monkeypatch.setattr(app, "_chat_llm", falso)
+    monkeypatch.setitem(app._settings, "chat_system", "Prompt do dono, intacto.")
+    sid = client.post("/api/chat/start", headers=auth,
+                      json={"objective": "teste"}).json()["session_id"]
+    d = _chat_espera(client, auth, sid)
+    assert d["reply"] == resposta                    # a UI exibe como o modelo escreveu
+    assert d["reply_fala"] == "Rascunho: veja aqui. item um."
+    assert d["text_fala"] == ""
+    sistema = vistos[0][0]["content"]
+    assert sistema.startswith("Prompt do dono, intacto.")   # #799: na frente, inteiro
+    assert REGRA_FALA in sistema
+    assert sum(1 for m in vistos[0] if m["role"] == "system") == 1
+
+
+def test_chat_text_fala_no_confirmado(client, auth, monkeypatch):
+    monkeypatch.setattr(app, "_chat_llm", lambda msgs:
+                        '{"final": true, "text": "## Aviso\\n**Amanhã** tem reunião 📅"}')
+    sid = client.post("/api/chat/start", headers=auth,
+                      json={"objective": "x"}).json()["session_id"]
+    d = _chat_espera(client, auth, sid)
+    assert d["status"] == "confirmed"
+    assert d["text"].startswith("## Aviso")          # texto aprovado: intacto
+    assert d["text_fala"] == "Aviso. Amanhã tem reunião."
+    assert d["reply_fala"] == d["text_fala"]

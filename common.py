@@ -694,3 +694,209 @@ def normaliza_loudness(caminho, alvo: float = LUFS_ALVO,
     finally:
         tmp.unlink(missing_ok=True)
     return round(delta, 2)
+
+
+# ---------------------------------------------------------------------------
+# Texto de LLM → fala (#871)
+# ---------------------------------------------------------------------------
+# O LLM ignora "sem markdown" com frequência e o TTS lia `**`, `#`, marcador de
+# lista, URL inteira, emoji e código. A limpeza é UMA só (`LimpadorFala`) e serve
+# aos dois consumidores: o Live, que recebe deltas e precisa limpar em streaming
+# (um `**` partido entre dois deltas não pode vazar), e a Conversa, que recebe o
+# texto inteiro (`texto_para_fala`, que é o mesmo limpador numa tacada só). Só o
+# que vai ao TTS passa por aqui; o texto exibido na UI mantém o markdown.
+
+#: regra de FORMATO anexada ao prompt (Live e Conversa), na MESMA mensagem de
+#: sistema — há provedor que recusa `system` fora da 1ª posição. Não substitui
+#: a instrução do dono (#799): no Live ela vem depois (a dele ganha o conflito);
+#: na Conversa ela abre e esta regra fecha.
+REGRA_FALA = (
+    "Sua resposta será LIDA EM VOZ ALTA por um sintetizador de voz. Escreva só "
+    "frases faladas, curtas, em texto corrido: nada de markdown (asteriscos, "
+    "cerquilha, listas, tabelas, links), nada de código e nada de emojis. Para "
+    "enumerar, use palavras (primeiro, depois, por fim)."
+)
+
+_FALA_LINK = re.compile(r"!?\[([^\]\n]*)\]\(([^()\s]*)(?:\s+\"[^\"\n]*\")?\)")
+_FALA_URL = re.compile(r"(?:https?://|www\.)[^\s<>()\[\]]*[^\s<>()\[\].,;:!?\"']")
+# `_x_`/`__x__` somem; `snake_case` (sublinhado ENTRE letras) fica
+_FALA_SUBLINHADO = re.compile(r"(?<!\w)_+|_+(?!\w)")
+_FALA_HTML = re.compile(r"</?[A-Za-z][^<>\n]{0,80}>")
+# pictogramas, símbolos, setas, dingbats, seletor de variação, ZWJ, keycap, tags
+_FALA_EMOJI = re.compile(
+    "[\U0001F000-\U0001FAFF←-⇿⌀-⏿☀-➿⬀-⯿"
+    "︎️‍⃣\U000E0020-\U000E007F]")
+_FALA_FENCE = re.compile(r"^\s*(```|~~~)")
+_FALA_REGUA = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
+_FALA_TAB_SEP = re.compile(r"^\s*\|?(?:\s*:?-{2,}:?\s*\|)+\s*:?-*:?\s*\|?\s*$")
+# prefixo de linha: citação(ões), depois cabeçalho OU marcador de lista
+_FALA_PREFIXO = re.compile(
+    r"^\s*(?:>\s?)*\s*(?:(?P<h>#{1,6})\s+|(?P<l>[-*+•])\s+|(?P<n>\d{1,3})[.)]\s+)?")
+_FALA_FIM = ".!?…:;,"
+#: até onde um `[` sem fechar é segurado à espera do `](url)`
+_FALA_TETO_LINK = 300
+#: teto do que fica pendente sem espaço (palavra/URL gigante não trava a fala)
+_FALA_TETO_PENDENTE = 400
+_FALA_CODIGO = "Código omitido."
+
+
+def _fala_inline(s: str) -> str:
+    """Limpeza que não depende de início de linha. Estável sob corte em espaço:
+    limpar `a ` e `b` separados dá o mesmo que limpar `a b`."""
+    s = _FALA_LINK.sub(lambda m: m.group(1), s)
+    s = _FALA_URL.sub("link", s)
+    s = _FALA_HTML.sub(" ", s)
+    s = s.replace("*", "").replace("`", "").replace("~~", "")
+    s = _FALA_SUBLINHADO.sub("", s)
+    s = _FALA_EMOJI.sub("", s)
+    return re.sub(r"[ \t]{2,}", " ", s)
+
+
+def _fala_tabela(linha: str) -> str:
+    """`| a | b |` → `a, b` (a régua `|---|` some antes de chegar aqui)."""
+    celulas = [c.strip() for c in linha.strip().strip("|").split("|")]
+    return ", ".join(c for c in celulas if c)
+
+
+class LimpadorFala:
+    """Tira markdown/código/emoji/URL do texto do LLM ANTES do TTS, em streaming.
+
+    `push(delta)` devolve o trecho JÁ SEGURO para falar; o resto fica pendente
+    até que o contexto que falta chegue:
+      - a última palavra (pode ser URL, `_ênfase_` ou `**` ainda aberto) espera
+        o próximo espaço — o corte é sempre em espaço, e a limpeza inline é
+        estável sob esse corte;
+      - o início da linha espera a 1ª palavra completa (`1.`, `##`, `-`, `>`,
+        `|` e a cerca de código só se decidem com ela);
+      - `[texto` espera o `](url)` (até `_FALA_TETO_LINK` chars);
+      - linha de tabela e linha de cerca esperam o `\\n`.
+    Lista, cabeçalho e linha de tabela viram FRASE: sem o marcador e com ponto
+    no fim se não tinham pontuação. Bloco de código vira "Código omitido."
+    `flush()` fecha o que sobrou no fim da resposta."""
+
+    def __init__(self):
+        self._reinicia()
+
+    def _reinicia(self) -> None:
+        self._pend = ""            # resto da linha corrente ainda não emitido
+        self._inicio = True        # `_pend` começa no início da linha
+        self._estrutural = False   # linha de lista/cabeçalho: fecha com ponto
+        self._ultimo = ""          # último char não-branco emitido nesta linha
+        self._codigo = False       # dentro de bloco ``` … ```
+
+    def push(self, delta: str) -> str:
+        self._pend += delta or ""
+        saida = []
+        while "\n" in self._pend:
+            linha, self._pend = self._pend.split("\n", 1)
+            saida.append(self._fecha_linha(linha) + "\n")
+        saida.append(self._parcial())
+        return "".join(saida)
+
+    def flush(self) -> str:
+        resto = self._fecha_linha(self._pend)
+        self._reinicia()      # inclusive o `_codigo`: cerca sem fechar não vaza
+        return resto
+
+    # -- linha ------------------------------------------------------------
+    def _fecha_linha(self, seg: str) -> str:
+        """Fim da linha corrente: `seg` é o que ainda não saiu dela."""
+        inicio, estrutural, ultimo = self._inicio, self._estrutural, self._ultimo
+        self._inicio, self._estrutural, self._ultimo = True, False, ""
+        if inicio and _FALA_FENCE.match(seg):
+            self._codigo = not self._codigo
+            return _FALA_CODIGO if self._codigo else ""
+        if self._codigo:
+            return ""
+        if inicio:
+            if _FALA_REGUA.match(seg) or _FALA_TAB_SEP.match(seg):
+                return ""
+            if seg.lstrip().startswith("|"):
+                seg, estrutural = _fala_tabela(seg), True
+            else:
+                seg, estrutural = self._sem_prefixo(seg)
+        txt = _fala_inline(seg).strip() if inicio else _fala_inline(seg).rstrip()
+        fim = (txt.rstrip() or ultimo)[-1:] if (txt.strip() or ultimo) else ""
+        if estrutural and fim and fim not in _FALA_FIM:
+            txt += "."
+        return txt
+
+    @staticmethod
+    def _sem_prefixo(seg: str) -> tuple[str, bool]:
+        m = _FALA_PREFIXO.match(seg)
+        estrutural = bool(m.group("h") or m.group("l") or m.group("n"))
+        return seg[m.end():], estrutural
+
+    # -- parcial (meio da linha) ---------------------------------------------
+    def _parcial(self) -> str:
+        if self._codigo:
+            if self._inicio:
+                s = self._pend.lstrip()
+                if len(s) < 3 or _FALA_FENCE.match(self._pend):
+                    return ""          # pode ser a cerca que FECHA: espera o \n
+                self._inicio = False   # linha de código comum: descarta
+            self._pend = ""
+            return ""
+        if self._inicio:
+            s = self._pend.lstrip()
+            if not s:
+                return ""
+            if s.startswith("|") or _FALA_FENCE.match(self._pend) or \
+                    (len(s) < 3 and "```".startswith(s)) or \
+                    (len(s) < 3 and "~~~".startswith(s)):
+                return self._estoura_teto()
+            m = _FALA_PREFIXO.match(self._pend)
+            resto = self._pend[m.end():]
+            if not re.search(r"\S\s", resto):
+                return self._estoura_teto()   # 1ª palavra ainda incompleta
+            self._estrutural = bool(m.group("h") or m.group("l") or m.group("n"))
+            self._pend, self._inicio = resto.lstrip(), False
+        return self._emite_ate_espaco()
+
+    def _estoura_teto(self) -> str:
+        """Pendente sem decisão passou do teto: trata como texto comum."""
+        if len(self._pend) <= _FALA_TETO_PENDENTE:
+            return ""
+        self._pend, self._inicio = self._sem_prefixo(self._pend)[0], False
+        return self._emite_ate_espaco()
+
+    def _emite_ate_espaco(self) -> str:
+        p = self._pend
+        limite = len(p)
+        # `[texto` sem o `](url)` ainda: segura a partir do `[` (ou do `![`)
+        links = [m.span() for m in _FALA_LINK.finditer(p)]
+        abre = p.find("[", links[-1][1] if links else 0)
+        if abre >= 0 and len(p) - abre <= _FALA_TETO_LINK:
+            limite = abre - 1 if abre > 0 and p[abre - 1] == "!" else abre
+        corte = max(p.rfind(" ", 0, limite), p.rfind("\t", 0, limite))
+        # nunca corta DENTRO de um link já fechado (`[a doc](url)` tem espaço)
+        for ini, fim in reversed(links):
+            if ini <= corte < fim:
+                corte = max(p.rfind(" ", 0, ini), p.rfind("\t", 0, ini))
+        if corte < 0:
+            if len(p) <= _FALA_TETO_PENDENTE:
+                return ""
+            corte = len(p) - 1
+        sai, self._pend = p[: corte + 1], p[corte + 1:]
+        txt = _fala_inline(sai)
+        if txt.strip():
+            self._ultimo = txt.strip()[-1]
+        return txt
+
+
+def texto_para_fala(texto: str) -> str:
+    """Texto inteiro do LLM → texto para o TTS (mesma limpeza do streaming).
+
+    As linhas viram frases numa linha só: linha que termina sem pontuação ganha
+    ponto, para a quebra de linha não sumir da prosódia."""
+    lim = LimpadorFala()
+    bruto = lim.push(texto or "") + lim.flush()
+    frases = []
+    for linha in bruto.split("\n"):
+        linha = re.sub(r"\s{2,}", " ", linha).strip()
+        if not linha:
+            continue
+        if linha[-1] not in _FALA_FIM:
+            linha += "."
+        frases.append(linha)
+    return " ".join(frases)

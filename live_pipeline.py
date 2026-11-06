@@ -36,6 +36,7 @@ import wave
 import numpy as np
 from queue import Empty, Queue
 
+from common import REGRA_FALA, LimpadorFala
 from dsh_client import DshError
 
 # Backend de IA "dsh" (DSH-2): com ele o turno NÃO re-renderiza o histórico a cada
@@ -52,8 +53,8 @@ _DSH_CTX_MAX_CHARS = max(500, int(os.environ.get("TTS_DSH_CTX_MAX_CHARS", "12000
 # como o perfil entrega o parágrafo INTEIRO num único `agent_message_chunk`, o 1º
 # áudio passa a esperar a geração toda. Fala curta é o que faz o alvo caber.
 _DSH_PERSONA = (
-    "Você conversa por voz com uma pessoa. Responda em 1 a 3 frases curtas, sem "
-    "markdown e sem bloco de código, em tom de conversa."
+    "Você conversa por voz com uma pessoa. Responda em 1 a 3 frases curtas, em "
+    "tom de conversa. " + REGRA_FALA
 )
 
 # Teto do 1º delta FALÁVEL (#264). O cliente só solta o parágrafo do thought
@@ -933,8 +934,16 @@ class LivePipeline:
 
             chunker = SentenceChunker(first_max=self.first_max_chars,
                                       max_chars=self.max_chars)
-            msgs = ([{"role": "system", "content": self.system}] if self.system else []) \
+            # #871: a regra de FALA abre o `system`; o do dono vem DEPOIS e
+            # intacto (#799) — em conflito, a instrução dele é a última. Uma
+            # mensagem só: há provedor que recusa `system` fora da 1ª posição.
+            sistema = f"{REGRA_FALA}\n\n{self.system}" if self.system else REGRA_FALA
+            msgs = [{"role": "system", "content": sistema}] \
                 + self.history + [{"role": "user", "content": texto}]
+            # #871: o TTS recebe o texto LIMPO (sem markdown/emoji/URL/código); a
+            # UI (`assistant_text`) e o histórico ficam com o texto do modelo
+            limpador = LimpadorFala()
+            falado = []
             turno_id = f"lt{turno}"
             inteiro = []
             for delta in self._deltas(msgs, texto, turno_id):
@@ -948,12 +957,16 @@ class LivePipeline:
                 # referência da checagem de eco acompanha o texto EM SÍNTESE: um
                 # barge-in enquanto o 1º chunk toca precisa comparar com o que já
                 # foi dito (o `history` ainda não tem nada deste turno)
-                self._fala_em_curso = "".join(inteiro)
+                fala = limpador.push(delta)
+                falado.append(fala)
+                self._fala_em_curso = "".join(falado)
                 self.emit_json({"type": "assistant_text", "delta": delta})
-                for pedaco in chunker.push(delta):
+                for pedaco in chunker.push(fala):
                     fila.put(pedaco)
             if not self.cancelado:
-                for pedaco in chunker.flush():
+                fala = limpador.flush()
+                falado.append(fala)
+                for pedaco in chunker.push(fala) + chunker.flush():
                     fila.put(pedaco)
             fila.put(None)                      # fim para o worker de TTS
             if tts_thread:
@@ -961,8 +974,9 @@ class LivePipeline:
             if erro_worker:
                 raise erro_worker[0]
             resposta = "".join(inteiro).strip()
-            self._fala_em_curso = resposta      # é o que o cliente vai tocar
-            self._marcar_render(resposta)
+            # referência de ECO = o que o cliente vai tocar, isto é, o texto limpo
+            self._fala_em_curso = "".join(falado).strip()
+            self._marcar_render(self._fala_em_curso)
             self.history += [{"role": "user", "content": texto},
                              {"role": "assistant", "content": resposta}]
             self._dsh_pos_turno()           # teto de contexto: fora da latência

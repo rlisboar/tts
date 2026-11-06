@@ -853,6 +853,14 @@ Como o Live usa isso (por sessão do WS, nada compartilhado com a Conversa):
   conversa") — é o que encurta a resposta e, o que define de fato o tempo até o 1º
   áudio, é a projeção dos deltas (patch DSH-4a; sem ele, um chunk no fim). O `system`
   da sessão, quando existe, entra DEPOIS da persona;
+- **texto limpo antes do TTS (#871)**: o modelo nem sempre obedece à persona, então
+  os deltas passam pelo `LimpadorFala` (`common.py`) antes do `SentenceChunker` —
+  some markdown, lista vira frase, link vira o texto dele, URL vira "link", código
+  vira "Código omitido.", emoji some. Um `**` ou `[link](url)` partido entre dois
+  deltas fica pendente até fechar. O `assistant_text` (UI) e o histórico seguem
+  com o texto do modelo; a referência de eco usa o texto LIMPO (é o que toca). No
+  caminho openai a mesma regra de fala (`REGRA_FALA`) abre o `system`, com o do
+  dono depois e intacto (#799);
 - **teto de contexto** igual ao do LIVE-5 (`TTS_DSH_CTX_MAX_MSGS` 24 /
   `TTS_DSH_CTX_MAX_CHARS` 12000): estourou, o próximo turno reabre sessão ACP nova
   com o contexto renderizado — reusa o resumo que o `_live_hist_comprime` já

@@ -83,6 +83,12 @@ POST /start → thinking → (worker chama o LLM em background)
 | `confirmed` | Humano aprovou; texto final em `text` | **envie `text` ao agente** |
 
 - `last_text`: último texto aprovado — persiste mesmo se a conversa seguir.
+- `reply_fala` / `text_fala` (#871): as MESMAS mensagens limpas para o TTS — sem
+  markdown (`**`, `#`, listas, tabelas), sem links/URLs (viram o texto do link
+  ou "link"), sem código ("Código omitido.") e sem emojis. **Mande ao TTS a
+  versão `_fala`**; exiba `reply`/`text` como vieram. O prompt já pede fala
+  corrida (regra anexada DEPOIS do `chat_system` do dono, que segue intacto),
+  mas o modelo nem sempre obedece — a limpeza é a garantia.
 - A conversa **não para** no `confirmed`: o humano pode pedir ajustes ("muda
   o tom") e um novo `confirmed` atualiza `text`.
 
@@ -120,6 +126,8 @@ anterior (aguarde ~2s e reenvie) · `400` message vazio
   "reply": "Ok, atualizei com Letícia. Fica assim?",
   "text": "",
   "last_text": "Comunicamos que no dia 31...",
+  "reply_fala": "Ok, atualizei com Letícia. Fica assim?",
+  "text_fala": "",
   "error": "",
   "messages": [ { "role": "user" | "assistant", "content": "..." }, ... ]
 }

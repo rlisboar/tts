@@ -152,7 +152,7 @@ try:                                     # cache de áudio por texto (#325)
 except Exception:                        # noqa: BLE001 — sem o módulo, sem cache
     _tts_cache = None
 from common import (GANHO_AVISO_DB, LUFS_ALVO, NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,
-                    RMS_AVISO,
+                    REGRA_FALA, RMS_AVISO, texto_para_fala,
                     resolve_omni_source, write_json_atomic,
                     apply_audio_fx,
                     atempo_chain as _atempo_chain,
@@ -3920,6 +3920,11 @@ def _chat_worker(sid: str, gen: int = 0) -> None:
                 if len(hist) > CHAT_MAX_MSGS + 1:
                     hist = [hist[0]] + hist[-(CHAT_MAX_MSGS + 1):]
             sys_prompt = (_settings.get("chat_system") or "").strip() or CHAT_SYSTEM
+            # #871: regra de FALA ANEXADA depois da instrução do dono (#799), que
+            # segue inteira e na frente. Uma mensagem de sistema só: há provedor
+            # OpenAI-compatível que recusa `system` fora da 1ª posição.
+            sys_prompt = (f"{sys_prompt}\n\n{REGRA_FALA} Isso vale para o conteúdo "
+                          "de 'reply' e de 'text'; o formato JSON pedido continua valendo.")
             reply = _chat_llm([{"role": "system", "content": sys_prompt}] + hist)
             parsed = _chat_parse(reply)
             with _chat_lock:
@@ -4034,8 +4039,12 @@ def chat_get(sid: str):
     s = _chat_get(sid)
     with _chat_lock:
         status = "thinking" if s.get("thinking") else s["status"]
+        # `reply`/`text` saem como o modelo escreveu (a UI exibe); os `_fala`
+        # são o que vai ao TTS — sem markdown, emoji, URL nem código (#871)
         return {"session_id": sid, "status": status, "text": s["text"],
                 "reply": s.get("reply", ""), "error": s.get("error", ""),
+                "text_fala": texto_para_fala(s["text"]),
+                "reply_fala": texto_para_fala(s.get("reply", "")),
                 "fila": bool(s.get("na_fila")),
                 "last_text": s.get("last_text", ""),
                 "objective": s["objective"],
