@@ -17,4 +17,10 @@ cd /Users/lisboa/Documents/tts-rod || exit 1
 # encaminha com SendEnv/AcceptEnv), então a allowlist de `Host` do #779 mora
 # AQUI. Sem ela o túnel leva 421 e a página pública sai do ar.
 export TTS_ALLOWED_HOSTS="${TTS_ALLOWED_HOSTS:-tts.the-dudes.com}"
+# #813/#789: origens de PÁGINA autorizadas a ler a API. Sem a origem pública o
+# preflight (`X-API-Key` é header não-simples) volta 400 "Disallowed CORS origin"
+# e o navegador reporta "Failed to fetch" — a página sobe e nada carrega. A LAN
+# entra junto porque a UI também é aberta pelo IP.
+export TTS_ORIGENS_PERMITIDAS="${TTS_ORIGENS_PERMITIDAS:-https://tts.the-dudes.com,http://192.168.15.34:7860,http://192.168.15.48:7860}"
+
 exec /bin/zsh ./run.sh
