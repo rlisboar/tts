@@ -9395,6 +9395,36 @@ def test_public_url_admin_persiste_use_nao_grava_e_url_ruim_da_400(
         client.post("/api/settings", headers=auth, json={"public_url": antes})
 
 
+def test_public_url_porta_nao_numerica_ou_acima_de_65535_da_400(client, auth):
+    """#950: `:xx` e porta >65535 são 400, não 500, e não gravam.
+
+    Os dois passavam por `urlsplit().port` fora do try (ValueError → 500).
+    65535 ainda grava; 65536 e um token não numérico devolvem 400 e deixam
+    a URL anterior e o `speed` do mesmo POST como estavam.
+    """
+    antes = app._settings.get("public_url") or ""
+    speed_antes = app._settings.get("speed")
+    try:
+        r = client.post("/api/settings", headers=auth, json={
+            "public_url": "https://a.com:65535"})
+        assert r.status_code == 200, r.text
+        guardada = "https://a.com:65535"
+        assert app._settings["public_url"] == guardada
+        assert r.json()["public_url"] == guardada
+        assert _json.loads(app.SETTINGS_PATH.read_text())["public_url"] == guardada
+
+        for ruim in ("https://a.com:xx", "https://a.com:65536"):
+            r = client.post("/api/settings", headers=auth, json={
+                "public_url": ruim, "speed": 3})
+            assert r.status_code == 400, (ruim, r.status_code, r.text[:160])
+            assert "public_url inválida" in r.text, ruim
+            assert app._settings["public_url"] == guardada, ruim
+            assert app._settings["speed"] == speed_antes, ruim
+            assert _json.loads(app.SETTINGS_PATH.read_text())["public_url"] == guardada, ruim
+    finally:
+        client.post("/api/settings", headers=auth, json={"public_url": antes})
+
+
 def test_host_privado_reconhece_as_faixas():
     for privado in ("127.0.0.1", "::1", "10.1.2.3", "192.168.0.1", "172.16.5.4",
                     "169.254.169.254", "100.64.0.1", "localhost", "mac.local"):

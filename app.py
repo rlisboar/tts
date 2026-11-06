@@ -4584,6 +4584,35 @@ def _host_privado(host: str) -> bool:
             or ip in ipaddress.ip_network("100.64.0.0/10"))
 
 
+def _sufixo_porta_publica(netloc: str) -> str:
+    """`:N` já conferido, ou "" quando a URL não traz porta (ou traz `:0`).
+
+    Não usa `urlsplit().port`: ele levanta nos dois casos que o POST tem de
+    recusar com 400 — token não numérico (`:xx`) e inteiro acima de 65535.
+    """
+    erro = "public_url inválida (use https:// e um host público)"
+    if netloc.startswith("["):
+        fecha = netloc.rfind("]")
+        cauda = netloc[fecha + 1:] if fecha >= 0 else netloc
+        if not cauda:
+            return ""
+        if not cauda.startswith(":"):
+            raise HTTPException(400, erro)
+        bruto = cauda[1:]
+    else:
+        _host, sep, bruto = netloc.rpartition(":")
+        if not sep:
+            return ""
+    if bruto == "":
+        return ""                        # `https://a.com:` — sem porta, como o urlsplit
+    if not bruto.isascii() or not bruto.isdigit():
+        raise HTTPException(400, erro)
+    numero = int(bruto)
+    if numero > 65535:
+        raise HTTPException(400, erro)
+    return f":{numero}" if numero else ""
+
+
 def _public_url_normaliza(valor) -> str:
     """URL pública gravável (#950). Vazio limpa. https, com host, sem destino privado.
 
@@ -4601,7 +4630,9 @@ def _public_url_normaliza(valor) -> str:
             or partes.password or partes.query or partes.fragment
             or _host_privado(host)):
         raise HTTPException(400, "public_url inválida (use https:// e um host público)")
-    porta = f":{partes.port}" if partes.port else ""
+    # `urlsplit().port` levanta ValueError em `:xx` e em porta fora de 0–65535.
+    # Lido solto, o POST virava 500. A faixa é conferida no inteiro (#950).
+    porta = _sufixo_porta_publica(partes.netloc)
     host_txt = f"[{host}]" if ":" in host else host
     caminho = (partes.path or "").rstrip("/")
     return f"https://{host_txt}{porta}{caminho}"
