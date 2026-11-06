@@ -7,7 +7,8 @@
 #   2. exige o worktree do agente limpo (commit primeiro, nada de stash invisível);
 #   3. faz `rebase main` no worktree — conflito aborta e volta tudo;
 #   4. roda o HOOK no worktree (é o gate: análise estática + testes);
-#   5. só então `merge --ff-only wt/<agente>` na raiz.
+#   5. só então `merge --ff-only` do SHA que o hook exercitou na raiz — commit
+#      feito durante a suíte NÃO entra sem gate (#911).
 #
 # Ordem importa: o hook roda no worktree, onde o código ainda não entrou na `main`.
 # O merge é `--ff-only` de propósito — rebase primeiro garante histórico linear e
@@ -80,6 +81,12 @@ if ! git -C "$WT" rebase main; then
     _aborta "rebase conflitou — nada foi integrado (resolva no worktree e rode de novo)"
 fi
 
+# O SHA que o hook vai exercitar (#911). Sem fixá-lo, o merge era feito pela REF:
+# um commit do agente durante a suíte (25 min de janela) entrava na main SEM
+# nunca ter passado pelo gate — foi assim que o #908 entrou. Daqui até o merge,
+# `$alvo` é a única verdade; commit novo no worktree fica para a próxima rodada.
+alvo="$(git -C "$WT" rev-parse HEAD)"
+
 # CÓPIA do dado do dono no worktree (#727): a guarda só lê e reporta. Copiar
 # `voices/`/estado para "validar suíte" foi a praxe do dia — e o dado copiado
 # envelhece e some do radar.
@@ -127,7 +134,16 @@ base_agora="$(git -C "$RAIZ" rev-parse main)"
 [ "$base_agora" = "$base_inicial" ] || _aborta \
     "a main andou durante a rodada (${base_inicial:0:7} → ${base_agora:0:7}) — rode de novo"
 
-echo "→ merge --ff-only de $branch na main"
-git -C "$RAIZ" merge --ff-only "$branch" || _aborta "merge não foi fast-forward — nada integrado"
+# A branch também pode andar (agente commitando durante o hook). Entra SÓ o SHA
+# que o hook exercitou; o que veio depois fica para a próxima rodada — e o aviso
+# é alto, senão o agente acha que o commit dele entrou (#911).
+alvo_agora="$(git -C "$WT" rev-parse HEAD)"
+if [ "$alvo_agora" != "$alvo" ]; then
+    echo "  [aviso] a branch andou durante o hook (${alvo:0:7} → ${alvo_agora:0:7})"
+    echo "          entra só ${alvo:0:7} (o que o hook validou); rode de novo para o resto"
+fi
+
+echo "→ merge --ff-only de ${alvo:0:7} ($branch) na main"
+git -C "$RAIZ" merge --ff-only "$alvo" || _aborta "merge não foi fast-forward — nada integrado"
 echo "✔ $branch integrado na main em $(git -C "$RAIZ" rev-parse --short HEAD)"
 echo "  a branch e o worktree continuam (remova com: tools/worktrees.sh remove $agente)"
