@@ -28,7 +28,8 @@ Roteiro (10 ciclos = 20 falas, áudio real com transcrição de referência):
 SLOs medidos:
   S1 % de falas que viraram turno com transcript + WER (falas com referência);
      falas ≥0,8 s descartadas;
-  S2 fim real da fala → 1º áudio da resposta (p50/p95);
+  S2 fim real da fala → 1º áudio da resposta (p50/p95), DECOMPOSTO pelo
+     `latency` do turno em `llm_ttft` (1º token) e `pos_llm` (TTS + fila);
   S3 início da fala por cima → duck (evento + rampa de 50 ms) e → `interrupted`;
      falso corte = `interrupted` durante resposta só com eco;
   S4 respostas com símbolo de markdown/emoji/URL no texto que vai ao TTS —
@@ -343,6 +344,18 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
     # resposta falando POR CIMA da própria fala (turno cortado numa pausa natural)
     la["audio_durante_fala"] = any(a_ini + FRAME_S <= t < a_fim for t, _ in c.bin)
     la["s2_ms"] = round((t_audio_a - a_fim) * 1000) if t_audio_a else None
+    # S2 DECOMPOSTO: o `latency` do turno já separa o 1º token da LLM do resto
+    # (TTS + fila). `first_token_ms` conta do início da thread do turno, que é
+    # logo depois do fim da fala — o resíduo é a decisão do VAD, não a LLM.
+    if t_audio_a is not None:
+        for _t, _ty, _e in c.evs(a_fim, ("latency",)):
+            if _e.get("cancelado") or _e.get("first_audio_ms") is None:
+                continue                   # turno cancelado pela continuação
+            la["s2_llm_ttft_ms"] = _e.get("first_token_ms")
+            if la["s2_llm_ttft_ms"] is not None:
+                la["s2_pos_llm_ms"] = max(
+                    0, la["s2_ms"] - la["s2_llm_ttft_ms"])
+            break
     # ---------- interrupção (fala B por cima da resposta de A) ----------
     interrompeu = False
     if t_audio_a is not None:
@@ -579,6 +592,8 @@ def resumo(res: dict, args) -> dict:
     wers = [l["wer_ciclo"] for l in L if "wer_ciclo" in l]
     longas = [l for l in L if l["dur_s"] >= 0.8]
     s2 = [l["s2_ms"] for l in L if l.get("s2_ms") is not None]
+    llm = [l["s2_llm_ttft_ms"] for l in L if l.get("s2_llm_ttft_ms") is not None]
+    pos = [l["s2_pos_llm_ms"] for l in L if l.get("s2_pos_llm_ms") is not None]
     inter = [l for l in L if l["tipo"] == "interrupcao"]
     eco = [l for l in L if "eco_falso_corte" in l]
     resp = [r for r in res["respostas"] if r["chars"]]
@@ -596,7 +611,13 @@ def resumo(res: dict, args) -> dict:
                "turnos_descartados_srv": sum(l.get("turnos_descartados", 0) for l in L),
                "meta": "≥95 % aceitas, WER ≤10 %, 0 descarte ≥0,8 s"},
         "S2": {"n": len(s2), "p50_ms": pct(s2, .5), "p95_ms": pct(s2, .95),
-               "max_ms": max(s2) if s2 else None, "meta": "p50 ≤1500, p95 ≤2500"},
+               "max_ms": max(s2) if s2 else None,
+               "llm_ttft_n": len(llm),
+               "llm_ttft_p50_ms": pct(llm, .5),
+               "llm_ttft_p95_ms": pct(llm, .95),
+               "pos_llm_p50_ms": pct(pos, .5),
+               "pos_llm_p95_ms": pct(pos, .95),
+               "meta": "p50 ≤1500, p95 ≤2500 (llm_ttft = 1º token; pos_llm = TTS+fila)"},
         "S3": {"interrupcoes": len(inter),
                "duck_n": sum(l.get("s3_duck_ms") is not None for l in inter),
                "duck_p50_ms": pct([l["s3_duck_ms"] for l in inter
