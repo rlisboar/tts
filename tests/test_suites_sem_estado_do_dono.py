@@ -113,6 +113,11 @@ def _raiz_falsa(tmp_path: Path) -> Path:
     return raiz
 
 
+# #783: a célula sobe uma suíte INTEIRA (servidor + navegador). Com outros hooks
+# rodando na máquina ela passa fácil dos 90 s do default e o gate cai por relógio,
+# não por regressão (medido no gate do #881: 2 timeouts). O teto do `subprocess`
+# abaixo já é 300 s — o do pytest passa a ser o mesmo.
+@pytest.mark.timeout(300)
 def test_suite_roda_sem_ler_o_estado_da_raiz(tmp_path):
     """Com a raiz envenenada, a pasta da rodada tem de sair limpa da isca."""
     if not PY.exists():
@@ -148,6 +153,7 @@ def _varre_isca(caminhos) -> None:
                          + ", ".join(achados))
 
 
+@pytest.mark.timeout(300)   # idem: sobe a `obs_ui.sh` inteira (ver o de cima)
 def test_suite_usa_a_fixture_mesmo_com_voz_na_raiz(tmp_path):
     """`voices/` da raiz com uma isca curta: a suíte tem de seguir na fixture.
 

@@ -8729,6 +8729,8 @@ function lxParaCaptura() {
   LX.anMic = LX.anOut = LX.bus = LX.duck = null;
   LX.hpCap = LX.gainCap = LX.mudoCap = null;
   LX.abaixado = false; clearTimeout(LX.duckT); LX.duckT = 0;
+  clearTimeout(LX.pausaT); LX.pausaT = 0; LX.pausado = false;   // #881: o contexto vai fechar
+  lxCorteFecha("desligado");
   lxPintaDuck();
   try { LX.noCap && (LX.noCap.port.onmessage = null); } catch (e) {}
   try { LX.fonte && LX.fonte.disconnect(); } catch (e) {}
@@ -8961,7 +8963,9 @@ function lxObsInicia(ctx, stream) {
   lxRearmaTick();
   // medidores na malha compartilhada do OBS-3: UMA RAF para o app inteiro
   OBS.liga("live:mic", () => lxBarra("mic", LX.anMic, "lxMicBar", "lxMicPeak", "lxMicDb"));
-  OBS.liga("live:out", () => lxBarra("out", LX.anOut, "lxOutBar", "lxOutPeak", "lxOutDb"));
+  // #881: contexto suspenso congela o analisador no ÚLTIMO quadro — o medidor
+  // mostraria som tocando numa resposta pausada. Pausado, a saída é silêncio.
+  OBS.liga("live:out", () => lxBarra("out", LX.pausado ? null : LX.anOut, "lxOutBar", "lxOutPeak", "lxOutDb"));
   lxObsRender();
 }
 
@@ -9370,13 +9374,15 @@ function lxAbaixaVolume(origem) {
   const jaEstava = LX.abaixado;   // `speech_start` e `barge_suspeito` chegam
                                   // juntos: um log só, mas o prazo se RENOVA
   LX.abaixado = true;
+  lxCorteInicia(origem || "duck");
+  lxCorteMarca("t_duck", LX_DUCK_MS);
   lxRampaVolume(Math.pow(10, LX_DUCK_DB / 20), LX_DUCK_MS);
   lxPintaDuck();
   clearTimeout(LX.duckT);
   // teto de segurança: sem `barge_retoma`/`interrupted` em 2 s, volta sozinho
   LX.duckT = setTimeout(() => {
     LX.duckT = 0;
-    if (!LX.abaixado) return;
+    if (!LX.abaixado || LX.pausado) return;   // #881: pausado, quem vigia é o teto da pausa
     lxRetomaVolume();
     lxLogEvento("⏱ 2 s sem decisão do motor — devolvi o volume sozinho", "e-erro");
   }, LX_DUCK_TETO_MS);
@@ -9390,6 +9396,89 @@ function lxRetomaVolume() {
   LX.abaixado = false;
   lxRampaVolume(1, LX_RETOMA_MS);
   lxPintaDuck();
+}
+
+/* #881 (S3, corte rápido): `barge_pausa` PARA o som no ponto exato sem perder
+   nada; `barge_retoma` continua dali. O meio é suspender o CONTEXTO de playback
+   (`ctxPlay`, só saída — a captura mora em `ctxCap` e não para): o relógio do
+   contexto congela, então os trechos já agendados ficam onde estavam, e o que
+   chegar durante a pausa entra em `LX.proximo` atrás deles (lxToca agenda pelo
+   relógio congelado). Nada é parado e recriado — por isso não repete nem pula.
+   O teto de 2,5 s é do servidor; o local (3 s) só cobre servidor que sumiu. */
+const LX_PAUSA_TETO_MS = 3000;
+LX.pausado = false; LX.pausaT = 0;
+
+function lxPausaPlayback() {
+  const ctx = LX.ctxPlay;
+  if (!ctx || LX.pausado) return;
+  LX.pausado = true;
+  clearTimeout(LX.duckT); LX.duckT = 0;
+  ctx.suspend().then(() => {
+    if (LX.ctxPlay !== ctx || !LX.pausado) return;   // retomou/cortou antes de assentar
+    lxCorteMarca("t_pausa");
+    lxLogEvento("⏸ pausei a resposta" + lxCorteTxt("t_pausa") + " — o motor decide");
+  }).catch(e => lxLogEvento("⚠ pausa do playback falhou: " + e.message, "e-erro"));
+  clearTimeout(LX.pausaT);
+  LX.pausaT = setTimeout(() => {
+    LX.pausaT = 0;
+    if (!LX.pausado) return;
+    lxLogEvento("⏱ 3 s pausado sem decisão do motor — continuei sozinho", "e-erro");
+    lxRetomaPlayback();
+    lxCorteFecha("teto_local");
+  }, LX_PAUSA_TETO_MS);
+}
+
+// Idempotente. Sem pausa vigente é só a volta do volume (o `barge_retoma` do
+// #502). O volume sobe DEPOIS do `resume`: rampa agendada em contexto suspenso
+// fica congelada e a vigia da rampa cravaria o alvo sem rampa (estalo).
+function lxRetomaPlayback() {
+  clearTimeout(LX.pausaT); LX.pausaT = 0;
+  const ctx = LX.ctxPlay;
+  if (!LX.pausado || !ctx) { LX.pausado = false; lxRetomaVolume(); return; }
+  LX.pausado = false;
+  ctx.resume().then(() => {
+    if (LX.ctxPlay === ctx && !LX.pausado) lxRetomaVolume();
+  }).catch(e => lxLogEvento("⚠ retomada do playback falhou: " + e.message, "e-erro"));
+}
+
+/* Medida do corte no CLIENTE, em ms desde o início da fala por cima (chegada do
+   `speech_start` com playback na fila; sem ele, o primeiro sinal do motor):
+   t_duck = abaixado audível (chamada + rampa), t_pausa = contexto suspenso,
+   t_corte = playback parado pelo cancel. `saida_ms` é a latência do alto-falante
+   que o navegador declara (soma a todos). A bancada lê `window.lxCortes`. */
+LX.corte = null; LX.cortes = [];
+window.lxCortes = LX.cortes;
+
+function lxCorteInicia(origem) {
+  if (LX.corte && !LX.corte.desfecho) return;   // o 1º sinal é o t0 do episódio
+  LX.corte = { t0_origem: origem, t0: performance.now(), t_duck: null, t_pausa: null,
+               t_retoma: null, t_corte: null, desfecho: null, saida_ms: null };
+}
+
+function lxCorteMarca(campo, extraMs) {
+  const c = LX.corte;
+  if (!c || c.desfecho || c[campo] != null) return;
+  c[campo] = Math.round(performance.now() - c.t0 + (extraMs || 0));
+}
+
+function lxCorteTxt(campo) {
+  const c = LX.corte;
+  return c && c[campo] != null ? " em " + c[campo] + " ms" : "";
+}
+
+function lxCorteFecha(desfecho) {
+  const c = LX.corte;
+  if (!c || c.desfecho) return;
+  c.desfecho = desfecho;
+  const ctx = LX.ctxPlay;
+  if (ctx && ctx.outputLatency != null) c.saida_ms = Math.round(ctx.outputLatency * 1000);
+  LX.cortes.push(c);
+  if (LX.cortes.length > 50) LX.cortes.shift();
+  LX.corte = null;
+  const f = (k, r) => c[k] != null ? r + " " + c[k] + " ms" : null;
+  const partes = [f("t_duck", "abaixou"), f("t_pausa", "pausou"), f("t_corte", "cortou"),
+                  f("t_retoma", "retomou")].filter(Boolean);
+  if (partes.length) lxLogEvento("⏱ corte (" + desfecho + "): " + partes.join(" · "));
 }
 
 // Fila de playback: agenda em `proximo` (sem sobrepor) e, no `interrupted`,
@@ -9421,7 +9510,14 @@ function lxToca(int16) {
 function lxCancelaPlayback() {
   for (const s of LX.ativos) { try { s.stop(0); } catch (e) {} }
   LX.ativos = []; LX.proximo = 0;
-  lxZeraVolume();     // corte com o ganho abaixado deixaria o PRÓXIMO turno mudo
+  lxZeraVolume();
+  // #881: contexto pausado precisa voltar a correr — o próximo turno tocaria mudo
+  clearTimeout(LX.pausaT); LX.pausaT = 0;
+  if (LX.pausado) {
+    LX.pausado = false;
+    const ctx = LX.ctxPlay;
+    if (ctx) ctx.resume().catch(() => {});
+  }     // corte com o ganho abaixado deixaria o PRÓXIMO turno mudo
 }
 
 function lxRecebe(ev) {
@@ -9472,8 +9568,10 @@ function lxRecebe(ev) {
                            // motor, pelo conteúdo — "uhum" não pode derrubar a resposta.
                            // `imediata` mantém o corte daqui (comportamento antigo).
                            if (LX.ativos.length) {
+                             lxCorteInicia("speech_start");   // #881: t0 da medida do corte
                              if (lxModoInterrupcao() === "imediata") {
                                lxCancelaPlayback();
+                               lxCorteMarca("t_corte"); lxCorteFecha("imediata");
                                lxLogEvento("⏹ cortei o assistente — você começou a falar");
                              } else {
                                lxAbaixaVolume("você falou");
@@ -9504,8 +9602,13 @@ function lxRecebe(ev) {
     // ABAIXA (nada é cortado ainda — o motor ouve o conteúdo e decide); o
     // `barge_retoma` devolve o volume e a resposta segue de onde estava.
     case "barge_suspeito": lxAbaixaVolume("motor"); break;
+    // #881: `barge_pausa` PARA o som no ponto exato (buffer intacto); o
+    // `barge_retoma` continua dali, ou o `interrupted` corta como sempre.
+    case "barge_pausa":    lxCorteInicia("barge_pausa");
+                           lxPausaPlayback(); break;
     case "barge_retoma":
-                           lxRetomaVolume();
+                           lxRetomaPlayback();
+                           lxCorteMarca("t_retoma"); lxCorteFecha("retoma");
                            lxLogEvento("↩ continuei — era " + (m.tipo || "sem classificação"), "e-ok");
                            if (LX.ativos.length) lxEstado("falando", null);
                            break;
@@ -9518,8 +9621,22 @@ function lxRecebe(ev) {
                                      + (m.decisao_ms != null ? " · decidido em " + m.decisao_ms + " ms" : ""),
                                      m.tipo === "interrupcao" ? "e-ok" : null);
                            break;
-    case "interrupted":    lxCancelaPlayback(); lxEstado("interrompido", "✋ interrompi — pode falar");
-                           lxLogEvento("interrompido", "e-ok"); break;
+    // #877: `motivo:"continuacao"` NÃO é interrupção — a fala emendou na pausa e
+    // o motor cancelou o turno antes de qualquer chunk. A fila fica (o prefixo
+    // já tocado, se houver, continua) e o volume/relógio voltam; a tela segue em
+    // "pensando" e não anuncia "interrompi". Só o cancel comum corta.
+    case "interrupted":
+      if (m.motivo === "continuacao") {
+        lxRetomaPlayback();
+        lxCorteFecha("continuacao");   // episódio sem t_corte: nada foi cortado
+        lxLogEvento("↪ continuação — a fala emendou; respondo a frase inteira");
+      } else {
+        lxCancelaPlayback();
+        lxCorteMarca("t_corte"); lxCorteFecha("corte");
+        lxEstado("interrompido", "✋ interrompi — pode falar");
+        lxLogEvento("interrompido", "e-ok");
+      }
+      break;
     case "latency":        LX.obs.lat = m;
                            if (m.first_audio_ms != null) {
                              LX.obs.latHist.unshift(m.first_audio_ms);
