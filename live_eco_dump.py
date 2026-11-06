@@ -13,8 +13,10 @@ também desligado por padrão, grava durante a sessão:
 
 Teto de 15 min por fluxo. Passou disso, para de acrescentar E de registrar
 o relógio: um playhead além do arquivo pareceria um eco que não casa.
-Diretório 0700 e cada arquivo 0600, como o dump do turno: a umask 022
-nasceria 0755/0644. Não cria pasta se nada foi escrito. Nunca levanta — falha de disco marca
+Diretório que ESTE processo criou sai 0700 (a sessão `eco-*` e um pai
+que ainda não existia) e cada arquivo 0600: a umask 022 nasceria
+0755/0644. Pai que já existia — o `/tmp`, o diretório que o dono apontou —
+não muda de modo. Não cria pasta se nada foi escrito. Nunca levanta — falha de disco marca
 o estado como quebrado e as chamadas seguintes não escrevem, para o índice
 não ficar com um buraco silencioso.
 
@@ -50,6 +52,28 @@ def _dir() -> str:
 def _modo_dir(pasta: Path) -> None:
     """0700 de verdade. `mkdir(mode=0o700)` não vence a umask nem o exist_ok."""
     pasta.chmod(0o700)
+
+
+def _cria_elos_0700(pasta: Path) -> None:
+    """Cria `pasta` e os pais que faltam, cada um em 0700.
+
+    Elo que já existia não leva chmod. Com o dump em `/tmp` o pai é o
+    `/tmp`: apertá-lo para 0700 tranca a máquina. A umask 022 mascara o
+    mode do mkdir, então o 0700 é o chmod — e só na peça nova.
+    """
+    faltam: list[Path] = []
+    cur = pasta
+    while not cur.exists():
+        faltam.append(cur)
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    for elo in reversed(faltam):
+        try:
+            elo.mkdir(mode=0o700)
+        except FileExistsError:
+            continue               # outro processo criou; não é nosso
+        elo.chmod(0o700)
 
 
 def _modo_arq(caminho: Path) -> None:
@@ -88,11 +112,9 @@ class _Dump:
     def _abre_pasta(self) -> None:
         if self._pasta_ok:
             return
-        # Mesmo contrato do dump do turno (`live_pipeline._stt_dump`): a voz
-        # do dono não pode nascer 0755/0644. O chmod é depois do mkdir porque
-        # a umask 022 mascara o mode e o exist_ok não reaplica.
-        self.pasta.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _modo_dir(self.pasta.parent)
+        # A voz não pode nascer 0755/0644. chmod só no elo que este
+        # processo criou: o pai (às vezes /tmp) já existia e fica como está.
+        _cria_elos_0700(self.pasta.parent)
         try:
             self.pasta.mkdir(exist_ok=False, mode=0o700)
         except FileExistsError:
@@ -216,7 +238,6 @@ class _Dump:
                         if arq.is_file():
                             _modo_arq(arq)
                     _modo_dir(self.pasta)
-                    _modo_dir(self.pasta.parent)
                 except Exception as exc:  # noqa: BLE001
                     self._falha(exc)
                 return

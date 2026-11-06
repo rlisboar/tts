@@ -888,6 +888,7 @@ referência do playback.
 | voz no cru não abaixar quando o filtrado é o eco | `test_voz_no_cru_abaixa_mesmo_se_o_filtrado_e_eco` **FAILED** |
 | a ferramenta offline divergir do correlacionador do motor | `test_janela_casa_com_o_correlacionador` **FAILED** |
 | o dump de eco nascer 0755/0644 (umask) | `test_dump_de_eco_nasce_0700_0600` **FAILED** |
+| chmod num pai que já existia (dump em /tmp deixa /tmp 0700) | `test_dump_nao_chmod_pai_que_ja_existia` **FAILED** |
 | flag off anotar a referência ou pôr `fala_ms` no `interrupted` | `test_flag_off_sem_dump_nao_anota_nem_poe_fala_ms` **FAILED** |
 
 ### #871 — markdown fora do TTS (Live em streaming e Conversa)

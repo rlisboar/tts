@@ -245,7 +245,7 @@ def test_ref_24k_casa_com_o_app():
 
 
 def test_dump_de_eco_nasce_0700_0600(tmp_path, monkeypatch):
-    """Mesmo contrato do dump do turno: umask 022 não deixa a voz em 0755/0644."""
+    """Umask 022 não deixa a voz em 0755/0644. O pai que já existia não muda."""
     monkeypatch.setenv("TTS_LIVE_DUMP_DIR", str(tmp_path))
     tmp_path.chmod(0o755)
     antes = os.umask(0o022)
@@ -262,11 +262,33 @@ def test_dump_de_eco_nasce_0700_0600(tmp_path, monkeypatch):
         pastas = list(tmp_path.glob("eco-*"))
         assert len(pastas) == 1, pastas
         pasta = pastas[0]
-        assert tmp_path.stat().st_mode & 0o777 == 0o700
+        assert tmp_path.stat().st_mode & 0o777 == 0o755
         assert pasta.stat().st_mode & 0o777 == 0o700
         for nome in ("mic.wav", "ref.f32", "relogio.jsonl", "meta.json"):
             modo = (pasta / nome).stat().st_mode & 0o777
             assert modo == 0o600, (nome, oct(modo))
+    finally:
+        os.umask(antes)
+
+
+def test_dump_nao_chmod_pai_que_ja_existia(tmp_path, monkeypatch):
+    """Dump em /tmp não pode deixar /tmp em 0700. Elo que nós criamos, sim."""
+    pai = tmp_path
+    pai.chmod(0o1777)
+    alvo = pai / "ainda-nao" / "dump"
+    monkeypatch.setenv("TTS_LIVE_DUMP_DIR", str(alvo))
+    antes = os.umask(0o022)
+    try:
+        sess = {"id": "t"}
+        live_eco_dump.anota_mic(sess, b"\x00\x01" * 160)
+        live_eco_dump.fecha(sess)
+        assert pai.stat().st_mode & 0o7777 == 0o1777
+        assert (pai / "ainda-nao").stat().st_mode & 0o777 == 0o700
+        assert alvo.stat().st_mode & 0o777 == 0o700
+        pastas = list(alvo.glob("eco-*"))
+        assert len(pastas) == 1
+        assert pastas[0].stat().st_mode & 0o777 == 0o700
+        assert (pastas[0] / "mic.wav").stat().st_mode & 0o777 == 0o600
     finally:
         os.umask(antes)
 
