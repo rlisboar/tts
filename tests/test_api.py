@@ -7118,6 +7118,43 @@ def test_marca_dagua_marca_o_trecho_enviado_ao_cliente(monkeypatch):
     assert _pcm_na_fila(sess3) == [pcm] and app._marca_avisada is True
 
 
+def test_marca_dagua_primeiro_trecho_so_pula_com_a_chave_off(monkeypatch):
+    """#901 atrás de `live_marca_primeiro_trecho`. Default True marca o 1º PCM.
+
+    False tira o AudioSeal só desse PCM; o seguinte continua marcado. A string
+    "false" desliga de verdade (o mesmo contrato de `tts_marca_dagua`)."""
+    assert "live_marca_primeiro_trecho" in app._SETTINGS_ADMIN
+    assert app._SETTINGS_DEFAULTS["live_marca_primeiro_trecho"] is True, \
+        "dono 2026-10-28: marca em toda saída"
+    monkeypatch.setitem(app._settings, "live_marca_primeiro_trecho", True)
+    assert app._live_marca_este_pcm(True) is True
+    assert app._live_marca_este_pcm(False) is True
+    app._settings.pop("live_marca_primeiro_trecho", None)
+    assert app._live_marca_este_pcm(True) is True, "chave ausente marca o 1º PCM"
+    assert app._apply_settings({"live_marca_primeiro_trecho": "false"})[
+        "live_marca_primeiro_trecho"] is False
+    assert app._apply_settings({"live_marca_primeiro_trecho": True})[
+        "live_marca_primeiro_trecho"] is True
+
+    _marca_stub(monkeypatch)
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    monkeypatch.setitem(app._settings, "live_marca_primeiro_trecho", True)
+    pcm = b"\x00\x01" * 800
+    sess = _sess_live_fila()
+    app._live_envia_audio(sess, pcm, marcar=app._live_marca_este_pcm(True))
+    assert _marca_fake["chamadas"] == 1, "default True marca o 1º PCM"
+    monkeypatch.setitem(app._settings, "live_marca_primeiro_trecho", False)
+    _marca_stub(monkeypatch)
+    sess = _sess_live_fila()
+    app._live_envia_audio(sess, pcm, marcar=app._live_marca_este_pcm(True))
+    assert _pcm_na_fila(sess) == [pcm], "chave off: o 1º trecho sai byte a byte"
+    assert _marca_fake["chamadas"] == 0
+    assert sess["audio_pendente"] == 1
+    sess2 = _sess_live_fila()
+    app._live_envia_audio(sess2, pcm, marcar=app._live_marca_este_pcm(False))
+    assert _marca_fake["chamadas"] == 1, "o trecho seguinte continua marcado"
+
+
 def test_marca_dagua_e_campo_ADMIN(monkeypatch):
     """Ligar/desligar muda o áudio de TODO mundo: só admin."""
     assert "tts_marca_dagua" in app._SETTINGS_ADMIN

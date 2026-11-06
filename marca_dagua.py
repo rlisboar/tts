@@ -24,7 +24,10 @@ DOIS LIMITES DECLARADOS (#845) — não são furo, são desenho:
    servidor recebe áudio cru — é contrato do cliente, e o aviso está lá.
 
 Nenhum dos dois vale para a saída normal do app, que sai marcada em todos os
-caminhos: job local, família isolada, retorno remoto e Live.
+caminhos: job local, família isolada, retorno remoto e Live. A chave
+`live_marca_primeiro_trecho` (default True; dono, 2026-10-28: marca em toda
+saída) mantém o AudioSeal também no 1º PCM do Live. False é o atalho do #901:
+só esse PCM sai sem marca; do 2º chunk em diante a marca volta.
 """
 
 from __future__ import annotations

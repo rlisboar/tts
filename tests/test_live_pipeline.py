@@ -151,6 +151,27 @@ def test_audio_sai_por_chunk_na_ordem_do_texto():
     assert [t for t, _ in p.gerados] == ["Bom dia!", "Tudo bem?"]
 
 
+def test_so_o_primeiro_pcm_do_turno_avisa_o_emit():
+    """#901: o emit do 1º PCM de cada turno vê `_primeiro_pcm`; o 2º, não.
+    Quem decide pular o AudioSeal é a chave `live_marca_primeiro_trecho`
+    (default True marca esse PCM também)."""
+    vistos = []
+    caixa = {}
+
+    def audio(b):
+        vistos.append(bool(caixa["p"]._primeiro_pcm))
+
+    p = lp.LivePipeline(lambda d: None, audio,
+                        stt=lambda pcm, lang: "oi",
+                        llm=lambda msgs: iter(["Bom dia! ", "Tudo bem? "]),
+                        tts=lambda chunk, omni: np.zeros(240, dtype=np.float32),
+                        prewarm=lambda: None)
+    caixa["p"] = p
+    p.push_pcm(b"\x00\x00" * 1600)
+    assert p.end_of_speech(inicia_thread=False) is True
+    assert vistos == [True, False]
+
+
 def test_primeiro_chunk_usa_perfil_rapido_e_os_seguintes_o_setting():
     """Alvo ≤1,5 s depende do 1º chunk: ele sai com num_steps limitado."""
     fala = Fala()

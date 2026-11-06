@@ -208,6 +208,9 @@ class LivePipeline:
                  teto_primeiro_delta=None, bridge_estado=None):
         self.emit_json = emit_json
         self.emit_audio = emit_audio
+        # #901: True só durante o emit do 1º PCM do turno. O app lê isto para
+        # não esperar o AudioSeal nesse trecho. Começa False (leitura solta).
+        self._primeiro_pcm = False
         self.voice_id = voice_id
         self.language = language
         self.system = system
@@ -1041,7 +1044,13 @@ class LivePipeline:
                 if self.cancelado:              # caiu durante a síntese: não manda
                     break
                 pcm = _pcm16(audio)
-                self.emit_audio(pcm)
+                # #901: o app lê durante o emit. Só tira o AudioSeal deste PCM se
+                # `live_marca_primeiro_trecho` estiver False (default True marca).
+                self._primeiro_pcm = primeiro
+                try:
+                    self.emit_audio(pcm)
+                finally:
+                    self._primeiro_pcm = False
                 estado["audio_bytes"] += len(pcm)
                 self._agendar_chunk(len(pcm))
                 if primeiro:

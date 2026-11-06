@@ -607,6 +607,10 @@ _SETTINGS_DEFAULTS = {
     # de todo mundo. LIGADA no default: o ABX do dono passou (só o par 7 audível de
     # 8). Sem os pesos/`audioseal`, sai sem marca e o log diz.
     "tts_marca_dagua": True,
+    # 1º PCM do Live também marcado (dono, 2026-10-28: marca em TODA saída).
+    # False é o atalho do #901: só esse PCM sai sem AudioSeal. Quem desliga
+    # leva a troca ao dono — o default fica no comportamento de hoje.
+    "live_marca_primeiro_trecho": True,
     # "Só a minha voz" no Live (#533): portão ECAPA no TURNO. Desligado, nada
     # muda. Ligado, terceiro/TV não corta a resposta nem vira turno (o filtro
     # `identidade` do I4 reusa a MESMA verificação). `perfil` é o nome do perfil
@@ -4673,8 +4677,9 @@ _SETTINGS_ADMIN = frozenset({
     # retenção do histórico de operação: APAGA série histórica (#791) — mesma
     # classe dos `auto_cleanup*`, e o efeito só aparece dias depois
     "metrics_ttl_dias",
-    # marca d'água: muda o áudio de TODO mundo (#657)
-    "tts_marca_dagua",
+    # marca d'água: muda o áudio de TODO mundo (#657). A do 1º PCM do Live
+    # também: desligar tira a marca de uma saída do TTS.
+    "tts_marca_dagua", "live_marca_primeiro_trecho",
     # guarda áudio do dono em disco (#658)
     "speaker_guardar_audio",
     # destino público do túnel: é o que o status checa sem `?url=` (#784)
@@ -5267,6 +5272,10 @@ def _apply_settings(payload: dict):
         v = payload["tts_marca_dagua"]
         _settings["tts_marca_dagua"] = (v if isinstance(v, bool)
                                         else str(v).strip().lower() in ("1", "true", "on"))
+    if "live_marca_primeiro_trecho" in payload:
+        v = payload["live_marca_primeiro_trecho"]
+        _settings["live_marca_primeiro_trecho"] = (v if isinstance(v, bool)
+                                                   else str(v).strip().lower() in ("1", "true", "on"))
     if "speaker_guardar_audio" in payload:
         v = payload["speaker_guardar_audio"]
         _settings["speaker_guardar_audio"] = (v if isinstance(v, bool)
@@ -11882,9 +11891,23 @@ def _avisa_sem_marca(motivo: str) -> None:
     print(f"[marca] áudio saindo SEM marca d'água: {motivo}", file=sys.stderr, flush=True)
 
 
-def _live_envia_audio(sess: dict, pcm: bytes) -> None:
+def _live_marca_este_pcm(primeiro: bool) -> bool:
+    """True = este PCM passa no AudioSeal antes de ir ao cliente.
+
+    Default (chave ausente ou True) marca também o 1º PCM do turno: a decisão
+    do dono de 2026-10-28 é marca em toda saída do TTS. `False` é o atalho do
+    #901 e só tira a marca desse primeiro PCM."""
+    if not primeiro:
+        return True
+    return bool(_settings.get("live_marca_primeiro_trecho", True))
+
+
+def _live_envia_audio(sess: dict, pcm: bytes, *, marcar: bool = True) -> None:
+    """Enfileira o PCM do Live. `marcar=False` só quando
+    `live_marca_primeiro_trecho` está desligada no 1º PCM do turno (#901)."""
     if pcm:
-        pcm = _marca_pcm(pcm)            # anti-clone: o áudio sai marcado (#657)
+        if marcar:
+            pcm = _marca_pcm(pcm)        # anti-clone: o resto sai marcado (#657)
         _live_janela_turno(sess, True)   # #167: turno do assistente com áudio em voo
         sess["audio_pendente"] = sess.get("audio_pendente", 0) + 1
         derrubados = sess["fila"].put(("audio", pcm))
@@ -13203,12 +13226,25 @@ def _live_pipe_novo(sess: dict):
                 print(f"[live] dsh indisponível ({type(exc).__name__}: {exc}) — "
                       f"sessão no backend openai", flush=True)
     sess["dsh"] = dsh
-    return _live_mod.LivePipeline(
+    # O pipeline ainda não existe quando o callback nasce, e ele só recebe o
+    # PCM. A caixa deixa o emit ler `_primeiro_pcm` na hora. A chave
+    # `live_marca_primeiro_trecho` (default True) decide se esse PCM também
+    # leva AudioSeal — False é o atalho do #901.
+    caixa: dict = {}
+
+    def _envia_pcm(pcm, _caixa=caixa):
+        pipe = _caixa.get("pipe")
+        primeiro = bool(getattr(pipe, "_primeiro_pcm", False)) if pipe is not None else False
+        _live_envia_audio(sess, pcm, marcar=_live_marca_este_pcm(primeiro))
+
+    pipe = _live_mod.LivePipeline(
         lambda obj: _live_envia_json(sess, obj),
-        lambda pcm: _live_envia_audio(sess, pcm),
+        _envia_pcm,
         voice_id=sess["voice_id"], system=sess["system"] or None, history=historico,
         dsh=dsh, ao_morrer_dsh=_dsh_marca_morto, bridge_estado=bridge,
         teto_primeiro_delta=teto)
+    caixa["pipe"] = pipe
+    return pipe
 
 
 def _live_pipe_start(sess: dict) -> None:
