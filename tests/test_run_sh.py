@@ -253,6 +253,41 @@ def test_reescrita_do_mesmo_conteudo_nao_reprova_o_knob(tmp_path):
     assert "não reprova" in r.stdout, r.stdout
 
 
+def test_veredito_olha_o_estado_padrao_do_app(tmp_path):
+    """#883: sem `TTS_DONO_DIR`, o veredito tem de olhar o DEFAULT do app (#721),
+    não a raiz do repositório. Depois do #721 o estado saiu do repo: a suíte que
+    vaza num worktree escreve `.state-local/settings.json` e o runner comparava
+    `<worktree>/settings.json` — ausente dos dois lados, `- -`, veredito mudo.
+
+    A sonda escreve em `TTS_STATE_DIR` (vence a regra da árvore) para a célula não
+    encostar no Application Support real da máquina. Ela roda FORA de
+    `fixtures/run_sh/` de propósito: com uma sonda na lista o runner dá uma CÓPIA
+    (`TTS_DONO_DIR`) e o veredito olharia a cópia, não o default."""
+    sonda = tmp_path / "suja_estado_padrao.sh"
+    shutil.copy(SONDAS / "suja_estado_padrao.sh", sonda)
+    sonda.chmod(0o755)
+    estado = tmp_path / "estado"
+    r = _rodar("navegador", env={"SUITES": str(sonda),
+                                 "TTS_STATE_DIR": str(estado),
+                                 "TTS_EXIGE_DONO_INTOCADO": "1"})
+    assert r.returncode == 1, r.stdout
+    assert "estado REAL do dono" in r.stdout, r.stdout
+    assert "suja_estado_padrao.sh escreveu settings.json" in r.stdout, r.stdout
+    # o caminho acusado é o do DEFAULT, não a raiz do repo
+    assert str(estado) in r.stdout, r.stdout
+
+
+def test_default_do_dono_segue_a_mesma_regra_do_app():
+    """Contrato do #883: o default do runner é o do app. Se o app mudar a regra
+    (`.state-local` no worktree, Application Support na raiz), o runner muda junto."""
+    fonte = RUNNER.read_text()
+    assert '.state-local' in fonte
+    assert 'Application Support/tts-studio' in fonte
+    assert 'TTS_STATE_DIR' in fonte
+    # e não pode voltar a cair na raiz do repositório
+    assert 'DONO_DIR="${TTS_DONO_DIR:-$RAIZ}"' not in fonte
+
+
 def test_suite_que_nao_escreve_nao_aparece(tmp_path):
     """Controle: suíte limpa não gera linha nenhuma."""
     r = _rodar("navegador", env={"SUITES": str(SONDAS / "sonda_env.sh"),

@@ -184,6 +184,21 @@ _com_teto() {
 # em 40 s com o dono intocado). As métricas seguem na rodada como NOTA, com o mesmo
 # diff, sem entrar em `FALHAS`.
 _ARQ_DONO=(settings.json .apikeys.json .apikey)
+# Onde o app escreveria o estado SEM override: a MESMA regra do
+# `_dir_de_estado_padrao` do app (#721) — `TTS_STATE_DIR` vence; worktree/cópia
+# (`.git` ARQUIVO) usa `<árvore>/.state-local`; só a RAIZ PRINCIPAL usa o
+# Application Support. Apontar para a raiz do repo, como antes, CEGAVA o veredito:
+# a suíte que vazasse num worktree escrevia `.state-local/settings.json` e o runner
+# comparava `<worktree>/settings.json` (ausente dos dois lados — `- -`).
+_estado_padrao() {
+    if [ -n "${TTS_STATE_DIR:-}" ]; then printf '%s\n' "$TTS_STATE_DIR"; return; fi
+    if [ ! -d "$RAIZ/.git" ]; then printf '%s\n' "$RAIZ/.state-local"; return; fi
+    case "$(uname -s)" in
+        Darwin) printf '%s\n' "${HOME}/Library/Application Support/tts-studio" ;;
+        *) printf '%s\n' "${XDG_STATE_HOME:-${HOME}/.local/state}/tts-studio" ;;
+    esac
+}
+DONO_PADRAO="$(_estado_padrao)"
 # SONDA (#710): o "dono" delas tem de ser uma CÓPIA. Sem `TTS_DONO_DIR` o alvo caía
 # na raiz do repo e, na ÁRVORE PRINCIPAL, a raiz é o `settings.json` do dono — a
 # sonda gravava `{}` por cima dele (3 bytes, 3 vezes em 31/10).
@@ -200,7 +215,7 @@ if _probe_na_lista; then
         for a in "${_ARQ_DONO[@]}"; do
             # `cp` SEM `-p`: o `-p` leva junto a flag `uchg` do arquivo do dono e a
             # cópia fica impossível de escrever (e de apagar no fim).
-            [ -f "$RAIZ/$a" ] && cp "$RAIZ/$a" "$TTS_DONO_DIR/$a" && chmod 600 "$TTS_DONO_DIR/$a"
+            [ -f "$DONO_PADRAO/$a" ] && cp "$DONO_PADRAO/$a" "$TTS_DONO_DIR/$a" && chmod 600 "$TTS_DONO_DIR/$a"
         done
         export TTS_DONO_DIR
         trap 'rm -rf "$TTS_DONO_DIR"' EXIT
@@ -216,7 +231,9 @@ if [ -z "${TTS_ROD_API_KEY:-}" ]; then
     export TTS_ROD_API_KEY="canario-da-rodada-$$"
     CANARIO=1
 fi
-DONO_DIR="${TTS_DONO_DIR:-$RAIZ}"
+# O veredito olha o que a sonda usa: a CÓPIA quando ela existe (e o default
+# quando não há sonda). `DONO_PADRAO` é só a origem da cópia.
+DONO_DIR="${TTS_DONO_DIR:-$DONO_PADRAO}"
 # portátil: o job `suites-sh` do CI é Linux (`sha256sum`/`stat -c`), a máquina de
 # trabalho é macOS (`shasum`/`stat -f`). Sem o ramo, a impressão degrada a ruído.
 if command -v sha256sum >/dev/null 2>&1; then _hash() { sha256sum "$1"; }
@@ -444,7 +461,7 @@ if [ -n "$SO_MTIME" ]; then
 fi
 if [ -n "$MUDOU" ]; then
     echo
-    echo "══ o estado REAL do dono MUDOU nesta rodada (veredito: conteúdo/sha256):"
+    echo "══ o estado REAL do dono MUDOU nesta rodada (veredito: conteúdo/sha256) em $DONO_DIR:"
     printf '%s\n' "$MUDOU" | sed 's/^/  /'
     echo "  dica de autoria (amostrador; sob -j N pode haver co-roda):"
     for a in $MUDOU; do
