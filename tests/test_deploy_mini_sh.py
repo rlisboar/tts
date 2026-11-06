@@ -179,7 +179,12 @@ def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
         # compartilhado entre processos concorrentes — só UM teste o exercita
         TTS_MINI_PREVIEW=str(tmp_path / "preview-requirements"),
         TTS_MINI_LOCK_PREVIEW=str(tmp_path / "preview-lock"),
+        # #721: o smoke lê `$HOME/Library/Application Support/.../.apikey`
+        # antes do espelho do repo. Sem este HOME, o shim acha a chave do
+        # dono e `test_smoke_avisa_sem_a_chave_do_mini` não vê o aviso.
+        HOME=str(tmp_path / "home"),
     )
+    (tmp_path / "home").mkdir()
     (tmp_path / "gitconfig").write_text("[init]\n\tdefaultBranch = main\n")
 
     origem = tmp_path / "origin.git"

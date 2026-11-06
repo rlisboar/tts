@@ -70,6 +70,17 @@ async def _receive_vazio():
     return {"type": "http.request", "body": b"", "more_body": False}
 
 
+def test_watchdog_esta_registrado_por_fora_do_teto():
+    """O relógio está no app, por fora do teto de corpo.
+
+    A célula do despejo monta o middleware à mão. Sem este registro, produção
+    não anota o /health e o 421/413 do teto deixa de ser a camada de dentro.
+    """
+    classes = [m.cls for m in app.app.user_middleware]
+    assert app._SaudeWatchdog in classes
+    assert classes.index(app._SaudeWatchdog) < classes.index(app._TetoDeCorpo)
+
+
 def test_path_do_health_e_exato():
     assert app._saude_e_health({"type": "http", "path": "/health"})
     assert not app._saude_e_health({"type": "http", "path": "/healthz"})

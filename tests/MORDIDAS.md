@@ -778,8 +778,9 @@ rearma e o log nasce em 0600 com `Timeout (`. A célula segura a GIL com
 | Sabotagem | Resultado |
 |---|---|
 | `_saude_rearma` volta na hora, sem armar | `test_watchdog_c_despeja_com_a_gil_presa` **FAILED**: `o rearme não criou o log` |
+| comentar `app.add_middleware(_SaudeWatchdog)` | `test_watchdog_esta_registrado_por_fora_do_teto` **FAILED** (0,31 s, bytecode limpo): `_SaudeWatchdog` ausente de `user_middleware`; a camada de fora vira `_TetoDeCorpo` |
 
-Com o rearme, o mesmo `nanosleep` de 1,2 s (prazo 0,4 s) faz o arquivo crescer com `Timeout (` e o nome da célula, modo 0600, sem o cabeçalho `[watchdog]` da trilha Python.
+Com o rearme, o mesmo `nanosleep` de 1,2 s (prazo 0,4 s) faz o arquivo crescer com `Timeout (` e o nome da célula, modo 0600, sem o cabeçalho `[watchdog]` da trilha Python. Com o registro, `_SaudeWatchdog` fica num índice menor que `_TetoDeCorpo` (Starlette insere o último `add_middleware` na frente). A célula do despejo monta o middleware à mão e passaria mesmo sem esta linha.
 
 ## #812 — retorno remoto: onde a marca é contada
 
