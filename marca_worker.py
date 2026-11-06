@@ -15,7 +15,11 @@ Resposta:
     {"id": 1, "ms": 41}                    (marca: escreve o wav de saída)
     {"id": 2, "prob": 0.999, "ms": 12}     (detecta: probabilidade da marca)
 
-16 kHz mono dos dois lados — o app só chama com a taxa dele.
+A grade do AudioSeal 0.2 é 16 kHz: `sample_rate` é no-op e o modelo lê as
+samples como estão. Wav noutra taxa (o Live manda 24 kHz) desce para 16 kHz
+antes de marcar ou detectar, e a marca volta para a taxa do arquivo no mesmo
+número de samples. Sem isso a conferência passa na grade errada e o áudio que
+o cliente ouve perde a marca (#908).
 """
 
 from __future__ import annotations
@@ -88,6 +92,28 @@ def _log(msg: str) -> None:
     print(f"[marca] {msg}", file=sys.stderr, flush=True)
 
 
+def _regrade(x: np.ndarray, de: int, para: int) -> np.ndarray:
+    """Reamostra. O AudioSeal 0.2 só entende a grade de 16 kHz."""
+    if int(de) == int(para) or x.size == 0:
+        return np.asarray(x, dtype=np.float32)
+    from math import gcd
+
+    from scipy.signal import resample_poly
+
+    g = gcd(int(de), int(para))
+    return np.asarray(
+        resample_poly(np.asarray(x, dtype=np.float32), int(para) // g, int(de) // g),
+        dtype=np.float32)
+
+
+def _mesmo_tamanho(y: np.ndarray, n: int) -> np.ndarray:
+    if y.size == n:
+        return y
+    if y.size > n:
+        return y[:n]
+    return np.pad(y, (0, n - y.size))
+
+
 def main() -> int:
     import numpy as np
     import soundfile as sf
@@ -107,6 +133,8 @@ def main() -> int:
     t = time.perf_counter()
     with torch.no_grad():                    # aquece o grafo do gerador
         gerador(torch.zeros(1, 1, 16000), sample_rate=16000)
+    # scipy entra aqui, no prewarm do filho: o 1º PCM não paga o import (~0,47 s).
+    _regrade(np.zeros(8, dtype=np.float32), 24000, 16000)
     _log(f"aquecido em {round((time.perf_counter() - t) * 1000)} ms")
     print(json.dumps({"tipo": "pronto"}), flush=True)
 
@@ -125,10 +153,15 @@ def main() -> int:
             x, sr = sf.read(pedido["wav"], dtype="float32")
             if x.ndim > 1:
                 x = x.mean(axis=1)
-            wav = torch.from_numpy(np.ascontiguousarray(x))[None, None]
+            sr = int(sr)
+            n = int(x.shape[0])
+            # Fora de 16 kHz a grade do arquivo não é a do modelo. Desce antes
+            # de marcar e de detectar; na marca, volta à taxa e ao tamanho de entrada.
+            x16 = x if sr == 16000 else _regrade(x, sr, 16000)
+            wav = torch.from_numpy(np.ascontiguousarray(x16))[None, None]
             if pedido.get("op") == "detecta":
                 with torch.no_grad():
-                    prob, _msg = detector.detect_watermark(wav, sample_rate=int(sr))
+                    prob, _msg = detector.detect_watermark(wav, sample_rate=16000)
                 print(json.dumps({"id": pedido.get("id"), "prob": float(prob.squeeze()),
                                   "ms": int((time.perf_counter() - t0) * 1000)}), flush=True)
             else:
@@ -137,7 +170,8 @@ def main() -> int:
                 # relativa (SNR era 24 dB, igual às outras) e sim o nível absoluto.
                 # Então o tanto de marca segue o nível do trecho: piso 0,6 (onde a
                 # detecção ainda fica >=0,96 medido) até 1,0 em material alto.
-                nivel = 20 * np.log10(max(float(np.sqrt(np.mean(x.astype(np.float64) ** 2))), 1e-9))
+                # O nível é o da GRADE marcada (16 kHz), não o do arquivo.
+                nivel = 20 * np.log10(max(float(np.sqrt(np.mean(x16.astype(np.float64) ** 2))), 1e-9))
                 fator = float(np.clip(0.6 + (nivel + 32.0) * 0.02, 0.6, 1.0))
                 # A mensagem é SORTEADA a cada embed e algumas sortes grudam mal em
                 # áudio baixo: medido 0,68 a 1,00 com o MESMO trecho em processos
@@ -145,8 +179,10 @@ def main() -> int:
                 # passou do alvo, sorteia de novo — sai sempre uma marca que o
                 # detector acha, em vez de uma fraca e silenciosa.
                 y, prob, usadas, erro = embute_conferido(
-                    gerador, detector, x, int(sr), fator, wav_original=wav)
-                sf.write(pedido["saida"], y, int(sr), subtype="PCM_16")
+                    gerador, detector, x16, 16000, fator, wav_original=wav)
+                if sr != 16000:
+                    y = _mesmo_tamanho(_regrade(y, 16000, sr), n)
+                sf.write(pedido["saida"], y, sr, subtype="PCM_16")
                 print(json.dumps({"id": pedido.get("id"),
                                   "ms": int((time.perf_counter() - t0) * 1000),
                                   "prob": None if prob != prob else round(prob, 3),

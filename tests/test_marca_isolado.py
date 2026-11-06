@@ -108,6 +108,60 @@ def test_desligado_nao_marca(tmp_path):
     assert prob is not None and prob < 0.5
 
 
+def _pcm_que_o_cliente_ouve(pcm: bytes) -> bytes:
+    """O PCM que sai na fila do Live — é o que o cliente toca, a 24 kHz."""
+    sess = {"id": "s-908", "fila": app._LiveFila(), "engine": None,
+            "audio_pendente": 0}
+    app._live_envia_audio(sess, pcm, marcar=True)
+    itens = []
+    while not sess["fila"].empty():
+        itens.append(sess["fila"].get())
+    audios = [c[1] for c in itens if c[0] == "audio"]
+    assert len(audios) == 1, audios
+    return audios[0]
+
+
+def _playback_16k(pcm: bytes) -> np.ndarray:
+    """Grade de 16 kHz do PCM tocado a 24 kHz (resample 2/3, contrato do AudioSeal)."""
+    from scipy.signal import resample_poly
+
+    x = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+    return np.asarray(resample_poly(x, 2, 3), dtype=np.float32)
+
+
+def test_pcm_final_do_live_detecta_no_audio_que_o_cliente_ouve(tmp_path, monkeypatch):
+    """#908: o cliente toca 24 kHz. A marca tem de aparecer depois de trazer
+    esse PCM de volta a 16 kHz. O defeito gravava as samples de 24 kHz com
+    cabeçalho 16 kHz: a conferência dava 1,0 e o playback dava 0,0."""
+    if not marca_dagua.disponivel():
+        pytest.skip(f"marca indisponível: {marca_dagua.motivo()}")
+
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    monkeypatch.setitem(app._settings, "live_marca_primeiro_trecho", True)
+    fala, sr = sf.read(RAIZ / "tests/fixtures/voz_fala_5s_16k.wav", dtype="float32")
+    assert sr == 16000
+    from scipy.signal import resample_poly
+
+    x24 = np.asarray(resample_poly(fala[: int(1.8 * 16000)], 3, 2), dtype=np.float32)
+    pcm = np.clip(np.round(x24 * 32767.0), -32768, 32767).astype("<i2").tobytes()
+    out = _pcm_que_o_cliente_ouve(pcm)
+    assert len(out) == len(pcm), "o cliente segue recebendo 24 kHz do mesmo tamanho"
+    assert out != pcm, "a marca não alterou o PCM"
+
+    def prob(samples: np.ndarray) -> float:
+        caminho = tmp_path / "ouve.wav"
+        sf.write(str(caminho), np.asarray(samples, dtype=np.float32), 16000,
+                 subtype="PCM_16")
+        achado = marca_dagua.detecta_prob(caminho)
+        assert achado is not None, "detector não respondeu"
+        return achado
+
+    marcado = prob(_playback_16k(out))
+    cru = prob(_playback_16k(pcm))
+    assert marcado >= 0.9, f"playback do Live sem marca legível ({marcado})"
+    assert cru < 0.5, f"PCM cru acusou marca ({cru})"
+
+
 def test_o_job_isolado_recebe_a_ordem_de_marcar(monkeypatch, tmp_path):
     """A ligação: a setting viaja no config do worker, senão a marca não acontece."""
     capturado = {}

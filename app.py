@@ -11851,6 +11851,11 @@ def _live_conta_underrun(sess: dict, nbytes: int) -> None:
 def _marca_pcm(pcm: bytes, sr: int = 16000) -> bytes:
     """Devolve o PCM marcado (AudioSeal), ou o MESMO pcm se a marca estiver fora.
 
+    `sr` é a taxa REAL das samples. O Live passa `_LIVE_AUDIO_SR` (24 kHz): o
+    cliente toca esse PCM. O worker desce para a grade de 16 kHz do AudioSeal,
+    marca, e devolve a mesma taxa e o mesmo número de samples (#908). Gravado
+    com cabeçalho 16 kHz, a conferência passa e a marca some no playback.
+
     Nunca levanta: marca é higiene anti-clone, não pode derrubar geração. O aviso
     de indisponibilidade sai uma vez por processo (`marca_dagua.motivo`)."""
     if not pcm or not _settings.get("tts_marca_dagua"):
@@ -11870,8 +11875,16 @@ def _marca_pcm(pcm: bytes, sr: int = 16000) -> bytes:
             x = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
             sf.write(str(caminho), x, sr, subtype="PCM_16")
             marca_dagua.marca_wav(caminho)
-            y = sf.read(str(caminho), dtype="int16")[0]
-            return y.tobytes()
+            y = np.asarray(sf.read(str(caminho), dtype="int16")[0], dtype="<i2").reshape(-1)
+            n = len(pcm) // 2
+            # O contrato do Live é 48 bytes/ms a 24 kHz. A reamostra não pode
+            # mudar o tamanho que o cliente já espera.
+            if y.size != n:
+                if y.size > n:
+                    y = y[:n]
+                else:
+                    y = np.pad(y, (0, n - y.size))
+            return np.ascontiguousarray(y, dtype="<i2").tobytes()
         finally:
             caminho.unlink(missing_ok=True)
     except Exception as exc:  # noqa: BLE001 — sem marca o áudio segue
@@ -11907,7 +11920,7 @@ def _live_envia_audio(sess: dict, pcm: bytes, *, marcar: bool = True) -> None:
     `live_marca_primeiro_trecho` está desligada no 1º PCM do turno (#901)."""
     if pcm:
         if marcar:
-            pcm = _marca_pcm(pcm)        # anti-clone: o resto sai marcado (#657)
+            pcm = _marca_pcm(pcm, _LIVE_AUDIO_SR)  # 24 kHz, grade 16 kHz por dentro (#908)
         _live_janela_turno(sess, True)   # #167: turno do assistente com áudio em voo
         sess["audio_pendente"] = sess.get("audio_pendente", 0) + 1
         derrubados = sess["fila"].put(("audio", pcm))
