@@ -73,6 +73,21 @@ import numpy as np
 SAMPLE_RATE = 16000
 FRAME_SAMPLES = 512                       # janela que o Silero ONNX exige
 FRAME_MS = FRAME_SAMPLES * 1000 // SAMPLE_RATE
+# Correlação com o playback enviado (#870). A bancada manda o mic em chunks
+# de 100 ms e soma 50 ms de rampa: para o duck ficar ≤300 ms a decisão tem de
+# sair no 1º ou no 2º chunk, isto é, com ≤192 ms de áudio. Uma janela de 96 ms
+# cabe; três janelas de 192 ms não. O eco puro da bancada fica em ~1,0; a
+# mistura em nível parecido cai para ~0,7. O atraso procurado cobre o eco de
+# 100 ms da bancada mais a folga do chunk.
+_CORR_MS = 96
+_CORR_LAG_MAX_MS = 220
+_CORR_LAG_PASSO_MS = 10
+_CORR_LIMIAR = 0.75
+_CORR_ENERGIA_DBFS = -45.0          # abaixo disto é silêncio, não o usuário
+_CORR_N = SAMPLE_RATE * _CORR_MS // 1000
+_CORR_LAG_MAX = SAMPLE_RATE * _CORR_LAG_MAX_MS // 1000
+_CORR_LAG_PASSO = SAMPLE_RATE * _CORR_LAG_PASSO_MS // 1000
+_REF_CAP = SAMPLE_RATE * 60         # teto do áudio em voo (playback_audio_max_ms)
 PREFIX_MS_PADRAO = 100
 SILENCE_MS_PADRAO = 600
 SILENCE_MS_MINIMO_STT = 500               # abaixo disto o STT come a última sílaba
@@ -249,6 +264,10 @@ class Config:
     # reversível (`barge_retoma` se o conteúdo não for interrupção). O cancel
     # definitivo continua saindo só de `decidir_barge("interrupcao")`. Não mexe
     # na folga do burst (#707) nem na janela do STT (#547).
+    # Com referência anotada (`anota_referencia`), o frame só conta para o duck
+    # e para a suspeita se NÃO for o playback pela correlação — nível e degrau
+    # deixam a sílaba do próprio TTS passar (bancada: eco_falso_duck 100%,
+    # p50 ~750 ms). Sem referência, o caminho de nível/degrau fica.
     duck_rapido: bool = False
     duck_rapido_ms: int = 96                      # 3 frames; cabe no 1º chunk de 100 ms
     duck_parada_ms: int = 480                     # acima do barge_in_ms, até 800 ms
@@ -546,6 +565,15 @@ class TurnEngine:
         self._suspeito_audio = b""
         self._duck_emitido = False      # #870 S3: um duck rápido por episódio de burst
         self._pausa_emitida = False     # #870 S3: uma pausa reversível por episódio
+        # Referência do que o servidor mandou tocar, em 16 kHz. O playhead anda
+        # em 1x com o mic: o envio é mais rápido que o alto-falante e, com o
+        # turno aberto, `_playback_restante` não escoa. `_ref_origem` é o
+        # começo do episódio que o cliente ainda pode tocar.
+        self._ref: np.ndarray | None = None
+        self._ref_n = 0
+        self._ref_play = 0
+        self._ref_origem = 0
+        self._ref_pausado = False
         self._nivel_payload: float | None = None
         self._pre_env: deque[float] = deque(maxlen=self.config._frames_pre)
         self._env: deque[float] = deque(maxlen=self.config._frames_envelope)
@@ -744,6 +772,12 @@ class TurnEngine:
                     self._barge_no_turno_emitido = False
                     self._duck_emitido = False
                     self._pausa_emitida = False
+                    # episódio novo: o ring anterior já tocou. O playhead cola
+                    # no que já foi escrito; o `anota_referencia` seguinte é o
+                    # que o cliente vai tocar agora.
+                    self._ref_origem = self._ref_n
+                    self._ref_play = self._ref_n
+                    self._ref_pausado = False
             self._speaking = bool(ligado)
             self._nivel_payload = nivel_dbfs if ligado else None
             if not ligado:
@@ -772,6 +806,14 @@ class TurnEngine:
             self._janela_log("set_turno_aberto", janela_antes)
             if aberto:
                 self._cortado = False
+                # o handler abre o turno ANTES do sender anotar o áudio. Se não
+                # há nada em voo, este turno é um episódio novo — senão o
+                # playhead ficaria no áudio do turno anterior, que o cliente
+                # já esgotou, e a correlação veria o mic como "não é o playback".
+                if self._ref_play >= self._ref_n:
+                    self._ref_origem = self._ref_n
+                    self._ref_play = self._ref_n
+                    self._ref_pausado = False
             elif not self._cortado:
                 # fechou o turno: vale a cauda normal (pode haver áudio no cliente).
                 # Depois de um corte não: o cliente descartou a fila (`playback_cortado`).
@@ -855,6 +897,8 @@ class TurnEngine:
             self._barge_sem_voz = 0
             self._duck_emitido = False
             self._pausa_emitida = False
+            # o cliente DESCARTOU a fila: o que estava no ring não vai tocar
+            self._ref_zera()
             # `_barge_pico` fica: é do episódio que ACABOU de ser cortado e é o
             # número que o painel lê logo depois da decisão
             self._barge_no_turno_emitido = False
@@ -862,6 +906,128 @@ class TurnEngine:
     def playback_restante_ms(self) -> int:
         """Quanto o CLIENTE ainda vai tocar (backlog do último chunk), em ms."""
         return int(self._playback_restante * FRAME_MS)
+
+    def anota_referencia(self, pcm: bytes | np.ndarray) -> None:
+        """Guarda o que o servidor MANDOU tocar, já em float 16 kHz.
+
+        O mic ouve isso atrasado (~100 ms na bancada) e atenuado. O playhead
+        não salta para o write head: o cliente toca em 1x, o envio é mais
+        rápido, e com o turno aberto `_playback_restante` não é esse relógio.
+        """
+        with self._lock:
+            x = np.ascontiguousarray(self._para_float(pcm), dtype=np.float32)
+            if x.size == 0:
+                return
+            buf = self._ref_buf()
+            cap = int(buf.size)
+            if x.size >= cap:
+                buf[:] = x[-cap:]
+                self._ref_n += int(x.size)
+                self._ref_origem = max(self._ref_origem, self._ref_n - cap)
+                self._ref_play = max(self._ref_play, self._ref_origem)
+                return
+            idx = self._ref_n % cap
+            n1 = min(int(x.size), cap - idx)
+            buf[idx:idx + n1] = x[:n1]
+            if n1 < x.size:
+                buf[:int(x.size) - n1] = x[n1:]
+            self._ref_n += int(x.size)
+            if self._ref_n - self._ref_origem > cap:
+                self._ref_origem = self._ref_n - cap
+                self._ref_play = max(self._ref_play, self._ref_origem)
+
+    def _ref_buf(self) -> np.ndarray:
+        if self._ref is None:
+            self._ref = np.zeros(_REF_CAP, dtype=np.float32)
+        return self._ref
+
+    def _ref_zera(self) -> None:
+        """O cliente não vai tocar o que estava no ring."""
+        self._ref_n = 0
+        self._ref_play = 0
+        self._ref_origem = 0
+        self._ref_pausado = False
+
+    def _ref_trecho(self, inicio: int, n: int) -> np.ndarray | None:
+        if n <= 0 or inicio < self._ref_origem or inicio + n > self._ref_n:
+            return None
+        buf = self._ref
+        if buf is None or self._ref_n - inicio > int(buf.size):
+            return None
+        cap = int(buf.size)
+        i = int(inicio) % cap
+        out = np.empty(n, dtype=np.float32)
+        n1 = min(n, cap - i)
+        out[:n1] = buf[i:i + n1]
+        if n1 < n:
+            out[n1:] = buf[:n - n1]
+        return out
+
+    def _avanca_referencia(self) -> None:
+        """1x com o mic. O `barge_pausa` congela: o cliente suspende o contexto."""
+        if self._ref is None or self._ref_pausado or self._ref_play >= self._ref_n:
+            return
+        if not self._playback_ativo():
+            return
+        self._ref_play = min(self._ref_play + FRAME_SAMPLES, self._ref_n)
+
+    @staticmethod
+    def _ncc(a: np.ndarray, b: np.ndarray) -> float:
+        """Correlação normalizada, sem média, em módulo. 0 se a janela é vazia."""
+        if a.size == 0 or a.size != b.size:
+            return 0.0
+        a = a - float(a.mean())
+        b = b - float(b.mean())
+        da = float(np.dot(a, a))
+        db = float(np.dot(b, b))
+        if da < 1e-8 or db < 1e-8:
+            return 0.0
+        return abs(float(np.dot(a, b)) / math.sqrt(da * db))
+
+    def _eco_por_correlacao(self) -> bool | None:
+        """O mic deste instante é o playback?
+
+        None = sem referência útil (caminho de nível/degrau). True = eco ou
+        silêncio — não conta como voz. False = não é o que foi enviado.
+        """
+        if (not self.config.duck_rapido or self._ref is None
+                or self._ref_n <= self._ref_origem):
+            return None
+        n = _CORR_N
+        if len(self._historico) * FRAME_SAMPLES < n:
+            return None
+        quadros = list(self._historico)[-math.ceil(n / FRAME_SAMPLES):]
+        mic = np.concatenate([q.pcm for q in quadros])[-n:]
+        rms = float(np.sqrt(float(np.dot(mic, mic)) / float(n)))
+        if _dbfs(rms) < _CORR_ENERGIA_DBFS:
+            # o vão do atraso (mic ainda em silêncio) correlaciona mal e
+            # pareceria voz. Sem energia não é o usuário.
+            return True
+        if self._ref_play - self._ref_origem < n + _CORR_LAG_MAX:
+            # o atraso procurado (até ~220 ms) ainda não cabe na busca
+            return True
+        melhor = 0.0
+        lag_max = min(_CORR_LAG_MAX, self._ref_play - self._ref_origem - n)
+        for lag in range(0, lag_max + 1, _CORR_LAG_PASSO):
+            trecho = self._ref_trecho(self._ref_play - lag - n, n)
+            if trecho is None:
+                continue
+            melhor = max(melhor, self._ncc(mic, trecho))
+        return melhor >= _CORR_LIMIAR
+
+    def _voz_no_playback(self, dbfs: float, prob: float) -> bool:
+        """O que conta para o duck e para a suspeita enquanto há playback.
+
+        Com a flag e referência, nível e degrau ficam de fora: a sílaba do TTS
+        sobe 2 dB e o Silero vê fala. Sem referência, o contrato antigo.
+        """
+        eco = self._eco_por_correlacao()
+        if eco is None:
+            return (self._voz(dbfs, prob, self.limiar_energia_dbfs)
+                    or self._degrau_sobre_eco(dbfs, prob))
+        if eco:
+            return False
+        return prob >= self.config.fala_threshold
 
     def reset(self) -> None:
         self._reset_turno()
@@ -873,6 +1039,7 @@ class TurnEngine:
         self._calibracao_vals = []
         self._env.clear()
         self._pendente = np.zeros(0, dtype=np.float32)
+        self._ref_zera()
 
     # -- entrada de áudio ------------------------------------------------
     def feed(self, pcm: bytes | np.ndarray) -> list[TurnEvent]:
@@ -903,6 +1070,7 @@ class TurnEngine:
     def _processar(self, frame: np.ndarray) -> list[TurnEvent]:
         amostra = self._proxima_amostra
         self._proxima_amostra += FRAME_SAMPLES
+        self._avanca_referencia()
         rms = float(np.sqrt(np.mean(frame * frame)))
         # envelope suavizado: a decisão NÃO pode ser por frame cru. Medido nos
         # wavs do app, o nível de UM frame de fala varia 34 dB entre vogal e
@@ -1037,10 +1205,15 @@ class TurnEngine:
         # entra: estes frames são reavaliados com o limiar já convergido)
         # #167: o braço do barge conta DESDE o início do áudio (não é zerado pela
         # recalibração por chunk) — aqui só se garante o mínimo que o histórico
-        # sustenta, sem descartar o que já contou
-        self._barge_frames = max(self._barge_frames,
-                                 min(self._fala_no_historico(),
-                                     self.config.eco_calibracao_teto * self.config._frames_calibracao))
+        # sustenta, sem descartar o que já contou.
+        # Com referência, o histórico foi julgado por NÍVEL. Importá-lo abre
+        # duck no próprio eco no frame em que a calibração fecha (#870).
+        if not (self.config.duck_rapido and self._ref is not None
+                and self._ref_n > self._ref_origem):
+            self._barge_frames = max(self._barge_frames,
+                                     min(self._fala_no_historico(),
+                                         self.config.eco_calibracao_teto
+                                         * self.config._frames_calibracao))
 
     def _eco_sumiu(self, obs_dbfs: float) -> bool:
         """O playback acrescentou eco de verdade?
@@ -1185,8 +1358,7 @@ class TurnEngine:
         # Medido no bloco `misto` antes dela: 17 decisões e 24 `interrupted`
         # para 6 falas, e o turno novo morria antes do 1º áudio.
         if self._playback_ativo() and time.monotonic() >= self._funde_ate:
-            voz = (self._voz(dbfs, prob, self.limiar_energia_dbfs)
-                   or self._degrau_sobre_eco(dbfs, prob))
+            voz = self._voz_no_playback(dbfs, prob)
             self._conta_barge(voz)
             self._onset_frames = 0
             # Duck que não confirmou: o burst zerou na folga (#707) sem abrir
@@ -1279,6 +1451,8 @@ class TurnEngine:
                 and self._suspeito and not self._pausa_emitida
                 and self._fala_frames * FRAME_MS >= self.config.duck_parada_ms):
             self._pausa_emitida = True
+            # o cliente suspende o contexto (#881): o playhead não pode seguir
+            self._ref_pausado = True
             return [self._evento("barge_pausa", self._t_ms(), self._turno_amostra,
                                   b"", barge_in=True, epoca=self._epoca,
                                   fala_ms=self._fala_frames * FRAME_MS,
@@ -1404,6 +1578,8 @@ class TurnEngine:
             # retoma: solta o turno e devolve o áudio para o handler decidir (ele pode
             # anotar a fala sem abrir turno)
             self._stat["barge_retomado"] = self._stat.get("barge_retomado", 0) + 1
+            # a pausa soltou: o cliente retoma de onde congelou
+            self._ref_pausado = False
             retoma = self._evento("barge_retoma", self._t_ms(), self._turno_amostra, audio,
                                   tipo_barge=tipo, texto=texto, fala_ms=fala_ms)
             self._reset_turno()

@@ -13695,6 +13695,22 @@ def _live_chunk_ms(pcm: bytes) -> float:
     return len(pcm) / 2 / (_LIVE_TTS_RATE / 1000.0)
 
 
+def _live_ref_16k(pcm: bytes):
+    """PCM16 24 kHz do fio → float32 16 kHz, a taxa do mic (#870).
+
+    A bancada reamostra o playback com `resample_poly(..., 2, 3)` antes de
+    reinjetar o eco. A mesma razão aqui: sem isso a correlação não casa com o
+    que volta no microfone. Vazio se não houver amostra.
+    """
+    import numpy as np
+
+    if len(pcm) < 2:
+        return np.zeros(0, dtype=np.float32)
+    n = len(pcm) - (len(pcm) % 2)
+    a = np.frombuffer(pcm[:n], dtype="<i2").astype(np.float32) / 32768.0
+    return _reamostra(a, _LIVE_TTS_RATE, 16000)
+
+
 def _live_pipe_novo(sess: dict):
     """Pipeline da sessão (None quando o módulo não está disponível -> stub).
 
@@ -13963,6 +13979,15 @@ async def _live_sender(sess: dict, ws) -> None:
                     # dispara na borda (`não speaking` -> `speaking`).
                     eng.set_speaking(True, nivel_dbfs=_dbfs16(payload),
                                      duracao_ms=_live_chunk_ms(payload))
+                    # #870: a referência é o que SAI no fio (já com a marca).
+                    # O motor só usa isto com o duck rápido ligado; sem o
+                    # método, o caminho de nível segue igual.
+                    anota = getattr(eng, "anota_referencia", None)
+                    if anota is not None:
+                        try:
+                            anota(_live_ref_16k(payload))
+                        except Exception:  # noqa: BLE001 — sem referência vale o nível
+                            pass
                     sess["audio_pendente"] = max(0, sess.get("audio_pendente", 1) - 1)
                     if sess["audio_pendente"] == 0:
                         sess["falando"] = False

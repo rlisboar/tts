@@ -2951,3 +2951,139 @@ def test_duck_rapido_nao_arma_stt_e_a_pausa_nao_cancela(monkeypatch):
         p = sess.get("barge_parar")
         if p is not None:
             p.set()
+
+
+def _motor_silaba():
+    """Stub que marca fala em qualquer frame audível.
+
+    O Silero de verdade devolve ~0,9 no eco do TTS (é fala). O stub antigo
+    só passava 20 dB acima de um tom plano e não via o falso duck da bancada.
+    """
+    rel = [0.0]
+
+    def scorer(frame: np.ndarray) -> float:
+        rms = float(np.sqrt(np.mean(frame * frame)))
+        return 0.95 if rms > 0.003 else 0.02
+
+    motor = lt.TurnEngine(
+        lt.Config(interrupcao="inteligente", duck_rapido=True),
+        scorer=scorer, relogio=lambda: rel[0], agora=lambda: 1_700_000_000.0)
+    return motor, rel
+
+
+def _silabas(n_frames: int, amp_forte: float = 0.40, amp_fraco: float = 0.05,
+             periodo: int = 8) -> np.ndarray:
+    """Tom com sílabas. A fase é contínua: o atraso casa amostra a amostra."""
+    meio = max(1, periodo // 2)
+    partes = []
+    for i in range(n_frames):
+        amp = amp_forte if (i // meio) % 2 == 0 else amp_fraco
+        t = (i * F + np.arange(F)) / lt.SAMPLE_RATE
+        partes.append((amp * np.sin(2 * np.pi * 180.0 * t)).astype(np.float32))
+    return np.concatenate(partes)
+
+
+def _ref_com_degrau(n_frames: int = 50, quiet_frames: int = 20) -> np.ndarray:
+    """Piso e depois um salto de +12 dB. A fase é contínua.
+
+    A sílaba periódica calibra no próprio p90 e o degrau de 2 dB nunca abre:
+    sem referência o teste passava calado. O piso (~-40 dBFS no mic, depois
+    de -15 dB) fecha a calibração; o salto passa de eco+4 dB. O atraso de
+    100 ms não muda a correlação — o ganho também não.
+    """
+    g = 10 ** (-15.0 / 20.0)
+    amp_q = 0.01 * math.sqrt(2.0) / g
+    amp_l = amp_q * (10 ** (12.0 / 20.0))
+    partes = []
+    for i in range(n_frames):
+        amp = amp_q if i < quiet_frames else amp_l
+        t = (i * F + np.arange(F)) / lt.SAMPLE_RATE
+        partes.append((float(amp) * np.sin(2 * np.pi * 180.0 * t)).astype(np.float32))
+    return np.concatenate(partes)
+
+
+def _eco_de(ref: np.ndarray, atraso_ms: int = 100, ganho_db: float = -15.0) -> np.ndarray:
+    d = int(atraso_ms * lt.SAMPLE_RATE / 1000)
+    g = np.float32(10 ** (ganho_db / 20.0))
+    out = np.zeros(ref.shape, dtype=np.float32)
+    if 0 < d < len(ref):
+        out[d:] = ref[:-d] * g
+    return out
+
+
+def test_eco_de_fala_sem_referencia_ainda_abaixa():
+    """Degrau do TTS, sem referência, passa de eco+4 dB e abaixa.
+
+    O tom plano calibrado não reproduz a bancada: o piso quieto cabe na
+    calibração e o salto seguinte é o que o caminho de nível conta.
+    """
+    motor, rel = _motor_silaba()
+    ref = _ref_com_degrau(60)
+    mic = _eco_de(ref)
+    motor.set_speaking(True, nivel_dbfs=-8.0, duracao_ms=len(ref) / 16.0)
+    evs = []
+    for i in range(60):
+        evs += motor.feed(mic[i * F:(i + 1) * F])
+        rel[0] += F / lt.SAMPLE_RATE
+    assert any(e.tipo == "barge_suspeito" for e in evs), \
+        "sem referência o degrau deixou de abaixar — o teste não morde mais"
+
+
+def test_eco_correlacionado_nao_abaixa():
+    """O mesmo eco, alinhado à referência, não conta como voz.
+
+    Nem duck, nem a suspeita dos 300 ms (a bancada conta os dois como
+    eco_falso_duck), nem a pausa.
+    """
+    motor, rel = _motor_silaba()
+    ref = _ref_com_degrau(60)
+    mic = _eco_de(ref)
+    motor.set_speaking(True, nivel_dbfs=-8.0, duracao_ms=len(ref) / 16.0)
+    motor.anota_referencia(ref)
+    evs = []
+    for i in range(60):
+        evs += motor.feed(mic[i * F:(i + 1) * F])
+        rel[0] += F / lt.SAMPLE_RATE
+    tipos = {e.tipo for e in evs}
+    assert not tipos.intersection(
+        {"barge_suspeito", "barge_in", "barge_pausa", "barge_retoma"}), tipos
+
+
+def test_voz_nao_correlacionada_abaixa_no_chunk_2():
+    """Voz que não é o playback abaixa com ≤192 ms de áudio dela.
+
+    A bancada manda o mic em chunks de 100 ms e soma 50 ms de rampa. Até o
+    6º frame (192 ms) o evento ainda sai no 2º chunk (s3 ≈ 250). No 7º cai
+    no 3º chunk e o SLO de 300 ms estoura.
+    """
+    motor, rel = _motor_silaba()
+    n = 50
+    ref = _silabas(n)
+    eco = _eco_de(ref)
+    rng = np.random.default_rng(870)
+    voz = rng.standard_normal(len(ref)).astype(np.float32)
+    inicio = 20 * F
+    trecho = eco[inicio:inicio + 8 * F]
+    alvo = float(np.sqrt(np.mean(trecho * trecho))) * 1.4
+    voz *= np.float32(alvo / (float(np.sqrt(np.mean(voz * voz))) + 1e-12))
+    mic = eco.copy()
+    mic[inicio:] += voz[inicio:]
+    motor.set_speaking(True, nivel_dbfs=-8.0, duracao_ms=len(ref) / 16.0)
+    motor.anota_referencia(ref)
+    duck_no = None
+    quadro_voz = inicio // F
+    for i in range(n):
+        got = motor.feed(mic[i * F:(i + 1) * F])
+        rel[0] += F / lt.SAMPLE_RATE
+        if duck_no is None and any(e.detalhe == "duck rapido" for e in got):
+            duck_no = i - quadro_voz + 1
+            break
+    assert duck_no is not None and duck_no <= 6, duck_no
+
+
+def test_referencia_24k_chega_em_16k():
+    """O fio é 24 kHz. A referência tem de chegar em 16 kHz, como o mic."""
+    import app
+
+    y = app._live_ref_16k(np.zeros(24000, dtype="<i2").tobytes())
+    assert abs(len(y) - 16000) <= 2, len(y)

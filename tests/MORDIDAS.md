@@ -877,6 +877,10 @@ Default OFF. Não mexe na folga (#707) nem na janela do STT (#547).
 | não soltar o volume quando o burst morre na folga | `test_duck_rapido_sem_confirmacao_retoma_uma_vez` **FAILED** |
 | pausa desarmar o timer ou cancelar | `test_duck_rapido_nao_arma_stt_e_a_pausa_nao_cancela` **FAILED** |
 | conteúdo não cancelar / não retomar depois da pausa | `test_depois_da_pausa_o_cancel_sai_do_conteudo` **FAILED** |
+| achar que o tom plano cobre o eco da bancada (degrau do TTS, sem referência) | `test_eco_de_fala_sem_referencia_ainda_abaixa` **FAILED** |
+| contar o eco que correlaciona com a referência | `test_eco_correlacionado_nao_abaixa` **FAILED** |
+| voz fora da referência não abaixar dentro de 192 ms (chunk 2) | `test_voz_nao_correlacionada_abaixa_no_chunk_2` **FAILED** |
+| anotar a referência em 24 kHz | `test_referencia_24k_chega_em_16k` **FAILED** (len 24000) |
 
 ### #871 — markdown fora do TTS (Live em streaming e Conversa)
 
