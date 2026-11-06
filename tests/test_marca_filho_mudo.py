@@ -185,6 +185,45 @@ def test_filho_frio_que_avisa_subindo_nao_morre_no_prazo_curto(
     assert _vivo(isola_marca[-1].pid)
 
 
+def test_pronto_devolve_o_relogio_e_o_passo_lento_morre_no_prazo_curto(
+        tmp_path, monkeypatch, isola_marca, capsys):
+    """`pronto` devolve o prazo curto. Um passo lento DEPOIS dele não cabe na carga.
+
+    Sem o reset, o sono de 1,2 s ainda cabe em `CARGA_S` e a resposta volta.
+    """
+    script = tmp_path / "filho_pronto.py"
+    script.write_text(
+        "import json, sys, time\n"
+        "pedido = json.loads(sys.stdin.readline())\n"
+        "sys.stdout.write(json.dumps({'tipo': 'subindo'}) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "sys.stdout.write(json.dumps({'tipo': 'pronto'}) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(1.2)\n"
+        "sys.stdout.write(json.dumps({'id': pedido['id'], 'ok': 1}) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(3600)\n",
+        encoding="utf-8",
+    )
+    carga = 5.0
+    monkeypatch.setattr(marca_dagua, "WORKER", script)
+    monkeypatch.setattr(marca_dagua, "CARGA_S", carga)
+
+    def chama():
+        marca_dagua._pede(
+            {"op": "marca", "wav": "x", "saida": "y"}, prazo_s=PRAZO_S)
+
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="filho mudo"):
+        _em_ate(chama, 4.0)
+    dt = time.monotonic() - t0
+    assert dt < carga
+    assert not _vivo(isola_marca[-1].pid)
+    aviso = capsys.readouterr().out
+    assert f"em {PRAZO_S:g}s" in aviso
+    assert f"em {carga:g}s" not in aviso
+
+
 def test_subindo_estende_a_carga_e_o_mudo_morre_nesse_teto(
         tmp_path, monkeypatch, isola_marca, capsys):
     """Avisou `subindo` e calou: morre no teto da carga, não no prazo curto."""

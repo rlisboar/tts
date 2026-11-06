@@ -452,10 +452,14 @@ limite honesto é corte grande: 83 % com 60 % do trecho cortado).
 default** desde o ABX do dono, que só ouviu diferença em 1 dos 8 pares; desligar é
 um POST). Instalação com `settings.json` já existente NÃO é reescrita: o default
 novo só vale na RAM e um valor explícito no arquivo vence. Custo medido: **28 ms
-por segundo de áudio**; a carga do modelo (~2,6 s) é
-paga uma vez e o Live a adianta na abertura da sessão, para o `first_audio_ms` não
-incluir. Sem o pacote `audioseal` ou sem os pesos em `models/audioseal`, o áudio
-sai SEM marca e o log avisa uma vez — nada quebra.
+por segundo de áudio**. A carga fica no boot (`tts_marca_prewarm_boot`, admin,
+default ligado; `TTS_MARCA_PREWARM_BOOT=0` desliga mesmo com o setting ligado).
+Neste host, em 2026-11-06, o 1º turno com o filho pronto foi 58–75 ms; com a
+carga só na abertura do WS (pedido já no pipe) foi 5,0–5,9 s. RSS do filho
+depois do `pronto`: 648–691 MB. A abertura da sessão ainda chama o prewarm, então
+desligar o boot não tira a marca — empurra esses ~5–6 s para o 1º turno. Sem o
+pacote `audioseal` ou sem os pesos em `models/audioseal`, o áudio sai SEM marca
+e o log avisa uma vez — nada quebra.
 
 O detector alimenta o gate de locutor com `speaker_anticlone` ligado (`anticlone`:
 `marcado`/`cru`/`indisponivel` + `anticlone_prob`). Detalhe de custo e pino:

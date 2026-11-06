@@ -616,6 +616,11 @@ _SETTINGS_DEFAULTS = {
     # False é o atalho do #901: só esse PCM sai sem AudioSeal. Quem desliga
     # leva a troca ao dono — o default fica no comportamento de hoje.
     "live_marca_primeiro_trecho": True,
+    # Aquecimento do AudioSeal no boot (#935). A carga na abertura do WS
+    # piora o 1º turno, então o default fica ligado. Desliga aqui ou com
+    # TTS_MARCA_PREWARM_BOOT=0. A sessão ainda chama prewarm(): desligar
+    # o boot não tira a marca, só empurra a carga para o 1º turno.
+    "tts_marca_prewarm_boot": True,
     # "Só a minha voz" no Live (#533): portão ECAPA no TURNO. Desligado, nada
     # muda. Ligado, terceiro/TV não corta a resposta nem vira turno (o filtro
     # `identidade` do I4 reusa a MESMA verificação). `perfil` é o nome do perfil
@@ -4870,15 +4875,36 @@ def _encerra_tudo(motivo: str = "shutdown") -> dict:
     return feito
 
 
-def _marca_prewarm_no_boot() -> None:
-    """Sobe o filho da marca no boot. A abertura da sessão chega tarde.
+def _marca_prewarm_boot_ligado() -> bool:
+    """Setting `tts_marca_prewarm_boot`, com `TTS_MARCA_PREWARM_BOOT` por cima.
 
-    Um turno antes do `pronto` saía sem marca, e a decisão do dono é marca em
-    tudo. Sob pytest o `TestClient` entra neste lifespan: não sobe o torch.
+    0/false/off/no desliga; 1/true/on/yes liga. Sem env, vale o setting.
+    """
+    env = (os.environ.get("TTS_MARCA_PREWARM_BOOT") or "").strip().lower()
+    if env in ("0", "false", "off", "no"):
+        return False
+    if env in ("1", "true", "on", "yes"):
+        return True
+    return bool(_settings.get("tts_marca_prewarm_boot", True))
+
+
+def _marca_prewarm_no_boot() -> None:
+    """Sobe o filho da marca no boot, se o setting/env deixar.
+
+    A carga na abertura do WS piora o 1º turno. Medido neste host em
+    2026-11-06 (não é o mini), 1 s de silêncio a 16 kHz: filho já pronto
+    58 ms e 75 ms; pedido já no pipe enquanto o filho sobe 4954 ms e
+    5943 ms. RSS depois do `pronto`: 648 MB e 691 MB. Por isso fica no
+    boot. Desliga com `tts_marca_prewarm_boot` ou
+    `TTS_MARCA_PREWARM_BOOT=0`. A abertura do WS continua chamando
+    `prewarm()`: desligar o boot não tira a marca.
+    Sob pytest o `TestClient` entra neste lifespan: não sobe o torch.
     """
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return
     if not _settings.get("tts_marca_dagua"):
+        return
+    if not _marca_prewarm_boot_ligado():
         return
     try:
         import marca_dagua
@@ -4910,7 +4936,8 @@ async def _lifespan(_app):
     # encaminha para o dele (guardado em `_RASTRO_DE_SINAL`), preservando o
     # shutdown gracioso.
     globals()["_RASTRO_DE_SINAL"] = _instala_rastro_de_sinal()
-    # Boot, não a abertura da sessão: turno com o AudioSeal frio saía sem marca.
+    # Boot, não a abertura da sessão: o 1º turno frio paga a carga
+    # (5,0–5,9 s medidos). Setting/env desliga.
     _marca_prewarm_no_boot()
     yield
     await asyncio.get_running_loop().run_in_executor(None, _encerra_tudo, "lifespan")
@@ -4975,7 +5002,7 @@ _SETTINGS_ADMIN = frozenset({
     "metrics_ttl_dias",
     # marca d'água: muda o áudio de TODO mundo (#657). A do 1º PCM do Live
     # também: desligar tira a marca de uma saída do TTS.
-    "tts_marca_dagua", "live_marca_primeiro_trecho",
+    "tts_marca_dagua", "live_marca_primeiro_trecho", "tts_marca_prewarm_boot",
     # #946: controla o tamanho do 1º trecho de voz do Live (latência ×
     # naturalidade) — o ajuste é global, não de um pedido.
     "live_clausula_palavras",
@@ -5578,6 +5605,10 @@ def _apply_settings(payload: dict):
         v = payload["live_marca_primeiro_trecho"]
         _settings["live_marca_primeiro_trecho"] = (v if isinstance(v, bool)
                                                    else str(v).strip().lower() in ("1", "true", "on"))
+    if "tts_marca_prewarm_boot" in payload:
+        v = payload["tts_marca_prewarm_boot"]
+        _settings["tts_marca_prewarm_boot"] = (v if isinstance(v, bool)
+                                               else str(v).strip().lower() in ("1", "true", "on"))
     if "speaker_guardar_audio" in payload:
         v = payload["speaker_guardar_audio"]
         _settings["speaker_guardar_audio"] = (v if isinstance(v, bool)

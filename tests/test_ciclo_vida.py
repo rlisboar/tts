@@ -319,7 +319,9 @@ def _espia_prewarm_da_marca(monkeypatch) -> list:
 def test_boot_aquece_o_filho_da_marca(isolado, monkeypatch):
     """Fora do pytest, o lifespan sobe a marca antes de aceitar turno."""
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("TTS_MARCA_PREWARM_BOOT", raising=False)
     monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    monkeypatch.setitem(app._settings, "tts_marca_prewarm_boot", True)
     chamadas = _espia_prewarm_da_marca(monkeypatch)
     with TestClient(app.app) as cliente:
         cliente.get("/health")
@@ -338,11 +340,58 @@ def test_boot_nao_aquece_a_marca_sob_pytest(isolado, monkeypatch):
 
 def test_boot_nao_aquece_a_marca_desligada(isolado, monkeypatch):
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("TTS_MARCA_PREWARM_BOOT", raising=False)
     monkeypatch.setitem(app._settings, "tts_marca_dagua", False)
+    monkeypatch.setitem(app._settings, "tts_marca_prewarm_boot", True)
     chamadas = _espia_prewarm_da_marca(monkeypatch)
     with TestClient(app.app) as cliente:
         cliente.get("/health")
     assert chamadas == []
+
+
+def test_boot_nao_aquece_com_prewarm_desligado(isolado, monkeypatch):
+    """Setting desligado: o boot não sobe o torch. A sessão ainda pode aquecer."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("TTS_MARCA_PREWARM_BOOT", raising=False)
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    monkeypatch.setitem(app._settings, "tts_marca_prewarm_boot", False)
+    chamadas = _espia_prewarm_da_marca(monkeypatch)
+    with TestClient(app.app) as cliente:
+        cliente.get("/health")
+    assert chamadas == []
+
+
+def test_boot_nao_aquece_com_env_prewarm_desligado(isolado, monkeypatch):
+    """O env desliga mesmo com o setting ligado (escape do mini, sem POST)."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("TTS_MARCA_PREWARM_BOOT", "0")
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    monkeypatch.setitem(app._settings, "tts_marca_prewarm_boot", True)
+    chamadas = _espia_prewarm_da_marca(monkeypatch)
+    with TestClient(app.app) as cliente:
+        cliente.get("/health")
+    assert chamadas == []
+
+
+def test_env_prewarm_liga_mesmo_com_setting_desligado(isolado, monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("TTS_MARCA_PREWARM_BOOT", "on")
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    monkeypatch.setitem(app._settings, "tts_marca_prewarm_boot", False)
+    chamadas = _espia_prewarm_da_marca(monkeypatch)
+    with TestClient(app.app) as cliente:
+        cliente.get("/health")
+    assert chamadas == [1]
+
+
+def test_apply_prewarm_boot_grava_o_booleano(isolado, monkeypatch):
+    """`off` desliga de verdade. O save fica no stub: não toca o settings do dono."""
+    monkeypatch.setattr(app, "_save_settings", lambda: None)
+    monkeypatch.setitem(app._settings, "tts_marca_prewarm_boot", True)
+    app._apply_settings({"tts_marca_prewarm_boot": "off"})
+    assert app._settings["tts_marca_prewarm_boot"] is False
+    app._apply_settings({"tts_marca_prewarm_boot": True})
+    assert app._settings["tts_marca_prewarm_boot"] is True
 
 
 # ------------------------------------- killpg só no worker do PRÓPRIO dono (#423)
