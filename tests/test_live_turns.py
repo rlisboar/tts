@@ -3081,6 +3081,63 @@ def test_voz_nao_correlacionada_abaixa_no_chunk_2():
     assert duck_no is not None and duck_no <= 6, duck_no
 
 
+def test_eco_no_cru_nao_abaixa_com_filtrado_destruido():
+    """O RNNoise quebra a forma do eco. A correlação tem de ver o cru.
+
+    O `feed` recebe ruído no RMS do eco: contra a referência a NCC é ~0 e o
+    caminho do histórico abaixaria. O cru é o eco atrasado e não pode abaixar.
+    """
+    motor, rel = _motor_silaba()
+    ref = _ref_com_degrau(60)
+    cru = _eco_de(ref)
+    rng = np.random.default_rng(895)
+    filtrado = rng.standard_normal(len(cru)).astype(np.float32)
+    alvo = float(np.sqrt(np.mean(cru[20 * F:] ** 2)) + 1e-12)
+    filtrado *= np.float32(alvo / (float(np.sqrt(np.mean(filtrado * filtrado))) + 1e-12))
+    motor.set_speaking(True, nivel_dbfs=-8.0, duracao_ms=len(ref) / 16.0)
+    motor.anota_referencia(ref)
+    evs = []
+    for i in range(60):
+        motor.anota_mic_cru(cru[i * F:(i + 1) * F])
+        evs += motor.feed(filtrado[i * F:(i + 1) * F])
+        rel[0] += F / lt.SAMPLE_RATE
+    tipos = {e.tipo for e in evs}
+    assert not tipos.intersection(
+        {"barge_suspeito", "barge_in", "barge_pausa", "barge_retoma"}), tipos
+
+
+def test_voz_no_cru_abaixa_mesmo_se_o_filtrado_e_eco():
+    """Outra fala no cru abaixa no chunk 2, mesmo com o filtrado igual ao eco.
+
+    Se a correlação ler o histórico, o `feed` é o playback atrasado e o duck
+    não sai. O SLO é o mesmo da célula sem filtro: duck_no ≤ 6.
+    """
+    motor, rel = _motor_silaba()
+    n = 50
+    ref = _silabas(n)
+    eco = _eco_de(ref)
+    rng = np.random.default_rng(870)
+    voz = rng.standard_normal(len(ref)).astype(np.float32)
+    inicio = 20 * F
+    trecho = eco[inicio:inicio + 8 * F]
+    alvo = float(np.sqrt(np.mean(trecho * trecho))) * 1.4
+    voz *= np.float32(alvo / (float(np.sqrt(np.mean(voz * voz))) + 1e-12))
+    cru = eco.copy()
+    cru[inicio:] += voz[inicio:]
+    motor.set_speaking(True, nivel_dbfs=-8.0, duracao_ms=len(ref) / 16.0)
+    motor.anota_referencia(ref)
+    duck_no = None
+    quadro_voz = inicio // F
+    for i in range(n):
+        motor.anota_mic_cru(cru[i * F:(i + 1) * F])
+        got = motor.feed(eco[i * F:(i + 1) * F])
+        rel[0] += F / lt.SAMPLE_RATE
+        if duck_no is None and any(e.detalhe == "duck rapido" for e in got):
+            duck_no = i - quadro_voz + 1
+            break
+    assert duck_no is not None and duck_no <= 6, duck_no
+
+
 def test_referencia_24k_chega_em_16k():
     """O fio é 24 kHz. A referência tem de chegar em 16 kHz, como o mic."""
     import app

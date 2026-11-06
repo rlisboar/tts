@@ -14474,6 +14474,16 @@ async def _live_loop(sess: dict, ws) -> None:
             sess["st_dbfs"] = round(_dbfs16(pcm), 1)
             eng = sess.get("engine")
             if eng is not None:
+                # #870: a correlação do duck lê o CRU (antes do RNNoise). O
+                # filtrado segue no `feed` — Silero e nível não mudam. Sem a
+                # flag o ring não enche e o motor usa o histórico do feed.
+                if getattr(getattr(eng, "config", None), "duck_rapido", False):
+                    anota_cru = getattr(eng, "anota_mic_cru", None)
+                    if anota_cru is not None:
+                        try:
+                            anota_cru(cru)
+                        except Exception:  # noqa: BLE001 — sem cru vale o histórico
+                            pass
                 _live_trata_eventos(sess, eng.feed(pcm))
             elif sess.get("pipe") is not None:
                 sess["pipe"].push_pcm(pcm)   # sem FSM: pipeline por frame

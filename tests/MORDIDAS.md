@@ -881,6 +881,8 @@ Default OFF. Não mexe na folga (#707) nem na janela do STT (#547).
 | contar o eco que correlaciona com a referência | `test_eco_correlacionado_nao_abaixa` **FAILED** |
 | voz fora da referência não abaixar dentro de 192 ms (chunk 2) | `test_voz_nao_correlacionada_abaixa_no_chunk_2` **FAILED** |
 | anotar a referência em 24 kHz | `test_referencia_24k_chega_em_16k` **FAILED** (len 24000) |
+| correlacionar o pós-RNNoise (eco destruído) em vez do cru | `test_eco_no_cru_nao_abaixa_com_filtrado_destruido` **FAILED** |
+| voz no cru não abaixar quando o filtrado é o eco | `test_voz_no_cru_abaixa_mesmo_se_o_filtrado_e_eco` **FAILED** |
 
 ### #871 — markdown fora do TTS (Live em streaming e Conversa)
 

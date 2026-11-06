@@ -76,9 +76,10 @@ FRAME_MS = FRAME_SAMPLES * 1000 // SAMPLE_RATE
 # Correlação com o playback enviado (#870). A bancada manda o mic em chunks
 # de 100 ms e soma 50 ms de rampa: para o duck ficar ≤300 ms a decisão tem de
 # sair no 1º ou no 2º chunk, isto é, com ≤192 ms de áudio. Uma janela de 96 ms
-# cabe; três janelas de 192 ms não. O eco puro da bancada fica em ~1,0; a
-# mistura em nível parecido cai para ~0,7. O atraso procurado cobre o eco de
-# 100 ms da bancada mais a folga do chunk.
+# cabe; três janelas de 192 ms não. No CRU o eco puro fica em ~1,0 (atraso
+# ~100 ms); depois do RNNoise a forma quebra e a NCC cai para ~0,3. Sem o
+# ring cru, a janela é o que o `feed` recebeu. A mistura em nível parecido
+# cai para ~0,7. O atraso procurado cobre o eco de 100 ms mais a folga do chunk.
 _CORR_MS = 96
 _CORR_LAG_MAX_MS = 500
 _CORR_LAG_PASSO_MS = 10
@@ -88,6 +89,7 @@ _CORR_N = SAMPLE_RATE * _CORR_MS // 1000
 _CORR_LAG_MAX = SAMPLE_RATE * _CORR_LAG_MAX_MS // 1000
 _CORR_LAG_PASSO = SAMPLE_RATE * _CORR_LAG_PASSO_MS // 1000
 _REF_CAP = SAMPLE_RATE * 60         # teto do áudio em voo (playback_audio_max_ms)
+_MIC_CAP = SAMPLE_RATE * 2          # cru da correlação; a janela em si é 96 ms
 PREFIX_MS_PADRAO = 100
 SILENCE_MS_PADRAO = 600
 SILENCE_MS_MINIMO_STT = 500               # abaixo disto o STT come a última sílaba
@@ -574,6 +576,10 @@ class TurnEngine:
         self._ref_play = 0
         self._ref_origem = 0
         self._ref_pausado = False
+        # Mic antes do RNNoise. `_mic_n == 0` = ninguém anotou: a correlação
+        # cai no histórico do `feed` (testes sem filtro, e o Silero não muda).
+        self._mic: np.ndarray | None = None
+        self._mic_n = 0
         self._nivel_payload: float | None = None
         self._pre_env: deque[float] = deque(maxlen=self.config._frames_pre)
         self._env: deque[float] = deque(maxlen=self.config._frames_envelope)
@@ -948,6 +954,48 @@ class TurnEngine:
         self._ref_origem = 0
         self._ref_pausado = False
 
+    def anota_mic_cru(self, pcm: bytes | np.ndarray) -> None:
+        """Guarda o mic ANTES do RNNoise, para a correlação do duck.
+
+        O filtro atrasa 111 ms e deforma o eco: contra a referência limpa a
+        NCC fica em ~0,3. No cru ela volta a ~1,0 com o atraso acústico
+        (~100 ms), que a busca de lag já cobre. Descontar os 111 ms do #869
+        não sobe a NCC e atrasa a janela — o ring fica no cru mais recente.
+        O `feed` continua recebendo o filtrado (Silero e nível).
+        """
+        with self._lock:
+            x = np.ascontiguousarray(self._para_float(pcm), dtype=np.float32)
+            if x.size == 0:
+                return
+            if self._mic is None:
+                self._mic = np.zeros(_MIC_CAP, dtype=np.float32)
+            buf = self._mic
+            cap = int(buf.size)
+            if x.size >= cap:
+                buf[:] = x[-cap:]
+                self._mic_n += int(x.size)
+                return
+            idx = self._mic_n % cap
+            n1 = min(int(x.size), cap - idx)
+            buf[idx:idx + n1] = x[:n1]
+            if n1 < x.size:
+                buf[:int(x.size) - n1] = x[n1:]
+            self._mic_n += int(x.size)
+
+    def _mic_zera(self) -> None:
+        self._mic_n = 0
+
+    def _mic_ultimos(self, n: int) -> np.ndarray | None:
+        """Últimas `n` amostras do cru. None se o ring ainda não tem a janela."""
+        if self._mic is None or n <= 0 or self._mic_n < n or n > int(self._mic.size):
+            return None
+        cap = int(self._mic.size)
+        fim = self._mic_n % cap
+        ini = (self._mic_n - n) % cap
+        if ini < fim:
+            return self._mic[ini:fim].copy()
+        return np.concatenate([self._mic[ini:], self._mic[:fim]])
+
     def _ref_trecho(self, inicio: int, n: int) -> np.ndarray | None:
         if n <= 0 or inicio < self._ref_origem or inicio + n > self._ref_n:
             return None
@@ -994,17 +1042,23 @@ class TurnEngine:
                 or self._ref_n <= self._ref_origem):
             return None
         n = _CORR_N
-        if len(self._historico) * FRAME_SAMPLES < n:
-            return None
-        quadros = list(self._historico)[-math.ceil(n / FRAME_SAMPLES):]
-        mic = np.concatenate([q.pcm for q in quadros])[-n:]
+        if self._mic_n > 0:
+            # ring cru anotado: não misturar com o histórico filtrado
+            mic = self._mic_ultimos(n)
+            if mic is None:
+                return True
+        else:
+            if len(self._historico) * FRAME_SAMPLES < n:
+                return None
+            quadros = list(self._historico)[-math.ceil(n / FRAME_SAMPLES):]
+            mic = np.concatenate([q.pcm for q in quadros])[-n:]
         rms = float(np.sqrt(float(np.dot(mic, mic)) / float(n)))
         if _dbfs(rms) < _CORR_ENERGIA_DBFS:
             # o vão do atraso (mic ainda em silêncio) correlaciona mal e
             # pareceria voz. Sem energia não é o usuário.
             return True
         if self._ref_play - self._ref_origem < n + _CORR_LAG_MAX:
-            # o atraso procurado (até ~220 ms) ainda não cabe na busca
+            # o atraso procurado (até 500 ms) ainda não cabe na busca
             return True
         melhor = 0.0
         lag_max = min(_CORR_LAG_MAX, self._ref_play - self._ref_origem - n)
@@ -1040,6 +1094,7 @@ class TurnEngine:
         self._env.clear()
         self._pendente = np.zeros(0, dtype=np.float32)
         self._ref_zera()
+        self._mic_zera()
 
     # -- entrada de áudio ------------------------------------------------
     def feed(self, pcm: bytes | np.ndarray) -> list[TurnEvent]:
