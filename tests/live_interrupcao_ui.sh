@@ -29,9 +29,15 @@
 # ESTADO PRÓPRIO (#541): todos os caminhos de estado vão para tmp pelas variáveis do
 # #461 (`TTS_SETTINGS_PATH`, `TTS_APIKEYS_PATH`, `TTS_VOICES_DIR`, `TTS_OUTPUTS_DIR`
 # e afins) — o `settings.json`/`.apikeys.json` do dono não são abertos. A suíte
-# imprime sha256 e mtime dos dois ANTES e DEPOIS e reprova se mudarem, para a rodada
+# imprime sha256 e mtime deles ANTES e DEPOIS e reprova se mudarem, para a rodada
 # nunca mais mexer no estado dele (antes era ele quem ganhava `live_barge_*` e podia
 # ficar com o Live em `dsh`, mandando texto para fora sem o dono ter escolhido).
+# Desde o #721 esse estado saiu do repositório: a guarda resolve o MESMO default do
+# app (`TTS_STATE_DIR`; worktree/cópia = `<árvore>/.state-local`; raiz principal =
+# Application Support) e cobre ainda o par legado da raiz. Guardar só a raiz, como
+# antes, deixava a célula MUDA num worktree limpo (o arquivo nem existe lá) e o
+# `antes[0]` estourava com `None` no fim; arquivo ausente nas duas pontas não é
+# regressão, mas se a rodada CRIAR um deles o veredito é vermelho.
 # O diretório da rodada (chaves sintéticas dentro) morre no VERDE e fica na VERMELHA
 # para leitura; na abertura, uma varredura por idade recolhe o que rodadas mortas
 # deixaram (#562 — antes ficavam 117 dirs e 57 `.jsonl` no /tmp até no verde).
@@ -107,8 +113,32 @@ DIR_TMP = pathlib.Path("/tmp") / f"live_interrupcao_{porta}"
 SETTINGS_TESTE = DIR_TMP / "settings.json"
 SETTINGS_TESTE.write_text("{}")     # vazio: valem os defaults do app
 RAIZ_REPO = pathlib.Path.cwd()
-OWNER_SETTINGS = RAIZ_REPO / "settings.json"
-OWNER_APIKEYS = RAIZ_REPO / ".apikeys.json"
+
+# Onde o app escreveria SEM os overrides acima (#721) — a MESMA regra do
+# `_dir_de_estado_padrao` do app: `TTS_STATE_DIR` vence; worktree/cópia (`.git`
+# ARQUIVO) usa `<árvore>/.state-local`; só a RAIZ PRINCIPAL usa o Application
+# Support. Apontar para a raiz do repo (como antes) deixava a guarda cega no
+# worktree, onde o arquivo não existe.
+def _estado_padrao():
+    bruto = (os.environ.get("TTS_STATE_DIR") or "").strip()
+    if bruto:
+        return pathlib.Path(bruto).expanduser()
+    if not (RAIZ_REPO / ".git").is_dir():
+        return RAIZ_REPO / ".state-local"
+    if sys.platform == "darwin":
+        return pathlib.Path.home() / "Library" / "Application Support" / "tts-studio"
+    return pathlib.Path(os.environ.get("XDG_STATE_HOME")
+                        or pathlib.Path.home() / ".local" / "state") / "tts-studio"
+
+ESTADO_PADRAO = _estado_padrao()
+# (rótulo, caminho, reprova?) — `settings.json` no default é o arquivo que a
+# suíte escreveria se o isolamento falhasse; `.apikeys.json` também é escrito por
+# outras suítes, então só avisa. O par LEGADO na raiz fica coberto enquanto um
+# checkout antigo o tiver.
+GUARDADOS = [(f"settings.json ({ESTADO_PADRAO})", ESTADO_PADRAO / "settings.json", True),
+             (f".apikeys.json ({ESTADO_PADRAO})", ESTADO_PADRAO / ".apikeys.json", False),
+             ("settings.json (legado na raiz)", RAIZ_REPO / "settings.json", True),
+             (".apikeys.json (legado na raiz)", RAIZ_REPO / ".apikeys.json", False)]
 
 def _impressao(caminho):
     """sha256 + mtime — é a prova de que o arquivo do dono não foi tocado."""
@@ -118,8 +148,8 @@ def _impressao(caminho):
     st = caminho.stat()
     return (hashlib.sha256(caminho.read_bytes()).hexdigest(), int(st.st_mtime_ns))
 
-ANTES = {str(c): _impressao(c) for c in (OWNER_SETTINGS, OWNER_APIKEYS)}
-print("  dono antes:", {k.split('/')[-1]: v for k, v in ANTES.items()})
+ANTES = {str(c): _impressao(c) for _r, c, _f in GUARDADOS}
+print("  dono antes:", ANTES)
 
 env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        "TTS_SETTINGS_PATH": str(SETTINGS_TESTE),
@@ -844,21 +874,24 @@ finally:
         try: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception: pass
 
-DEPOIS = {str(c): _impressao(c) for c in (OWNER_SETTINGS, OWNER_APIKEYS)}
-print("  dono depois:", {k.split('/')[-1]: v for k, v in DEPOIS.items()})
-for chave, antes in ANTES.items():
-    nome = chave.split("/")[-1]
-    if antes == DEPOIS[chave]:
-        print(f"  ✔ intacto: {nome} sha256={str(antes[0])[:12]} mtime_ns={antes[1]}")
-    elif nome == "settings.json":
-        # ESTE é o arquivo que a suíte escreveria se o isolamento falhasse: muda
-        # aqui = regressão dura.
-        falhas.append(f"o settings.json do dono MUDOU na rodada ({antes} -> {DEPOIS[chave]})")
+DEPOIS = {str(c): _impressao(c) for _r, c, _f in GUARDADOS}
+print("  dono depois:", DEPOIS)
+for rotulo, caminho, reprova in GUARDADOS:
+    antes, depois = ANTES[str(caminho)], DEPOIS[str(caminho)]
+    if antes == depois:
+        if antes is None:
+            print(f"  · intacto: {rotulo} (ausente — nada foi criado)")
+        else:
+            print(f"  ✔ intacto: {rotulo} sha256={str(antes[0])[:12]} mtime_ns={antes[1]}")
+    elif reprova:
+        # ESTE é o arquivo que a suíte escreveria se o isolamento falhasse: mudou
+        # (ou apareceu) aqui = regressão dura.
+        falhas.append(f"o {rotulo} do dono MUDOU na rodada ({antes} -> {depois})")
     else:
         # `.apikeys.json` é escrito por OUTRAS suítes (admin_ui_flow,
-        # ultima_chave_ui) que rodam em paralelo no mesmo estágio: mudança aqui
-        # pode não ser nossa, então avisa em vez de reprovar.
-        print(f"  ⚠ {nome} mudou na rodada (pode ser de outra suíte): {antes} -> {DEPOIS[chave]}")
+        # ultima_chave_ui) que rodam no mesmo estágio: mudança aqui pode não ser
+        # nossa, então avisa em vez de reprovar.
+        print(f"  ⚠ {rotulo} mudou na rodada (pode ser de outra suíte): {antes} -> {depois}")
 
 print()
 if falhas:
