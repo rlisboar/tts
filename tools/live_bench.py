@@ -7,7 +7,12 @@ Roda NO MINI, contra a instância que está no ar (loopback dispensa chave):
     # o áudio é COPIADO para /tmp antes (nunca mova o original de voices/)
     mkdir -p /tmp/live-bench-audio && cp voices/*.wav voices/*.json /tmp/live-bench-audio/
     .venv-mlx/bin/python -I /tmp/live_bench.py --audio /tmp/live-bench-audio \
-        --url ws://127.0.0.1:7860/api/live/ws --out /tmp/live-bench-<sha>.json
+        --url ws://127.0.0.1:7890/api/live/ws --out /tmp/live-bench-<sha>.json
+
+PORTA: use 7890+ nas instâncias de bancada. A página sonda 7861-7865 (probes do
+mic-router) e uma instância viva nessas portas entra no meio da integração — o
+`obs_ui.sh` chega a reprovar por causa do console.error de CORS. Derrube a
+instância ao terminar (`pkill -f "port 7890"`); `nohup` sobrevive ao shell.
 
 O cliente simulado é o do navegador:
   * mic em tempo real, frames PCM16 mono 16 kHz de 100 ms (o tamanho que a UI manda),
@@ -729,7 +734,7 @@ def imprime(r: dict, L: list[dict]):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--url", default="ws://127.0.0.1:7860/api/live/ws")
+    ap.add_argument("--url", default="ws://127.0.0.1:7890/api/live/ws")
     ap.add_argument("--audio", type=Path, required=True,
                     help="pasta com CÓPIA de voices/*.wav+*.json (nunca o original)")
     ap.add_argument("--voice", default="", help="voice_id da sessão (padrão: o do servidor)")
