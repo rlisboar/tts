@@ -18,30 +18,42 @@ PORTA="${TTS_SERVER_PORTA:-7860}"
 REPO="${TTS_SERVER_REPO:-/Users/lisboa/Documents/tts-rod}"
 PIDFILE="$HOME/.tts-studio/server.pid"
 
-# 1) o `run.sh` anterior: sem isto o laço dele ressuscita o uvicorn em 2 s
+# Derruba a ÁRVORE a partir do pid (folha antes do pai). Filho de uvicorn não
+# escuta porta nenhuma: `intencao_worker` (3,8 GB), `marca_worker`,
+# `separa_worker`, `tts_worker`. Matar só o listener deixa todos órfãos com
+# PPID 1 segurando GPU/RAM — e o `run.sh` ainda ressuscita o uvicorn em 2 s.
+_mata_arvore() {
+  local raiz="$1" filho
+  for filho in $(pgrep -P "$raiz" 2>/dev/null); do
+    _mata_arvore "$filho"
+  done
+  kill "$raiz" 2>/dev/null || true
+}
+
+# 1) o `run.sh` anterior e a árvore dele: sem isto o laço ressuscita o uvicorn
 if [ -f "$PIDFILE" ]; then
   antigo="$(cat "$PIDFILE" 2>/dev/null)"
   case "$antigo" in
     ''|*[!0-9]*) ;;
     *) if ps -o command= -p "$antigo" 2>/dev/null | grep -q "run\.sh"; then
-         kill "$antigo" 2>/dev/null || true
+         _mata_arvore "$antigo"
        fi ;;
   esac
 fi
-# 2) workers do app: nascem em SESSÃO PRÓPRIA (`start_new_session`), então
-# sobrevivem ao pai morto e continuam segurando GPU/RAM — o `intencao_worker`
-# sozinho são 3,8 GB. Só o caminho do REPO de produção entra aqui: worktree é
-# `…/tts-rod-wt/…`, que não casa com `…/tts-rod/`.
-for _w in tts_worker marca_worker separa_worker intencao_worker; do
-  pkill -f "$REPO/${_w}\.py" 2>/dev/null || true
-done
-# 3) quem ainda estiver na porta de produção (uvicorn órfão de um ssh morto)
+# 2) quem ainda estiver na porta de produção (uvicorn órfão de um ssh morto) —
+# a árvore dele primeiro, o `run.sh` pai depois
 for pid in $(lsof -ti ":$PORTA" -sTCP:LISTEN 2>/dev/null); do
   [ "$pid" = "$$" ] && continue
-  kill "$pid" 2>/dev/null || true
+  _mata_arvore "$pid"
   pai="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
   [ -n "$pai" ] && ps -o command= -p "$pai" 2>/dev/null | grep -q "run\.sh" \
-    && kill "$pai" 2>/dev/null
+    && _mata_arvore "$pai"
+done
+# 3) rede de segurança para worker que já perdeu o pai (crash anterior): aí não
+# há árvore para descer, só o caminho do REPO — worktree é `…/tts-rod-wt/…` e
+# não casa com a barra final de `…/tts-rod/`
+for _w in tts_worker marca_worker separa_worker intencao_worker; do
+  pkill -f "$REPO/${_w}\.py" 2>/dev/null || true
 done
 sleep 1
 cd "$REPO" || exit 1

@@ -30,14 +30,16 @@ def _porta_livre() -> int:
 
 
 def _duble(tmp_path: Path, porta: int, nome: str) -> subprocess.Popen:
-    """Processo com a assinatura `uvicorn app:app` escutando na porta.
+    """`uvicorn app:app` escutando na porta E um filho que não escuta.
 
-    Sem `exec` de propósito: o `ps` tem de mostrar o caminho do dublê seguido de
-    `app:app`, que é o que o `pkill -f` antigo casava."""
+    O filho é o ponto: worker de verdade (`intencao_worker`, 3,8 GB) não abre
+    porta, então limpeza que mata só o listener o deixa órfão. O `ps` mostra o
+    caminho do dublê seguido de `app:app`; o `exec` mantém o pid."""
     binario = tmp_path / "bin" / nome
     binario.parent.mkdir(parents=True, exist_ok=True)
     binario.write_text(
         "#!/bin/sh\n"
+        "sleep 200 &\n"
         "exec python3 -c 'import http.server,sys;"
         'http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])),'
         "http.server.SimpleHTTPRequestHandler).serve_forever()' \"$1\" app:app\n")
@@ -47,6 +49,19 @@ def _duble(tmp_path: Path, porta: int, nome: str) -> subprocess.Popen:
 
 def _vivo(proc: subprocess.Popen) -> bool:
     return proc.poll() is None
+
+
+def _vivo_pid(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _filhos(pid: int) -> list[int]:
+    saida = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout
+    return [int(x) for x in saida.split()]
 
 
 def _espera(cond, teto: float = 8.0) -> bool:
@@ -84,6 +99,8 @@ def test_boot_mata_so_a_producao(tmp_path):
         [sys.executable, "-c", "import time; time.sleep(60)",
          str(repo / "intencao_worker.py")], start_new_session=True)
     assert _espera(lambda: "app:app" in _cmd(antigo.pid)), "dublê não subiu"
+    assert _espera(lambda: _filhos(antigo.pid)), "o dublê não tem filho para morrer"
+    filho = _filhos(antigo.pid)[0]
     assert _espera(lambda: "app:app" in _cmd(vizinho.pid)), "dublê vizinho não subiu"
     assert _espera(lambda: "intencao_worker.py" in _cmd(worker.pid)), "worker não subiu"
 
@@ -100,6 +117,8 @@ def test_boot_mata_so_a_producao(tmp_path):
 
         assert _espera(lambda: not _vivo(antigo)), \
             "o processo na porta de produção sobreviveu ao boot"
+        assert _espera(lambda: not _vivo_pid(filho)), (
+            "o filho que não escuta (worker) ficou órfão segurando GPU/RAM")
         assert _espera(lambda: not _vivo(worker)), (
             "o worker de sessão própria sobreviveu e fica segurando GPU/RAM")
         assert _vivo(vizinho), (
