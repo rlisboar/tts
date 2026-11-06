@@ -11923,6 +11923,9 @@ def _live_envia_audio(sess: dict, pcm: bytes, *, marcar: bool = True) -> None:
             pcm = _marca_pcm(pcm, _LIVE_AUDIO_SR)  # 24 kHz, grade 16 kHz por dentro (#908)
         _live_janela_turno(sess, True)   # #167: turno do assistente com áudio em voo
         sess["audio_pendente"] = sess.get("audio_pendente", 0) + 1
+        # #877: contador MONOTÔNICO de áudio da resposta — a continuação só vale
+        # enquanto o turno em curso não mandou nenhum chunk (depois disso é barge)
+        sess["audio_enviado"] = sess.get("audio_enviado", 0) + 1
         derrubados = sess["fila"].put(("audio", pcm))
         if derrubados:
             # teto da fila: o áudio derrubado não vai mais ao ar, então sai da
@@ -12210,6 +12213,10 @@ def _live_abre_turno(sess: dict, pcm: bytes = b"", barge_in: bool = False) -> No
     # `vad` — a fala do dono sumia e a sessão ficava parada. O `pop` garante uma
     # vez só (o caminho pendente carrega o trecho junto, então aqui não sobra).
     pcm = (sess.pop("barge_audio", b"") or b"") + (pcm or b"")
+    # CONTINUAÇÃO (#877): a 1ª metade da frase (turno cancelado porque o dono
+    # voltou a falar antes de qualquer áudio da resposta) vem NA FRENTE — o STT
+    # transcreve a frase inteira e o LLM responde a ela, não à metade.
+    pcm = (sess.pop("continuacao_audio", b"") or b"") + pcm
     pipe = sess.get("pipe")
     if pipe is None:                     # sem pipeline: stub mínimo
         # via `_live_envia_json` (#211), como o irmão `_live_engine`: a fila crua
@@ -12258,6 +12265,13 @@ def _live_abre_turno(sess: dict, pcm: bytes = b"", barge_in: bool = False) -> No
             if pcm:
                 pipe.push_pcm(pcm, substituir=True)   # é o turno INTEIRO, não um pedaço
             abriu = pipe.end_of_speech(barge=bool(barge_in))
+        if abriu and pcm and not barge_in:
+            # candidato a CONTINUAÇÃO (#877): o que foi entregue agora, o instante
+            # e quanto áudio de resposta já tinha saído antes dele
+            sess["continuavel"] = {"pcm": pcm, "t": time.monotonic(),
+                                   "audio0": sess.get("audio_enviado", 0)}
+        elif abriu:
+            sess.pop("continuavel", None)
         if not abriu:
             # perdeu a corrida (outro turno abriu entre a checagem e aqui):
             # a fala vira pendente em vez de sumir (mesma política do ocupado)
@@ -13084,6 +13098,38 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
     _live_conta_barge(sess, tipo, decisao_ms, modelo_ms)
 
 
+#: janela da CONTINUAÇÃO (#877), contada da abertura do turno anterior. O guarda
+#: principal é "nenhum áudio da resposta saiu"; a janela só impede fundir uma fala
+#: NOVA com um turno cujo LLM demorou muito (aí ela é outra pergunta: pendente).
+_LIVE_CONTINUACAO_MS = int(os.environ.get("TTS_LIVE_CONTINUACAO_MS", "2500") or 0)
+
+
+def _live_tenta_continuacao(sess: dict) -> bool:
+    """Fala recomeçou com o turno anterior ainda SEM resposta audível (#877).
+
+    O motor fecha o turno em `silence_ms` (600) e uma pausa de respiração no meio
+    de uma frase longa passa disso: o pipeline respondia à 1ª metade e a resposta
+    começava POR CIMA da 2ª (bancada E2E, #875). Aqui o turno em voo é cancelado
+    sem gravar history e o áudio dele volta para a frente do próximo turno — o
+    STT transcreve a frase inteira. Depois do 1º chunk de resposta não há
+    continuação: a fala por cima é barge e segue a cadeia do #870."""
+    cont = sess.get("continuavel")
+    pipe = sess.get("pipe")
+    if not cont or pipe is None or not getattr(pipe, "ocupado", False):
+        return False
+    if sess.get("audio_enviado", 0) != cont["audio0"]:
+        return False                       # a resposta já soou: é barge
+    idade_ms = int((time.monotonic() - cont["t"]) * 1000)
+    if _LIVE_CONTINUACAO_MS <= 0 or idade_ms > _LIVE_CONTINUACAO_MS:
+        return False
+    sess.pop("continuavel", None)
+    sess["continuacao_audio"] = cont["pcm"]
+    pipe.cancel(sem_historico=True)
+    _live_log_kv("turno_continuado", sess=sess["id"], idade_ms=idade_ms,
+                 bytes=len(cont["pcm"]))
+    return True
+
+
 def _live_conta_barge(sess: dict, tipo: str, decisao_ms: int,
                       modelo_ms: int | None) -> None:
     st = sess.setdefault("barge_stats", {"tipos": {}, "decisoes": [], "modelo": []})
@@ -13126,6 +13172,8 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
         elif ev.tipo == "speech_start":
             _live_log_kv("speech_start", sess=sess["id"], t_ms=ev.t_ms,
                          prob=getattr(ev, "prob", None))
+            if not getattr(ev, "barge_in", False):
+                _live_tenta_continuacao(sess)
         elif ev.tipo == "speech_end":
             _live_log_kv("speech_end", sess=sess["id"], t_ms=ev.t_ms,
                          fala_ms=getattr(ev, "fala_ms", None),

@@ -271,6 +271,7 @@ class LivePipeline:
         self._render_ate = 0.0
 
         self._cancel = threading.Event()
+        self._sem_historico = False    # #877: cancel de CONTINUAÇÃO não grava history
         self._fala = bytearray()          # PCM16 16 kHz do turno em curso
         self._em_turno = threading.Event()
         # RLock: `abrir_turno` segura a trava e chama `end_of_speech`, que a toma
@@ -510,6 +511,7 @@ class LivePipeline:
             pcm = bytes(self._fala)
             self._fala = bytearray()
             self._cancel.clear()
+            self._sem_historico = False
             if not pcm:
                 # protocolo: sem áudio não há turno — o cliente sabe por quê
                 self.emit_json({"type": "error", "code": "sem_audio",
@@ -525,13 +527,20 @@ class LivePipeline:
             self._turno(pcm)
         return True
 
-    def cancel(self) -> None:
+    def cancel(self, sem_historico: bool = False) -> None:
         """Barge-in/`cancel`: derruba geração e fila. Thread-safe e idempotente.
+
+        `sem_historico` (#877): o turno cancelado NÃO entra no `history`. É a
+        CONTINUAÇÃO — o dono só respirou no meio da frase; o turno fundido leva o
+        áudio das duas metades e a 1ª metade, sozinha, não pode ficar no contexto
+        do LLM com uma resposta que ninguém ouviu.
 
         No backend dsh derruba TAMBÉM o `session/prompt` em voo do harness: sem
         isso a sessão ACP segue gerando depois do barge-in e um chunk tardio
         entraria no TTS do turno seguinte. Casa por identidade de turno (o
         `cancel` de um turno velho não mata o novo)."""
+        if sem_historico:
+            self._sem_historico = True
         self._cancel.set()
         if self._dsh is not None and self._dsh_turno:
             try:
@@ -980,8 +989,10 @@ class LivePipeline:
             # referência de ECO = o que o cliente vai tocar, isto é, o texto limpo
             self._fala_em_curso = "".join(falado).strip()
             self._marcar_render(self._fala_em_curso)
-            self.history += [{"role": "user", "content": texto},
-                             {"role": "assistant", "content": resposta}]
+            # #877: continuação cancelada não grava history (o áudio vai na frente)
+            if not (self.cancelado and getattr(self, "_sem_historico", False)):
+                self.history += [{"role": "user", "content": texto},
+                                 {"role": "assistant", "content": resposta}]
             self._dsh_pos_turno()           # teto de contexto: fora da latência
 
             if self.cancelado:

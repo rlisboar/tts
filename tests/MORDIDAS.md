@@ -846,3 +846,15 @@ o resto no fim da resposta; na Conversa o campo `_fala` é o limpo e o cru fica 
 | destino do link sem parênteses (`[^()]`) | `test_link_com_parenteses_nao_vaza` **FAILED** (`(city)` falado) |
 | segurar todo `[` e falar o colchete no `flush` | `test_colchete_sem_url_nao_e_falado` **FAILED** (`[` na fala) |
 | emitir o espaço da lista e pendurar o ponto depois | `test_lista_longa_nao_deixa_espaco_antes_do_ponto` **FAILED** (`fim .`) |
+
+### #877 — continuação: pausa de respiração não fecha a frase longa
+
+Fala que recomeça com o turno anterior ainda SEM áudio de resposta cancela esse turno
+sem gravar history e o áudio dele vai na frente do turno seguinte.
+
+| Sabotagem | Resultado |
+|---|---|
+| sem o conserto (app + pipeline do `99a2e76`) | `test_fala_que_recomeca_antes_da_resposta_funde_no_mesmo_turno`, `..._vai_inteira_ao_pendente`, `test_fora_da_janela_e_fala_nova`, `test_sem_historico_nao_gruda_no_turno_seguinte` **FAILED** |
+| gravar history mesmo com `sem_historico` | `test_cancel_de_continuacao_nao_grava_a_metade_no_history` **FAILED** |
+| tirar o guarda "nenhum áudio de resposta saiu" | `test_depois_do_primeiro_audio_da_resposta_nao_ha_continuacao` **FAILED** |
+| tratar `speech_start` de barge como continuação | `test_speech_start_de_barge_nao_e_continuacao` **FAILED** |
