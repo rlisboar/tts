@@ -626,7 +626,7 @@ async def sessao(args, corpus: list[dict]) -> dict:
         setup = {"type": "setup"}
         if args.voice:
             setup["voice_id"] = args.voice
-        await ws.send(json.dumps(setup))
+        await asyncio.wait_for(ws.send(json.dumps(setup)), 20)
         c = Cliente(ws, args.eco_db, args.eco_atraso_ms, args.ruido_dbfs)
         rx = asyncio.create_task(c.recebe())
         if not await c.espera(lambda: c.evs(0, ("ready", "error")), 60):
@@ -657,7 +657,10 @@ async def sessao(args, corpus: list[dict]) -> dict:
             k += 1
         vivo_no_fim = c.vivo
         mic.cancel()
-        await ws.close()
+        try:
+            await asyncio.wait_for(ws.close(), 5)
+        except Exception:                                         # noqa: BLE001
+            pass                    # socket pendurado não pode segurar o resumo
         rx.cancel()
     proc_fim = _servidor_proc(porta)
     resps = respostas(c)
