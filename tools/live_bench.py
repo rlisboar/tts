@@ -289,7 +289,6 @@ class Cliente:
         return self.voz_fim
 
     async def mic(self):
-        from scipy.signal import resample_poly
         prox = time.monotonic() + FRAME_S
         while self.vivo:
             await asyncio.sleep(max(0.0, prox - time.monotonic()))
@@ -307,8 +306,14 @@ class Cliente:
                 self.play = self.play[n24:]
             if len(tocado):
                 self.tocado_s += len(tocado) / SR_OUT
-                eco = resample_poly(tocado, 2, 3).astype(np.float32)[:FRAME]
-                eco = np.pad(eco, (0, FRAME - len(eco)))
+                # 24k → 16k CONTINUO (interpolação linear com passo 1,5). O
+                # `resample_poly` por quadro de 100 ms reinicia a fase do filtro
+                # a cada quadro e a correlação com a referência do servidor cai
+                # para ~0,5 (medido) — o duck então trata eco como voz. Aqui o
+                # passo é exato: 1600 saídas consomem 2400 entradas, sem sobra.
+                x = self.play[: n24 + 1]
+                pos = np.arange(FRAME, dtype=np.float32) * 1.5
+                eco = np.interp(pos, np.arange(len(x), dtype=np.float32), x).astype(np.float32)
             else:
                 eco = np.zeros(FRAME, np.float32)
             self.eco_fila.append(eco * self.eco_g)
