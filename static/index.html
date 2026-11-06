@@ -3259,10 +3259,10 @@
         <details class="sp-avancado" id="spAvancado">
           <summary>Número cru do rigor</summary>
           <label class="cfg-label">Rigor <output id="spThrOut">0.60</output>
-            <input type="range" id="spThr" data-admin-setting="speaker_threshold" min="0.35" max="0.9" step="0.05" value="0.6" aria-describedby="spThrNota"></label>
+            <input type="range" id="spThr" min="0.35" max="0.9" step="0.05" value="0.6" aria-describedby="spThrNota" data-admin-setting="speaker_threshold"></label>
           <p class="hint" style="margin-top:0">Sua voz costuma dar <b>0.65–0.85</b>; outra pessoa, <b>0.40–0.55</b>. Padrão 0.60 — rejeita intrusos sem rejeitar você (resfriado/afastado do mic). Só vale no modo cru.</p>
         </details>
-        <label class="check" title="Marca d'água em toda saída do TTS, com detector — ainda não implementado (#522)"><input type="checkbox" id="spAntiClone" data-admin-setting="speaker_anticlone" data-sempre-travado="1" disabled> Anti-clone (marca d'água) <span class="hint">— em breve</span></label>
+        <label class="check" title="Marca d'água em toda saída do TTS, com detector — ainda não implementado (#522)"><input type="checkbox" id="spAntiClone" data-sempre-travado="1" data-admin-setting="speaker_anticlone" disabled> Anti-clone (marca d'água) <span class="hint">— em breve</span></label>
         <!-- o app pode cair para o extrator legado quando faltam os pesos do
              atual; quem diz é o servidor (`extrator_efetivo`) e aqui só se avisa
              — sem o campo (servidor anterior) o parágrafo fica oculto -->

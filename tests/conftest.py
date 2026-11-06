@@ -562,6 +562,12 @@ def _registro_limpo_entre_testes():
     with app._jobs_lock:
         app._jobs.clear()
     app._chat_dsh_livres.clear()
+    # Freio de força bruta (#785): o contador é GLOBAL por IP e a suíte inteira usa
+    # o mesmo `testclient`. Passadas ~20 falhas de auth o IP fica travado por 60 s
+    # e o resto da suíte vira 429 — dependendo de a rodada caber na janela. Cada
+    # teste começa com o freio zerado.
+    with app._auth_falhas_lock:
+        app._auth_falhas.clear()
     yield
     # a limpeza FINAL é do espiao (`tests/_espiao.py`): ele reporta antes de
     # zerar. Deixar aqui também cegava o espiao (#575).
