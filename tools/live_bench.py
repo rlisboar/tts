@@ -30,8 +30,10 @@ SLOs medidos:
      falas ≥0,8 s descartadas;
   S2 fim real da fala → 1º áudio da resposta (p50/p95), DECOMPOSTO pelo
      `latency` do turno em `llm_ttft` (1º token) e `pos_llm` (TTS + fila);
-  S3 início da fala por cima → duck (evento + rampa de 50 ms) e → `interrupted`;
-     falso corte = `interrupted` durante resposta só com eco;
+  S3 início da fala por cima → duck (evento + rampa de 50 ms), pausa reversível
+     (`barge_pausa` ≤800 ms) e corte por conteúdo (`interrupted`, sem
+     `motivo:"continuacao"`); falso corte/duck/pausa = sinal durante resposta só
+     com eco (o player simulado suspende/retoma como o `340af4b`);
   S4 respostas com símbolo de markdown/emoji/URL no texto que vai ao TTS —
      `texto_para_fala(assistant_text)` (#871; o `assistant_text` cru segue
      medido em `cru_com_simbolo`). Sem `common.py` no diretório do app, cai no
@@ -65,6 +67,7 @@ SR_OUT = 24000
 FRAME = 1600                      # 100 ms
 FRAME_S = FRAME / SR_MIC
 DUCK_RAMPA_MS = 50                # LX_DUCK_MS da UI
+PAUSA_TETO_S = 3.0                # LX_PAUSA_TETO_MS do player (#881)
 CURTA_S = 0.9                     # fala curta: ≤1 s
 
 
@@ -230,6 +233,8 @@ class Cliente:
         self.rng = np.random.default_rng(7)
         self.vivo = True
         self.erro: str | None = None
+        self.pausado = False                            # #881: contexto suspenso
+        self.pausa_desde = 0.0
 
     def agora(self) -> float:
         return time.monotonic() - self.t0
@@ -253,8 +258,19 @@ class Cliente:
                     self.ultimo_stats = ev
                     continue
                 self.eventos.append((t, tipo, ev))
-                if tipo == "interrupted":
-                    self.play = np.zeros(0, dtype=np.float32)   # o cliente corta
+                # #881: o player real SUSPENDE o contexto no `barge_pausa` e
+                # retoma no `barge_retoma`; `interrupted` corta. O `interrupted`
+                # de continuação (#877) NÃO é corte: a fila fica.
+                if tipo == "barge_pausa":
+                    self.pausado, self.pausa_desde = True, time.monotonic()
+                elif tipo == "barge_retoma":
+                    self.pausado = False
+                elif tipo == "interrupted":
+                    self.pausado = False
+                    if ev.get("motivo") != "continuacao":
+                        self.play = np.zeros(0, dtype=np.float32)   # o cliente corta
+                elif tipo == "pausa_teto":
+                    self.pausado = False
         except Exception as exc:                                  # noqa: BLE001
             self.erro = f"{type(exc).__name__}: {exc}"
         finally:
@@ -274,10 +290,16 @@ class Cliente:
             await asyncio.sleep(max(0.0, prox - time.monotonic()))
             # o frame cobre [prox-100ms, prox): sai depois de capturado
             quadro = (self.rng.standard_normal(FRAME).astype(np.float32) * self.ruido)
-            # playback: 100 ms tocados neste quadro → eco (atrasado) no mic
+            # playback: 100 ms tocados neste quadro → eco (atrasado) no mic.
+            # PAUSADO (#881) o relógio do contexto congela: nada é consumido e
+            # não há eco. O teto local de 3 s devolve sozinho.
             n24 = FRAME * SR_OUT // SR_MIC
-            tocado = self.play[:n24]
-            self.play = self.play[n24:]
+            if self.pausado and time.monotonic() - self.pausa_desde > PAUSA_TETO_S:
+                self.pausado = False
+                self.eventos.append((self.agora(), "pausa_teto", {}))
+            tocado = self.play[:n24] if not self.pausado else np.zeros(0, np.float32)
+            if not self.pausado:
+                self.play = self.play[n24:]
             if len(tocado):
                 self.tocado_s += len(tocado) / SR_OUT
                 eco = resample_poly(tocado, 2, 3).astype(np.float32)[:FRAME]
@@ -376,12 +398,16 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
         # (o frame sai depois de capturado): evento antes disso não é desta fala
         # — é eco do playback, e entra no `eco_falso_duck`, não aqui.
         causal = b_ini + FRAME_S
-        lb["duck_antes_da_fala"] = bool(c.evs(b_ini - 1.0, ("speech_start", "barge_suspeito"),
-                                              causal))
+        lb["duck_antes_da_fala"] = bool(c.evs(b_ini - 1.0, ("speech_start", "barge_suspeito",
+                                                             "barge_pausa"), causal))
         duck = c.evs(causal, ("speech_start", "barge_suspeito"))
-        corte = c.evs(causal, ("interrupted",))
+        pausa = c.evs(causal, ("barge_pausa",))
+        corte = [(t, ty, e) for t, ty, e in c.evs(causal, ("interrupted",))
+                 if e.get("motivo") != "continuacao"]
         lb["s3_duck_ms"] = (round((duck[0][0] - b_ini) * 1000) + DUCK_RAMPA_MS
                             if duck else None)
+        # pausa reversível (#881): alvo ≤800 ms; o cancel por conteúdo vem depois
+        lb["s3_pausa_ms"] = round((pausa[0][0] - b_ini) * 1000) if pausa else None
         lb["s3_stop_ms"] = round((corte[0][0] - b_ini) * 1000) if corte else None
     # ---------- resposta de B toca inteira com eco ----------
     await c.espera(lambda: c.bin_apos(b_fim) is not None
@@ -394,9 +420,11 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
     eco_fim = c.agora()
     lb["eco_tocado_s"] = round(c.tocado_s, 1) if t_audio_b else 0.0
     if t_audio_b is not None:
-        lb["eco_falso_corte"] = bool(c.evs(t_audio_b, ("interrupted",), eco_fim))
+        lb["eco_falso_corte"] = bool([e for _, _, e in c.evs(
+            t_audio_b, ("interrupted",), eco_fim) if e.get("motivo") != "continuacao"])
         lb["eco_falso_duck"] = bool(c.evs(t_audio_b, ("speech_start", "barge_suspeito"),
                                           eco_fim))
+        lb["eco_falso_pausa"] = bool(c.evs(t_audio_b, ("barge_pausa",), eco_fim))
     await asyncio.sleep(1.0)            # cauda: evento atrasado ainda conta
     # S1 por CICLO: o servidor corta fala longa em pausa natural, acumula trecho
     # como pendente e funde trechos — atribuir transcript por janela de tempo
@@ -555,6 +583,11 @@ async def sessao(args, corpus: list[dict]) -> dict:
         if c.evs(0, ("error",)):
             raise SystemExit(f"setup recusado: {c.evs(0, ('error',))[0][2]}")
         await c.espera(lambda: c.evs(0, ("prewarm",)), args.prewarm_s)
+        # O handshake do dsh é ASSÍNCRONO no setup e o prewarm do chat pode
+        # falhar antes dele (estado local sem provedor): sem esta folga o 1º
+        # turno paga o boot, estoura o teto de 1º delta e a sessão cai no
+        # openai — que no estado sintético não tem base URL.
+        await asyncio.sleep(6.0)
         mic = asyncio.create_task(c.mic())
         await asyncio.sleep(1.5)                     # ruído de fundo antes da 1ª fala
         ordem = list(corpus)
@@ -631,10 +664,17 @@ def resumo(res: dict, args) -> dict:
                "stop_max_ms": max([l["s3_stop_ms"] for l in inter
                                    if l.get("s3_stop_ms") is not None], default=None),
                "stop_ok_800": sum((l.get("s3_stop_ms") or 1e9) <= 800 for l in inter),
+               "pausa_n": sum(l.get("s3_pausa_ms") is not None for l in inter),
+               "pausa_p50_ms": pct([l["s3_pausa_ms"] for l in inter
+                                    if l.get("s3_pausa_ms") is not None], .5),
+               "pausa_max_ms": max([l["s3_pausa_ms"] for l in inter
+                                    if l.get("s3_pausa_ms") is not None], default=None),
+               "pausa_ok_800": sum((l.get("s3_pausa_ms") or 1e9) <= 800 for l in inter),
                "eco_respostas": len(eco),
                "eco_falso_corte": sum(l["eco_falso_corte"] for l in eco),
                "eco_falso_duck": sum(l.get("eco_falso_duck", False) for l in eco),
-               "meta": "duck ≤300, stop ≤800, falso corte ≤5 %"},
+               "eco_falso_pausa": sum(l.get("eco_falso_pausa", False) for l in eco),
+               "meta": "duck ≤300, pausa ≤800, falso corte ≤5 %, falso duck ≤5 %"},
         "S4": {"respostas": len(resp),
                "com_simbolo": sum(bool(r["s4_simbolos"]) for r in resp),
                "por_tipo": _soma([r["s4_simbolos"] for r in resp]),
@@ -661,14 +701,16 @@ def _soma(ds: list[dict]) -> dict:
 
 
 def imprime(r: dict, L: list[dict]):
-    print("\nfala tipo        dur   aceito cobert. WERciclo  S2ms  duck  stop  eco_corte eco_duck")
+    print("\nfala tipo        dur   aceito cobert. WERciclo  S2ms  duck  pausa  stop  eco_corte eco_duck eco_pausa")
     for l in L:
         print(f"{l['fala']:>4} {l['tipo']:<11} {l['dur_s']:>4.1f}  {str(l['aceito']):<6}"
               f" {l.get('cobertura', '—')!s:<7} {l.get('wer_ciclo', '—')!s:<8}"
               f" {l.get('s2_ms') if l.get('s2_ms') is not None else '—'!s:>5}"
               f"  {l.get('s3_duck_ms') if l.get('s3_duck_ms') is not None else '—'!s:>4}"
+              f"  {l.get('s3_pausa_ms') if l.get('s3_pausa_ms') is not None else '—'!s:>5}"
               f"  {l.get('s3_stop_ms') if l.get('s3_stop_ms') is not None else '—'!s:>4}"
-              f"  {str(l.get('eco_falso_corte', '—')):<9} {l.get('eco_falso_duck', '—')!s}")
+              f"  {str(l.get('eco_falso_corte', '—')):<9} {l.get('eco_falso_duck', '—')!s:<9}"
+              f" {l.get('eco_falso_pausa', '—')!s}")
     print()
     for s, v in r.items():
         print(s, json.dumps(v, ensure_ascii=False))
