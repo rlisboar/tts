@@ -63,40 +63,55 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--carga", action="store_true")
     ap.add_argument("--n", type=int, default=20)
+    ap.add_argument("--dono", default="", help="caminho.wav|transcrição de referência")
     a = ap.parse_args()
     import app
     meta = json.loads((CORPUS / "meta.json").read_text())["refs"]
-    falas = sorted(meta)[: a.n]
+    falas = [CORPUS / f for f in sorted(meta)[: a.n]]
+    meta = {str(CORPUS / f): t for f, t in meta.items()}
+    if a.dono:
+        # cópia da voz do dono (em /tmp, nunca do `voices/`) com o `ref_text` dela;
+        # entra como mais uma fala E sai em linha própria
+        wav, ref = a.dono.split("|", 1)
+        meta[wav] = ref
+        falas.append(pathlib.Path(wav))
     proc = carga() if a.carga else None
+    carga_dir = sorted(pathlib.Path(tempfile.gettempdir()).glob("876-carga-*"))
     res = {}
     try:
         for repo in MODELOS:
             app._settings["stt_whisper_repo"] = repo
             app._transcreve_em_janelas(np.zeros(16000, np.float32), "pt")   # aquece
-            ws, lat = [], {1: [], 3: [], 6: []}
+            ws, lat, dono = [], {1: [], 3: [], 6: []}, {}
             for f in falas:
-                x, sr = sf.read(str(CORPUS / f), dtype="float32")
+                x, sr = sf.read(str(f), dtype="float32")
                 if x.ndim > 1:
                     x = x.mean(1)
                 if sr != 16000:
                     import librosa
                     x = librosa.resample(x, orig_sr=sr, target_sr=16000)
                 r = app._transcreve_em_janelas(x, "pt")
-                ws.append(wer(r.get("text") or "", meta[f]))
+                ws.append(wer(r.get("text") or "", meta[str(f)]))
+                if a.dono and str(f) == a.dono.split("|", 1)[0]:
+                    dono["wer"] = round(ws[-1], 4)
                 for s in lat:
                     t0 = time.perf_counter()
                     app._transcreve_em_janelas(x[: s * 16000], "pt")
                     lat[s].append((time.perf_counter() - t0) * 1000)
+                    if dono and f"ms_{s}s" not in dono:
+                        dono[f"ms_{s}s"] = round(lat[s][-1])
             res[repo] = {"wer_medio": round(float(np.mean(ws)), 4),
                          "wer_mediano": round(float(np.median(ws)), 4),
                          **{f"ms_{s}s_p50": round(float(np.median(v))) for s, v in lat.items()},
-                         **{f"ms_{s}s_p90": round(float(np.percentile(v, 90))) for s, v in lat.items()}}
+                         **{f"ms_{s}s_p90": round(float(np.percentile(v, 90))) for s, v in lat.items()},
+                         **({"dono": dono} if dono else {})}
             print(repo.split("/")[-1], res[repo], flush=True)
     finally:
         if proc:
             os.killpg(proc.pid, 15)
-    saida = RAIZ / "evidence" / f"876-stt-bench-{'carga' if a.carga else 'livre'}.json"
-    saida.write_text(json.dumps({"n": len(falas), "carga": a.carga,
+    saida = pathlib.Path(os.environ.get("BENCH_OUT") or RAIZ / "evidence") / f"876-stt-bench-{os.uname().nodename.split(".")[0]}-{'carga' if a.carga else 'livre'}.json"
+    geradas = len(list(carga_dir[-1].glob("out/*.wav"))) if (a.carga and carga_dir) else 0
+    saida.write_text(json.dumps({"n": len(falas), "carga": a.carga, "tts_geracoes": geradas,
                                  "maquina": os.uname().nodename, "res": res}, indent=1))
 
 
