@@ -540,6 +540,10 @@ _SETTINGS_DEFAULTS = {
     "stt_denoise": True,              # denoise ffmpeg (afftdn) antes de cada transcrição
     "stt_local_engine": "whisper",    # STT local no Mac: whisper | parakeet
     "stt_whisper_repo": "",           # repo HF do Whisper local; vazio = large-v3-turbo
+    # #876: Whisper do LIVE (turno + decisão de barge), separado do de arquivo. Vazio =
+    # turbo: no Live a latência manda e o large-v3 custa 1,5–2,4× sem ganho medido de
+    # WER (evidence/876-stt-live.md). O `stt_whisper_repo` do dono segue no ditado/arquivo.
+    "live_stt_whisper_repo": "",
     "stt_beam": 5,                    # beam do STT remoto: 1=rápido, 5=padrão, 8=qualidade
     # Histórico de operação (#376): TTL em dias do JSONL do /api/metrics e teto de
     # tamanho por arquivo. Política de RECURSO (não é admin): quem gera fala pode
@@ -4643,7 +4647,7 @@ def shutdown(request: Request):
 # `TTS_ROD_ADMIN_KEY` e sem `role` nas chaves, toda chave válida segue admin.
 # ---------------------------------------------------------------------------
 _SETTINGS_ADMIN = frozenset({
-    "model", "translate_model", "stt_whisper_repo",
+    "model", "translate_model", "stt_whisper_repo", "live_stt_whisper_repo",
     "remote_tts", "remote_translate", "remote_stt",
     "remote_base_url", "remote_api_key", "remote_tts_url",
     "remote_stt_base_url", "remote_stt_key",
@@ -5163,6 +5167,11 @@ def _apply_settings(payload: dict):
         if repo and (not re.fullmatch(r"[\w.\-/]+", repo) or "whisper" not in repo.lower()):
             raise HTTPException(400, "stt_whisper_repo inválido (esperado repo HF do whisper)")
         _settings["stt_whisper_repo"] = repo
+    if "live_stt_whisper_repo" in payload:
+        repo = str(payload["live_stt_whisper_repo"] or "").strip()[:200]
+        if repo and (not re.fullmatch(r"[\w.\-/]+", repo) or "whisper" not in repo.lower()):
+            raise HTTPException(400, "live_stt_whisper_repo inválido (esperado repo HF do whisper)")
+        _settings["live_stt_whisper_repo"] = repo
     if "stt_beam" in payload:
         _settings["stt_beam"] = int(_clamp(payload["stt_beam"], 1, 10, 5))
     # Histórico de operação (#376): 1..365 dias (0 apaga tudo na próxima poda) e
@@ -8874,9 +8883,38 @@ def _transcreve_em_janelas(audio, lang, sr: int = 16000, desistiu=None):
             "segments": segmentos}
 
 
-def _whisper_repo() -> str:
+#: Whisper do Live quando `live_stt_whisper_repo` está vazio (#876). Fixo, não o
+#: `WHISPER_REPO`: o env do dono pode apontar o de arquivo para o large-v3.
+LIVE_WHISPER_PADRAO = "mlx-community/whisper-large-v3-turbo"
+_stt_ctx = threading.local()
+
+
+class _stt_do_live:
+    """Marca a thread: o `_transcribe` que rodar dentro usa o Whisper do Live.
+
+    Thread-local, não argumento: o `_transcribe` é dublado em dezenas de células
+    com a assinatura antiga, e o Live chega nele pelo `_stt_app` (mesma thread)."""
+
+    def __enter__(self):
+        self._antes = getattr(_stt_ctx, "live", False)
+        _stt_ctx.live = True
+
+    def __exit__(self, *exc):
+        _stt_ctx.live = self._antes
+
+
+def _whisper_repo(live: bool | None = None) -> str:
     """Repo HF do Whisper local: setting (ex. large-v3 completo p/ máxima
-    precisão) com fallback p/ o default do env."""
+    precisão) com fallback p/ o default do env.
+
+    `live=True` (#876): turno e barge do Live usam `live_stt_whisper_repo`
+    (vazio = turbo). O `mlx_whisper` guarda UM modelo; alternar Live e arquivo
+    com repos diferentes recarrega — custo aceito: as duas cargas não se cruzam
+    numa mesma sessão."""
+    if live is None:
+        live = bool(getattr(_stt_ctx, "live", False))
+    if live:
+        return (_settings.get("live_stt_whisper_repo") or "").strip() or LIVE_WHISPER_PADRAO
     return (_settings.get("stt_whisper_repo") or "").strip() or WHISPER_REPO
 
 
@@ -12402,7 +12440,8 @@ def _live_transcreve_trecho(sess: dict, audio: bytes, cru: bool = False,
             a = a[:24000]                      # ~1,5 s do INÍCIO: o comando vem no
                                                # ataque, não no fim do trecho
             if prazo_s <= 0:
-                return (_transcreve_em_janelas(a, idioma).get("text") or "").strip()
+                with _stt_do_live():     # #876: Whisper do Live
+                    return (_transcreve_em_janelas(a, idioma).get("text") or "").strip()
             # PRAZO por passada: o STT sob carga leva segundos e sem prazo a fila
             # de passadas cresce até estourar o teto de 2 s do cliente (#503).
             # `shutdown(wait=False)` é ESSENCIAL (#547): com o `with`, o
@@ -12424,7 +12463,7 @@ def _live_transcreve_trecho(sess: dict, audio: bytes, cru: bool = False,
                 return geracao != _STT_CMD_GERACAO
 
             def _roda():
-                with _stt_lock:
+                with _stt_lock, _stt_do_live():     # #876: thread do pool, marca aqui
                     if _desistiu():
                         return ""
                     return _transcreve_em_janelas(a, idioma,

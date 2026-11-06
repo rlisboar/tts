@@ -2013,6 +2013,17 @@ def test_stt_whisper_repo_setting(client, auth):
     client.post("/api/settings", headers=auth, json={"stt_whisper_repo": ""})
 
 
+def test_live_stt_whisper_repo_setting(client, auth):
+    r = client.post("/api/settings", headers=auth,
+                    json={"live_stt_whisper_repo": "mlx-community/whisper-large-v3-mlx"})
+    assert r.status_code == 200
+    assert app._whisper_repo(live=True) == "mlx-community/whisper-large-v3-mlx"
+    assert client.post("/api/settings", headers=auth,
+                       json={"live_stt_whisper_repo": "gpt-4"}).status_code == 400
+    client.post("/api/settings", headers=auth, json={"live_stt_whisper_repo": ""})
+    assert app._whisper_repo(live=True) == app.LIVE_WHISPER_PADRAO
+
+
 def test_transcribe_filtra_alucinacao(client, auth, monkeypatch):
     # ruído transcrito como "E aí" (blacklist) → rejeitado, sem virar mensagem
     monkeypatch.setitem(app._settings, "stt_anti_ruido", True)   # independe do settings.json real

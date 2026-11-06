@@ -1445,7 +1445,8 @@ def _stt_julga(pcm16_le_16k: bytes, language: str | None,
         if sep and julga is not None:
             julga["separacao"] = sep
         try:
-            r = app._transcribe(alvo_stt, language=language)
+            with app._stt_do_live():       # #876: Whisper do Live (turbo)
+                r = app._transcribe(alvo_stt, language=language)
         finally:
             if alvo_stt != destino:
                 alvo_stt.unlink(missing_ok=True)
