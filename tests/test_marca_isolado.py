@@ -115,7 +115,7 @@ def test_marca_nao_segura_o_gen_lock(monkeypatch, tmp_path):
     # --- Live: a produção não segura a trava; se um dia segurar, solta aqui ---
     live = []
 
-    def _espia_live(caminho):
+    def _espia_live(caminho, **_kw):
         live.append(app._gen_lock._is_owned())
         return caminho
 
