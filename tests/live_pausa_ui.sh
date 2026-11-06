@@ -14,6 +14,8 @@
 #     contexto pausado volta e a tela não anuncia "interrompi" — o MESMO frame
 #     sem `motivo` continua cortando (contraprova);
 #   · sem decisão do motor, o teto local (3 s) continua sozinho;
+#   · sem `ctxPlay` o episódio de medida não fica órfão (o próximo nasce com `t0`
+#     novo, não herda o velho);
 #   · `window.lxCortes` expõe t_duck, t_pausa e t_corte (ms desde a fala) para a
 #     bancada, com o desfecho de cada episódio.
 #
@@ -301,6 +303,30 @@ try:
         print("  5b:", json.dumps(r))
         cobrar(r["ativos"] == 0 and r["estado"] == "interrompido",
                f"interrupted comum continua cortando ({r['ativos']}, {r['estado']!r})")
+
+        # ─── 6. sem `ctxPlay` o episódio não fica órfão (P3 do gate #893) ────
+        # `lxPausaPlayback` sai cedo sem contexto; se o episódio ficasse aberto, o
+        # `lxCorteInicia` do próximo sinal passaria pelo early return e o `t0` novo
+        # nunca nasceria — as medidas seguintes herdariam o `t0` velho.
+        r = pg.evaluate("""async () => {
+            const o = {};
+            lxToca(__tom(1)); await __dorme(150);
+            __ev({ type: 'speech_start' }); await __dorme(50);
+            o.aberto = !!LX.corte;
+            const ctx = LX.ctxPlay; LX.ctxPlay = null;     // contexto morto
+            __ev({ type: 'barge_pausa', turn: 7 }); await __dorme(100);
+            o.orfao = !!LX.corte;
+            o.desfecho = (LX.cortes[LX.cortes.length - 1] || {}).desfecho;
+            LX.ctxPlay = ctx;
+            __ev({ type: 'speech_start' }); await __dorme(50);
+            o.novo = LX.corte ? LX.corte.t0_origem : null;
+            lxCancelaPlayback(); lxCorteFecha('fim'); return o;
+        }""")
+        print("  6:", json.dumps(r))
+        cobrar(r["aberto"], "o primeiro speech_start abriu episódio")
+        cobrar(not r["orfao"], f"episódio ficou órfão sem ctxPlay ({r})")
+        cobrar(r["desfecho"] == "sem_ctx", f"órfão fechado como sem_ctx ({r['desfecho']!r})")
+        cobrar(r["novo"] == "speech_start", f"o episódio seguinte nasceu com t0 novo ({r['novo']!r})")
 
         cobrar(not erros, f"console sem pageerror ({erros[:3]})")
         try: pg.evaluate("() => lxDesligar()")

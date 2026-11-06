@@ -9450,6 +9450,13 @@ LX.corte = null; LX.cortes = [];
 window.lxCortes = LX.cortes;
 
 function lxCorteInicia(origem) {
+  // Sem `ctxPlay` não há o que medir: um episódio aberto aqui nunca seria fechado
+  // pela pausa (`lxPausaPlayback` sai cedo) e envenenaria o `t0` do PRÓXIMO, porque
+  // o early return abaixo passaria a valer. Fecha o órfão e não abre outro (P3 #893).
+  if (!LX.ctxPlay) {
+    if (LX.corte && !LX.corte.desfecho) lxCorteFecha("sem_ctx");
+    return;
+  }
   if (LX.corte && !LX.corte.desfecho) return;   // o 1º sinal é o t0 do episódio
   LX.corte = { t0_origem: origem, t0: performance.now(), t_duck: null, t_pausa: null,
                t_retoma: null, t_corte: null, desfecho: null, saida_ms: null };
