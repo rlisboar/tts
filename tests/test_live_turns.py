@@ -2330,6 +2330,31 @@ def test_segunda_suspeita_antes_da_decisao_preserva_o_audio_das_duas():
     assert len(motor.audio_suspeito()) > audio1, "o áudio da 1ª suspeita foi apagado"
 
 
+def test_fusao_nao_emite_suspeita_a_cada_frame():
+    """#870: com a suspeita ainda sem decisão, a FUSÃO saía em TODO frame.
+
+    O `_conta_barge` (#707) só zera depois da folga, então com `_barge_frames`
+    já acima do alvo cada frame seguinte reentrava no ramo da fusão: medido no
+    mini, dezenas de `barge_suspeito` em 1 s (cada um armando timer + thread de
+    passadas de STT) e a decisão empurrada para 13 s. Fusão tem de pedir uma
+    janela de confirmação NOVA — no máximo um evento por `barge_in_ms`."""
+    motor, rel = _motor_inteligente()
+    _tocar(motor, rel, _tom(0.001), 40)
+    motor.set_speaking(True, nivel_dbfs=-18.0, duracao_ms=10000.0)
+    motor._calibrando = False
+    alvo = lt.Config()._frames_barge
+    evs1 = [e for e in _tocar(motor, rel, _tom(0.3), alvo + 2)
+            if e.tipo == "barge_suspeito"]
+    assert len(evs1) == 1
+    _tocar(motor, rel, _tom(0.001), 25)                 # fecha; decisão pendente
+    n = 60                                              # ~2 s de fala contínua
+    evs2 = [e for e in _tocar(motor, rel, _tom(0.3), n)
+            if e.tipo == "barge_suspeito"]
+    assert evs2, "a fusão sumiu (o #802 precisa do evento para trocar a época)"
+    assert len(evs2) <= n // alvo + 1, (
+        f"{len(evs2)} suspeitas em {n} frames: a fusão dispara a cada frame")
+
+
 def test_decisao_de_epoca_velha_nao_derruba_a_suspeita_nova():
     motor, rel = _motor_inteligente()
     _tocar(motor, rel, _tom(0.001), 40)
@@ -2581,3 +2606,161 @@ def test_rota_do_comando_adianta_o_desistiu_ate_as_janelas(monkeypatch):
     # rodaria as 3 e o total iria a 6
     assert len(janelas) <= 4, f"a abandonada não desistiu: {len(janelas)} janelas no total"
     assert nova == "para"
+
+
+# --- #870: decisão do barge em 13 s ------------------------------------------
+
+def _sess_870(motor):
+    import queue
+    import threading
+    return {"id": "s870", "ultimo_assistente": "", "pipe": None,
+            "cancelado": threading.Event(), "turno": 1, "fila": queue.Queue(),
+            "engine": motor}
+
+
+_TUDO_DESLIGADO = {n: {"on": False} for n in (
+    "palavras_corte", "eco", "identidade", "backchannel", "ruido", "modelo",
+    "pergunta", "frase_longa", "fala_sustentada", "fim_de_resposta")}
+
+
+def test_suspeita_fundida_desarma_timer_e_passadas_da_anterior(monkeypatch):
+    """#870: a fusão reentra no handler com a suspeita velha viva. O timer e o
+    laço de passadas dela seguiam rodando — cada fusão somava um decisor e um
+    laço de STT, e a decisão de verdade ficava na fila do `_stt_lock`."""
+    import app
+    monkeypatch.setitem(app._settings, "live_barge_filtros",
+                        {"palavras_corte": {"on": True, "passo_ms": 10_000}})
+    monkeypatch.setattr(app, "_live_transcreve_trecho", lambda *a, **k: "")
+    motor, _rel = _motor_inteligente()
+    sess = _sess_870(motor)
+
+    class _Ev:
+        audio = b"\x01\x00" * 800
+        epoca = 1
+    app._live_suspeita_barge(sess, _Ev())
+    timer1, parar1 = sess["barge_timer"], sess["barge_parar"]
+    _Ev.epoca = 2
+    app._live_suspeita_barge(sess, _Ev())
+    try:
+        assert parar1.is_set(), "o laço de passadas da suspeita velha seguiu vivo"
+        assert timer1.finished.is_set(), "o timer da suspeita velha seguiu armado"
+        assert sess["barge_timer"] is not timer1
+    finally:
+        sess["barge_timer"].cancel()
+        sess["barge_parar"].set()
+
+
+def test_timer_da_suspeita_leva_a_epoca(monkeypatch):
+    """#870: o prazo decide pela época DELE — o de uma suspeita já fundida não
+    pode decidir pela nova (o #802 já filtra, mas só se a época chegar)."""
+    import app
+    monkeypatch.setitem(app._settings, "live_barge_filtros", _TUDO_DESLIGADO)
+    vistos = []
+    monkeypatch.setattr(app, "_live_decide_barge",
+                        lambda s, a, f, **k: vistos.append(k.get("epoca")))
+    motor, _rel = _motor_inteligente()
+    import dataclasses
+    motor.config = dataclasses.replace(motor.config, barge_decisao_ms=1)
+    sess = _sess_870(motor)
+
+    class _Ev:
+        audio = b""
+        epoca = 7
+    app._live_suspeita_barge(sess, _Ev())
+    sess["barge_timer"].join(2)
+    assert vistos == [7]
+
+
+def test_sem_filtro_de_comando_nao_ha_passadas_de_stt(monkeypatch):
+    """#870: as passadas só servem ao `palavras_corte`; desligado, eram whisper a
+    cada 150 ms disputando a GPU sem poder decidir nada."""
+    import app
+    monkeypatch.setitem(app._settings, "live_barge_filtros", _TUDO_DESLIGADO)
+    chamadas = []
+    monkeypatch.setattr(app, "_live_transcreve_trecho",
+                        lambda *a, **k: chamadas.append(1) or "")
+    motor, _rel = _motor_inteligente()
+    sess = _sess_870(motor)
+
+    class _Ev:
+        audio = b"\x01\x00" * 800
+        epoca = 1
+    app._live_suspeita_barge(sess, _Ev())
+    try:
+        assert "barge_parar" not in sess, "armou laço de passadas sem filtro de comando"
+    finally:
+        sess["barge_timer"].cancel()
+    assert chamadas == []
+
+
+def test_cadeia_sem_filtro_de_texto_decide_sem_stt(monkeypatch):
+    """#870 (medido no mini): a cadeia inteira desligada e `sem_decisao=continua`
+    — o desfecho é fixo, mas a decisão pagava o whisper (13 s) para chegar nele."""
+    import app
+    monkeypatch.setitem(app._settings, "live_barge_filtros", _TUDO_DESLIGADO)
+    monkeypatch.setitem(app._settings, "live_barge_sem_decisao", "continua")
+    chamadas = []
+    monkeypatch.setattr(app, "_live_transcreve_trecho",
+                        lambda *a, **k: chamadas.append(1) or "Tch-tch-tch")
+    motor, rel = _motor_inteligente()
+    _abrir_por_barge(motor, rel)
+    sess = _sess_870(motor)
+    sess["barge_suspeito"] = {"audio": b"\x01\x00" * 800}
+    app._live_decide_barge(sess, b"\x01\x00" * 800, 400)
+    assert chamadas == [], "transcreveu sem nenhum filtro que leia o texto"
+    # com UM filtro de texto ligado o STT volta a rodar
+    monkeypatch.setitem(app._settings, "live_barge_filtros",
+                        {**_TUDO_DESLIGADO, "pergunta": {"on": True}})
+    _abrir_por_barge(motor, rel)
+    sess["barge_suspeito"] = {"audio": b"\x01\x00" * 800}
+    app._live_decide_barge(sess, b"\x01\x00" * 800, 400)
+    assert chamadas == [1]
+
+
+def test_whisper_tem_teto_de_tokens_pela_duracao(monkeypatch):
+    """#870: alucinação em laço ("Tch-tch-tch…") decodificava até 224 tokens num
+    trecho de 2,3 s. O teto acompanha a duração da janela."""
+    import sys
+    import types
+
+    import numpy as np
+
+    import app
+    pedidos = []
+    falso = types.SimpleNamespace(
+        transcribe=lambda a, **k: pedidos.append((len(a), k.get("sample_len")))
+        or {"text": "", "segments": []})
+    monkeypatch.setitem(sys.modules, "mlx_whisper", falso)
+    app._transcreve_em_janelas(np.zeros(int(2.336 * 16000), np.float32), "pt")
+    (n, teto), = pedidos
+    assert teto is not None, "sem teto: o laço decodifica até o limite do modelo"
+    assert teto <= 64, f"teto {teto} para 2,3 s ainda deixa o laço longo"
+    pedidos.clear()
+    app._transcreve_em_janelas(np.zeros(30 * 16000, np.float32), "pt")
+    assert pedidos[0][1] == app.STT_TOKENS_MAX, "janela cheia não pode perder texto"
+
+
+def test_fala_decidida_depois_do_fim_da_resposta_vira_pendente(monkeypatch):
+    """#870 (mini): "Tchau." real decidido com `restante_ms=0` saiu `ruido`
+    pelo `sem_decisao` e sumiu. Sem resposta tocando não há o que proteger: o
+    trecho vai ao pendente (o turno julga eco/alucinação com o STT dele)."""
+    import app
+    monkeypatch.setitem(app._settings, "live_barge_filtros", _TUDO_DESLIGADO)
+    monkeypatch.setitem(app._settings, "live_barge_sem_decisao", "continua")
+    monkeypatch.setattr(app, "_live_acorda_pendente", lambda s: None)
+    motor, rel = _motor_inteligente()
+    _abrir_por_barge(motor, rel)
+    sess = _sess_870(motor)
+    sess["barge_suspeito"] = {"audio": b"\x01\x00" * 800}
+    motor._playback_restante = 0
+    app._live_decide_barge(sess, b"\x01\x00" * 800, 672)
+    assert sess.get("turno_pendente"), "a fala sumiu com a resposta já terminada"
+    assert sess.get("turno_pendente_barge") is True, "perdeu o eco-check do turno"
+    # com resposta AINDA tocando, `sem_decisao=continua` segue descartando
+    motor2, rel2 = _motor_inteligente()
+    _abrir_por_barge(motor2, rel2)
+    sess2 = _sess_870(motor2)
+    sess2["barge_suspeito"] = {"audio": b"\x01\x00" * 800}
+    motor2._playback_restante = 300
+    app._live_decide_barge(sess2, b"\x01\x00" * 800, 672)
+    assert not sess2.get("turno_pendente")

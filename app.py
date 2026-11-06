@@ -8820,6 +8820,22 @@ def _vad_estado() -> tuple[str, str]:
 TETO_STT_S = 1800.0
 JANELA_STT_S = 30.0
 SOBREPOSICAO_STT_S = 1.0
+# Teto de tokens por janela, PROPORCIONAL à duração (#870). Sem ele o whisper
+# alucinando sobre eco/ruído ("Tch-tch-tch-…") decodifica até o limite do modelo
+# (224 tokens) num trecho de 2,3 s: medido 13 s de decisão de barge no mini com o
+# TTS disputando a GPU; com EOT suprimido (o mesmo laço) 2,3 s de áudio custam
+# 2 741 ms sem teto e 1 314 ms com 43 tokens. 12 tok/s cobre com folga fala
+# rápida em pt (~4 tok/s) mais os tokens de timestamp; a janela cheia de 30 s
+# cai no teto do próprio modelo e não muda.
+STT_TOKENS_POR_S = 12
+STT_TOKENS_MIN = 32
+STT_TOKENS_MAX = 224
+
+
+def _stt_teto_tokens(n_amostras: int, sr: int = 16000) -> int:
+    """`sample_len` do whisper para uma janela de `n_amostras`."""
+    dur = max(0.0, n_amostras / float(sr))
+    return int(min(STT_TOKENS_MAX, max(STT_TOKENS_MIN, STT_TOKENS_MIN + dur * STT_TOKENS_POR_S)))
 
 
 def _duracao_audio(path) -> float:
@@ -8860,6 +8876,7 @@ def _transcreve_em_janelas(audio, lang, sr: int = 16000, desistiu=None):
             # não deitar nada fora por conta própria.
             no_speech_threshold=0.99, logprob_threshold=-3.0,
             compression_ratio_threshold=9.9,
+            sample_len=_stt_teto_tokens(len(pedaco), sr),
         )
         t = (r.get("text") or "").strip()
         if t:
@@ -12791,6 +12808,16 @@ def _live_suspeita_barge(sess: dict, ev) -> None:
     Guarda o áudio e arma o PRAZO: quem não chegar a `speech_end` (fala que não
     fechou, STT rápido demais para a janela) decide pelo que tiver. O timer é
     cancelado se o `speech_end` chegar antes."""
+    # SUSPEITA NOVA SUBSTITUI A VELHA (#870): a fusão (#802) reentra aqui com a
+    # anterior ainda viva, e o timer e a thread de passadas dela seguiam rodando —
+    # medido no mini: ~22 suspeitas em 1 s, ~22 timers decidindo e ~22 laços de
+    # STT disputando o `_stt_lock`; a decisão real saiu em 13 s.
+    velho = sess.pop("barge_timer", None)
+    if velho is not None:
+        velho.cancel()
+    velho = sess.pop("barge_parar", None)
+    if velho is not None:
+        velho.set()
     sess["barge_suspeito"] = {"audio": bytes(getattr(ev, "audio", b"") or b""),
                               "t": time.monotonic()}
     # zera o marcador da janela incremental: sem isto a suspeita NOVA herdava a
@@ -12798,8 +12825,10 @@ def _live_suspeita_barge(sess: dict, ev) -> None:
     sess["barge_cru_ate"] = 0
     motor = sess.get("engine")
     prazo = getattr(getattr(motor, "config", None), "barge_decisao_ms", 700) / 1000.0
+    # a época vai junto: o timer de uma suspeita já fundida não decide pela nova
+    epoca = getattr(ev, "epoca", None)
     can = threading.Timer(prazo, lambda: _live_decide_barge(
-        sess, b"", _live_fala_ms(sess, ev), por_prazo=True))
+        sess, b"", _live_fala_ms(sess, ev), por_prazo=True, epoca=epoca))
     can.daemon = True
     sess["barge_timer"] = can
     can.start()
@@ -12808,9 +12837,12 @@ def _live_suspeita_barge(sess: dict, ev) -> None:
     # comando disparar, a decisão sai ali (p50 ≤600 ms no smoke de latência).
     # 150 ms: o STT custa ~300-500 ms, então passo maior só empurra o p50 para
     # cima sem economizar nada (medido: 250→712 ms, 150→543 ms)
-    passo = int((_settings.get("live_barge_filtros") or {}).get(
-        "palavras_corte", {}).get("passo_ms", 150))
-    if passo > 0:
+    cfg_corte = (_settings.get("live_barge_filtros") or {}).get("palavras_corte") or {}
+    passo = int(cfg_corte.get("passo_ms", 150))
+    # Passadas só existem para o filtro de COMANDO: desligado, cada passada era
+    # whisper a cada 150 ms disputando a GPU com a decisão e o TTS sem nunca
+    # poder decidir nada (#870).
+    if passo > 0 and cfg_corte.get("on", True):
         parar = threading.Event()
         sess["barge_parar"] = parar
 
@@ -12830,6 +12862,22 @@ def _live_suspeita_barge(sess: dict, ev) -> None:
         th = threading.Thread(target=_passos, daemon=True)
         sess["barge_passo_thread"] = th
         th.start()
+
+
+#: filtros da cadeia que dependem do TRANSCRIPT (o `ruido` também: ele lê o
+#: texto VAZIO como falha do STT e corta). `identidade` e `fim_de_resposta` não.
+_BARGE_FILTROS_DE_TEXTO = ("palavras_corte", "eco", "backchannel", "ruido", "modelo",
+                           "pergunta", "frase_longa", "fala_sustentada")
+
+
+def _live_barge_le_texto(filtros: dict) -> bool:
+    """Algum filtro ligado precisa do STT? (mesmo default `on` da cadeia)."""
+    for nome in _BARGE_FILTROS_DE_TEXTO:
+        cfg = filtros.get(nome)
+        padrao = nome != "modelo"
+        if (padrao if cfg is None else bool(cfg.get("on", padrao))):
+            return True
+    return False
 
 
 def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
@@ -12931,7 +12979,11 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
                 and not perto_do_fim):
             tipo, filtro = "interrupcao", "fala_sustentada"
         else:
-            texto = _live_transcreve_trecho(sess, audio)
+            # Sem filtro que LEIA texto ligado, o transcript não muda o desfecho:
+            # o STT era só custo (medido no mini com a cadeia toda desligada:
+            # 13 s de whisper para sair `sem_decisao`, #870).
+            texto = (_live_transcreve_trecho(sess, audio)
+                     if _live_barge_le_texto(filtros) else "")
             tipo, p_cortar, modelo_ms, filtro = _live_avalia_filtros(
                 sess, texto, fala_ms, filtros)
             if filtro == "fim_de_resposta":
@@ -12948,6 +13000,16 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         tipo = "interrupcao" if tipo == "interrompe" else "ruido"
         filtro = "erro"
     decisao_ms = int((time.monotonic() - t0) * 1000)
+    if (tipo != "interrupcao" and filtro == "sem_decisao" and audio
+            and motor is not None and motor.playback_restante_ms() == 0):
+        # A RESPOSTA ACABOU DURANTE A DECISÃO (#870): não há mais nada a proteger,
+        # e descartar o trecho jogava fora fala real — medido no mini: "Tchau."
+        # (672 ms) decidido com `restante_ms=0` virou `ruido` e sumiu. Vai para o
+        # PENDENTE com o flag de barge (o turno passa pelo STT + juiz + eco-check
+        # do turno; eco ou alucinação morrem lá, com motivo). Só no `sem_decisao`:
+        # eco/backchannel/identidade decidiram de propósito.
+        _live_guarda_pendente(sess, audio, barge_in=True)
+        filtro = "playback_acabou"
     # o modo `imediata`/`so_comando` já filtrou; aqui só o desfecho
     eventos = []
     if motor is not None:

@@ -1176,6 +1176,11 @@ class TurnEngine:
                     # `_suspeito_audio` + `_turno`; o handler só precisa do evento
                     # novo para trocar o timer e passar a época nova.
                     self._decisao_frames = 0
+                    # JANELA NOVA (#870): o `_conta_barge` só zera após a folga, então
+                    # sem isto cada frame seguinte reentrava aqui — dezenas de
+                    # suspeitas por segundo, cada uma armando timer + passadas de STT.
+                    self._barge_frames = 0
+                    self._barge_sem_voz = 0
                     ev = self._evento("barge_suspeito", self._t_ms(),
                                       self._proxima_amostra, b"", prob=prob,
                                       rms_dbfs=dbfs, barge_in=True, epoca=self._epoca,

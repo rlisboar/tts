@@ -813,3 +813,19 @@ são de 24 kHz. Sem reamostrar, 1 s vira 2 s no fio (2× lento) e uma oitava aba
 |---|---|
 | devolver o áudio do filho sem `_reamostra` | `test_audio_do_filho_em_48k_chega_em_24k_sem_mudar_o_tom` **FAILED** ("48000 amostras") |
 | tirar a reamostragem do caminho IN-PROCESS (`return r`) | `test_caminho_in_process_reamostra_para_a_taxa_do_fio` **FAILED** ("48000 amostras") |
+
+### #870 — decisão do barge em 13 s, "Tchau." sumindo, `barge_suspeito` em rajada
+
+Mini `9b0230c`, sessão `cea89ecf4c`: 22 `barge_suspeito` em 1 s (fusão a cada frame),
+duas decisões de 13 s com o whisper em laço ("Tch-tch-tch…") e "Tchau." decidido com
+`restante_ms=0` saindo `ruido`. Cada linha abaixo foi rodada com o conserto removido.
+
+| Sabotagem | Resultado |
+|---|---|
+| tirar o `_barge_frames = 0` da fusão (`live_turns`) | `test_fusao_nao_emite_suspeita_a_cada_frame` **FAILED** ("51 suspeitas em 60 frames") |
+| não desarmar timer/passadas da suspeita anterior | `test_suspeita_fundida_desarma_timer_e_passadas_da_anterior` **FAILED** |
+| timer da suspeita sem `epoca=` | `test_timer_da_suspeita_leva_a_epoca` **FAILED** (`[None] != [7]`) |
+| armar passadas com `palavras_corte` desligado | `test_sem_filtro_de_comando_nao_ha_passadas_de_stt` **FAILED** |
+| transcrever com a cadeia sem filtro de texto | `test_cadeia_sem_filtro_de_texto_decide_sem_stt` **FAILED** |
+| tirar o `sample_len` do `_transcreve_em_janelas` | `test_whisper_tem_teto_de_tokens_pela_duracao` **FAILED** ("sem teto") |
+| tirar o resgate `playback_acabou` | `test_fala_decidida_depois_do_fim_da_resposta_vira_pendente` **FAILED** |
