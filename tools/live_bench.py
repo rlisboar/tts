@@ -365,10 +365,18 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
     ref_a = ref_injetada(fa, audio_a)      # cortou o áudio: corta a referência junto
     # ---------- fala A ----------
 
-    await c.falar(audio_a).wait()
-    a_ini, a_fim = c.voz_t_ini, c.voz_t_fim
     la = {"fala": 2 * k, "tipo": "curta" if curta else "longa", "voz": fa["id"],
           "dur_s": round(len(audio_a) / SR_MIC, 2), "papel": "A"}
+    try:
+        # `falar()` só resolve quando o áudio TODO entrou; se a task do mic
+        # morrer no meio (WS caído, app travado) o evento nunca vem e a rodada
+        # fica pendurada para sempre.
+        await asyncio.wait_for(c.falar(audio_a).wait(), args.teto_turno_s)
+    except asyncio.TimeoutError:
+        la["timeout_fala"] = True
+        linhas.append(la)
+        return
+    a_ini, a_fim = c.voz_t_ini, c.voz_t_fim
     # espera o 1º áudio da resposta (ou o turno fechar sem áudio)
     await c.espera(lambda: c.bin_apos(a_fim) is not None
                         or c.evs(a_fim, ("turn_complete", "error")), args.teto_turno_s)
@@ -389,7 +397,12 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
     la["interrupcao_valida"] = interrompeu
     await asyncio.sleep(0)
     fim_b = c.falar(fb["audio"])
-    await fim_b.wait()
+    try:
+        await asyncio.wait_for(fim_b.wait(), args.teto_turno_s)
+    except asyncio.TimeoutError:
+        la["timeout_fala"] = True
+        linhas.append(la)
+        return
     b_ini, b_fim = c.voz_t_ini, c.voz_t_fim
     lb = {"fala": 2 * k + 1, "tipo": "interrupcao" if interrompeu else "longa",
           "voz": fb["id"], "dur_s": round(len(fb["audio"]) / SR_MIC, 2), "papel": "B"}
