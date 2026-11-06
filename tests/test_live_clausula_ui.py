@@ -7,6 +7,12 @@ admin, limites, leitura no load e POST com clamp.
 """
 from pathlib import Path
 
+import app
+
+pytest_plugins = ["test_api"]
+
+from test_api import auth, chave_de_uso, client  # noqa: E402, F401
+
 INDEX = Path(__file__).resolve().parent.parent / "static" / "index.html"
 
 
@@ -39,3 +45,22 @@ def test_setting_e_admin_no_servidor():
     bloco = app.split("_SETTINGS_ADMIN = frozenset({", 1)[1].split("})", 1)[0]
     assert '"live_clausula_palavras"' in bloco, \
         "o campo saiu de _SETTINGS_ADMIN — chave `use` volta a poder mudá-lo"
+
+
+def test_chave_use_nao_muda_e_admin_muda(client, auth, chave_de_uso):
+    """O ajuste é GLOBAL: chave `use` não decide, admin decide (igual ao #791).
+
+    Sonda de efeito, não de string: o POST da chave de uso volta 200 com o nome
+    em `admin_ignored` e o valor guardado NÃO muda; o da admin grava.
+    """
+    antes = app._settings.get("live_clausula_palavras")
+    assert antes == 6, f"default esperado 6, veio {antes!r}"
+    r = client.post("/api/settings", headers=chave_de_uso,
+                    json={"live_clausula_palavras": 40})
+    assert r.status_code == 200, r.text
+    assert "live_clausula_palavras" in r.json()["admin_ignored"], r.json()
+    assert app._settings.get("live_clausula_palavras") == 6, \
+        "chave de uso mudou o ajuste global"
+    r = client.post("/api/settings", headers=auth, json={"live_clausula_palavras": 40})
+    assert r.status_code == 200, r.text
+    assert app._settings.get("live_clausula_palavras") == 40, "chave admin não gravou"
