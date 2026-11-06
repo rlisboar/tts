@@ -86,3 +86,10 @@ def test_setting_valida_e_e_de_admin():
     assert "live_stt_whisper_repo" in app._SETTINGS_ADMIN
     assert app._SETTINGS_DEFAULTS["live_stt_whisper_repo"] == ""
 
+
+def test_prewarm_do_live_aquece_o_whisper_do_live(repos):
+    """O prewarm compilava o repo de ARQUIVO. No mini isso é o large-v3, e o
+    1º turno do Live pagava a carga do turbo de novo — o prewarm não servia."""
+    live_pipeline._stt_aquece(app)
+    assert repos == [app.LIVE_WHISPER_PADRAO], repos
+

@@ -1235,7 +1235,9 @@ def _stt_aquece(app) -> None:
     try:
         import mlx_whisper
         tom = (np.sin(np.linspace(0, 2 * np.pi * 220, 8000)) * 0.3).astype(np.float32)
-        with app._stt_lock:
+        # #876: aquece o repo do LIVE (turbo), não o de arquivo. Sem a marca, o
+        # mini compilava o large-v3 aqui e o 1º turno pagava a carga do turbo.
+        with app._stt_lock, app._stt_do_live():
             mlx_whisper.transcribe(
                 tom, path_or_hf_repo=app._whisper_repo(), language="pt",
                 temperature=0.0, condition_on_previous_text=False,
@@ -1375,13 +1377,20 @@ _LIVE_DUMP_DIR = (os.environ.get("TTS_LIVE_DUMP_DIR") or "").strip()
 
 
 def _stt_dump(pcm: bytes, julga: dict, texto: str) -> None:
-    """Grava o turno no `TTS_LIVE_DUMP_DIR` (nunca levanta: é diagnóstico)."""
+    """Grava o turno no `TTS_LIVE_DUMP_DIR` (nunca levanta: é diagnóstico).
+
+    Diretório 0700 e cada `.wav`/`.json` 0600. `mkdir(..., exist_ok=True)` não
+    reaplica o mode, e a umask 022 nasceria 0755/0644 — a voz do dono ficaria
+    legível por outros usuários da máquina.
+    """
     try:
         base = pathlib.Path(_LIVE_DUMP_DIR)
-        base.mkdir(parents=True, exist_ok=True)
+        base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        base.chmod(0o700)             # exist_ok não reaplica o mode; umask também não
         nome = base / time.strftime("%Y%m%d-%H%M%S")
         nome = nome.with_name(f"{nome.name}-{int(time.monotonic() * 1000) % 100000:05d}")
-        with wave.open(str(nome.with_suffix(".wav")), "wb") as w:
+        wav = nome.with_suffix(".wav")
+        with wave.open(str(wav), "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(16000)
@@ -1391,7 +1400,10 @@ def _stt_dump(pcm: bytes, julga: dict, texto: str) -> None:
         meta = {"ms": len(pcm) // 32, "dbfs": round(20 * float(np.log10(max(rms, 1e-7))), 1),
                 "motivo": julga.get("motivo") or "", "detalhe": julga.get("detalhe") or "",
                 "texto": texto}
-        nome.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False))
+        js = nome.with_suffix(".json")
+        js.write_text(json.dumps(meta, ensure_ascii=False))
+        wav.chmod(0o600)
+        js.chmod(0o600)
     except Exception as exc:  # noqa: BLE001 — instrumento não derruba turno
         print(f"[live] dump do turno falhou: {exc}", flush=True)
 

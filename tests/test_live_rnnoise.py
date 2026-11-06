@@ -846,6 +846,35 @@ def test_recorte_do_cru_desconta_o_atraso_do_filtro():
         "cru recortado fora de fase com o turno do motor (atraso do filtro não descontado)")
 
 
+def test_comeco_fora_do_ring_devolve_o_filtrado_byte_a_byte():
+    """Gate do #869: a base do ring já passou de `início − atraso`. O filtrado
+    volta byte a byte. O `max(0)` antigo recortava o começo do que sobrou, no
+    tamanho certo, e o STT recebia o lugar errado sem ninguém ver."""
+    import app
+
+    filtrado = b"\x01\x02" * 80
+    atraso, base, n = 1776, 8000, len(filtrado) // 2
+    # com o atraso descontado, o início cai 40 amostras ANTES da base
+    fim = base + n + atraso - 40
+    sess = {
+        "rnnoise": SimpleNamespace(atraso_amostras=atraso),
+        "cru": [bytearray(b"\x7f\x00" * 20000), base],
+    }
+    ev = SimpleNamespace(tipo="speech_end", amostra=fim, audio=filtrado)
+    assert app._live_audio_cru(sess, ev) == filtrado
+
+
+def test_atraso_soma_as_faltas_e_zera_fora_do_ar():
+    """`faltas` empurra o atraso; filtro ainda fechado ou morto declara 0."""
+    ns = RnnoiseAoVivo()
+    ns.faltas = 101
+    assert ns.atraso_amostras == 0
+    ns._ok = True
+    assert ns.atraso_amostras == live_rnnoise.ATRASO_AMOSTRAS + 50
+    ns._morto = True
+    assert ns.atraso_amostras == 0
+
+
 def test_atraso_declarado_bate_com_o_ffmpeg_real():
     """`ATRASO_AMOSTRAS` é medida, não chute: o filtro real tem de concordar
     dentro de 1 ms. Sem ffmpeg/modelo, pula (a CI sem ffmpeg não prova nada)."""
@@ -895,26 +924,39 @@ def test_turno_de_1500ms_de_fala_real_passa_no_vad_do_stt():
 
 
 def test_dump_opt_in_grava_wav_e_veredito(tmp_path, monkeypatch):
-    """`TTS_LIVE_DUMP_DIR` (#869): o turno vira `.wav` + `.json` com o motivo."""
+    """`TTS_LIVE_DUMP_DIR` (#869): o turno vira `.wav` + `.json` com o motivo.
+
+    O diretório nasce 0700 e os arquivos 0600 — a umask padrão (0755/0644)
+    deixaria a voz e o texto do dono legíveis por outros usuários da máquina."""
     import json
+    import os
 
     import live_pipeline
 
-    monkeypatch.setattr(live_pipeline, "_LIVE_DUMP_DIR", str(tmp_path))
+    pasta = tmp_path / "dump"
+    pasta.mkdir()
+    pasta.chmod(0o755)
+    monkeypatch.setattr(live_pipeline, "_LIVE_DUMP_DIR", str(pasta))
+    umask_antes = os.umask(0o022)
+    try:
+        def _julga(pcm, lang, julga):
+            julga["motivo"] = "vad"
+            return ""
 
-    def _julga(pcm, lang, julga):
-        julga["motivo"] = "vad"
-        return ""
-
-    monkeypatch.setattr(live_pipeline, "_stt_julga", _julga)
-    pcm = _pcm(_fala_com_pausas(1.5)[:SR])
-    julga: dict = {}
-    assert live_pipeline._stt_app(pcm, "pt", julga) == ""
-    assert julga["motivo"] == "vad"
-    wavs, jsons = list(tmp_path.glob("*.wav")), list(tmp_path.glob("*.json"))
-    assert len(wavs) == 1 and len(jsons) == 1
-    meta = json.loads(jsons[0].read_text())
-    assert meta["motivo"] == "vad" and meta["ms"] == 1000
+        monkeypatch.setattr(live_pipeline, "_stt_julga", _julga)
+        pcm = _pcm(_fala_com_pausas(1.5)[:SR])
+        julga: dict = {}
+        assert live_pipeline._stt_app(pcm, "pt", julga) == ""
+        assert julga["motivo"] == "vad"
+        wavs, jsons = list(pasta.glob("*.wav")), list(pasta.glob("*.json"))
+        assert len(wavs) == 1 and len(jsons) == 1
+        meta = json.loads(jsons[0].read_text())
+        assert meta["motivo"] == "vad" and meta["ms"] == 1000
+        assert pasta.stat().st_mode & 0o777 == 0o700
+        assert wavs[0].stat().st_mode & 0o777 == 0o600
+        assert jsons[0].stat().st_mode & 0o777 == 0o600
+    finally:
+        os.umask(umask_antes)
 
 
 def test_dump_desligado_nao_escreve_nada(tmp_path, monkeypatch):
