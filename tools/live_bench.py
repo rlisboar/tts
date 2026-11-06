@@ -296,6 +296,21 @@ class Cliente:
         return self.voz_fim
 
     async def mic(self):
+        """Loop do microfone. Exceção aqui NÃO pode morrer calada (#934).
+
+        A task é irmã do `recebe`; se ela morre, o ciclo queima o teto e o
+        `erro_ws` fica null — foi assim que o defeito passou. Tudo vira
+        `self.erro` e `vivo=False`, que a rodada lê e reprova.
+        """
+        try:
+            await self._mic_loop()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:                               # noqa: BLE001
+            self.erro = f"mic: {type(exc).__name__}: {exc}"
+            self.vivo = False
+
+    async def _mic_loop(self):
         prox = time.monotonic() + FRAME_S
         while self.vivo:
             await asyncio.sleep(max(0.0, prox - time.monotonic()))
@@ -309,6 +324,10 @@ class Cliente:
                 self.pausado = False
                 self.eventos.append((self.agora(), "pausa_teto", {}))
             tocado = self.play[:n24] if not self.pausado else np.zeros(0, np.float32)
+            # O lookahead tem de sair ANTES do consumo: no último quadro o
+            # `play` fica vazio e `np.interp` levanta "array of sample points
+            # is empty" — a task do mic morria calada (#934).
+            x = self.play[: n24 + 1]
             if not self.pausado:
                 self.play = self.play[n24:]
             if len(tocado):
@@ -318,7 +337,6 @@ class Cliente:
                 # a cada quadro e a correlação com a referência do servidor cai
                 # para ~0,5 (medido) — o duck então trata eco como voz. Aqui o
                 # passo é exato: 1600 saídas consomem 2400 entradas, sem sobra.
-                x = self.play[: n24 + 1]
                 pos = np.arange(FRAME, dtype=np.float32) * 1.5
                 eco = np.interp(pos, np.arange(len(x), dtype=np.float32), x).astype(np.float32)
             else:
@@ -829,6 +847,10 @@ def main(argv=None):
     if args.textos:
         args.textos.write_text(json.dumps(res["textos"], ensure_ascii=False, indent=1))
         os.chmod(args.textos, 0o600)
+    if res["erro_ws"]:
+        print(f"\n✖ a rodada morreu no cliente: {res['erro_ws']}", flush=True)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
