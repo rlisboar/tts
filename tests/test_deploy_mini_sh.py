@@ -1025,6 +1025,57 @@ def test_peso_ausente_no_mini_e_sincronizado_antes_do_restart(amb):
     assert len(_log(amb, "launch")) == 1, "reiniciou mesmo com o peso recuperado"
 
 
+def test_manifesto_multilinha_nao_reescreve_peso_valido(amb):
+    """O `shasum` sem aspas do #938 hasheava só o 1º caminho (zsh não faz split
+    por newline): o 2º virava 'faltando' e o tar reescrevia o arquivo bom."""
+    bom = b"peso-que-ja-esta-certo"
+    _publica_manifesto(amb, {"bom.bin": bom, "novo.bin": b"peso-novo"})
+    _peso_fora_do_git(amb, "novo.bin")
+    _peso_fora_do_git(amb, "bom.bin")      # os dois fora do git (models/ é ignorado)
+    mini = Path(amb["TTS_MINI_DIR"]) / "models"
+    mini.mkdir(exist_ok=True)
+    # bom.bin existe SÓ no mini (não está na árvore local): se o tar o incluísse,
+    # o `tar -T` falharia por ausência na origem
+    (mini / "bom.bin").write_bytes(bom)
+    antes = (mini / "bom.bin").stat().st_mtime_ns
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode == 0, _saida(r)
+    assert "sincronizando" in r.stdout, _saida(r)
+    assert (mini / "novo.bin").read_bytes() == b"peso-novo"
+    assert (mini / "bom.bin").stat().st_mtime_ns == antes, "peso válido foi reescrito"
+
+
+def _manifesto_cru(amb, linhas: list[str]) -> None:
+    dev = Path(amb["TTS_MINI_REPO"])
+    (dev / "models").mkdir(exist_ok=True)
+    (dev / "models" / "sha256sums.txt").write_text("\n".join(linhas) + "\n")
+    _git("add", "models", cwd=dev, env=amb)
+    _git("commit", "-qm", "manifesto cru", cwd=dev, env=amb)
+
+
+def test_caminho_com_volta_para_fora_do_models_e_rejeitado(amb):
+    _manifesto_cru(amb, ["0" * 64 + "  ../fora.bin"])
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode != 0, _saida(r)
+    assert "fora da whitelist" in _saida(r), _saida(r)
+    assert _log(amb, "launch") == []
+
+
+def test_metacaractere_no_manifesto_nao_executa_no_mini(amb):
+    """Caminho ia cru para uma string de shell remota: `;` e `>>` executavam."""
+    _manifesto_cru(amb, ["0" * 64 + "  models/x;>>MARCADOR"])
+
+    r = _run(amb, "deploy", "--apply")
+
+    assert r.returncode != 0, _saida(r)
+    assert "fora da whitelist" in _saida(r), _saida(r)
+    assert not (Path(amb["TTS_MINI_DIR"]) / "MARCADOR").exists(), "o `>>` vazou para o shell"
+
+
 def test_peso_que_nao_da_para_recuperar_para_antes_do_restart(amb):
     _publica_manifesto(amb, {"peso.bin": b"x"})
     origem_local = _peso_fora_do_git(amb, "peso.bin")

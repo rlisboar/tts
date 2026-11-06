@@ -105,28 +105,48 @@ sem_nonce() { sed -E 's/ nonce="[^"]*"//g'; }
 tem_rota() { git -C "$LOCAL_REPO" show "${1}:app.py" 2>/dev/null | grep -qF "$2"; }
 git_remoto() { distante "cd $(cd_remoto) && git $1"; }
 
+#: O caminho vem CRU do manifesto e ia para uma string de shell remota: `..` lê
+#: fora de `models/` e `;`/`>>` executam comando no mini (#938, gate #939).
+#: Inválido sai prefixado de `!` (a whitelist não permite `!`, então é seguro).
+#: `models/` + só `[A-Za-z0-9._/-]`, sem segmento `..`.
+_peso_valido() {
+  local p="$1"
+  case "$p" in models/*) ;; *) return 1 ;; esac
+  case "/$p/" in */../*) return 1 ;; esac
+  case "$p" in *[!A-Za-z0-9._/-]*) return 1 ;; esac
+  return 0
+}
+
 #: Pesos do manifesto que NÃO conferem no mini (ausentes ou com sha errado).
 #: `models/` NÃO é versionado — sem esta conferência o mini sobe sem o AudioSeal
 #: e a marca d'água desliga em silêncio, com o smoke verde (#938).
+#:
+#: Um caminho por vez, com aspas: no zsh `$arqs` NÃO sofre split por newline, e
+#: `shasum -a 256 $arqs` hasheava só o primeiro. Os caminhos vão pela STDIN
+#: (NUL) — nada deles é interpolado no comando remoto.
 pesos_faltando() {
-  # O manifesto vem do REV ALVO (o mini pode estar num rev anterior, sem ele) e o
-  # hash de lá é comparado com o do mini — arquivo ausente simplesmente não sai.
-  local manifesto arqs remoto sha arq
+  local manifesto sha arq remoto
+  local -a caminhos
   manifesto="$(git -C "$LOCAL_REPO" show "${ALVO_SHA:-HEAD}:models/sha256sums.txt" 2>/dev/null)" || return 0
   [ -n "$manifesto" ] || return 0
-  arqs="$(print -r -- "$manifesto" | awk 'NF >= 2 {print $2}')"
-  [ -n "$arqs" ] || return 0
-  remoto="$(distante "cd $(cd_remoto) && shasum -a 256 $arqs 2>/dev/null")"
-  print -r -- "$manifesto" | while read -r sha arq; do
+  while read -r sha arq; do
     [ -n "${arq:-}" ] || continue
-    print -r -- "$remoto" | grep -qx "$sha  $arq" || print -r -- "$arq"
-  done
+    if _peso_valido "$arq"; then caminhos+=("$arq"); else print -r -- "!$arq"; fi
+  done <<< "$manifesto"
+  [ "${#caminhos[@]}" -gt 0 ] || return 0
+  remoto="$(printf '%s\0' "${caminhos[@]}" \
+    | distante "cd $(cd_remoto) && while IFS= read -r -d \$'\\0' p; do shasum -a 256 -- \"\$p\" 2>/dev/null; done")"
+  while read -r sha arq; do
+    [ -n "${arq:-}" ] || continue
+    _peso_valido "$arq" || continue
+    print -r -- "$remoto" | grep -qxF "$sha  $arq" || print -r -- "$arq"
+  done <<< "$manifesto"
 }
 
 #: Copia os pesos que faltam da árvore local. `tar` pelo ssh (sem rsync no
 #: caminho, e binário passa intacto).
-sincroniza_pesos() { # $1 = lista, uma por linha
-  print -r -- "$1" | tar -cf - -C "$LOCAL_REPO" -T - 2>/dev/null \
+sincroniza_pesos() { # $1 = lista, uma por linha (só o que falhou na conferência)
+  print -r -- "$1" | tr '\n' '\0' | tar -cf - --null -C "$LOCAL_REPO" -T - 2>/dev/null \
     | distante "cd $(cd_remoto) && tar -xf -" 2>/dev/null
 }
 
@@ -529,8 +549,16 @@ deploy() {
   # sobe degradado e SILENCIOSO — a marca d'água desliga e os filtros caem, e o
   # smoke antigo não via. A conferência é read-only e roda até no dry-run; a
   # sincronização, só no --apply, sempre ANTES do restart.
-  local faltando
+  local faltando invalidos
   faltando="$(pesos_faltando)"
+  invalidos="$(print -r -- "$faltando" | grep '^!' | sed 's/^!//')"
+  faltando="$(print -r -- "$faltando" | grep -v '^!')"
+  if [ -n "$invalidos" ]; then
+    print -r -- "  [PARA] caminho fora da whitelist no manifesto (models/, sem '..', só [A-Za-z0-9._/-]):"
+    print -r -- "$invalidos" | sed 's/^/    /'
+    print -r -- "    nada foi copiado nem reiniciado"
+    return 1
+  fi
   if [ -n "$faltando" ]; then
     print -r -- "  pesos: $(print -r -- "$faltando" | wc -l | tr -d ' ') ausente(s)/divergente(s) no manifesto:"
     print -r -- "$faltando" | sed 's/^/    /'
