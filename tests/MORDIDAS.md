@@ -864,6 +864,9 @@ e, aos ~480 ms, `barge_pausa` (`filtro="duck_rapido"`, com `fala_ms` e `epoca`).
 A pausa não cancela e não fecha a suspeita. O `barge_in` / `interrupted` só sai
 de `decidir_barge("interrupcao")`; eco, ruído e backchannel saem `barge_retoma`.
 Default OFF. Não mexe na folga (#707) nem na janela do STT (#547).
+A NCC do eco de sala mede-se offline, com `tools/ncc_eco.py` sobre o dump
+`eco-*` (o mesmo `TTS_LIVE_DUMP_DIR` do #869). O wav do turno não traz a
+referência do playback.
 
 | Sabotagem | Resultado |
 |---|---|
@@ -883,6 +886,7 @@ Default OFF. Não mexe na folga (#707) nem na janela do STT (#547).
 | anotar a referência em 24 kHz | `test_referencia_24k_chega_em_16k` **FAILED** (len 24000) |
 | correlacionar o pós-RNNoise (eco destruído) em vez do cru | `test_eco_no_cru_nao_abaixa_com_filtrado_destruido` **FAILED** |
 | voz no cru não abaixar quando o filtrado é o eco | `test_voz_no_cru_abaixa_mesmo_se_o_filtrado_e_eco` **FAILED** |
+| a ferramenta offline divergir do correlacionador do motor | `test_janela_casa_com_o_correlacionador` **FAILED** |
 
 ### #871 — markdown fora do TTS (Live em streaming e Conversa)
 

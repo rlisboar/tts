@@ -224,6 +224,45 @@ def _pcm16(f32: np.ndarray) -> bytes:
     return (np.clip(f32, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
 
 
+def ncc(a: np.ndarray, b: np.ndarray) -> float:
+    """Correlação normalizada, sem média, em módulo. 0 se a janela é vazia."""
+    if a.size == 0 or a.size != b.size:
+        return 0.0
+    a = a - float(a.mean())
+    b = b - float(b.mean())
+    da = float(np.dot(a, a))
+    db = float(np.dot(b, b))
+    if da < 1e-8 or db < 1e-8:
+        return 0.0
+    return abs(float(np.dot(a, b)) / math.sqrt(da * db))
+
+
+def melhor_ncc(mic: np.ndarray, trecho) -> tuple[float, int]:
+    """Maior |NCC| da janela contra a referência. Lag 0–500 ms, passo 10 ms.
+
+    `trecho(lag, n)` devolve as `n` amostras da referência que terminam `lag`
+    antes do playhead, ou None se esse atraso não cabe. O motor e a
+    ferramenta offline (`tools/ncc_eco.py`) chamam esta função.
+    """
+    n = int(mic.shape[0]) if mic is not None else 0
+    if n <= 0:
+        return 0.0, -1
+    melhor = 0.0
+    lag_top = -1
+    for lag in range(0, _CORR_LAG_MAX + 1, _CORR_LAG_PASSO):
+        pedaco = trecho(lag, n)
+        if pedaco is None:
+            continue
+        pedaco = np.asarray(pedaco, dtype=np.float32)
+        if int(pedaco.shape[0]) != n:
+            continue
+        c = ncc(mic, pedaco)
+        if c > melhor:
+            melhor = c
+            lag_top = lag
+    return melhor, lag_top
+
+
 # --------------------------------------------------------------------------
 # configuração
 # --------------------------------------------------------------------------
@@ -1022,15 +1061,7 @@ class TurnEngine:
     @staticmethod
     def _ncc(a: np.ndarray, b: np.ndarray) -> float:
         """Correlação normalizada, sem média, em módulo. 0 se a janela é vazia."""
-        if a.size == 0 or a.size != b.size:
-            return 0.0
-        a = a - float(a.mean())
-        b = b - float(b.mean())
-        da = float(np.dot(a, a))
-        db = float(np.dot(b, b))
-        if da < 1e-8 or db < 1e-8:
-            return 0.0
-        return abs(float(np.dot(a, b)) / math.sqrt(da * db))
+        return ncc(a, b)
 
     def _eco_por_correlacao(self) -> bool | None:
         """O mic deste instante é o playback?
@@ -1060,13 +1091,16 @@ class TurnEngine:
         if self._ref_play - self._ref_origem < n + _CORR_LAG_MAX:
             # o atraso procurado (até 500 ms) ainda não cabe na busca
             return True
-        melhor = 0.0
-        lag_max = min(_CORR_LAG_MAX, self._ref_play - self._ref_origem - n)
-        for lag in range(0, lag_max + 1, _CORR_LAG_PASSO):
-            trecho = self._ref_trecho(self._ref_play - lag - n, n)
-            if trecho is None:
-                continue
-            melhor = max(melhor, self._ncc(mic, trecho))
+        play = self._ref_play
+        origem = self._ref_origem
+        teto = play - origem - n
+
+        def _trecho(lag: int, n_: int):
+            if lag > teto:
+                return None
+            return self._ref_trecho(play - lag - n_, n_)
+
+        melhor, _lag = melhor_ncc(mic, _trecho)
         return melhor >= _CORR_LIMIAR
 
     def _voz_no_playback(self, dbfs: float, prob: float) -> bool:

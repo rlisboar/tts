@@ -13720,6 +13720,60 @@ def _live_ref_16k(pcm: bytes):
     return a
 
 
+def _live_eco_dir() -> str:
+    """O mesmo env do dump do turno (#869). Vazio = desligado, sem import."""
+    return (os.environ.get("TTS_LIVE_DUMP_DIR") or "").strip()
+
+
+def _live_eco_mic(sess: dict, pcm: bytes) -> None:
+    """Cru no dump do eco. No-op sem o env. Nunca levanta."""
+    if not pcm or not _live_eco_dir():
+        return
+    try:
+        import live_eco_dump
+        live_eco_dump.anota_mic(sess, pcm)
+    except Exception:  # noqa: BLE001 — diagnóstico não derruba o frame
+        pass
+
+
+def _live_eco_ref(sess: dict, ref) -> None:
+    """O float que o motor acabou de guardar. No-op sem o env."""
+    if not _live_eco_dir():
+        return
+    try:
+        if ref is None or len(ref) == 0:
+            return
+    except TypeError:
+        return
+    try:
+        import live_eco_dump
+        live_eco_dump.anota_ref(sess, ref)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _live_eco_marca(sess: dict, eng) -> None:
+    """Relógio do playhead. No-op sem o env ou sem motor."""
+    if eng is None or not _live_eco_dir():
+        return
+    try:
+        import live_eco_dump
+        live_eco_dump.marca(sess, eng)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _live_eco_fecha(sess: dict) -> None:
+    """Fecha o dump se a sessão chegou a abrir um. Não importa à toa."""
+    if sess.get("_eco_dump") is None and not _live_eco_dir():
+        return
+    try:
+        import live_eco_dump
+        live_eco_dump.fecha(sess)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _live_pipe_novo(sess: dict):
     """Pipeline da sessão (None quando o módulo não está disponível -> stub).
 
@@ -13994,9 +14048,13 @@ async def _live_sender(sess: dict, ws) -> None:
                     anota = getattr(eng, "anota_referencia", None)
                     if anota is not None:
                         try:
-                            anota(_live_ref_16k(payload))
+                            ref16 = _live_ref_16k(payload)
+                            anota(ref16)
                         except Exception:  # noqa: BLE001 — sem referência vale o nível
                             pass
+                        else:
+                            # o dump grava o MESMO float, e só se o motor aceitou
+                            _live_eco_ref(sess, ref16)
                     sess["audio_pendente"] = max(0, sess.get("audio_pendente", 1) - 1)
                     if sess["audio_pendente"] == 0:
                         sess["falando"] = False
@@ -14366,6 +14424,9 @@ async def live_ws(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        # antes do close do filtro: ele pode esperar ~0,3 s e o dump tem de
+        # fechar o wav mesmo assim. Idempotente se o sender ainda escrever.
+        _live_eco_fecha(sess)
         ns = sess.pop("rnnoise", None)
         if ns is not None:
             # thread: `fechar` espera o processo até ~0,3 s (espera do filtro +
@@ -14455,6 +14516,7 @@ async def _live_loop(sess: dict, ws) -> None:
             # o CRU é guardado ANTES de qualquer filtro: é dele que o STT vai
             # receber o áudio do turno (#481)
             _live_cru_guarda(sess, cru)
+            _live_eco_mic(sess, cru)   # #870: cru do eco; no-op sem TTS_LIVE_DUMP_DIR
             # thread: o prime do ffmpeg pode levar ~0,2 s no 1º frame e o
             # sender (TTS) precisa continuar no event loop. Sem filtro, o
             # cru entra direto — a suíte não paga o hop.
@@ -14485,6 +14547,8 @@ async def _live_loop(sess: dict, ws) -> None:
                         except Exception:  # noqa: BLE001 — sem cru vale o histórico
                             pass
                 _live_trata_eventos(sess, eng.feed(pcm))
+                # depois do feed: _proxima_amostra já inclui o frame que correlacionou
+                _live_eco_marca(sess, eng)
             elif sess.get("pipe") is not None:
                 sess["pipe"].push_pcm(pcm)   # sem FSM: pipeline por frame
             buf = sess["buffer"]
