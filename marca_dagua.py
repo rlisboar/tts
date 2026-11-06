@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import subprocess
 import sys
 import tempfile
@@ -169,14 +170,24 @@ def _pede(pedido: dict) -> dict:
     return dados
 
 
-def _le_ate(proc: subprocess.Popen, ident: int) -> str:
-    limite = time.monotonic() + TIMEOUT_S
+def _fd_leitura(proc: subprocess.Popen) -> int:
+    saida = proc.stdout
+    if saida is None or saida.closed:
+        raise RuntimeError("worker da marca sem stdout")
+    fd = saida.fileno()
+    # readline no TextIOWrapper não aceita prazo. O fd solto + select acorda
+    # no teto; os bytes não passam pelo buffer do wrapper (ele não é lido).
+    os.set_blocking(fd, False)
+    return fd
+
+
+def _casa_id(buf: bytearray, ident: int) -> str | None:
     while True:
-        if proc.poll() is not None:
-            raise RuntimeError(f"worker da marca morreu (rc={proc.returncode})")
-        if time.monotonic() > limite:
-            raise RuntimeError(f"marca passou de {TIMEOUT_S:.0f}s")
-        linha = proc.stdout.readline()
+        nl = buf.find(b"\n")
+        if nl < 0:
+            return None
+        linha = bytes(buf[:nl]).decode("utf-8", "replace").strip()
+        del buf[: nl + 1]
         if not linha:
             continue
         try:
@@ -185,6 +196,93 @@ def _le_ate(proc: subprocess.Popen, ident: int) -> str:
             continue
         if dados.get("id") == ident:
             return linha
+
+
+def _mata_filho(proc: subprocess.Popen) -> None:
+    """Mata e esquece. Já corre sob `_trava` — não pega a trava de novo.
+
+    Não sobe outro aqui: o load do AudioSeal (~2,6 s) seguraria o `_gen_lock`
+    de novo. O próximo `_pega` é quem re-sobe.
+    """
+    global _proc
+    try:
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                proc.wait(timeout=2)
+            except Exception:  # noqa: BLE001
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    proc.wait(timeout=2)
+                except Exception:  # noqa: BLE001
+                    pass
+        for stream in (proc.stdin, proc.stdout):
+            if stream is None:
+                continue
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        if _proc is proc:
+            _proc = None
+
+
+def _filho_mudo(proc: subprocess.Popen) -> None:
+    pid = getattr(proc, "pid", None)
+    print(
+        f"[marca] filho mudo (pid={pid}) não respondeu em {TIMEOUT_S:g}s; "
+        "matei e o áudio sai sem marca",
+        flush=True,
+    )
+    _mata_filho(proc)
+    raise RuntimeError(f"marca passou de {TIMEOUT_S:g}s (filho mudo)")
+
+
+def _le_ate(proc: subprocess.Popen, ident: int) -> str:
+    """Linha JSON deste id. Cada espera no fd respeita o que falta de TIMEOUT_S.
+
+    O `readline` bloqueava sem prazo. No job local essa leitura corre dentro
+    do `_gen_lock`: filho mudo travava o servidor. No estouro o filho morre,
+    `_proc` zera e a exceção sobe — o chamador entrega o áudio sem marca.
+    """
+    limite = time.monotonic() + TIMEOUT_S
+    fd = _fd_leitura(proc)
+    buf = bytearray()
+    while True:
+        achada = _casa_id(buf, ident)
+        if achada is not None:
+            return achada
+        restante = limite - time.monotonic()
+        if restante <= 0:
+            _filho_mudo(proc)
+        # Filho já morto: drena o que houver no pipe e não espera o teto.
+        espera = 0.0 if proc.poll() is not None else restante
+        try:
+            pronto, _, _ = select.select([fd], [], [], espera)
+        except (ValueError, OSError) as exc:
+            raise RuntimeError(
+                f"worker da marca morreu (rc={proc.returncode})") from exc
+        if not pronto:
+            if proc.poll() is not None:
+                raise RuntimeError(f"worker da marca morreu (rc={proc.returncode})")
+            _filho_mudo(proc)
+        try:
+            pedaco = os.read(fd, 65536)
+        except BlockingIOError:
+            continue
+        except OSError as exc:
+            raise RuntimeError(
+                f"worker da marca morreu (rc={proc.returncode})") from exc
+        if not pedaco:
+            raise RuntimeError(f"worker da marca morreu (rc={proc.poll()})")
+        buf.extend(pedaco)
 
 
 def marca_wav(entrada: Path) -> Path:
