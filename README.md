@@ -1101,7 +1101,7 @@ navegador.
 # deriva (mesma fonte do estágio `estatica` do CI). Doc com cópia à mão já deixou
 # `live_rnnoise.py` fora do gate (#288/#389).
 ./.venv-mlx/bin/python tests/_pyflakes_gate.py
-# (28 alvos explícitos hoje; `tests/*.py` é glob e não conta —
+# (29 alvos explícitos hoje; `tests/*.py` é glob e não conta —
 #  ao acrescentar módulo ao hook, atualize aqui: um teste compara)
 # o linter é o ruff (conjunto `F` = o mesmo do pyflakes que ele substituiu), config
 # no `pyproject.toml`. `# noqa` VALE: import que só existe para virar fixture de
