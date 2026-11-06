@@ -9,6 +9,12 @@ Roda NO MINI, contra a instância que está no ar (loopback dispensa chave):
     .venv-mlx/bin/python -I /tmp/live_bench.py --audio /tmp/live-bench-audio \
         --url ws://127.0.0.1:7890/api/live/ws --out /tmp/live-bench-<sha>.json
 
+MODELO: `TTS_CHAT_MODEL=deepseek-flash-41` (produção do dono). `gpt-4o-mini` só
+como fallback — muda o p50 da LLM e o S2 deixa de ser comparável.
+
+AMOSTRA: ≥20 ciclos por ponta (ou duas rodadas). Com n=10 a taxa de eco falso
+oscila 40-90 % só por sorteio; o resumo traz IC95 de Wilson para as proporções.
+
 PORTA: use 7890+ nas instâncias de bancada. A página sonda 7861-7865 (probes do
 mic-router) e uma instância viva nessas portas entra no meio da integração — o
 `obs_ui.sh` chega a reprovar por causa do console.error de CORS. Derrube a
@@ -55,6 +61,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import random
 import re
@@ -654,6 +661,22 @@ async def sessao(args, corpus: list[dict]) -> dict:
             "ciclos": k, "ws_vivo_no_fim": vivo_no_fim, "erro_ws": c.erro}
 
 
+def _ic95(k: int, n: int) -> list | None:
+    """Intervalo de Wilson 95 % para uma proporção (k de n).
+
+    Com n=10 uma taxa de 40 % tem IC de ~17-69 %: sem o intervalo, duas rodadas
+    viram "mudou" quando é a mesma moeda. Reportar junto evita a decisão por
+    um número só."""
+    if n <= 0:
+        return None
+    z = 1.959963984540054
+    p = k / n
+    den = 1 + z * z / n
+    centro = (p + z * z / (2 * n)) / den
+    meia = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / den
+    return [round(100 * max(0.0, centro - meia), 1), round(100 * min(1.0, centro + meia), 1)]
+
+
 def resumo(res: dict, args) -> dict:
     L = res["linhas"]
     wers = [l["wer_ciclo"] for l in L if "wer_ciclo" in l]
@@ -667,6 +690,7 @@ def resumo(res: dict, args) -> dict:
     r = {
         "S1": {"falas": len(L), "aceitas": sum(l["aceito"] for l in L),
                "pct_aceitas": round(100 * sum(l["aceito"] for l in L) / max(1, len(L)), 1),
+               "aceitas_ic95": _ic95(sum(l["aceito"] for l in L), len(L)),
                "cobertura_media": (round(statistics.mean(
                    l["cobertura"] for l in L if "cobertura" in l), 3)
                    if any("cobertura" in l for l in L) else None),
@@ -706,7 +730,9 @@ def resumo(res: dict, args) -> dict:
                "pausa_ok_800": sum((l.get("s3_pausa_ms") or 1e9) <= 800 for l in inter),
                "eco_respostas": len(eco),
                "eco_falso_corte": sum(l["eco_falso_corte"] for l in eco),
+               "eco_falso_corte_ic95": _ic95(sum(l["eco_falso_corte"] for l in eco), len(eco)),
                "eco_falso_duck": sum(l.get("eco_falso_duck", False) for l in eco),
+               "eco_falso_duck_ic95": _ic95(sum(l.get("eco_falso_duck", False) for l in eco), len(eco)),
                "eco_falso_pausa": sum(l.get("eco_falso_pausa", False) for l in eco),
                "meta": "duck ≤300, pausa ≤800, falso corte ≤5 %, falso duck ≤5 %"},
         "S4": {"respostas": len(resp),
