@@ -1,15 +1,16 @@
-"""Marca d'água nas famílias ISOLADAS (#797).
+"""Marca d'água nas famílias ISOLADAS (#797) e fora do `_gen_lock` (#915).
 
-O caminho isolado grava o trecho no worker e o pai marcava só no caminho
-in-process — a família isolada saía sem marca e o anti-clone furava em silêncio.
-A régua é a do gate do #657: 100 % de detecção no positivo, 0 % no negativo,
-cobrindo TODAS as famílias do catálogo.
+O filho grava o trecho cru: quem marca é o pai, depois de soltar a trava da
+geração. A célula que morde é `test_marca_nao_segura_o_gen_lock` — se a
+chamada de `marca_wav` voltar para dentro do `with`, ela reprova.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -75,15 +76,16 @@ def _roda_worker(tmp_path, monkeypatch, familia: str) -> Path:
 
 
 @pytest.mark.parametrize("familia", sorted(app._ISOLATED_FAMILIES))
-def test_toda_familia_isolada_leva_marca(familia, tmp_path, monkeypatch):
-    """Se a família entra no laço isolado, o trecho gravado TEM de sair marcado."""
-    if not marca_dagua.disponivel():
-        pytest.skip(f"marca indisponível: {marca_dagua.motivo()}")
+def test_filho_isolado_nao_marca(familia, tmp_path, monkeypatch):
+    """O cfg pede marca e o filho não chama: marcar aqui segurava o `_gen_lock` do pai."""
+    chamadas = []
+    monkeypatch.setattr(marca_dagua, "disponivel", lambda: True)
+    monkeypatch.setattr(marca_dagua, "marca_wav",
+                        lambda p: chamadas.append(Path(p).name) or p)
 
-    peca = _roda_worker(tmp_path, monkeypatch, familia)
+    _roda_worker(tmp_path, monkeypatch, familia)
 
-    prob = marca_dagua.detecta_prob(peca)
-    assert prob is not None and prob > 0.9, f"{familia}: trecho sem marca (prob {prob})"
+    assert chamadas == [], f"{familia}: o filho marcou {chamadas}"
 
 
 def test_trecho_cru_nao_acusa_marca(tmp_path):
@@ -97,15 +99,160 @@ def test_trecho_cru_nao_acusa_marca(tmp_path):
     assert prob is not None and prob < 0.5, f"cru acusou marca ({prob})"
 
 
-def test_desligado_nao_marca(tmp_path):
-    if not marca_dagua.disponivel():
-        pytest.skip(f"marca indisponível: {marca_dagua.motivo()}")
+def test_marca_nao_segura_o_gen_lock(monkeypatch, tmp_path):
+    """`marca_wav` roda sem o `_gen_lock` nos três caminhos de produção (#915).
 
-    peca = tmp_path / "desligado.wav"
-    sf.write(str(peca), _fala(), 16000, subtype="PCM_16")
-    tts_worker._marca_peca(peca, False)
-    prob = marca_dagua.detecta_prob(peca)
-    assert prob is not None and prob < 0.5
+    Morde de três jeitos: a trava estava tomada e a chamada a viu solta; o
+    trecho só publica depois da marca; o filho isolado não marca enquanto
+    ainda está no Metal (o pai marca trecho e wav final depois do `with`).
+    """
+    from test_app import _TEXTO_1_TRECHO, _job_de_render
+
+    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
+    monkeypatch.setattr(marca_dagua, "disponivel", lambda: True)
+    monkeypatch.setattr(marca_dagua, "motivo", lambda: "")
+
+    # --- Live: a produção não segura a trava; se um dia segurar, solta aqui ---
+    live = []
+
+    def _espia_live(caminho):
+        live.append(app._gen_lock._is_owned())
+        return caminho
+
+    monkeypatch.setattr(marca_dagua, "marca_wav", _espia_live)
+    pcm = b"\x00\x01" * 800
+    sess = {"id": "s-marca", "fila": app._LiveFila(), "engine": None, "audio_pendente": 0}
+    app._live_envia_audio(sess, pcm)
+    app._gen_lock.acquire()
+    try:
+        app._live_envia_audio(
+            {"id": "s-marca-2", "fila": app._LiveFila(), "engine": None, "audio_pendente": 0},
+            pcm)
+        assert app._gen_lock._is_owned(), "a trava não voltou depois da marca do Live"
+    finally:
+        if app._gen_lock._is_owned():
+            app._gen_lock.release()
+    assert live == [False, False], f"Live marcou com o _gen_lock: {live}"
+
+    # --- job local in-process: gera COM a trava, marca SEM, publica depois ---
+    vistas = []
+    gerou = []
+
+    def _espia_job(caminho):
+        vistas.append((Path(caminho).name, app._gen_lock._is_owned(),
+                       app._jobs[jid].get("pieces")))
+        return caminho
+
+    def _gerador(*_a, **_k):
+        gerou.append(app._gen_lock._is_owned())
+        t = np.arange(24000) / 24000.0
+        return (0.2 * np.sin(2 * np.pi * 180 * t)).astype(np.float32)
+
+    monkeypatch.setattr(marca_dagua, "marca_wav", _espia_job)
+    jid = _job_de_render(monkeypatch, tmp_path, _gerador, texto=_TEXTO_1_TRECHO)
+    app._run_tts_job(jid, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
+                     "pt", {"num_steps": 4}, use_queue=False)
+    assert gerou and all(gerou), "a geração local saiu do _gen_lock"
+    assert vistas, "o job local não marcou"
+    assert all(not dono for _, dono, _ in vistas), f"marcou com a trava: {vistas}"
+    assert all(pecas in (0, None) for _, _, pecas in vistas), (
+        f"publicou o trecho antes da marca: {vistas}")
+    assert app._jobs[jid]["status"] == "done"
+    assert app._jobs[jid]["pieces"] >= 1
+    assert not app._gen_lock._is_owned(), "a trava ficou presa depois do job"
+
+    # --- isolado: filho no Metal sem marca; pai marca os dois wavs fora ---
+    marcas = []
+    cfg_visto = {}
+    saida = tmp_path / "saida-iso"
+    saida.mkdir()
+    monkeypatch.setattr(app, "OUTPUTS_DIR", saida)
+    monkeypatch.setattr(app, "_piece_dir", lambda job_id: tmp_path / job_id)
+    monkeypatch.setattr(app, "_unload_local_tts", lambda *_a, **_k: None)
+    monkeypatch.setattr(app, "_jobs_hist_salva", lambda *_a, **_k: None)
+    monkeypatch.setattr(app, "_jobs", {})
+    app._jobs["jiso"] = {"status": "queued", "pieces": 0}
+
+    class _Proc:
+        pid = 4242
+        returncode = None
+        acabou = False
+
+        def poll(self):
+            if self.acabou:
+                self.returncode = 0
+                return 0
+            return None
+
+        def wait(self, timeout=None):
+            self.acabou = True
+            self.returncode = 0
+            return 0
+
+        def terminate(self):
+            self.acabou = True
+
+        def kill(self):
+            self.acabou = True
+
+    proc = _Proc()
+    pronto = {"json": ""}
+
+    def _espia_iso(caminho):
+        marcas.append((Path(caminho).name, app._gen_lock._is_owned(),
+                       app._jobs["jiso"].get("pieces")))
+        return caminho
+
+    def _popen(argv, **_kw):
+        cfg = json.loads(Path(argv[2]).read_text())
+        cfg_visto.update(cfg)
+        pdir = Path(cfg["piece_dir"])
+        sf.write(pdir / "0.wav", _fala(), 16000, subtype="PCM_16")
+        sf.write(saida / "out1.wav", _fala(), 16000, subtype="PCM_16")
+        (pdir / "status.json").write_text(json.dumps({
+            "status": "running", "pieces": 1, "total": 1,
+            "progress": {"stage": "gerando"},
+        }))
+        pronto["json"] = json.dumps({
+            "status": "done", "pieces": 1, "total": 1, "progress": None,
+            "output": {"id": "out1", "duration": 1.0}, "error": None,
+        })
+        return proc
+
+    giros = {"n": 0}
+    dormir = time.sleep
+    dono = threading.current_thread()
+
+    def _sleep(s):
+        # o watchdog de /health também dorme em `time.sleep`; só o job interessa
+        if threading.current_thread() is not dono:
+            return dormir(s)
+        giros["n"] += 1
+        assert not marcas, f"marcou com o filho ainda no Metal: {marcas}"
+        assert app._jobs["jiso"].get("pieces") in (0, None)
+        assert app._gen_lock._is_owned(), "o poll do filho soltou o _gen_lock"
+        (tmp_path / "jiso" / "status.json").write_text(pronto["json"])
+        proc.acabou = True
+
+    monkeypatch.setattr(marca_dagua, "marca_wav", _espia_iso)
+    monkeypatch.setattr(app.subprocess, "Popen", _popen)
+    monkeypatch.setattr(time, "sleep", _sleep)
+    try:
+        app._run_tts_job_isolated(
+            "jiso", "oi", "voz", tmp_path / "voz.wav", "pt", {},
+            {"id": "kokoro", "family": "kokoro", "meta": {}})
+    finally:
+        monkeypatch.setattr(time, "sleep", dormir)
+
+    assert "marca" not in cfg_visto, "o cfg ainda manda o filho marcar"
+    assert giros["n"] >= 1, "o filho não chegou a rodar sob a trava"
+    assert {nome for nome, _, _ in marcas} == {"0.wav", "out1.wav"}
+    assert all(not dono for _, dono, _ in marcas), f"isolado marcou com a trava: {marcas}"
+    assert all(pecas in (0, None) for _, _, pecas in marcas), (
+        f"publicou trecho cru: {marcas}")
+    assert app._jobs["jiso"]["status"] == "done"
+    assert app._jobs["jiso"]["pieces"] == 1
+    assert not app._gen_lock._is_owned()
 
 
 def _pcm_que_o_cliente_ouve(pcm: bytes) -> bytes:
@@ -160,41 +307,3 @@ def test_pcm_final_do_live_detecta_no_audio_que_o_cliente_ouve(tmp_path, monkeyp
     cru = prob(_playback_16k(pcm))
     assert marcado >= 0.9, f"playback do Live sem marca legível ({marcado})"
     assert cru < 0.5, f"PCM cru acusou marca ({cru})"
-
-
-def test_o_job_isolado_recebe_a_ordem_de_marcar(monkeypatch, tmp_path):
-    """A ligação: a setting viaja no config do worker, senão a marca não acontece."""
-    capturado = {}
-
-    class _Proc:
-        pid = 4242
-        returncode = 0
-
-        def poll(self):
-            return 0
-
-        def wait(self, timeout=None):
-            return 0
-
-        def terminate(self):
-            pass
-
-        def kill(self):
-            pass
-
-    def _popen(argv, **kw):
-        cfg = json.loads(Path(argv[2]).read_text())   # [python, worker, config]
-        capturado.update(cfg)
-        return _Proc()
-
-    monkeypatch.setattr(app.subprocess, "Popen", _popen)
-    monkeypatch.setitem(app._settings, "tts_marca_dagua", True)
-    monkeypatch.setattr(app, "_unload_local_tts", lambda *a, **k: None)
-    monkeypatch.setattr(app, "_jobs", {})
-    app._jobs["j1"] = {"status": "queued"}
-    monkeypatch.setattr(app, "_piece_dir", lambda job_id: tmp_path / job_id)
-    monkeypatch.setattr(app, "_schedule_job_cleanup", lambda *a, **k: None)
-
-    app._run_tts_job_isolated("j1", "oi", "voz", tmp_path / "voz.wav", "pt", {},
-                              {"id": "kokoro", "family": "kokoro", "meta": {}})
-    assert capturado.get("marca") is True, "o config do worker não pediu a marca"

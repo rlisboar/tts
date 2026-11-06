@@ -742,18 +742,18 @@ valer mesmo com o túnel caído.
 | sonda de Host removida do `health_probe.sh` | `test_host_publico_fora_da_allowlist_vira_alerta` **FAILED** |
 | `export TTS_ALLOWED_HOSTS` removido do `start-server.sh` | `test_start_server_exporta_o_host_publico` **FAILED** (o plist não chega ao app: sshd não herda) |
 
-## #797 — marca d'água nas famílias isoladas
+## #797 / #915 — marca fora do `_gen_lock`
 
-O caminho isolado grava o trecho DENTRO do worker e o pai só publica status: a
-marca que o caminho in-process faz no pai nunca acontecia ali, e as 11 famílias
-saíam cruas.
+O filho isolado grava o PCM cru (marcar no filho segurava o `_gen_lock` do pai
+pelo tempo do IPC). O pai marca o trecho e o wav final depois que o filho sai.
+No job local e no Live, `marca_wav` solta a trava e a repega antes de publicar.
 
 | Sabotagem | Resultado |
 |---|---|
-| remover a chamada de `_marca_peca` no worker | **11 FAILED**, exatamente as 11 famílias de `_ISOLATED_FAMILIES`; negativo, desligado e ordem seguem verdes |
+| `_corre_sem_gen_lock` só chama `fn()` | `test_marca_nao_segura_o_gen_lock` **FAILED**: `Live marcou com o _gen_lock: [False, True]` |
+| filho volta a chamar `marca_wav` | `test_filho_isolado_nao_marca` **FAILED** nas 11 famílias (a célula exige `chamadas == []`) |
 
-O negativo (`test_trecho_cru_nao_acusa_marca`) e o desligado existem para o caso
-oposto: se a marca passasse a ser aplicada sempre, eles caem.
+O negativo (`test_trecho_cru_nao_acusa_marca`) segue: áudio cru não pode acusar marca.
 
 ## #812 — retorno remoto: onde a marca é contada
 

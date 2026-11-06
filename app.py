@@ -7162,6 +7162,62 @@ def _sanitiza_caminhos(texto: str) -> str:
     return texto.replace(str(BASE), "repo").replace(str(Path.home()), "~")
 
 
+def _corre_sem_gen_lock(fn):
+    """Roda `fn` sem esta thread dona do `_gen_lock` (#915).
+
+    A marca d'água é IPC de CPU: não usa o Metal. Segurá-la dentro da trava
+    da geração emperra o Live e o próximo job pelo tempo do readline. Solta
+    TODOS os níveis do RLock — um `release` só tira um — e repega o mesmo
+    tanto no fim, para o `with` de fora continuar equilibrado.
+    """
+    niveis = 0
+    while _gen_lock._is_owned():
+        _gen_lock.release()
+        niveis += 1
+        if niveis > 16:          # trava desbalanceada: não gira para sempre
+            break
+    try:
+        return fn()
+    finally:
+        for _ in range(niveis):
+            _gen_lock.acquire()
+
+
+def _marca_arquivo(caminho: Path) -> None:
+    """Marca um wav no disco. Nunca levanta e não segura o `_gen_lock`."""
+    if not _settings.get("tts_marca_dagua"):
+        return
+    if not Path(caminho).is_file():
+        return
+
+    def _faz() -> None:
+        try:
+            import marca_dagua
+
+            if marca_dagua.disponivel():
+                marca_dagua.marca_wav(caminho)
+            else:
+                _avisa_sem_marca(marca_dagua.motivo())
+        except Exception as exc:  # noqa: BLE001 — sem marca o áudio segue
+            _avisa_sem_marca(str(exc)[:120])
+
+    _corre_sem_gen_lock(_faz)
+
+
+def _marca_saida_isolada(pdir: Path, st: dict) -> None:
+    """Trechos e wav final do isolado, com o filho já fora do Metal (#915).
+
+    A concatenação copia o PCM cru. Marcar só o trecho deixa o arquivo final
+    sem marca; marcar só o final deixa o trecho que o cliente pede cru.
+    """
+    n = int(st["pieces"]) if st.get("pieces") is not None else 0
+    for i in range(max(0, n)):
+        _marca_arquivo(pdir / f"{i}.wav")
+    out = (st.get("output") or {}).get("id")
+    if out:
+        _marca_arquivo(OUTPUTS_DIR / f"{out}.wav")
+
+
 def _unload_local_tts():
     """Libera o modelo MLX do processo principal (antes de spawnar worker)."""
     global _model
@@ -7221,9 +7277,9 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
             "audio_eq_mid_db": _settings.get("audio_eq_mid_db", 0.0),
             "audio_eq_high_db": _settings.get("audio_eq_high_db", 0.0),
         },
-        # anti-clone: a marca é do PAI, mas quem grava o trecho é o worker — sem
-        # isto a família isolada saía sem marca e ninguém percebia (#797)
-        "marca": bool(_settings.get("tts_marca_dagua")),
+        # a marca NÃO viaja no cfg (#915): o filho grava cru e o pai marca
+        # depois de soltar o `_gen_lock`. Marcar no filho segurava esta trava
+        # pelo tempo do IPC.
         "piece_dir": str(pdir),
         "outputs_dir": str(OUTPUTS_DIR),
         "voices_dir": str(VOICES_DIR),
@@ -7240,7 +7296,9 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
     # desfecho resolvido SOB o lock e aplicado FORA dele (#796): `deliver`/`abort`
     # esperam a vez na fila, e esperar segurando o `_gen_lock` congelava TTS e Live.
     final: tuple[str, object] | None = None
-    # serializa workers (um modelo pesado por vez no Metal)
+    last_pieces = 0
+    # serializa workers (um modelo pesado por vez no Metal). A marca fica
+    # FORA deste with (#915).
     with _gen_lock:
         log_f = open(log_path, "w", encoding="utf-8")  # noqa: SIM115
         try:
@@ -7334,8 +7392,8 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
                         st = json.loads(status_path.read_text())
                         if st.get("pieces") is not None:
                             last_pieces = int(st["pieces"])
-                            if not hold_pieces:
-                                job["pieces"] = last_pieces
+                            # não publica: o wav ainda está cru. `job["pieces"]`
+                            # sai no `_finish_ok`, depois da marca (#915).
                         if st.get("total") is not None:
                             job["total"] = int(st["total"])
                         if st.get("progress") is not None and not hold_pieces:
@@ -7442,6 +7500,14 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
             if err_tail:
                 msg += " | " + err_tail.replace("\n", " ")[:300]
             final = ("err", msg)
+
+    # FORA do `_gen_lock` (#796 fila, #915 marca). O filho já soltou o Metal.
+    # Sem isto o cliente pede o trecho (ou o wav final) ainda cru.
+    if final is not None and final[0] == "ok":
+        _marca_saida_isolada(pdir, final[1])
+    elif last_pieces:
+        for _i in range(last_pieces):
+            _marca_arquivo(pdir / f"{_i}.wav")
 
     # FORA do `_gen_lock` (#796): aqui se espera a vez na fila
     if final is not None:
@@ -7763,19 +7829,11 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                     audio = np.concatenate(
                         [audio, np.zeros(pausa, dtype=np.float32)])
                 sf.write(pdir / f"{i}.wav", audio, sr, subtype="PCM_16")
-                if _settings.get("tts_marca_dagua"):
-                    try:                     # marca o TRECHO no disco (#657)
-                        import marca_dagua
-
-                        if marca_dagua.disponivel():
-                            marca_dagua.marca_wav(pdir / f"{i}.wav")
-                        else:
-                            _avisa_sem_marca(marca_dagua.motivo())
-                    except Exception as exc:  # noqa: BLE001
-                        _avisa_sem_marca(str(exc)[:120])
+                # solta o `_gen_lock` só aqui (#915) e repega antes de publicar
+                _marca_arquivo(pdir / f"{i}.wav")
                 del audio
                 if not hold_pieces:
-                    job["pieces"] = i + 1  # publica só depois do arquivo no disco
+                    job["pieces"] = i + 1  # publica só depois da marca no disco
                 # MLX acumula blocos no pool Metal; sem clear a RAM sobe a cada trecho
                 if not alvo_remoto:
                     _release_mlx_memory()
@@ -12073,7 +12131,9 @@ def _marca_pcm(pcm: bytes, sr: int = 16000) -> bytes:
         try:
             x = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
             sf.write(str(caminho), x, sr, subtype="PCM_16")
-            marca_dagua.marca_wav(caminho)
+            # Fora do `_gen_lock` (#915). A taxa e o tamanho ficam os do PCM
+            # de entrada: o worker desce a 16 kHz e volta (#908).
+            _corre_sem_gen_lock(lambda: marca_dagua.marca_wav(caminho))
             y = np.asarray(sf.read(str(caminho), dtype="int16")[0], dtype="<i2").reshape(-1)
             n = len(pcm) // 2
             # O contrato do Live é 48 bytes/ms a 24 kHz. A reamostra não pode

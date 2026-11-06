@@ -50,33 +50,6 @@ from common import (NATIVE_SPEED_FAMILIES, OMNI_ALIASES, PAD_CAUDA_S,  # noqa: E
                     release_mlx_memory as _release_mlx_memory)  # noqa: E402
 
 DESIGN_VOICE_ID = "__design__"
-_marca_avisada = False
-
-
-def _marca_peca(caminho: Path, ligado: bool) -> None:
-    """Marca d'água no TRECHO recém-gravado (#797).
-
-    O caminho in-process marca no pai, depois de cada `sf.write`; o isolado grava
-    aqui, então a marca tem de ser feita aqui também — senão a família isolada sai
-    sem marca e o anti-clone fura em silêncio. O trecho é a unidade que o pai
-    publica e que a concatenação copia, então marcar o trecho cobre os dois.
-    """
-    global _marca_avisada
-    if not ligado:
-        return
-    try:
-        import marca_dagua
-
-        if marca_dagua.disponivel():
-            marca_dagua.marca_wav(caminho)
-        elif not _marca_avisada:
-            _marca_avisada = True
-            print(f"[marca] trecho saindo SEM marca d'água: {marca_dagua.motivo()}",
-                  file=sys.stderr, flush=True)
-    except Exception as exc:  # noqa: BLE001 — sem marca o áudio segue
-        if not _marca_avisada:
-            _marca_avisada = True
-            print(f"[marca] trecho saindo SEM marca d'água: {exc}", file=sys.stderr, flush=True)
 PROTOCOLO = 1          # versão do protocolo do `--serve` (o pai checa)
 
 
@@ -290,7 +263,9 @@ def main() -> int:
             if i < len(chunks) - 1:
                 audio = _concat(est, audio, pausa_apos(chunk[-1]))
             sf.write(piece_dir / f"{i}.wav", audio, sr, subtype="PCM_16")
-            _marca_peca(piece_dir / f"{i}.wav", bool(cfg.get("marca")))
+            # Cru de propósito (#915): o pai segura o `_gen_lock` enquanto este
+            # processo usa o Metal. Quem marca é o pai, depois do filho sair,
+            # no trecho e no wav final (a concatenação copia este PCM cru).
             del audio
             _release_mlx_memory()  # sem isto o pool Metal cresce a cada trecho
             _write_status(status_path, {
