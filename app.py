@@ -2511,18 +2511,18 @@ def _separa_musica(audio, sr: int):
     filho usa MPS, então a trava fica em volta do `subprocess.run` — soltar,
     como a marca (CPU), poria as duas pilhas juntas. O `timeout` é o que devolve
     a trava: filho mudo morre e a limpeza segue sem separar (#924)."""
+    global _MUSICA_MOTIVO
     import numpy as np
 
     try:
         __import__("demucs")            # só a presença do pacote decide a etapa
     except Exception:  # noqa: BLE001
         _MUSICA_MOTIVO = "pacote demucs ausente"
-        globals()["_MUSICA_MOTIVO"] = _MUSICA_MOTIVO
         return None
     # pesos LOCAIS: a etapa NUNCA baixa (nada sai da máquina por padrão)
     pesos = _DEMUCS_DIR
     if not (pesos / "htdemucs.yaml").is_file():
-        globals()["_MUSICA_MOTIVO"] = f"pesos ausentes em {pesos}"
+        _MUSICA_MOTIVO = f"pesos ausentes em {pesos}"
         return None
     try:
         import subprocess
@@ -2546,8 +2546,7 @@ def _separa_musica(audio, sr: int):
                         env={**os.environ, "TTS_DEMUCS_DIR": str(pesos),
                              "HF_HUB_OFFLINE": "1"})
                 except subprocess.TimeoutExpired:
-                    motivo = f"filho mudo não respondeu em {_MUSICA_TIMEOUT_S:g}s"
-                    globals()["_MUSICA_MOTIVO"] = motivo
+                    _MUSICA_MOTIVO = f"filho mudo não respondeu em {_MUSICA_TIMEOUT_S:g}s"
                     print(
                         "[voice] separação de música: filho mudo "
                         f"não respondeu em {_MUSICA_TIMEOUT_S:g}s; "
@@ -2556,16 +2555,15 @@ def _separa_musica(audio, sr: int):
                     )
                     return None
             if r.returncode != 0 or not saida.exists():
-                motivo = (r.stderr or b"").decode().strip()[-160:] or "worker falhou"
-                globals()["_MUSICA_MOTIVO"] = motivo
-                print(f"[voice] separação de música falhou: {motivo}", flush=True)
+                _MUSICA_MOTIVO = (r.stderr or b"").decode().strip()[-160:] or "worker falhou"
+                print(f"[voice] separação de música falhou: {_MUSICA_MOTIVO}", flush=True)
                 return None
             x, sr2 = sf.read(str(saida), dtype="float32")
             if sr2 != sr:
                 x = resample_poly(x, sr, sr2).astype(np.float32)
             return np.asarray(x, dtype=np.float32)[: np.asarray(audio).size]
     except Exception as erro:  # noqa: BLE001
-        globals()["_MUSICA_MOTIVO"] = str(erro)[:160]
+        _MUSICA_MOTIVO = str(erro)[:160]
         print(f"[voice] separação de música falhou ({erro})", flush=True)
         return None
 
