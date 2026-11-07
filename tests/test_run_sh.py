@@ -611,8 +611,10 @@ def test_sigint_no_harness_nao_deixa_servidor(tmp_path):
     O harness sobe o servidor com grupo próprio; sem trap, um `timeout` (SIGTERM)
     matava só o script e o servidor ficava órfão — 32 achados com ppid 1 e 808 MB.
     SIGTERM é o caso que vazou: o SIGINT já virá como KeyboardInterrupt e passa
-    pela limpeza normal, o SIGTERM não levanta nada. O teste interrompe com TERM e
-    cobra o grupo morto e o pidfile removido."""
+    pela limpeza normal, o SIGTERM não levanta nada. O sinal vai para o GRUPO do
+    harness (bash + o python dele): mandar só ao bash deixa o python vivo até o
+    fim da rodada e o teste passaria mesmo SEM trap — foi o que a mordida pegou.
+    Com o trap, o python morre pelo handler e o grupo do servidor vai junto."""
     import signal as _signal
 
     # o pidfile é nomeado pelo PID do PYTHON filho, não do bash: o jeito imune a
@@ -638,7 +640,7 @@ def test_sigint_no_harness_nao_deixa_servidor(tmp_path):
             time.sleep(0.25)
         assert pidfile is not None, "o harness não registrou o grupo do servidor"
         pgid = int(pidfile.read_text().strip())
-        proc.send_signal(_signal.SIGTERM)
+        os.killpg(os.getpgid(proc.pid), _signal.SIGTERM)
         proc.wait(timeout=90)
         for _ in range(120):
             try:
