@@ -309,10 +309,10 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `812-marca-remoto.md` | #812 | 2026-11-05 | Marca d'água no caminho remoto (#812) |
 | `869-live-vad-cru.md` | #869 | 2026-11-06 | 869 — Live descarta turno com fala real (`motivo=vad` / "sem fala") |
 | `869-repro-cru.py` | #869 | 2026-11-06 | """#869 — reproduz o descarte `motivo=vad` do Live com áudio gravado. |
-| `876-stt-bench-carga.json` | #876 | — | "n": 20, |
-| `876-stt-bench-livre.json` | #876 | — | "n": 20, |
-| `876-stt-bench.py` | #876 | — | """#876 — latência e WER do STT local do Live por modelo, com e sem TTS em paralelo. |
-| `876-stt-live.md` | #876 | — | 876 — STT do Live: modelo e beam (bancada local, antes do Mini) |
+| `876-stt-bench-carga.json` | #876 | 2026-11-06 | "n": 20, |
+| `876-stt-bench-livre.json` | #876 | 2026-11-06 | "n": 20, |
+| `876-stt-bench.py` | #876 | 2026-11-06 | """#876 — latência e WER do STT local do Live por modelo, com e sem TTS em paralelo. |
+| `876-stt-live.md` | #876 | 2026-11-06 | 876 — STT do Live: modelo e beam (bancada local, antes do Mini) |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |
@@ -341,6 +341,8 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `dsh-provider-sse-spike.py` | — | 2026-09-29 | """Mede TTFT do provedor dsflash DIRETO (SSE), para saber o ganho se o ACP streamasse.""" |
 | `live-barge-in-ui.txt` | — | 2026-09-25 | Live (task #115) — E2E do barge-in pela UI, ponta a ponta (tests/live_ui.sh) |
 | `live-barge-in.txt` | — | 2026-09-25 | Live (task #92) — medicao de barge-in com eco do TTS |
+| `live-bench-9b0230c.json` | — | 2026-11-06 | "rotulo": "9b0230c", |
+| `live-bench-9b0230c.md` | — | 2026-11-06 | 875: linha de base da bancada E2E do Live no `9b0230c` (mini, 2026-11-06) |
 | `papel-da-chave-ui.png` | — | 2026-09-24 | (imagem) |
 | `passo2-prep-dry-run.txt` | — | 2026-10-01 | === PREP PASSO 2 — dry-run read-only com alvo = HEAD (d252693) — 2026-10-01 03:07:26 === |
 | `passo2-prep-smoke-head.txt` | — | 2026-10-01 | === PREP DO PASSO 2: smoke read-only com o alvo = HEAD atual (produção ainda no corte) — 2026-10-01 02:56:19 - |
