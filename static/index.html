@@ -9157,7 +9157,7 @@ const LX_FILTROS_PADRAO = {
   identidade: { on: false, perfis: [], far: 0.01 },
   // decide pelo conteúdo (LLM): nasce DESLIGADO; `dsh` manda o trecho para fora
   modelo: { on: false, provedor: "local", limiar: 0.5, timeout_ms: 400 },
-  fim_de_resposta: { on: true, restante_ms: 1000 },
+  fim_de_resposta: { on: true, restante_ms: 2000 },
 };
 // O motor lê `interrompe` como corte (app.py: `"interrupcao" if tipo == "interrompe"`);
 // aceitar `corta` na leitura cobre o vocabulário do adendo, que é outro.
