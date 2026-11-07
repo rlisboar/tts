@@ -595,6 +595,13 @@ class LivePipeline:
         `cancel` de um turno velho não mata o novo)."""
         if sem_historico:
             self._sem_historico = True
+            # #888: no harness ACP o prompt cancelado pode FICAR no contexto da
+            # sessão (o log do dsh é durável). Como o turno cancelado não entra
+            # no `history`, a próxima fala reabre a sessão com o contexto
+            # RENDERIZADO — que já exclui a metade respondida à toa — em vez de
+            # mandar só o texto novo e deixar o modelo ver a pergunta pela metade.
+            if self._dsh is not None and not self._dsh_indisponivel:
+                self._dsh_nova = True
         self._cancel.set()
         if self._dsh is not None and self._dsh_turno:
             try:

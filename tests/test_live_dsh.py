@@ -199,6 +199,55 @@ def test_barge_in_cancela_o_turno_no_harness_e_corta_o_chunk_tardio():
     assert fala.texto() == "ja saiu ", "o chunk tardio não entrou no texto"
 
 
+def test_continuacao_reabre_sessao_acp_no_turno_seguinte(dsh_limpo):
+    """#888: o prompt cancelado por CONTINUAÇÃO pode ficar no contexto do harness
+    ACP (o log do dsh é durável). O turno seguinte tem de reabrir a sessão com o
+    histórico RENDERIZADO (msgs list) — sem a marca, ele manda só o texto novo
+    (str) e o modelo vê a pergunta pela metade."""
+    fala = Fala()
+    dsh = DshFalso()
+    bloqueio = threading.Event()
+    comecou = threading.Event()
+
+    def stream_travado(msgs, turno_id):
+        with dsh._trava:
+            dsh.chamadas.append((msgs, turno_id))
+        yield "ja saiu "
+        comecou.set()
+        bloqueio.wait(5)
+        yield "tardio"
+
+    dsh.stream = stream_travado
+    textos = ["o que você acha do mercado"]
+    p = lp.LivePipeline(
+        fala.json, fala.audio,
+        stt=lambda pcm, language: textos[0],
+        tts=lambda c, o: np.zeros(240, dtype=np.float32),
+        prewarm=lambda **_: None, dsh=dsh)
+    dsh.pipe = p
+
+    p.push_pcm(_fala_nova())
+    p.end_of_speech(inicia_thread=True)
+    assert comecou.wait(5)
+    p.cancel(sem_historico=True)            # continuação: houve pausa, não barge
+    bloqueio.set()
+    assert _espera(lambda: not p.ocupado, 3.0)
+
+    assert p.history == [], "a metade cancelada não entra no histórico"
+
+    textos[0] = "e o dólar?"
+    p.push_pcm(_fala_nova())
+    p.end_of_speech(inicia_thread=False)
+
+    msgs, _turno = dsh.chamadas[1]
+    assert isinstance(msgs, list), \
+        "continuação tem de reabrir a sessão (contexto renderizado), não o texto solto"
+    render = "\n".join(str(m.get("content")) for m in msgs)
+    assert "e o dólar?" in render
+    assert "o que você acha do mercado" not in render, \
+        "a pergunta pela metade não pode voltar no contexto"
+
+
 def test_delta_de_turno_abandonado_nao_entra_no_chunker():
     """Guarda de identidade do lado do pipeline (defesa em profundidade): se um
     delta escapar mesmo com a checagem de cancel, ele morre ANTES do chunker."""
