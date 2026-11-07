@@ -8856,6 +8856,16 @@ def _mt_repo() -> str:
     return (_settings.get("translate_model") or "").strip() or TRANSLATE_REPO
 
 
+def _mlx_whisper_ja_no_processo() -> bool:
+    """True se este processo já importou o mlx_whisper.
+
+    O laço de 30 s olha o holder com o TTL padrão em 600. Importar só para
+    isso puxa o pacote real; o import em voo reescreve o dublê da suíte em
+    sys.modules e o silêncio volta "E aí" (#957)."""
+    return ("mlx_whisper" in sys.modules
+            or "mlx_whisper.transcribe" in sys.modules)
+
+
 def _unload_local_models(tts=True, stt=True, mt=True, ser=True,
                          espera_gen_s: float | None = None) -> dict:
     """Libera RAM descarregando os modelos LOCAIS (MLX/torch). Cada flag controla um motor.
@@ -8906,14 +8916,17 @@ def _unload_local_models(tts=True, stt=True, mt=True, ser=True,
                 freed.append("tradutor")
     if stt:                                  # mlx-whisper cacheia o modelo em ModelHolder (classe)
         with _stt_lock:                  # transcrição em curso não pode ver o holder sumir
-            try:
-                from mlx_whisper.transcribe import ModelHolder
-                if ModelHolder.model is not None:
-                    ModelHolder.model = None
-                    ModelHolder.model_path = None
-                    freed.append("whisper")
-            except Exception:  # noqa: BLE001
-                pass
+            # mesma regra do passo do TTL (#957): sem o pacote no processo,
+            # importar aqui carrega o whisper real
+            if _mlx_whisper_ja_no_processo():
+                try:
+                    from mlx_whisper.transcribe import ModelHolder
+                    if ModelHolder.model is not None:
+                        ModelHolder.model = None
+                        ModelHolder.model_path = None
+                        freed.append("whisper")
+                except Exception:  # noqa: BLE001
+                    pass
             if _pk["model"] is not None:
                 _pk["model"] = None
                 _pk["repo"] = ""
@@ -8978,6 +8991,10 @@ def _whisper_arquivo_passo() -> bool:
     if ttl <= 0:
         return False
     with _stt_lock:
+        # Não importar só para olhar (#957). Com o TTL padrão em 600 o laço
+        # de 30 s entrava aqui sempre; o import em voo reescrevia o dublê.
+        if not _mlx_whisper_ja_no_processo():
+            return False
         try:
             from mlx_whisper.transcribe import ModelHolder
         except Exception:  # noqa: BLE001 — sem a lib não há modelo a soltar

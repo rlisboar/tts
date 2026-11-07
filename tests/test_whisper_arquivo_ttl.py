@@ -149,3 +149,40 @@ def test_ttl_e_configuravel_e_nao_e_admin():
     finally:
         app._settings["whisper_arquivo_ttl_s"] = antes
         app._save_settings()
+
+
+class _BloqueiaMlxWhisper:
+    """Barra o pacote real se alguém importar o whisper só para olhar."""
+
+    def __init__(self):
+        self.vistos = []
+
+    def find_spec(self, nome, path, target=None):
+        if nome == "mlx_whisper" or nome.startswith("mlx_whisper."):
+            self.vistos.append(nome)
+            raise AssertionError(nome)
+        return None
+
+
+def test_passo_nao_importa_o_whisper_so_para_olhar(monkeypatch):
+    """TTL 600 e pacote ausente: o passo e o unload não puxam o mlx_whisper (#957).
+
+    O laço de 30 s chama o passo. O import em voo reescrevia o dublê de
+    test_stt_local_engine_dispatch e a célula lia "E aí"."""
+    bloqueio = _BloqueiaMlxWhisper()
+    monkeypatch.setitem(app._settings, "whisper_arquivo_ttl_s", 600)
+    monkeypatch.delitem(sys.modules, "mlx_whisper", raising=False)
+    monkeypatch.delitem(sys.modules, "mlx_whisper.transcribe", raising=False)
+    monkeypatch.setattr(app, "_release_mlx_memory", lambda aggressive=False: None)
+    if "torch" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    sys.meta_path.insert(0, bloqueio)
+    try:
+        assert app._whisper_arquivo_passo() is False
+        corpo = app._unload_local_models(tts=False, stt=True, mt=False, ser=False)
+        assert "whisper" not in corpo["unloaded"]
+        assert bloqueio.vistos == []
+        assert "mlx_whisper" not in sys.modules
+        assert "mlx_whisper.transcribe" not in sys.modules
+    finally:
+        sys.meta_path.remove(bloqueio)
