@@ -4563,15 +4563,15 @@ def _host_privado(host: str) -> bool:
     chega aqui já descolchetada pelo `urlsplit().hostname`.
 
     Sem isso o `?url=` é um scanner da rede interna com oráculo de código/latência
-    (#784). Nome que não resolve em IP cai no heurístico de sufixo."""
+    (#784). Esta função olha a STRING. Quem aceita um nome (`_public_url_normaliza`,
+    `_public_proxy_check`) resolve antes, em `_destino_resolvido` (#954)."""
     import ipaddress
 
     nome = (host or "").strip().strip("[]").lower()
     if not nome:
         return True
-    # NOME que não resolvemos: o heurístico de sufixo pega o caso comum, mas um
-    # domínio público apontando para IP privado (ou o contrário) passa — brecha
-    # conhecida e declarada (#784).
+    # Sufixo cobre o caso comum sem DNS. `foo.localhost` NÃO entra aqui: o
+    # bloqueio desse nome é o IP que `_destino_resolvido` obtém.
     if nome in ("localhost",) or nome.endswith((".local", ".lan", ".internal",
                                                 ".home.arpa")):
         return True
@@ -4582,6 +4582,65 @@ def _host_privado(host: str) -> bool:
     # CGNAT (100.64/10) NÃO entra em `is_private` no 3.12 — a linha é necessária
     return (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
             or ip in ipaddress.ip_network("100.64.0.0/10"))
+
+
+_DNS_PRAZO_S = 2.0
+
+
+def _ips_do_nome(host: str) -> list[str]:
+    """IPs de `getaddrinfo`, sem repetir. Estoura se passar de `_DNS_PRAZO_S`."""
+    caixa: dict = {}
+
+    def _resolve() -> None:
+        try:
+            caixa["infos"] = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            caixa["erro"] = exc
+
+    t = threading.Thread(target=_resolve, daemon=True)
+    t.start()
+    t.join(_DNS_PRAZO_S)
+    if t.is_alive():
+        raise TimeoutError(host)
+    if "erro" in caixa:
+        raise caixa["erro"]
+    if "infos" not in caixa:
+        raise OSError(f"sem resposta de DNS para {host}")
+    ips: list[str] = []
+    for info in caixa["infos"]:
+        ip = info[4][0]
+        if isinstance(ip, str) and "%" in ip:
+            ip = ip.split("%", 1)[0]
+        if ip and ip not in ips:
+            ips.append(ip)
+    return ips
+
+
+def _destino_resolvido(host: str, *, sem_dns: str) -> list[str]:
+    """IPs públicos do host. Qualquer um privado recusa o nome inteiro (#954).
+
+    `sem_dns="heuristico"` (gravação): DNS fora do ar cai na string e devolve
+    `[]` — o POST não trava. `sem_dns="recusa"` (checagem): DNS fora do ar
+    recusa e ninguém conecta no nome. Loopback, RFC1918, link-local (metadata
+    169.254/16), não especificado e CGNAT 100.64/10 valem para cada IP.
+    """
+    nome = (host or "").strip().strip("[]")
+    if _host_privado(nome):
+        raise ValueError(f"destino interno ({nome})")
+    try:
+        ips = _ips_do_nome(nome)
+    except (OSError, TimeoutError):
+        if sem_dns == "heuristico":
+            return []
+        raise ValueError(f"não resolvi o host ({nome})") from None
+    if not ips:
+        if sem_dns == "heuristico":
+            return []
+        raise ValueError(f"não resolvi o host ({nome})")
+    for ip in ips:
+        if _host_privado(ip):
+            raise ValueError(f"destino interno ({nome})")
+    return ips
 
 
 def _sufixo_porta_publica(netloc: str) -> str:
@@ -4618,6 +4677,9 @@ def _public_url_normaliza(valor) -> str:
 
     O GET `/api/tunnel/status` sem `?url=` lê este campo. Sem ramo no apply o POST
     de admin respondia 200 e o valor não ia para a RAM nem para o disco.
+
+    Nome passa por DNS: se qualquer IP for privado, 400. DNS fora do ar não
+    trava o POST — aí fica o heurístico da string (#954).
     """
     cru = str(valor or "").strip()
     if not cru:
@@ -4627,12 +4689,17 @@ def _public_url_normaliza(valor) -> str:
     partes = urlsplit(cru)
     host = partes.hostname or ""
     if (partes.scheme.lower() != "https" or not host or partes.username
-            or partes.password or partes.query or partes.fragment
-            or _host_privado(host)):
+            or partes.password or partes.query or partes.fragment):
         raise HTTPException(400, "public_url inválida (use https:// e um host público)")
     # `urlsplit().port` levanta ValueError em `:xx` e em porta fora de 0–65535.
     # Lido solto, o POST virava 500. A faixa é conferida no inteiro (#950).
+    # Porta antes do DNS: token inválido não espera o resolver.
     porta = _sufixo_porta_publica(partes.netloc)
+    try:
+        _destino_resolvido(host, sem_dns="heuristico")
+    except ValueError:
+        raise HTTPException(
+            400, "public_url inválida (use https:// e um host público)") from None
     host_txt = f"[{host}]" if ":" in host else host
     caminho = (partes.path or "").rstrip("/")
     return f"https://{host_txt}{porta}{caminho}"
@@ -4641,32 +4708,137 @@ def _public_url_normaliza(valor) -> str:
 import urllib.request  # noqa: E402  (só aqui embaixo; ver uso)
 
 
-class _SemRedirect(urllib.request.HTTPRedirectHandler):
-    """Não segue redirect: senão a allowlist de destino vira porta de entrada."""
+class _DestinoRecusado(Exception):
+    """Redirect (ou hop) que não pode ser buscado. `privado` vira 400 no status."""
+
+    def __init__(self, mensagem: str, privado: bool):
+        super().__init__(mensagem)
+        self.privado = privado
+
+
+def _pedido_pinado(url: str, ip: str):
+    """Request no IP já validado, com Host/SNI do nome (#954).
+
+    Conectar de novo pelo nome reabria a janela de rebinding: o DNS da
+    validação e o DNS do `urllib` podiam divergir.
+    """
+    partes = urlsplit(url)
+    try:
+        porta_n = partes.port
+    except ValueError:
+        raise ValueError("porta inválida") from None
+    host = partes.hostname or ""
+    if not host:
+        raise ValueError("sem host")
+    ip_txt = f"[{ip}]" if ":" in ip else ip
+    porta = f":{porta_n}" if porta_n else ""
+    caminho = partes.path or "/"
+    if partes.query:
+        caminho = f"{caminho}?{partes.query}"
+    pinada = f"{partes.scheme}://{ip_txt}{porta}{caminho}"
+    if ":" in host:
+        host_hdr = f"[{host}]"
+    else:
+        host_hdr = host
+    if porta_n and not (partes.scheme == "https" and porta_n == 443
+                        or partes.scheme == "http" and porta_n == 80):
+        host_hdr = f"{host_hdr}:{porta_n}"
+    req = urllib.request.Request(pinada, method="GET")
+    req.add_unredirected_header("Host", host_hdr)
+    req.add_unredirected_header("User-Agent", "tts-studio-tunnel-check")
+    req.sni_host = host
+    return req
+
+
+class _HTTPSComSNI(urllib.request.HTTPSHandler):
+    """SNI e checagem do certificado usam o nome, não o IP pinado."""
+
+    def https_open(self, req):
+        import http.client
+        sni = getattr(req, "sni_host", None)
+
+        class _Conn(http.client.HTTPSConnection):
+            # CPython 3.12 não aceita `server_hostname` no construtor: o
+            # `connect()` de fábrica usaria o IP pinado como SNI.
+            def __init__(self, host, port=None,
+                         timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                         source_address=None, context=None,
+                         blocksize=8192, **kwargs):
+                kwargs.pop("server_hostname", None)
+                self._sni = sni
+                super().__init__(
+                    host, port, timeout=timeout,
+                    source_address=source_address, context=context,
+                    blocksize=blocksize, **kwargs)
+                self.server_hostname = sni
+
+            def connect(self):
+                http.client.HTTPConnection.connect(self)
+                nome = self._tunnel_host or self._sni or self.host
+                self.sock = self._context.wrap_socket(
+                    self.sock, server_hostname=nome)
+
+        def fabrica(host, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, **kwargs):
+            return _Conn(host, timeout=timeout, **kwargs)
+
+        return self.do_open(fabrica, req, context=self._context)
+
+
+class _RedirectValidado(urllib.request.HTTPRedirectHandler):
+    """30x só para outro host público, também pinado. Privado não é seguido (#954)."""
 
     def redirect_request(self, req, fp, codigo, msg, headers, novo):
-        return None
+        partes = urlsplit(novo)
+        esquema = (partes.scheme or "").lower()
+        if esquema not in ("http", "https") or partes.username or partes.password:
+            raise _DestinoRecusado("redirect inválido", privado=True)
+        try:
+            host = partes.hostname or ""
+        except ValueError:
+            raise _DestinoRecusado("redirect inválido", privado=True) from None
+        try:
+            ips = _destino_resolvido(host, sem_dns="recusa")
+        except ValueError as exc:
+            texto = str(exc)
+            raise _DestinoRecusado(
+                texto, privado=not texto.startswith("não resolvi")) from None
+        return _pedido_pinado(novo, ips[0])
+
+
+def _recusa_de_destino(exc: ValueError) -> dict:
+    texto = str(exc)
+    if texto.startswith("não resolvi"):
+        return {"ok": False, "error": texto}
+    return {"ok": False, "privado": True,
+            "error": f"{texto} — não é URL pública"}
 
 
 def _public_proxy_check(url: str, timeout: float = 6.0) -> dict:
     """Checa a URL pública do proxy a partir daqui (ida e volta completa:
     Mac → VPS → túnel → Mac). Responde {ok, status_code, latency_ms, error}.
 
-    Destino privado/loopback NÃO é seguido: devolve `privado=True` (#784)."""
+    Destino privado/loopback NÃO é seguido: devolve `privado=True` (#784).
+    Nome é resolvido; se qualquer IP for interno, não conecta. A conexão vai
+    no IP pinado, com Host/SNI do nome (#954). Redirect só segue host que
+    passou pela mesma regra.
+    """
     url = (url or "").strip().rstrip("/")
     if not url.startswith(("http://", "https://")):
         return {"ok": False, "error": "URL inválida (use http/https)"}
-    partes = urlsplit(url)
-    if _host_privado(partes.hostname or ""):
-        return {"ok": False, "privado": True,
-                "error": f"destino interno ({partes.hostname}) — não é URL pública"}
     try:
-        import urllib.request
-        req = urllib.request.Request(f"{url}/health", method="GET")
-        req.add_header("User-Agent", "tts-studio-tunnel-check")
-        # o python.org framework build não tem CA store próprio — sem certifi a
-        # checagem falha com "unable to get local issuer certificate" e a UI
-        # mostra a internet como caída (mesmo bug já tratado em _chat_llm)
+        partes = urlsplit(url)
+        host = partes.hostname or ""
+    except ValueError:
+        return {"ok": False, "error": "URL inválida (use http/https)"}
+    try:
+        ips = _destino_resolvido(host, sem_dns="recusa")
+    except ValueError as exc:
+        return _recusa_de_destino(exc)
+    try:
+        req = _pedido_pinado(f"{url}/health", ips[0])
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)[:200]}
+    try:
         import ssl
         try:
             import certifi
@@ -4674,14 +4846,22 @@ def _public_proxy_check(url: str, timeout: float = 6.0) -> dict:
         except Exception:  # noqa: BLE001 — sem certifi, trust store padrão
             ctx = ssl.create_default_context()
         t0 = time.monotonic()
+        # Proxy do ambiente furaria o pin: o TCP iria para o proxy, não para o IP.
         aberto = urllib.request.build_opener(
-            _SemRedirect(), urllib.request.HTTPSHandler(context=ctx))
+            urllib.request.ProxyHandler({}),
+            _RedirectValidado(),
+            _HTTPSComSNI(context=ctx))
         with aberto.open(req, timeout=timeout) as resp:
             body = resp.read(200)
             lat = round((time.monotonic() - t0) * 1000)
             ok = resp.status == 200 and b'"ok"' in body
             return {"ok": ok, "status_code": resp.status,
                     "latency_ms": lat, "error": None if ok else "resposta inesperada"}
+    except _DestinoRecusado as exc:
+        if exc.privado:
+            return {"ok": False, "privado": True,
+                    "error": f"{exc} — não é URL pública"}
+        return {"ok": False, "latency_ms": None, "error": str(exc)[:200]}
     except Exception as e:
         return {"ok": False, "latency_ms": None, "error": str(e)[:200]}
 
@@ -4695,6 +4875,11 @@ def tunnel_status(request: Request, url: str = ""):
     estar de pé apontando para loopback, e aí a auth pública é no-op. O campo
     `conector` diz por que o cloudflared está "parado" (sem agente, plist sem
     token, conector parado) em vez de só um booleano.
+
+    `?url=` é só admin (`_exige_admin`: loopback sem origem estrangeira,
+    `TTS_ROD_ADMIN_KEY` ou papel admin). Chave `use` recebe 403 e o destino
+    não é buscado (#784/#954). Sem `?url=`, a checagem usa a `public_url`
+    gravada — esse campo também só admin escreve.
     """
     # `?url=` na query é SSRF de graça: o Mac busca o destino e devolve código e
     # latência (#784). Só admin manda destino; o resto usa a URL CONFIGURADA.

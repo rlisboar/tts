@@ -9449,9 +9449,7 @@ def test_host_privado_ipv6_e_formas_de_url():
 
 
 def test_redirect_nao_e_seguido():
-    """Host público que redireciona para interno não pode furar a checagem.
-
-    Follow desligado: o `ok` fica falso (3xx) em vez de virar 200 do destino."""
+    """IP literal privado não é buscado (#784). 302 de host público: célula do #954."""
     import threading as _th
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -9471,13 +9469,209 @@ def test_redirect_nao_e_seguido():
         # 127.0.0.1 é privado: usa-se o caminho direto pela função, que não valida
         r = app._public_proxy_check(f"http://127.0.0.1:{srv.server_address[1]}")
         assert r["privado"] is True
-        # e o handler de redirect está instalado no opener
-        import urllib.request
-
-        assert any(isinstance(h, app._SemRedirect) for h in
-                   urllib.request.build_opener(app._SemRedirect()).handlers)
     finally:
         srv.shutdown()
+
+
+def _tcp_proibido(*a, **k):
+    """O pin não pode cair no `create_connection` de verdade."""
+    raise AssertionError(f"tcp real {a[:2]}")
+
+
+def _dns_falso(mapa):
+    """`getaddrinfo` stubado. Valor str ou lista de IPs; exceção é reerguida."""
+    import socket as _socket
+
+    def _gai(host, _port, *args, **kwargs):
+        if host not in mapa:
+            raise _socket.gaierror(8, f"sem {host}")
+        ips = mapa[host]
+        if isinstance(ips, BaseException):
+            raise ips
+        if isinstance(ips, str):
+            ips = [ips]
+        saida = []
+        for ip in ips:
+            fam = _socket.AF_INET6 if ":" in ip else _socket.AF_INET
+            saida.append((fam, _socket.SOCK_STREAM, 0, "", (ip, 0)))
+        return saida
+
+    return _gai
+
+
+def _conn_falsa(monkeypatch, respostas):
+    """Substitui o TCP/TLS: registra o host conectado e devolve a fila de respostas."""
+    import http.client as _hc
+
+    feitas = []
+
+    class _Resp:
+        def __init__(self, status, hdrs, body):
+            self.status = self.code = status
+            self.reason = "x"
+            self.headers = _hc.HTTPMessage()
+            for k, v in hdrs.items():
+                self.headers[k] = v
+            self._body = body
+
+        def read(self, n=-1):
+            data = self._body
+            self._body = b""
+            if n is None or n < 0:
+                return data
+            return data[:n]
+
+        def info(self):
+            return self.headers
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
+    class _C:
+        # HTTPSHandler lê `HTTPSConnection.debuglevel` no construtor.
+        debuglevel = 0
+
+        def __init__(self, host, port=None, timeout=None, context=None,
+                     server_hostname=None, **kwargs):
+            self.host = host
+            self.port = port
+            self.server_hostname = server_hostname
+            self.headers = {}
+            self.selector = ""
+            self.sock = None
+            feitas.append(self)
+
+        def set_debuglevel(self, _n):
+            pass
+
+        def request(self, method, selector, body=None, headers=None, **kwargs):
+            self.selector = selector
+            self.headers = headers or {}
+
+        def getresponse(self):
+            status, hdrs, body = respostas.pop(0)
+            return _Resp(status, hdrs, body)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_hc, "HTTPConnection", _C)
+    monkeypatch.setattr(_hc, "HTTPSConnection", _C)
+    return feitas
+
+
+def test_nome_com_a_privado_recusa_e_publico_pina(client, auth, monkeypatch):
+    """#954: getaddrinfo stubado. Nome→IP privado não grava e não conecta.
+
+    Nome→IP público grava e o `?url=` conecta no IP, com Host e SNI do nome.
+    DNS quebrado no save cai no heurístico; na checagem recusa sem conectar.
+    Um A público misturado com A privado também recusa.
+    """
+    import socket as _socket
+
+    # TEST-NET (203.0.113/24) é `is_private` neste 3.12: o produto recusa, e a
+    # célula de "público" precisa de um IP que `_host_privado` deixa passar.
+    # `create_connection` estoura: o pin não pode abrir TCP de verdade.
+    ip_publico = "8.8.8.8"
+    monkeypatch.setattr(_socket, "create_connection", _tcp_proibido)
+    antes = app._settings.get("public_url") or ""
+    speed_antes = app._settings.get("speed")
+    try:
+        for ip in ("127.0.0.1", "192.168.1.10", "10.1.2.3",
+                   "169.254.169.254", "100.64.0.1"):
+            monkeypatch.setattr(_socket, "getaddrinfo", _dns_falso({
+                "privado.exemplo": ip}))
+            feitas = _conn_falsa(monkeypatch, [])
+            r = client.post("/api/settings", headers=auth, json={
+                "public_url": "https://privado.exemplo/tts", "speed": 3})
+            assert r.status_code == 400, (ip, r.status_code, r.text[:160])
+            assert (app._settings.get("public_url") or "") == antes, ip
+            assert app._settings.get("speed") == speed_antes, ip
+            r = client.get("/api/tunnel/status?url=http://privado.exemplo",
+                           headers=auth)
+            assert r.status_code == 400, (ip, r.text[:160])
+            assert "interno" in r.text
+            assert feitas == [], ip
+
+        monkeypatch.setattr(_socket, "getaddrinfo", _dns_falso({
+            "misto.exemplo": ["8.8.8.8", "10.0.0.8"]}))
+        feitas = _conn_falsa(monkeypatch, [])
+        r = client.get("/api/tunnel/status?url=http://misto.exemplo", headers=auth)
+        assert r.status_code == 400, r.text[:160]
+        assert feitas == [], "conectou mesmo com um A privado"
+
+        monkeypatch.setattr(_socket, "getaddrinfo", _dns_falso({
+            "publico.exemplo": ip_publico}))
+        r = client.post("/api/settings", headers=auth, json={
+            "public_url": "https://publico.exemplo/tts/"})
+        assert r.status_code == 200, r.text[:160]
+        assert app._settings["public_url"] == "https://publico.exemplo/tts"
+
+        feitas = _conn_falsa(monkeypatch, [
+            (200, {"Content-Type": "application/json"}, b'{"ok": true}')])
+        r = client.get("/api/tunnel/status?url=https://publico.exemplo",
+                       headers=auth)
+        assert r.status_code == 200, r.text[:200]
+        assert r.json()["public_check"]["ok"] is True
+        assert len(feitas) == 1
+        assert feitas[0].host == ip_publico
+        assert feitas[0].headers.get("Host") == "publico.exemplo"
+        assert feitas[0].server_hostname == "publico.exemplo"
+        assert feitas[0].selector == "/health"
+
+        monkeypatch.setattr(_socket, "getaddrinfo", _dns_falso({
+            "sem-dns.exemplo": _socket.gaierror(8, "falhou")}))
+        feitas = _conn_falsa(monkeypatch, [])
+        r = client.post("/api/settings", headers=auth, json={
+            "public_url": "https://sem-dns.exemplo"})
+        assert r.status_code == 200, r.text[:160]
+        assert app._settings["public_url"] == "https://sem-dns.exemplo"
+        r = client.get("/api/tunnel/status?url=http://sem-dns.exemplo",
+                       headers=auth)
+        assert r.status_code == 200, r.text[:200]
+        assert r.json()["public_check"]["ok"] is False
+        assert feitas == [], "DNS fora do ar ainda conectou pelo nome"
+    finally:
+        client.post("/api/settings", headers=auth, json={"public_url": antes})
+
+
+def test_redirect_para_privado_nao_conecta_e_publico_e_seguido(monkeypatch):
+    """#954: 302 para nome com A privado não é seguido. 302 para nome público é,
+    no IP pinado desse nome — senão o 302 de um túnel válido vira 'fora'.
+    """
+    import socket as _socket
+
+    mapa = {
+        "publico.exemplo": "8.8.8.8",
+        "interno.exemplo": "192.168.1.10",
+        "outro.exemplo": "1.1.1.1",
+    }
+    monkeypatch.setattr(_socket, "create_connection", _tcp_proibido)
+    monkeypatch.setattr(_socket, "getaddrinfo", _dns_falso(mapa))
+    feitas = _conn_falsa(monkeypatch, [
+        (302, {"Location": "http://interno.exemplo/health"}, b""),
+    ])
+    r = app._public_proxy_check("http://publico.exemplo")
+    assert r.get("privado") is True, r
+    assert r["ok"] is False
+    assert [c.host for c in feitas] == ["8.8.8.8"]
+
+    feitas = _conn_falsa(monkeypatch, [
+        (302, {"Location": "http://outro.exemplo/health"}, b""),
+        (200, {"Content-Type": "application/json"}, b'{"ok": true}'),
+    ])
+    r = app._public_proxy_check("http://publico.exemplo")
+    assert r["ok"] is True, r
+    assert [c.host for c in feitas] == ["8.8.8.8", "1.1.1.1"]
+    assert feitas[1].headers.get("Host") == "outro.exemplo"
+    assert feitas[1].selector == "/health"
 
 
 # --- #799: trabalho bloqueante fora do event loop ----------------------------
