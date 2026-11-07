@@ -1,0 +1,246 @@
+{
+ "rotulo": "c3f4a78-mini",
+ "quando": "2026-11-07 16:49:29",
+ "params": {
+  "url": "ws://127.0.0.1:7890/api/live/ws",
+  "audio": "/tmp/live-bench-audio",
+  "voice": "",
+  "ciclos": 3,
+  "sessao_min": 0,
+  "interrompe_apos_ms": 1500,
+  "eco_db": -15.0,
+  "eco_atraso_ms": 100,
+  "ruido_dbfs": -60.0,
+  "pausa_min_s": 1.0,
+  "pausa_max_s": 4.0,
+  "teto_turno_s": 60.0,
+  "prewarm_s": 20.0,
+  "seed": 875,
+  "out": "/tmp/live-bench-942d.json",
+  "rotulo": "c3f4a78-mini",
+  "verbose": false
+ },
+ "corpus": 14,
+ "resumo": {
+  "S1": {
+   "falas": 6,
+   "aceitas": 4,
+   "pct_aceitas": 66.7,
+   "aceitas_ic95": [
+    30.0,
+    90.3
+   ],
+   "cobertura_media": 0.537,
+   "ciclos_com_wer": 3,
+   "wer_ciclo_medio": 0.477,
+   "wer_ciclo_mediana": 0.467,
+   "ciclos_wer_ok_10": 0,
+   "falas_ge_0_8s_perdidas": 2,
+   "turnos_descartados_srv": 0,
+   "meta": "≥95 % aceitas, WER ≤10 %, 0 descarte ≥0,8 s"
+  },
+  "S2": {
+   "n": 5,
+   "p50_ms": 4202.0,
+   "p95_ms": 7472.6,
+   "max_ms": 8085,
+   "llm_ttft_n": 3,
+   "llm_ttft_p50_ms": 1721.0,
+   "llm_ttft_p95_ms": 1742.6,
+   "pos_llm_p50_ms": 3473.0,
+   "pos_llm_p95_ms": 6074.9,
+   "meta": "p50 ≤1500, p95 ≤2500 (llm_ttft = 1º token; pos_llm = TTS+fila)"
+  },
+  "S3": {
+   "interrupcoes": 3,
+   "duck_n": 1,
+   "duck_p50_ms": 3562.0,
+   "duck_max_ms": 3562,
+   "duck_ok_300": 0,
+   "stop_n": 1,
+   "stop_p50_ms": 5199.0,
+   "stop_max_ms": 5199,
+   "stop_ok_800": 0,
+   "pausa_n": 0,
+   "pausa_p50_ms": null,
+   "pausa_max_ms": null,
+   "pausa_ok_800": 0,
+   "eco_respostas": 2,
+   "eco_falso_corte": 0,
+   "eco_falso_corte_ic95": [
+    0.0,
+    65.8
+   ],
+   "eco_falso_duck": 0,
+   "eco_falso_duck_ic95": [
+    0.0,
+    65.8
+   ],
+   "eco_falso_pausa": 0,
+   "meta": "duck ≤300, pausa ≤800, falso corte ≤5 %, falso duck ≤5 %"
+  },
+  "S4": {
+   "respostas": 4,
+   "com_simbolo": 0,
+   "por_tipo": {},
+   "cru_com_simbolo": 0,
+   "cru_por_tipo": {},
+   "limpador": "/Users/lisboa/Documents/tts-rod/common.py",
+   "meta": "0 em 50 respostas (texto LIMPO, o que vai ao TTS)"
+  },
+  "S5": {
+   "sessao_s": 350,
+   "ciclos": 3,
+   "ws_vivo_no_fim": true,
+   "erro_ws": null,
+   "proc_ini": {
+    "pid": 20770,
+    "rss_mb": 65,
+    "threads": 6,
+    "filhos": 0
+   },
+   "proc_fim": {
+    "pid": 20770,
+    "rss_mb": 247,
+    "threads": 46,
+    "filhos": 2
+   },
+   "erros": {},
+   "meta": "30 min sem travar nem vazar worker/lock (não rodado: use --sessao-min 30)"
+  }
+ },
+ "falas": [
+  {
+   "fala": 0,
+   "tipo": "longa",
+   "voz": "320afe68b8",
+   "dur_s": 6.82,
+   "papel": "A",
+   "audio_durante_fala": false,
+   "s2_ms": 8085,
+   "interrupcao_valida": true,
+   "s2_llm_ttft_ms": 1721,
+   "s2_pos_llm_ms": 6364,
+   "cobertura": 1.0,
+   "aceito": true
+  },
+  {
+   "fala": 1,
+   "tipo": "interrupcao",
+   "voz": "b835c54c36",
+   "dur_s": 5.18,
+   "papel": "B",
+   "duck_antes_da_fala": false,
+   "s3_duck_ms": null,
+   "s3_pausa_ms": null,
+   "s3_stop_ms": null,
+   "s2_ms": 1217,
+   "eco_tocado_s": 8.8,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 0.053,
+   "aceito": false,
+   "wer_ciclo": 0.514,
+   "turnos_descartados": 0,
+   "pendente": false
+  },
+  {
+   "fala": 2,
+   "tipo": "curta",
+   "voz": "b2c6e1f478",
+   "dur_s": 0.9,
+   "papel": "A",
+   "audio_durante_fala": false,
+   "s2_ms": 5023,
+   "interrupcao_valida": true,
+   "s2_llm_ttft_ms": 1550,
+   "s2_pos_llm_ms": 3473,
+   "aceito": true,
+   "sobra_palavras": 4
+  },
+  {
+   "fala": 3,
+   "tipo": "interrupcao",
+   "voz": "fb998865dc",
+   "dur_s": 10.96,
+   "papel": "B",
+   "duck_antes_da_fala": false,
+   "s3_duck_ms": 3562,
+   "s3_pausa_ms": null,
+   "s3_stop_ms": 5199,
+   "s2_ms": 4068,
+   "eco_tocado_s": 11.5,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 0.556,
+   "aceito": true,
+   "wer_ciclo": 0.467,
+   "turnos_descartados": 0,
+   "pendente": false
+  },
+  {
+   "fala": 4,
+   "tipo": "longa",
+   "voz": "fd9b237973",
+   "dur_s": 10.0,
+   "papel": "A",
+   "audio_durante_fala": false,
+   "s2_ms": 4202,
+   "interrupcao_valida": true,
+   "s2_llm_ttft_ms": 1745,
+   "s2_pos_llm_ms": 2457,
+   "cobertura": 0.933,
+   "aceito": true
+  },
+  {
+   "fala": 5,
+   "tipo": "interrupcao",
+   "voz": "4486241991",
+   "dur_s": 9.02,
+   "papel": "B",
+   "duck_antes_da_fala": false,
+   "s3_duck_ms": null,
+   "s3_pausa_ms": null,
+   "s3_stop_ms": null,
+   "s2_ms": null,
+   "eco_tocado_s": 0.0,
+   "cobertura": 0.143,
+   "aceito": false,
+   "wer_ciclo": 0.451,
+   "turnos_descartados": 0,
+   "pendente": false
+  }
+ ],
+ "respostas": [
+  {
+   "t": 29.08,
+   "fim": "turn_complete",
+   "chars": 95,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 53.1,
+   "fim": "turn_complete",
+   "chars": 53,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 69.7,
+   "fim": "turn_complete",
+   "chars": 57,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 94.8,
+   "fim": "turn_complete",
+   "chars": 106,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  }
+ ]
+}
