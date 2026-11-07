@@ -294,6 +294,8 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `521-bakeoff-identidade.md` | #521 | 2026-10-28 | Bake-off de identidade de voz (#521) — veredito |
 | `522-anticlone.md` | #522 | 2026-10-31 | Anti-clone (#522) — marca d'água medida; AASIST reprovado como portão solo |
 | `523-limitedor-onnx.md` | #523 | 2026-10-28 | Limpar amostra pelo DFN3 em ONNX (#523) — medição refeita |
+| `528-etapas-limpeza.png` | #528 | 2026-11-07 | (imagem) |
+| `528-filtros-identidade.png` | #528 | 2026-11-07 | (imagem) |
 | `532-bakeoff-locutor-alvo.md` | #532 | 2026-10-28 | Locutor-alvo (#532) — bake-off: seleção por janela × separação |
 | `534-separacao-alvo.txt` | #534 | 2026-10-28 | 534 — rodada REAL do filtro `speaker_alvo` (VOZ-I6), 2026-10-28 |
 | `563-dsh-fallback-prewarm.txt` | #563 | 2026-10-28 | 563 — `live_dsh_fallback.sh`: espera o pre-warm antes de mandar áudio |

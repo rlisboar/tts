@@ -2430,6 +2430,11 @@
                     title="Baixa todas as vozes (.wav + .json) num zip — guarde em local seguro">⬇ Backup</button>
             <input type="file" id="voicesImportFile" accept=".zip" style="display:none">
           </div>
+          <div class="row" id="vozLimpezaEtapas" style="gap:10px; align-items:center; margin:2px 0 8px">
+            <span class="hint" style="margin:0">etapas da limpeza:</span>
+            <label class="check" title="separa música antes de limpar (se o modelo estiver instalado)"><input type="checkbox" id="vozLimpaMusica" data-admin-setting="voice_limpar_musica"> música</label>
+            <label class="check" title="reduz a reverberação da sala antes de limpar (se o modelo estiver instalado)"><input type="checkbox" id="vozLimpaDereverb" data-admin-setting="voice_limpar_dereverb"> reverb</label>
+          </div>
           <div id="voiceList"><div class="empty">Nenhuma voz ainda — grave ou importe ao lado.</div></div>
         </div>
       </div>
@@ -2698,8 +2703,8 @@
           <details class="lx-filtros" id="lxFiltros">
             <summary>Filtros da interrupção <span class="hint" id="lxFiltrosResumo"></span></summary>
             <p class="hint" id="lxFiltrosDica">
-              ordem de avaliação: palavras de corte &gt; eco &gt; backchannel &gt; ruído &gt;
-              pergunta &gt; frase longa &gt; fala sustentada &gt; quando nenhum decide.
+              ordem de avaliação: palavras de corte &gt; marca d'água &gt; eco &gt; identidade &gt;
+              backchannel &gt; ruído &gt; pergunta &gt; frase longa &gt; fala sustentada &gt; quando nenhum decide.
             </p>
             <div class="lx-filtro" data-filtro="palavras_corte">
               <label class="check"><input type="checkbox" id="lxLiga_palavras_corte">
@@ -2747,6 +2752,25 @@
             <div class="lx-filtro" data-filtro="eco">
               <label class="check"><input type="checkbox" id="lxLiga_eco"><b>eco do próprio TTS</b></label>
               <span class="lx-dica">CONTINUO quando o que voltou é a minha própria fala</span>
+            </div>
+            <!-- I4 (#527): os dois desligados por padrão. `marca_eco` vem ANTES do
+                 eco na ordem do servidor: a marca d'água é prova forte e cobre a
+                 minha própria voz clonada, que o eco por texto pode confundir. -->
+            <div class="lx-filtro" data-filtro="marca_eco">
+              <label class="check"><input type="checkbox" id="lxLiga_marca_eco"><b>eco pela marca d'água</b></label>
+              <span class="lx-dica">CONTINUO quando o trecho traz a marca d'água do próprio TTS — pega até a minha voz clonada</span>
+            </div>
+            <div class="lx-filtro" data-filtro="identidade">
+              <label class="check"><input type="checkbox" id="lxLiga_identidade"><b>só vozes cadastradas interrompem</b></label>
+              <span class="lx-dica">CONTINUO em TV e outra pessoa; só a voz cadastrada corta</span>
+              <select id="lxPerfis_identidade" multiple size="3" aria-label="perfis que podem interromper"></select>
+              <span class="lx-dica" id="lxPerfisDica">nenhum marcado = o perfil do “só a minha voz”</span>
+              <label for="lxFar_identidade" class="lx-dica">rigor</label>
+              <select id="lxFar_identidade" aria-label="rigor do limiar de identidade">
+                <option value="0.01">1 erro a cada 100 falas</option>
+                <option value="0.001">1 erro a cada 1000 falas</option>
+                <option value="0.05">folgado (5 %)</option>
+              </select>
             </div>
             <!-- `modelo` é FEATURE-DETECTADO: servidor que não devolve o campo não
                  ganha o toggle (ver lxFiltrosModeloVisivel). Desligado por padrão. -->
@@ -3513,6 +3537,9 @@ function aplicarPoliticaAdmin() {
     (el.closest("label") || el).classList.toggle("cfg-travado", travado);
   });
   travarAcoesElevadas();
+  // o modo do painel de filtros também decide `disabled` (filtro desligado inerte):
+  // sem reaplicar aqui, a política reabilitava perfis/rigor do filtro desligado
+  if (typeof lxFiltrosModo === "function") lxFiltrosModo();
   const b = $("cfgAdminBadge");
   if (b) {
     b.hidden = false;
@@ -4802,6 +4829,27 @@ $("edTrim").onclick = () => ED.sel ? edOp({ type: "trim", start: ED.sel.a * ED.d
 $("edCut").onclick = () => ED.sel ? edOp({ type: "cut", start: ED.sel.a * ED.dur, end: ED.sel.b * ED.dur }) : toast("Arraste na onda p/ selecionar.");
 $("edNorm").onclick = () => edOp({ type: "normalize" });
 $("edDenoise").onclick = () => edOp({ type: "denoise", strength: parseFloat($("edDnStr").value) });
+/* Etapas da limpeza (#528): settings GLOBAIS (admin) — o preview do servidor lê
+   daqui. Mudou etapa com um painel A/B aberto, o painel é refeito no mesmo item
+   (as prévias abertas em outros itens morrem: foram medidas na configuração velha). */
+async function vozLimpezaEtapa(chave, id) {
+  const chk = $(id);
+  if (!chk) return;
+  try {
+    const r = await api("/api/settings", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [chave]: chk.checked }) });
+    if (r && r.admin_ignored && r.admin_ignored.includes(chave))
+      toast("etapa da limpeza é ajuste de admin", 4000);
+  } catch (e) { chk.checked = !chk.checked; toast("Erro: " + e.message, 5000); return; }
+  const abertos = [...document.querySelectorAll("#voiceList .ab-previa")];
+  for (const p of abertos) {
+    const item = p.closest(".item");
+    p.remove();
+    item?.querySelector(".clean")?.click();
+  }
+}
+if ($("vozLimpaMusica")) $("vozLimpaMusica").onchange = () => vozLimpezaEtapa("voice_limpar_musica", "vozLimpaMusica");
+if ($("vozLimpaDereverb")) $("vozLimpaDereverb").onchange = () => vozLimpezaEtapa("voice_limpar_dereverb", "vozLimpaDereverb");
 $("edGain").oninput = () => $("edGainOut").textContent = (+$("edGain").value).toFixed(1).replace(/\.0$/, "") + " dB";
 // Este era o ÚNICO handler inline do arquivo. Atributo on*= precisa de
 // 'unsafe-inline' no script-src; com o nonce entrando (#76), ele sai. Os vizinhos
@@ -7153,8 +7201,7 @@ async function loadSettings() {
     cfgTxt("sttWhisperModel", s.stt_whisper_repo);
     cfgNum("spThr", s.speaker_threshold, 0.6)   // mesmo default do servidor (#525);
     if ($("spThrOut")) $("spThrOut").textContent = (+($("spThr").value)).toFixed(2);
-    spFarAlvoAplica(s.speaker_far_alvo);
-    spExtratorAviso(s.extrator_efetivo);   // ausente = servidor sem o campo
+    spFarAlvoAplica(s.speaker_far_alvo);    spExtratorAviso(s.extrator_efetivo);   // ausente = servidor sem o campo
     if (typeof refreshSpProfiles === "function") refreshSpProfiles();
     $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
     applySttEngine(false);
@@ -7171,6 +7218,8 @@ async function loadSettings() {
     }
     cfgChk("sttFiltros", s.stt_anti_ruido !== false);
     cfgChk("sttDenoise", s.stt_denoise !== false);
+    cfgChk("vozLimpaMusica", !!s.voice_limpar_musica);
+    cfgChk("vozLimpaDereverb", !!s.voice_limpar_dereverb);
     pintaSttFiltros();
     // popula voz padrão da API com as vozes existentes
     const voices = await api("/api/voices");
@@ -8941,6 +8990,13 @@ function lxObsRender() {
           + (backendEfetivo || "endpoint") + (motivo ? ": " + motivo : "")
         : "backend que de FATO responde o turno (o servidor publica em stats.ia)";
     }
+    // contador de falas IGNORADAS (#527): só interessa com identidade/marca_eco
+    // ligados; `tipos.ruido` é o que CONTINUOU (o motor conta toda decisão)
+    const filtroIgnora = !!(LX.filtros
+      && ((LX.filtros.identidade || {}).on || (LX.filtros.marca_eco || {}).on));
+    const chipIgn = $("lxIgnoradasChip");
+    if (chipIgn) chipIgn.hidden = !filtroIgnora;
+    if (filtroIgnora) txt("lxIgnoradas", String(((s && s.barge && s.barge.tipos) || {}).ruido || 0));
   }
   // o aviso também se acende pelo `stats` (fonte que se auto-corrige, caso o
   // evento único se perca numa reconexão)
@@ -9095,6 +9151,10 @@ const LX_FILTROS_PADRAO = {
   backchannel: { on: true, palavras: ["uhum", "aham", "hum", "sim", "sei", "ok", "tá", "certo", "entendi", "isso", "claro", "beleza", "legal", "nossa", "mhm", "yeah", "right"] },
   ruido: { on: true },
   eco: { on: true },
+  // I4 (#527): desligados por padrão — identidade custa um passo do extrator por
+  // suspeita; `perfis` vazio = o perfil do `live_so_minha_voz` (contrato do servidor)
+  marca_eco: { on: false },
+  identidade: { on: false, perfis: [], far: 0.01 },
   // decide pelo conteúdo (LLM): nasce DESLIGADO; `dsh` manda o trecho para fora
   modelo: { on: false, provedor: "local", limiar: 0.5, timeout_ms: 400 },
   fim_de_resposta: { on: true, restante_ms: 1000 },
@@ -9142,6 +9202,11 @@ function lxFiltroCfg(nome, v) {
   if (padrao.min_palavras !== undefined) cfg.min_palavras = lxClampNum(v && v.min_palavras, 1, 20, padrao.min_palavras);
   if (padrao.min_ms !== undefined) cfg.min_ms = lxClampNum(v && v.min_ms, 150, 5000, padrao.min_ms);
   if (padrao.restante_ms !== undefined) cfg.restante_ms = lxClampNum(v && v.restante_ms, 200, 5000, padrao.restante_ms);
+  if (padrao.perfis) {
+    const lista = Array.isArray(v && v.perfis) ? v.perfis : padrao.perfis;
+    cfg.perfis = lista.map(p => String(p).trim().slice(0, 60)).filter(Boolean).slice(0, 8);
+  }
+  if (padrao.far !== undefined) cfg.far = lxClampFloat(v && v.far, 0.001, 0.2, padrao.far);
   if (padrao.limiar !== undefined) {
     cfg.provedor = (v && v.provedor === "dsh") ? "dsh" : "local";
     cfg.limiar = lxClampFloat(v && v.limiar, 0.05, 0.95, padrao.limiar);
@@ -9218,12 +9283,17 @@ function lxFiltrosRender() {
     }
   }
   if ($("lxProv_modelo")) $("lxProv_modelo").value = LX.filtros.modelo.provedor;
+  // identidade (#527): lista de perfis do servidor + rigor (fora do laço genérico)
+  if ($("lxPerfis_identidade") && LX.filtros.identidade) lxPerfisPreenche();
+  if ($("lxFar_identidade") && LX.filtros.identidade)
+    $("lxFar_identidade").value = String(LX.filtros.identidade.far);
   lxPintaEgress();
   if ($("lxSemDecisao")) $("lxSemDecisao").value = LX.semDecisao || LX_SEM_DECISAO_PADRAO;
   const ligados = Object.values(LX.filtros).filter(c => c.on).length;
   if ($("lxFiltrosResumo"))
     $("lxFiltrosResumo").textContent = "· " + ligados + " de " + Object.keys(LX.filtros).length + " ligados"
       + " · sem decisão: " + (LX.semDecisao === LX_SEM_DECISAO_CORTA ? "corta" : "continua");
+  lxFiltrosModo();   // ligar/desligar filtro muda o que fica inerte (perfis/rigor)
 }
 
 /* No modo `imediata` o motor corta no primeiro som e os filtros não decidem nada:
@@ -9235,10 +9305,49 @@ function lxFiltrosModo() {
   p.classList.toggle("travado", travado);
   for (const el of p.querySelectorAll("input, select, button"))
     if (el.id !== "lxFiltrosPadrao" && el.id !== "lxFiltrosPreset") el.disabled = travado;
+  // perfis/rigor só fazem sentido com o filtro ligado (desligado, ficam inertes)
+  const identOn = !!(LX.filtros && LX.filtros.identidade && LX.filtros.identidade.on);
+  // array, não parênteses: `("a", "b")` vira a string "b" e o for...of iteraria
+  // os CARACTERES — nenhum id casaria (mesma mordida do botão Limpar)
+  for (const id of ["lxPerfis_identidade", "lxFar_identidade"])
+    if ($(id)) $(id).disabled = travado || !identOn;
   if ($("lxFiltrosDica"))
     $("lxFiltrosDica").textContent = travado
       ? "modo Imediata: o motor corta no primeiro som, os filtros não decidem nada (troque para Inteligente para usá-los)."
-      : "ordem de avaliação: palavras de corte > eco > backchannel > ruído > pergunta > frase longa > fala sustentada > quando nenhum decide.";
+      : "ordem de avaliação: palavras de corte > marca d'água > eco > identidade > backchannel > ruído > pergunta > frase longa > fala sustentada > quando nenhum decide.";
+}
+
+/* Perfis que podem interromper (#527). Cache por sessão de tela: o render é
+   chamado a cada mudança e não pode virar uma requisição por tecla. Perfil que
+   está na configuração mas sumiu do servidor continua na lista marcado — senão
+   o render o apagaria da configuração sem o dono ver. */
+let lxPerfisEmVoo = false;
+async function lxPerfisPreenche() {
+  const sel = $("lxPerfis_identidade");
+  if (!sel || lxPerfisEmVoo) return;
+  lxPerfisEmVoo = true;
+  try {
+    if (!LX.perfisNomes) {
+      const lista = await api("/api/speaker/profiles");
+      LX.perfisNomes = (Array.isArray(lista) ? lista : []).map(p => p && p.name).filter(Boolean);
+    }
+  } catch (e) { LX.perfisNomes = LX.perfisNomes || []; }
+  lxPerfisEmVoo = false;
+  const marcados = new Set((LX.filtros.identidade && LX.filtros.identidade.perfis) || []);
+  sel.textContent = "";
+  for (const nome of LX.perfisNomes) {
+    const o = document.createElement("option");
+    o.value = nome; o.textContent = nome; o.selected = marcados.has(nome);
+    sel.appendChild(o);
+  }
+  for (const nome of marcados) {
+    if (LX.perfisNomes.includes(nome)) continue;
+    const o = document.createElement("option");
+    o.value = nome; o.textContent = nome + " (fora da lista)"; o.selected = true;
+    sel.appendChild(o);
+  }
+  const dica = $("lxPerfisDica");
+  if (dica) dica.hidden = sel.options.length > 0;
 }
 
 function lxFiltrosStatus(msg, erro) {
@@ -9957,9 +10066,20 @@ for (const b of document.querySelectorAll("[data-add]")) {
   };
 }
 if ($("lxProv_modelo")) $("lxProv_modelo").onchange = () => {
-  lxFiltroMuda("modelo", "provedor", $("lxProv_modelo").value === "dsh" ? "dsh" : "local");
-  lxLogEvento("⚙ decisão pelo modelo via " + LX.filtros.modelo.provedor
+  lxFiltroMuda("modelo", "provedor", $("lxProv_modelo").value === "dsh" ? "dsh" : "local");  lxLogEvento("⚙ decisão pelo modelo via " + LX.filtros.modelo.provedor
             + (LX.filtros.modelo.provedor === "dsh" ? " — o texto do trecho sai da máquina" : ""));
+};
+// identidade (#527): lista de perfis e rigor. Lista VAZIA = o perfil do “só a minha
+// voz”; marcá-los é o que faz o filtro valer para perfis nomeados.
+if ($("lxPerfis_identidade")) $("lxPerfis_identidade").onchange = () => {
+  const nomes = [...$("lxPerfis_identidade").selectedOptions].map(o => o.value);
+  lxFiltroMuda("identidade", "perfis", nomes);
+  lxLogEvento("⚙ identidade: " + (nomes.length ? nomes.join(", ") : "perfil do “só a minha voz”"));
+};
+if ($("lxFar_identidade")) $("lxFar_identidade").onchange = () => {
+  const v = parseFloat($("lxFar_identidade").value);
+  lxFiltroMuda("identidade", "far", Number.isFinite(v) ? v : 0.01);
+  lxLogEvento("⚙ rigor da identidade: FAR " + (Number.isFinite(v) ? v : 0.01));
 };
 if ($("lxSemDecisao")) $("lxSemDecisao").onchange = () => {
   LX.semDecisao = $("lxSemDecisao").value === LX_SEM_DECISAO_CORTA

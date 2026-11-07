@@ -10,7 +10,8 @@
 #   · `speech_start` durante o playback NÃO corta no modo `inteligente` (abaixa e
 #     espera) e MANTÉM o corte em `imediata` — a #225 continua valendo, agora
 #     dependendo do modo.
-#   · o PAINEL DE FILTROS (adendo do dono): oito toggles, três números, dois
+#   · o PAINEL DE FILTROS (adendo do dono): onze toggles (os dois do I4 nascem
+#     desligados e inertes), números, dois
 #     editores de chips, `sem_decisao` e restaurar padrões. Cobra o MERGE PARCIAL
 #     (mandar um filtro não pode zerar os outros), a normalização de palavra, os
 #     limites (40 chars, duplicata) e o painel TRAVADO no modo `imediata`.
@@ -322,6 +323,12 @@ try:
                      palavras_corte: LX.filtros.palavras_corte.palavras.length,
                      backchannel: LX.filtros.backchannel.palavras.length,
                      modelo: LX.filtros.modelo.on,
+                     identidade: LX.filtros.identidade.on,
+                     marca_eco: LX.filtros.marca_eco.on,
+                     far: document.getElementById('lxFar_identidade').value,
+                     perfis_multiple: document.getElementById('lxPerfis_identidade').multiple,
+                     perfis_habilitado: !document.getElementById('lxPerfis_identidade').disabled,
+                     far_habilitado: !document.getElementById('lxFar_identidade').disabled,
                      modelo_visivel: !document.getElementById('lxFiltroModelo').hidden,
                      modelo_campos: [document.getElementById('lxProv_modelo').value,
                                      document.getElementById('lxNum_modelo_limiar').value,
@@ -331,11 +338,11 @@ try:
         print(f"  painel de filtros: {painel}")
         cobrar(painel is not None, "painel #lxFiltros não existe")
         if painel:
-            cobrar(len(painel["toggles"]) == 9, f"faltam toggles de filtro: {painel['toggles']}")
+            cobrar(len(painel["toggles"]) == 11, f"faltam toggles de filtro: {painel['toggles']}")
             cobrar(sorted(painel["toggles"]) == sorted(
                 "lxLiga_" + f for f in ("palavras_corte", "pergunta", "frase_longa",
                                         "fala_sustentada", "backchannel", "ruido", "eco",
-                                        "modelo", "fim_de_resposta")),
+                                        "marca_eco", "identidade", "modelo", "fim_de_resposta")),
                 f"toggles fora do schema: {painel['toggles']}")
             cobrar(painel["modelo"] is False, "o filtro modelo deveria nascer DESLIGADO")
             cobrar(painel["modelo_visivel"], "o filtro `modelo` não apareceu com o servidor servindo o campo")
@@ -350,6 +357,13 @@ try:
             cobrar(painel["recolhido"], "painel deveria nascer recolhido")
             cobrar(painel["palavras_corte"] > 0 and painel["backchannel"] > 0,
                    "listas padrão não vieram preenchidas")
+            # I4 (#527): os dois nascem DESLIGADOS; perfis/rigor só com o filtro ligado
+            cobrar(painel["identidade"] is False and painel["marca_eco"] is False,
+                   "identidade/marca_eco deveriam nascer DESLIGADOS")
+            cobrar(painel["far"] == "0.01", f"rigor padrão errado: {painel['far']}")
+            cobrar(painel["perfis_multiple"], "a lista de perfis precisa ser múltipla")
+            cobrar(not painel["perfis_habilitado"] and not painel["far_habilitado"],
+                   "perfis/rigor deveriam estar inertes com o filtro desligado")
 
         pg.locator("#lxLigar").click()
         try:
@@ -586,6 +600,40 @@ try:
         print("  clamp de 99 ->", pg.evaluate("() => document.getElementById('lxNum_frase_longa_min_palavras').value"))
         cobrar(pg.evaluate("() => document.getElementById('lxNum_frase_longa_min_palavras').value") == "20",
                "valor acima do teto não foi limitado a 20")
+
+        # identidade (#527): ligar manda SÓ o filtro; perfis e rigor vão no campo próprio
+        limpa_posts()
+        pg.evaluate("""() => { const c = document.getElementById('lxLiga_identidade');
+                                c.checked = true; c.onchange(); }""")
+        pg.wait_for_timeout(700)
+        corpo = posts()[-1] if posts() else {}
+        print("  identidade on ->", corpo.get("live_barge_filtros"))
+        cobrar((corpo.get("live_barge_filtros") or {}).get("identidade", {}).get("on") is True,
+               "o toggle de identidade não mandou o on")
+        cobrar(list((corpo.get("live_barge_filtros") or {}).keys()) == ["identidade"],
+               f"identidade não foi parcial: {corpo.get('live_barge_filtros')}")
+        cobrar(pg.evaluate("() => !document.getElementById('lxPerfis_identidade').disabled"),
+               "perfis continuam inertes com o filtro ligado")
+        limpa_posts()
+        pg.evaluate("() => lxFiltroMuda('identidade', 'perfis', ['voce-teste'])")
+        pg.wait_for_timeout(600)
+        corpo = posts()[-1] if posts() else {}
+        print("  identidade perfis ->", corpo.get("live_barge_filtros"))
+        cobrar((corpo.get("live_barge_filtros") or {}).get("identidade", {}).get("perfis") == ["voce-teste"],
+               "os perfis não foram no POST")
+        limpa_posts()
+        pg.evaluate("""() => { const c = document.getElementById('lxFar_identidade');
+                                c.value = '0.001'; c.onchange(); }""")
+        pg.wait_for_timeout(600)
+        corpo = posts()[-1] if posts() else {}
+        cobrar((corpo.get("live_barge_filtros") or {}).get("identidade", {}).get("far") == 0.001,
+               "o rigor não foi no POST")
+        cobrar((settings().get("live_barge_filtros") or {}).get("identidade", {}).get("far") == 0.001,
+               "o rigor não chegou ao servidor")
+        # devolve o padrão para não contaminar as células seguintes
+        pg.evaluate("""() => { const c = document.getElementById('lxLiga_identidade');
+                                c.checked = false; c.onchange(); }""")
+        pg.wait_for_timeout(400)
 
         # palavra nova: normalizada (maiúscula/acento), entra no filtro e o liga
         pg.evaluate("""() => { const c = document.getElementById('lxLiga_palavras_corte');

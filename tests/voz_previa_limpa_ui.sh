@@ -9,7 +9,9 @@
 #   · "Descartar" fecha o painel e o arquivo continua intacto;
 #   · "Aplicar limpeza" grava (hash muda) e a lista recarrega;
 #   · recusa da guarda (`X-Recusado: 1`) mostra o motivo e trava o aplicar;
-#   · servidor sem a prévia (404) cai no caminho antigo, que ainda aplica direto.
+#   · servidor sem a prévia (404) cai no caminho antigo, que ainda aplica direto;
+#   · etapas da limpeza (#528) nascem desligadas, são admin e, com painel aberto,
+#     refazem a prévia (as etapas entram na medição).
 #
 # Vozes SINTÉTICAS em tmp (o `voices/` do dono não é tocado), sem microfone.
 #
@@ -180,7 +182,36 @@ try:
         pg.evaluate("() => document.querySelector('.ab-previa .ab-descartar').click()")
         pg.unroute(lambda u: "denoise?previa=true" in u)
 
-        # ── 5) servidor sem prévia (404): caminho antigo, aplica direto ──────
+        # ── 5) etapas da limpeza (#528): nascem desligadas, são admin e, com um
+        #       painel aberto, a prévia é REFEITA (as etapas entram na medição) ──
+        cobrar(pg.is_checked("#vozLimpaMusica") is False, "música deveria nascer desligada")
+        cobrar(pg.is_checked("#vozLimpaDereverb") is False, "reverb deveria nascer desligado")
+        for cid, chave in (("#vozLimpaMusica", "voice_limpar_musica"),
+                           ("#vozLimpaDereverb", "voice_limpar_dereverb")):
+            cobrar(pg.get_attribute(cid, "data-admin-setting") == chave,
+                   f"{cid} perdeu o marcador de admin")
+        vistas, posts = [], []
+        pg.on("request", lambda r: vistas.append(r) if "denoise?previa=true" in r.url else None)
+        pg.on("request", lambda r: posts.append(r)
+              if r.url.endswith("/api/settings") and r.method == "POST" else None)
+        limpar()
+        esperar(lambda: pg.wait_for_selector(".ab-previa", timeout=60000), "painel antes da etapa")
+        n0 = len(vistas)
+        # `esperar` avalia UMA vez (não repete): a requisição é aguardada pelo
+        # próprio Playwright, sem corrida contra o onchange assíncrono
+        with pg.expect_request(lambda r: "denoise?previa=true" in r.url, timeout=60000):
+            pg.check("#vozLimpaMusica")
+        esperar(lambda: pg.wait_for_selector(".ab-previa", timeout=60000), "painel refeito")
+        cobrar(len(vistas) > n0, "mudar etapa não refez a prévia")
+        cobrar(bool(posts), "a etapa não foi gravada em /api/settings")
+        cobrar(any("voice_limpar_musica" in (r.post_data or "") for r in posts),
+               "o POST da etapa não nomeia o campo")
+        cobrar(pg.is_checked("#vozLimpaMusica") is True, "o toggle não ficou ligado")
+        pg.evaluate("() => document.querySelector('.ab-previa .ab-descartar')?.click()")
+        pg.uncheck("#vozLimpaMusica")
+        pg.wait_for_timeout(400)
+
+        # ── 6) servidor sem prévia (404): caminho antigo, aplica direto ──────
         pg.route(lambda u: "denoise?previa=true" in u,
                  lambda route: route.fulfill(status=404, content_type="application/json",
                                              body='{"detail":"sem previa"}'))
@@ -217,5 +248,6 @@ if falhas:
 try: shutil.rmtree(DIR)
 except Exception: pass
 print("✔ OK — a limpeza mostra antes × depois com DNSMOS/timbre, não escreve antes do "
-      "aceite, descarta de graça, trava na recusa e cai no caminho antigo se o servidor não tiver prévia")
+      "aceite, descarta de graça, trava na recusa, refaz a prévia ao mexer nas etapas "
+      "e cai no caminho antigo se o servidor não tiver prévia")
 PYEOF

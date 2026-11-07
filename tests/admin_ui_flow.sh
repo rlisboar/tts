@@ -377,7 +377,7 @@ with sync_playwright() as p:
     # #786/#791: os campos de identidade também são admin — a tela não pode
     # oferecer controle que o servidor dropa em silêncio
     ident = pg.eval_on_selector_all(
-        "#speakerGate, #spThr, #spFarAlvo, #spAntiClone",
+        "#speakerGate, #spThr, #spFarAlvo, #spAntiClone, #vozLimpaMusica, #vozLimpaDereverb",
         "els => els.map(e => [e.id, e.dataset.adminSetting, e.disabled])")
     print(f"  campos de identidade: {ident}")
     protegidos = set(pg.evaluate("() => [...ADMIN.fields]") or [])

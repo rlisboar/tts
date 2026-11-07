@@ -5300,6 +5300,9 @@ _SETTINGS_ADMIN = frozenset({
     "live_clausula_palavras",
     # guarda áudio do dono em disco (#658)
     "speaker_guardar_audio",
+    # etapas da limpeza de ruído (#528): mudam o áudio de TODA voz limpa — uma
+    # chave `use` que ligue música/dereverb altera o resultado global
+    "voice_limpar_musica", "voice_limpar_dereverb",
     # destino público do túnel: é o que o status checa sem `?url=` (#784)
     "public_url",
     # IDENTIDADE (#786): quem é o dono, com que rigor o gate decide e se ele
