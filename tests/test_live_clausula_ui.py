@@ -13,6 +13,11 @@ pytest_plugins = ["test_api"]
 
 from test_api import auth, chave_de_uso, client  # noqa: E402, F401
 
+# `# noqa` é do flake8 e o hook roda pyflakes (que o ignora — #200): os nomes viram
+# fixture de teste pelo `pytest_plugins`, então o marcador que cala o F401/F811 é
+# `__all__`.
+__all__ = ["auth", "chave_de_uso", "client"]
+
 INDEX = Path(__file__).resolve().parent.parent / "static" / "index.html"
 
 
