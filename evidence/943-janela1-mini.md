@@ -13,13 +13,18 @@ Não é a rodada do #942 (`evidence/942-bancada-mini-c3f4a78.md`, 16:16–16:50,
 
 - 16 intervalos, todos sem `turno_pendente`
 - p50 984 ms, p95 1612 ms, máximo 1733 ms
-- fechamento: `tts` 13, `interrupted` 3
-- os três `interrupted`: 111 ms, 120 ms e 240 ms
+- fechamento: `tts` 8, `stt` 5, `interrupted` 3
+- os três `interrupted`: 111 ms (16:37:07), 120 ms (16:36:08) e 240 ms (16:37:38)
 
-O rótulo `tts` é o primeiro evento depois do `stage_fim` (o turno segue para o
-áudio). Não é um estágio `stt` deixado aberto por cima de áudio antigo. O log
-de antes do conserto não está neste arquivo, então a comparação com a cauda
-antiga não entra aqui.
+O laço para no próximo `stage_inicio` ou `stage_fim` com `stage=stt` da sessão
+e não herda o `tts` desse stt. Os cinco `stt` (115 ms às 16:36:11, 239 ms às
+16:36:22, 120 ms às 16:37:09, 209 ms às 16:37:40 e 1252 ms às 16:37:44)
+voltaram a idle; o `tts` que o instrumento antigo colava neles é o do
+intervalo seguinte. O `tts` que permanece é o `stage_inicio stage=tts`
+deste intervalo, depois do `stage_inicio stage=llm` — não é o primeiro evento
+depois do `stage_fim`, nem um `stt` deixado aberto por cima de áudio antigo.
+O log de antes do conserto não está neste arquivo, então a comparação com a
+cauda antiga não entra aqui.
 
 ## #901 — passos no 1º chunk (bancada, um ciclo cada, n pequeno)
 

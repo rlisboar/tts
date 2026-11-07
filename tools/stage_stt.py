@@ -6,12 +6,17 @@ antes e depois do conserto do #943 (o estágio só abre no `speech_start` do
 pipeline; cancel não espera o whisper) sem ninguém reinterpretar grep na mão.
 
 O que conta como FECHAMENTO do intervalo (primeiro que aparecer depois do
-`stage_fim stage=stt` da MESMA sessão):
+`stage_fim stage=stt` da MESMA sessão). O laço para no próximo
+`stage_inicio` ou `stage_fim` com `stage=stt` dessa sessão e não herda o
+`tts` desse stt posterior:
 
     transcript  — o STT devolveu (o caso bom)
     interrupted — barge/cancel derrubou o turno
-    tts         — saiu áudio do turno anterior no meio (o estágio "stt" não
-                  devia estar aberto; é o defeito que o #943 removeu)
+    tts         — este intervalo chegou em `stage_inicio stage=tts` antes do
+                  próximo stt (o turno seguiu para o áudio). No log saudável
+                  o primeiro evento depois do `stage_fim` é `stage_inicio
+                  stage=llm`, não o tts. Não é o defeito do #943.
+    stt         — o próximo stt da sessão chegou antes; o tts dele não entra
     turn_complete / fecha — o turno acabou por outro caminho
     vazio       — nada depois (log cortado)
 
@@ -37,6 +42,11 @@ MS = re.compile(r"\bms=(\d+)")
 FECHA = {"transcript_user": "transcript", "interrupted": "interrupted",
          "turn_complete": "turn_complete", "fecha": "fecha"}
 PENDENTE = {"turno_pendente", "barge_decisao"}
+
+
+def _proximo_stt(tipo: str, resto: str) -> bool:
+    """Próximo estágio stt da sessão: o corte que não deixa herdar o tts dele."""
+    return tipo in {"stage_inicio", "stage_fim"} and "stage=stt" in resto
 
 
 def eventos(caminho: str):
@@ -95,6 +105,9 @@ def main() -> int:
             for _, t2, r2 in evs[i + 1:]:
                 if t2 in PENDENTE or "turno_pendente" in r2:
                     pendente = True
+                if _proximo_stt(t2, r2):
+                    como = "stt"
+                    break
                 if t2 in FECHA:
                     como = FECHA[t2]
                     break
