@@ -4585,10 +4585,50 @@ def _host_privado(host: str) -> bool:
 
 
 _DNS_PRAZO_S = 2.0
+# Teto de resoluções ao mesmo tempo. `getaddrinfo` não cancela: a thread que
+# passou do prazo continua até o SO responder, mas não nasce outra além deste
+# número (#956). Com o teto cheio o caller estoura na hora, sem enfileirar.
+_DNS_POOL_N = 4
+_dns_fila: queue.Queue = queue.Queue()
+_dns_vagas = threading.Semaphore(_DNS_POOL_N)
+_dns_pool_pronto = False
+_dns_pool_trava = threading.Lock()
+
+
+def _dns_operario() -> None:
+    while True:
+        fn, feito = _dns_fila.get()
+        try:
+            fn()
+        except Exception:
+            # OSError já fica na caixa do caller. Outra exceção não pode
+            # matar o operário: o pool encolheria e o teto viraria mentira.
+            pass
+        finally:
+            feito.set()
+            _dns_vagas.release()
+
+
+def _dns_pool_garante() -> None:
+    global _dns_pool_pronto
+    if _dns_pool_pronto:
+        return
+    with _dns_pool_trava:
+        if _dns_pool_pronto:
+            return
+        for i in range(_DNS_POOL_N):
+            threading.Thread(
+                target=_dns_operario, name=f"dns-pub-{i}", daemon=True,
+            ).start()
+        _dns_pool_pronto = True
 
 
 def _ips_do_nome(host: str) -> list[str]:
-    """IPs de `getaddrinfo`, sem repetir. Estoura se passar de `_DNS_PRAZO_S`."""
+    """IPs de `getaddrinfo`, sem repetir. Estoura se passar de `_DNS_PRAZO_S`.
+
+    No máximo `_DNS_POOL_N` chamadas ocupam um operário. A que não acha vaga
+    levanta `TimeoutError` sem abrir thread nova (#956).
+    """
     caixa: dict = {}
 
     def _resolve() -> None:
@@ -4597,10 +4637,17 @@ def _ips_do_nome(host: str) -> list[str]:
         except OSError as exc:
             caixa["erro"] = exc
 
-    t = threading.Thread(target=_resolve, daemon=True)
-    t.start()
-    t.join(_DNS_PRAZO_S)
-    if t.is_alive():
+    _dns_pool_garante()
+    if not _dns_vagas.acquire(blocking=False):
+        raise TimeoutError(host)
+    feito = threading.Event()
+    try:
+        _dns_fila.put((_resolve, feito))
+    except Exception:
+        _dns_vagas.release()
+        raise
+    if not feito.wait(_DNS_PRAZO_S) and not feito.is_set():
+        # A vaga volta no `finally` do operário, quando o getaddrinfo sair.
         raise TimeoutError(host)
     if "erro" in caixa:
         raise caixa["erro"]
@@ -4646,8 +4693,9 @@ def _destino_resolvido(host: str, *, sem_dns: str) -> list[str]:
 def _sufixo_porta_publica(netloc: str) -> str:
     """`:N` já conferido, ou "" quando a URL não traz porta (ou traz `:0`).
 
-    Não usa `urlsplit().port`: ele levanta nos dois casos que o POST tem de
-    recusar com 400 — token não numérico (`:xx`) e inteiro acima de 65535.
+    Não usa `urlsplit().port`: ele levanta nos casos que o POST tem de
+    recusar com 400 — token não numérico (`:xx`), inteiro acima de 65535
+    e mais de uma porta (`a.com:1:2`, que o `rpartition` lia como `:2`).
     """
     erro = "public_url inválida (use https:// e um host público)"
     if netloc.startswith("["):
@@ -4659,9 +4707,11 @@ def _sufixo_porta_publica(netloc: str) -> str:
             raise HTTPException(400, erro)
         bruto = cauda[1:]
     else:
-        _host, sep, bruto = netloc.rpartition(":")
-        if not sep:
+        # Primeiro `:`, como o urlsplit. `rpartition` gravava `a.com:1:2`
+        # como `https://a.com:2` (#956).
+        if ":" not in netloc:
             return ""
+        _host, bruto = netloc.split(":", 1)
     if bruto == "":
         return ""                        # `https://a.com:` — sem porta, como o urlsplit
     if not bruto.isascii() or not bruto.isdigit():

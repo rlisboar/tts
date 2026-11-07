@@ -9717,6 +9717,197 @@ def test_sufixo_localhost_recusa_mesmo_com_a_publico(client, auth, monkeypatch):
         client.post("/api/settings", headers=auth, json={"public_url": antes})
 
 
+def test_public_url_com_duas_portas_da_400(client, auth, monkeypatch):
+    """#956: `https://a.com:1:2` é 400. O `rpartition` gravava `:2`.
+
+    A porta é o trecho depois do primeiro `:`, como o `urlsplit` (que levanta
+    em `'1:2'`). Não consulta DNS e não grava a URL nem o `speed`. 65535, com
+    um único `:`, continua gravando.
+    """
+    import socket as _socket
+
+    chamadas = []
+
+    def _gai(host, *a, **k):
+        chamadas.append(host)
+        return _dns_falso({"a.com": "8.8.8.8"})(host, *a, **k)
+
+    monkeypatch.setattr(_socket, "create_connection", _tcp_proibido)
+    monkeypatch.setattr(_socket, "getaddrinfo", _gai)
+    antes = app._settings.get("public_url") or ""
+    speed_antes = app._settings.get("speed")
+    try:
+        for ruim in ("https://a.com:1:2", "https://a.com:1:2/tts",
+                     "https://a.com:443:80", "https://[2001:db8::1]:1:2"):
+            r = client.post("/api/settings", headers=auth, json={
+                "public_url": ruim, "speed": 3})
+            assert r.status_code == 400, (ruim, r.status_code, r.text[:160])
+            assert "public_url inválida" in r.text, ruim
+            assert (app._settings.get("public_url") or "") == antes, ruim
+            assert app._settings.get("speed") == speed_antes, ruim
+        assert chamadas == [], chamadas
+
+        r = client.post("/api/settings", headers=auth, json={
+            "public_url": "https://a.com:65535"})
+        assert r.status_code == 200, r.text[:160]
+        assert app._settings["public_url"] == "https://a.com:65535"
+        assert chamadas == ["a.com"]
+    finally:
+        client.post("/api/settings", headers=auth, json={"public_url": antes})
+
+
+def test_pool_dns_nao_abre_vaga_alem_do_teto(monkeypatch):
+    """#956: no máximo `_DNS_POOL_N` getaddrinfo ao mesmo tempo.
+
+    Com as vagas presas num resolve que não volta, a chamada seguinte estoura
+    na hora e não entra no `getaddrinfo`. Soltar as presas devolve a vaga.
+    """
+    import socket as _socket
+    import threading as _th
+
+    segue = _th.Event()
+    lock = _th.Lock()
+    n = {"n": 0}
+
+    def trava(host, *a, **k):
+        with lock:
+            n["n"] += 1
+        segue.wait(5)
+        return [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))]
+
+    monkeypatch.setattr(_socket, "getaddrinfo", trava)
+    threads = []
+
+    def uma():
+        try:
+            app._ips_do_nome("preso.exemplo")
+        except (TimeoutError, OSError):
+            pass
+
+    try:
+        for _ in range(app._DNS_POOL_N):
+            t = _th.Thread(target=uma)
+            t.start()
+            threads.append(t)
+        limite = time.monotonic() + 2
+        while n["n"] < app._DNS_POOL_N and time.monotonic() < limite:
+            time.sleep(0.01)
+        assert n["n"] == app._DNS_POOL_N, n["n"]
+        t0 = time.monotonic()
+        try:
+            app._ips_do_nome("mais-um.exemplo")
+            raise AssertionError("vaga extra ainda resolveu")
+        except TimeoutError:
+            pass
+        assert time.monotonic() - t0 < 0.5
+        assert n["n"] == app._DNS_POOL_N, n["n"]
+    finally:
+        segue.set()
+        for t in threads:
+            t.join(3)
+    monkeypatch.setattr(_socket, "getaddrinfo", _dns_falso({
+        "publico.exemplo": "8.8.8.8"}))
+    assert app._ips_do_nome("publico.exemplo") == ["8.8.8.8"]
+
+
+def test_tls_confere_o_certificado_pelo_nome_com_ip_pinado(monkeypatch, tmp_path):
+    """#956: o handshake confere o nome, não o IP pinado.
+
+    Servidor TLS no loopback com cert de `pin.exemplo`. DNS stubado para
+    8.8.8.8 e `create_connection` forçado ao loopback: a URL do nome casa e
+    devolve ok; `outro.exemplo` no mesmo cert falha com mismatch. O TCP
+    pedido é o IP pinado, não o nome e não o 127.0.0.1.
+
+    `foo.localhost` não serve mais aqui: desde o 75983d0 é sufixo privado e
+    a checagem recusa antes do handshake.
+    """
+    import socket as _socket
+    import ssl
+    import subprocess
+    import threading as _th
+
+    nome = "pin.exemplo"
+    cert = tmp_path / "cert.pem"
+    key = tmp_path / "key.pem"
+    gerado = subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+         "-keyout", str(key), "-out", str(cert),
+         "-days", "1", "-nodes",
+         "-subj", f"/CN={nome}",
+         "-addext", f"subjectAltName=DNS:{nome}"],
+        capture_output=True, text=True)
+    assert gerado.returncode == 0, gerado.stderr[-400:]
+
+    ctx_srv = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx_srv.load_cert_chain(cert, key)
+    bruto = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    bruto.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    bruto.bind(("127.0.0.1", 0))
+    bruto.listen(8)
+    bruto.settimeout(0.2)
+    porta = bruto.getsockname()[1]
+    parar = _th.Event()
+
+    def _serve():
+        while not parar.is_set():
+            try:
+                conn, _ = bruto.accept()
+            except OSError:
+                continue
+            try:
+                ss = ctx_srv.wrap_socket(conn, server_side=True)
+                ss.recv(8192)
+                corpo = b'{"ok":true}'
+                ss.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n"
+                    b"Connection: close\r\n\r\n" % len(corpo) + corpo)
+                ss.close()
+            except Exception:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
+    t = _th.Thread(target=_serve, daemon=True)
+    t.start()
+    vistos = []
+
+    def forcado(endereco, timeout=_socket._GLOBAL_DEFAULT_TIMEOUT,
+                source_address=None, *a, **k):
+        # `create_connection` resolveria de novo. O stub de DNS não tem o
+        # loopback; o connect no IP literal não chama getaddrinfo.
+        vistos.append(endereco)
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        if timeout is not _socket._GLOBAL_DEFAULT_TIMEOUT:
+            s.settimeout(timeout)
+        s.connect(("127.0.0.1", porta))
+        return s
+
+    try:
+        monkeypatch.setattr(_socket, "getaddrinfo", _dns_falso({
+            nome: "8.8.8.8",
+            "outro.exemplo": "8.8.8.8",
+        }))
+        monkeypatch.setattr(_socket, "create_connection", forcado)
+        import certifi
+        monkeypatch.setattr(certifi, "where", lambda: str(cert))
+
+        ok = app._public_proxy_check(f"https://{nome}")
+        assert ok.get("ok") is True, ok
+        assert vistos and vistos[0][0] == "8.8.8.8", vistos
+        assert vistos[0][0] != nome
+
+        ruim = app._public_proxy_check("https://outro.exemplo")
+        assert ruim.get("ok") is False, ruim
+        texto = (ruim.get("error") or "").lower()
+        assert "mismatch" in texto or "certificate_verify_failed" in texto, ruim
+        assert vistos[-1][0] == "8.8.8.8"
+    finally:
+        parar.set()
+        bruto.close()
+        t.join(2)
+
+
 # --- #799: trabalho bloqueante fora do event loop ----------------------------
 def _health_durante(dispara, limite=5.0):
     """Roda `dispara()` numa thread e mede a latência de `/health` no meio."""
