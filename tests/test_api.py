@@ -9427,9 +9427,11 @@ def test_public_url_porta_nao_numerica_ou_acima_de_65535_da_400(client, auth):
 
 def test_host_privado_reconhece_as_faixas():
     for privado in ("127.0.0.1", "::1", "10.1.2.3", "192.168.0.1", "172.16.5.4",
-                    "169.254.169.254", "100.64.0.1", "localhost", "mac.local"):
+                    "169.254.169.254", "100.64.0.1", "localhost", "mac.local",
+                    "foo.localhost", "a.b.localhost", "Foo.LocalHost"):
         assert app._host_privado(privado) is True, privado
-    for publico in ("8.8.8.8", "abc.trycloudflare.com", "meu.dominio.com.br"):
+    for publico in ("8.8.8.8", "abc.trycloudflare.com", "meu.dominio.com.br",
+                    "foo.localhost.example", "notlocalhost"):
         assert app._host_privado(publico) is False, publico
 
 
@@ -9672,6 +9674,47 @@ def test_redirect_para_privado_nao_conecta_e_publico_e_seguido(monkeypatch):
     assert [c.host for c in feitas] == ["8.8.8.8", "1.1.1.1"]
     assert feitas[1].headers.get("Host") == "outro.exemplo"
     assert feitas[1].selector == "/health"
+
+
+def test_sufixo_localhost_recusa_mesmo_com_a_publico(client, auth, monkeypatch):
+    """#954: `.localhost` é sufixo. Não casa com `.local`.
+
+    A record público (ou o getaddrinfo nem precisa responder) não grava o nome
+    e o `?url=` não conecta. 302 para `foo.localhost` também não abre esse host.
+    Tirar `.localhost` da tupla derruba a célula: `.local` sozinho não pega.
+    """
+    import socket as _socket
+
+    monkeypatch.setattr(_socket, "create_connection", _tcp_proibido)
+    monkeypatch.setattr(_socket, "getaddrinfo", _dns_falso({
+        "foo.localhost": "8.8.8.8",
+        "a.b.localhost": "1.1.1.1",
+        "publico.exemplo": "8.8.8.8",
+    }))
+    antes = app._settings.get("public_url") or ""
+    speed_antes = app._settings.get("speed")
+    try:
+        feitas = _conn_falsa(monkeypatch, [])
+        for nome in ("foo.localhost", "a.b.localhost"):
+            r = client.post("/api/settings", headers=auth, json={
+                "public_url": f"https://{nome}/tts", "speed": 3})
+            assert r.status_code == 400, (nome, r.status_code, r.text[:160])
+            assert (app._settings.get("public_url") or "") == antes, nome
+            assert app._settings.get("speed") == speed_antes, nome
+            r = client.get(f"/api/tunnel/status?url=http://{nome}", headers=auth)
+            assert r.status_code == 400, (nome, r.text[:160])
+            assert "interno" in r.text
+        assert feitas == [], "sufixo .localhost ainda conectou"
+
+        feitas = _conn_falsa(monkeypatch, [
+            (302, {"Location": "http://foo.localhost/health"}, b""),
+        ])
+        r = app._public_proxy_check("http://publico.exemplo")
+        assert r.get("privado") is True, r
+        assert r["ok"] is False
+        assert [c.host for c in feitas] == ["8.8.8.8"]
+    finally:
+        client.post("/api/settings", headers=auth, json={"public_url": antes})
 
 
 # --- #799: trabalho bloqueante fora do event loop ----------------------------

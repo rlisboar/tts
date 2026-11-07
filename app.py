@@ -4570,10 +4570,10 @@ def _host_privado(host: str) -> bool:
     nome = (host or "").strip().strip("[]").lower()
     if not nome:
         return True
-    # Sufixo cobre o caso comum sem DNS. `foo.localhost` NÃO entra aqui: o
-    # bloqueio desse nome é o IP que `_destino_resolvido` obtém.
-    if nome in ("localhost",) or nome.endswith((".local", ".lan", ".internal",
-                                                ".home.arpa")):
+    # Sufixo cobre o caso comum sem DNS, sem esperar o A record (#954).
+    # `.localhost` não casa com `.local` (`foo.localhost` termina em `host`).
+    if nome in ("localhost",) or nome.endswith(
+            (".localhost", ".local", ".lan", ".internal", ".home.arpa")):
         return True
     try:
         ip = ipaddress.ip_address(nome)
