@@ -50,7 +50,7 @@
 set -uo pipefail
 
 # #992: harness de agentes põe um guard de `rm`/`unlink` à frente no PATH que morre
-# no parse de `-f` e sai 0 SEM apagar. Sem isto, `rm -rf` de trava/log vira no-op e
+# no parse de `-f` e sai 0 SEM apagar. Sem isto, `/bin/rm -rf` de trava/log vira no-op e
 # a suíte `serial_lock` espera o TTL inteiro (40 min) em vez de segundos. O hook e o
 # `tests/conftest.py` já normalizam; aqui é para rodada manual. Só sai do PATH o
 # diretório cujo `rm` comprovadamente não apaga.
@@ -177,7 +177,7 @@ _e_de_instancia() { case " ${INSTANCIA[*]} " in *" $1 "*) return 0 ;; esac; retu
 _toma_a_trava() { grep -qs 'serial\.sh' "$(_arquivo_da_suite "$1")"; }
 
 DIR="$(mktemp -d "${TMPDIR:-/tmp}/suites-sh.XXXXXX")"
-trap 'rm -rf "$DIR"' EXIT
+trap '/bin/rm -rf "$DIR"' EXIT
 
 # teto portátil: o `timeout` do coreutils NÃO existe no macOS; o alarme do perl sim.
 # `$1` é o teto (o do trabalho ou o da fila) — o valor não pode ser fixo aqui.
@@ -237,7 +237,7 @@ if _probe_na_lista; then
             [ -f "$DONO_PADRAO/$a" ] && cp "$DONO_PADRAO/$a" "$TTS_DONO_DIR/$a" && chmod 600 "$TTS_DONO_DIR/$a"
         done
         export TTS_DONO_DIR
-        trap 'rm -rf "$TTS_DONO_DIR"' EXIT
+        trap '/bin/rm -rf "$TTS_DONO_DIR"' EXIT
     elif [ "$(cd "$TTS_DONO_DIR" 2>/dev/null && pwd -P)" = "$(cd "$RAIZ" && pwd -P)" ]; then
         echo "✖ sonda com TTS_DONO_DIR na RAIZ ($RAIZ): é o settings do DONO na árvore principal" >&2
         exit 2
@@ -415,7 +415,7 @@ METRICAS_ANTES="$(_impressao_metricas)"
         for a in $(_arquivos_tocados "$DONO_ANTES" "$DONO_DEPOIS_S"); do
             printf '%s|%s\n' "$a" "$nome" >> "$DIR/janelas"
         done
-        rm -f "$DIR/rodando/$CHAVE"
+        /bin/rm -f "$DIR/rodando/$CHAVE"
         echo "$rc $nome $(( $(date +%s) - inicio )) $LOG"
     ) >>"$DIR/resultado" &
     PIDS+=($!)
@@ -619,7 +619,7 @@ if [ "${#FALHAS[@]}" -gt 0 ]; then
     done < <(sort -k2 "$DIR/resultado")
     # Poda: um teste por rodada, e rodada vermelha acumulava um diretório por vez
     # (18 no /tmp quando isso foi medido — #428). Fica o dos últimos 3 vermelhos.
-    ls -1dt "${TMPDIR:-/tmp}"/suites-sh-falhas.* 2>/dev/null | tail -n +4 | xargs rm -rf 2>/dev/null || true
+    ls -1dt "${TMPDIR:-/tmp}"/suites-sh-falhas.* 2>/dev/null | tail -n +4 | xargs /bin/rm -rf 2>/dev/null || true
     echo
     echo "logs preservados em $destino (mantidos os 3 últimos vermelhos)"
     exit 1

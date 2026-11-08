@@ -118,7 +118,7 @@ if [ -z "$ARVORE" ]; then
   ARVORE="$(mktemp -d "${TMPDIR:-/tmp}/freeze-arvore.XXXXXX")" || exit 1
   if ! git ls-files -z -- ':!:evidence' | tar -c --null -T - -f - 2>/dev/null \
        | tar -xf - -C "$ARVORE" 2>/dev/null; then
-    echo "✖ não consegui copiar a árvore para $ARVORE" >&2; rm -rf "$ARVORE"; exit 1
+    echo "✖ não consegui copiar a árvore para $ARVORE" >&2; /bin/rm -rf "$ARVORE"; exit 1
   fi
   # `-n` é obrigatório: sem ele, se o alvo já existir como LINK o `ln` segue e cria
   # um link DENTRO do destino (`voices/voices` dentro do dado do dono, duas vezes).
@@ -131,7 +131,7 @@ if [ -z "$ARVORE" ]; then
   # o `cp` deixaria a fixture no `voices/` do worktree.
   cp -n "$RAIZ/tests/fixtures/voz_sintetica/voz.wav" "$ARVORE/voices/"
   mkdir -p "$ARVORE/outputs"
-  _limpa_arvore() { [ -n "${ARVORE:-}" ] && rm -rf "$ARVORE"; }
+  _limpa_arvore() { [ -n "${ARVORE:-}" ] && /bin/rm -rf "$ARVORE"; }
   # `FREEZE_MANTER=1`: quem chamou quer inspecionar a cópia depois (a célula do
   # #703 lê o `voices` dela) e assume a limpeza.
   [ "${FREEZE_MANTER:-0}" = "1" ] || trap '_limpa_arvore' EXIT
@@ -200,7 +200,7 @@ PYM
       echo "  ⚠ o bloco do `busy` mudou durante a mordida — restaurando pelo backup"
       cp "$BAK" "$APP"
     fi
-    rm -f "$BAK"
+    /bin/rm -f "$BAK"
     AGORA="$(md5_de "$APP")"
     if [ "$AGORA" = "$ANTES" ]; then
       echo "  ✔ app.py restaurado byte a byte (md5 $ANTES)"

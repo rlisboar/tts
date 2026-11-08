@@ -35,7 +35,7 @@ while True:
     if not 7861 <= p <= 7865: print(p); break')"
   APK="$(mktemp -t apikeys-cfgsujo.XXXXXX 2>/dev/null || echo "/tmp/apikeys-cfgsujo.$$")"
   SET="$(mktemp -t settings-cfgsujo.XXXXXX 2>/dev/null || echo "/tmp/settings-cfgsujo.$$")"
-  rm -f "$APK" "$SET"
+  /bin/rm -f "$APK" "$SET"
   LOG="$(mktemp -t cfgsujo-servidor.XXXXXX 2>/dev/null || echo "/tmp/cfgsujo-servidor.$$")"
   # `.apikey` (legado) também é espelho de `_save_apikeys`: sem isto a rodada
   # reescrevia o arquivo do DONO mesmo com `APIKEYS_PATH` em /tmp (#535).
@@ -53,7 +53,7 @@ PY
   BASE="http://127.0.0.1:$PORTA"
   limpa_servidor() {
     [ -n "$SERVIDOR_PID" ] && kill "$SERVIDOR_PID" 2>/dev/null || true
-    rm -f "$APK" "$SET" "$LEG"
+    /bin/rm -f "$APK" "$SET" "$LEG"
   }
   trap 'limpa_servidor' EXIT INT TERM
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do

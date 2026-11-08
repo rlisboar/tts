@@ -54,7 +54,7 @@ _teto_armar() {
   [ -n "${TTS_TETO_POS_TRAVA:-}" ] || return 0
   _SERIAL_TRABALHANDO=1
   _TETO_MARCA="${TMPDIR:-/tmp}/tts-teto.$$"
-  rm -f "$_TETO_MARCA"
+  /bin/rm -f "$_TETO_MARCA"
   (
     sleep "$TTS_TETO_POS_TRAVA"
     # o shell pode ter saído sem `_teto_matar` (suíte que sobrescreve o trap EXIT):
@@ -77,10 +77,29 @@ _teto_armar() {
 _teto_matar() {
   [ -n "${_TETO_PID:-}" ] && kill "$_TETO_PID" 2>/dev/null
   _TETO_PID=""
-  [ -n "${_TETO_MARCA:-}" ] && rm -f "$_TETO_MARCA"
+  [ -n "${_TETO_MARCA:-}" ] && /bin/rm -f "$_TETO_MARCA"
   # `return 0` OBRIGATÓRIO (#592): sem o vigia armado as duas linhas acima são
   # `[ -n "" ] && …` e voltam 1, então o trap de EXIT devolvia 1 e suíte VERDE saía
   # rc=1 (`./tests/voz_check_ui.sh` imprimia "✔ OK" e o runner marcava FALHA).
+  return 0
+}
+
+# Remove a trava e só devolve 0 quando ela SUMIU de fato. Com um `rm` de PATH que
+# sai 0 sem apagar (guard do harness, #996) o `rm -rf` não tirava nada e o laço
+# reencontrava a MESMA trava para sempre, imprimindo "assumindo" a cada 0,5 s
+# (~1,5 MB de log por rodada). O teto troca o laço infinito por erro claro, com o
+# caminho na mensagem — vale também se o `rm` falhar de verdade (permissão, disco).
+_serial_remove_trava() {
+  local n=0
+  until [ ! -e "$_TRAVA_DIR" ]; do
+    n=$((n + 1))
+    if [ "$n" -gt "${TTS_SERIAL_REMOCAO_TETO:-5}" ]; then
+      echo "  [serial] não consegui remover a trava $_TRAVA_DIR (rm não apaga?) — desisto" >&2
+      return 1
+    fi
+    /bin/rm -rf "$_TRAVA_DIR" 2>/dev/null
+    [ -e "$_TRAVA_DIR" ] && sleep 0.1
+  done
   return 0
 }
 
@@ -100,18 +119,18 @@ serial_pega() {
     idade=$(( $(date +%s) - $(_serial_mtime "$_TRAVA_DIR") ))
     if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
       echo "  [serial] trava órfã (pid $pid morto) — assumindo"
-      rm -rf "$_TRAVA_DIR"; continue
+      _serial_remove_trava || return 1; continue
     fi
     if [ -z "$pid" ] && [ "$idade" -gt 5 ]; then
       # `mkdir` feito e pid ainda não escrito é uma janela de ms; sem pid com
       # idade é dona morta entre os dois (SIGKILL). Sem este ramo a trava SEM pid
       # só cairia no TTL (40 min) e a suíte pareceria pendurada.
       echo "  [serial] trava sem pid (${idade}s) — assumindo"
-      rm -rf "$_TRAVA_DIR"; continue
+      _serial_remove_trava || return 1; continue
     fi
     if [ "$idade" -gt "${TTS_SERIAL_TTL:-2400}" ]; then
       echo "  [serial] trava órfã (${idade}s) — assumindo"
-      rm -rf "$_TRAVA_DIR"; continue
+      _serial_remove_trava || return 1; continue
     fi
     if [ $((SECONDS - t0)) -gt "$espera" ]; then
       echo "  [serial] trava de modelo não liberou em ${espera}s (dona: $dono)"
@@ -127,10 +146,9 @@ serial_pega() {
 serial_solta() {
   [ "${TTS_SERIAL:-1}" = "0" ] && return 0
   [ "$(cat "$_TRAVA_DIR/pid" 2>/dev/null || true)" = "$$" ] || return 0
-  rm -rf "$_TRAVA_DIR"
+  /bin/rm -rf "$_TRAVA_DIR"
   return 0
 }
-
 # O teto estourado depois da trava tem mensagem própria (a suíte está trabalhando,
 # não esperando): sem ela o SIGALRM parece pendura da fila — e o texto tem de
 # distinguir os dois, senão o operador procura contenção onde não tem.

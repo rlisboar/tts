@@ -189,7 +189,7 @@ remove() {
         exit 1
     fi
     git -C "$RAIZ" worktree remove --force "$destino" 2>/dev/null \
-        || rm -rf "$destino"
+        || /bin/rm -rf "$destino"
     git -C "$RAIZ" branch -D "wt/$agente" >/dev/null 2>&1
     echo "✔ worktree e branch de $agente removidos"
 }

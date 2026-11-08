@@ -71,7 +71,7 @@ SUF="$$"
 for _v in /tmp/xss_repro_*; do
   [ -d "$_v" ] || continue
   [ "$_v" = "$DIR" ] && continue
-  [ -n "$(find "$_v" -maxdepth 0 -mmin +60 2>/dev/null)" ] && rm -rf "$_v"
+  [ -n "$(find "$_v" -maxdepth 0 -mmin +60 2>/dev/null)" ] && /bin/rm -rf "$_v"
 done
 STEM="xssprobe-$SUF"
 STEM_V="xssvirt-$SUF"
@@ -116,20 +116,20 @@ CRIADOS=(
 limpa_vozes() {
   [ "$MANTER" = "1" ] && return 0
   local f
-  # `rm -f` em arquivo ausente sai 0: sem o teste `-e`, o laço nunca devolve 1 e o
-  # trap não aborta antes do `rm -rf $TMP` (sob `set -e` o status MANDA no trap)
-  for f in "${CRIADOS[@]}"; do rm -f "$f"; done
+  # `/bin/rm -f` em arquivo ausente sai 0: sem o teste `-e`, o laço nunca devolve 1 e o
+  # trap não aborta antes do `/bin/rm -rf $TMP` (sob `set -e` o status MANDA no trap)
+  for f in "${CRIADOS[@]}"; do /bin/rm -f "$f"; done
 }
 encerra() {
   limpa_vozes
-  rm -rf "$TMP"
+  /bin/rm -rf "$TMP"
   # espera o servidor sair antes de apagar: ele grava estado ao encerrar e
-  # recriaria o diretório depois do `rm -rf`
+  # recriaria o diretório depois do `/bin/rm -rf`
   if [ "${PROPRIO:-0}" = 1 ]; then
     kill "$SRV" 2>/dev/null || true
     for _ in $(seq 1 50); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
   fi
-  [ "$MANTER" = "1" ] || rm -rf "$DIR"
+  [ "$MANTER" = "1" ] || /bin/rm -rf "$DIR"
 }
 trap 'encerra' EXIT
 

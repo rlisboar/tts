@@ -92,12 +92,12 @@ for i in itens:
 encerra() {
   limpa_outputs || true
   # mata e ESPERA o servidor: ele grava `jobs.json` ao sair e recriaria o
-  # diretório depois do `rm -rf` (sobrava um diretório só com esse arquivo)
+  # diretório depois do `/bin/rm -rf` (sobrava um diretório só com esse arquivo)
   if [ "${PROPRIO:-0}" = 1 ]; then
     kill "$SRV" 2>/dev/null || true
     for _ in $(seq 1 50); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
   fi
-  rm -rf "${DIR:-/nonexistent}"
+  /bin/rm -rf "${DIR:-/nonexistent}"
   return 0
 }
 # `_teto_matar`: o trap SOBRESCREVE o do `serial.sh`; sem isto o vigia do

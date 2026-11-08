@@ -17,7 +17,7 @@ TMPD="$(mktemp -d "/tmp/tts-rod-serial-$SUF.XXXXXX")"
 falhas=0
 cobrar() { [ "$1" = "1" ] && echo "  ✔ $2" || { echo "  ✘ $2"; falhas=$((falhas+1)); }; }
 
-limpa() { rm -rf "$TMPD" "$TTS_SERIAL_LOCK"; }
+limpa() { /bin/rm -rf "$TMPD" "$TTS_SERIAL_LOCK"; }
 trap limpa EXIT
 
 # worker: entra na trava, avisa, dorme o que pedirem e sai
@@ -33,7 +33,7 @@ chmod +x "$TMPD/worker.sh"
 # ORDEM FIXADA (#141): sem esperar a dona registrar o pid, o 2º (DORMIR=0) podia
 # ganhar o mkdir e quem esperava era o 1º — o aviso saía no OUTRO log e a
 # asserção virava corrida (2/3 rodadas vermelhas com a trava funcionando).
-rm -rf "$TTS_SERIAL_LOCK"
+/bin/rm -rf "$TTS_SERIAL_LOCK"
 t0=$(date +%s%N)
 ( DORMIR=2 bash "$TMPD/worker.sh" primeiro.sh > "$TMPD/a.log" 2>&1 ) &
 for _ in $(seq 250); do [ -s "$TTS_SERIAL_LOCK/pid" ] && break; sleep 0.02; done
@@ -54,7 +54,7 @@ cobrar "$([ "$(grep -c 'DENTRO' "$TMPD/b.log")" = "1" ] && echo 1 || echo 0)" "o
 # ─── 1b) controle NEGATIVO: sem a trava, o 2º NÃO espera ───────────────────
 # Sem isto, "esperou" poderia passar por acidente (ex.: asserção lendo o log
 # errado) — aqui o mesmo par roda com TTS_SERIAL=0 e ninguém pode esperar.
-rm -rf "$TTS_SERIAL_LOCK"
+/bin/rm -rf "$TTS_SERIAL_LOCK"
 ( DORMIR=2 TTS_SERIAL=0 bash "$TMPD/worker.sh" n1.sh > "$TMPD/f1.log" 2>&1 ) &
 ( DORMIR=0 TTS_SERIAL=0 bash "$TMPD/worker.sh" n2.sh > "$TMPD/f2.log" 2>&1 ) &
 wait
@@ -62,7 +62,7 @@ cobrar "$([ "$(grep -c 'esperando a trava' "$TMPD/f2.log")" = "0" ] && echo 1 ||
        "controle negativo: com TTS_SERIAL=0 o 2º não espera"
 cobrar "$([ "$(grep -c 'DENTRO' "$TMPD/f2.log")" = "1" ] && echo 1 || echo 0)" \
        "controle negativo: com TTS_SERIAL=0 o 2º entra na hora"
-rm -rf "$TTS_SERIAL_LOCK"
+/bin/rm -rf "$TTS_SERIAL_LOCK"
 
 # ─── 2) lock ÓRFÃO (dona morta) é roubado na hora, sem esperar o TTL ────────
 mkdir -p "$TTS_SERIAL_LOCK"; echo 999999 > "$TTS_SERIAL_LOCK/pid"; echo "morta.sh" > "$TTS_SERIAL_LOCK/qual"
@@ -85,7 +85,33 @@ TTS_SERIAL_ESPERA=1 bash "$TMPD/worker.sh" janela.sh > "$TMPD/g.log" 2>&1
 rc_jan=$?
 cobrar "$([ "$rc_jan" != "0" ] && echo 1 || echo 0)" "lock recém-criado não é roubado na janela do pid (rc=$rc_jan)"
 cobrar "$(grep -c 'não liberou' "$TMPD/g.log")" "e a espera terminou com motivo, não em silêncio"
-rm -rf "$TTS_SERIAL_LOCK"
+/bin/rm -rf "$TTS_SERIAL_LOCK"
+
+# ─── 2c) `rm` de PATH quebrado (#996) não pode prender o laço ────────────────
+# O guard do harness morre no parse de `-rf` e sai 0 SEM apagar. Com `rm` de PATH,
+# a trava órfã era "assumida" a cada 0,5 s para sempre (1,5 MB de log por rodada).
+# O shim abaixo reproduz o guard. O fix usa `/bin/rm` e tem teto de tentativas: sem
+# qualquer dos dois, a célula cai (rc != 0 ou aviso repetido).
+mkdir -p "$TMPD/bin-rm-quebrado"
+cat > "$TMPD/bin-rm-quebrado/rm" <<'SH'
+#!/usr/bin/env bash
+exit 0          # sai 0 sem apagar nada (guard do harness, #996)
+SH
+chmod +x "$TMPD/bin-rm-quebrado/rm"
+mkdir -p "$TTS_SERIAL_LOCK"; echo 999999 > "$TTS_SERIAL_LOCK/pid"; echo "morta.sh" > "$TTS_SERIAL_LOCK/qual"
+t_quebrado=$(date +%s)
+PATH="$TMPD/bin-rm-quebrado:$PATH" TTS_SERIAL_TTL=99999 TTS_SERIAL_ESPERA=5 \
+    bash "$TMPD/worker.sh" quebrado.sh > "$TMPD/h.log" 2>&1
+rc_quebrado=$?
+dur_quebrado=$(( $(date +%s) - t_quebrado ))
+cobrar "$([ "$rc_quebrado" = "0" ] && echo 1 || echo 0)" \
+       "rm de PATH quebrado: a trava órfã ainda é assumida (rc=$rc_quebrado)"
+cobrar "$([ "$dur_quebrado" -lt 3 ] && echo 1 || echo 0)" \
+       "e sem girar o laço (${dur_quebrado}s; sem fix ele só sai no TTS_SERIAL_ESPERA)"
+cobrar "$([ "$(grep -c 'assumindo' "$TMPD/h.log")" = "1" ] && echo 1 || echo 0)" \
+       "o aviso de assumir sai UMA vez, não a cada 0,5 s"
+cobrar "$(grep -c 'DENTRO' "$TMPD/h.log")" "o worker entrou mesmo com o rm quebrado"
+/bin/rm -rf "$TTS_SERIAL_LOCK"
 
 # ─── 3) timeout curto devolve erro em vez de pendurar a bateria ─────────────
 mkdir -p "$TTS_SERIAL_LOCK"; echo $$ > "$TTS_SERIAL_LOCK/pid"; echo "eu.sh" > "$TTS_SERIAL_LOCK/qual"
@@ -93,7 +119,7 @@ TTS_SERIAL_ESPERA=1 bash "$TMPD/worker.sh" apressada.sh > "$TMPD/d.log" 2>&1
 rc=$?
 cobrar "$([ "$rc" != "0" ] && echo 1 || echo 0)" "espera estourou e retornou != 0 (rc=$rc)"
 cobrar "$(grep -c 'não liberou' "$TMPD/d.log")" "e disse o motivo (não falhou mudo)"
-rm -rf "$TTS_SERIAL_LOCK"
+/bin/rm -rf "$TTS_SERIAL_LOCK"
 
 # ─── 4) escape TTS_SERIAL=0 entra mesmo com a trava presa ──────────────────
 mkdir -p "$TTS_SERIAL_LOCK"; echo $$ > "$TTS_SERIAL_LOCK/pid"; echo "presa.sh" > "$TTS_SERIAL_LOCK/qual"

@@ -26,7 +26,7 @@ for m in "${MODULOS[@]}"; do
   base="${m%.py}"
   for alvo in "$RAIZ/__pycache__/$base".cpython-*.pyc "$RAIZ/tests/__pycache__/$base".cpython-*.pyc; do
     [ -e "$alvo" ] || continue
-    rm -f "$alvo" && removidos=$((removidos + 1))
+    /bin/rm -f "$alvo" && removidos=$((removidos + 1))
   done
 done
 echo "  [bytecode] $removidos .pyc removido(s) — a próxima medição compila da fonte"

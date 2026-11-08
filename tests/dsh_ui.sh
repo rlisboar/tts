@@ -40,7 +40,7 @@ if [ -f "$HOME/.dsh/profiles/$DSH_PROFILE/cordis.yml" ] \
   export DSH_HOME="$DSH_HOME_TMP"
   echo "  ~/.dsh não gravável nesta sessão — usando cópia em $DSH_HOME_TMP"
 fi
-cleanup_dsh() { rm -rf "${DSH_HOME_TMP:-/nonexistent-dsh-home}"; }
+cleanup_dsh() { /bin/rm -rf "${DSH_HOME_TMP:-/nonexistent-dsh-home}"; }
 trap cleanup_dsh EXIT
 
 # Só a descoberta (não carrega modelo de áudio) — não precisa da trava, mas o

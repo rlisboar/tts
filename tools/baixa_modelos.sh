@@ -134,12 +134,12 @@ for linha in "${FONTES[@]}"; do
   fi
   print -r -- "  baixando ${arq:t} de $repo@${rev[1,8]}…"
   if ! curl -fsSL --retry 2 -o "$arq.$TMP_SUF" "$url"; then
-    print -r -- "  [FALHA] download de $arq falhou"; rm -f "$arq.$TMP_SUF"; falhas=1; continue
+    print -r -- "  [FALHA] download de $arq falhou"; /bin/rm -f "$arq.$TMP_SUF"; falhas=1; continue
   fi
   atual="$(sha_de "$arq.$TMP_SUF")"
   if [ "$atual" != "$alvo" ]; then
     print -r -- "  [FALHA] $arq baixado com sha256 ${atual[1,12]}… ≠ esperado ${alvo[1,12]}…"
-    rm -f "$arq.$TMP_SUF"; falhas=1; continue
+    /bin/rm -f "$arq.$TMP_SUF"; falhas=1; continue
   fi
   mv "$arq.$TMP_SUF" "$arq"
   chmod 444 "$arq" 2>/dev/null   # peso é imutável na árvore, como os já materializados
@@ -180,12 +180,12 @@ for linha in "${DERIVADOS[@]}"; do
     cp "$origem" "$arq.$TMP_SUF"
   fi
   if [ ! -s "$arq.$TMP_SUF" ] || ! chmod 444 "$arq.$TMP_SUF"; then
-    print -r -- "  [FALHA] não consegui derivar $arq"; rm -f "$arq.$TMP_SUF"; falhas=1; continue
+    print -r -- "  [FALHA] não consegui derivar $arq"; /bin/rm -f "$arq.$TMP_SUF"; falhas=1; continue
   fi
   atual="$(sha_de "$arq.$TMP_SUF")"
   if [ "$atual" != "$alvo" ]; then
     print -r -- "  [FALHA] $arq derivado com sha256 ${atual[1,12]}… ≠ esperado ${alvo[1,12]}…"
-    rm -f "$arq.$TMP_SUF"; falhas=1; continue
+    /bin/rm -f "$arq.$TMP_SUF"; falhas=1; continue
   fi
   mv "$arq.$TMP_SUF" "$arq"
   print -r -- "  [ok] $arq derivado e conferido"
