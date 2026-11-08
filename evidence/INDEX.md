@@ -314,11 +314,15 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `876-stt-bench-carga.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench-livre.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench.py` | #876 | 2026-11-06 | """#876 — latência e WER do STT local do Live por modelo, com e sem TTS em paralelo. |
-| `876-stt-frio-prewarm.md` | #876 | — | 876 — STT do 1º turno frio: o prewarm do Live o deixa igual ao quente (0,23 s × 1,25 s sem) |
-| `876-stt-frio-prewarm.py` | #876 | — | """#876 — 1º turno frio isolado (script do A/B do prewarm): processo NOVO, com × sem `_stt_aquece`, mede o |
+| `876-stt-frio-prewarm.md` | #876 | 2026-11-08 | 876 — STT do 1º turno frio: o prewarm do Live o deixa igual ao quente (0,23 s × 1,25 s sem) |
+| `876-stt-frio-prewarm.py` | #876 | 2026-11-08 | """#876 — 1º turno frio isolado (script do A/B do prewarm): processo NOVO, com × sem `_stt_aquece`, mede o |
 | `876-stt-live.md` | #876 | 2026-11-06 | 876 — STT do Live: modelo e beam (bancada local, antes do Mini) |
 | `942-bancada-mini-c3f4a78.json` | #942 | 2026-11-07 | "rotulo": "c3f4a78-mini", |
 | `942-bancada-mini-c3f4a78.md` | #942 | 2026-11-07 | 942 — bancada no mini sobre c3f4a78 (4º deploy), janela 16:16–16:50 BRT |
+| `979-asnorm-topk.py` | #979 | — | """#979 — mesma fala, mesma coorte: só muda o K do AS-norm (app top-10 × R2 top-50).""" |
+| `979-coorte-pt-medicao.py` | #979 | — | """#979 — coorte PT-BR (FLEURS pt_br test, 40 locutores, 2 trechos de 3 s) para o ECAPA — MEDIÇÃO, não artefat |
+| `979-limiar-ecapa-pt.md` | #979 | — | 979 — limiar do ECAPA em fala PT-BR: o AS-norm 2,434 deixa passar 12,7 % dos impostores; o cosseno cru separa |
+| `979-limiar-ecapa-pt.py` | #979 | — | """#979 — validação do limiar ECAPA AS-norm (2,434 @FAR 1 % do R2, 1,8 joelho do Live) num corpus |
 | `980-e2e-biometria.py` | #980 | 2026-11-08 | !/usr/bin/env python3 |
 | `982-barge-escala-crua.py` | #982 | — | """#982/#984 — o portão "só a minha voz" no BARGE CURTO: aceite do dono × falso aceite de |
 | `982-eco-clone-do-dono.py` | #982 | — | """#982 — por que o eco "passa como dono": a voz da resposta é um clone do dono do E2E.""" |

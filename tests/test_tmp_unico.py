@@ -54,6 +54,8 @@ COMPARTILHADOS = {
     "ab984": "bancada #984/#982: lê a cópia do estado do E2E que já está em /tmp; o script não cria o diretório",
     "e2e-dono-3.wav": "bancada #984/#982: WAV de entrada já gravado fora do repo; o script só lê",
     "e2e-terceiro.wav": "bancada #984/#982: WAV de entrada já gravado fora do repo; o script só lê",
+    "ab869": "bancada #979: lê a coorte PT já extraída em /tmp/ab869; o script não cria o diretório",
+    "tts-bakeoff": "bancada #979/#640: corpus FLEURS local em /tmp/tts-bakeoff, compartilhado de propósito; o script só lê",
 }
 
 # `os.environ` entra porque a linha do fallback lê a variável que a suíte exporta
