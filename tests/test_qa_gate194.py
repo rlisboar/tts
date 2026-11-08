@@ -338,9 +338,10 @@ def test_pipeline_que_nao_nasce_fecha_o_dsh_orfao(ws_client, live_limpo, monkeyp
     with ws_client.websocket_connect("/api/live/ws") as ws:
         _setup_ok(ws)
         assert ws.receive_json()["code"] == "pipeline"
-    time.sleep(0.3)
-    assert fechados, "o dsh órfão da sessão sem pipeline não foi fechado"
-    assert not app._live_sessions, "sessão presa no registry"
+    # o finally roda na task do WS, fora desta thread: espera por CONDIÇÃO (#1004)
+    _espera(lambda: fechados, "o dsh órfão da sessão sem pipeline não foi fechado")
+    _espera(lambda: not app._live_sessions, "sessão presa no registry",
+            diag=lambda: list(app._live_sessions))
 
 
 def test_retomada_que_nasce_DURANTE_o_fechamento_sobrevive(ws_client, live_limpo,
