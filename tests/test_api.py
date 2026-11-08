@@ -2534,8 +2534,10 @@ def test_speaker_check_pontua_como_o_gate_e_diz_o_veredito(client, auth, monkeyp
     Antes pontuava pelo MÁXIMO das amostras e devolvia só `sim`: com
     `[[1,0],[0,1]]` e a voz em `[1,0]` o máximo dá 1,0 (passa) e o centróide
     0,707 (reprova com rigor 0,75) — a tela dizia "✅ passa" e o gate barrava."""
+    # perfil LEGADO: é nele que o `speaker_threshold` (rigor cru) manda; o ECAPA tem
+    # régua própria (#982, ver o fim do teste)
     perfis = {"eu": {"vecs": [[1.0, 0.0], [0.0, 1.0]],
-                     "modelo": app._speaker_modelo_efetivo()}}
+                     "modelo": app.SPEAKER_MODELO_LEGADO}}
     monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
     monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".vozchk": Path("f.wav"))
@@ -2554,6 +2556,16 @@ def test_speaker_check_pontua_como_o_gate_e_diz_o_veredito(client, auth, monkeyp
     corpo = client.post("/api/speaker/check", headers=auth,
                         files={"audio": ("a.wav", b"x", "audio/wav")}).json()
     assert corpo["passaria"] is True and corpo["autorizado"] is True
+    # ECAPA (#982): régua CRU calibrada (0,44), que não lê o `speaker_threshold`, e
+    # o limiar de janela do Live na MESMA escala (0,31) sai junto
+    perfis["eu"]["modelo"] = "ecapa:v1"
+    monkeypatch.setitem(app._settings, "speaker_threshold", 0.9)
+    monkeypatch.setitem(app._settings, "live_so_minha_voz", {"on": False, "rigor_far": "joelho"})
+    corpo = client.post("/api/speaker/check", headers=auth,
+                        files={"audio": ("a.wav", b"x", "audio/wav")}).json()
+    assert (corpo["limiar"], corpo["modo"]) == (0.44, "cru"), corpo
+    assert (corpo["limiar_live"], corpo["modo_live"]) == (0.31, "cru"), corpo
+    assert corpo["passaria"] is True, "0,707 ≥ 0,44: o rigor do legado não vale no ECAPA"
 
 
 STORE: dict = {}
@@ -2614,7 +2626,10 @@ def test_speaker_check_em_perfil_legado_com_ecapa_nao_estoura(client, auth, monk
 
 def _coorte_falsa(monkeypatch, vecs):
     """Coorte sintética no cache: evita depender do arquivo real do repositório."""
-    monkeypatch.setattr(app, "_speaker_cohorte_cache", {app._speaker_modelo_efetivo(): vecs})
+    # os DOIS extratores (#982): o AS-norm só sobrou no legado, e o teste não pode
+    # depender de qual deles está instalado nesta máquina
+    monkeypatch.setattr(app, "_speaker_cohorte_cache",
+                        {app.SPEAKER_MODELO_ATUAL: vecs, app.SPEAKER_MODELO_LEGADO: vecs})
 
 
 def test_speaker_far_alvo_normaliza_o_escore_e_usa_o_limiar_calibrado(monkeypatch):
@@ -2623,7 +2638,9 @@ def test_speaker_far_alvo_normaliza_o_escore_e_usa_o_limiar_calibrado(monkeypatc
     A coorte é de impostores: quanto mais longe dela, maior o escore. O limiar
     calibrado (2,434 para FAR 1 %) é em unidades normalizadas — comparar com o
     0,6 cru seria erro de escala."""
-    perfis = {"eu": {"vecs": [[1.0, 0.0]], "modelo": app._speaker_modelo_efetivo()}}
+    # o AS-norm segue no extrator LEGADO; o ECAPA decide no cru (#982, abaixo)
+    leg = app.SPEAKER_MODELO_LEGADO
+    perfis = {"eu": {"vecs": [[1.0, 0.0]], "modelo": leg}}
     monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
     monkeypatch.setattr(app, "_speaker_load", lambda: perfis)
     _coorte_falsa(monkeypatch, [[0.0, 1.0], [0.1, 0.99], [0.2, 0.98],
@@ -2632,10 +2649,10 @@ def test_speaker_far_alvo_normaliza_o_escore_e_usa_o_limiar_calibrado(monkeypatc
     monkeypatch.setitem(app._settings, "speaker_far_alvo", "1")
     monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
     try:
-        lim, modo = app._speaker_limiar(app._speaker_modelo_efetivo())
+        lim, modo = app._speaker_limiar(leg)
         assert modo == "asnorm"
         # limiar da tabela calibrada PARA ESTE modelo (o R2 calibrou por modelo)
-        assert lim == app._SPEAKER_LIMIAR_FAR[app._speaker_modelo_efetivo()]["1"]
+        assert lim == app._SPEAKER_LIMIAR_FAR[leg]["1"]
         _n, sim, _h, modo_escore = app._speaker_pontua(Path("x.wav"), perfis)
         assert modo_escore == "asnorm"
         # mesma voz (cosseno 1,0 contra a coorte toda em 0) ⇒ escore normalizado
@@ -2643,6 +2660,12 @@ def test_speaker_far_alvo_normaliza_o_escore_e_usa_o_limiar_calibrado(monkeypatc
         assert sim > lim
         out = app._speaker_gate_ok(Path("x.wav"))
         assert out == {"speaker_escore_modo": "asnorm"}, out
+        # ECAPA com o mesmo alvo: cru, faixa de FAR 1 % calibrada no MLS PT (0,39)
+        perfis["eu"]["modelo"] = "ecapa:v1"
+        assert app._speaker_limiar("ecapa:v1") == (0.39, "cru")
+        _n, sim, _h, modo_escore = app._speaker_pontua(Path("x.wav"), perfis)
+        assert modo_escore == "cru" and abs(sim - 1.0) < 1e-6
+        assert app._speaker_gate_ok(Path("x.wav")) == {}
     finally:
         monkeypatch.setitem(app._settings, "speaker_far_alvo", "")
         monkeypatch.setitem(app._settings, "speaker_gate", "off")
@@ -2685,8 +2708,10 @@ def test_speaker_far_alvo_sem_coorte_cai_no_escore_cru(monkeypatch):
     monkeypatch.setitem(app._settings, "speaker_far_alvo", "0.1")
     monkeypatch.setitem(app._settings, "speaker_threshold", 0.6)
     try:
-        lim, modo = app._speaker_limiar(app._speaker_modelo_efetivo())
+        lim, modo = app._speaker_limiar(app.SPEAKER_MODELO_LEGADO)
         assert modo == "cru" and lim == 0.6
+        # o ECAPA não depende de coorte (#982): a faixa "0.1" é 0,48 cru com ou sem
+        assert app._speaker_limiar("ecapa:v1") == (0.48, "cru")
     finally:
         monkeypatch.setitem(app._settings, "speaker_far_alvo", "")
 

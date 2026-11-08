@@ -1609,24 +1609,24 @@ def test_filtro_identidade_nao_corta_o_barge(monkeypatch):
     assert sess["voz_stats"]["recusados"] == 1
 
 
-def test_portao_usa_o_escore_asnorm_com_limiar_por_far(monkeypatch):
-    """Decisão do PM (#533): AS-norm com a coorte do I3 e limiar por FAR.
+def _emb_cos(c: float):
+    """Vetor cujo cosseno com o perfil [1, 0] é `c`."""
+    import math
+    return [c, math.sqrt(max(0.0, 1.0 - c * c))]
 
-    O 0,44 CRU é só queda — no caminho normal o limiar é o da tabela de FAR
-    (2,434 no FAR 1 %), e quem decide é o escore NORMALIZADO."""
+
+def test_portao_ecapa_decide_no_cru_por_janela(monkeypatch):
+    """#982: o ECAPA decide no cosseno CRU, 0,31 por janela de 1 s, mesmo com a
+    coorte presente. O AS-norm 2,434/1,8 do LibriSpeech deixava passar 12,7–15 %
+    de impostores em fala PT (#979)."""
     _liga_so_minha_voz(monkeypatch)
     import app
-    # modelo com entrada na tabela de FAR (o extrator de verdade); o perfil de
-    # teste usa "fake:v1", que não tem linha e cairia na queda
     monkeypatch.setattr(app, "_speaker_modelo_do_perfil", lambda p: "ecapa:v1")
     monkeypatch.setattr(app, "_speaker_cohorte", lambda m: [[0.0, 1.0], [0.0, 1.0]])
-    monkeypatch.setattr(app, "_speaker_asnorm",
-                        lambda emb, vecs, m, alvo=None: (3.5, "asnorm"))
+    monkeypatch.setattr(app, "_speaker_embed_ecapa_x", lambda t: _emb_cos(0.33))
     res = app._voz_do_dono(_pcm(3.0))
-    assert res["ok"] is True
-    assert res["limiar"] == 2.434 and res["escore"] == "asnorm"
-    monkeypatch.setattr(app, "_speaker_asnorm",
-                        lambda emb, vecs, m, alvo=None: (1.9, "asnorm"))
+    assert (res["ok"], res["limiar"], res["escore"]) == (True, 0.31, "cru"), res
+    monkeypatch.setattr(app, "_speaker_embed_ecapa_x", lambda t: _emb_cos(0.29))
     assert app._voz_do_dono(_pcm(3.0))["ok"] is False
 
 
@@ -2107,30 +2107,39 @@ def test_comando_no_ultimo_segundo_CORTA_mesmo_com_fim_de_resposta():
     assert not sess.get("turno_pendente"), "comando corta, não anota"
 
 
-def test_portao_usa_o_joelho_do_live_e_a_identidade_fica_no_far_1(monkeypatch):
-    """Condição do PM: o joelho vale SÓ no portão do Live.
-
-    A identidade (`speaker_gate`, anti-clone, "só a voz de:" no STT/Tradutor)
-    segue no FAR calibrado 1 % (2,434). Aqui se prova que os dois caminhos não
-    compartilham o número."""
+def test_escala_crua_do_ecapa_por_duracao_e_legado_intocado(monkeypatch):
+    """#982: a régua do ECAPA é CRU e por duração. Identidade (≥3 s): 0,44; com
+    `speaker_far_alvo` "1"/"0.1": 0,39/0,48. Janela de 1 s do Live: 0,31 no joelho
+    e no "1", 0,39 no "0.1". O Resemblyzer (perfil legado do mini) não muda: sem
+    alvo é o `speaker_threshold` (0,6) e com alvo o AS-norm do R2."""
     import app
 
-    real_limiar = app._speaker_limiar          # o helper abaixo troca pelo dublê
-    _liga_so_minha_voz(monkeypatch)
-    monkeypatch.setattr(app, "_speaker_limiar", real_limiar)
-    monkeypatch.setattr(app, "_speaker_modelo_do_perfil", lambda p: "ecapa:v1")
-    monkeypatch.setattr(app, "_speaker_cohorte", lambda m: [[0.0, 1.0]])
-    monkeypatch.setattr(app, "_speaker_asnorm", lambda *a, **k: (3.5, "asnorm"))
-    monkeypatch.setitem(app._settings, "live_so_minha_voz",
-                        {"on": True, "perfil": "dono", "rigor_far": "joelho"})
-    res = app._voz_do_dono(_pcm(3.0))
-    assert (res["limiar"], res["escore"]) == (1.8, "asnorm"), "o portão não está no joelho"
-    # identidade: sem banda escolhida, o limiar cru do cadastro (0,6); com FAR 1 %,
-    # 2,434 — nunca 1,8, que é do portão do Live
+    monkeypatch.setitem(app._settings, "speaker_threshold", 0.6)
     monkeypatch.setitem(app._settings, "speaker_far_alvo", "")
-    assert app._speaker_limiar("ecapa:v1")[0] == 0.6
+    assert app._speaker_limiar("ecapa:v1") == (0.44, "cru")
+    assert app._speaker_limiar("resemblyzer:v1") == (0.6, "cru"), "o legado mudou"
+    for alvo, lim in (("1", 0.39), ("0.1", 0.48)):
+        monkeypatch.setitem(app._settings, "speaker_far_alvo", alvo)
+        assert app._speaker_limiar("ecapa:v1") == (lim, "cru")
+    monkeypatch.setattr(app, "_speaker_cohorte", lambda m: [[0.0, 1.0], [0.1, 0.9]])
     monkeypatch.setitem(app._settings, "speaker_far_alvo", "1")
-    assert app._speaker_limiar("ecapa:v1")[0] == 2.434
+    assert app._speaker_limiar("resemblyzer:v1") == (2.906, "asnorm"), "o legado mudou"
+    for rigor, lim in (("joelho", 0.31), ("1", 0.31), ("0.1", 0.39)):
+        assert app._voz_limiar("ecapa:v1", rigor) == (lim, "cru")
+    assert app._voz_limiar("ecapa:v1", "joelho", 0.5) == (0.5, "cru")
+    assert app._voz_limiar("resemblyzer:v1", "joelho") == (0.44, "cru"), "o legado mudou"
+
+
+def test_escore_do_ecapa_e_cru_mesmo_com_coorte_e_alvo(monkeypatch):
+    """#982: `_speaker_asnorm` não normaliza o ECAPA (o `separa_voz` e o gate leem
+    daqui); o Resemblyzer com alvo e coorte segue normalizado."""
+    import app
+
+    monkeypatch.setitem(app._settings, "speaker_far_alvo", "1")
+    monkeypatch.setattr(app, "_speaker_cohorte", lambda m: [[0.0, 1.0], [0.1, 0.9], [0.2, 0.8]])
+    nota, modo = app._speaker_asnorm(_emb_cos(0.5), [[1.0, 0.0]], "ecapa:v1")
+    assert modo == "cru" and abs(nota - 0.5) < 1e-6
+    assert app._speaker_asnorm(_emb_cos(0.5), [[1.0, 0.0]], "resemblyzer:v1")[1] == "asnorm"
 
 
 # ---------------------------------------------------------------------------

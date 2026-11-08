@@ -11020,18 +11020,27 @@ def _speaker_pontua(wav_path: Path, perfis: dict
     return melhor, sim, bool(embs), modo
 
 
-#: limiar normalizado por (modelo, FAR alvo), calibrado no R2 (#521). Só vale
-#: para escore AS-normalizado — não se compara com o 0,6/0,75 cru.
+#: extratores que DECIDEM no cosseno CRU, sem AS-norm (#982). Medido no MLS
+#: Portuguese (`evidence/982-calibra-mls.md`): em fala PT o AS-norm do ECAPA
+#: (sonda, coorte EN, top-10) pedia 10,4 em 3 s e 7,0 em 1 s — o 2,434/1,8
+#: calibrados no LibriSpeech deixavam passar 12,7–15 % de impostores (#979) — e
+#: mesmo na escala certa perdia para o cru (EER 3 s 2,16 % × 0,33 %). O cru não
+#: depende de coorte nem de língua. O Resemblyzer (legado) segue como estava.
+_SPEAKER_DECIDE_CRU = frozenset({"ecapa:v1"})
+#: ECAPA, identidade (trecho ≥3 s: `speaker_gate`, `/api/speaker/check`, "só a voz
+#: de:", anti-clone): FAR 0,34 % / FRR 0,83 % no MLS (limiar cruzado A/B). Não lê o
+#: `speaker_threshold`, que é a escala do Resemblyzer (o 0,6 do perfil legado).
+_ECAPA_LIMIAR_IDENTIDADE = 0.44
+#: ECAPA, janela de 1 s do portão do Live (2 confirmações): FAR ~1 % por janela
+#: (FRR 10,6 %); o rigor "0.1" vai a 0,39 (FAR 0,1 % por janela).
+_ECAPA_LIMIAR_JANELA = 0.31
+_ECAPA_LIMIAR_JANELA_01 = 0.39
+#: limiar por (modelo, FAR alvo). Resemblyzer: AS-normalizado, calibrado no R2
+#: (#521). ECAPA: CRU em 3 s, calibrado no MLS PT (#982) — "1" = FAR 1 %,
+#: "0.1" = FAR 0,1 %.
 _SPEAKER_LIMIAR_FAR = {
     "resemblyzer:v1": {"1": 2.906, "0.1": 3.173},
-    # "1.8" é o JOELHO medido no corpus do R4 (#533): o 2,434 veio da calibração
-    # do R2, com OUTRO corpus e outro cadastro, e no corpus do card custa a
-    # cobertura do dono (57 %); no 1,8 são 90 % com 0 turno falso em 10 min.
-    # as bandas são de FAR CALIBRADO (identidade: speaker_gate, anti-clone, "só a
-    # voz de:" no STT/Tradutor). O joelho do Live NÃO entra aqui: ele é
-    # `_VOZ_LIMIAR_JOELHO` (constante própria), senão mexer no portão do Live
-    # mexeria na identidade (decisão do PM, #533).
-    "ecapa:v1": {"1": 2.434, "0.1": 3.044},
+    "ecapa:v1": {"1": 0.39, "0.1": 0.48},
 }
 #: artefato da coorte por extrator. O do ECAPA é o `.npy` publicado em `models/`
 #: junto dos pesos (o `.json` ao lado é a ficha: modelo, dimensão, corpus) — antes o
@@ -11110,6 +11119,8 @@ def _speaker_asnorm(emb, vecs_perfil: list, modelo: str,
     `rigor_far` do bloco, não o setting global de cadastro) — #533."""
     centroide = _speaker_centroide(vecs_perfil)
     cru = _cos_sim(emb, centroide)
+    if modelo in _SPEAKER_DECIDE_CRU:      # #982: o ECAPA decide no cru
+        return cru, "cru"
     alvo = (str(_settings.get("speaker_far_alvo") or "").strip()
             if alvo is None else str(alvo or "").strip())
     coorte = _speaker_cohorte(modelo) if alvo else []
@@ -11125,8 +11136,13 @@ def _speaker_asnorm(emb, vecs_perfil: list, modelo: str,
 
 
 def _speaker_limiar(modelo: str) -> tuple[float, str]:
-    """(limiar, modo). `speaker_threshold` cru explícito continua vencendo."""
+    """(limiar, modo). Resemblyzer: AS-norm com alvo de FAR, senão o
+    `speaker_threshold` cru. ECAPA (#982): sempre CRU — o alvo de FAR escolhe a
+    faixa (0,39/0,48) e sem alvo vale o calibrado de identidade (0,44)."""
     alvo = str(_settings.get("speaker_far_alvo") or "").strip()
+    if modelo in _SPEAKER_DECIDE_CRU:
+        lim = _SPEAKER_LIMIAR_FAR.get(modelo, {}).get(alvo) if alvo else None
+        return (float(lim) if lim is not None else _ECAPA_LIMIAR_IDENTIDADE), "cru"
     if alvo and _speaker_cohorte(modelo):
         lim = _SPEAKER_LIMIAR_FAR.get(modelo, {}).get(alvo)
         if lim is not None:
@@ -11230,12 +11246,12 @@ def _speaker_anticlone(wav_path: Path) -> dict:
 # **2 janelas seguidas** acima do limiar e piso de energia (0,15 do p90). Falso
 # turno medido: 0 em 10 min; custo 17 ms por janela com o modelo carregado — daí
 # o PREWARM por sessão.
-# LIMIAR: o escore é o ECAPA **AS-normalizado** com a mesma coorte do I3 e limiar
-# por alvo de FAR (`rigor_far`; default "1.8" = 1,8 no escore AS-normalizado, o
-# JOELHO medido no corpus do R4 — o "1" (2,434) vem da calibração do R2, com outro
-# corpus e outro cadastro, e custa 33 p.p. de cobertura do dono). O 0,44 CRU é só
-# QUEDA, quando não há coorte/alvo ou a normalização não pegou (0,35 cru passa voz
-# parecida, `evidence/521`); perfil legado vai SEMPRE no cru.
+# LIMIAR (#982): o ECAPA decide no cosseno **CRU** por janela — 0,31 no joelho e no
+# rigor "1" (FAR ~1 % por janela no MLS PT), 0,39 no "0.1" (`_ECAPA_LIMIAR_JANELA*`).
+# O AS-norm com o joelho 1,8 (#533) foi calibrado no LibriSpeech e em fala PT deixava
+# passar 15 % de impostores (#979); o ramo AS-norm de `_voz_limiar` fica só para um
+# extrator futuro que não esteja em `_SPEAKER_DECIDE_CRU`. O 0,44 CRU segue como
+# QUEDA do perfil legado (Resemblyzer), que vai SEMPRE no cru.
 _VOZ_JANELA_S = 1.0
 _VOZ_PASSO_S = 0.25
 _VOZ_CONFIRMACOES = 2
@@ -11282,7 +11298,14 @@ def _voz_limiar(modelo: str, rigor: str, fixo: float = 0.0) -> tuple[float, str]
     AS-norm SÓ em perfil do extrator ATUAL (decisão do PM, achado do gate do
     #534): os perfis do dono hoje são legados e o escore normalizado de um
     extrator não atravessa para o outro. Perfil legado vai para o limiar CRU do
-    Resemblyzer mesmo com coorte disponível."""
+    Resemblyzer mesmo com coorte disponível.
+
+    ECAPA (#982): CRU por janela de 1 s — 0,31 no joelho e no "1" (FAR ~1 % por
+    janela), 0,39 no "0.1". `limiar` explícito do bloco também é cru."""
+    if modelo in _SPEAKER_DECIDE_CRU:
+        if fixo and fixo > 0:
+            return float(fixo), "cru"
+        return (_ECAPA_LIMIAR_JANELA_01 if rigor == "0.1" else _ECAPA_LIMIAR_JANELA), "cru"
     asnorm_ok = (modelo == SPEAKER_MODELO_ATUAL and bool(rigor)
                  and bool(_speaker_cohorte(modelo)))
     if fixo and fixo > 0:
@@ -11396,9 +11419,10 @@ def _voz_do_dono(pcm16: bytes, cfg: dict | None = None, fala_ms: int = 0) -> dic
         if not emb:
             break                         # extrator indisponível: fail-open
         score, modo_esc = _speaker_asnorm(emb, vecs, modelo, alvo=alvo_norm)
-        if modo_esc != "asnorm":
+        if modo_esc != "asnorm" and modelo not in _SPEAKER_DECIDE_CRU:
             # a normalização não pegou (coorte ilegível): compara no CRU com a
-            # queda — escore normalizado contra limiar cru erraria por muito
+            # queda — escore normalizado contra limiar cru erraria por muito.
+            # O ECAPA já decide no cru com o limiar dele (#982): não cai aqui.
             lim, modo_lim = _VOZ_LIMIAR_PADRAO, "cru"
         scores.append(score)
         if score >= lim:
@@ -11691,8 +11715,14 @@ async def speaker_check(audio: UploadFile = None):
               else _speaker_modelo_efetivo())
     limiar, modo_limiar = _speaker_limiar(modelo)
     passa = bool(melhor and sim is not None and sim >= limiar)
+    # a régua do Live na MESMA escala (#982): o check pontua o áudio inteiro contra
+    # o limiar de identidade; o portão do Live pontua janelas de 1 s contra este.
+    cfg_live = _settings.get("live_so_minha_voz") or {}
+    lim_live, modo_live = _voz_limiar(modelo, str(cfg_live.get("rigor_far") or _VOZ_RIGOR_PADRAO),
+                                      float(cfg_live.get("limiar") or 0.0))
     return {"speaker": melhor, "sim": round(sim or 0.0, 3),
             "limiar": round(limiar, 3), "modo": modo_limiar,
+            "limiar_live": round(lim_live, 3), "modo_live": modo_live,
             # veredito do servidor: com `asnorm` o `sim` não se compara ao rigor cru.
             # `passaria` é o contrato decidido no #590; `autorizado` é o nome anterior
             # (a tela já lê os dois por feature-detect) e fica enquanto houver cliente
