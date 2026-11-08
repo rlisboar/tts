@@ -283,6 +283,12 @@ SIMULTANEIDADE_MIN = 0.5
 #: os dois fluxos casando com o perfil = a MESMA voz partida em dois (não duas
 #: pessoas): margem curta entre os dois escores
 MARGEM = 0.05
+#: presença do dono no cosseno CRU [-1, 1], antes de preservar qualquer janela.
+#: O piso relativo (0,55 × melhor) sozinho aprova um intruso exclusivo: 0,15 em
+#: todas as janelas vira piso 0,0825 e a fala inteira segue para o STT. 0,20
+#: fica acima dessa banda e abaixo do dono em janela de 1,5 s (0,26 medido,
+#: #663) — não é o limiar do gate (0,6), que vetava o próprio dono.
+PISO_PRESENCA_CRU = 0.20
 
 
 def _simultaneidade(a, b, q: int = 320) -> float:
@@ -370,31 +376,55 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
             x = x.mean(axis=1)
         fluxos = [sf.read(str(f), dtype="float32")[0] for f in fluxos_p]
         centroide = app._speaker_centroide(vecs)
-        limiar = float(app._speaker_limiar(modelo)[0])
+        # (limiar, modo). Com `speaker_far_alvo` o [0] é AS-norm (2,434 / 3,044),
+        # não cosseno. A nota da decisão tem de nascer nessa mesma escala; o piso
+        # relativo continua no cru, que é onde o 0,55 foi medido (#663).
+        limiar, modo = app._speaker_limiar(modelo)
+        limiar = float(limiar)
+        if modo == "asnorm" and vecs:
+            # coorte com menos de 2 impostores devolve o cru: o limiar tem de
+            # voltar junto, senão 2,434 compara com cosseno
+            _nota_sonda, modo_sonda = app._speaker_asnorm(vecs[0], vecs, modelo)
+            if modo_sonda != "asnorm":
+                modo = "cru"
+                limiar = float(app._settings.get("speaker_threshold")
+                               or app._SETTINGS_DEFAULTS["speaker_threshold"])
 
         _conta = [0]
 
-        def _sim(sinal) -> float:
+        def _mede(sinal) -> tuple[float, float]:
+            """(cosseno cru, nota na escala de `limiar`)."""
             if sinal.size < 1600:            # < 0,1 s não gera embedding confiável
-                return -1.0
+                return -1.0, -1.0
             _conta[0] += 1
             # arquivo PRÓPRIO por janela: reusar um nome só já deu leitura do
             # conteúdo anterior (todos os escores voltando -1 na mesma rodada)
             tmp = dir_saida / f"jan{_conta[0]}.wav"
             sf.write(str(tmp), sinal, sr, subtype="PCM_16")
             emb = app._speaker_embed(tmp, modelo)
-            return app._cos_sim(emb, centroide) if emb else -1.0
+            if not emb:
+                return -1.0, -1.0
+            cru = app._cos_sim(emb, centroide)
+            if modo != "asnorm":
+                return cru, cru
+            nota, modo_nota = app._speaker_asnorm(emb, vecs, modelo)
+            # coorte curta devolve o cru com o modo "cru": não comparar isso
+            # com o limiar AS-norm (2,434 contra um cosseno em [-1, 1])
+            if modo_nota != "asnorm":
+                return cru, cru
+            return cru, nota
 
         passo = int(0.5 * sr)        # sub-bloco da medida: 1,5 s sozinho pontua baixo
 
-        def _sim_forte(sinal) -> float:
-            """Melhor escore entre sub-blocos de 0,5 s: um trecho com o dono em
-            QUALQUER pedaço da janela não pode ser vetado (com o escore da janela
-            inteira, o dono sumia em blocos de 2 s — medido)."""
+        def _mede_forte(sinal) -> tuple[float, float]:
+            """Melhor (cru, nota) entre sub-blocos de 0,5 s: um trecho com o dono
+            em QUALQUER pedaço da janela não pode ser vetado (com o escore da
+            janela inteira, o dono sumia em blocos de 2 s — medido)."""
             if sinal.size <= passo:
-                return _sim(sinal)
-            return max(_sim(sinal[k:k + passo])
-                       for k in range(0, sinal.size - passo + 1, passo))
+                return _mede(sinal)
+            pares = [_mede(sinal[k:k + passo])
+                     for k in range(0, sinal.size - passo + 1, passo)]
+            return max(p[0] for p in pares), max(p[1] for p in pares)
 
         janela = int(JANELA_S * sr)
         saida = np.zeros(x.size, dtype=np.float32)
@@ -406,31 +436,45 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
         trechos_descartados = 0
         escores_janelas = []
         sobrepostas = 0
-        # PASSO 1: mede todas as janelas. O piso do veto é RELATIVO à mediana do
-        # próprio áudio — o escore cru cai com a duração da janela (a mesma fala em
+        # PASSO 1: mede todas as janelas. O piso do veto é RELATIVO ao melhor cru
+        # do próprio áudio — o escore cai com a duração da janela (a mesma fala em
         # 1,5 s dá 0,26 e em 7 s dá ~0,9), então o limiar absoluto do gate vetava o
-        # próprio dono.
+        # próprio dono. Antes disso, um piso absoluto no cru confirma que o dono
+        # APARECE: sem ele, um intruso exclusivo (0,15 em tudo) passa no relativo.
         medido = []
         for ini, fim in segmentos:
-            sim_orig = _sim(x[ini:fim])
-            ocorre = _sim_forte(x[ini:fim])
-            sims = [(_sim(f[ini:fim]), i) for i, f in enumerate(fluxos)]
+            sim_orig, nota_orig = _mede(x[ini:fim])
+            ocorre, _nota_ocorre = _mede_forte(x[ini:fim])
+            sims, notas = [], []
+            for i, f in enumerate(fluxos):
+                cru_i, nota_i = _mede(f[ini:fim])
+                sims.append((cru_i, i))
+                notas.append((nota_i, i))
             sims.sort(reverse=True)
-            medido.append((ini, fim, sim_orig, ocorre, sims))
-        # piso POR FALANTE: a janela se compara ao MELHOR escore do próprio arquivo
-        # para aquele fluxo. O dono num trecho fora das amostras do perfil pontua
-        # baixo no absoluto (0,065 medido), mas continua sendo o melhor do arquivo —
-        # piso global vetava ele (#663).
+            notas.sort(reverse=True)
+            medido.append((ini, fim, sim_orig, ocorre, sims, nota_orig, notas))
+        # piso POR FALANTE, no cru: a janela se compara ao MELHOR escore do próprio
+        # arquivo. O dono num trecho fora das amostras do perfil pontua baixo no
+        # absoluto (0,065 medido), mas continua sendo o melhor do arquivo — piso
+        # global por janela vetava ele (#663).
         melhor_arquivo = max((m[4][0][0] for m in medido), default=0.0)
+        melhor_ocorre = max((m[3] for m in medido), default=-1.0)
+        evidencia = [s for s in (melhor_arquivo, melhor_ocorre) if s >= 0.0]
+        # sem escore válido não é intruso confirmado: embedding falho segue no
+        # caminho que devolve o original
+        presente = (not evidencia) or max(evidencia) >= PISO_PRESENCA_CRU
         piso = melhor_arquivo * 0.55
 
         # PASSO 2: decide
-        for ini, fim, sim_orig, ocorre, sims in medido:
-            (melhor_sim, melhor_i), (seg_sim, _) = sims[0], sims[1]
-            # os dois fluxos casam com o perfil: um falante só, separar atrapalha
-            um_falante = (sim_orig >= limiar and seg_sim >= limiar
+        for ini, fim, sim_orig, ocorre, sims, nota_orig, notas in medido:
+            (melhor_sim, _melhor_i), (seg_sim, _) = sims[0], sims[1]
+            (nota_melhor, nota_i), (nota_seg, _) = notas[0], notas[1]
+            # os dois fluxos casam com o perfil: um falante só, separar atrapalha.
+            # O limiar é na escala da nota (AS-norm quando o FAR alvo está ligado);
+            # a margem fica no cru, que é onde o 0,05 foi medido.
+            um_falante = (nota_orig >= limiar and nota_seg >= limiar
                           and (melhor_sim - seg_sim) <= MARGEM)
-            escolhido = fluxos[melhor_i][ini:fim]
+            escolhido = fluxos[nota_i][ini:fim]
             simult = _simultaneidade(fluxos[0][ini:fim], fluxos[1][ini:fim])
             # DECISÃO pela correlação: a simultaneidade de energia foi medida e NÃO
             # separa os cenários (0,35–0,43 nas janelas dos DOIS — as saídas são
@@ -440,8 +484,13 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
                 if fim - ini > 1 else 0.0
             if corr != corr:                  # NaN: sinal constante, sem correlação
                 corr = 0.0
-            separou = corr < CORR_SEPAROU and melhor_sim >= limiar
-            if melhor_sim < 0 and sim_orig < 0:
+            separou = corr < CORR_SEPAROU and nota_melhor >= limiar
+            if not presente:
+                # arquivo só com terceiro: atenua toda janela de fala
+                saida[ini:fim] = x[ini:fim] * 0.03
+                trechos_descartados += 1
+                descartados_ms += int((fim - ini) / sr * 1000)
+            elif melhor_sim < 0 and sim_orig < 0:
                 # embedding falhou: fica o ORIGINAL (sem isto a janela ficava em
                 # zero no `saida` e o áudio saía picado de silêncio)
                 saida[ini:fim] = x[ini:fim]
@@ -465,11 +514,12 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
                                     round(seg_sim, 3), round(corr, 3),
                                     round(simult, 3)])
 
-        if sobrepostas == 0:
+        if sobrepostas == 0 and presente:
             # REDE DE SEGURANÇA (#663): sem NENHUMA sobreposição o caminho novo não
             # tem o que fazer — vale a seleção pura do R4 (manter quem casa com o
             # perfil, atenuar o resto), que é o melhor método nesse cenário.
-            for ini, fim, _sim_orig, _ocorre, sims in medido:
+            # Dono ausente não entra: o relativo (0,55 × 0,15) reporia o intruso.
+            for ini, fim, _sim_orig, _ocorre, sims, _nota_orig, _notas in medido:
                 if sims[0][0] >= piso:
                     saida[ini:fim] = x[ini:fim]
                 else:
@@ -477,7 +527,8 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
         final = Path(tempfile.mkstemp(prefix="alvo-", suffix=".wav")[1])
         sf.write(str(final), saida, sr, subtype="PCM_16")
         info = {"escores_janelas": escores_janelas[:40], "sobrepostas": sobrepostas,
-                "limiar": round(limiar, 3), "piso": round(piso, 3)}
+                "limiar": round(limiar, 3), "piso": round(piso, 3),
+                "piso_presenca": PISO_PRESENCA_CRU, "dono_presente": presente}
         if trechos_descartados:
             info["descartados"] = {"trechos": trechos_descartados, "ms": descartados_ms}
         return final, info
