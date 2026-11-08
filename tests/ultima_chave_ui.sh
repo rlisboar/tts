@@ -40,7 +40,7 @@ def porta_livre():
 
 porta = porta_livre()
 apikeys = pathlib.Path(f"/tmp/apikeys_teste-{SUF}.json")
-log = pathlib.Path(f"/tmp/ultima_chave-{porta}.log")
+log = pathlib.Path(f"/tmp/ultima_chave-{SUF}.log")   # único por execução (#1017)
 # isolamento por AMBIENTE (#461): `TTS_APIKEYS_PATH` é lido no import do app, então
 # não precisa de launcher com monkeypatch — o arquivo do dono nem é aberto
 # o `.apikey` legado também: `_save_apikeys` espelha nele e, sem a variável, o
@@ -194,7 +194,7 @@ try:
         apikeys.unlink(missing_ok=True)
         porta2 = porta_livre()
         env2 = {**env_proc, "TTS_ROD_API_KEY": "chave-de-ambiente-teste-998"}
-        log2 = pathlib.Path(f"/tmp/ultima_chave_env-{porta2}.log")
+        log2 = pathlib.Path(f"/tmp/ultima_chave_env-{SUF}.log")   # único por execução (#1017)
         proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app",
                                  "--host", "127.0.0.1", "--port", str(porta2),
                                  "--log-level", "warning"],
