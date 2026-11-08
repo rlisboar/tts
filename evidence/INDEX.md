@@ -307,13 +307,15 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `687-marca-nivel.md` | #687 | 2026-10-31 | Marca d'água audível em fala baixa (#687) — diagnóstico e correção |
 | `796-mordida.txt` | #796 | 2026-11-05 | MORDIDA #796 — a entrega da fala tem de esperar a fila FORA do `_gen_lock` |
 | `812-marca-remoto.md` | #812 | 2026-11-05 | Marca d'água no caminho remoto (#812) |
-| `869-ab-s1-cru-filtrado.md` | #869 | — | 869 item 3 — S1 isolado do PCM cru: o `motivo=vad` só aparece com o filtrado no STT |
-| `869-ab-s1-cru-filtrado.py` | #869 | — | """#869 item 3 (A/B isolado do S1, script) — S1 ISOLADO do PCM cru: mesmo SHA, mesmo áudio, só muda o que o |
+| `869-ab-s1-cru-filtrado.md` | #869 | 2026-11-08 | 869 item 3 — S1 isolado do PCM cru: o `motivo=vad` só aparece com o filtrado no STT |
+| `869-ab-s1-cru-filtrado.py` | #869 | 2026-11-08 | """#869 item 3 (A/B isolado do S1, script) — S1 ISOLADO do PCM cru: mesmo SHA, mesmo áudio, só muda o que o |
 | `869-live-vad-cru.md` | #869 | 2026-11-06 | 869 — Live descarta turno com fala real (`motivo=vad` / "sem fala") |
 | `869-repro-cru.py` | #869 | 2026-11-06 | """#869 — reproduz o descarte `motivo=vad` do Live com áudio gravado. |
 | `876-stt-bench-carga.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench-livre.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench.py` | #876 | 2026-11-06 | """#876 — latência e WER do STT local do Live por modelo, com e sem TTS em paralelo. |
+| `876-stt-frio-prewarm.md` | #876 | — | 876 — STT do 1º turno frio: o prewarm do Live o deixa igual ao quente (0,23 s × 1,25 s sem) |
+| `876-stt-frio-prewarm.py` | #876 | — | """#876 — 1º turno frio isolado (script do A/B do prewarm): processo NOVO, com × sem `_stt_aquece`, mede o |
 | `876-stt-live.md` | #876 | 2026-11-06 | 876 — STT do Live: modelo e beam (bancada local, antes do Mini) |
 | `942-bancada-mini-c3f4a78.json` | #942 | 2026-11-07 | "rotulo": "c3f4a78-mini", |
 | `942-bancada-mini-c3f4a78.md` | #942 | 2026-11-07 | 942 — bancada no mini sobre c3f4a78 (4º deploy), janela 16:16–16:50 BRT |
