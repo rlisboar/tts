@@ -50,6 +50,10 @@ _SETTINGS.write_text("{}")          # defaults do app; nada do dono
 env_proc = {**os.environ, "TTS_APIKEYS_PATH": str(apikeys),
             "TTS_LEGACY_APIKEY_PATH": str(pathlib.Path(f"/tmp/apikey_teste-{SUF}")),
             "TTS_SETTINGS_PATH": str(_SETTINGS)}
+# #998: sem isto a suíte herda o `TTS_ROD_ADMIN_KEY` do runner e a linha readonly de
+# ambiente entra na lista — o roteiro (contagens e o clique em Apagar) não a previu.
+env_proc.pop("TTS_ROD_ADMIN_KEY", None)
+env_proc.pop("TTS_ROD_API_KEY", None)   # é esta que vira linha readonly na lista
 proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app",
                          "--host", "127.0.0.1", "--port", str(porta),
                          "--log-level", "warning"],
@@ -98,12 +102,17 @@ try:
         pg.evaluate("showView('config', {tab: 'acesso'})")
         pg.wait_for_timeout(600)
 
-        def apagar_primeiro():
-            return pg.evaluate("""() => {
-                const row = document.querySelector('#apiKeysList .api-key-row');
-                if (!row) return false;
-                [...row.querySelectorAll('button')].find(b => b.textContent.trim() === 'Apagar').click();
-                return true;
+        def apagar_primeiro(pagina=None):
+            # #998: a linha da chave de AMBIENTE é readonly e NÃO tem o botão —
+            # escolher a primeira linha que TENHA o botão (antes, um `.find`
+            # devolvia undefined e o `.click()` estourava TypeError).
+            return (pagina or pg).evaluate("""() => {
+                for (const row of document.querySelectorAll('#apiKeysList .api-key-row')) {
+                    const b = [...row.querySelectorAll('button')]
+                        .find(x => x.textContent.trim() === 'Apagar');
+                    if (b) { b.click(); return true; }
+                }
+                return false;
             }""")
 
         # ── caso comum: duas chaves, apagar é UM passo e não pergunta preço ──
@@ -172,6 +181,66 @@ try:
         pg.wait_for_timeout(700)
         cobrar("DESLIGADA" in (pg.text_content("#toast") or ""),
                f"desligar a exigência pelo toggle não mostrou o aviso ({pg.text_content('#toast')!r})")
+        # ── #998: com `TTS_ROD_ADMIN_KEY` no ambiente, a linha readonly aparece e o
+        #    "Apagar" tem de achar a linha que TEM o botão (não a de ambiente).
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except Exception:
+            proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            pass
+        apikeys.unlink(missing_ok=True)
+        porta2 = porta_livre()
+        env2 = {**env_proc, "TTS_ROD_API_KEY": "chave-de-ambiente-teste-998"}
+        log2 = pathlib.Path(f"/tmp/ultima_chave_env-{porta2}.log")
+        proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app",
+                                 "--host", "127.0.0.1", "--port", str(porta2),
+                                 "--log-level", "warning"],
+                                cwd=str(RAIZ), env=env2, stdout=log2.open("w"),
+                                stderr=subprocess.STDOUT, start_new_session=True)
+        base = f"http://127.0.0.1:{porta2}"
+        for _ in range(120):
+            try:
+                urllib.request.urlopen(base + "/", timeout=2).read(1)
+                break
+            except Exception:
+                time.sleep(0.25)
+        else:
+            raise SystemExit("servidor com chave de ambiente não subiu")
+        pg2 = ctx.new_page()
+        pg2.on("dialog", lambda d: d.accept())   # o confirm do apagar
+        pg2.goto(base, wait_until="domcontentloaded")
+        pg2.wait_for_timeout(1200)
+        pg2.evaluate("showView('config', {tab: 'acesso'})")
+        pg2.wait_for_timeout(600)
+        limpa()                              # 0 chaves de arquivo: só a de ambiente
+        pg2.evaluate("loadApiKeys()")
+        pg2.wait_for_timeout(600)
+        cobrar(pg2.evaluate("document.querySelectorAll('#apiKeysList .api-key-row').length") == 1,
+               "a chave de ambiente não entrou na lista (esperava 1 linha readonly)")
+        # 1) só a linha de ambiente: o clique não pode estourar (o `find` devolvia
+        #    undefined e o `.click()` lançava TypeError) e devolve False
+        sem_botao = apagar_primeiro(pg2)
+        cobrar(sem_botao is False, f"a linha de ambiente sem botão devia devolver False (veio {sem_botao!r})")
+        # 2) com chaves de teste, acha a linha que TEM o botão e apaga
+        cria("uma", "use"); cria("outra", "use")
+        pg2.evaluate("loadApiKeys()")
+        pg2.wait_for_timeout(600)
+        cobrar(pg2.evaluate("document.querySelectorAll('#apiKeysList .api-key-row').length") == 3,
+               "as chaves de teste não entraram na lista (esperava 3 linhas)")
+        apagou = apagar_primeiro(pg2)
+        pg2.wait_for_timeout(800)
+        cobrar(apagou is True, "o Apagar não achou nenhuma linha com botão")
+        # com a chave de ambiente a rede segue autenticada; se a tela perguntar, força
+        pg2.evaluate("""() => { const c = document.querySelector('.ak-confirma');
+            const b = c && [...c.querySelectorAll('button')]
+                .find(x => x.textContent.includes('LAN') || x.textContent.includes('forçar'));
+            if (b) b.click(); }""")
+        pg2.wait_for_timeout(800)
+        cobrar(len(chaves()) == 1, f"apagar com chave de ambiente não apagou uma chave de teste (restam {len(chaves())})")
+        pg2.close()
         b.close()
 finally:
     try: os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
