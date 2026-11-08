@@ -49,6 +49,25 @@
 # truncam. Cada suíte tem TETO próprio: suíte pendurada falha, não prende o gate.
 set -uo pipefail
 
+# #992: harness de agentes põe um guard de `rm`/`unlink` à frente no PATH que morre
+# no parse de `-f` e sai 0 SEM apagar. Sem isto, `rm -rf` de trava/log vira no-op e
+# a suíte `serial_lock` espera o TTL inteiro (40 min) em vez de segundos. O hook e o
+# `tests/conftest.py` já normalizam; aqui é para rodada manual. Só sai do PATH o
+# diretório cujo `rm` comprovadamente não apaga.
+_probe_rm="$(mktemp -d)"; _path_ok=()
+for _d in ${PATH//:/ }; do
+    if [ -x "$_d/rm" ]; then
+        : > "$_probe_rm/x"; "$_d/rm" -f "$_probe_rm/x" >/dev/null 2>&1
+        if [ -e "$_probe_rm/x" ]; then
+            echo "[run_sh] PATH: $_d/rm não apaga — fora do PATH (#992)" >&2
+            continue
+        fi
+    fi
+    _path_ok+=("$_d")
+done
+PATH="$(IFS=:; echo "${_path_ok[*]}")"
+/bin/rm -rf "$_probe_rm" 2>/dev/null || true
+
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RAIZ="$(dirname "$AQUI")"
 # 90 s: o hook HERDA este teto, e 240 s por suíte pendurada prendiam o commit por
