@@ -9,8 +9,10 @@
 # registro ele seria arquivo inerte — nenhum runner carrega `_*.py` sozinho.
 pytest_plugins = ("_espiao",)
 
+import os
 import pathlib
 import shutil
+import subprocess
 import tempfile
 import sys
 import time
@@ -18,6 +20,37 @@ import warnings
 from pathlib import Path
 
 import pytest
+
+
+# ── #992: `rm` do PATH que não apaga ────────────────────────────────────────────
+# O harness de agentes põe um guard (`.../rm-guard/<pid>/rm`, junto de `find` e
+# `unlink`) à frente no PATH. Ele morre no parse de `-f` (`ERR_PARSE_ARGS_UNKNOWN_OPTION`)
+# e sai **0 sem apagar**: toda suíte que limpa temporário com `rm` fica vermelha só
+# nesta máquina — e o `rm -f` silencioso faz o teste mentir sobre o estado real.
+# Se o `rm` de um diretório do PATH não apaga de fato, o diretório sai do PATH da
+# sessão (os subprocessos herdam). O produto usa `/bin/rm` absoluto onde importa.
+def _rm_do_dir_apaga(diretorio: str) -> bool:
+    exe = Path(diretorio) / "rm"
+    if not exe.exists():
+        return True
+    with tempfile.TemporaryDirectory() as tmp:
+        alvo = Path(tmp) / "x"
+        alvo.write_text("x")
+        try:
+            subprocess.run([str(exe), "-f", str(alvo)], capture_output=True, timeout=30)
+        except OSError:
+            return True
+        return not alvo.exists()
+
+
+def _path_sem_rm_quebrado() -> None:
+    partes = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    quebrados = [d for d in partes if not _rm_do_dir_apaga(d)]
+    if quebrados:
+        os.environ["PATH"] = os.pathsep.join(d for d in partes if d not in quebrados)
+
+
+_path_sem_rm_quebrado()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -48,10 +81,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # O `noqa` era do flake8 e o pyflakes do hook não o lia; desde a #378 o lint é o
 # ruff e ele VALE — o E402 abaixo só existe por causa do setup de ambiente.
 # decorativo — silêncio de verdade, aqui, só com `__all__` (ver o hook).
-import os                       # noqa: E402
 
 os.environ.setdefault("TTS_LIVE_WORKER", "0")
-
 # #813: o CORS copia a lista de extensões na CRIAÇÃO do middleware, então a célula
 # não consegue monkeypatchá-la — o id de teste entra por ambiente, antes do import.
 os.environ["TTS_ORIGENS_PERMITIDAS"] = "chrome-extension://abcdefghijklmnop"

@@ -474,6 +474,9 @@ def test_assinatura_traz_pgid_sid_e_horario_estavel(isolado, capsys):
 
 def test_orfao_traz_pai_de_boot_e_o_grupo(isolado, monkeypatch, capsys):
     monkeypatch.setattr(app.os, "getppid", lambda: 1)
+    # dicionário próprio: sem isto o pid falso 4242 vaza para o vizinho, que então
+    # acusa órfão fantasma (passava sozinho e caía na suíte — #992).
+    monkeypatch.setattr(app, "_PAI_DO_BOOT", {})
     app._PAI_DO_BOOT.clear()
     app._PAI_DO_BOOT.update(pid=4242, lstart="Thu Oct 22 02:36:06 2026", cmd="bash /tmp/x.sh")
     monkeypatch.setattr(app, "_processos_do_grupo", lambda pg, sd: "111:1:%d:bash /tmp/x.sh" % pg)
@@ -485,6 +488,9 @@ def test_orfao_traz_pai_de_boot_e_o_grupo(isolado, monkeypatch, capsys):
 
 
 def test_pai_vivo_nao_polui_com_o_ramo_de_orfao(isolado, capsys):
+    # grava o pai REAL aqui: sem isto a célula depende da ordem da suíte (#992)
+    app._PAI_DO_BOOT.clear()
+    app._grava_pai_do_boot()
     app._assinatura_do_sinal(15)
     assert "ÓRFÃO" not in capsys.readouterr().err
 

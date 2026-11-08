@@ -6,8 +6,14 @@ importa aqui é o ALARME: falha só vira alerta depois de N consecutivas (senão
 piscar de um deploy vira ruído), o alerta é um arquivo-flag e o contador zera na
 primeira recuperação.
 
-`curl`, `osascript` e `launchctl` são shims: nada de rede, nada de notificação
-real, nada de launchd. O histórico e o alerta ficam num `$HOME` de tmp.
+`curl`, `osascript`, `launchctl` e `rm` são shims: nada de rede, nada de
+notificação real, nada de launchd. O histórico e o alerta ficam num `$HOME` de tmp.
+
+O shim de `rm` (#992) reproduz o guard de PATH do harness de agentes, que morre no
+parse de `-f` e sai 0 SEM apagar: com ele o `rm` do PATH vira no-op silencioso.
+Por isso o probe apaga com `/bin/rm` absoluto — e as células conferem que o shim
+NÃO foi usado. Antes do fix os dois testes de limpeza ficavam vermelhos aqui e
+verdes na máquina de quem não tem o guard no PATH (a suíte não era hermética).
 """
 
 import os
@@ -53,6 +59,14 @@ if [ $so_codigo = 1 ]; then print -rn -- "$codigo"; else print -rn -- "$corpo"; 
 """
 
 
+SHIM_RM = r"""#!/bin/zsh
+# rm falso que reproduz o guard do PATH (#992): qualquer invocação morre no parse
+# e sai 0 sem apagar nada. Se o script usar o `rm` do PATH, a limpeza vira no-op.
+print -r -- "$*" >> "$T_RM_LOG"
+exit 0
+"""
+
+
 def _shim(dir_: Path, nome: str, corpo: str) -> None:
     p = dir_ / nome
     p.write_text(corpo)
@@ -66,6 +80,7 @@ def amb(tmp_path):
     _shim(bin_, "curl", SHIM_CURL)
     _shim(bin_, "osascript", '#!/bin/zsh\nprint -r -- "$*" >> "$T_OSA_LOG"\nexit 0\n')
     _shim(bin_, "launchctl", '#!/bin/zsh\nprint -r -- "$*" >> "$T_LAUNCH_LOG"\ncase "$1" in print) exit 0;; esac\nexit 0\n')
+    _shim(bin_, "rm", SHIM_RM)
     home = tmp_path / "home"
     (home / "Library" / "Logs").mkdir(parents=True)
     return {
@@ -77,6 +92,7 @@ def amb(tmp_path):
             "T_CURL_LOG": str(tmp_path / "curl.log"),
             "T_OSA_LOG": str(tmp_path / "osa.log"),
             "T_LAUNCH_LOG": str(tmp_path / "launch.log"),
+            "T_RM_LOG": str(tmp_path / "rm.log"),
         },
     }
 
@@ -164,6 +180,9 @@ def test_recuperacao_zera_contador_e_limpa_a_flag(amb):
     assert _contador(amb) == 0
     assert not (amb["logs"] / "tts-health-ALERTA.txt").exists(), "a flag ficou aberta"
     assert "recuperado (havia 3 falhas)" in _log(amb)
+    assert "flag de alerta limpa" in _log(amb), "não registrou a limpeza da flag"
+    assert not Path(amb["env"]["T_RM_LOG"]).exists(), \
+        "apagou com o rm do PATH (o guard do harness sai 0 sem apagar) — use /bin/rm"
 
 
 def test_sem_chave_dando_200_acusa_tunel_em_loopback(amb):
@@ -251,7 +270,11 @@ def test_install_cria_agente_com_intervalo_e_roda_uma_vez(amb):
 
 def test_uninstall_tira_o_agente(amb):
     _run(amb, "install")
+    plist = amb["home"] / "Library" / "LaunchAgents" / "com.local.tts-health-probe.plist"
+    assert plist.exists()
     r = _run(amb, "uninstall")
     assert r.returncode == 0
-    assert not (amb["home"] / "Library" / "LaunchAgents" / "com.local.tts-health-probe.plist").exists()
+    assert not plist.exists(), "o uninstall deixou o plist no lugar"
     assert "bootout" in Path(amb["env"]["T_LAUNCH_LOG"]).read_text()
+    assert not Path(amb["env"]["T_RM_LOG"]).exists(), \
+        "apagou com o rm do PATH (o guard do harness sai 0 sem apagar) — use /bin/rm"

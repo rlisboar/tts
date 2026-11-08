@@ -749,6 +749,25 @@ valer mesmo com o túnel caído.
 | sonda de Host removida do `health_probe.sh` | `test_host_publico_fora_da_allowlist_vira_alerta` **FAILED** |
 | `export TTS_ALLOWED_HOSTS` removido do `start-server.sh` | `test_start_server_exporta_o_host_publico` **FAILED** (o plist não chega ao app: sshd não herda) |
 
+## #992 — limpeza da flag e do plist presas ao `rm` do PATH
+
+O probe apagava a flag de alerta (na recuperação) e o plist (no `uninstall`) com o
+`rm` resolvido por PATH. No harness de agentes o primeiro `rm` do PATH é um guard
+que morre no parse de `-f` e sai **0 sem apagar** — as duas limpezas viravam no-op
+silencioso: a flag ficava aberta mascarando alerta novo e o `uninstall` dizia
+"removido" deixando o agente no lugar. Na máquina de quem não tem o guard no PATH
+os mesmos testes passavam (suíte não hermética — visto primeiro no api-backend).
+
+Fix: `/bin/rm` absoluto nas duas limpezas (o probe é de macOS) e o log da flag só
+sai quando o arquivo sumiu. O shim de `rm` do teste reproduz o guard, e as células
+conferem que ele **não** foi usado.
+
+| Sabotagem | Resultado |
+|---|---|
+| `/bin/rm` de volta para `rm` (o shim vira o `rm` do PATH) | `test_recuperacao_zera_contador_e_limpa_a_flag` e `test_uninstall_tira_o_agente` **FAILED** |
+| `rm` removido do caminho de recuperação | `…_zera_contador_e_limpa_a_flag` **FAILED** ("a flag ficou aberta") |
+| `rm` removido do `uninstall` | `test_uninstall_tira_o_agente` **FAILED** ("o uninstall deixou o plist no lugar") |
+
 ## #797 / #915 — marca fora do `_gen_lock`
 
 O filho isolado grava o PCM cru (marcar no filho segurava o `_gen_lock` do pai

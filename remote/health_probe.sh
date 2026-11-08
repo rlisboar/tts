@@ -152,7 +152,14 @@ check() {
   if [ "$falhas_lan" = 0 ] && [ "$falhas_pub" = 0 ]; then
     if [ "$n" != 0 ]; then _log "recuperado (havia $n falhas)"; fi
     print -r -- 0 > "$CONTADOR"
-    [ -f "$FLAG" ] && { rm -f "$FLAG"; _log "flag de alerta limpa"; }
+    # `/bin/rm` ABSOLUTO (#992): com um `rm` quebrado ou embrulhado à frente no PATH
+    # (o guard do harness de agentes recusa `-f` e sai 0) a limpeza virava no-op
+    # silencioso e a flag ficava aberta mascarando o alerta seguinte. O probe é de
+    # macOS: /bin/rm é garantido. O log só sai quando o arquivo realmente sumiu.
+    if [ -f "$FLAG" ]; then
+      /bin/rm -f "$FLAG" && _log "flag de alerta limpa" \
+        || _log "AVISO: não consegui remover a flag $FLAG"
+    fi
     return 0
   fi
   n=$((n + 1))
@@ -207,7 +214,10 @@ EOF
     exit 0 ;;
   uninstall)
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-    rm -f "$PLIST"
+    # absoluto pelo mesmo motivo da limpeza da flag (#992): um `rm` de PATH que
+    # falhe calado deixaria o plist no lugar dizendo "removido".
+    /bin/rm -f "$PLIST" \
+      || { print -r -- "AVISO: não consegui remover $PLIST" >&2; exit 1; }
     print -r -- "probe removido (log e flag ficam em ~/Library/Logs)."
     exit 0 ;;
 esac
