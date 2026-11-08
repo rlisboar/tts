@@ -311,12 +311,14 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `869-ab-s1-cru-filtrado.py` | #869 | 2026-11-08 | """#869 item 3 (A/B isolado do S1, script) — S1 ISOLADO do PCM cru: mesmo SHA, mesmo áudio, só muda o que o |
 | `869-live-vad-cru.md` | #869 | 2026-11-06 | 869 — Live descarta turno com fala real (`motivo=vad` / "sem fala") |
 | `869-repro-cru.py` | #869 | 2026-11-06 | """#869 — reproduz o descarte `motivo=vad` do Live com áudio gravado. |
-| `875-bancada-afc3f42-PARCIAL.json` | #875 | — | "rotulo": "afc3f42", |
-| `875-bancada-afc3f42-PARCIAL.log` | #875 | — | (sem descrição) |
-| `875-hang-README.md` | #875 | — | 875 — hang do turno no Live (rodada final INCOMPLETA, build `afc3f42`) |
-| `875-hang-b50ec5a60b-relogio.jsonl` | #875 | — | (sem descrição) |
-| `875-hang-bffb1c9d09-relogio.jsonl` | #875 | — | (sem descrição) |
-| `875-hang-log.txt` | #875 | — | 15:20:23 [live] abre sess=d4930cc1e3 voz=4f6a75c20d retomado=False history=0 criadas=0 |
+| `875-bancada-afc3f42-PARCIAL.json` | #875 | 2026-11-08 | "rotulo": "afc3f42", |
+| `875-bancada-afc3f42-PARCIAL.log` | #875 | 2026-11-08 | (sem descrição) |
+| `875-bancada-e2bb4f7.json` | #875 | — | "rotulo": "e2bb4f7", |
+| `875-bancada-e2bb4f7.log` | #875 | — | (sem descrição) |
+| `875-hang-README.md` | #875 | 2026-11-08 | 875 — hang do turno no Live (rodada final INCOMPLETA, build `afc3f42`) |
+| `875-hang-b50ec5a60b-relogio.jsonl` | #875 | 2026-11-08 | (sem descrição) |
+| `875-hang-bffb1c9d09-relogio.jsonl` | #875 | 2026-11-08 | (sem descrição) |
+| `875-hang-log.txt` | #875 | 2026-11-08 | 15:20:23 [live] abre sess=d4930cc1e3 voz=4f6a75c20d retomado=False history=0 criadas=0 |
 | `876-stt-bench-carga.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench-livre.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench.py` | #876 | 2026-11-06 | """#876 — latência e WER do STT local do Live por modelo, com e sem TTS em paralelo. |
@@ -343,6 +345,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `chave-admin-campos-livres.png` | — | 2026-09-24 | (imagem) |
 | `chave-de-uso-campos-travados.png` | — | 2026-09-24 | (imagem) |
 | `deploy-head-afc3f42.txt` | — | — | == início 2026-11-08T17:28:12-03:00 — log /tmp/deploy-head-20261108-172812.log |
+| `deploy-head-e2bb4f7.txt` | — | — | == início 2026-11-08T19:53:56-03:00 — log /tmp/deploy-head-20261108-195356.log |
 | `depois-chave-sessao.png` | — | 2026-09-24 | (imagem) |
 | `depois-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `dsh-acp-3pontas-persona.txt` | — | 2026-09-29 | == busca de turno LENTO com trace (prompt persona) == |
