@@ -162,8 +162,91 @@ def _patched(self, ligado, nivel_dbfs=None, **kw):
 live_turns.TurnEngine.set_speaking = _patched
 uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["LIVE_UI_PORT"]))
 '''
+#: servidor da rodada (para o trap de saída) e o pidfile do GRUPO dele (#964)
+_SERVIDOR = None
+_PIDFILE = None
+
+
+def mata_servidor(servidor):
+    """Mata o GRUPO do servidor — `terminate()` sozinho deixa filho para trás."""
+    if servidor is None:
+        return
+    try:
+        os.killpg(os.getpgid(servidor.pid), signal.SIGTERM)
+    except Exception:                                         # noqa: BLE001 — já morreu
+        try:
+            servidor.terminate()
+        except Exception:                                     # noqa: BLE001
+            pass
+    try:
+        servidor.wait(timeout=15)
+    except Exception:                                         # noqa: BLE001
+        try:
+            os.killpg(os.getpgid(servidor.pid), signal.SIGKILL)
+        except Exception:                                     # noqa: BLE001
+            pass
+    if _PIDFILE is not None:
+        try:
+            _PIDFILE.unlink()
+        except Exception:                                     # noqa: BLE001
+            pass
+
+
+def mata_servidores_antigos():
+    """SIGTERM nos grupos de rodadas ANTERIORES que ficaram para trás (#688/#964).
+
+    O harness escolhe porta livre, então a rodada nova não sabe a porta da velha:
+    o pidfile do grupo (`$$` no nome) é o que sobra. Sem isto, um SIGTERM no meio
+    deixava uvicorn órfão segurando o modelo carregado."""
+    mortos = 0
+    for pidfile in pathlib.Path("/tmp").glob("live_ui_servidor_*.pgid"):
+        # o nome carrega o PID do HARNESS dono do pidfile (`_{os.getpid()}.pgid`).
+        # Harness VIVO é rodada concorrente (outro agente/worktree): não é órfão —
+        # sem este filtro, quem começa derrubava o servidor de quem já estava
+        # rodando. Órfão de verdade tem o harness morto e o servidor de pé.
+        try:
+            dono = int(pidfile.stem.rsplit("_", 1)[-1])
+            os.kill(dono, 0)
+            if dono != os.getpid():
+                continue
+        except (ValueError, OSError):
+            pass
+        try:
+            pgid = int(pidfile.read_text().strip())
+        except Exception:                                     # noqa: BLE001
+            pidfile.unlink(missing_ok=True)
+            continue
+        try:
+            os.killpg(pgid, signal.SIGTERM)   # sobra de rodada morta: avisa e segue
+            print(f"  (matei servidor órfão da rodada anterior, grupo {pgid})")
+            mortos += 1
+        except OSError:
+            pass
+        pidfile.unlink(missing_ok=True)
+    return mortos
+
+
+def instala_traps():
+    """SIGINT/SIGTERM/SIGHUP e saída normal passam TODOS por `mata_servidor`."""
+    def _sai(signum, _frame):
+        mata_servidor(_SERVIDOR)
+        raise SystemExit(128 + signum)
+
+    for sinal in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sinal, _sai)
+
+
+# Antes de subir: sobra de rodada morta não pode ficar segurando memória/porta.
+mata_servidores_antigos()
 proc = subprocess.Popen([str(RAIZ / ".venv-mlx" / "bin" / "python"), "-c", _launcher],
                         cwd=str(RAIZ), env=env, stdout=log.open("w"), stderr=subprocess.STDOUT, start_new_session=True)
+_SERVIDOR = proc
+_PIDFILE = pathlib.Path("/tmp") / f"live_ui_servidor_{porta}_{os.getpid()}.pgid"
+try:
+    _PIDFILE.write_text(str(os.getpgid(proc.pid)))
+except Exception:                                             # noqa: BLE001
+    _PIDFILE = None
+instala_traps()
 base = f"http://127.0.0.1:{porta}"
 SONDAGEM = None      # (provedor, instância) medidos com o servidor VIVO
 
@@ -748,16 +831,8 @@ finally:
     # Mata o GRUPO inteiro, não só o líder: o servidor sobe com `start_new_session`
     # (grupo próprio) e o uvicorn tem filhos — sem isso sobra servidor de teste vivo
     # segurando porta (e o modelo carregado), o que atrapalha rodadas seguintes.
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except Exception:
-        try: proc.terminate()
-        except Exception: pass
-    try:
-        proc.wait(timeout=10)
-    except Exception:
-        try: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except Exception: pass
+    # O mesmo caminho roda no trap de SIGINT/SIGTERM/SIGHUP (#964).
+    mata_servidor(_SERVIDOR)
 
 print()
 if falhas:

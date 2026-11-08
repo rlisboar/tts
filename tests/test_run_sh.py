@@ -663,9 +663,85 @@ def test_sigint_no_harness_nao_deixa_servidor(tmp_path):
             pidfile.unlink(missing_ok=True)
 
 
+def test_sigint_no_harness_da_ui_nao_deixa_servidor():
+    """O mesmo SIGTERM do `live_ws` no harness da UI não pode deixar uvicorn (#964).
+
+    O `live_ui.sh` limpava só no `finally` do python, que não roda em SIGTERM: um
+    `timeout` matava o script e o servidor ficava órfão com o modelo carregado. O
+    sinal vai para o GRUPO do harness (bash + python) — mandar só ao bash deixaria
+    o python vivo e o teste passaria mesmo SEM trap. Com o handler, o python morre
+    e leva o grupo do servidor junto.
+
+    A varredura da largada também é exercida: uma sobra de rodada MORTA (dono
+    inexistente) plantada antes tem de ser morta pelo harness novo."""
+    import signal as _signal
+
+    # sobra de rodada morta: pidfile com dono inexistente apontando um `sleep`
+    orfao = subprocess.Popen(["sleep", "120"], start_new_session=True)
+    pidfile_orfao = Path("/tmp") / "live_ui_servidor_1_999999.pgid"
+    pidfile_orfao.write_text(str(os.getpgid(orfao.pid)))
+
+    antes_pidfiles = set(Path("/tmp").glob("live_ui_servidor_*.pgid")) - {pidfile_orfao}
+    # `TTS_SERIAL=0`: a célula só quer o trap; esperar a trava de outra suíte
+    # estouraria a janela daqui (mesmo motivo da célula irmã do `live_ws`).
+    proc = subprocess.Popen([str(AQUI / "live_ui.sh")], cwd=str(AQUI.parent),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                            start_new_session=True,
+                            env={**os.environ, "TTS_SERIAL": "0"})
+    pidfile = None
+    try:
+        # pidfile pelo PID DO HARNESS que subimos (`_{pid}.pgid`), não pelo mais
+        # recente de /tmp: com outra rodada viva ao lado, o "mais novo" é do outro
+        for _ in range(240):                  # até 60 s para o servidor subir
+            achados = list(set(Path("/tmp").glob("live_ui_servidor_*.pgid")) - antes_pidfiles
+                           - {pidfile_orfao})
+            if achados:
+                pidfile = achados[0]
+                break
+            assert proc.poll() is None, "o harness saiu antes de subir o servidor"
+            time.sleep(0.25)
+        assert pidfile is not None, "o harness não registrou o grupo do servidor"
+        # a varredura da largada levou a sobra junto (pidfile e processo)
+        for _ in range(120):
+            try:
+                os.killpg(os.getpgid(orfao.pid), 0)
+            except OSError:
+                break
+            time.sleep(0.25)
+        else:
+            assert False, "o harness não varreu o servidor órfão da largada"
+        assert not pidfile_orfao.exists(), "o pidfile do órfão ficou para trás"
+        pgid = int(pidfile.read_text().strip())
+        os.killpg(os.getpgid(proc.pid), _signal.SIGTERM)
+        proc.wait(timeout=90)
+        for _ in range(120):
+            try:
+                os.killpg(pgid, 0)
+            except OSError:
+                break
+            time.sleep(0.25)
+        else:
+            assert False, f"o servidor do harness sobreviveu ao SIGTERM (grupo {pgid})"
+        assert not pidfile.exists(), "o pidfile do grupo ficou para trás"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
+        if pidfile is not None and pidfile.exists():
+            try:
+                os.killpg(int(pidfile.read_text().strip()), _signal.SIGKILL)
+            except Exception:                 # noqa: BLE001
+                pass
+            pidfile.unlink(missing_ok=True)
+        try:
+            os.killpg(os.getpgid(orfao.pid), _signal.SIGKILL)
+        except OSError:
+            pass
+        pidfile_orfao.unlink(missing_ok=True)
+
+
 def test_mata_orfaos_do_harness_sob_demanda(tmp_path):
     """Um SIGKILL no harness não roda trap: a sobra tem de morrer sob demanda (#688).
-
     O harness deixa o pidfile do grupo em `/tmp`; sem um modo avulso, um órfão
     sobrevive até alguém rodar a suíte de novo (40 h medidos)."""
     proc = subprocess.Popen(["sleep", "120"], start_new_session=True)
