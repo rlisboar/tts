@@ -341,6 +341,8 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `984-barge-curto-dono.md` | #984 | 2026-11-08 | 984 — barge curto do dono sobre o eco: pontuar só a fala nova leva o aceite de 0,4 s de 6 % a 60 % e baixa o f |
 | `984-barge-curto-dono.py` | #984 | 2026-11-08 | """#984 — o portão "só a minha voz" no BARGE CURTO: aceite do dono × falso aceite de |
 | `984-eco-sozinho.py` | #984 | 2026-11-08 | """#984 — o eco da resposta SOZINHO no portão "só a minha voz" (perfil do E2E).""" |
+| `963-so-minha-voz-bloco.png` | #963 | 2026-11-08 | (imagem) |
+| `963-so-minha-voz-chips.png` | #963 | 2026-11-08 | (imagem) |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |
