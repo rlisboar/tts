@@ -10262,3 +10262,247 @@ def test_chat_text_fala_no_confirmado(client, auth, monkeypatch):
     assert d["text"].startswith("## Aviso")          # texto aprovado: intacto
     assert d["text_fala"] == "Aviso. Amanhã tem reunião."
     assert d["reply_fala"] == d["text_fala"]
+
+
+# --- biometria nas rotas de STT (#975) ---------------------------------------
+# Estado sintético (#728): o gate e o upload são stubs. Nada de perfil do dono.
+
+def _upload_falso(monkeypatch, tmp_path):
+    """`_save_audio_upload` que grava um arquivo real para o unlink ser visível."""
+    criados = []
+
+    def _grava(upload, prefix=".stt"):
+        destino = tmp_path / f"stt-{len(criados)}.wav"
+        destino.write_bytes(b"RIFF")
+        criados.append(destino)
+        return destino
+
+    monkeypatch.setattr(app, "_save_audio_upload", _grava)
+    return criados
+
+
+def _post_arquivo(client, auth, rota, campo, dados=None):
+    return client.post(rota, headers=auth, data=dados or {},
+                       files={campo: ("a.wav", b"x", "audio/wav")})
+
+
+def _proibe_motor(*_a, **_k):
+    raise AssertionError("motor de STT/tradução/separação rodou com voz rejeitada")
+
+
+def test_v1_transcriptions_enforce_barra_todos_os_formatos(client, auth, monkeypatch,
+                                                           tmp_path):
+    """Intruso: 200 vazio no formato pedido, sem transcrever, e o temp some."""
+    monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
+    criados = _upload_falso(monkeypatch, tmp_path)
+    motivo = "voz não autorizada (melhor: ninguém 0.10 < 0.60)"
+    monkeypatch.setattr(app, "_speaker_gate_ok",
+                        lambda _p: {"rejected": True, "reason": motivo})
+    monkeypatch.setattr(app, "_transcribe", _proibe_motor)
+    monkeypatch.setattr(app, "_translate", _proibe_motor)
+    monkeypatch.setattr(app, "_aplica_speaker_alvo", _proibe_motor)
+    for fmt in ("json", "verbose_json", "text", "srt", "vtt"):
+        r = _post_arquivo(client, auth, "/v1/audio/transcriptions", "file",
+                          {"response_format": fmt})
+        assert r.status_code == 200, (fmt, r.text)
+        assert r.headers.get("x-tts-speaker-rejected") == "1", fmt
+        razao = r.headers["x-tts-speaker-reason"]
+        assert razao == app._cabecalho_latin1(motivo), fmt
+        razao.encode("ascii")
+        if fmt == "json":
+            assert r.json() == {"text": ""}
+        elif fmt == "verbose_json":
+            assert r.json() == {"task": "transcribe", "language": "", "duration": 0.0,
+                                "text": "", "segments": [], "rejected": True,
+                                "reason": motivo}
+        elif fmt == "text":
+            assert r.text == "" and r.headers["content-type"].startswith("text/plain")
+        elif fmt == "srt":
+            assert r.text == ""
+            assert r.headers["content-type"].startswith("application/x-subrip")
+        else:
+            assert r.text == "WEBVTT\n\n"
+            assert r.headers["content-type"].startswith("text/vtt")
+    assert criados and all(not p.exists() for p in criados)
+
+
+def test_v1_transcriptions_enforce_autorizado_transcreve(client, auth, monkeypatch,
+                                                         tmp_path):
+    monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
+    _upload_falso(monkeypatch, tmp_path)
+    monkeypatch.setattr(app, "_speaker_gate_ok", lambda _p: {})
+    vistos = []
+
+    def _ok(p, language=None, allow_remote=True):
+        vistos.append(language)
+        return {"text": "olá mundo", "language": "pt", "segments": []}
+
+    monkeypatch.setattr(app, "_transcribe", _ok)
+    r = _post_arquivo(client, auth, "/v1/audio/transcriptions", "file")
+    assert r.status_code == 200 and r.json() == {"text": "olá mundo"}
+    assert vistos == ["auto"]
+    assert "x-tts-speaker-rejected" not in r.headers
+
+
+def test_v1_anticlone_travessao_cabe_em_latin1(client, auth, monkeypatch, tmp_path):
+    """O motivo do anti-clone traz '—'. O header não pode estourar o ASGI."""
+    monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
+    monkeypatch.setitem(app._settings, "speaker_anticlone", True)
+    _upload_falso(monkeypatch, tmp_path)
+    perfis = {"ana": {"vecs": [[1.0, 0.0]], "modelo": app.SPEAKER_MODELO_LEGADO}}
+    monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
+    monkeypatch.setattr(app, "_speaker_pontua",
+                        lambda _wav, _perfis: ("ana", 0.99, True, "cru"))
+    monkeypatch.setattr(app, "_speaker_anticlone",
+                        lambda _wav: {"anticlone": "marcado", "anticlone_prob": 0.91})
+    vistos = []
+    marca = types.ModuleType("marca_dagua")
+    marca.prewarm = lambda: vistos.append("prewarm")
+    monkeypatch.setitem(sys.modules, "marca_dagua", marca)
+    monkeypatch.setattr(app, "_transcribe", _proibe_motor)
+    monkeypatch.setattr(app, "_aplica_speaker_alvo", _proibe_motor)
+    r = _post_arquivo(client, auth, "/v1/audio/transcriptions", "file",
+                      {"response_format": "json"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"text": ""}
+    assert vistos == ["prewarm"]
+    razao = r.headers["x-tts-speaker-reason"]
+    razao.encode("ascii")
+    assert "—" not in razao and "marca" in razao and "0.91" in razao
+    assert " - " in razao
+    assert r.headers["x-tts-speaker-rejected"] == "1"
+
+
+def test_v1_label_etiqueta_em_todos_os_formatos(client, auth, monkeypatch, tmp_path):
+    monkeypatch.setitem(app._settings, "speaker_gate", "label")
+    _upload_falso(monkeypatch, tmp_path)
+    gate = {"speaker": "Ana — casa", "speaker_sim": 0.812,
+            "speaker_escore_modo": "asnorm"}
+    monkeypatch.setattr(app, "_speaker_gate_ok", lambda _p: gate)
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True: {
+        "text": "olá mundo", "language": "pt",
+        "segments": [{"start": 0.0, "end": 1.25, "text": "olá mundo"}]})
+    for fmt in ("json", "verbose_json", "text", "srt", "vtt"):
+        r = _post_arquivo(client, auth, "/v1/audio/transcriptions", "file",
+                          {"response_format": fmt})
+        assert r.status_code == 200, (fmt, r.text)
+        nome = r.headers["x-tts-speaker"]
+        nome.encode("latin-1")
+        assert nome == "Ana - casa", fmt
+        assert "—" not in nome
+        if fmt == "verbose_json":
+            corpo = r.json()
+            assert corpo["speaker"] == "Ana — casa"
+            assert corpo["speaker_sim"] == 0.812
+            assert corpo["speaker_escore_modo"] == "asnorm"
+            assert corpo["text"] == "olá mundo"
+        elif fmt == "json":
+            assert r.json() == {"text": "olá mundo"}
+
+
+def test_v1_translations_gate_e_speaker_alvo(client, auth, monkeypatch, tmp_path):
+    monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
+    criados = _upload_falso(monkeypatch, tmp_path)
+    motivo = "voz não autorizada"
+    monkeypatch.setattr(app, "_speaker_gate_ok",
+                        lambda _p: {"rejected": True, "reason": motivo})
+    monkeypatch.setattr(app, "_transcribe", _proibe_motor)
+    monkeypatch.setattr(app, "_translate", _proibe_motor)
+    monkeypatch.setattr(app, "_aplica_speaker_alvo", _proibe_motor)
+    r = _post_arquivo(client, auth, "/v1/audio/translations", "file",
+                      {"response_format": "verbose_json", "speaker_alvo": "eu"})
+    assert r.status_code == 200, r.text
+    assert r.json()["task"] == "translate" and r.json()["rejected"] is True
+    assert r.json()["reason"] == motivo and r.json()["text"] == ""
+    assert r.headers["x-tts-speaker-rejected"] == "1"
+    assert r.headers["x-tts-speaker-reason"].encode("ascii")
+    assert r.headers["x-tts-speaker-reason"] == app._cabecalho_latin1(motivo)
+    assert not criados[-1].exists()
+
+    vistos = {}
+
+    def _aplica(tmp, alvo):
+        vistos["alvo"] = alvo
+        return tmp, {}
+
+    monkeypatch.setattr(app, "_speaker_gate_ok", lambda _p: {})
+    monkeypatch.setattr(app, "_aplica_speaker_alvo", _aplica)
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True: {
+        "text": "hola mundo", "language": "es", "segments": []})
+    monkeypatch.setattr(app, "_translate", lambda text, lang, emotion=None: "hello world")
+    r = _post_arquivo(client, auth, "/v1/audio/translations", "file",
+                      {"speaker_alvo": "eu"})
+    assert r.status_code == 200 and r.json() == {"text": "hello world"}
+    assert vistos["alvo"] == "eu"
+
+
+def test_v1_off_transcreve_sem_header_de_gate(client, auth, monkeypatch, tmp_path):
+    monkeypatch.setitem(app._settings, "speaker_gate", "off")
+    _upload_falso(monkeypatch, tmp_path)
+    # off devolve {} sem ler perfil: a função real é que tem de correr
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True: {
+        "text": "olá mundo", "language": "pt", "segments": []})
+    r = _post_arquivo(client, auth, "/v1/audio/transcriptions", "file")
+    assert r.status_code == 200 and r.json() == {"text": "olá mundo"}
+    assert "x-tts-speaker-rejected" not in r.headers
+    assert "x-tts-speaker" not in r.headers
+
+
+def test_modify_speech_enforce_rejeita_sem_transcrever(client, auth, monkeypatch, tmp_path):
+    criados = _upload_falso(monkeypatch, tmp_path)
+    monkeypatch.setattr(app, "_speaker_gate_ok",
+                        lambda _p: {"rejected": True, "reason": "voz não autorizada"})
+    monkeypatch.setattr(app, "_transcribe", _proibe_motor)
+    r = _post_arquivo(client, auth, "/api/modify-speech", "audio",
+                      {"voice_id": "vd-narrador"})
+    assert r.status_code == 200, r.text
+    assert r.json()["rejected"] is True and r.json()["source_text"] == ""
+    assert criados and not criados[-1].exists()
+
+
+def test_modify_speech_label_devolve_speaker(client, auth, monkeypatch, tmp_path):
+    _upload_falso(monkeypatch, tmp_path)
+    monkeypatch.setattr(app, "_speaker_gate_ok", lambda _p: {
+        "speaker": "eu", "speaker_sim": 0.9, "speaker_escore_modo": "asnorm"})
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True: {
+        "text": "olá mundo", "language": "pt", "segments": []})
+    monkeypatch.setattr(app, "_run_tts_job", lambda *a, **k: None)
+    r = _post_arquivo(client, auth, "/api/modify-speech", "audio",
+                      {"voice_id": "vd-narrador"})
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert corpo["speaker"] == "eu" and corpo["speaker_escore_modo"] == "asnorm"
+    assert corpo["translation"] == "olá mundo" and corpo["job_id"]
+
+
+def test_stt_partial_enforce_rejeita_sem_transcrever(client, auth, monkeypatch, tmp_path):
+    criados = _upload_falso(monkeypatch, tmp_path)
+    monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
+    monkeypatch.setattr(app, "_speaker_gate_ok",
+                        lambda _p: {"rejected": True, "reason": "voz não autorizada"})
+    monkeypatch.setattr(app, "_transcribe", _proibe_motor)
+    r = _post_arquivo(client, auth, "/api/stt-partial", "audio")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"text": "", "rejected": True, "reason": "voz não autorizada"}
+    assert criados and not criados[-1].exists()
+
+
+def test_stt_partial_enforce_autorizado_transcreve(client, auth, monkeypatch, tmp_path):
+    _upload_falso(monkeypatch, tmp_path)
+    monkeypatch.setitem(app._settings, "speaker_gate", "enforce")
+    monkeypatch.setattr(app, "_speaker_gate_ok", lambda _p: {})
+    monkeypatch.setattr(app, "_transcribe", lambda caminho, language="auto": {
+        "text": "olá mundo", "language": "pt"})
+    r = _post_arquivo(client, auth, "/api/stt-partial", "audio")
+    assert r.status_code == 200
+    assert r.json() == {"text": "olá mundo", "language": "pt"}
+
+
+def test_stt_partial_off_nao_consulta_o_gate(client, auth, monkeypatch, tmp_path):
+    _upload_falso(monkeypatch, tmp_path)
+    monkeypatch.setitem(app._settings, "speaker_gate", "off")
+    monkeypatch.setattr(app, "_speaker_gate_ok", _proibe_motor)
+    monkeypatch.setattr(app, "_transcribe", lambda caminho, language="auto": {
+        "text": "olá mundo", "language": "pt"})
+    r = _post_arquivo(client, auth, "/api/stt-partial", "audio")
+    assert r.status_code == 200 and r.json()["text"] == "olá mundo"

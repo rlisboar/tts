@@ -415,7 +415,7 @@ curl -X POST -H "X-API-Key: $KEY" -F "audio=@fala.webm" -F "speaker_alvo=eu" \
 | Onde | Como |
 |---|---|
 | `/api/transcribe`, `/api/translate-speech`, `/api/modify-speech` | campo de formulário `speaker_alvo` |
-| `/v1/audio/transcriptions` | campo de formulário `speaker_alvo` (extensão; sem ele o contrato OpenAI é o de sempre) |
+| `/v1/audio/transcriptions`, `/v1/audio/translations` | campo de formulário `speaker_alvo` (extensão; sem ele o contrato OpenAI é o de sempre) |
 
 Sem o parâmetro **nada muda** — nem campo na resposta. Com ele:
 
@@ -483,7 +483,23 @@ memória* (ou `POST /api/settings`):
 | `enforce` | só voz de perfil com escore acima do limiar; o resto volta rejeitado |
 | `label` | transcreve todos e etiqueta o locutor (`speaker`, `speaker_sim`) |
 
-O gate vale para `/api/transcribe` e para a Conversa (ditado). Rejeitado sai como
+O gate vale para `/api/transcribe`, `/api/translate-speech`, `/api/modify-speech`,
+`/api/stt-partial` (só no `enforce`) e para a Conversa (ditado). Nas rotas OpenAI
+`POST /v1/audio/transcriptions` e `POST /v1/audio/translations` o `enforce`
+também filtra: a voz rejeitada não é transcrita e a resposta continua `200` com
+texto vazio no `response_format` pedido (`json` → `{"text":""}`, `verbose_json`
+traz `rejected` e `reason`, `text` e `srt` vazios, `vtt` só `WEBVTT`). Os
+headers `X-TTS-Speaker-Rejected: 1` e `X-TTS-Speaker-Reason` saem em todos os
+formatos, em ASCII (o travessão `—` do motivo anti-clone vira `-`; o que não
+cabe vira `?` — um byte latin-1 acima de 127 quebra o envio). O `reason` do
+JSON mantém o texto original. Em `label`
+o header `X-TTS-Speaker` sai em todo formato e o `verbose_json` ganha `speaker`,
+`speaker_sim` e, quando houver, `speaker_escore_modo`. `/api/modify-speech` usa
+o mesmo portão do tradutor e devolve `speaker` / `speaker_escore_modo` quando o
+`label` etiquetou. `/api/stt-partial` em `enforce`, com a voz rejeitada, responde
+`{"text": "", "rejected": true, "reason": "…"}` sem chamar o Whisper.
+
+Rejeitado no `/api/transcribe` sai como
 `200` com `{"rejected": true, "reason": "voz não autorizada (melhor: … 0,48 <
 0,60)", "text": ""}` — para o cliente é o mesmo caminho de "ruído, siga
 ouvindo", nada de erro de transporte. Sem perfil cadastrado o gate fica inerte;

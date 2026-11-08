@@ -10315,11 +10315,19 @@ def stt_partial(audio: UploadFile = None, source_lang: str = Form("auto")):
     palavras na tela enquanto o usuário ainda fala. Sem filtro anti-ruído: é só
     prévia ao vivo, a versão final vem do /api/translate-speech.
 
-    Mesmo teto do STT normal: 30 min (`TETO_STT_S`), acima disso 413."""
+    Mesmo teto do STT normal: 30 min (`TETO_STT_S`), acima disso 413.
+
+    Com `speaker_gate == enforce` a prévia usa o mesmo portão: voz rejeitada
+    volta vazia (`rejected`) e o Whisper não roda. O temporário sai do disco
+    nos dois caminhos."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
     tmp = _save_audio_upload(audio, ".pstt")
     try:
+        if (_settings.get("speaker_gate") or "off").lower() == "enforce":
+            gate = _speaker_gate_ok(tmp)
+            if gate.get("rejected"):
+                return {"text": "", "rejected": True, "reason": gate["reason"]}
         r = _transcribe(tmp, language=(source_lang or "auto").lower())
     except Exception:  # noqa: BLE001 — prévia: nunca derruba a UI
         return {"text": ""}
@@ -11870,19 +11878,24 @@ def modify_speech(audio: UploadFile = None, voice_id: str = Form(""),
     _jobs_capacity_check()      # antes do STT: recusa cedo, não em segundos
     p = _preparar_fala_para_voz(audio, voice_id, source_lang, emotion_mode, instruct,
                                 "Voice design vazio — descreva a voz",
-                                speaker_alvo=speaker_alvo)
+                                com_gate=True, speaker_alvo=speaker_alvo)
     if "resposta" in p:
         return p["resposta"]
     src_text = p["src_text"]
     out_text = src_text                    # SEM tradução: fala o que foi dito
     lang = p["lang"]
+    gate = p["gate"]
 
     job_id = _jobs_admit({"text": out_text[:200]})
     threading.Thread(target=_run_tts_job, args=(job_id, out_text, p["vid"], p["vpath"],
                                                 lang, p["omni"]), daemon=True).start()
     return {"job_id": job_id, "source_text": src_text, "source_lang": p["src_lang"],
             "translation": out_text, "target_lang": lang,
-            "emotion": p["emo_show"], "emotion_error": p["emo_err"], **p["alvo"]}
+            "emotion": p["emo_show"], "emotion_error": p["emo_err"],
+            **({"speaker": gate["speaker"]} if gate.get("speaker") else {}),
+            **({"speaker_escore_modo": gate["speaker_escore_modo"]}
+               if gate.get("speaker_escore_modo") else {}),
+            **p["alvo"]}
 
 
 # ---------------------------------------------------------------------------
@@ -15142,18 +15155,82 @@ def _segs_to_vtt(segs) -> str:
     return "WEBVTT\n\n" + body
 
 
+def _cabecalho_latin1(valor) -> str:
+    """Valor de header HTTP em ASCII.
+
+    O Starlette codifica header em latin-1 e levanta UnicodeEncodeError no
+    travessão (—). Este TestClient, na volta, decodifica o byte como UTF-8: um
+    'ã' (0xE3 em latin-1) estoura no meio do envio. ASCII cabe nos dois. O
+    travessão vira hífen antes do replace, para não sair como '?'.
+    """
+    texto = str("" if valor is None else valor)
+    texto = texto.replace("—", "-").replace("–", "-")
+    texto = texto.replace("\r", " ").replace("\n", " ")
+    return texto.encode("ascii", errors="replace").decode("ascii")
+
+
+def _headers_speaker_stt(headers, gate: dict) -> None:
+    """Cabeçalhos do gate nas rotas OpenAI de STT. Gate vazio não acrescenta nada."""
+    if not gate:
+        return
+    if gate.get("rejected"):
+        headers["X-TTS-Speaker-Rejected"] = "1"
+        headers["X-TTS-Speaker-Reason"] = _cabecalho_latin1(gate.get("reason") or "")
+    if gate.get("speaker"):
+        headers["X-TTS-Speaker"] = _cabecalho_latin1(gate["speaker"])
+
+
+def _openai_stt_rejeitado(response_format, translate, gate, response):
+    """200 com texto vazio no formato pedido. Não transcreve nem traduz."""
+    rf = (response_format or "json").lower()
+    if rf == "text":
+        resp = Response("", media_type="text/plain; charset=utf-8")
+        _headers_speaker_stt(resp.headers, gate)
+        return resp
+    if rf == "srt":
+        resp = Response("", media_type="application/x-subrip; charset=utf-8")
+        _headers_speaker_stt(resp.headers, gate)
+        return resp
+    if rf == "vtt":
+        resp = Response("WEBVTT\n\n", media_type="text/vtt; charset=utf-8")
+        _headers_speaker_stt(resp.headers, gate)
+        return resp
+    if response is not None:
+        _headers_speaker_stt(response.headers, gate)
+    if rf == "verbose_json":
+        return {"task": "translate" if translate else "transcribe", "language": "",
+                "duration": 0.0, "text": "", "segments": [],
+                "rejected": True, "reason": gate.get("reason") or ""}
+    return {"text": ""}
+
+
 def _openai_stt(file, language, response_format, translate, response=None,
                 speaker_alvo=""):
     """STT OpenAI-compatível: áudio -> texto (+ segmentos). translate=True traduz p/ inglês.
 
     `response` é a resposta injetada pela rota: o aviso de fallback do remoto vai no
     HEADER (vale para json/verbose_json/text/srt/vtt; um campo no corpo não cobriria
-    os formatos de texto)."""
+    os formatos de texto).
+
+    O gate corre ANTES de separar, transcrever ou traduzir. Em `enforce` a voz
+    rejeitada volta 200 vazio no `response_format` pedido — cliente de ditado não
+    vê erro de transporte. Headers `X-TTS-Speaker-*` saem em latin-1.
+    """
     if file is None:
         raise HTTPException(400, "Campo 'file' obrigatório")
     tmp = _save_audio_upload(file)
+    if _settings.get("speaker_anticlone"):
+        try:                    # 1ª detecção custa 4,6 s: aquece fora do relógio
+            import marca_dagua
+
+            marca_dagua.prewarm()
+        except Exception:       # noqa: BLE001 — prewarm é otimização
+            pass
     extra_alvo: dict = {}
     try:
+        gate = _speaker_gate_ok(tmp)
+        if gate.get("rejected"):
+            return _openai_stt_rejeitado(response_format, translate, gate, response)
         tmp_stt, extra_alvo = _aplica_speaker_alvo(tmp, speaker_alvo)
         try:
             r = _transcribe(tmp_stt, language=(language or "auto").lower())
@@ -15168,27 +15245,37 @@ def _openai_stt(file, language, response_format, translate, response=None,
              "text": (s.get("text") or "").strip()} for s in (r.get("segments") or [])]
     if translate and text:                       # /translations -> inglês (agrega; srt/vtt ficam no original)
         text = _translate(text, "en")
-    if response is not None:
-        _aviso_remoto_headers(response.headers, r)
     rf = (response_format or "json").lower()
     if rf == "text":
         resp = Response(text + "\n", media_type="text/plain; charset=utf-8")
         _aviso_remoto_headers(resp.headers, r)
+        _headers_speaker_stt(resp.headers, gate)
         return resp
     if rf == "srt":
         resp = Response(_segs_to_srt(segs), media_type="application/x-subrip; charset=utf-8")
         _aviso_remoto_headers(resp.headers, r)
+        _headers_speaker_stt(resp.headers, gate)
         return resp
     if rf == "vtt":
         resp = Response(_segs_to_vtt(segs), media_type="text/vtt; charset=utf-8")
         _aviso_remoto_headers(resp.headers, r)
+        _headers_speaker_stt(resp.headers, gate)
         return resp
+    if response is not None:
+        _aviso_remoto_headers(response.headers, r)
+        _headers_speaker_stt(response.headers, gate)
     if rf == "verbose_json":
         dur = max((s["end"] for s in segs), default=0.0)
-        return {"task": "translate" if translate else "transcribe", "language": lang,
-                "duration": round(dur, 3), "text": text,
-                "segments": [{"id": i, "start": s["start"], "end": s["end"], "text": s["text"]}
-                             for i, s in enumerate(segs)], **extra_alvo}
+        corpo = {"task": "translate" if translate else "transcribe", "language": lang,
+                 "duration": round(dur, 3), "text": text,
+                 "segments": [{"id": i, "start": s["start"], "end": s["end"], "text": s["text"]}
+                              for i, s in enumerate(segs)], **extra_alvo}
+        if gate.get("speaker"):
+            corpo["speaker"] = gate["speaker"]
+            corpo["speaker_sim"] = gate.get("speaker_sim")
+            if gate.get("speaker_escore_modo"):
+                corpo["speaker_escore_modo"] = gate["speaker_escore_modo"]
+        return corpo
     return {"text": text}
 
 
@@ -15208,9 +15295,14 @@ def openai_transcriptions(response: Response, file: UploadFile = File(...),
 @app.post("/v1/audio/translations")
 def openai_translations(response: Response, file: UploadFile = File(...),
                         model: str = Form("whisper-1"), prompt: str = Form(None),
-                        response_format: str = Form("json"), temperature: float = Form(0.0)):
-    """STT + tradução p/ inglês (compatível com OpenAI). response_format igual ao de transcriptions."""
-    return _openai_stt(file, None, response_format, translate=True, response=response)
+                        response_format: str = Form("json"), temperature: float = Form(0.0),
+                        speaker_alvo: str = Form("")):
+    """STT + tradução p/ inglês (compatível com OpenAI). response_format igual ao de transcriptions.
+
+    `speaker_alvo` é a mesma extensão de `/v1/audio/transcriptions`: sem o campo o
+    contrato OpenAI não muda."""
+    return _openai_stt(file, None, response_format, translate=True, response=response,
+                       speaker_alvo=speaker_alvo)
 
 
 @app.post("/v1/audio/speech")
