@@ -293,8 +293,6 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `521-bakeoff-identidade.md` | #521 | 2026-10-28 | Bake-off de identidade de voz (#521) — veredito |
 | `522-anticlone.md` | #522 | 2026-10-31 | Anti-clone (#522) — marca d'água medida; AASIST reprovado como portão solo |
 | `523-limitedor-onnx.md` | #523 | 2026-10-28 | Limpar amostra pelo DFN3 em ONNX (#523) — medição refeita |
-| `528-etapas-limpeza.png` | #528 | — | (imagem) |
-| `528-filtros-identidade.png` | #528 | — | (imagem) |
 | `532-bakeoff-locutor-alvo.md` | #532 | 2026-10-28 | Locutor-alvo (#532) — bake-off: seleção por janela × separação |
 | `534-separacao-alvo.txt` | #534 | 2026-10-28 | 534 — rodada REAL do filtro `speaker_alvo` (VOZ-I6), 2026-10-28 |
 | `563-dsh-fallback-prewarm.txt` | #563 | 2026-10-28 | 563 — `live_dsh_fallback.sh`: espera o pre-warm antes de mandar áudio |
@@ -315,8 +313,9 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `876-stt-bench-livre.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench.py` | #876 | 2026-11-06 | """#876 — latência e WER do STT local do Live por modelo, com e sem TTS em paralelo. |
 | `876-stt-live.md` | #876 | 2026-11-06 | 876 — STT do Live: modelo e beam (bancada local, antes do Mini) |
-| `942-bancada-mini-c3f4a78.json` | #942 | — | "rotulo": "c3f4a78-mini", |
-| `942-bancada-mini-c3f4a78.md` | #942 | — | 942 — bancada no mini sobre c3f4a78 (4º deploy), janela 16:16–16:50 BRT |
+| `942-bancada-mini-c3f4a78.json` | #942 | 2026-11-07 | "rotulo": "c3f4a78-mini", |
+| `942-bancada-mini-c3f4a78.md` | #942 | 2026-11-07 | 942 — bancada no mini sobre c3f4a78 (4º deploy), janela 16:16–16:50 BRT |
+| `980-e2e-biometria.py` | #980 | 2026-11-08 | !/usr/bin/env python3 |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |

@@ -6,12 +6,21 @@ Fase 2: ECAPA (dir real) → perfil legado segue autenticando, `precisa_recadast
         true, enforce NÃO tranca o dono e o terceiro é recusado; o recadastro
         migra o perfil para o extrator novo e ele segue autenticando.
 """
-import json, os, pathlib, shutil, signal, socket, subprocess, sys, time
+import json, os, pathlib, shutil, signal, socket, subprocess, sys, tempfile, time
 import urllib.request, urllib.error
 
-RAIZ = pathlib.Path("/Users/lisboa/Documents/tts-rod")
-PY = RAIZ / ".venv-mlx/bin/python"
-TMP = pathlib.Path("/tmp/e2e980")
+RAIZ = pathlib.Path(__file__).resolve().parents[1]  # a árvore do próprio script
+PY = pathlib.Path(sys.executable)  # o interpretador que roda o script (worktree não tem venv)
+TMP = pathlib.Path(tempfile.mkdtemp(prefix="e2e980-"))  # único por execução (#243/#991)
+#: áudio de entrada: env > `voices/` da árvore do script > `voices/` da raiz (worktree
+#: nova não tem `voices/`: é untracked).
+VOZES = pathlib.Path(os.environ.get("TTS_VOZES_DIR") or (RAIZ / "voices"))
+if not any(VOZES.glob("*.wav")):
+    VOZES = pathlib.Path("/Users/lisboa/Documents/tts-rod/voices")
+#: pesos do ECAPA: a árvore do script, senão a raiz (os pesos são untracked).
+MODELOS = RAIZ / "models" / "ecapa-voxceleb"
+if not (MODELOS / "embedding_model.ckpt").is_file():  # os .ckpt são untracked
+    MODELOS = pathlib.Path("/Users/lisboa/Documents/tts-rod/models/ecapa-voxceleb")
 falhas = []
 
 
@@ -91,7 +100,7 @@ def get(url):
 
 
 def wav(caminho, ini_s, dur_s):
-    import numpy as np, soundfile as sf
+    import soundfile as sf
     a, sr = sf.read(caminho, dtype="float32")
     if a.ndim > 1: a = a.mean(axis=1)
     pedaco = a[int(ini_s * sr):int((ini_s + dur_s) * sr)]
@@ -106,7 +115,7 @@ def main():
     (TMP / "outputs").mkdir()
     (TMP / "settings.json").write_text("{}\n")
 
-    vozes = sorted(p for p in (RAIZ / "voices").glob("*.wav")
+    vozes = sorted(p for p in VOZES.glob("*.wav")
                    if p.with_suffix(".json").exists())
     dono, terceiro = vozes[0], vozes[1]
     print(f"vozes: dono={dono.name} terceiro={terceiro.name}")
@@ -139,7 +148,7 @@ def main():
         mata(p1)
 
     # ── fase 2: ECAPA ligado, mesmo arquivo de perfis ─────────────────────
-    p2, u2 = sobe(RAIZ / "models" / "ecapa-voxceleb")
+    p2, u2 = sobe(MODELOS)
     try:
         st = get(f"{u2}/api/settings")
         cobrar(st.get("extrator_efetivo") == "ecapa:v1", f"settings.extrator_efetivo={st.get('extrator_efetivo')!r}")
