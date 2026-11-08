@@ -211,6 +211,45 @@ def _carrega_limpador():
 _PARA_FALA, _LIMPA_DE = _carrega_limpador()
 
 
+#: trechos do `pos_llm` (1º token → 1º áudio), na ordem do caminho (#1022).
+#: Cada um é a diferença entre dois marcos do `latency` do turno; `resto` é o que
+#: sobra até o 1º áudio no CLIENTE (fio + fila do sender + decisão do VAD, que o
+#: `first_token_ms` não enxerga porque conta do início da thread do turno).
+ESTAGIOS_POS_LLM = ("llm_frase", "fila_tts", "lock", "tts", "marca", "envio", "resto")
+
+
+def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
+    """Decompõe o `pos_llm` de UM turno a partir do `latency` (#1022).
+
+    - `llm_frase`: 1º token → 1ª cláusula fechada (o LLM ainda escrevendo a frase);
+    - `fila_tts`: cláusula → o worker de TTS pegar o trecho;
+    - `lock`: espera pelo `_gen_lock` (job de lote na frente), DENTRO do `tts`;
+    - `tts`: síntese do 1º trecho sem a espera do lock;
+    - `marca`: PCM pronto → marca d'água aplicada;
+    - `envio`: marca → entrega ao sender;
+    - `resto`: `s2_ms − first_audio_ms` (fio, cliente e VAD).
+    Marco ausente → trecho `None` (não inventa zero)."""
+    def g(k):
+        v = lat.get(k)
+        return float(v) if isinstance(v, (int, float)) else None
+
+    def d(a, b):
+        return round(b - a) if a is not None and b is not None else None
+
+    tok, cla = g("first_token_ms"), g("first_clause_ms")
+    ini, pcm = g("tts_start_ms"), g("tts_first_pcm_ms")
+    mar, env, aud = g("marca_ms"), g("send_ms"), g("first_audio_ms")
+    lock = g("lock_espera_ms")
+    tts = d(ini, pcm)
+    if tts is not None and lock is not None:
+        tts = max(0, tts - round(lock))
+    return {"llm_frase": d(tok, cla), "fila_tts": d(cla, ini),
+            "lock": round(lock) if lock is not None else None, "tts": tts,
+            "marca": d(pcm, mar), "envio": d(mar, env),
+            "resto": (round(s2_ms - aud) if isinstance(s2_ms, (int, float))
+                      and aud is not None else None)}
+
+
 def pct(xs: list[float], p: float) -> float | None:
     if not xs:
         return None
@@ -591,6 +630,8 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
             la["s2_llm_ttft_ms"] = _e.get("first_token_ms")
             if la["s2_llm_ttft_ms"] is not None:
                 la["s2_pos_llm_ms"] = max(0, la["s2_ms"] - la["s2_llm_ttft_ms"])
+            # #1022: onde o pos_llm gasta, trecho a trecho
+            la["s2_estagios"] = estagios_pos_llm(_e, la.get("s2_ms"))
             break
     lb["eco_tocado_s"] = round(c.tocado_s, 1) if t_audio_b else 0.0
     if t_audio_b is not None:
@@ -868,6 +909,12 @@ def resumo(res: dict, args) -> dict:
                "llm_ttft_p95_ms": pct(llm, .95),
                "pos_llm_p50_ms": pct(pos, .5),
                "pos_llm_p95_ms": pct(pos, .95),
+               # #1022: p50/p95 de cada trecho do pos_llm (ver ESTAGIOS_POS_LLM)
+               "pos_llm_estagios": {
+                   k: {"n": len(v), "p50_ms": pct(v, .5), "p95_ms": pct(v, .95)}
+                   for k in ESTAGIOS_POS_LLM
+                   for v in [[l["s2_estagios"][k] for l in L
+                              if (l.get("s2_estagios") or {}).get(k) is not None]]},
                "meta": "p50 ≤1500, p95 ≤2500 (llm_ttft = 1º token; pos_llm = TTS+fila)"},
         "S3": {"interrupcoes": len(inter),
                "duck_n": sum(l.get("s3_duck_ms") is not None for l in inter),

@@ -340,3 +340,40 @@ def test_interrupted_de_continuacao_nao_fecha_e_o_terminal_fecha():
     c2 = _cliente(_WS())
     c2.eventos.append((0.5, "interrupted", {"motivo": "barge"}))
     assert lb._turno_b_encerrou(c2, 0.9, 1.0) is False
+
+
+# ---------------------------------------------------------------------------
+# #1022: decomposição do pos_llm (1º token → 1º áudio) por trecho
+# ---------------------------------------------------------------------------
+
+def test_estagios_do_pos_llm_fecham_com_os_marcos_do_latency():
+    lat = {"first_token_ms": 1000, "first_clause_ms": 1600, "tts_start_ms": 1610,
+           "tts_first_pcm_ms": 2900, "lock_espera_ms": 300, "marca_ms": 3100,
+           "send_ms": 3120, "first_audio_ms": 3125}
+    e = lb.estagios_pos_llm(lat, s2_ms=3400)
+    assert e == {"llm_frase": 600, "fila_tts": 10, "lock": 300, "tts": 990,
+                 "marca": 200, "envio": 20, "resto": 275}
+    # a soma dos trechos fecha com o pos_llm da bancada (s2 − 1º token), a menos
+    # do intervalo send → first_audio, que é o emit (5 ms aqui)
+    assert sum(e.values()) == 3400 - 1000 - (3125 - 3120)
+
+
+def test_marco_ausente_vira_none_e_nao_zero():
+    e = lb.estagios_pos_llm({"first_token_ms": 900, "first_audio_ms": 2000}, None)
+    assert set(e) == set(lb.ESTAGIOS_POS_LLM)
+    assert all(v is None for v in e.values())
+
+
+def test_resumo_publica_p50_de_cada_trecho():
+    base = {"tipo": "longa", "dur_s": 2.0, "s2_ms": 3000, "s2_llm_ttft_ms": 1000,
+            "s2_pos_llm_ms": 2000}
+    L = [dict(base, s2_estagios={"llm_frase": v, "fila_tts": 5, "lock": None, "tts": 1000,
+                                 "marca": 200, "envio": 10, "resto": 100})
+         for v in (400, 600, 800)]
+    res = {"linhas": L, "respostas": [], "sessao_s": 1, "ciclos": 1,
+           "ws_vivo_no_fim": True, "erro_ws": None, "proc_ini": {}, "proc_fim": {},
+           "erros": []}
+    est = lb.resumo(res, types.SimpleNamespace(sessao_min=30))["S2"]["pos_llm_estagios"]
+    assert est["llm_frase"] == {"n": 3, "p50_ms": 600.0, "p95_ms": 780.0}
+    assert est["lock"] == {"n": 0, "p50_ms": None, "p95_ms": None}
+    assert list(est) == list(lb.ESTAGIOS_POS_LLM)
