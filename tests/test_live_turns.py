@@ -1492,6 +1492,79 @@ def test_voz_do_dono_curto_demais_e_fail_open(monkeypatch):
     assert res["ok"] is True and res["estado"] == "indisponivel"
 
 
+def _barge_curto_sobre_eco(fala_s: float = 0.5, total_s: float = 1.376,
+                           ini_s: float = 0.4) -> bytes:
+    """Trecho do barge do #984: ECO da resposta do começo ao fim (ruído baixo) e a
+    fala nova do dono (tom alto) só em `fala_s` dele."""
+    import numpy as np
+    x = np.random.default_rng(3).normal(0, 0.02, int(16000 * total_s))
+    t = np.arange(int(16000 * fala_s)) / 16000.0
+    i = int(16000 * ini_s)
+    x[i:i + t.size] += np.sin(2 * np.pi * 220 * t) * 0.2
+    return (np.clip(x, -1, 1) * 32767).astype("<i2").tobytes()
+
+
+def _embed_pela_fracao_de_fala(dono: bool = True):
+    """Dublê do extrator: o vetor dilui com o eco como o ECAPA dilui — a nota cai
+    com a FRAÇÃO da janela que é fala nova (quadros acima do eco)."""
+    import numpy as np
+    import soundfile as sf
+
+    def emb(p, m=None):
+        a, _ = sf.read(str(p), dtype="float32")
+        q = [float(np.sqrt((a[i:i + 512] ** 2).mean())) for i in range(0, a.size - 511, 512)]
+        f = sum(v > 0.07 for v in q) / max(1, len(q))
+        return [f, 1.0 - f] if dono else [0.0, 1.0]
+    return emb
+
+
+def test_barge_curto_do_dono_sobre_o_eco_passa_com_a_fala_recortada(monkeypatch):
+    """#984: 0,5 s do dono num trecho de 1,376 s de eco. Pontuando o trecho
+    inteiro, toda janela de 1 s é mais eco que dono e o portão recusava o próprio
+    dono (o barge não cortava). Com `fala_ms`, pontua só a fala nova."""
+    _liga_so_minha_voz(monkeypatch)
+    import app
+    # escore CRU (dublê sem coorte): o portão compara com a queda `_VOZ_LIMIAR_PADRAO`
+    monkeypatch.setattr(app, "_VOZ_LIMIAR_PADRAO", 0.9)
+    monkeypatch.setattr(app, "_speaker_embed", _embed_pela_fracao_de_fala())
+    pcm = _barge_curto_sobre_eco(0.5)
+    assert app._voz_do_dono(pcm)["estado"] == "recusado", "o cenário tem de reproduzir o #984"
+    res = app._voz_do_dono(pcm, fala_ms=500)
+    assert res["ok"] is True and res["estado"] == "ok", res
+    # a fala no FIM do trecho (o caso do E2E) também é achada
+    assert app._voz_do_dono(_barge_curto_sobre_eco(0.5, ini_s=0.876), fala_ms=500)["ok"]
+
+
+def test_barge_curto_de_terceiro_segue_recusado_com_o_recorte(monkeypatch):
+    """O recorte não abre a porta: voz de terceiro recortada continua recusada."""
+    _liga_so_minha_voz(monkeypatch)
+    import app
+    # escore CRU (dublê sem coorte): o portão compara com a queda `_VOZ_LIMIAR_PADRAO`
+    monkeypatch.setattr(app, "_VOZ_LIMIAR_PADRAO", 0.9)
+    monkeypatch.setattr(app, "_speaker_embed", _embed_pela_fracao_de_fala(dono=False))
+    res = app._voz_do_dono(_barge_curto_sobre_eco(0.5), fala_ms=500)
+    assert res["ok"] is False and res["estado"] == "recusado"
+
+
+def test_decide_barge_passa_a_fala_ao_portao(monkeypatch):
+    """O elo do #984: a decisão do barge entrega `fala_ms` ao portão."""
+    import app
+    visto = {}
+
+    def portao(audio, cfg=None, fala_ms=0):
+        visto["fala_ms"] = fala_ms
+        return {"ok": False, "estado": "recusado", "score": -4.1, "janelas": 1,
+                "latencia_ms": 1, "motivo": "outra voz"}
+    monkeypatch.setitem(app._settings, "live_so_minha_voz", {"on": True, "perfil": "dono"})
+    monkeypatch.setattr(app, "_voz_do_dono", portao)
+    sess = {"id": "s", "engine": None, "barge_suspeito": {"audio": _pcm(1.4)}}
+    try:
+        app._live_decide_barge(sess, _pcm(1.4), 416)
+    except Exception:  # noqa: BLE001 — só o elo interessa, o resto do turno é dublê
+        pass
+    assert visto.get("fala_ms") == 416
+
+
 def test_voz_do_dono_sem_perfil_e_fail_open(monkeypatch):
     _liga_so_minha_voz(monkeypatch)
     import app
@@ -2083,7 +2156,7 @@ def test_filtro_identidade_terceiro_continua_e_leva_o_score(monkeypatch):
     filtros = {"identidade": {"on": True, "perfis": [], "far": 0.01}}
     monkeypatch.setattr(app, "_live_voz_ligado", lambda: None)
     monkeypatch.setattr(app, "_voz_do_dono",
-                        lambda pcm, cfg=None: {"ok": False, "estado": "recusado",
+                        lambda pcm, cfg=None, fala_ms=0: {"ok": False, "estado": "recusado",
                                                "score": 0.31, "janelas": 2,
                                                "latencia_ms": 30, "motivo": "outra voz"})
     sess = {"id": "s"}
@@ -2094,13 +2167,31 @@ def test_filtro_identidade_terceiro_continua_e_leva_o_score(monkeypatch):
     assert sess["voz_stats"]["recusados"] == 1
 
 
+def test_filtro_identidade_passa_a_fala_ao_portao(monkeypatch):
+    """#984: o filtro `identidade` da cadeia também recorta pela fala do barge."""
+    import app
+
+    visto = {}
+
+    def portao(pcm, cfg=None, fala_ms=0):
+        visto["fala_ms"] = fala_ms
+        return {"ok": True, "estado": "ok", "score": 2.0, "janelas": 1,
+                "latencia_ms": 1, "motivo": ""}
+    monkeypatch.setattr(app, "_live_voz_ligado", lambda: None)
+    monkeypatch.setattr(app, "_voz_do_dono", portao)
+    app._live_avalia_filtros({"id": "s"}, "o dia ta bonito", 416,
+                             {"identidade": {"on": True, "perfis": [], "far": 0.01}},
+                             audio=b"\x01\x00" * 800)
+    assert visto.get("fala_ms") == 416
+
+
 def test_filtro_identidade_dono_segue_a_cadeia(monkeypatch):
     import app
 
     filtros = {"identidade": {"on": True, "perfis": [], "far": 0.01}}
     monkeypatch.setattr(app, "_live_voz_ligado", lambda: None)
     monkeypatch.setattr(app, "_voz_do_dono",
-                        lambda pcm, cfg=None: {"ok": True, "estado": "ok", "score": 1.9,
+                        lambda pcm, cfg=None, fala_ms=0: {"ok": True, "estado": "ok", "score": 1.9,
                                                "janelas": 2, "latencia_ms": 30, "motivo": ""})
     sess = {"id": "s"}
     tipo, _p, _m, filtro = app._live_avalia_filtros(sess, "o dia ta bonito", 900, filtros,
@@ -2139,7 +2230,7 @@ def test_filtro_identidade_fail_open_nao_barra_o_dono(monkeypatch):
     filtros = {"identidade": {"on": True, "perfis": [], "far": 0.01}}
     monkeypatch.setattr(app, "_live_voz_ligado", lambda: None)
     monkeypatch.setattr(app, "_voz_do_dono",
-                        lambda pcm, cfg=None: {"ok": True, "estado": "indisponivel",
+                        lambda pcm, cfg=None, fala_ms=0: {"ok": True, "estado": "indisponivel",
                                                "score": None, "janelas": 0,
                                                "latencia_ms": 1, "motivo": "perfil ausente"})
     sess = {"id": "s"}

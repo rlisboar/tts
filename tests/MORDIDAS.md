@@ -929,3 +929,16 @@ sem gravar history e o áudio dele vai na frente do turno seguinte.
 | `interrupted` de continuação sem `motivo` | `test_cancel_de_continuacao_nao_grava_a_metade_no_history` **FAILED** (o campo some e a tela mostra "interrompido") |
 | tirar o guarda "nenhum áudio de resposta saiu" | `test_depois_do_primeiro_audio_da_resposta_nao_ha_continuacao` **FAILED** |
 | tratar `speech_start` de barge como continuação | `test_speech_start_de_barge_nao_e_continuacao` **FAILED** |
+
+### #984 — "só a minha voz": barge curto pontua a fala nova, não o eco
+
+O trecho do barge leva o eco da resposta do começo ao fim. Com 0,4–0,6 s de fala do
+dono, toda janela de 1 s era quase toda eco e o portão recusava o próprio dono. Com
+`fala_ms`, `_voz_do_dono` pontua só o pedaço de maior energia desse tamanho
+(`_voz_recorta_fala`).
+
+| Sabotagem | Resultado |
+|---|---|
+| tirar `a = _voz_recorta_fala(...)` de `_voz_do_dono` | `test_barge_curto_do_dono_sobre_o_eco_passa_com_a_fala_recortada` **FAILED** |
+| `_live_decide_barge` chamar `_voz_do_dono(audio)` sem `fala_ms` | `test_decide_barge_passa_a_fala_ao_portao` **FAILED** |
+| filtro `identidade` da cadeia sem `fala_ms` | `test_filtro_identidade_passa_a_fala_ao_portao` **FAILED** |

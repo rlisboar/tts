@@ -11296,7 +11296,25 @@ def _voz_limiar(modelo: str, rigor: str, fixo: float = 0.0) -> tuple[float, str]
     return _VOZ_LIMIAR_PADRAO, "cru"
 
 
-def _voz_do_dono(pcm16: bytes, cfg: dict | None = None) -> dict:
+def _voz_recorta_fala(a, fala_ms: int):
+    """Só o pedaço do trecho onde está a FALA NOVA (#984).
+
+    O trecho do barge é pré-roll + o que veio depois, e o eco da resposta corre
+    por baixo do começo ao fim: com 0,4 s de fala do dono num trecho de 1,4 s, toda
+    janela de 1 s era quase toda eco e o portão recusava o próprio dono. O motor
+    mede a fala (`fala_ms`); o resíduo do eco (pós-AEC) é mais baixo que a voz
+    perto do microfone, então ela é o pedaço de MAIOR energia daquele tamanho.
+    Folga de 0,2 s (ataque e cauda) e piso de 0,6 s (o mínimo do extrator)."""
+    import numpy as np
+    n = max(int(16000 * (fala_ms / 1000.0 + 0.2)), int(16000 * 0.6))
+    if fala_ms <= 0 or n >= a.size:
+        return a
+    acum = np.concatenate([[0.0], np.cumsum(a.astype(np.float64) ** 2)])
+    ini = int(np.argmax(acum[n:] - acum[:-n]))
+    return a[ini:ini + n]
+
+
+def _voz_do_dono(pcm16: bytes, cfg: dict | None = None, fala_ms: int = 0) -> dict:
     """O trecho é o DONO falando? `{ok, score, janelas, latencia_ms, estado, motivo}`.
 
     `ok=True` também nos casos de INDISPONIBILIDADE (fail-open, nunca ficar surdo):
@@ -11331,6 +11349,9 @@ def _voz_do_dono(pcm16: bytes, cfg: dict | None = None) -> dict:
                           dtype="<i2").astype(np.float32) / 32768.0
     except Exception as exc:              # noqa: BLE001
         return _fora(f"áudio ilegível ({type(exc).__name__})")
+    # barge (#984): pontua a fala nova, não o eco que a cerca. O turno do STT não
+    # passa `fala_ms` e segue pontuando o trecho inteiro.
+    a = _voz_recorta_fala(a, int(fala_ms or 0))
     janela = int(16000 * _VOZ_JANELA_S)
     passo = int(16000 * _VOZ_PASSO_S)
     if a.size < janela:                   # curto demais p/ 1 janela cheia
@@ -13497,7 +13518,7 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
     # pessoa não pode cortar por ser "fala longa". Sem áudio (dublês) é pulado.
     if ligado("identidade", False) and audio and not _live_voz_ligado():
         cfg_id = _cfg_identidade(filtros.get("identidade") or {})
-        voz = _voz_do_dono(audio, cfg_id)
+        voz = _voz_do_dono(audio, cfg_id, fala_ms=fala_ms)
         _live_voz_anota(sess, voz)
         if voz.get("estado") == "recusado":
             return "ruido", voz.get("score"), None, "identidade"
@@ -13891,7 +13912,7 @@ def _live_decide_barge(sess: dict, audio_cru: bytes, fala_ms: int,
         # "SÓ A MINHA VOZ" (#533): quem não é o dono não corta e não vira turno —
         # é o PRIMEIRO elo (a TV ou outra pessoa não pode cortar o assistente).
         # Mesma verificação que o `_stt_app` usa no turno (uma só, não duas).
-        voz = _voz_do_dono(audio) if _live_voz_ligado() else None
+        voz = _voz_do_dono(audio, fala_ms=fala_ms) if _live_voz_ligado() else None
         if voz is not None:
             _live_voz_anota(sess, voz)
         # ADENDO: perto do fim da resposta a fala vira turno pendente em vez de
