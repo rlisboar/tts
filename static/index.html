@@ -2080,6 +2080,8 @@
   .lx-filtro { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center;
                padding: 5px 0; border-top: 1px dashed var(--border-soft); font-size: 12px; }
   .lx-filtro:first-of-type { border-top: 0; }
+  .lx-modo-voz { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 6px 0 2px; border-top: 1px dashed var(--border-soft); }
+  .lx-modo-voz select { max-width: 260px; }
   .lx-dica { color: var(--faint); font-size: 11.5px; }
   .lx-num { width: 82px; }
   .lx-chips-edit { display: flex; flex-wrap: wrap; gap: 5px; flex-basis: 100%; }
@@ -2471,6 +2473,9 @@
           </div>
           <div class="field-group">
             <span>De</span>
+            <select id="tvSoVoz" aria-label="só a voz de (perfil)" title="só a voz de: o resto (outras pessoas, TV) não entra na tradução" style="max-width:200px">
+              <option value="">sem filtro de voz</option>
+            </select>
             <select id="tvSrc" aria-label="Idioma de origem" style="max-width:160px">
               <option value="auto">qualquer</option>
               <option value="pt" selected>Português</option>
@@ -2536,6 +2541,9 @@
               <div id="obsStt"></div>
               <button id="sttUploadBtn" class="ghost" type="button">Carregar arquivo</button>
               <input type="file" id="sttFile" accept="audio/*" style="display:none">
+              <select id="sttSoVoz" aria-label="só a voz de (perfil)" title="só a voz de: o resto (outras pessoas, TV) não entra na transcrição" style="max-width:200px">
+                <option value="">sem filtro de voz</option>
+              </select>
               <select id="sttSrcLang" style="max-width:190px">
                 <option value="auto" selected>Idioma: Auto (detecta)</option>
                 <option value="pt">Português</option>
@@ -2585,6 +2593,9 @@
           </div>
           <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
             <button type="button" id="cvMic" class="primary">🎙 Ligar</button>
+            <select id="cvSoVoz" aria-label="só a voz de (perfil)" title="só a voz de: o resto (outras pessoas, TV) não entra na conversa" style="max-width:200px">
+              <option value="">sem filtro de voz</option>
+            </select>
             <select id="cvVoice" title="Voz da resposta da IA e da síntese" style="max-width:200px"></select>
             <span id="cvRec" style="display:none" class="hint">🎧 escutando…</span>
             <span style="flex:1"></span>
@@ -2694,6 +2705,24 @@
               </select></div>
             <span style="flex:1"></span>
             <button id="lxLimpar" class="ghost small" type="button">Limpar</button>
+          </div>
+          <!-- I5 (#533) no Live, #963: "entender só a minha voz" é MODO (abre o turno), não
+               filtro de barge. Por isso fica FORA do painel de filtros: lá o modo `imediata`
+               trava tudo, e este modo não depende dele. Admin: o servidor ignora a chave `use`
+               e a tela trava os controles (data-admin-setting). -->
+          <div class="lx-modo-voz" id="lxSoVozBloco">
+            <label class="check"><input type="checkbox" id="lxSoVoz_on" data-admin-setting="live_so_minha_voz"><b>entender só a minha voz</b></label>
+            <span class="lx-dica">terceiros e TV não abrem turno nem viram resposta; a sua voz segue normal</span>
+            <label for="lxSoVoz_perfil" class="lx-dica">perfil</label>
+            <select id="lxSoVoz_perfil" data-admin-setting="live_so_minha_voz" aria-label="perfil de voz do dono"></select>
+            <label for="lxSoVoz_rigor" class="lx-dica">rigor</label>
+            <select id="lxSoVoz_rigor" data-admin-setting="live_so_minha_voz" aria-label="rigor da verificação de voz">
+              <option value="joelho">joelho medido (padrão)</option>
+              <option value="1">1 erro a cada 100 falas</option>
+              <option value="0.1">1 erro a cada 1000 falas</option>
+            </select>
+            <span class="lx-dica" id="lxSoVozSemPerfil" hidden>nenhum perfil cadastrado — <button type="button" id="lxSoVozCadastra">cadastrar minha voz</button></span>
+            <span class="lx-dica">microfone de headset ou direcional ajuda mais que qualquer filtro</span>
           </div>
           <!-- #502 (adendo do dono): os filtros da interrupção inteligente. Cada um
                LIGA/DESLIGA separado, com o número editável e a lista de palavras em
@@ -2843,6 +2872,10 @@
                     title="uma fala foi detectada por cima da resposta: playback em -18 dB até o motor decidir (teto de segurança: 2 s)">🔉 volume abaixado</span>
               <span class="lx-chip" id="lxIgnoradasChip" hidden
                     title="falas que o filtro deixou passar sem cortar (outra pessoa, TV ou eco): o motor decidiu CONTINUAR">falas ignoradas <b id="lxIgnoradas">0</b></span>
+              <span class="lx-chip" id="lxVozChip" hidden
+                    title="entender só a minha voz: veredito do último trecho (stats.motor.voz.ultimo)">é você? <b id="lxVozEst">—</b> <b id="lxVozScore"></b></span>
+              <span class="lx-chip warn" id="lxVozRecusChip" hidden
+                    title="trechos recusados por não serem a sua voz (stats.motor.voz.recusados)">outra voz recusada <b id="lxVozRecus">0</b></span>
               <span class="lx-chip ok" id="lxNs" title="noiseSuppression do navegador, sempre ligado no Live — o checkbox de Configurações não manda aqui. Nas outras telas ele fica off porque o servidor já roda afftdn; duas supressões comem consoante. O PCM do Live não passa por afftdn.">ventoinha <b>supressão ligada</b></span>
             </div>
             <div class="lx-grid">
@@ -3516,9 +3549,6 @@ const ADMIN_SEM_UI = new Set([
   // faltante acusaria os dois para sempre (#657/#791)
   "tts_marca_dagua", "live_marca_primeiro_trecho", "tts_marca_prewarm_boot",
   "speaker_guardar_audio",
-  // o toggle "só a minha voz" do Live ainda não tem controle (#528, espera o
-  // speech); entra aqui para o aviso de marcador faltante não acusar (#791)
-  "live_so_minha_voz",
   // #946: vermelhos da suíte de admin no rebase — protegidos no servidor e ainda
   // sem controle na tela. Saem daqui quando o input marcado existir.
   "live_stt_whisper_repo", "public_url",
@@ -6319,6 +6349,8 @@ async function requestTranslation(blob) {
   const fd = new FormData();
   fd.append("audio", wav, "fala.wav");
   FEAT.body(fd);                                    // translate -> target_lang; modify -> nada
+  const svTrad = soVozValor("tvSoVoz");   // só a voz de (#963): Tradutor e Modificador usam este envio
+  if (svTrad) fd.append("speaker_alvo", svTrad);
   fd.append("source_lang", fEl("src").value);
   fd.append("emotion_mode", fEl("emo").value);
   fd.append("voice_id", voice_id);
@@ -6327,6 +6359,7 @@ async function requestTranslation(blob) {
   const tSent = performance.now(), meta = chunkMeta.get(blob);
   try { r = await api(FEAT.ep, { method: "POST", body: fd }); }
   catch (e) { toast("Erro: " + e.message, 6000); return null; }
+  soVozAvisa(svTrad, r);
   if (PERF_LOG && meta) {
     console.log(`[perf] time-to-start(onset→envio)=${Math.round(tSent - meta.onset)}ms`
       + ` · fila=${Math.round(tSent - meta.flush)}ms · STT+tradução(modelo)=${Math.round(performance.now() - tSent)}ms`);
@@ -7189,6 +7222,7 @@ async function loadSettings() {
       $("lxClausula").value = s.live_clausula_palavras ?? 6;
     // #502 (adendo): os filtros vêm do servidor; o que faltar cai no padrão
     lxFiltrosAplica(s.live_barge_filtros, s.live_barge_sem_decisao);
+    lxSoVozAplica(s.live_so_minha_voz);
     // ANTES de escrever o effort: o select nasce vazio, e `value=` num select sem
     // options não pega — o liga() é quem o popula (lista completa) e dispara a
     // descoberta; o valor salvo é aplicado logo abaixo e a descoberta o preserva
@@ -7893,9 +7927,12 @@ async function sttTranscribe(blob) {
   catch (e) { wav = blob; }  // browser não decodificou (Safari/iOS) — servidor converte via ffmpeg
   const fd = new FormData();
   fd.append("audio", wav, "a.wav");
+  const svStt = soVozValor("sttSoVoz");   // só a voz de (#963)
+  if (svStt) fd.append("speaker_alvo", svStt);
   fd.append("source_lang", $("sttSrcLang").value);
   try {
     const r = await api("/api/transcribe", { method: "POST", body: fd });
+    soVozAvisa(svStt, r);
     $("sttText").value = r.text || "";
     sttSegs = r.segments || [];
     $("sttStatus").textContent = `pronto (${r.language || "?"}) — ${(r.text || "").length} caracteres`;
@@ -8186,10 +8223,13 @@ async function cvTranscribeEEnvia(blob) {
   const ext = (blob.type.split("/")[1] || "webm").split(";")[0];
   const fd = new FormData();
   fd.append("audio", blob, "fala." + ext);
+  const svCv = soVozValor("cvSoVoz");   // só a voz de (#963): fala da Conversa
+  if (svCv) fd.append("speaker_alvo", svCv);
   fd.append("source_lang", "pt");
   let texto = "", cvLocutor = null;
   try {
     const r = await api("/api/transcribe", { method: "POST", body: fd });
+    soVozAvisa(svCv, r);
     if (r.rejected) { cvStatus("🔇 " + (r.reason || "sem fala")); cvBusy = false; return; }
     texto = (r.text || "").trim();
     cvLocutor = r.speaker || null;
@@ -8999,6 +9039,23 @@ function lxObsRender() {
     const chipIgn = $("lxIgnoradasChip");
     if (chipIgn) chipIgn.hidden = !filtroIgnora;
     if (filtroIgnora) txt("lxIgnoradas", String(((s && s.barge && s.barge.tipos) || {}).ruido || 0));
+    // "é você?" e recusas do modo I5 (#963): stats.motor.voz (app.py, `_live_voz_anota`)
+    const voz = (s && s.motor && s.motor.voz) || {};
+    const ult = voz.ultimo || {};
+    const chipVoz = $("lxVozChip");
+    if (chipVoz) {
+      chipVoz.hidden = !SOVOZ.on;
+      txt("lxVozEst", { ok: "●", recusado: "○", indisponivel: "?" }[ult.estado] || "—");
+      txt("lxVozScore", ult.score != null ? Number(ult.score).toFixed(2).replace(".", ",") : "");
+      chipVoz.classList.toggle("warn", ult.estado === "recusado");
+      chipVoz.title = ult.motivo || "veredito do último trecho (stats.motor.voz.ultimo)";
+    }
+    const chipRecus = $("lxVozRecusChip");
+    if (chipRecus) {
+      const n = Number(voz.recusados || 0);
+      chipRecus.hidden = !SOVOZ.on && n === 0;
+      txt("lxVozRecus", String(n));
+    }
   }
   // o aviso também se acende pelo `stats` (fonte que se auto-corrige, caso o
   // evento único se perca numa reconexão)
@@ -9365,6 +9422,102 @@ function lxFiltrosStatus(msg, erro) {
    dentro de 350 ms viram UM corpo (as chaves se somam, os campos não se apagam).
    A resposta é conferida campo a campo — servidor que não conhece a chave, ou que
    normaliza para outro valor, aparece na tela em vez de mentir "salvo". */
+// "só a voz de" (#534/I6) e "entender só a minha voz" (#533/I5) — tela do #963.
+// Perfis: /api/speaker/profiles (a mesma fonte do filtro de identidade).
+let SOVOZ = { on: false, perfil: "", rigor_far: "joelho" };
+let SOVOZ_NOMES = null;
+async function soVozCarregaPerfis() {
+  try {
+    const lista = await api("/api/speaker/profiles");
+    SOVOZ_NOMES = (Array.isArray(lista) ? lista : []).map(p => p && p.name).filter(Boolean);
+  } catch (e) { SOVOZ_NOMES = SOVOZ_NOMES || []; }
+  return SOVOZ_NOMES;
+}
+// seletor "só a voz de": mantém a escolha se o perfil ainda existe; vazio = sem filtro
+function soVozPreenche(sel, nomes) {
+  if (!sel) return;
+  const atual = sel.value;
+  sel.textContent = "";
+  const vazio = document.createElement("option");
+  vazio.value = ""; vazio.textContent = "sem filtro de voz";
+  sel.appendChild(vazio);
+  for (const nome of nomes) {
+    const o = document.createElement("option");
+    o.value = nome; o.textContent = "só a voz de: " + nome;
+    sel.appendChild(o);
+  }
+  sel.value = nomes.includes(atual) ? atual : "";
+}
+// valor mandado como `speaker_alvo`; vazio = o campo nem vai no envio
+function soVozValor(id) {
+  const el = $(id);
+  return el && el.value ? el.value : "";
+}
+// separação que caiu (indisponível/falhou): o texto saiu da fala INTEIRA — isso tem de aparecer
+function soVozAvisa(valor, r) {
+  if (!valor || !r || !r.separacao || r.separacao === "ok") return;
+  toast("só a voz de " + valor + ": separação " + r.separacao
+    + (r.separacao_motivo ? " (" + r.separacao_motivo + ")" : "")
+    + " — o texto saiu da fala inteira", 7000);
+}
+async function soVozPreencheTodos() {
+  const nomes = await soVozCarregaPerfis();
+  for (const id of ["sttSoVoz", "tvSoVoz", "cvSoVoz"]) soVozPreenche($(id), nomes);
+  const sel = $("lxSoVoz_perfil");
+  if (sel) {
+    const atual = SOVOZ.perfil;
+    sel.textContent = "";
+    const auto = document.createElement("option");
+    auto.value = ""; auto.textContent = "automático (o único perfil)";
+    sel.appendChild(auto);
+    for (const nome of nomes) {
+      const o = document.createElement("option");
+      o.value = nome; o.textContent = nome;
+      sel.appendChild(o);
+    }
+    sel.value = nomes.includes(atual) ? atual : "";
+  }
+  if ($("lxSoVozSemPerfil")) $("lxSoVozSemPerfil").hidden = nomes.length > 0;
+}
+// estado do modo vindo do servidor; o default antigo "1.8" (joelho) cai em joelho
+function lxSoVozAplica(cfg) {
+  const c = cfg || {};
+  const rigor = String(c.rigor_far || "");
+  SOVOZ = { on: !!c.on, perfil: String(c.perfil || ""),
+            rigor_far: rigor === "1" || rigor === "0.1" ? rigor : "joelho" };
+  if ($("lxSoVoz_on")) $("lxSoVoz_on").checked = SOVOZ.on;
+  if ($("lxSoVoz_rigor")) $("lxSoVoz_rigor").value = SOVOZ.rigor_far;
+  soVozPreencheTodos();
+}
+// uma chamada por mudança, só com a chave do modo (o servidor faz o merge)
+async function lxSoVozSalva(patch) {
+  const antes = { ...SOVOZ };
+  Object.assign(SOVOZ, patch);
+  try {
+    const r = await api("/api/settings", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ live_so_minha_voz: patch }) });
+    if (((r || {}).admin_ignored || []).includes("live_so_minha_voz")) {
+      lxSoVozAplica(antes);   // chave `use`: a tela volta ao que estava salvo
+      lxLogEvento("⚠ só a minha voz exige chave de admin — nada mudou", "warn");
+      return;
+    }
+    // a resposta do POST é o estado salvo no servidor: a tela segue ela (normaliza o rigor)
+    if (r && r.live_so_minha_voz) lxSoVozAplica(r.live_so_minha_voz);
+    lxLogEvento("⚙ só a minha voz: " + (SOVOZ.on ? "ligado" : "desligado")
+      + " · " + (SOVOZ.perfil ? "perfil " + SOVOZ.perfil : "perfil automático")
+      + " · rigor " + SOVOZ.rigor_far);
+  } catch (e) {
+    lxSoVozAplica(antes);
+    lxLogEvento("⚠ só a minha voz não salvou: " + (e.message || e), "warn");
+  }
+}
+// sem perfil cadastrado, o modo leva ao assistente de cadastro (Configurações)
+function lxSoVozCadastra() {
+  document.querySelector('.nav-item[data-view="config"]')?.click();
+  $("spAssistente")?.scrollIntoView({ block: "start" });
+}
+
 function lxSalvaBarge(corpo) {
   if (!corpo) return;
   // merge de UM nível em `filtros`: `Object.assign` cru perderia o `palavras` de
@@ -10089,6 +10242,15 @@ if ($("lxSemDecisao")) $("lxSemDecisao").onchange = () => {
   lxFiltrosRender();
   lxSalvaBarge({ live_barge_sem_decisao: LX.semDecisao });
 };
+// "entender só a minha voz" (#963): o servidor decide; a tela só manda o que mudou
+if ($("lxSoVoz_on")) $("lxSoVoz_on").onchange = () => {
+  const ligou = $("lxSoVoz_on").checked;
+  lxSoVozSalva({ on: ligou });
+  if (ligou && !(SOVOZ_NOMES || []).length) lxSoVozCadastra();   // sem perfil: leva ao cadastro
+};
+if ($("lxSoVoz_perfil")) $("lxSoVoz_perfil").onchange = () => lxSoVozSalva({ perfil: $("lxSoVoz_perfil").value });
+if ($("lxSoVoz_rigor")) $("lxSoVoz_rigor").onchange = () => lxSoVozSalva({ rigor_far: $("lxSoVoz_rigor").value });
+if ($("lxSoVozCadastra")) $("lxSoVozCadastra").onclick = () => lxSoVozCadastra();
 if ($("lxFiltrosPadrao")) $("lxFiltrosPadrao").onclick = () => lxRestauraPadroes();
 if ($("lxFiltrosPreset")) $("lxFiltrosPreset").onclick = () => lxAplicaPresetSoComando();
 if ($("lxPttBtn")) {

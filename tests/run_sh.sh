@@ -87,7 +87,7 @@ _teto_da_suite() {
         admin_ui_flow|live_barge_rep) echo 600 ;;
         live_ui|live_ws|live_interrupcao_ui|live_pausa_ui|obs_ui) echo 300 ;;
         voz_cadastro_ui|voz_desfazer_ui|voz_check_ui|voz_far_alvo_ui|voz_recadastro_ui) echo 300 ;;
-        voz_previa_limpa_ui|voz_assistente_ui|cancelado_ui) echo 300 ;;
+        voz_previa_limpa_ui|voz_assistente_ui|cancelado_ui|live_so_minha_voz_ui) echo 300 ;;
         onboarding_atalhos) echo 600 ;;   # gera fala de verdade, modelo frio
         live_dsh_fallback|conversa_429) echo 240 ;;
         live_lock_freeze) echo 300 ;;   # duas rodadas + cópia; roda no hook
@@ -110,7 +110,7 @@ NAVEGADOR=(dsh_ui hash_deep_link live_dsh_fallback live_barge_rep live_ui
             live_interrupcao_ui obs_ui live_ws ultima_chave_ui admin_ui_flow cfg_sujo_e_erros
             voz_desfazer_ui voz_cadastro_ui voz_check_ui voz_far_alvo_ui live_retomada_ui
             onboarding_atalhos xss_frontend_repro voz_recadastro_ui
-            voz_previa_limpa_ui voz_assistente_ui cancelado_ui live_pausa_ui)
+            voz_previa_limpa_ui voz_assistente_ui cancelado_ui live_pausa_ui live_so_minha_voz_ui)
 INSTANCIA=(a11y_teclado conversa_429 key_storage_repro live_hold_ui mic_erro_ui
            mobile_layout ui_repouso)
 
