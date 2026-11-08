@@ -467,7 +467,7 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
 
         # PASSO 2: decide
         for ini, fim, sim_orig, ocorre, sims, nota_orig, notas in medido:
-            (melhor_sim, _melhor_i), (seg_sim, _) = sims[0], sims[1]
+            (melhor_sim, _), (seg_sim, _) = sims[0], sims[1]
             (nota_melhor, nota_i), (nota_seg, _) = notas[0], notas[1]
             # os dois fluxos casam com o perfil: um falante só, separar atrapalha.
             # O limiar é na escala da nota (AS-norm quando o FAR alvo está ligado);
