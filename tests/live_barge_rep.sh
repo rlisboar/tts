@@ -793,12 +793,31 @@ try:
     elif BLOCO == "fim":
         # o aceite do `fim` é: NÃO cortar e a fala ser respondida depois. O
         # PENDENTE com `fim_de_resposta` é o caminho preferido e vai no número
-        # (`anotadas`), mas exigi-lo reprovaria por underrun da máquina.
+        # (`anotadas`), mas exigi-lo em TODA rodada reprovaria por underrun da
+        # máquina. Com fila, porém, a anotação é obrigatória: sem esta trava a
+        # mordida do `restante_ms` (MORDIDAS #547) deixou de morder — com 1000 o
+        # bloco passava no piso e `anotadas` caía para 0 em silêncio.
         acertos = ok_n
+        anotadas_com_fila = sum(1 for r in resultados
+                                if r.get("fim") and (r.get("fila_ms") or 0) >= 400)
+        # só cobra a anotação quando a decisão teve TEXTO: com o STT estourando o
+        # prazo (fala de ~100 ms sob carga) o desfecho cai em `ruido` antes da
+        # cadeia e a ausência de anotação não é do `restante_ms`.
+        decisoes_com_texto = sum(
+            1 for r in resultados
+            if any((s.get("texto") or "").strip()
+                   for s in (r.get("assinatura") or [])
+                   if s.get("type") == "barge_decisao"))
         print(f"\n=== BLOCO {BLOCO}: {acertos}/{REP} não cortaram E foram respondidas"
               f" · anotadas no pendente={sum(1 for r in resultados if r.get('fim'))}"
               f" · respondidas={sum(1 for r in resultados if r.get('respondida'))}"
+              f" · decisões com texto={decisoes_com_texto}"
               f" (limiar {LIMIAR})")
+        if decisoes_com_texto and not anotadas_com_fila:
+            print("✖ REPROVADO: com fila de playback e decisão por TEXTO, nenhuma"
+                  " fala do último segundo foi ANOTADA no pendente"
+                  " (mordida do restante_ms — #547)")
+            acertos = 0
     else:
         acertos = ok_n
         print(f"\n=== BLOCO {BLOCO}: {acertos}/{REP} cortaram (limiar {LIMIAR})")

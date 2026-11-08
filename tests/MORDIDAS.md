@@ -524,6 +524,13 @@ reprova — a regra passa a disparar depois do fim do áudio, quando a janela de
 barge já fechou. O cenário tem de injetar na janela (turno `ocioso` + playback
 ABERTO); sem essa preparação a fala entra no turno em voo e não vira barge.
 
+**Condição da mordida (medida em 2026-11-07):** ela só morde quando a decisão
+tem TEXTO. Com o STT estourando o prazo (fala de ~100 ms sob carga) o desfecho
+cai em `ruido` antes da cadeia e a anotação não acontece nem com 2000 — o bloco
+passaria nos dois sentidos. Por isso o resumo publica `decisões com texto` e a
+cobra da anotação só vale quando há ao menos uma: rode a mordida em janela
+folgada (o bloco também cai de 6/6 para 4–5/6 com load ≳ 30 sozinho).
+
 ## #533 — portão "só a minha voz" (smoke com o corpus do R4)
 
 Duas mordidas no `smoke_so_minha_voz.py` (corpus `/tmp/tts-bakeoff/fala`, do
