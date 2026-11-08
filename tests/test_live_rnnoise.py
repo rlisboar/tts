@@ -1053,6 +1053,32 @@ def test_atraso_declarado_bate_com_o_ffmpeg_real():
     assert abs(lag - live_rnnoise.ATRASO_AMOSTRAS) <= 16, f"atraso medido {lag} amostras"
 
 
+def test_turno_longo_tambem_vai_cru_ao_stt():
+    """#869 (A/B do S1): o ring tinha 10 s e o recorte pede o turno INTEIRO —
+    turno de fala contínua acima disso caía calado no filtrado. O motor fecha
+    turno de até `turno_max_ms`; o ring tem de cobrir isso + prefix + atraso."""
+    import app
+    import live_turns
+    import soundfile as sf
+
+    voz, sr = sf.read(str(_FALA), dtype="float32")
+    assert sr == SR
+    x = np.concatenate([np.zeros(SR, np.float32), np.tile(voz, 3),
+                        np.zeros(3 * SR, np.float32)])
+    x += np.random.default_rng(7).normal(0, 10 ** (-55 / 20), len(x)).astype(np.float32)
+    ns = _NsInverte()
+    sess = {"id": "s", "rnnoise": ns}
+    fins = _roda_motor(sess, x, ns.processa)
+    assert len(fins) == 1
+    ev, stt = fins[0]
+    assert len(ev.audio) // 2 > 12 * SR, "o turno precisa passar do ring antigo (10 s)"
+    assert not _igual(stt, bytes(ev.audio)), "turno longo foi FILTRADO ao STT (ring curto)"
+    assert _igual(stt, ns.processa(bytes(ev.audio)))
+    teto_s = (live_turns.Config().turno_max_ms + 2000) / 1000 \
+        + live_rnnoise.ATRASO_AMOSTRAS / SR
+    assert app._CRU_CAUDA_S > teto_s, "ring do cru menor que o turno máximo do motor"
+
+
 def test_turno_de_1500ms_de_fala_real_passa_no_vad_do_stt():
     """Aceite do #869: 1,5 s de fala real que o motor fecha como turno NÃO pode
     sair `motivo=vad` — o portão do STT (`_vad_tem_fala`) roda no que o turno

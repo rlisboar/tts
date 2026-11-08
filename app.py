@@ -12889,7 +12889,12 @@ def _live_rnnoise_derruba(sess: dict, motivo: str) -> None:
 # STT sai deste ring do PCM cru, alinhado por AMOSTRA. `TTS_LIVE_RNNOISE_STT=filtrado`
 # volta ao caminho antigo (é a mordida) e `TTS_LIVE_RNNOISE=0` desliga o filtro todo.
 _TTS_LIVE_RNNOISE_STT = (os.environ.get("TTS_LIVE_RNNOISE_STT") or "cru").strip().lower()
-_CRU_CAUDA_S = 10.0                  # pré-roll do motor + folga; ~320 kB por sessão
+# O ring cobre o TURNO INTEIRO, não só o pré-roll (#869): o recorte lê o trecho
+# do tamanho do áudio do turno, e turno mais longo que o ring caía calado no
+# filtrado (com 10 s, todo turno >~10 s ia ao Whisper com RNNoise). Teto do
+# motor (`turno_max_ms` 30 s, pré-roll do cliente incluso) + prefix máx. 2 s +
+# atraso do filtro + folga. ~1,1 MB por sessão.
+_CRU_CAUDA_S = 34.0
 #: geração das passadas de comando (#803): a nova invalida a anterior, que desiste
 #: no próximo ponto seguro — sem isso a abandonada seguia segurando o MLX.
 _STT_CMD_GERACAO = 0

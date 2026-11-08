@@ -376,9 +376,10 @@ def separa_alvo(wav: Path, vecs: list, modelo: str) -> tuple[Path, dict]:
             x = x.mean(axis=1)
         fluxos = [sf.read(str(f), dtype="float32")[0] for f in fluxos_p]
         centroide = app._speaker_centroide(vecs)
-        # (limiar, modo). Com `speaker_far_alvo` o [0] é AS-norm (2,434 / 3,044),
-        # não cosseno. A nota da decisão tem de nascer nessa mesma escala; o piso
-        # relativo continua no cru, que é onde o 0,55 foi medido (#663).
+        # (limiar, modo). ECAPA (#982) devolve cru mesmo com `speaker_far_alvo`
+        # ("1" → 0,39, "0.1" → 0,48). Resemblyzer com FAR alvo segue AS-norm.
+        # A nota da decisão nasce nessa mesma escala; o piso relativo continua
+        # no cru, que é onde o 0,55 foi medido (#663).
         limiar, modo = app._speaker_limiar(modelo)
         limiar = float(limiar)
         if modo == "asnorm" and vecs:

@@ -119,11 +119,11 @@ def _far_ligado(monkeypatch, vetor_dono: list[float]) -> None:
 
 
 def test_far_alvo_separa_na_escala_asnorm_e_nao_no_cru(monkeypatch, tmp_path):
-    """Cosseno 0,40 perde do limiar cru 0,6 e do 2,434; a nota AS-norm separa.
+    """ECAPA com FAR alvo "1" decide no cru 0,39 (#982), não no AS-norm 2,434.
 
-    Os dois fluxos não são a mesma voz (um casa, o outro não) e a correlação
-    com o original é nula — `separou` tem de disparar. Comparar o cru com
-    2,434, ou ignorar o FAR e usar 0,6, deixa `sobrepostas` em zero.
+    Cosseno 0,40 passa de 0,39 e perde do 0,6. Os dois fluxos não são a mesma
+    voz e a correlação com o original é nula — `separou` dispara. Voltar o
+    limiar para 2,434, ou ignorar o FAR e usar 0,6, deixa `sobrepostas` em zero.
     """
     dono_v = _vetor(0.40)
     intr_v = _vetor(-1.0)
@@ -152,7 +152,7 @@ def test_far_alvo_separa_na_escala_asnorm_e_nao_no_cru(monkeypatch, tmp_path):
     final, info = separa_voz.separa_alvo(wav, [[1.0, 0.0]], MODELO)
     saida = _le(final)
 
-    assert info["limiar"] == pytest.approx(2.434)
+    assert info["limiar"] == pytest.approx(0.39)
     assert info["dono_presente"] is True
     assert info["sobrepostas"] >= 1
     assert _rms(saida) > 0.05
@@ -179,6 +179,6 @@ def test_far_alvo_um_falante_nao_separa_voz_unica(monkeypatch, tmp_path):
     final, info = separa_voz.separa_alvo(wav, [[1.0, 0.0]], MODELO)
     saida = _le(final)
 
-    assert info["limiar"] == pytest.approx(2.434)
+    assert info["limiar"] == pytest.approx(0.39)
     assert info["sobrepostas"] == 0
     assert _rms(saida) < 1e-3

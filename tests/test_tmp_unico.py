@@ -51,6 +51,9 @@ COMPARTILHADOS = {
     "dsh4b-wire.py": "idem, variante wire",
     "medir_aceite_eco.py": "receita manual (comentário): script solto em /tmp, rodado à mão",
     "nome-antigo.log": "literal de exemplo no docstring do próprio teste da varredura",
+    "ab984": "bancada #984/#982: lê a cópia do estado do E2E que já está em /tmp; o script não cria o diretório",
+    "e2e-dono-3.wav": "bancada #984/#982: WAV de entrada já gravado fora do repo; o script só lê",
+    "e2e-terceiro.wav": "bancada #984/#982: WAV de entrada já gravado fora do repo; o script só lê",
 }
 
 # `os.environ` entra porque a linha do fallback lê a variável que a suíte exporta

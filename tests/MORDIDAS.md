@@ -930,6 +930,24 @@ sem gravar history e o áudio dele vai na frente do turno seguinte.
 | tirar o guarda "nenhum áudio de resposta saiu" | `test_depois_do_primeiro_audio_da_resposta_nao_ha_continuacao` **FAILED** |
 | tratar `speech_start` de barge como continuação | `test_speech_start_de_barge_nao_e_continuacao` **FAILED** |
 
+### #869 — PCM cru no STT do turno: ring do tamanho do turno
+
+O recorte de `_live_audio_cru` pede o trecho do tamanho do áudio do turno. Quando o
+ring guardava só 10 s, todo turno de fala contínua mais longo caía calado no
+filtrado: o tamanho não batia e o filtrado servia. O motor fecha turnos de até
+`turno_max_ms` (30 s, com o pré-roll), o prefix do cliente vai até 2 s e o atraso
+do filtro soma ~0,11 s; por isso o ring tem 34 s.
+
+| Sabotagem | Resultado |
+|---|---|
+| `_CRU_CAUDA_S = 10.0` (o ring antigo) | `test_turno_longo_tambem_vai_cru_ao_stt` **FAILED** (turno de 15,4 s FILTRADO ao STT) |
+
+Guarda sem mordida (registro do gate #878): `test_turno_de_1500ms_de_fala_real_passa_no_vad_do_stt`
+**não morde** o `motivo=vad` do relato. O turno de 1,5 s já passava no `_vad_tem_fala`
+antes do conserto. A célula prende o aceite (fala de 1,5 s fechada pelo motor não sai
+`motivo=vad`), não a causa: a causa do `motivo=vad` em produção não foi reproduzida
+offline (`evidence/869-live-vad-cru.md`).
+
 ### #984 — "só a minha voz": barge curto pontua a fala nova, não o eco
 
 O trecho do barge leva o eco da resposta do começo ao fim. Com 0,4–0,6 s de fala do
