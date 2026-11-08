@@ -414,6 +414,46 @@ async def _fala_ou_morte(c: Cliente, evento: asyncio.Event, teto_s: float) -> bo
     return fala in feitos
 
 
+def _voz_bloco(c: Cliente) -> dict:
+    """`stats.motor.voz` — o veredito do portão. Ausente vira `{}`."""
+    stats = getattr(c, "ultimo_stats", None) or {}
+    motor = stats.get("motor") if isinstance(stats, dict) else None
+    voz = (motor or {}).get("voz") if isinstance(motor, dict) else None
+    return voz if isinstance(voz, dict) else {}
+
+
+def _recusados_voz(c: Cliente) -> int:
+    try:
+        return int(_voz_bloco(c).get("recusados") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _b_recusada_identidade(c: Cliente, desde: float, recusados_antes: int) -> bool:
+    """O portão `identidade` recusou a fala B e nenhum turno vai abrir (#988).
+
+    Sem isto a bancada espera `--teto-turno-s` pelo 1º áudio e mais `teto*3`
+    por um `turn_complete` que não existe — a sessão fica `ocioso`.
+
+    Vale `barge_decisao` com `tipo=ruido` e `filtro=identidade` a partir de
+    `desde`. Outro ruído (eco, fim de resposta, STT vazio) não encerra: esse
+    turno ainda pode abrir. O `stats` só conta se `voz.recusados` SUBIU desde
+    o começo de B — o `ultimo.estado` antigo viaja em todo stats seguinte.
+    """
+    for _t, _ty, e in c.evs(desde, ("barge_decisao",)):
+        if e.get("filtro") == "identidade" and e.get("tipo") == "ruido":
+            return True
+    voz = _voz_bloco(c)
+    ultimo = voz.get("ultimo") or {}
+    if not isinstance(ultimo, dict) or ultimo.get("estado") != "recusado":
+        return False
+    try:
+        agora_n = int(voz.get("recusados") or 0)
+    except (TypeError, ValueError):
+        return False
+    return agora_n > int(recusados_antes)
+
+
 async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
                 args, linhas: list[dict]):
     """Uma fala A (resposta interrompida por B) + fala B (resposta toca com eco)."""
@@ -453,6 +493,8 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
         interrompeu = len(c.play) > 0 or c.tocado_s >= args.interrompe_apos_ms / 1000
     la["interrupcao_valida"] = interrompeu
     await asyncio.sleep(0)
+    # antes de B entrar: um `recusado` antigo não pode fechar esta fala
+    recusados_antes = _recusados_voz(c)
     fim_b = c.falar(fb["audio"])
     if not await _fala_ou_morte(c, fim_b, args.teto_turno_s):
         la["timeout_fala"] = True
@@ -482,13 +524,30 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
         lb["s3_pausa_ms"] = round((pausa[0][0] - b_ini) * 1000) if pausa else None
         lb["s3_stop_ms"] = round((corte[0][0] - b_ini) * 1000) if corte else None
     # ---------- resposta de B toca inteira com eco ----------
+    # Recusa de identidade não abre turno: sem este termo as duas esperas
+    # queimam o teto (300 s + 900 s) com a sessão em `ocioso` (#988).
+    desde_b = b_ini if isinstance(b_ini, (int, float)) else b_fim
+
+    def recusou() -> bool:
+        return _b_recusada_identidade(c, desde_b, recusados_antes)
+
     await c.espera(lambda: c.bin_apos(b_fim) is not None
-                   or c.evs(b_fim, ("turn_complete", "error")), args.teto_turno_s)
+                   or c.evs(b_fim, ("turn_complete", "error"))
+                   or recusou(),
+                   args.teto_turno_s)
     t_audio_b = c.bin_apos(max(b_fim, (c.evs(b_ini, ("interrupted",)) or [(b_fim,)])[0][0]))
     lb["s2_ms"] = round((t_audio_b - b_fim) * 1000) if t_audio_b else None
-    # até o turno fechar E o playback esvaziar
-    await c.espera(lambda: c.evs(b_fim, ("turn_complete", "error")) and len(c.play) == 0,
-                   args.teto_turno_s * 3)
+    turno_b = bool(c.evs(b_fim, ("turn_complete", "error")))
+    recusada = t_audio_b is None and not turno_b and recusou()
+    # até o turno fechar E o playback esvaziar. Recusa já decidida não espera.
+    if not recusada:
+        await c.espera(lambda: (c.evs(b_fim, ("turn_complete", "error"))
+                                and len(c.play) == 0)
+                       or (c.bin_apos(b_fim) is None and recusou()),
+                       args.teto_turno_s * 3)
+        t_audio_b = c.bin_apos(max(b_fim, (c.evs(b_ini, ("interrupted",)) or [(b_fim,)])[0][0]))
+        turno_b = bool(c.evs(b_fim, ("turn_complete", "error")))
+        recusada = t_audio_b is None and not turno_b and recusou()
     eco_fim = c.agora()
     # S2 DECOMPOSTO: o `latency` do turno chega no FECHAMENTO e separa o 1º
     # token da LLM (TTS + fila). `first_token_ms` conta do início da thread do
@@ -508,7 +567,9 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
         lb["eco_falso_duck"] = bool(c.evs(t_audio_b, ("speech_start", "barge_suspeito"),
                                           eco_fim))
         lb["eco_falso_pausa"] = bool(c.evs(t_audio_b, ("barge_pausa",), eco_fim))
-    await asyncio.sleep(1.0)            # cauda: evento atrasado ainda conta
+    # recusa já fechou: não há transcript atrasado para esperar 1 s
+    if not recusada:
+        await asyncio.sleep(1.0)        # cauda: evento atrasado ainda conta
     # S1 por CICLO: o servidor corta fala longa em pausa natural, acumula trecho
     # como pendente e funde trechos — atribuir transcript por janela de tempo
     # erra. Cada fala com referência conta pela COBERTURA das palavras dela no
@@ -533,6 +594,13 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
     lb["wer_ciclo"] = round(min(1.0, wer(ref_a + " " + fb["ref"], hip)), 3)
     lb["turnos_descartados"] = len(descartes)
     lb["pendente"] = bool(c.evs(a_ini, ("turno_pendente",)))
+    if recusada:
+        # portão, não perda: fora do S1/S3 (o observado continua sendo quem
+        # teve turno). `aceito` falso aqui só serviria para inflar o descarte.
+        lb["recusada_identidade"] = True
+        lb["aceito"] = False
+        lb["cobertura"] = 0.0
+        lb.pop("wer_ciclo", None)
     if t_audio_b is not None and "eco_falso_corte" in lb:
         lb["eco_falso_corte"] = lb["eco_falso_corte"] or bool(
             c.evs(eco_fim, ("interrupted",)))
@@ -541,6 +609,8 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
         for l in (la, lb):
             print(json.dumps({k: v for k, v in l.items() if not k.startswith("_")},
                              ensure_ascii=False), flush=True)
+    if recusada:
+        return
     await asyncio.sleep(random.uniform(args.pausa_min_s, args.pausa_max_s))
 
 
@@ -734,21 +804,24 @@ def _ic95(k: int, n: int) -> list | None:
 
 def resumo(res: dict, args) -> dict:
     L = res["linhas"]
-    wers = [l["wer_ciclo"] for l in L if "wer_ciclo" in l]
-    longas = [l for l in L if l["dur_s"] >= 0.8]
+    # Recusa do portão não é fala perdida nem entra na taxa do S1/S3 (#988).
+    obs = [l for l in L if not l.get("recusada_identidade")]
+    wers = [l["wer_ciclo"] for l in obs if "wer_ciclo" in l]
+    longas = [l for l in obs if l["dur_s"] >= 0.8]
     s2 = [l["s2_ms"] for l in L if l.get("s2_ms") is not None]
     llm = [l["s2_llm_ttft_ms"] for l in L if l.get("s2_llm_ttft_ms") is not None]
     pos = [l["s2_pos_llm_ms"] for l in L if l.get("s2_pos_llm_ms") is not None]
-    inter = [l for l in L if l["tipo"] == "interrupcao"]
+    inter = [l for l in obs if l["tipo"] == "interrupcao"]
     eco = [l for l in L if "eco_falso_corte" in l]
     resp = [r for r in res["respostas"] if r["chars"]]
     r = {
-        "S1": {"falas": len(L), "aceitas": sum(l.get("aceito", False) for l in L),
-               "pct_aceitas": round(100 * sum(l.get("aceito", False) for l in L) / max(1, len(L)), 1),
-               "aceitas_ic95": _ic95(sum(l.get("aceito", False) for l in L), len(L)),
+        "S1": {"falas": len(obs), "aceitas": sum(l.get("aceito", False) for l in obs),
+               "pct_aceitas": round(100 * sum(l.get("aceito", False) for l in obs) / max(1, len(obs)), 1),
+               "aceitas_ic95": _ic95(sum(l.get("aceito", False) for l in obs), len(obs)),
+               "recusadas_identidade": sum(bool(l.get("recusada_identidade")) for l in L),
                "cobertura_media": (round(statistics.mean(
-                   l["cobertura"] for l in L if "cobertura" in l), 3)
-                   if any("cobertura" in l for l in L) else None),
+                   l["cobertura"] for l in obs if "cobertura" in l), 3)
+                   if any("cobertura" in l for l in obs) else None),
                "ciclos_com_wer": len(wers),
                "wer_ciclo_medio": round(statistics.mean(wers), 3) if wers else None,
                "wer_ciclo_mediana": round(statistics.median(wers), 3) if wers else None,
