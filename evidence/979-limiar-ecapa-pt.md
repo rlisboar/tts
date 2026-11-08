@@ -58,15 +58,16 @@ Impostor cru: p50 0,086, p99 0,379, máx 0,441. Genuíno cru: p50 0,723, p5 0,43
 1. **Não ligar `speaker_far_alvo = "1"` com a coorte de hoje.** O 2,434 foi calibrado no
    LibriSpeech (R2, `evidence/521`) e não se transfere para fala PT: aqui o FAR medido é
    12,7 %.
-2. **Enforce no ECAPA em modo CRU: `speaker_threshold = 0.55`, `speaker_far_alvo = ""`.**
-   Neste corpus, 0 de 371 impostores passam (IC95 superior ≈ 1 %) e a folga é igual dos
-   dois lados (impostor máx 0,441; genuíno típico ≥0,6). Isso vale **depois** que o dono
+2. **Enforce no ECAPA em modo CRU, limiar 0,44** (CORRIGIDO em 2026-11-08 pelo #982;
+   esta nota dizia 0,55). Com 20 locutores do MLS Portuguese e o limiar tirado por
+   validação cruzada (`evidence/982-calibra-mls.md`), o 0,44 em 3 s dá FAR 0,34 % e
+   FRR 0,83 %; o 0,55 recusava o dono em 7,2 % (FRR) sem ganho real de FAR. Os 371
+   impostores daqui seguem a 0 % em 0,50–0,60 e a 0,27 % em 0,44. O ECAPA passa a ter
+   régua própria, que não lê o `speaker_threshold` (#982). Vale **depois** que o dono
    recadastrar no ECAPA: ≥3 amostras de ≥3 s, em ambiente quieto (regra do #521).
    Antes disso, o enforce de hoje segue no Resemblyzer com 0,6.
 3. **Conferir no microfone do dono antes de travar o número:** `/api/speaker/check`
    com ≥10 falas dele (todas `passaria`) e ≥10 de TV ou de outra pessoa (nenhuma).
-   Se o p5 do dono ficar abaixo de 0,6, baixar até 0,50; abaixo disso, a folga contra
-   impostores some.
 4. **Risco fora deste card (para o PM):** o portão "só a minha voz" do Live usa o
    AS-norm com o joelho 1,8 por padrão. Na régua de 3 s, isso deu 15 % de FAR aqui.
    Hoje ele está desligado no mini. Ligá-lo pede antes uma nova calibração (S-norm
