@@ -64,6 +64,14 @@ def test_dica_de_ordem_cita_os_dois_filtros_novos():
     assert "marca d'água > eco > identidade" in fonte
 
 
+def test_contador_de_falas_ignoradas_existe_no_painel_do_live():
+    """O JS escreve em #lxIgnoradas/#lxIgnoradasChip; sem o elemento no HTML o
+    contador nunca aparece (achado do #963: a entrega do #528 não tinha o markup)."""
+    painel = _fonte().split('id="view-live"', 1)[1].split('id="view-config"', 1)[0]
+    for cid in ("lxIgnoradasChip", "lxIgnoradas"):
+        assert f'id="{cid}"' in painel, f"{cid} não está no painel do Live"
+
+
 def test_etapas_da_limpeza_tem_marcador_de_admin_no_html():
     fonte = _fonte()
     assert 'data-admin-setting="voice_limpar_musica"' in fonte
