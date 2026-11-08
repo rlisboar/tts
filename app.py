@@ -11031,9 +11031,11 @@ _SPEAKER_DECIDE_CRU = frozenset({"ecapa:v1"})
 #: de:", anti-clone): FAR 0,34 % / FRR 0,83 % no MLS (limiar cruzado A/B). Não lê o
 #: `speaker_threshold`, que é a escala do Resemblyzer (o 0,6 do perfil legado).
 _ECAPA_LIMIAR_IDENTIDADE = 0.44
-#: ECAPA, janela de 1 s do portão do Live (2 confirmações): FAR ~1 % por janela
-#: (FRR 10,6 %); o rigor "0.1" vai a 0,39 (FAR 0,1 % por janela).
-_ECAPA_LIMIAR_JANELA = 0.31
+#: ECAPA, janela de 1 s do portão do Live (2 confirmações): 0,35 — FAR 0,46 % por
+#: janela no MLS PT (FRR 14,9 %). O FAR 1 % (0,31) ficou a 0,005 de um par do smoke
+#: do #533 (terceiro 2277: 48 turnos falsos em 10 min no 0,31, 0 a partir de 0,32);
+#: o 0,35 é a margem (decisão do PM). O rigor "0.1" vai a 0,39 (FAR 0,1 % por janela).
+_ECAPA_LIMIAR_JANELA = 0.35
 _ECAPA_LIMIAR_JANELA_01 = 0.39
 #: limiar por (modelo, FAR alvo). Resemblyzer: AS-normalizado, calibrado no R2
 #: (#521). ECAPA: CRU em 3 s, calibrado no MLS PT (#982) — "1" = FAR 1 %,
@@ -11246,8 +11248,8 @@ def _speaker_anticlone(wav_path: Path) -> dict:
 # **2 janelas seguidas** acima do limiar e piso de energia (0,15 do p90). Falso
 # turno medido: 0 em 10 min; custo 17 ms por janela com o modelo carregado — daí
 # o PREWARM por sessão.
-# LIMIAR (#982): o ECAPA decide no cosseno **CRU** por janela — 0,31 no joelho e no
-# rigor "1" (FAR ~1 % por janela no MLS PT), 0,39 no "0.1" (`_ECAPA_LIMIAR_JANELA*`).
+# LIMIAR (#982): o ECAPA decide no cosseno **CRU** por janela — 0,35 no joelho e no
+# rigor "1" (FAR 0,46 % por janela no MLS PT), 0,39 no "0.1" (`_ECAPA_LIMIAR_JANELA*`).
 # O AS-norm com o joelho 1,8 (#533) foi calibrado no LibriSpeech e em fala PT deixava
 # passar 15 % de impostores (#979); o ramo AS-norm de `_voz_limiar` fica só para um
 # extrator futuro que não esteja em `_SPEAKER_DECIDE_CRU`. O 0,44 CRU segue como
@@ -11300,7 +11302,7 @@ def _voz_limiar(modelo: str, rigor: str, fixo: float = 0.0) -> tuple[float, str]
     extrator não atravessa para o outro. Perfil legado vai para o limiar CRU do
     Resemblyzer mesmo com coorte disponível.
 
-    ECAPA (#982): CRU por janela de 1 s — 0,31 no joelho e no "1" (FAR ~1 % por
+    ECAPA (#982): CRU por janela de 1 s — 0,35 no joelho e no "1" (FAR 0,46 % por
     janela), 0,39 no "0.1". `limiar` explícito do bloco também é cru."""
     if modelo in _SPEAKER_DECIDE_CRU:
         if fixo and fixo > 0:

@@ -942,3 +942,24 @@ dono, toda janela de 1 s era quase toda eco e o portão recusava o próprio dono
 | tirar `a = _voz_recorta_fala(...)` de `_voz_do_dono` | `test_barge_curto_do_dono_sobre_o_eco_passa_com_a_fala_recortada` **FAILED** |
 | `_live_decide_barge` chamar `_voz_do_dono(audio)` sem `fala_ms` | `test_decide_barge_passa_a_fala_ao_portao` **FAILED** |
 | filtro `identidade` da cadeia sem `fala_ms` | `test_filtro_identidade_passa_a_fala_ao_portao` **FAILED** |
+
+### #982 — ECAPA decide no cosseno cru, por duração
+
+No MLS Portuguese, o AS-norm do ECAPA (coorte EN, top-10) pedia 10,4 em 3 s e 7,0 em
+1 s, contra os 2,434/1,8 do código, e mesmo assim perdia para o cru. O ECAPA passa a
+decidir no cru: 0,44 na identidade (0,39/0,48 com `speaker_far_alvo`) e 0,35 por
+janela de 1 s no Live. O Resemblyzer (perfil legado, 0,6) não muda.
+
+| Sabotagem | Resultado |
+|---|---|
+| janela do Live em 0,31 (o FAR 1 % do MLS; 48 turnos falsos no smoke) | `test_portao_ecapa_decide_no_cru_por_janela`, `test_escala_crua_do_ecapa_por_duracao_e_legado_intocado`, `test_speaker_check_pontua_como_o_gate_e_diz_o_veredito` **FAILED** |
+| identidade do ECAPA em 0,6 (a escala do Resemblyzer) | `test_escala_crua_...`, `test_speaker_check_...` **FAILED** |
+| tabela de FAR do ECAPA de volta a 2,434/3,044 | `test_escala_crua_...`, `test_speaker_far_alvo_normaliza_...`, `test_speaker_far_alvo_sem_coorte_...` **FAILED** |
+| `_SPEAKER_DECIDE_CRU` vazio (volta o AS-norm) | 6 células **FAILED** (as três acima + `test_escore_do_ecapa_e_cru_mesmo_com_coorte_e_alvo` e as duas de `far_alvo`) |
+| a queda 0,44 de `_voz_do_dono` sobrescrever o limiar do ECAPA | `test_portao_ecapa_decide_no_cru_por_janela` **FAILED** |
+| `_speaker_asnorm` normalizar o ECAPA de novo | `test_escore_do_ecapa_e_cru_...`, `test_speaker_far_alvo_normaliza_...` **FAILED** |
+
+O piso do `misto` no smoke caiu de 35 % para 10 %. Os 35 % vieram do AS-norm com
+uma coorte que CONTÉM os locutores 1673 e 2277 do corpus (vazamento). Dono e
+terceiro ao mesmo tempo, sem separação, é limitação conhecida até a separação do
+turno (#533 item 2). O piso do terceiro (≤1 turno falso em 10 min) segue duro.

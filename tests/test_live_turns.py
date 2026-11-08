@@ -1616,17 +1616,18 @@ def _emb_cos(c: float):
 
 
 def test_portao_ecapa_decide_no_cru_por_janela(monkeypatch):
-    """#982: o ECAPA decide no cosseno CRU, 0,31 por janela de 1 s, mesmo com a
+    """#982: o ECAPA decide no cosseno CRU, 0,35 por janela de 1 s, mesmo com a
     coorte presente. O AS-norm 2,434/1,8 do LibriSpeech deixava passar 12,7–15 %
     de impostores em fala PT (#979)."""
     _liga_so_minha_voz(monkeypatch)
     import app
     monkeypatch.setattr(app, "_speaker_modelo_do_perfil", lambda p: "ecapa:v1")
     monkeypatch.setattr(app, "_speaker_cohorte", lambda m: [[0.0, 1.0], [0.0, 1.0]])
-    monkeypatch.setattr(app, "_speaker_embed_ecapa_x", lambda t: _emb_cos(0.33))
+    monkeypatch.setattr(app, "_speaker_embed_ecapa_x", lambda t: _emb_cos(0.37))
     res = app._voz_do_dono(_pcm(3.0))
-    assert (res["ok"], res["limiar"], res["escore"]) == (True, 0.31, "cru"), res
-    monkeypatch.setattr(app, "_speaker_embed_ecapa_x", lambda t: _emb_cos(0.29))
+    assert (res["ok"], res["limiar"], res["escore"]) == (True, 0.35, "cru"), res
+    # 0,33: passava no FAR 1 % (0,31), que deixou 48 turnos falsos no smoke do #533
+    monkeypatch.setattr(app, "_speaker_embed_ecapa_x", lambda t: _emb_cos(0.33))
     assert app._voz_do_dono(_pcm(3.0))["ok"] is False
 
 
@@ -2109,7 +2110,7 @@ def test_comando_no_ultimo_segundo_CORTA_mesmo_com_fim_de_resposta():
 
 def test_escala_crua_do_ecapa_por_duracao_e_legado_intocado(monkeypatch):
     """#982: a régua do ECAPA é CRU e por duração. Identidade (≥3 s): 0,44; com
-    `speaker_far_alvo` "1"/"0.1": 0,39/0,48. Janela de 1 s do Live: 0,31 no joelho
+    `speaker_far_alvo` "1"/"0.1": 0,39/0,48. Janela de 1 s do Live: 0,35 no joelho
     e no "1", 0,39 no "0.1". O Resemblyzer (perfil legado do mini) não muda: sem
     alvo é o `speaker_threshold` (0,6) e com alvo o AS-norm do R2."""
     import app
@@ -2124,7 +2125,7 @@ def test_escala_crua_do_ecapa_por_duracao_e_legado_intocado(monkeypatch):
     monkeypatch.setattr(app, "_speaker_cohorte", lambda m: [[0.0, 1.0], [0.1, 0.9]])
     monkeypatch.setitem(app._settings, "speaker_far_alvo", "1")
     assert app._speaker_limiar("resemblyzer:v1") == (2.906, "asnorm"), "o legado mudou"
-    for rigor, lim in (("joelho", 0.31), ("1", 0.31), ("0.1", 0.39)):
+    for rigor, lim in (("joelho", 0.35), ("1", 0.35), ("0.1", 0.39)):
         assert app._voz_limiar("ecapa:v1", rigor) == (lim, "cru")
     assert app._voz_limiar("ecapa:v1", "joelho", 0.5) == (0.5, "cru")
     assert app._voz_limiar("resemblyzer:v1", "joelho") == (0.44, "cru"), "o legado mudou"

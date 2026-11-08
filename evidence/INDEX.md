@@ -316,9 +316,12 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `942-bancada-mini-c3f4a78.json` | #942 | 2026-11-07 | "rotulo": "c3f4a78-mini", |
 | `942-bancada-mini-c3f4a78.md` | #942 | 2026-11-07 | 942 — bancada no mini sobre c3f4a78 (4º deploy), janela 16:16–16:50 BRT |
 | `980-e2e-biometria.py` | #980 | 2026-11-08 | !/usr/bin/env python3 |
-| `984-barge-curto-dono.md` | #984 | — | 984 — barge curto do dono sobre o eco: pontuar só a fala nova leva o aceite de 0,4 s de 6 % a 60 % e baixa o f |
-| `984-barge-curto-dono.py` | #984 | — | """#984 — o portão "só a minha voz" no BARGE CURTO: aceite do dono × falso aceite de |
-| `984-eco-sozinho.py` | #984 | — | """#984 — o eco da resposta SOZINHO no portão "só a minha voz" (perfil do E2E).""" |
+| `982-barge-escala-crua.py` | #982 | — | """#982/#984 — o portão "só a minha voz" no BARGE CURTO: aceite do dono × falso aceite de |
+| `982-eco-clone-do-dono.py` | #982 | — | """#982 — por que o eco "passa como dono": a voz da resposta é um clone do dono do E2E.""" |
+| `982-escala-crua-implementada.md` | #982 | — | 982 — escala crua do ECAPA implementada: smoke #533 OK (0 turno falso), barge do terceiro 0/1530 |
+| `984-barge-curto-dono.md` | #984 | 2026-11-08 | 984 — barge curto do dono sobre o eco: pontuar só a fala nova leva o aceite de 0,4 s de 6 % a 60 % e baixa o f |
+| `984-barge-curto-dono.py` | #984 | 2026-11-08 | """#984 — o portão "só a minha voz" no BARGE CURTO: aceite do dono × falso aceite de |
+| `984-eco-sozinho.py` | #984 | 2026-11-08 | """#984 — o eco da resposta SOZINHO no portão "só a minha voz" (perfil do E2E).""" |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |

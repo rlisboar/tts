@@ -339,7 +339,7 @@ aparelho da LAN cadastra a própria voz); apagar o perfil (`DELETE
 | Rota | O que devolve |
 |---|---|
 | `GET /api/speaker/profiles` | `name`, `samples`, `updated`, `modelo`, `precisa_recadastrar`, `pendente` |
-| `POST /api/speaker/check` | `speaker`, `sim`, `limiar`, `modo` e `passaria` do áudio enviado (diagnóstico pela MESMA régua do gate) |
+| `POST /api/speaker/check` | `speaker`, `sim`, `limiar`, `modo` e `passaria` do áudio enviado (diagnóstico pela MESMA régua do gate), mais `limiar_live`/`modo_live` (a régua por janela do portão do Live, na mesma escala) |
 | `DELETE /api/speaker/{name}/pendente` | joga fora o recadastro PARCIAL (admin); o perfil e os vetores antigos ficam |
 
 O áudio de cada amostra aceita fica guardado em `state/speaker-audio/<id>/`
@@ -359,8 +359,37 @@ curto e devolve `fala_s`, `snr_db`, `ok` e `problemas` com as MESMAS réguas do
 O `check` existe para calibrar sem depender do gate ligado: ele pontua pelo
 centróide das amostras, com o extrator do perfil, e devolve o veredito do
 servidor (`passaria`; `autorizado` é o nome anterior, ainda publicado) junto do
-limiar e do modo efetivos — com `modo: "asnorm"` o `sim` é normalizado e não se
-compara com o rigor cru.
+limiar e do modo efetivos — com `modo: "asnorm"` (só no Resemblyzer com
+`speaker_far_alvo`) o `sim` é normalizado e não se compara com o rigor cru.
+
+### Régua do ECAPA: cosseno cru, por duração (#982)
+
+Com o ECAPA, a decisão é no **cosseno cru**, sem AS-norm. O check, o `speaker_gate`,
+o "só a voz de:" e o portão "só a minha voz" do Live usam a MESMA escala; muda só a
+duração do que é pontuado:
+
+| onde | o que é pontuado | limiar | medido no MLS Portuguese (limiar cruzado) |
+|---|---|---|---|
+| identidade (`check`, `speaker_gate`, "só a voz de:") | o áudio inteiro (≥3 s) | **0,44** | FAR 0,34 % · FRR 0,83 % |
+| idem com `speaker_far_alvo` `"1"` / `"0.1"` | idem | 0,39 / 0,48 | FAR 1 % / 0,1 % |
+| portão do Live (`live_so_minha_voz`) | janelas de 1 s, 2 confirmações | **0,35** (`rigor_far` `"0.1"`: 0,39) | FAR 0,46 % por janela · FRR 14,9 % |
+
+- O `sim` do check se compara direto com o `limiar` (identidade). O `limiar_live`
+  vale para uma janela de 1 s, não para o áudio inteiro: um check que passa no 0,44
+  não garante que toda janela do Live passe no 0,35.
+- **Por que não AS-norm:** a coorte EN e os limiares 2,434/1,8 foram calibrados no
+  LibriSpeech. Em fala PT, deixavam passar 12,7–15 % de impostores (#979) e, mesmo na
+  escala certa, perdiam para o cru (EER em 3 s: 2,16 % × 0,33 %;
+  `evidence/982-calibra-mls.md`). O cru não depende de coorte nem de língua.
+- O `speaker_threshold` (o "rigor" cru, default 0,6) é a escala do **Resemblyzer** e
+  só vale para perfil legado; o ECAPA não o lê.
+- O portão do Live recorta a fala nova do barge antes de pontuar (#984). O piso do
+  smoke (`smoke_so_minha_voz.py`) é duro para o terceiro: ≤1 turno falso em 10 min.
+- **Limitação conhecida:** com o dono e um terceiro falando AO MESMO TEMPO (sem
+  separação), o portão aceita só ~10 % das janelas do dono. O piso antigo de 35 % do
+  smoke veio de uma coorte que continha os próprios locutores do corpus (vazamento) e
+  não valia. Proteger contra voz sobreposta depende da separação do turno (#533,
+  item 2), hoje desligada; o portão **não** protege contra fala sobreposta.
 
 Cada perfil guarda o **extrator** que o gerou (`modelo`; ausente = Resemblyzer
 legado). Perfil de outro extrator continua autenticando — `precisa_recadastrar`

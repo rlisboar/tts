@@ -2557,14 +2557,14 @@ def test_speaker_check_pontua_como_o_gate_e_diz_o_veredito(client, auth, monkeyp
                         files={"audio": ("a.wav", b"x", "audio/wav")}).json()
     assert corpo["passaria"] is True and corpo["autorizado"] is True
     # ECAPA (#982): régua CRU calibrada (0,44), que não lê o `speaker_threshold`, e
-    # o limiar de janela do Live na MESMA escala (0,31) sai junto
+    # o limiar de janela do Live na MESMA escala (0,35) sai junto
     perfis["eu"]["modelo"] = "ecapa:v1"
     monkeypatch.setitem(app._settings, "speaker_threshold", 0.9)
     monkeypatch.setitem(app._settings, "live_so_minha_voz", {"on": False, "rigor_far": "joelho"})
     corpo = client.post("/api/speaker/check", headers=auth,
                         files={"audio": ("a.wav", b"x", "audio/wav")}).json()
     assert (corpo["limiar"], corpo["modo"]) == (0.44, "cru"), corpo
-    assert (corpo["limiar_live"], corpo["modo_live"]) == (0.31, "cru"), corpo
+    assert (corpo["limiar_live"], corpo["modo_live"]) == (0.35, "cru"), corpo
     assert corpo["passaria"] is True, "0,707 ≥ 0,44: o rigor do legado não vale no ECAPA"
 
 

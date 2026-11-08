@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Smoke do portão "só a minha voz" (#533) com o corpus do R4.
 
-Mede o que o card cobra, no caminho REAL do portão (`app._voz_do_dono`, ECAPA
-AS-normalizado com a coorte do I3 e limiar por FAR):
+Mede o que o card cobra, no caminho REAL do portão (`app._voz_do_dono`; desde o
+#982 o ECAPA decide no cosseno CRU, 0,35 por janela de 1 s):
 
   (a) dono falando → COBERTURA (janelas aceitas);
   (b) terceiro falando 10 min → TURNOS FALSOS (duas janelas seguidas aceitas);
@@ -49,7 +49,12 @@ MAX_FALSOS = float(os.environ.get("MAX_FALSOS", "1"))
 #: separação (que é opcional e desligada por default) — o vetor cai entre os dois
 #: e o pior caso custa caro: ~45 % das janelas e 2 janelas de ECAPA por chamada,
 #: então o piso de latência dele é o dobro (o resto segue ≤50 ms)
-PISO_MISTO = float(os.environ.get("PISO_MISTO", "35"))
+# #982: o piso era 35 % no AS-norm, mas a coorte EN de `models/` CONTÉM os dois
+# locutores deste corpus (1673 e 2277) — vazamento, número otimista. No cosseno
+# CRU do ECAPA (0,35 por janela) o misto mede 10 %: dono + terceiro somados sem
+# separação é LIMITAÇÃO CONHECIDA até a separação do turno (#533 item 2) ligar. O
+# piso do terceiro (≤1 turno falso/10 min) é duro e não muda.
+PISO_MISTO = float(os.environ.get("PISO_MISTO", "10"))
 #: o misto tem teto de latência PRÓPRIO: com voz de terceiro somada, quase toda
 #: janela tem voz, então a chamada paga as 2 janelas do protocolo (o piso de 50 ms
 #: do card é o do caminho normal)
@@ -207,7 +212,7 @@ def main() -> int:
               f"(piso ≤{MAX_FALSOS:g}/10min) · latência p50 {p50} ms {marca_lat} "
               f"p95 {p95} ms (piso mediana ≤{teto_lat:g}) · {janelas} janelas")
 
-    # CURVA do limiar: o FAR 1 % (2,434) é um ponto, não uma verdade — no corpus
+    # CURVA do limiar: o limiar em uso é um ponto, não uma verdade — no corpus
     # do R4 ele custa cobertura, então o número fica visível para o PM decidir.
     import app as _app
     lim_ef, modo_ef = _app._voz_limiar(
