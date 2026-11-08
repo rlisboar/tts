@@ -1,0 +1,133 @@
+15:20:23 [live] abre sess=d4930cc1e3 voz=4f6a75c20d retomado=False history=0 criadas=0
+00:30:48 [live] abre sess=66cc166d13 voz=901228b40a retomado=False history=0 criadas=0
+00:30:59 [live] abre sess=66cc166d13 voz=901228b40a retomado=False history=0 criadas=0
+00:31:09 [live] abre sess=66cc166d13 voz=901228b40a retomado=False history=0 criadas=0
+00:34:02 [live] abre sess=c881026e01 voz=901228b40a retomado=False history=0 criadas=0
+00:34:22 [live] abre sess=bcaefd36aa voz=901228b40a retomado=False history=0 criadas=0
+00:35:47 [live] abre sess=87163825ef voz=901228b40a retomado=False history=0 criadas=0
+00:37:32 [live] abre sess=4f69eb3d58 voz=901228b40a retomado=False history=0 criadas=0
+00:37:38 [live] abre sess=5c8c3844b5 voz=901228b40a retomado=False history=0 criadas=0
+00:53:15 [live] abre sess=5670abecea voz=7b620feaba retomado=False history=0 criadas=0
+00:53:24 [live] abre sess=5670abecea voz=7b620feaba retomado=False history=0 criadas=0
+01:03:40 [live] abre sess=e26b409768 voz=7b620feaba retomado=False history=0 criadas=0
+01:03:48 [live] abre sess=e26b409768 voz=7b620feaba retomado=False history=0 criadas=0
+01:03:59 [live] abre sess=e26b409768 voz=7b620feaba retomado=False history=0 criadas=0
+01:05:02 [live] abre sess=cea89ecf4c voz=7b620feaba retomado=False history=0 criadas=0
+01:29:14 [live] abre sess=7bd86a6a90 voz=7b620feaba retomado=False history=0 criadas=0
+01:39:06 [live] abre sess=1ec901c4f8 voz=7b620feaba retomado=False history=0 criadas=0
+01:41:32 [live] abre sess=bf8db68f1c voz=7b620feaba retomado=False history=0 criadas=0
+02:13:23 [live] abre sess=03d0590c0c voz=7b620feaba retomado=False history=0 criadas=0
+14:45:21 [live] abre sess=f7c51ea587 voz=7b620feaba retomado=False history=0 criadas=0
+15:04:21 [live] abre sess=6042a7c4b9 voz=7b620feaba retomado=False history=0 criadas=0
+15:22:03 [live] abre sess=b761794d1f voz=7b620feaba retomado=False history=0 criadas=0
+15:41:48 [live] abre sess=769f5346c6 voz=7b620feaba retomado=False history=0 criadas=0
+15:52:07 [live] abre sess=5750d20571 voz=7b620feaba retomado=False history=0 criadas=0
+16:18:15 [live] abre sess=1a0207abfc voz=7b620feaba retomado=False history=0 criadas=0
+17:39:13 [live] abre sess=1517afd0a8 voz=7b620feaba retomado=False history=0 criadas=0
+17:45:10 [live] abre sess=95dd6fe27a voz=7b620feaba retomado=False history=0 criadas=0
+19:16:34 [live] abre sess=3340319653 voz=7b620feaba retomado=False history=0 criadas=0
+19:18:46 [live] abre sess=1ef3e93035 voz=7b620feaba retomado=False history=0 criadas=0
+23:32:23 [live] abre sess=17f72d8b0f voz=7b620feaba retomado=False history=0 criadas=0
+17:33:18 [live] abre sess=b50ec5a60b voz=7b620feaba retomado=False history=0 criadas=0
+17:33:35 [live] loop_atraso sess=b50ec5a60b ms=17336 stage=idle
+17:33:37 [live] speech_start sess=b50ec5a60b t_ms=22269 prob=0.996574878692627
+17:33:40 [live] speech_end sess=b50ec5a60b t_ms=25885 fala_ms=2432 curto=False barge_falso=False detalhe=silencio
+17:33:40 [live] stage_inicio sess=b50ec5a60b stage=stt
+17:33:40 [live] speech_start sess=b50ec5a60b t_ms=25565 prob=0.9948171377182007
+17:33:40 [live] turno_continuado sess=b50ec5a60b idade_ms=94 bytes=104448
+17:33:40 [live] interrupted sess=b50ec5a60b turno=1 motivo=continuacao
+17:33:40 [live] stage_fim sess=b50ec5a60b stage=stt ms=115
+17:33:41 [live] barge_in sess=b50ec5a60b t_ms=26383
+17:33:41 [live] cancel sess=b50ec5a60b turno=1 em_curso=True
+17:33:41 [live] interrupted sess=b50ec5a60b turno=1
+17:33:43 [live] speech_end sess=b50ec5a60b t_ms=28283 fala_ms=1760 curto=False barge_falso=False detalhe=silencio
+17:33:43 [live] stage_inicio sess=b50ec5a60b stage=stt
+17:33:43 [live] speech_start sess=b50ec5a60b t_ms=27966 prob=0.9995259046554565
+17:33:43 [live] turno_continuado sess=b50ec5a60b idade_ms=97 bytes=179200
+17:33:43 [live] interrupted sess=b50ec5a60b turno=2 motivo=continuacao
+17:33:43 [live] stage_fim sess=b50ec5a60b stage=stt ms=105
+17:33:44 [live] speech_end sess=b50ec5a60b t_ms=29884 fala_ms=896 curto=False barge_falso=False detalhe=silencio
+17:33:44 [live] stage_inicio sess=b50ec5a60b stage=stt
+17:33:45 [live] stage_fim sess=b50ec5a60b stage=stt ms=1020
+17:33:45 [live] stage_inicio sess=b50ec5a60b stage=llm
+17:33:48 [live] stage_fim sess=b50ec5a60b stage=llm ms=2701
+17:33:48 [live] stage_inicio sess=b50ec5a60b stage=tts
+17:33:56 [live] stage_fim sess=b50ec5a60b stage=tts ms=8024
+17:49:35 [live] loop_atraso sess=b50ec5a60b ms=565 stage=idle
+17:49:53 [live] solta_slot sess=b50ec5a60b motivo=cliente_fechou fila_bytes=0 descartados=0
+17:49:53 [live] fecha sess=b50ec5a60b idade_s=998 frames=9779 bytes=31292800 chunks=4 turnos=3
+17:50:00 [live] abre sess=bffb1c9d09 voz=7b620feaba retomado=False history=0 criadas=0
+17:50:06 [live] loop_atraso sess=bffb1c9d09 ms=6148 stage=idle
+17:50:08 [live] speech_start sess=bffb1c9d09 t_ms=11642 prob=0.9975849390029907
+17:50:11 [live] speech_end sess=bffb1c9d09 t_ms=15260 fala_ms=2432 curto=False barge_falso=False detalhe=silencio
+17:50:11 [live] stage_inicio sess=bffb1c9d09 stage=stt
+17:50:11 [live] speech_start sess=bffb1c9d09 t_ms=14941 prob=0.994320273399353
+17:50:11 [live] turno_continuado sess=bffb1c9d09 idade_ms=97 bytes=104448
+17:50:11 [live] interrupted sess=bffb1c9d09 turno=1 motivo=continuacao
+17:50:11 [live] stage_fim sess=bffb1c9d09 stage=stt ms=112
+17:50:12 [live] barge_in sess=bffb1c9d09 t_ms=15753
+17:50:12 [live] cancel sess=bffb1c9d09 turno=1 em_curso=True
+17:50:12 [live] interrupted sess=bffb1c9d09 turno=1
+17:50:14 [live] speech_end sess=bffb1c9d09 t_ms=18257 fala_ms=1760 curto=False barge_falso=False detalhe=silencio
+17:50:14 [live] stage_inicio sess=bffb1c9d09 stage=stt
+17:50:14 [live] speech_start sess=bffb1c9d09 t_ms=17848 prob=0.9995118379592896
+17:50:14 [live] turno_continuado sess=bffb1c9d09 idade_ms=3 bytes=179200
+17:50:14 [live] interrupted sess=bffb1c9d09 turno=2 motivo=continuacao
+17:50:14 [live] stage_fim sess=bffb1c9d09 stage=stt ms=52
+17:50:15 [live] speech_end sess=bffb1c9d09 t_ms=19346 fala_ms=896 curto=False barge_falso=False detalhe=silencio
+17:50:15 [live] stage_inicio sess=bffb1c9d09 stage=stt
+17:50:16 [live] stage_fim sess=bffb1c9d09 stage=stt ms=1003
+17:50:16 [live] stage_inicio sess=bffb1c9d09 stage=llm
+17:50:19 [live] stage_fim sess=bffb1c9d09 stage=llm ms=3236
+17:50:19 [live] stage_inicio sess=bffb1c9d09 stage=tts
+17:50:28 [live] stage_fim sess=bffb1c9d09 stage=tts ms=8054
+17:50:35 [live] barge_suspeito sess=bffb1c9d09 t_ms=38086 detalhe=onset durante playback (inteligente)
+17:50:36 [live] speech_end sess=bffb1c9d09 t_ms=39957 fala_ms=896 curto=False barge_falso=False detalhe=silencio
+17:50:36 [live] stage_inicio sess=bffb1c9d09 stage=stt
+17:50:36 [live] barge_decisao sess=bffb1c9d09 tipo=interrupcao filtro=palavras_corte fala_ms=896 decisao_ms=977 texto=Conselheiro, não é conselheiro? restante_ms=864 trecho_ms=1408
+17:50:36 [live] cancel sess=bffb1c9d09 turno=4 em_curso=True
+17:50:36 [live] barge_in sess=bffb1c9d09 t_ms=40442
+17:50:36 [live] cancel sess=bffb1c9d09 turno=4 em_curso=True
+17:50:36 [live] speech_start sess=bffb1c9d09 t_ms=40442 prob=0.0
+17:50:36 [live] interrupted sess=bffb1c9d09 turno=4
+17:50:36 [live] stage_fim sess=bffb1c9d09 stage=stt ms=539
+17:50:37 [live] speech_end sess=bffb1c9d09 t_ms=40954 fala_ms=0 curto=True barge_falso=True detalhe=silencio
+17:50:37 [live] stage_inicio sess=bffb1c9d09 stage=stt
+17:50:38 [live] stage_fim sess=bffb1c9d09 stage=stt ms=1217
+17:50:38 [live] stage_inicio sess=bffb1c9d09 stage=llm
+17:50:41 [live] stage_fim sess=bffb1c9d09 stage=llm ms=2769
+17:50:41 [live] stage_inicio sess=bffb1c9d09 stage=tts
+17:50:43 [live] barge_suspeito sess=bffb1c9d09 t_ms=46381 detalhe=onset durante playback (inteligente)
+17:50:45 [live] speech_end sess=bffb1c9d09 t_ms=48754 fala_ms=1312 curto=False barge_falso=False detalhe=silencio
+17:50:45 [live] turno_pendente sess=bffb1c9d09 bytes=281600 trechos=1 truncado=False descartados_ms=0 barge=True fim_de_resposta=False
+17:50:45 [live] barge_decisao sess=bffb1c9d09 tipo=eco filtro=eco fala_ms=928 decisao_ms=1214 texto=Isso mesmo. restante_ms=1824 trecho_ms=1344
+17:50:47 [live] stage_fim sess=bffb1c9d09 stage=tts ms=6196
+17:50:47 [live] stage_inicio sess=bffb1c9d09 stage=stt
+17:50:48 [live] stage_fim sess=bffb1c9d09 stage=stt ms=911
+17:50:48 [live] stage_inicio sess=bffb1c9d09 stage=llm
+17:50:51 [live] stage_fim sess=bffb1c9d09 stage=llm ms=2707
+17:50:51 [live] stage_inicio sess=bffb1c9d09 stage=tts
+17:50:52 [live] barge_suspeito sess=bffb1c9d09 t_ms=55381 detalhe=onset durante playback (inteligente)
+17:50:53 [live] speech_end sess=bffb1c9d09 t_ms=56654 fala_ms=320 curto=False barge_falso=True detalhe=silencio
+17:50:54 [live] barge_decisao sess=bffb1c9d09 tipo=interrupcao filtro=conteudo fala_ms=320 decisao_ms=1875 texto=poderia restante_ms=3744 trecho_ms=1280
+17:50:54 [live] cancel sess=bffb1c9d09 turno=6 em_curso=True
+17:50:54 [live] barge_in sess=bffb1c9d09 t_ms=58529
+17:50:54 [live] cancel sess=bffb1c9d09 turno=6 em_curso=True
+17:50:54 [live] speech_start sess=bffb1c9d09 t_ms=58529 prob=0.0
+17:50:55 [live] interrupted sess=bffb1c9d09 turno=6
+17:50:55 [live] stage_fim sess=bffb1c9d09 stage=tts ms=4066
+17:50:55 [live] speech_end sess=bffb1c9d09 t_ms=59059 fala_ms=0 curto=True barge_falso=True detalhe=silencio
+17:50:55 [live] stage_inicio sess=bffb1c9d09 stage=stt
+17:50:56 [live] turno_descartado sess=bffb1c9d09 motivo=stt detalhe=baixa confiança (-1.08)
+17:50:56 [live] stage_fim sess=bffb1c9d09 stage=stt ms=964
+17:51:01 [live] speech_start sess=bffb1c9d09 t_ms=64344 prob=0.9817895889282227
+17:51:11 [live] speech_end sess=bffb1c9d09 t_ms=75362 fala_ms=9184 curto=False barge_falso=False detalhe=silencio
+17:51:11 [live] stage_inicio sess=bffb1c9d09 stage=stt
+17:51:12 [live] stage_fim sess=bffb1c9d09 stage=stt ms=1062
+17:51:12 [live] stage_inicio sess=bffb1c9d09 stage=llm
+17:51:15 [live] stage_fim sess=bffb1c9d09 stage=llm ms=2390
+17:51:15 [live] stage_inicio sess=bffb1c9d09 stage=tts
+17:51:20 [live] stage_fim sess=bffb1c9d09 stage=tts ms=5800
+18:08:25 [live] solta_slot sess=bffb1c9d09 motivo=cliente_fechou fila_bytes=0 descartados=0
+18:08:25 [live] fecha sess=bffb1c9d09 idade_s=1109 frames=10989 bytes=35164800 chunks=11 turnos=8
+18:08:32 [live] abre sess=0ae8e4f6e3 voz=7b620feaba retomado=False history=0 criadas=0

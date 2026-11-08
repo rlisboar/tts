@@ -311,6 +311,12 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `869-ab-s1-cru-filtrado.py` | #869 | 2026-11-08 | """#869 item 3 (A/B isolado do S1, script) — S1 ISOLADO do PCM cru: mesmo SHA, mesmo áudio, só muda o que o |
 | `869-live-vad-cru.md` | #869 | 2026-11-06 | 869 — Live descarta turno com fala real (`motivo=vad` / "sem fala") |
 | `869-repro-cru.py` | #869 | 2026-11-06 | """#869 — reproduz o descarte `motivo=vad` do Live com áudio gravado. |
+| `875-bancada-afc3f42-PARCIAL.json` | #875 | — | "rotulo": "afc3f42", |
+| `875-bancada-afc3f42-PARCIAL.log` | #875 | — | (sem descrição) |
+| `875-hang-README.md` | #875 | — | 875 — hang do turno no Live (rodada final INCOMPLETA, build `afc3f42`) |
+| `875-hang-b50ec5a60b-relogio.jsonl` | #875 | — | (sem descrição) |
+| `875-hang-bffb1c9d09-relogio.jsonl` | #875 | — | (sem descrição) |
+| `875-hang-log.txt` | #875 | — | 15:20:23 [live] abre sess=d4930cc1e3 voz=4f6a75c20d retomado=False history=0 criadas=0 |
 | `876-stt-bench-carga.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench-livre.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench.py` | #876 | 2026-11-06 | """#876 — latência e WER do STT local do Live por modelo, com e sem TTS em paralelo. |
@@ -324,9 +330,9 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `979-limiar-ecapa-pt.md` | #979 | 2026-11-08 | 979 — limiar do ECAPA em fala PT-BR: o AS-norm 2,434 deixa passar 12,7 % dos impostores; o cosseno cru separa |
 | `979-limiar-ecapa-pt.py` | #979 | 2026-11-08 | """#979 — validação do limiar ECAPA AS-norm (2,434 @FAR 1 % do R2, 1,8 joelho do Live) num corpus |
 | `980-e2e-biometria.py` | #980 | 2026-11-08 | !/usr/bin/env python3 |
-| `982-barge-escala-crua.py` | #982 | — | """#982/#984 — o portão "só a minha voz" no BARGE CURTO: aceite do dono × falso aceite de |
-| `982-eco-clone-do-dono.py` | #982 | — | """#982 — por que o eco "passa como dono": a voz da resposta é um clone do dono do E2E.""" |
-| `982-escala-crua-implementada.md` | #982 | — | 982 — escala crua do ECAPA implementada: smoke #533 OK (0 turno falso), barge do terceiro 0/1530 |
+| `982-barge-escala-crua.py` | #982 | 2026-11-08 | """#982/#984 — o portão "só a minha voz" no BARGE CURTO: aceite do dono × falso aceite de |
+| `982-eco-clone-do-dono.py` | #982 | 2026-11-08 | """#982 — por que o eco "passa como dono": a voz da resposta é um clone do dono do E2E.""" |
+| `982-escala-crua-implementada.md` | #982 | 2026-11-08 | 982 — escala crua do ECAPA implementada: smoke #533 OK (0 turno falso), barge do terceiro 0/1530 |
 | `984-barge-curto-dono.md` | #984 | 2026-11-08 | 984 — barge curto do dono sobre o eco: pontuar só a fala nova leva o aceite de 0,4 s de 6 % a 60 % e baixa o f |
 | `984-barge-curto-dono.py` | #984 | 2026-11-08 | """#984 — o portão "só a minha voz" no BARGE CURTO: aceite do dono × falso aceite de |
 | `984-eco-sozinho.py` | #984 | 2026-11-08 | """#984 — o eco da resposta SOZINHO no portão "só a minha voz" (perfil do E2E).""" |
@@ -336,6 +342,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `audit-fe-mobile-tradutor-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `chave-admin-campos-livres.png` | — | 2026-09-24 | (imagem) |
 | `chave-de-uso-campos-travados.png` | — | 2026-09-24 | (imagem) |
+| `deploy-head-afc3f42.txt` | — | — | == início 2026-11-08T17:28:12-03:00 — log /tmp/deploy-head-20261108-172812.log |
 | `depois-chave-sessao.png` | — | 2026-09-24 | (imagem) |
 | `depois-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `dsh-acp-3pontas-persona.txt` | — | 2026-09-29 | == busca de turno LENTO com trace (prompt persona) == |
