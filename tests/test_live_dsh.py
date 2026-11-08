@@ -540,7 +540,8 @@ def test_stats_ia_reflete_o_fallback(monkeypatch, dsh_limpo):
     monkeypatch.setenv("TTS_CHAT_BACKEND", "dsh")
     caiu = app._live_stats_ia({"pipe": PipeFalso()})
     assert caiu == {"pedido": "dsh", "backend": "openai", "fallback": True,
-                    "motivo": "DshError: rc=1", "teto_estouro": 0, "bridge": None}
+                    "motivo": "DshError: rc=1", "teto_estouro": 0, "bridge": None,
+                    "llm_cortes": 0, "llm_corte": ""}
 
     class PipeOk:
         _dsh_indisponivel = False

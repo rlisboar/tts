@@ -74,6 +74,16 @@ def _env_positivo(nome: str, padrao: float) -> float:
 
 
 _DSH_FIRST_DELTA_S = _env_positivo("TTS_LIVE_DSH_FIRST_DELTA_S", 12.0)
+# Tetos do stream do LLM no caminho openai (#1006). O `urlopen(timeout=120)` é
+# por LEITURA de socket: provedor que manda keepalive (`: ping`) ou fecha a
+# resposta sem `[DONE]` e sem fechar a conexão prendia o `for delta` do turno
+# para sempre — sem `turn_complete`, sem `interrupted`, e o barge-in nem era
+# visto, porque o laço só olha o cancel ENTRE deltas. Medido na bancada #875
+# (afc3f42): duas sessões paradas 16 min depois do TTS. `OCIOSO` conta desde o
+# último delta de TEXTO (keepalive não zera); `TETO` é o stream inteiro.
+_LLM_OCIOSO_S = _env_positivo("TTS_LIVE_LLM_OCIOSO_S", 30.0)
+_LLM_TETO_S = _env_positivo("TTS_LIVE_LLM_TETO_S", 120.0)
+
 #: estouros de relógio SEGUIDOS antes de dar o dsh como indisponível (#287)
 _DSH_ESTOUROS_MAX = max(1, int(os.environ.get("TTS_LIVE_DSH_ESTOUROS_MAX", "2")))
 
@@ -285,6 +295,12 @@ class LivePipeline:
         #: estouros de relógio SEGUIDOS: o dsh segue vivo, mas insistir a cada turno
         #: custaria 12 s por turno — depois do teto de tentativas ele desiste
         self._dsh_estouros = 0
+        #: tetos do stream openai (#1006) e o último corte, que vai ao `stats.ia`
+        self._llm_ocioso_s = _LLM_OCIOSO_S
+        self._llm_teto_s = _LLM_TETO_S
+        self._llm_corte = ""              # motivo do corte do turno EM CURSO
+        self._llm_cortes = 0              # quantos turnos da sessão foram cortados
+        self._llm_corte_ultimo = ""       # retrato do último corte (para o stats)
         # a voz vem do `setup` da sessão, não do default do app
         # Sem `tts` injetado, o turno tenta o worker PERSISTENTE da sessão (#152) e
         # cai no `_tts_app` in-process na 1ª falha (ver `_tts_live`).
@@ -630,8 +646,81 @@ class LivePipeline:
             # qualquer forma — o laço do turno compara com ela e o `cancel` do
             # barge-in continua achando o turno (o cliente morto ignora).
             self._dsh_turno = turno_id
-            return self._llm(msgs)
+            return self._llm_com_teto(msgs)
         return self._deltas_dsh(msgs, texto, turno_id)
+
+    def _llm_com_teto(self, msgs: list):
+        """Deltas do `llm` (openai) com teto de OCIOSIDADE e teto TOTAL (#1006).
+
+        O stream é puxado numa thread e o laço espera com prazo curto: assim o
+        barge-in (`cancel`) é visto mesmo com o socket parado, e um provedor que
+        não encerra o stream não segura o turno. Estourou, o gerador TERMINA (não
+        levanta): o turno fecha com o que já foi dito e o `turn_complete` leva
+        `llm_corte` com o motivo — o mesmo motivo sai no `stats.ia`. A thread de
+        leitura fica para trás (daemon) até o socket dela morrer; nada do que ela
+        puxar depois chega ao turno."""
+        fila: Queue = Queue()
+        abandonado = threading.Event()
+        # pull SOB DEMANDA, um delta por vez (como no dsh): o gerador só anda
+        # depois que o turno processou o delta anterior — a referência do eco
+        # (`_fala_em_curso`) e o chunker veem o texto na mesma ordem de antes
+        pedido = threading.Event()
+        pedido.set()
+        gen = iter(self._llm(msgs))
+
+        def _puxar() -> None:
+            try:
+                while True:
+                    pedido.wait()
+                    pedido.clear()
+                    if abandonado.is_set():
+                        return
+                    try:
+                        delta = next(gen)
+                    except StopIteration:
+                        fila.put(("fim", None))
+                        return
+                    if abandonado.is_set():
+                        return
+                    fila.put(("delta", delta))
+            except BaseException as exc:  # noqa: BLE001 — sobe na thread do turno
+                fila.put(("erro", exc))
+
+        threading.Thread(target=_puxar, name="llm-stream", daemon=True).start()
+        inicio = ultimo = time.monotonic()
+        try:
+            while True:
+                if self.cancelado:
+                    return
+                agora = time.monotonic()
+                if agora - inicio > self._llm_teto_s:
+                    self._llm_cortou("teto", agora - inicio)
+                    return
+                if agora - ultimo > self._llm_ocioso_s:
+                    self._llm_cortou("ocioso", agora - ultimo)
+                    return
+                item = self._fila_ou_none(fila, 0.05)
+                if item is None:
+                    continue
+                tipo, payload = item
+                if tipo == "fim":
+                    return
+                if tipo == "erro":
+                    raise payload
+                yield payload
+                ultimo = time.monotonic()  # o relógio da ociosidade conta do PEDIDO
+                pedido.set()
+        finally:
+            abandonado.set()
+            pedido.set()                  # solta a thread se ela espera pedido
+
+    def _llm_cortou(self, motivo: str, segundos: float) -> None:
+        self._llm_corte = motivo
+        self._llm_cortes += 1
+        self._llm_corte_ultimo = (f"{motivo}: stream do LLM parado "
+                                  f"{segundos:.1f}s (turno {self._turno_atual})")
+        print(f"[live] {self._llm_corte_ultimo} — turno fecha com o que já saiu",
+              flush=True)
 
     def _deltas_dsh(self, msgs: list, texto: str, turno_id: str):
         """Deltas pelo dsh, com REDE DE SEGURANÇA para o openai (#146 / #259 / #264).
@@ -721,7 +810,7 @@ class LivePipeline:
                         parar.set()
                         pedido.set()
                         self._dsh_teto_estourou(turno_id)
-                        yield from self._llm(msgs)
+                        yield from self._llm_com_teto(msgs)
                         return
                 else:
                     item = self._fila_ou_none(fila, min(0.05, restante))
@@ -740,7 +829,7 @@ class LivePipeline:
                 if primeiro:
                     self._dsh_morreu(payload)
                     if (texto or "").strip():
-                        yield from self._llm(msgs)
+                        yield from self._llm_com_teto(msgs)
                     return
                 self._dsh_morreu(payload, avisa=False)
                 raise payload
@@ -748,7 +837,7 @@ class LivePipeline:
                 if primeiro and not self.cancelado and (texto or "").strip():
                     self._dsh_morreu(DshError(
                         "dsh encerrou sem emitir nenhum token"))
-                    yield from self._llm(msgs)
+                    yield from self._llm_com_teto(msgs)
                 return
             if self.cancelado:
                 return                    # chunk tardio não passa do teto nem do barge-in
@@ -950,6 +1039,7 @@ class LivePipeline:
                      "tts_start_ms": None, "tts_first_pcm_ms": None,
                      "marca_ms": None, "send_ms": None}
         self._play_fim = 0.0          # speech_start no cliente zera a fila
+        self._llm_corte = ""          # #1006: corte do stream vale por turno
         try:
             self.emit_json({"type": "speech_start", "turn": turno,
                             "buffer_bytes": bytes_entrada})
@@ -1094,10 +1184,15 @@ class LivePipeline:
             if _DEBUG_TTS:
                 print(f"[live][dbg] turn_complete turno={turno} bytes={bytes_entrada} "
                       f"truncado={truncado}", flush=True)
-            self.emit_json({"type": "turn_complete", "turn": turno, "ms": lat["total_ms"],
-                            "audio_bytes": estado["audio_bytes"],
-                            "buffer_bytes": bytes_entrada, "transcript": texto,
-                            "truncated": truncado})
+            fim = {"type": "turn_complete", "turn": turno, "ms": lat["total_ms"],
+                   "audio_bytes": estado["audio_bytes"],
+                   "buffer_bytes": bytes_entrada, "transcript": texto,
+                   "truncated": truncado}
+            if self._llm_corte:
+                # #1006: a resposta foi CORTADA pelo teto do stream — o cliente
+                # e a bancada distinguem de uma resposta que terminou sozinha
+                fim["llm_corte"] = self._llm_corte
+            self.emit_json(fim)
             self._truncado = False
         except Exception as exc:                                        # noqa: BLE001
             self.emit_json({"type": "error", "code": "pipeline",
@@ -1714,12 +1809,18 @@ def _llm_stream_app(messages: list):
                 if payload == b"[DONE]":
                     break
                 try:
-                    delta = json.loads(payload)["choices"][0].get("delta", {}).get("content")
-                except (ValueError, KeyError, IndexError):
+                    escolha = json.loads(payload)["choices"][0]
+                    delta = escolha.get("delta", {}).get("content")
+                except (ValueError, KeyError, IndexError, TypeError, AttributeError):
                     continue
                 if delta:
                     recebeu = True
                     yield delta
+                # #1006: `finish_reason` JÁ é o fim da resposta. Há provedor que
+                # para aí sem mandar `[DONE]` nem fechar a conexão (keep-alive):
+                # esperar o `[DONE]` prendia o turno até o teto do pipeline.
+                if escolha.get("finish_reason"):
+                    break
     except urllib.error.HTTPError as e:
         if recebeu:
             raise

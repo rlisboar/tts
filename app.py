@@ -12153,7 +12153,11 @@ def _live_stats_ia(sess: dict) -> dict:
             "teto_estouro": estouros,
             # bridge `clean` explica um turno que caiu no openai sem o dsh estar
             # morto: sem o patch não há delta a esperar (#287)
-            "bridge": bridge}
+            "bridge": bridge,
+            # #1006: turnos cuja resposta foi cortada pelo teto do stream do LLM
+            # (provedor que não encerra o SSE) e o retrato do último corte
+            "llm_cortes": int(getattr(pipe, "_llm_cortes", 0) or 0),
+            "llm_corte": str(getattr(pipe, "_llm_corte_ultimo", "") or "")[:200]}
 
 
 def _live_fila_itens(sess: dict) -> int:

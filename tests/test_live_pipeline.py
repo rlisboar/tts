@@ -1202,3 +1202,132 @@ def test_301_eco_com_palavra_parecida_do_whisper_ainda_e_eco():
                   "é sexta-feira.")
     assert lp._parece_eco("o relatório ficou pronto ontem a noite", assistente)
     assert lp._parece_eco("o prazo de entrega e sexta-feira", assistente)
+
+
+# ---------------------------------------------------------------------------
+# #1006: stream do LLM que não encerra não pode prender o turno
+# ---------------------------------------------------------------------------
+
+def _pipe_stream_parado(fala, llm, **tetos):
+    p = lp.LivePipeline(fala.json, fala.audio, stt=lambda pcm, l: "oi", llm=llm,
+                        tts=lambda t, o: np.zeros(240, dtype=np.float32),
+                        prewarm=lambda: None)
+    for k, v in tetos.items():
+        setattr(p, k, v)
+    p.push_pcm(b"\x00\x00" * 800)
+    return p
+
+
+def _roda_turno(p, prazo):
+    t = threading.Thread(target=p.end_of_speech, args=(False,), daemon=True)
+    t0 = time.monotonic()
+    t.start()
+    t.join(prazo)
+    return t.is_alive(), time.monotonic() - t0
+
+
+def test_stream_que_para_depois_do_texto_fecha_com_turn_complete_e_motivo():
+    """Bancada #875 em afc3f42: o provedor entrega a resposta e o SSE não
+    encerra. O turno tem de fechar pelo teto de ociosidade, com o que já saiu
+    falado e o motivo no `turn_complete` e no `stats.ia`."""
+    fala = Fala()
+    nunca = threading.Event()
+
+    def llm(msgs):
+        yield "Resposta inteira. "
+        nunca.wait(30)                    # SSE aberto, sem [DONE], sem fechar
+
+    p = _pipe_stream_parado(fala, llm, _llm_ocioso_s=0.3, _llm_teto_s=20)
+    vivo, levou = _roda_turno(p, 10)
+    nunca.set()
+    assert not vivo, "turno preso no stream do LLM que não encerra"
+    assert levou < 5, f"o turno levou {levou:.1f}s com teto de ociosidade 0,3s"
+    fim = [e for _, e in fala.eventos if e["type"] == "turn_complete"]
+    assert fim and fim[-1].get("llm_corte") == "ocioso", fala.tipos()
+    assert fim[-1]["audio_bytes"] > 0, "o que já tinha chegado não foi falado"
+    assert p._llm_cortes == 1 and "ocioso" in p._llm_corte_ultimo
+    assert p.history[-1] == {"role": "assistant", "content": "Resposta inteira."}
+
+
+def test_stream_que_pinga_sem_parar_corta_no_teto_total():
+    """Keepalive reseta o socket, não o relógio: deltas vazios a cada 50 ms
+    não podem segurar o turno além do teto TOTAL."""
+    fala = Fala()
+    para = threading.Event()
+
+    def llm(msgs):
+        yield "Comecei. "
+        while not para.is_set():
+            time.sleep(0.05)
+            yield "a "                    # nunca termina
+
+    p = _pipe_stream_parado(fala, llm, _llm_ocioso_s=5, _llm_teto_s=0.5)
+    vivo, _ = _roda_turno(p, 10)
+    para.set()
+    assert not vivo, "stream infinito segurou o turno"
+    fim = [e for _, e in fala.eventos if e["type"] == "turn_complete"]
+    assert fim and fim[-1].get("llm_corte") == "teto", fala.tipos()
+
+
+def test_barge_com_o_socket_parado_interrompe_na_hora():
+    """O laço só via o cancel ENTRE deltas: com a leitura presa, o barge-in
+    esperava o socket. Agora o `interrupted` sai sem o stream andar."""
+    fala = Fala()
+    ja_falou = threading.Event()
+    nunca = threading.Event()
+
+    def llm(msgs):
+        yield "Primeira frase. "
+        ja_falou.set()
+        nunca.wait(30)
+
+    p = _pipe_stream_parado(fala, llm, _llm_ocioso_s=60, _llm_teto_s=60)
+    t = threading.Thread(target=p.end_of_speech, args=(False,), daemon=True)
+    t.start()
+    assert ja_falou.wait(3)
+    t0 = time.monotonic()
+    p.cancel()
+    t.join(5)
+    nunca.set()
+    assert not t.is_alive(), "barge-in não derrubou o turno preso no socket"
+    assert time.monotonic() - t0 < 2
+    assert "interrupted" in fala.tipos()
+    assert "turn_complete" not in fala.tipos()
+
+
+def test_stream_normal_nao_ganha_llm_corte():
+    fala = Fala()
+    p = _pipeline(fala)
+    p.end_of_speech(inicia_thread=False)
+    fim = [e for _, e in fala.eventos if e["type"] == "turn_complete"][-1]
+    assert "llm_corte" not in fim and p._llm_cortes == 0
+
+
+def test_sse_termina_no_finish_reason_sem_esperar_o_done(monkeypatch):
+    """Provedor que manda `finish_reason` e deixa a conexão aberta sem `[DONE]`:
+    o leitor tem de parar no `finish_reason`, não ler a linha seguinte."""
+    import json as _json
+    import urllib.request
+
+    import app
+    leu_alem = []
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            yield b'data: ' + _json.dumps(
+                {"choices": [{"delta": {"content": "Oi."}, "finish_reason": None}]}).encode()
+            yield b'data: ' + _json.dumps(
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]}).encode()
+            leu_alem.append(True)         # aqui o socket real ficaria parado
+            yield b": keepalive"
+
+    monkeypatch.setattr(app, "_chat_provider", lambda: ("http://127.0.0.1:9", "m", ""))
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: Resp())
+    assert list(lp._llm_stream_app([{"role": "user", "content": "oi"}])) == ["Oi."]
+    assert not leu_alem, "o leitor seguiu depois do finish_reason"
