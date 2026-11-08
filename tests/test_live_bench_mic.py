@@ -236,3 +236,80 @@ def test_leitor_que_fecha_limpo_marca_morte_sem_erro():
     assert c.vivo is False
     assert c.erro is None
     assert c.morreu.is_set()
+
+
+def test_resposta_de_b_por_interrupted_nao_queima_o_teto_triplo(monkeypatch):
+    """Eco corta B com `interrupted` terminal e o ciclo não queima teto*3 (#942).
+
+    O `interrupted` que cortou A cai depois de `b_fim` e antes do áudio de B;
+    `motivo:"continuacao"` também não solta. Sem o filtro o ciclo acaba antes
+    do corte terminal (o roteiro é cancelado e `terminal` não entra). Sem o
+    conserto, `espera` fica em `turn_complete` o `teto_turno_s * 3` inteiro.
+    """
+    real_sleep = asyncio.sleep
+
+    async def _sleep(s, *a, **k):
+        # a cauda de 1 s do ciclo não é a espera sob teste
+        if s >= 1.0:
+            return None
+        return await real_sleep(s, *a, **k)
+
+    monkeypatch.setattr(asyncio, "sleep", _sleep)
+    teto = 1.0
+    c = _cliente(_WS())
+    marcos: list[str] = []
+
+    async def roteiro() -> None:
+        while c.voz_t_fim is None:
+            await real_sleep(0.005)
+        a_fim = c.voz_t_fim
+        # carimbo >= a_fim: `agora()` no fim do quadro pode ficar atrás do
+        # relógio da fala e a espera do 1º áudio queimaria o teto
+        c.bin.append((a_fim + 0.001, 2400))
+        c.play = np.ones(8000, np.float32)
+        while c.voz is None:
+            await real_sleep(0.005)
+        while c.voz is not None:
+            await real_sleep(0.005)
+        b_fim = c.voz_t_fim
+        # corte de A DEPOIS de b_fim e ANTES do áudio de B; zera o playback
+        c.eventos.append((b_fim + 0.01, "interrupted", {"motivo": "barge"}))
+        c.play = np.zeros(0, np.float32)
+        marcos.append("corte_a")
+        await real_sleep(0.05)
+        c.bin.append((b_fim + 0.02, 2400))
+        marcos.append("audio_b")
+        await real_sleep(0.05)
+        c.eventos.append((b_fim + 0.03, "interrupted", {"motivo": "continuacao"}))
+        marcos.append("continuacao")
+        await real_sleep(0.25)
+        marcos.append("terminal")
+        c.eventos.append((b_fim + 0.04, "interrupted", {"motivo": "eco"}))
+        c.play = np.zeros(0, np.float32)
+
+    linhas: list[dict] = []
+    args = types.SimpleNamespace(
+        teto_turno_s=teto, interrompe_apos_ms=0,
+        pausa_min_s=0.0, pausa_max_s=0.0, verbose=False,
+    )
+
+    async def corre() -> None:
+        mic = asyncio.ensure_future(c.mic())
+        rot = asyncio.ensure_future(roteiro())
+        try:
+            await lb.ciclo(c, 0, _fala("a"), _fala("b"), False, args, linhas)
+        finally:
+            c.vivo = False
+            if not rot.done():
+                rot.cancel()
+            mic.cancel()
+            await asyncio.gather(mic, rot, return_exceptions=True)
+
+    t0 = time.monotonic()
+    asyncio.run(corre())
+    dt = time.monotonic() - t0
+    assert c.erro is None, c.erro
+    assert "terminal" in marcos, marcos
+    assert dt < teto * 2, f"queimei o teto triplo: {dt:.3f}s (teto*3={teto * 3:.3f})"
+    assert len(linhas) == 2, linhas
+    assert linhas[1].get("eco_falso_corte") is True, linhas[1]

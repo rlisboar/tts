@@ -454,6 +454,25 @@ def _b_recusada_identidade(c: Cliente, desde: float, recusados_antes: int) -> bo
     return agora_n > int(recusados_antes)
 
 
+def _turno_b_encerrou(c: Cliente, b_fim: float, t_audio_b: float | None) -> bool:
+    """Turno de B fechou e o playback esvaziou.
+
+    `turn_complete` / `error` seguem o contrato antigo. O eco que corta a
+    resposta DEPOIS de `t_audio_b` emite `interrupted` com motivo diferente
+    de `continuacao`: o cliente já zerou `play` e o servidor não manda
+    `turn_complete`. Sem isso a espera queima `teto_turno_s * 3` (#942).
+
+    Não conta o `interrupted` que cortou A (anterior a `t_audio_b`, mesmo
+    que tenha caído depois de `b_fim`) nem `motivo:"continuacao"` (a fila fica).
+    """
+    if c.evs(b_fim, ("turn_complete", "error")) and len(c.play) == 0:
+        return True
+    if t_audio_b is None or len(c.play) != 0:
+        return False
+    return any(e.get("motivo") != "continuacao"
+               for _t, _ty, e in c.evs(t_audio_b, ("interrupted",)))
+
+
 async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
                 args, linhas: list[dict]):
     """Uma fala A (resposta interrompida por B) + fala B (resposta toca com eco)."""
@@ -531,6 +550,10 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
     def recusou() -> bool:
         return _b_recusada_identidade(c, desde_b, recusados_antes)
 
+    # O `interrupted` que cortou A pode cair depois de `b_fim` e ANTES do
+    # áudio de B. Incluí-lo aqui soltaria a espera cedo; o corte terminal de
+    # B só existe depois de `t_audio_b` (#942). 439/451 são a resposta de A,
+    # antes de B falar — o eco ainda não cortou nada.
     await c.espera(lambda: c.bin_apos(b_fim) is not None
                    or c.evs(b_fim, ("turn_complete", "error"))
                    or recusou(),
@@ -541,8 +564,8 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
     recusada = t_audio_b is None and not turno_b and recusou()
     # até o turno fechar E o playback esvaziar. Recusa já decidida não espera.
     if not recusada:
-        await c.espera(lambda: (c.evs(b_fim, ("turn_complete", "error"))
-                                and len(c.play) == 0)
+        # eco → `interrupted` terminal também encerra (#942)
+        await c.espera(lambda: _turno_b_encerrou(c, b_fim, t_audio_b)
                        or (c.bin_apos(b_fim) is None and recusou()),
                        args.teto_turno_s * 3)
         t_audio_b = c.bin_apos(max(b_fim, (c.evs(b_ini, ("interrupted",)) or [(b_fim,)])[0][0]))
