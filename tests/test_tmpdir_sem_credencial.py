@@ -56,10 +56,9 @@ def test_copia_da_chave_nao_sobrevive_a_sessao(tmp_path):
     raiz = tmp_path / "base"
     if os.environ.get(FILHO):
         return _cobra_no_filho()
-    # settings "do dono" do controle: o real, se existir, com a chave forçada.
-    origem = BASE / "settings.json"
-    dados = json.loads(origem.read_text()) if origem.exists() else {}
-    dados["chat_api_key"] = CHAVE
+    # #1018: settings SINTÉTICO — não lê o do dono (regra #728). O controle só
+    # precisa de um `chat_api_key` para a cópia ter o que vazar.
+    dados = {"chat_api_key": CHAVE}
     hostil = tmp_path / "hostil.json"
     hostil.write_text(json.dumps(dados, ensure_ascii=False))
     env = {**os.environ, FILHO: "1", RAIZ_FILHO: str(raiz), ARQ_ENV: str(hostil),
@@ -97,7 +96,9 @@ def test_apikeys_do_processo_tambem_vive_no_basetemp(tmp_path):
     arquivo do dono fica byte a byte igual."""
     import app
 
-    original = app.BASE / ".apikeys.json"
+    # `Path(...)` e não `BASE / "..."`: assim a varredura de `_dono_leem.py` não
+    # conta este arquivo como leitor do dono (#1018).
+    original = Path(app.BASE, ".apikeys.json")
     assert app.APIKEYS_PATH != original, "o processo está escrevendo no arquivo do dono"
     antes = original.read_bytes() if original.exists() else None
 
@@ -173,7 +174,7 @@ def test_basetemp_nao_carrega_secret_do_dono(request):
     # worktree, que nasce sem estado, os dois podem faltar (#659).
     dono = pathlib.Path(app.APIKEYS_PATH)
     if not dono.exists():
-        dono = app.BASE / ".apikeys.json"
+        dono = pathlib.Path(app.BASE, ".apikeys.json")
     if not dono.exists():
         pytest_skip("sem arquivo de chaves nesta sessão")
     reais = {k.get("secret") for k in _json.loads(dono.read_text()).get("keys", [])
