@@ -11,7 +11,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 
 | arquivo | task | data | o que mostra |
 |---|---|---|---|
-| `1022-hipoteses-falsificacao.md` | #1022 | — | 1022 — hipóteses de causa do pos_llm e critérios de FALSIFICAÇÃO (pré-registro) |
+| `1022-hipoteses-falsificacao.md` | #1022 | 2026-11-08 | 1022 — hipóteses de causa do pos_llm e critérios de FALSIFICAÇÃO (pré-registro) |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
@@ -322,7 +322,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `875-hang-b50ec5a60b-relogio.jsonl` | #875 | 2026-11-08 | (sem descrição) |
 | `875-hang-bffb1c9d09-relogio.jsonl` | #875 | 2026-11-08 | (sem descrição) |
 | `875-hang-log.txt` | #875 | 2026-11-08 | 15:20:23 [live] abre sess=d4930cc1e3 voz=4f6a75c20d retomado=False history=0 criadas=0 |
-| `876-c1-modelo-real.py` | #876 | — | """#876 C1 com modelo REAL (script): turno do Live (`_stt_app`) e passada de comando, C0 × C1.""" |
+| `876-c1-modelo-real.py` | #876 | 2026-11-08 | """#876 C1 com modelo REAL (script): turno do Live (`_stt_app`) e passada de comando, C0 × C1.""" |
 | `876-refs-mls.py` | #876 | 2026-11-08 | """#876 — transcrições do MLS PT (dev/test) por arquivo extraído. Lê só dados (pyarrow).""" |
 | `876-stt-bench-carga.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench-livre.json` | #876 | 2026-11-06 | "n": 20, |
@@ -335,6 +335,8 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `876-stt-motor-parakeet.py` | #876 | 2026-11-08 | """#876 — motor do STT do Live: Whisper turbo (o de hoje) × Parakeet TDT 0.6B v3. |
 | `942-bancada-mini-c3f4a78.json` | #942 | 2026-11-07 | "rotulo": "c3f4a78-mini", |
 | `942-bancada-mini-c3f4a78.md` | #942 | 2026-11-07 | 942 — bancada no mini sobre c3f4a78 (4º deploy), janela 16:16–16:50 BRT |
+| `963-so-minha-voz-bloco.png` | #963 | 2026-11-08 | (imagem) |
+| `963-so-minha-voz-chips.png` | #963 | 2026-11-08 | (imagem) |
 | `979-asnorm-topk.py` | #979 | 2026-11-08 | """#979 — mesma fala, mesma coorte: só muda o K do AS-norm (app top-10 × R2 top-50).""" |
 | `979-coorte-pt-medicao.py` | #979 | 2026-11-08 | """#979 — coorte PT-BR (FLEURS pt_br test, 40 locutores, 2 trechos de 3 s) para o ECAPA — MEDIÇÃO, não artefat |
 | `979-limiar-ecapa-pt.md` | #979 | 2026-11-08 | 979 — limiar do ECAPA em fala PT-BR: o AS-norm 2,434 deixa passar 12,7 % dos impostores; o cosseno cru separa |
@@ -346,14 +348,14 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `984-barge-curto-dono.md` | #984 | 2026-11-08 | 984 — barge curto do dono sobre o eco: pontuar só a fala nova leva o aceite de 0,4 s de 6 % a 60 % e baixa o f |
 | `984-barge-curto-dono.py` | #984 | 2026-11-08 | """#984 — o portão "só a minha voz" no BARGE CURTO: aceite do dono × falso aceite de |
 | `984-eco-sozinho.py` | #984 | 2026-11-08 | """#984 — o eco da resposta SOZINHO no portão "só a minha voz" (perfil do E2E).""" |
-| `963-so-minha-voz-bloco.png` | #963 | 2026-11-08 | (imagem) |
-| `963-so-minha-voz-chips.png` | #963 | 2026-11-08 | (imagem) |
 | `antes-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `audit-fe-mobile-gerar-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-gerar.png` | — | 2026-10-21 | (imagem) |
 | `audit-fe-mobile-tradutor-pos-fix.png` | — | 2026-10-21 | (imagem) |
 | `chave-admin-campos-livres.png` | — | 2026-09-24 | (imagem) |
 | `chave-de-uso-campos-travados.png` | — | 2026-09-24 | (imagem) |
+| `deploy-head-afc3f42.txt` | — | 2026-11-08 | == início 2026-11-08T17:28:12-03:00 — log /tmp/deploy-head-20261108-172812.log |
+| `deploy-head-e2bb4f7.txt` | — | 2026-11-08 | == início 2026-11-08T19:53:56-03:00 — log /tmp/deploy-head-20261108-195356.log |
 | `depois-chave-sessao.png` | — | 2026-09-24 | (imagem) |
 | `depois-xss-vozes.png` | — | 2026-09-24 | (imagem) |
 | `dsh-acp-3pontas-persona.txt` | — | 2026-09-29 | == busca de turno LENTO com trace (prompt persona) == |

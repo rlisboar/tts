@@ -41,6 +41,8 @@ COMPARTILHADOS = {
     "dsh4a-trace.on": "handshake do probe com o app: a PRESENÇA do arquivo liga o trace",
     "dsh4a-trace.": "trace do bridge: um arquivo POR PID (`...jsonl.<pid>`), presença do `.on` liga (sufixo dinâmico)",
     "dsh-home": "DSH_HOME (cache de sessões) — compartilhar é o ponto",
+    "mls-pt-wav": "corpus FLEURS baixado UMA vez em /tmp e lido pelos scripts de "
+                  "evidência do #876 (corpus, não estado de execução)",
     "x": "/tmp/x é caminho FALSO de modelo em fake (não precisa existir; só retorno de lambda)",
     "x.sh": "caminho FALSO de script em fake (idem, não precisa existir)",
     "modelo-local-do-teste": "caminho FALSO de modelo local na célula do #787 (idem; só a string vai na recusa)",
