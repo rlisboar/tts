@@ -12,8 +12,10 @@ import hashlib
 import re
 import http.server
 import shutil
+import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -63,19 +65,40 @@ def _sha(p: Path) -> str:
 class _Espelho:
     """http.server local servindo `<repo>/resolve/<rev>/<arquivo>`."""
 
+    #: teto do `shutdown()` (#1047). `socketserver.shutdown()` espera o laço sair
+    #: por um `threading.Event.wait()` SEM prazo: com a máquina sob carga isso
+    #: pendura a suíte INTEIRA (o `pytest-timeout` é `thread` e a espera fica no
+    #: thread principal, que ninguém interrompe). Medido 2× em 3 rodadas, 100 % de
+    #: CPU e sem progresso por 45–60 min.
+    TETO_S = 5.0
+
     def __init__(self, raiz: Path):
         self.raiz = raiz
         tratador = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(raiz))
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), tratador)
         self.httpd.log_message = lambda *a: None  # type: ignore[method-assign]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        threading.Thread(target=self._serve, name="espelho-http", daemon=True).start()
+
+    def _serve(self) -> None:
+        try:
+            # `poll_interval` curto: o laço vê o pedido de parada em ~20 ms, não
+            # nos 0,5 s de fábrica — é o que faz o `shutdown` voltar rápido
+            self.httpd.serve_forever(poll_interval=0.02)
+        except OSError:
+            pass          # `server_close()` por baixo do laço (ver `fecha`)
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.httpd.server_address[1]}"
 
     def fecha(self) -> None:
-        self.httpd.shutdown()
+        """Para o espelho com TETO: estourou, segue e solta o socket de qualquer jeito."""
+        t = threading.Thread(target=self.httpd.shutdown, name="espelho-shutdown", daemon=True)
+        t.start()
+        t.join(self.TETO_S)
+        # daemon: mesmo travado o thread não segura o processo; soltar o socket é o
+        # que impede o vazamento de porta a cada teste
+        self.httpd.server_close()
 
 
 @pytest.fixture
@@ -283,3 +306,32 @@ def test_ckpt_fica_fora_do_git_e_o_script_materializa():
     for p in pesos:
         ignorado = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-q", str(p)])
         assert ignorado.returncode == 0, f"{p.name} não está no .gitignore"
+
+
+# -- #1047: o teardown do espelho não pode segurar a suíte -------------------
+def test_teardown_do_espelho_nao_pendura_com_shutdown_travado(tmp_path, monkeypatch):
+    """`shutdown()` preso NÃO pode segurar a rodada — o `join` tem teto.
+
+    `socketserver.shutdown()` espera o laço sair por `threading.Event.wait()` sem
+    prazo; com a máquina carregada ele pendurou a suíte inteira duas vezes (100 %
+    de CPU, 45–60 min, e o `pytest-timeout` não alcança o thread principal)."""
+    espelho = _Espelho(tmp_path)
+    # simula o travamento: `shutdown` que nunca volta
+    monkeypatch.setattr(espelho.httpd, "shutdown", lambda: threading.Event().wait())
+    espelho.TETO_S = 0.2
+    t0 = time.monotonic()
+    espelho.fecha()
+    assert time.monotonic() - t0 < 2.0, "o teardown não respeitou o teto"
+
+
+def test_fecha_libera_a_porta_do_espelho(tmp_path):
+    """Estourado ou não o teto, `fecha()` solta o socket (nada de porta vazada)."""
+    espelho = _Espelho(tmp_path)
+    porta = espelho.httpd.server_address[1]
+    espelho.fecha()
+    s = socket.socket()
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", porta))       # levantaria OSError se ainda escutasse
+    finally:
+        s.close()
