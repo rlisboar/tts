@@ -2673,6 +2673,8 @@
           <p class="view-desc">Sessão contínua por WebSocket — fala e escuta no mesmo canal, com barge-in</p>
         </div>
         <div class="view-head-actions">
+          <span id="lxAecDiag" class="badge warn" hidden role="status"
+                title="aberto com ?aec=0 na URL: o cancelamento de eco do navegador fica DESLIGADO para medir o eco cru (#870). Tire o ?aec=0 da URL para voltar ao normal.">AEC desligado — diagnóstico</span>
           <span id="lxEstado" class="badge">desligado</span>
           <button id="lxLigar" class="primary">🎙 Ligar</button>
         </div>
@@ -8529,6 +8531,13 @@ const obsTtsM = criaObsMonitor("obsTts", { compacto: true }); // sem áudio capt
    Protocolo da #91: cliente manda JSON de controle + PCM16 mono 16 kHz; servidor
    devolve eventos JSON + PCM16 24 kHz. Estado centralizado em LX.estado e o botão
    só REFLETE — foi assim que a Conversa se queimou com botão dessincronizado. */
+// #1067 (#870): DIAGNÓSTICO — `?aec=0` na URL abre o mic do Live SEM o AEC do
+// navegador, para medir se o `mic.wav` do dump já chega pós-AEC (NCC baixa no
+// real × ~0,99 na bancada). Só o AEC muda: NS e AGC ficam como no normal, para
+// isolar uma variável. Query string e não setting: some ao recarregar sem ela,
+// ninguém esquece ligado no settings. O badge do cabeçalho avisa enquanto vale.
+const LX_AEC_DIAG = new URLSearchParams(location.search).get("aec") === "0";
+if (LX_AEC_DIAG && $("lxAecDiag")) $("lxAecDiag").hidden = false;
 const LX = { ws: null, estado: "desligado", ctxCap: null, noCap: null, stream: null,
              fonte: null, hpCap: null, gainCap: null, mudoCap: null,
              ctxPlay: null, ativos: [], proximo: 0, ptt: false, erro: false,
@@ -8742,6 +8751,9 @@ function lxSetup() {
     vad: { silence_ms: parseInt($("lxSilencio")?.value, 10) || 600, prefix_ms: 100,
            ptt: !!$("lxPtt")?.checked },
     history: [],
+    // #1067: o que a CAPTURA pediu ao navegador. Campo aditivo: o validador do
+    // setup ignora chave desconhecida, então servidor antigo segue igual.
+    captura: { aec: !LX_AEC_DIAG },
   });
 }
 
@@ -8776,8 +8788,20 @@ async function lxCaptura() {
   // checkbox (default off) porque o afftdn do servidor já denoisa o upload —
   // duas supressões comem consoante. Este PCM não passa por afftdn.
   const stream = await navigator.mediaDevices.getUserMedia({
-    audio: micAudioConstraints({ echoCancellation: true, noiseSuppression: true, autoGainControl: false }) });
+    audio: micAudioConstraints({ echoCancellation: !LX_AEC_DIAG, noiseSuppression: true, autoGainControl: false }) });
   LX.stream = stream;
+  // #1067: o que o navegador APLICOU (não o que pedimos) — é o aceite da medida.
+  // Pedido ignorado (ex.: device que força AEC) tem de aparecer, não ficar mudo.
+  {
+    const st = (stream.getAudioTracks()[0] || { getSettings: () => ({}) }).getSettings();
+    console.log("[live] captura: echoCancellation=" + st.echoCancellation
+                + " noiseSuppression=" + st.noiseSuppression + " autoGainControl=" + st.autoGainControl
+                + (LX_AEC_DIAG ? " (diagnóstico ?aec=0)" : ""));
+    if (LX_AEC_DIAG) lxLogEvento(st.echoCancellation === false
+      ? "mic: AEC do navegador DESLIGADO (diagnóstico ?aec=0)"
+      : "mic: pedi AEC desligado mas o navegador manteve (echoCancellation=" + st.echoCancellation + ")",
+      st.echoCancellation === false ? null : "e-erro");
+  }
   // captura a 16 kHz: o worklet entrega já na taxa do protocolo, sem resample
   const ctx = new AudioContext({ sampleRate: 16000 });
   let play = null;
