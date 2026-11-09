@@ -72,7 +72,7 @@ vermelho (antes a divergência voltava calada).
   `admin_ui_flow`, `cfg_sujo_e_erros`, `voz_desfazer_ui`, `voz_cadastro_ui`,
   `voz_check_ui`, `voz_far_alvo_ui`, `voz_recadastro_ui`, `live_retomada_ui`,
   `onboarding_atalhos`, `xss_frontend_repro`, `voz_previa_limpa_ui`,
-  `voz_assistente_ui`, `cancelado_ui`, `live_pausa_ui`.
+  `voz_assistente_ui`, `cancelado_ui`, `live_pausa_ui`, `live_so_minha_voz_ui`.
 - `instancia`: `a11y_teclado`, `conversa_429`, `key_storage_repro`, `live_hold_ui`,
   `mic_erro_ui`, `mobile_layout`, `ui_repouso`.
 
