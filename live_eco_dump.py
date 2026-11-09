@@ -87,9 +87,13 @@ _CRIA = threading.Lock()
 
 
 class _Dump:
-    def __init__(self, pasta: Path, sessao: str) -> None:
+    def __init__(self, pasta: Path, sessao: str, captura: dict | None = None) -> None:
         self.pasta = pasta
         self.sessao = sessao
+        # #870: o que a captura pediu ao navegador (`{"aec": bool}`), do `setup`.
+        # `None` = cliente antigo/bancada. Sem isto, um dump com AEC ligado e um
+        # com `?aec=0` ficam indistinguíveis justamente na hora de comparar NCC.
+        self.captura = captura if isinstance(captura, dict) else None
         self.lock = threading.Lock()
         self.mic_n = 0
         self.ref_n = 0
@@ -226,6 +230,7 @@ class _Dump:
                         "linhas": self.linhas,
                         "truncado": self.truncado,
                         "quebrado": self.quebrado,
+                        "captura": self.captura,
                         "nota": _NOTA,
                     }
                     meta_path = self.pasta / "meta.json"
@@ -257,7 +262,7 @@ def _novo(sess: dict) -> _Dump | None:
             return None if est.quebrado or est.fechado else est
         pasta = Path(base) / (
             time.strftime("eco-%Y%m%d-%H%M%S-") + f"{secrets.randbelow(100000):05d}")
-        est = _Dump(pasta, str(sess.get("id") or ""))
+        est = _Dump(pasta, str(sess.get("id") or ""), sess.get("captura"))
         sess["_eco_dump"] = est
         return est
 

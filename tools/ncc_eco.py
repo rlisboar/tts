@@ -36,6 +36,10 @@ import live_turns as lt  # noqa: E402
 
 
 _AVISO_SEM_RELOGIO = "sem relógio: playhead = índice do mic"
+# Silero acima disto conta como VOZ na janela: a NCC daí é de mistura
+# (fala por cima do eco), não de eco puro. 0,5 é o mesmo limiar de decisão do
+# motor; aqui só classifica, não decide nada em tempo real.
+_VOZ_PROB = 0.5
 _AVISO_TURNO = (
     "dump do STT (#869): é o turno do usuário, sem a referência do playback. "
     "Uma NCC baixa aqui não é o eco que falhou."
@@ -102,6 +106,12 @@ def _base(**kw) -> dict:
         "lag_p50": None,
         "lag_p50_ms": None,
         "frac_075": None,
+        "pausado": 0,
+        "puro_n": 0,
+        "voz_n": 0,
+        "puro_p10": None,
+        "puro_p50": None,
+        "puro_p90": None,
         "eco": False,
         "pasta": "",
         "mic_amostras": 0,
@@ -151,8 +161,10 @@ def medir(mic: np.ndarray, ref: np.ndarray, linhas: list[dict] | None = None,
     n = lt._CORR_N
     preciso = n + lt._CORR_LAG_MAX
     vals: list[float] = []
+    vals_puro: list[float] = []
+    vals_voz: list[float] = []
     lags: list[int] = []
-    silencio = busca = fora = 0
+    silencio = busca = fora = pausado = 0
     for linha in linhas:
         try:
             fim = int(linha["mic"])
@@ -164,6 +176,11 @@ def medir(mic: np.ndarray, ref: np.ndarray, linhas: list[dict] | None = None,
             continue
         if fim > int(mic.shape[0]) or play > int(ref.shape[0]) or play > ref_n:
             fora += 1
+            continue
+        # #870: referência PAUSADA (barge_pausa) não avança com o playback, então
+        # a NCC contra ela não descreve o eco. Conta à parte e fica fora da conta.
+        if linha.get("pausa"):
+            pausado += 1
             continue
         if fim < n or play - origem < preciso:
             busca += 1
@@ -177,15 +194,32 @@ def medir(mic: np.ndarray, ref: np.ndarray, linhas: list[dict] | None = None,
         if par is None or par[1] < 0:
             busca += 1
             continue
+        # #870: eco PURO (ninguém falando) é a pergunta do diagnóstico. A mistura
+        # tem valor próprio e não pode diluir a estatística do eco.
+        if _tem_voz(janela):
+            vals_voz.append(float(par[0]))
+        else:
+            vals_puro.append(float(par[0]))
         vals.append(float(par[0]))
         lags.append(int(par[1]))
     out = _base(tipo=tipo, aviso=aviso, sem_relogio=sem_relogio, pasta=pasta,
                 medidas=len(vals), silencio=silencio, busca_curta=busca, fora=fora,
+                pausado=pausado, puro_n=len(vals_puro), voz_n=len(vals_voz),
                 mic_amostras=int(mic.size), ref_amostras=int(ref.size))
     if not vals:
         return out
     a = np.asarray(vals, dtype=np.float64)
     lag = np.asarray(lags, dtype=np.float64)
+    # o veredito é do ECO PURO: com voz por cima a NCC cai legitimamente e a
+    # mistura não pode reprovar o eco. Sem janela pura, cai no total e avisa.
+    if vals_puro:
+        puro = np.asarray(vals_puro, dtype=np.float64)
+        out.update({"puro_p10": float(np.percentile(puro, 10)),
+                    "puro_p50": float(np.percentile(puro, 50)),
+                    "puro_p90": float(np.percentile(puro, 90))})
+    else:
+        out["aviso"] = (out["aviso"] + " · " if out["aviso"] else "") + \
+            "sem janela de eco puro (mic sempre com voz)"
     p10 = float(np.percentile(a, 10))
     p50_lag = float(np.percentile(lag, 50))
     out.update({
@@ -197,9 +231,17 @@ def medir(mic: np.ndarray, ref: np.ndarray, linhas: list[dict] | None = None,
         "lag_p50": p50_lag,
         "lag_p50_ms": p50_lag * 1000.0 / lt.SAMPLE_RATE,
         "frac_075": float(np.mean(a >= lt._CORR_LIMIAR)),
-        "eco": bool(p10 >= 0.8),
+        "eco": bool((out["puro_p10"] if vals_puro else p10) >= 0.8),
     })
     return out
+
+
+def _tem_voz(janela: np.ndarray) -> bool:
+    """Silero na janela do mic. Falha do modelo não derruba a medida — vira puro."""
+    try:
+        return lt.scorer_silero(janela) >= _VOZ_PROB
+    except Exception:  # noqa: BLE001 — sem Silero a separação some, a NCC fica
+        return False
 
 
 def _le_wav(path: Path) -> tuple[np.ndarray, int]:
@@ -375,15 +417,19 @@ def imprime(r: dict) -> None:
     if r.get("aviso"):
         print(r["aviso"])
     print(f"medidas={r['medidas']} silencio={r['silencio']} "
-          f"busca_curta={r['busca_curta']} fora={r['fora']}")
+          f"busca_curta={r['busca_curta']} fora={r['fora']} pausado={r['pausado']}")
     print(f"p10={_fmt(r['p10'])} p50={_fmt(r['p50'])} p90={_fmt(r['p90'])} "
           f"min={_fmt(r['min'])} max={_fmt(r['max'])}")
+    # #870: a separação é o ponto. Eco puro é a pergunta; a mistura é contexto.
+    print(f"puro n={r['puro_n']} p10={_fmt(r['puro_p10'])} p50={_fmt(r['puro_p50'])} "
+          f"p90={_fmt(r['puro_p90'])}")
+    print(f"voz  n={r['voz_n']}")
     if r["lag_p50"] is None:
         print("lag_p50=null")
     else:
         print(f"lag_p50={r['lag_p50']:.0f} ({r['lag_p50_ms']:.0f} ms)")
     print(f"frac>=0.75={_fmt(r['frac_075'])}")
-    print("p10>=0.8: sim" if r["eco"] else "p10>=0.8: não")
+    print("p10(puro)>=0.8: sim" if r["eco"] else "p10(puro)>=0.8: não")
 
 
 def _uso() -> None:

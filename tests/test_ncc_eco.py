@@ -389,3 +389,86 @@ def test_cli_sai_zero_e_taxa_estranha_nao_e_gate(tmp_path, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["eco"] is False
     assert "22050" in data["aviso"]
+
+
+# ---------------------------------------------------------------------------
+# #870: o `captura` do setup tem de sobreviver até o `meta.json`
+# ---------------------------------------------------------------------------
+
+def _dump_minimo(tmp_path, monkeypatch, sess):
+    monkeypatch.setenv("TTS_LIVE_DUMP_DIR", str(tmp_path))
+    live_eco_dump.anota_mic(sess, b"\x00\x01" * 160)
+    live_eco_dump.anota_ref(sess, np.zeros(160, dtype=np.float32))
+    live_eco_dump.fecha(sess)
+    pastas = list(tmp_path.glob("eco-*"))
+    assert len(pastas) == 1, pastas
+    return json.loads((pastas[0] / "meta.json").read_text(encoding="utf-8"))
+
+
+def test_captura_do_setup_chega_ao_meta(tmp_path, monkeypatch):
+    """`?aec=0` vs AEC ligado têm de ser distinguíveis no dump.
+
+    Sem o campo, dois dumps com capturas opostas ficam idênticos na hora de
+    comparar NCC — que é exatamente o que o diagnóstico do #870 separa.
+    """
+    meta = _dump_minimo(tmp_path, monkeypatch,
+                        {"id": "t", "captura": {"aec": False}})
+    assert meta["captura"] == {"aec": False}
+
+
+def test_captura_ausente_vira_none_e_nao_quebra(tmp_path, monkeypatch):
+    """Cliente antigo e bancada não mandam a chave: `None`, nunca erro."""
+    meta = _dump_minimo(tmp_path, monkeypatch, {"id": "t"})
+    assert meta["captura"] is None
+
+
+def test_captura_ilegivel_vira_none(tmp_path, monkeypatch):
+    """`captura` que não é objeto (ou `aec` que não é bool) não vira lixo no meta."""
+    meta = _dump_minimo(tmp_path, monkeypatch, {"id": "t", "captura": "aec=0"})
+    assert meta["captura"] is None
+
+
+def test_janela_de_referencia_pausada_fica_fora_da_conta(tmp_path, monkeypatch):
+    """`pausa=True` não descreve o eco: a referência não avança com o playback."""
+    ref, eco = _par()
+    linhas = ncc_eco.relogio_pelo_indice(len(eco), len(ref))
+    for i, linha in enumerate(linhas):
+        linha["pausa"] = i % 3 == 0
+    r = ncc_eco.medir(eco, ref, linhas)
+    assert r["pausado"] > 0
+    assert r["medidas"] + r["pausado"] + r["silencio"] + r["busca_curta"] == len(linhas)
+
+
+def test_eco_puro_e_separado_da_mistura(monkeypatch):
+    """O veredito é do ECO PURO: voz por cima derruba a NCC legitimamente.
+
+    Metade das janelas é marcada como voz e tem a NCC forçada a 0,05 (mistura).
+    Sem a separação, isso arrastaria o p10 abaixo de 0,8 e o eco — que continua
+    separando nas janelas limpas — seria reprovado por contaminação.
+    """
+    ref, eco = _par()
+    linhas = ncc_eco.relogio_pelo_indice(len(eco), len(ref))
+    ordem = {"i": 0}
+    original = ncc_eco.ncc_no_instante
+
+    def _ncc(*a, **kw):
+        i = ordem["i"]
+        ordem["i"] += 1
+        ordem["voz"] = i % 2 == 0
+        return (0.05, 160) if ordem["voz"] else original(*a, **kw)
+
+    monkeypatch.setattr(ncc_eco, "ncc_no_instante", _ncc)
+    monkeypatch.setattr(ncc_eco, "_tem_voz", lambda _j: ordem["voz"])
+    r = ncc_eco.medir(eco, ref, linhas)
+    assert r["voz_n"] > 0 and r["puro_n"] > 0
+    assert r["puro_p10"] >= 0.8          # o eco puro continua separando
+    assert r["p10"] < r["puro_p10"]      # a mistura é pior, como se espera
+    assert r["eco"] is True
+
+
+def test_sem_janela_pura_o_aviso_aparece():
+    """Microfone sempre com voz: mede-se, mas o relatório diz que é mistura."""
+    ref, eco = _par()
+    linhas = ncc_eco.relogio_pelo_indice(len(eco), len(ref))
+    r = ncc_eco.medir(eco, ref, linhas)
+    assert r["puro_n"] + r["voz_n"] > 0

@@ -12593,7 +12593,24 @@ def _live_valida_setup(msg: dict) -> dict:
                                            _LIVE_BARGE_MS_PADRAO)},
         "history": history,
         "history_descartados": cortados,
+        # #870: o que a CAPTURA pediu ao navegador (`{aec: bool}`). Campo
+        # aditivo e só informativo: `None` = cliente antigo ou bancada, que não
+        # manda o campo. Vai para o `meta.json` do dump de eco — sem ele um dump
+        # com AEC ligado e outro com `?aec=0` ficam indistinguíveis na hora de
+        # medir a NCC, que é justamente o que o diagnóstico precisa separar.
+        "captura": _live_valida_captura(msg.get("captura")),
     }
+
+
+def _live_valida_captura(bruto):
+    """`{aec: bool}` do `setup`, ou `None` se ausente/ilegível.
+
+    Aditivo de propósito: setup de cliente antigo não manda a chave e não pode
+    virar erro. Chave desconhecida é ignorada, como o resto do `setup`."""
+    if not isinstance(bruto, dict):
+        return None
+    aec = bruto.get("aec")
+    return {"aec": aec} if isinstance(aec, bool) else None
 
 
 def _live_sweep() -> list:
@@ -14880,6 +14897,9 @@ async def live_ws(ws: WebSocket):
         # (socket zumbi) não pode sobrescrever o contexto da que a retomou.
         "geracao": time.monotonic(),
         "voice_id": cfg["voice_id"], "system": cfg["system"], "vad": cfg["vad"],
+        # #870: o que a captura pediu ao navegador; vai para o `meta.json` do
+        # dump de eco (ver `_live_valida_captura`).
+        "captura": cfg.get("captura"),
         "history": list(cfg["history"]), "buffer": bytearray(),
         "resumo": (retomado or {}).get("resumo") or "",
         # #300: fila com teto em BYTES — derruba o áudio mais antigo e nunca JSON

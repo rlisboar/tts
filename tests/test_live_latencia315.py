@@ -281,5 +281,20 @@ def test_setup_corta_historico_absurdamente_grande():
     assert sum(len(h["text"]) for h in s["history"]) <= app._LIVE_SETUP_HIST_MAX_CHARS
 
 
+def test_setup_aceita_captura_e_nao_quebra_sem_ela():
+    """#870: `captura.aec` é aditivo — cliente antigo segue valendo."""
+    base = {"voice_id": app.DESIGN_VOICE_ID}
+    assert app._live_valida_setup(dict(base))["captura"] is None
+    s = app._live_valida_setup({**base, "captura": {"aec": False}})
+    assert s["captura"] == {"aec": False}
+
+
+def test_setup_captura_ilegivel_nao_derruba_o_setup():
+    """Chave estranha é ignorada, como o resto do `setup` — nunca erro."""
+    base = {"voice_id": app.DESIGN_VOICE_ID}
+    for ruim in ("aec=0", [1, 2], None, {"aec": "nao"}):
+        assert app._live_valida_setup({**base, "captura": ruim})["captura"] is None
+
+
 if __name__ == "__main__":                    # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
