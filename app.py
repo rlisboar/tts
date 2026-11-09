@@ -11889,6 +11889,13 @@ _LIVE_BARGE_MS_PADRAO = 300
 _LIVE_ESPERA_PREWARM_S = max(0.0, float(os.environ.get("TTS_LIVE_ESPERA_PREWARM_S", "2")))
 _LIVE_AUDIO_SR = 24000                  # o que o servidor ENVIA (o cliente manda 16k)
 _LIVE_TICK_S = 0.2                      # acorda a task de envio p/ checar TTL/fechamento
+# #1022 (P1): teto de UM `send` no WS. `send` sem timeout com o par parado de ler
+# trava a task de envio PARA SEMPRE, e o sintoma é mudo: o laço de recepção segue
+# renovando `visto`, o TTL nunca vence, nenhum `error` sai e o Live fica calado até
+# o cliente desistir. Medido no mini: 8 min sem um evento com o app saudável
+# (RSS plano, frames entrando a 10/s). 15 s é o mesmo teto que a bancada já usa no
+# próprio `send` — passou disso, o par não está drenando e o certo é derrubar.
+_LIVE_SEND_TIMEOUT_S = 15.0
 _live_lock = threading.Lock()
 _live_sessions: dict = {}
 _live_sweeper_iniciado = False
@@ -14073,7 +14080,7 @@ async def _live_manda_stats(sess: dict, ws) -> bool:
     """
     sess["st_proximo"] = time.monotonic() + _LIVE_STATS_MS / 1000.0
     try:
-        await ws.send_json(_live_stats(sess))
+        await asyncio.wait_for(ws.send_json(_live_stats(sess)), _LIVE_SEND_TIMEOUT_S)
     except Exception:                     # noqa: BLE001 — quem trata a morte é o laço
         return False
     return True
@@ -14106,16 +14113,20 @@ async def _live_sender(sess: dict, ws) -> None:
         if item is not None:
             tipo, payload = item
             try:
+                # #1022: SEM teto aqui o `send` pendura e a sessão fica muda sem
+                # sintoma nenhum (ver `_LIVE_SEND_TIMEOUT_S`). `TimeoutError` cai no
+                # mesmo ramo da exceção: o par parou de ler, o socket acabou.
                 if tipo == "json":
-                    await ws.send_json(payload)
+                    await asyncio.wait_for(ws.send_json(payload), _LIVE_SEND_TIMEOUT_S)
                 else:
-                    await ws.send_bytes(payload)
+                    await asyncio.wait_for(ws.send_bytes(payload), _LIVE_SEND_TIMEOUT_S)
             except Exception:  # noqa: BLE001 — o socket morreu (a limpeza de recursos
                 # é do endpoint, quando o `_live_loop` voltar). O SLOT, porém, é
                 # liberado aqui e já: sem consumidora a fila só cresce, e o loop
                 # segue renovando `visto` — o TTL nunca venceria (#300). O
                 # `ws.close` é o que faz o `receive()` pendente do loop voltar.
                 _live_solta_slot(sess, "sender_morto")
+                _live_log_kv("sender_morto", sess=sess["id"])
                 try:
                     await ws.close(code=1011)
                 except Exception:      # noqa: BLE001

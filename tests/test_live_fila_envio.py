@@ -225,3 +225,29 @@ def test_stats_publica_o_backlog_da_fila():
     s = app._live_stats(sess)
     assert s["playback"]["fila_bytes"] == len(CHUNK)
     assert s["playback"]["fila_itens"] == 1 and s["playback"]["fila_descartados"] == 0
+
+
+def test_send_pendurado_derruba_a_sessao_em_vez_de_emudecer(monkeypatch):
+    """#1022 (P1): `send` sem teto trava a task de envio PARA SEMPRE.
+
+    Sintoma medido no mini: 8 min de silêncio com o app saudável — o laço de
+    recepção segue renovando `visto`, o TTL nunca vence, nenhum `error` sai e o
+    Live fica mudo até o cliente desistir. O par parado de ler não pode ser
+    invisível: estourou o teto, solta o SLOT, avisa no log e fecha.
+    """
+    monkeypatch.setattr(app, "_LIVE_SEND_TIMEOUT_S", 0.05)
+    sess = _sess()
+    sess["pipe"] = _PipeFake()
+    ws = _WsFalso(travar=True)
+    app._live_sessions["s-fila"] = sess
+    try:
+        app._live_envia_audio(sess, CHUNK)
+
+        async def fluxo() -> None:
+            await asyncio.wait_for(app._live_sender(sess, ws), 2.0)
+
+        asyncio.run(fluxo())
+        assert ws.fechado == 1011              # fechou em vez de ficar mudo
+        assert sess["pipe"].cancelado == 1     # a geração parou
+    finally:
+        app._live_sessions.pop("s-fila", None)
