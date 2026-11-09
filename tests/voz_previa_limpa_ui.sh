@@ -13,6 +13,11 @@
 #   · etapas da limpeza (#528) nascem desligadas, são admin e, com painel aberto,
 #     refazem a prévia (as etapas entram na medição).
 #
+# DEPENDÊNCIA DE MÁQUINA (#1012): os números de DNSMOS vêm de
+# `models/dnsmos/*.onnx`, que é UNTRACKED. Sem eles a célula dos números é PULADA
+# com o motivo impresso (nada de falha críptica); painel, timbre, descarte, recusa
+# e etapas seguem cobrados em qualquer árvore.
+#
 # Vozes SINTÉTICAS em tmp (o `voices/` do dono não é tocado), sem microfone.
 #
 #   ./tests/voz_previa_limpa_ui.sh
@@ -29,8 +34,15 @@ cd "$RAIZ"
 import hashlib, json, os, pathlib, shutil, socket, subprocess, sys, threading, time, traceback, urllib.request
 
 falhas = []
+avisos = []
 def cobrar(c, m):
     if not c: falhas.append(m)
+
+def aviso(m):
+    """Pulado por dependência de máquina: não falha, mas o motivo fica impresso e
+    no resumo final (regra #728 — a célula diz o que é fixture e o que é máquina)."""
+    avisos.append(m)
+    print(f"  ! PULADO: {m}")
 
 # Fora da faixa de controle do mic-router (7861-7865, #898): se o servidor do
 # teste cair ali, a sonda do painel OBS fala com ele no lugar do roteador e
@@ -142,7 +154,18 @@ try:
         print(f"  painel: {painel}")
         cobrar(painel["audios"] == 2, f"o painel não tem os dois lados ({painel['audios']})")
         cobrar(painel["aplicar"] and painel["descartar"], "faltou aplicar/descartar no painel")
-        cobrar("DNSMOS" in painel["nums"], f"os números não aparecem ({painel['nums']!r})")
+        # Os números de DNSMOS só existem com `models/dnsmos/*.onnx` na árvore —
+        # que é UNTRACKED (#1012). Num worktree limpo o servidor manda os
+        # `X-Dnsmos-*` vazios e a linha não é renderizada: sem esta guarda a
+        # suíte falhava com "os números não aparecem ('timbre preservado 88%')",
+        # que não nomeia a causa. O painel/o timbre/a recusa seguem cobrados.
+        if "DNSMOS" in painel["nums"]:
+            cobrar("→" in painel["nums"], f"os números de DNSMOS vêm sem antes → depois ({painel['nums']!r})")
+        elif "timbre preservado" in painel["nums"]:
+            aviso("DNSMOS ausente (models/dnsmos/*.onnx é untracked) — "
+                  "asserção dos números pulada; painel, timbre e descarte seguem cobrados")
+        else:
+            cobrar(False, f"nem DNSMOS nem timbre no painel ({painel['nums']!r})")
         cobrar(sha() == antes, "a PRÉVIA já escreveu no arquivo")
 
         # ── 2) descartar não escreve nada ────────────────────────────────────
@@ -239,6 +262,9 @@ finally:
         except Exception: pass
 
 print()
+if avisos:
+    print(f"  ({len(avisos)} asserção(ões) pulada(s) por dependência de máquina)")
+    for a in avisos: print("    ·", a)
 if falhas:
     print("✖ prévia da limpeza:")
     print("  log do servidor:", log)
