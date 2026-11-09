@@ -278,9 +278,12 @@ def test_tts_app_marca_setup_e_geracao(monkeypatch, tmp_path):
     espera: dict = {}
     lp._tts_app("Claro,", {"num_steps": 16}, voice_id="voz-x", espera=espera)
 
-    assert espera.get("modelo_ms") is not None      # setup medido
-    assert espera.get("cond_ms") is not None        # clone prompt medido
-    assert espera.get("gen_ms") is not None         # geração medida
+    # as chaves que o produtor grava são EXATAMENTE as que o laço do 1º áudio
+    # copia para o `latency` (+ a espera do lock do #313). Antes cada lado tinha
+    # a sua convenção e as sub-marcas nunca chegavam ao evento.
+    assert set(espera) == ({f"tts_{k}_ms" for k in lp._TTS_SUB_MARCAS}
+                           | {"lock_espera_ms"})
+    assert all(isinstance(v, int) and v >= 0 for v in espera.values())
 
 
 def test_espera_ausente_nao_inventa_campo(monkeypatch):

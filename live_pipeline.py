@@ -1275,7 +1275,7 @@ class LivePipeline:
                     # #1022: sub-marcas do `tts` (ausente = fora do evento, como
                     # o resto). Fora da guarda do lock: caminho sem espera também
                     # tem setup e geração para medir.
-                    for _k in ("modelo", "cond", "gen", "prep"):
+                    for _k in _TTS_SUB_MARCAS:
                         if espera.get(f"tts_{_k}_ms") is not None:
                             lat[f"tts_{_k}_ms"] = int(espera[f"tts_{_k}_ms"])
                     self.ultima_latencia = dict(lat)
@@ -1847,6 +1847,14 @@ def _llm_stream_app(messages: list):
         yield app._chat_llm(messages)
 
 
+#: #1022: sub-marcas do `tts` do 1º trecho. O `_tts_app` grava `tts_<k>_ms` no
+#: `espera` do turno e o laço do 1º áudio copia as MESMAS chaves para o
+#: `latency` — uma lista só, para produtor e consumidor não divergirem (o gate
+#: #1065 aprovou um par em que um gravava `modelo_ms` e o outro lia
+#: `tts_modelo_ms`: a janela sairia toda `None`).
+_TTS_SUB_MARCAS = ("modelo", "cond", "prep", "gen")
+
+
 def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
              espera: dict | None = None):
     """Gera UM chunk in-process (mesmo modelo/conds do app) e devolve float32 24 kHz.
@@ -1866,15 +1874,17 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
     import time as _t
     import app
     _m = [_t.perf_counter()]
-    def _marco(rot):
+    def _marco(rot, publica=True):
         _m.append(_t.perf_counter())
         # #1022: o mesmo marco que o debug imprime vai para o `latency`. Sem
         # isso o `tts` é caixa preta de ~1430 ms no mini contra 635 ms da
         # síntese isolada do MESMO texto — fator que não é conteúdo e só o
         # caminho real separa (`modelo` = get_model, `cond` = clone prompt,
-        # `gen` = a geração). `trava` reusa o `lock_espera_ms` do #313.
-        if espera is not None:
-            espera[f"{rot}_ms"] = round((_m[-1] - _m[-2]) * 1000)
+        # `prep` = backend/ref_text, `gen` = a geração). `trava` só fecha o
+        # intervalo (o `gen` não leva a espera): a espera em si já sai como
+        # `lock_espera_ms` do #313, e publicá-la de novo seria campo morto.
+        if espera is not None and publica:
+            espera[f"tts_{rot}_ms"] = round((_m[-1] - _m[-2]) * 1000)
         if _DEBUG_TTS:
             print(f"[live][dbg] {rot} {(_m[-1]-_m[-2])*1000:.0f} ms", flush=True)
     voice_id = (voice_id or app._settings.get("default_voice")
@@ -1899,7 +1909,7 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
     with trava:
         if espera is not None:
             espera["lock_espera_ms"] = _ms(t_trava)
-        _marco("trava")
+        _marco("trava", publica=False)
         r = app._generate_chunk(model, texto, _idioma_tts(),
                                 conds, ref_text, omni, ref_audio=ref_audio,
                                 family=be["family"], meta=be.get("meta"), sr=sr)

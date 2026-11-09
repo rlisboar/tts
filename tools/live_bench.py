@@ -216,7 +216,8 @@ _PARA_FALA, _LIMPA_DE = _carrega_limpador()
 #: sobra até o 1º áudio no CLIENTE (fio + fila do sender + decisão do VAD, que o
 #: `first_token_ms` não enxerga porque conta do início da thread do turno).
 ESTAGIOS_POS_LLM = ("llm_frase", "fila_tts", "lock", "tts", "marca", "envio", "resto",
-                    "vad", "fio", "tts_modelo", "tts_cond", "tts_gen")
+                    "vad", "fio", "tts_modelo", "tts_cond", "tts_prep", "tts_gen",
+                    "tts_fora")
 
 
 def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
@@ -260,9 +261,16 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
         tts = max(0, tts - round(lock))
     resto = (round(s2_ms - aud) if isinstance(s2_ms, (int, float))
              and aud is not None else None)
-    # #1022: dentro do `tts` — `get_model`, clone prompt e a geração em si. Somam
-    # para o `tts` (menos a reamostra) e dizem se o tempo é setup ou síntese.
-    modelo, cond, gen = g("tts_modelo_ms"), g("tts_cond_ms"), g("tts_gen_ms")
+    # #1022: dentro do `tts` — `get_model`, clone prompt, preparo e a geração em
+    # si. `tts_fora` é o que sobra do `tts` fora das quatro (reamostra, fila do
+    # worker, emissão do PCM): fecha a soma POR CONSTRUÇÃO, e é ele que diz se o
+    # critério "gen > 80 % do tts" falhou por setup ou por algo fora do
+    # `_tts_app`. Qualquer sub-marca ausente → `tts_fora` None (não inventa).
+    modelo, cond = g("tts_modelo_ms"), g("tts_cond_ms")
+    prep, gen = g("tts_prep_ms"), g("tts_gen_ms")
+    subs = (modelo, cond, prep, gen)
+    fora = (tts - sum(round(x) for x in subs)
+            if tts is not None and all(x is not None for x in subs) else None)
     vad = g("t_decisao_ms") or g("decisao_ms") or None   # 0 = sem carimbo
     return {"llm_frase": d(tok, cla), "fila_tts": d(cla, ini),
             "lock": round(lock) if lock is not None else None, "tts": tts,
@@ -272,7 +280,9 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
                     else None),
             "tts_modelo": round(modelo) if modelo is not None else None,
             "tts_cond": round(cond) if cond is not None else None,
-            "tts_gen": round(gen) if gen is not None else None}
+            "tts_prep": round(prep) if prep is not None else None,
+            "tts_gen": round(gen) if gen is not None else None,
+            "tts_fora": fora}
 
 
 def pct(xs: list[float], p: float) -> float | None:
