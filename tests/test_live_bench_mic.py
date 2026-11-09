@@ -349,19 +349,53 @@ def test_interrupted_de_continuacao_nao_fecha_e_o_terminal_fecha():
 def test_estagios_do_pos_llm_fecham_com_os_marcos_do_latency():
     lat = {"first_token_ms": 1000, "first_clause_ms": 1600, "tts_start_ms": 1610,
            "tts_first_pcm_ms": 2900, "lock_espera_ms": 300, "marca_ms": 3100,
-           "send_ms": 3120, "first_audio_ms": 3125}
+           "send_ms": 3120, "first_audio_ms": 3125, "t_decisao_ms": 200}
     e = lb.estagios_pos_llm(lat, s2_ms=3400)
     assert e == {"llm_frase": 600, "fila_tts": 10, "lock": 300, "tts": 990,
-                 "marca": 200, "envio": 20, "resto": 275}
+                 "marca": 200, "envio": 20, "resto": 275, "vad": 200, "fio": 75}
     # a soma dos trechos fecha com o pos_llm da bancada (s2 − 1º token), a menos
-    # do intervalo send → first_audio, que é o emit (5 ms aqui)
-    assert sum(e.values()) == 3400 - 1000 - (3125 - 3120)
+    # do intervalo send → first_audio, que é o emit (5 ms aqui). `vad`/`fio`
+    # ficam de fora: eles DECOMPÕEM o `resto`, não somam com ele.
+    assert sum(v for k, v in e.items() if k not in ("vad", "fio")) == \
+        3400 - 1000 - (3125 - 3120)
+    assert e["vad"] + e["fio"] == e["resto"]
 
 
 def test_marco_ausente_vira_none_e_nao_zero():
     e = lb.estagios_pos_llm({"first_token_ms": 900, "first_audio_ms": 2000}, None)
     assert set(e) == set(lb.ESTAGIOS_POS_LLM)
     assert all(v is None for v in e.values())
+
+
+def test_resto_abre_em_vad_e_fio():
+    """#1038: o `resto` é caixa preta de ~900 ms — `vad`/`fio` a abrem.
+
+    `vad` é a decisão do detector; `fio` é o que sobra (transporte/fila). Sem os
+    dois, cortar o `resto` é chute: 900 ms não dizem se o problema é hangover do
+    VAD ou fio.
+    """
+    e = lb.estagios_pos_llm({"first_token_ms": 900, "first_audio_ms": 2000,
+                             "t_decisao_ms": 600}, 2900)
+    assert e["resto"] == 900
+    assert e["vad"] == 600
+    assert e["fio"] == 300
+
+
+def test_resto_sem_carimbo_nao_inventa_vad_nem_fio():
+    """Sem `t_decisao_ms` os dois são `None` — não rateia o `resto` no chute."""
+    e = lb.estagios_pos_llm({"first_token_ms": 900, "first_audio_ms": 2000}, 2900)
+    assert e["resto"] == 900 and e["vad"] is None and e["fio"] is None
+
+
+def test_decisao_zero_vale_por_ausente():
+    """O produtor faz `or 0`: zero é "sem carimbo", não "decisão imediata".
+
+    Se o zero virasse medida, o `fio` sairia igual ao `resto` e a leitura diria
+    "tudo é fio" mesmo quando o detector não carimbou nada.
+    """
+    e = lb.estagios_pos_llm({"first_token_ms": 900, "first_audio_ms": 2000,
+                             "t_decisao_ms": 0}, 2900)
+    assert e["vad"] is None and e["fio"] is None
 
 
 def test_resumo_publica_p50_de_cada_trecho():

@@ -1695,6 +1695,11 @@ class TurnEngine:
         ev = self._evento("speech_end", self._t_ms(), fim, audio, detalhe=motivo,
                           fala_ms=fala_ms, curto=curto, barge_in=self._turno_barge,
                           barge_falso=falso)
+        # #1022/#1038: aqui `t_decisao_ms` é DURAÇÃO, não carimbo. O detector
+        # fecha o turno depois de `silence_ms` de silêncio, e é esse tempo que
+        # falta na conta do `resto` (~900 ms medidos na bancada). Carimbo de
+        # sessão não serve: o `t_ms` do próprio evento já é o mesmo instante.
+        ev.t_decisao_ms = self._silencio_frames * FRAME_MS
         self._reset_turno()
         return [ev]
 

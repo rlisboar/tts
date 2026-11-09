@@ -18,6 +18,7 @@ import pytest
 
 import app
 import live_pipeline as lp
+import live_turns as lt
 
 
 # -- 1. a decisão entra na conta ------------------------------------------
@@ -102,6 +103,34 @@ def test_speech_end_carimba_a_decisao():
     assert isinstance(sess["t_decisao"], float) and sess["t_decisao_ms"] == 512
     # o stub (sem pipe) fecha o turno e o `abre` segue nulo: a soma só sai com áudio
     assert sess["t_abre_turno"] is None
+
+
+def test_o_motor_manda_DURACAO_e_nao_carimbo_no_speech_end():
+    """`t_decisao_ms` do `speech_end` é o silêncio esperado, não o relógio.
+
+    Medido no mini: vinha 78049 ms (carimbo de sessão) e, subtraído do `resto`
+    (≈900 ms), dava `fio` negativo em 78 s. Aqui o motor fecha um turno por
+    silêncio e o evento tem de trazer ~`silence_ms`, não o `t_ms` da sessão.
+    """
+    rel = [0.0]
+    motor = lt.TurnEngine(lt.Config(silence_ms=600, min_fala_ms=300),
+                          scorer=lambda f: 0.9 if float(np.abs(f).mean()) > 0.01 else 0.02,
+                          relogio=lambda: rel[0], agora=lambda: 1_700_000_000.0)
+    voz = np.ones(lt.FRAME_SAMPLES, dtype=np.float32) * 0.1
+    mudo = np.zeros(lt.FRAME_SAMPLES, dtype=np.float32)
+    evs = []
+
+    def toca(frame, n):
+        for _ in range(n):
+            evs.extend(motor.feed(frame))
+            rel[0] += lt.FRAME_SAMPLES / lt.SAMPLE_RATE
+
+    toca(voz, 40)                              # fala
+    toca(mudo, 40)                             # silêncio fecha o turno
+    fim = [e for e in evs if e.tipo == "speech_end"]
+    assert fim, "o turno devia ter fechado por silêncio"
+    assert 600 <= fim[0].t_decisao_ms <= 700    # ~silence_ms, não o relógio
+    assert fim[0].t_ms > 1000                   # o carimbo da sessão é bem maior
 
 
 # -- 2. gate do prewarm ---------------------------------------------------

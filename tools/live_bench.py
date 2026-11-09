@@ -215,7 +215,8 @@ _PARA_FALA, _LIMPA_DE = _carrega_limpador()
 #: Cada um é a diferença entre dois marcos do `latency` do turno; `resto` é o que
 #: sobra até o 1º áudio no CLIENTE (fio + fila do sender + decisão do VAD, que o
 #: `first_token_ms` não enxerga porque conta do início da thread do turno).
-ESTAGIOS_POS_LLM = ("llm_frase", "fila_tts", "lock", "tts", "marca", "envio", "resto")
+ESTAGIOS_POS_LLM = ("llm_frase", "fila_tts", "lock", "tts", "marca", "envio", "resto",
+                    "vad", "fio")
 
 
 def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
@@ -228,6 +229,8 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
     - `marca`: PCM pronto → marca d'água aplicada;
     - `envio`: marca → entrega ao sender;
     - `resto`: `s2_ms − first_audio_ms` (fio, cliente e VAD).
+    - `vad`: parcela do `resto` que é a decisão do detector (`t_decisao_ms`);
+    - `fio`: `resto − vad` — o que sobra é transporte/fila, sem o VAD.
     Marco ausente → trecho `None` (não inventa zero).
 
     RESSALVA do `resto` (medida local, #1022): ele mistura DOIS relógios. O
@@ -235,7 +238,12 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
     do início da thread do turno, DEPOIS da decisão do VAD. `resto` pode então
     sair NEGATIVO (−121 ms no p50 de n=2) e a soma dos trechos não fecha exata
     com o `pos_llm`. Não é erro do pipeline; é offset de instrumento. Ler `resto`
-    como ordem de grandeza (fio + cliente + VAD), nunca como tempo absoluto."""
+    como ordem de grandeza (fio + cliente + VAD), nunca como tempo absoluto.
+
+    `vad`/`fio` existem para abrir essa caixa (#1038 publicou `t_decisao_ms`):
+    sem eles, ~900 ms medidos na janela não dizem se o problema é hangover do
+    detector ou fio. `ZERO` em `t_decisao_ms` vale por AUSENTE — o produtor faz
+    `or 0` no caminho real, então zero é "sem carimbo", não "decisão imediata"."""
     def g(k):
         v = lat.get(k)
         return float(v) if isinstance(v, (int, float)) else None
@@ -250,11 +258,15 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
     tts = d(ini, pcm)
     if tts is not None and lock is not None:
         tts = max(0, tts - round(lock))
+    resto = (round(s2_ms - aud) if isinstance(s2_ms, (int, float))
+             and aud is not None else None)
+    vad = g("t_decisao_ms") or g("decisao_ms") or None   # 0 = sem carimbo
     return {"llm_frase": d(tok, cla), "fila_tts": d(cla, ini),
             "lock": round(lock) if lock is not None else None, "tts": tts,
-            "marca": d(pcm, mar), "envio": d(mar, env),
-            "resto": (round(s2_ms - aud) if isinstance(s2_ms, (int, float))
-                      and aud is not None else None)}
+            "marca": d(pcm, mar), "envio": d(mar, env), "resto": resto,
+            "vad": round(vad) if vad is not None else None,
+            "fio": (resto - round(vad) if resto is not None and vad is not None
+                    else None)}
 
 
 def pct(xs: list[float], p: float) -> float | None:

@@ -48,5 +48,69 @@ o erro mais fácil aqui.
 
 ## Readout da janela
 
-<!-- preencher no commit da rodada: data, SHA, p50/p95 por trecho, quais
-     hipóteses caíram e por qual número. -->
+**Data:** 2026-11-09 · **SHA:** `48b11d5` · **Rodada:** `/tmp/rodada-876-1794234572`
+(2×2 do #876 × #870, semente 875, 10 ciclos + 1 de aquecimento por célula) · **relatório:** `evidence/876-janela-2x2.md`
+
+**Duas ressalvas que mudam a leitura, declaradas pelo relatório antes do número:**
+
+1. **O provedor estava fora (HTTP 530) — rodou-se só com o LLM FALSO.** O critério da
+   hipótese 1 pedia `llm_frase` baixo nas DUAS rodadas; houve uma. Onde isso pesa,
+   está marcado abaixo.
+2. O `pos_llm` só tem estágio nas falas de papel A **que abriram turno com áudio**
+   (n=7–9 por célula), não nas 20 do S2.
+
+### Medido (p50 / p95, ms, por célula)
+
+| trecho | f0-c0 | f0-c1 | f1-c0 | f1-c1 |
+|---|---|---|---|---|
+| `llm_frase` | 34 / 35,6 | 34 / 35,6 | 29 / 34,7 | 31 / 34,1 |
+| `tts` | **1437 / 1487** | **1429 / 1448** | **1431 / 1854** | **1448 / 1481** |
+| `resto` | **870 / 2571** | **1014 / 2328** | **928 / 2979** | **656 / 1034** |
+| `marca` | 0 / 0 | 0 / 1 | 0 / 0 | 0 / 0 |
+| `fila_tts` · `lock` · `envio` | ~0 | ~0 | ~0 | ~0 |
+
+### Veredito por hipótese
+
+| # | veredito | número |
+|---|---|---|
+| 1 `llm_frase` | **INDETERMINADA** | 29–34 ms nas quatro células — 10× abaixo do limite de 300, mas só na rodada falsa; a real não existiu (provedor 530) |
+| 2 `tts` no mini | **SOBREVIVEU** | 1429–1448 ms de p50, quatro células, contra limite de morte de 300 ms |
+| 3 `marca` inline | **NÃO TESTADA** | 0,0 ms — a marca d'água estava DESLIGADA na janela (runbook, passo 5), então o 0 é ausência, não rapidez. Sonda local com a marca ligada: 61 ms |
+| 4 `resto` como causa | **SOBREVIVEU — e é 2/3 VAD** | ver a abertura abaixo: 918 ms de `resto` = **608 de `vad` + 310 de `fio`** |
+
+### O `resto` foi aberto (rodada local `vad5`, 2026-11-09)
+
+O `t_decisao_ms` publicado pelo #1038 vinha como **carimbo de sessão** (78049 ms) e, subtraído
+do `resto`, dava `fio` negativo em 78 s — campo inútil como estava. O motor passou a mandar
+**duração** (o silêncio que o detector esperou) e a bancada a abrir o `resto` em `vad` + `fio`:
+
+```
+resto  p50 918  =  vad p50 608  +  fio p50 310
+```
+
+O `vad` bate com o `silence_ms` de 600 do config (608 = 19 frames de 32 ms), o que valida a
+medida. Ou seja: **o maior trecho do pos_llm é o hangover do VAD, e o segundo é fio/fila** —
+não é LLM (29 ms), não é `_cond_for` (52 ms), não é `marca` (0 ms com a marca desligada).
+
+Cortar o `vad` tem piso declarado no próprio código: `SILENCE_MS_MINIMO_STT = 500` (abaixo
+disso o STT come a última sílaba). São 100 ms disponíveis ali, contra 310 ms de `fio` que
+ainda não têm dono.
+
+### O que o número já derruba, e o que ele não sustenta
+
+- **A hipótese do `_cond_for` caiu por medição direta**, não pela janela. Sonda isolada
+  (`/tmp/probe_cond.py`, 2026-11-09): `create_voice_clone_prompt` frio custa **52 ms** com
+  o modelo carregado, e as falas 14/16 da f0-c0 repetem vozes da 0/2 com o mesmo `tts`
+  (1436/1438 ms) — a LRU de 4 não explica nada em 1430 ms. O `tts` é **síntese**, não cache.
+- **A 1ª cláusula já é curta**: o chunker entrega `"Claro,"` (6 ch) e a síntese isolada
+  disso a 16 passos custa **635 ms** — não 1430. Ou seja, metade do `tts` da janela é
+  estado da máquina, não do texto (a mesma chamada a 8 passos custa 311 ms).
+- **Rodada local de controle** (`tools/mede_pos_llm.sh base 5`, corpus FLEURS): `tts` p50
+  **316 ms**, `resto` p50 **918 ms**. O `resto` se repete; o `tts` não.
+
+### Consequência para o passo 2
+
+`resto` (~900 ms) é o maior trecho e o único que ainda não tem conta aberta: **600 ms dele
+são o hangover do VAD** (`silence_ms`, mínimo 500) e o resto é fio/fila. Antes de cortar
+qualquer coisa, a bancada precisa gravar `t_decisao_ms` — hoje o `resto` é uma caixa preta
+de 900 ms e cortar sem separar é o erro que o histórico do repositório já cobrou uma vez.

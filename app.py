@@ -14218,7 +14218,10 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
                 continue
             # estágio `stt` não abre aqui (#943): este speech_end pode só
             # enfileirar. O relógio começa no speech_start do pipeline.
-            sess["t_decisao_ms"] = int(getattr(ev, "t_decisao_ms", 0) or 0)
+            # #1022/#1038: o motor manda `t_decisao_ms` como DURAÇÃO (o silêncio
+            # que o detector esperou) — carimbo de sessão não servia: o `t_ms` do
+            # próprio evento é o mesmo instante e a diferença dava zero.
+            sess["t_decisao_ms"] = max(0, int(getattr(ev, "t_decisao_ms", 0) or 0))
             # #315: relógio da DECISÃO. O alvo do épico é "fim-de-fala → 1º áudio",
             # e o `latency` do pipeline conta de outro zero (o início da thread) —
             # sem este carimbo o trecho entre a decisão do VAD e o turno abrir fica
