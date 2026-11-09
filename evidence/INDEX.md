@@ -12,6 +12,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | arquivo | task | data | o que mostra |
 |---|---|---|---|
 | `1022-hipoteses-falsificacao.md` | #1022 | 2026-11-08 | 1022 — hipóteses de causa do pos_llm e critérios de FALSIFICAÇÃO (pré-registro) |
+| `1049-deploy-head-48b11d5.txt` | #1049 | — | == deploy 48b11d5 (main) — 2026-11-09T10:19:17-03:00 |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
@@ -335,7 +336,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `876-stt-motor-parakeet.py` | #876 | 2026-11-08 | """#876 — motor do STT do Live: Whisper turbo (o de hoje) × Parakeet TDT 0.6B v3. |
 | `942-bancada-mini-c3f4a78.json` | #942 | 2026-11-07 | "rotulo": "c3f4a78-mini", |
 | `942-bancada-mini-c3f4a78.md` | #942 | 2026-11-07 | 942 — bancada no mini sobre c3f4a78 (4º deploy), janela 16:16–16:50 BRT |
-| `943-janela1-mini.md` | #943 | — | 943 / #901 — Janela 1 na porta 7890 (2026-11-07): estágio stt e matriz de passos |
+| `943-janela1-mini.md` | #943 | 2026-11-07 | 943 / #901 — Janela 1 na porta 7890 (2026-11-07): estágio stt e matriz de passos |
 | `963-so-minha-voz-bloco.png` | #963 | 2026-11-08 | (imagem) |
 | `963-so-minha-voz-chips.png` | #963 | 2026-11-08 | (imagem) |
 | `979-asnorm-topk.py` | #979 | 2026-11-08 | """#979 — mesma fala, mesma coorte: só muda o K do AS-norm (app top-10 × R2 top-50).""" |
