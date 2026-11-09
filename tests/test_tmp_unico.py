@@ -23,8 +23,11 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 
 # Arquivos varríveis: scripts e testes executáveis da casa (não docs, não vendor).
+# `tools/*.sh` entrou no #1022: o `mede_pos_llm.sh` nasceu com saída fixa por rótulo
+# e a varredura não olhava a pasta — a mesma classe do #240 passava despercebida.
 ALVOS = sorted(
     [p for p in (REPO / "remote").glob("*.sh")]
+    + [p for p in (REPO / "tools").glob("*.sh")]
     + [p for p in (REPO / "tests").glob("*.sh")]
     + [p for p in (REPO / "tests").glob("*.py")]
     + [p for p in (REPO / "evidence").glob("*.sh")]

@@ -7,7 +7,8 @@
 # Env: PORTA (7895), PORTA_LLM (7899), TTFT_MS (300), TPS (40),
 #      FLEURS (/tmp/tts-bakeoff/fala_pt, montado por tools/bakeoff/wer_pt_real.py --monta)
 # Corpus e voz da sessão saem do FLEURS pt_br (CC BY 4.0) — NUNCA de voices/ (#728).
-# Saída: /tmp/pos-llm-<rotulo>.json e .log
+# Saída: /tmp/pos-llm-<rotulo>-<pid>.json e .log (sufixo por execução: rodada
+# repetida com o mesmo rótulo não sobrescreve a anterior).
 set -eu
 ROTULO="${1:?rótulo}"
 CICLOS="${2:-6}"
@@ -17,7 +18,11 @@ FLEURS="${FLEURS:-/tmp/tts-bakeoff/fala_pt}"
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
 PY="$RAIZ/.venv-mlx/bin/python"
 EST="$(mktemp -d /tmp/pos-llm-estado.XXXXXX)"
-LOG="/tmp/pos-llm-$ROTULO.log"
+# sufixo por execução: rodada repetida com o mesmo rótulo não sobrescreve a
+# anterior (mesma classe do #12/#240/#998 — caminho fixo em /tmp compartilhado).
+SUF="$$"
+LOG="/tmp/pos-llm-$ROTULO-$SUF.log"
+SAIDA="/tmp/pos-llm-$ROTULO-$SUF.json"
 
 limpa() {
   [ -n "${PID_APP:-}" ] && kill "$PID_APP" 2>/dev/null || true
@@ -72,9 +77,9 @@ done
 
 "$PY" -u "$RAIZ/tools/live_bench.py" --url "ws://127.0.0.1:$PORTA/api/live/ws" \
   --audio "$AUDIO" --voice "$VOZ" --ciclos "$CICLOS" --seed 875 --teto-turno-s 120 \
-  --out "/tmp/pos-llm-$ROTULO.json" --rotulo "$ROTULO" >>"$LOG" 2>&1 || true
+  --out "$SAIDA" --rotulo "$ROTULO" >>"$LOG" 2>&1 || true
 
-"$PY" - "/tmp/pos-llm-$ROTULO.json" <<'EOF'
+"$PY" - "$SAIDA" <<'EOF'
 import json, sys
 s2 = json.load(open(sys.argv[1]))["resumo"]["S2"]
 print(f"S2 p50 {s2['p50_ms']}  pos_llm p50 {s2['pos_llm_p50_ms']} p95 {s2['pos_llm_p95_ms']}")
