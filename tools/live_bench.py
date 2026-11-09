@@ -289,6 +289,25 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
             "tts_fora": fora}
 
 
+def latencia_com_audio(c, desde: float):
+    """O `latency` do turno que começou em `desde`, se ele chegou a emitir áudio.
+
+    #1022: nesta bancada B interrompe A em TODO ciclo, e o turno interrompido sai
+    por `_interrompido` marcado `cancelado=True` — mas carregando `first_audio_ms`
+    e todos os marcos. Descartar por `cancelado` fazia o laço pular o turno de A e
+    casar `s2_ms` de A com `first_token_ms` de B, que é dezenas de segundos depois:
+    o `pos_llm` saía MENOR que o próprio `tts` e o `resto` negativo em ~1,4 s
+    (medido no mini, f0-c0, fala 12: s2=484 ms com first_token=1421 ms).
+
+    O que desqualifica um `latency` é NÃO ter primeiro áudio — cancelado antes de
+    qualquer som não mede S2. Ser cancelado depois, sim.
+    """
+    for _t, _ty, _e in c.evs(desde, ("latency",)):
+        if _e.get("first_audio_ms") is not None:
+            return _e
+    return None
+
+
 def pct(xs: list[float], p: float) -> float | None:
     if not xs:
         return None
@@ -662,16 +681,24 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
     # S2 DECOMPOSTO: o `latency` do turno chega no FECHAMENTO e separa o 1º
     # token da LLM (TTS + fila). `first_token_ms` conta do início da thread do
     # turno, logo depois do fim da fala — o resíduo é a decisão do VAD.
+    #
+    # #1022: o turno de A é interrompido por B em TODO ciclo desta bancada, e o
+    # turno interrompido sai por `_interrompido` com `cancelado=True` — carregando
+    # `first_audio_ms` e todos os marcos. Descartar por `cancelado` fazia o laço
+    # pular o turno de A e pegar o de B, que é dezenas de segundos depois: com
+    # `s2_ms` de A e `first_token_ms` de B o `pos_llm` saía MENOR que o próprio
+    # `tts` e o `resto` negativo em ~1,4 s (medido no mini, f0-c0: fala 12 com
+    # s2=484 ms e first_token=1421 ms — aritmeticamente impossível no mesmo
+    # turno). O que desqualifica um `latency` é NÃO ter primeiro áudio, não ser
+    # cancelado: cancelado antes de qualquer som não mede S2.
     if t_audio_a is not None:
-        for _t, _ty, _e in c.evs(a_fim, ("latency",)):
-            if _e.get("cancelado") or _e.get("first_audio_ms") is None:
-                continue                   # turno cancelado pela continuação
-            la["s2_llm_ttft_ms"] = _e.get("first_token_ms")
+        _lat = latencia_com_audio(c, a_fim)
+        if _lat is not None:
+            la["s2_llm_ttft_ms"] = _lat.get("first_token_ms")
             if la["s2_llm_ttft_ms"] is not None:
                 la["s2_pos_llm_ms"] = max(0, la["s2_ms"] - la["s2_llm_ttft_ms"])
             # #1022: onde o pos_llm gasta, trecho a trecho
-            la["s2_estagios"] = estagios_pos_llm(_e, la.get("s2_ms"))
-            break
+            la["s2_estagios"] = estagios_pos_llm(_lat, la.get("s2_ms"))
     lb["eco_tocado_s"] = round(c.tocado_s, 1) if t_audio_b else 0.0
     if t_audio_b is not None:
         lb["eco_falso_corte"] = bool([e for _, _, e in c.evs(

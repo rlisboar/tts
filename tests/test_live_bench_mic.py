@@ -429,3 +429,39 @@ def test_resumo_publica_p50_de_cada_trecho():
     assert est["llm_frase"] == {"n": 3, "p50_ms": 600.0, "p95_ms": 780.0}
     assert est["lock"] == {"n": 0, "p50_ms": None, "p95_ms": None}
     assert list(est) == list(lb.ESTAGIOS_POS_LLM)
+
+
+# ---------------------------------------------------------------------------
+# #1022: o `latency` de A é o de A — o barge-in cancela o turno, não a medida
+# ---------------------------------------------------------------------------
+
+def test_turno_interrompido_ainda_empresta_o_proprio_latency():
+    """A é SEMPRE interrompido nesta bancada; o turno de A sai `cancelado=True`.
+
+    Descartar por `cancelado` casava o `s2_ms` de A com o `first_token_ms` de B
+    (dezenas de segundos depois) e o `resto` saía negativo em ~1,4 s.
+    """
+    c = _cliente(_WS())
+    c.eventos = [
+        (10.0, "latency", {"cancelado": True, "first_token_ms": 1400,
+                           "first_audio_ms": 2900}),
+        (40.0, "latency", {"first_token_ms": 300, "first_audio_ms": 900}),
+    ]
+    e = lb.latencia_com_audio(c, 9.0)
+    assert e is not None and e["first_token_ms"] == 1400   # o de A, não o de B
+
+
+def test_turno_cancelado_antes_do_audio_nao_mede_s2():
+    """Cancelado sem primeiro áudio: não há S2 a decompor — pula para o próximo."""
+    c = _cliente(_WS())
+    c.eventos = [
+        (10.0, "latency", {"cancelado": True}),
+        (40.0, "latency", {"first_token_ms": 300, "first_audio_ms": 900}),
+    ]
+    e = lb.latencia_com_audio(c, 9.0)
+    assert e is not None and e["first_token_ms"] == 300
+
+
+def test_sem_latency_nenhum_devolve_none():
+    c = _cliente(_WS())
+    assert lb.latencia_com_audio(c, 0.0) is None
