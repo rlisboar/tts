@@ -1,95 +1,90 @@
-# Runbook — janela C0 × C1 do #876 (motor do STT do Live)
+# Runbook — janela 2×2 #876 (motor do STT) × #870 (duck rápido)
 
-Só rodar com a janela autorizada pelo PM. O objeto é decidir, com número, se o
-Parakeet (`live_stt_engine=parakeet`, C1) entra como motor do STT do Live no
-lugar do whisper (C0). **A janela é no mini de produção** — 16 GB, com o app do
-dono no ar na 7860.
+Só rodar com a janela autorizada pelo PM. Duas perguntas, uma rodada:
 
-Quem faz o quê:
+- **#876**: o Parakeet (`live_stt_engine=parakeet`, C1) substitui o whisper (C0)
+  sem estragar S1/S2 e com o `stt` mais rápido?
+- **#870**: a flag `TTS_LIVE_BARGE_DUCK_RAPIDO` (F1) pode LIGAR? Ela abaixa em
+  ~96 ms e pausa em ~480 ms sem esperar o whisper — se o número couber no S3 e
+  não inventar falso duck, liga.
 
-| passo | quem |
-|---|---|
-| deploy do C1 e do #1021 (integração + subida) | infra-remote / PM |
-| janela, coleta e relatório | audio-ml |
-| leitura do veredito | PM |
+**A janela é no mini de produção** — 16 GB, app do dono no ar na 7860.
 
-## Regras que valem em todos os passos
+## Limites declarados ANTES da rodada (não se movem depois)
 
-- **Produção intocada**: nada de restart da 7860, nada de `settings.json` do
-  dono. A bancada usa `TTS_STATE_DIR` sintético em `/tmp`.
-- **Porta 7890** para a instância de bancada; `pkill -f "port 7890"` no fim.
-- Uma rodada por vez. Se outro agente estiver com a 7890, esperar.
-- Se a máquina estiver com swap acima de ~1,5 GB ou com sessão Live do dono
-  aberta, **não começar**.
+Liga a flag ⇔ **no C1**: pausa p95 ≤ 800 ms **E** duck p50 ≤ 300 ms **E**
+`eco_falso_duck` ≤ 5 % (IC95 superior ≤ 5 %) **E** `eco_falso_corte` ≤ C1/F0
+**E** S1 e S2 sem piora contra C1/F0.
 
-## Antes: o que tem de estar verdadeiro
+Qualquer um falhando, ou amostra faltando → **não liga** (ou INDETERMINADO).
+Os limites estão no cabeçalho do `rodada_c0c1.sh` e nas constantes do
+`relatorio_rodada.py`.
 
-1. O SHA no ar é o que tem o C1. Conferir os dois lados:
-   `git -C ~/Documents/tts-rod rev-parse --short HEAD` e
-   `curl -s http://127.0.0.1:7860/api/build` (com a chave) — o `codigo` tem de
-   bater com o rev.
-2. `live_stt_engine` existe no `GET /api/settings`. Sem a chave, o C1 não é
-   selecionável e a janela não tem objeto — parar e avisar o PM.
+## Desenho
+
+4 células, 10 ciclos cada (40 ciclos = 80 falas, o mesmo volume de um 20+20),
+cada célula seguida de 3 min de eco puro e 3 min de ventoinha:
+
+| célula | motor | flag |
+|---|---|---|
+| `f0-c0` | whisper | off |
+| `f0-c1` | parakeet | off |
+| `f1-c0` | whisper | on |
+| `f1-c1` | parakeet | on |
+
+A troca de motor é por `POST /api/settings` (sem restart). A troca de flag é por
+`TTS_LIVE_BARGE_DUCK_RAPIDO` no ambiente, então a instância da 7890 **reinicia**
+entre os blocos — a produção (7860) nunca.
+
+## Regras
+
+- Produção intocada: nada de restart da 7860, nada de `settings.json` do dono.
+- Porta 7890; o script sobe e derruba a instância sozinho.
+- Uma rodada por vez. Swap acima de ~1,5 GB ou sessão Live do dono aberta: não
+  começar.
+- **A primeira execução é teste do instrumento.** Se o pré-voo ou o `trap`
+  falharem, PARAR e consertar antes de gerar número — não adaptar no meio da
+  coleta.
+
+## Antes
+
+1. O SHA no ar tem o C1 e o #870 (patch-id conferido pelo PM). Conferir
+   `git -C ~/Documents/tts-rod rev-parse --short HEAD` e o `codigo` do
+   `/api/build` com a chave.
+2. `live_stt_engine` existe no `GET /api/settings`; sem a chave, parar.
 3. Corpus copiado (nunca mover o original de `voices/`):
    `mkdir -p /tmp/live-bench-audio && cp voices/*.wav voices/*.json /tmp/live-bench-audio/`
-4. `sysctl vm.swapusage` anotado antes.
+4. Estado sintético:
+   `mkdir -p /tmp/bench-mini/.state-local && printf '%s' '{"omni_num_steps":16,"live_num_steps":16,"tts_marca_dagua":false,"tts_marca_prewarm_boot":false}' > /tmp/bench-mini/.state-local/settings.json`
+5. `sysctl vm.swapusage` anotado.
 
 ## Execução
 
 ```zsh
 cd ~/Documents/tts-rod
-
-# 1) estado sintético (settings mínimo; a bancada não lê o do dono)
-mkdir -p /tmp/bench-mini/.state-local /tmp/bench-mini/outputs
-printf '%s' '{"omni_num_steps":16,"live_num_steps":16,"tts_marca_dagua":false,"tts_marca_prewarm_boot":false}' \
-  > /tmp/bench-mini/.state-local/settings.json
-
-# 2) instância de bancada na 7890 (provedor do dono, sem chave impressa)
-K=$(python3 -c 'import json;print(json.load(open("settings.json"))["chat_api_key"])')
-B=$(python3 -c 'import json;print(json.load(open("settings.json"))["chat_base_url"])')
-M=$(python3 -c 'import json;print(json.load(open("settings.json"))["chat_model"])')
-TTS_STATE_DIR=/tmp/bench-mini/.state-local TTS_OUTPUTS_DIR=/tmp/bench-mini/outputs \
-TTS_CHAT_BACKEND_LIVE=openai TTS_CHAT_BASE_URL="$B" TTS_CHAT_MODEL="$M" \
-TTS_CHAT_API_KEY="$K" TTS_MARCA_PREWARM_BOOT=0 TTS_ALLOWED_HOSTS=127.0.0.1,localhost \
-TTS_LIVE_TTL_S=1800 \
-  nohup ./.venv-mlx/bin/uvicorn app:app --host 127.0.0.1 --port 7890 --log-level warning \
-  > /tmp/bench-mini/app.log 2>&1 &
-until curl -s -m 2 -o /dev/null http://127.0.0.1:7890/health; do sleep 2; done
-
-# 3) a rodada inteira (C0 → C1 → eco → ventoinha → relatório)
-tools/rodada_c0c1.sh --sha "$(git rev-parse --short HEAD)" \
-  --corpus /tmp/live-bench-audio --ciclos 20 --min-eco 5 --min-ventoinha 5
+tools/rodada_c0c1.sh --app-dir "$PWD" --sha "$(git rev-parse --short HEAD)" \
+  --corpus /tmp/live-bench-audio --estado /tmp/bench-mini/.state-local
 ```
 
-`rodada_c0c1.sh` faz sozinho: recusa de pré-voo (7890/7860/SHA/corpus), amostra
-de RSS e swap a cada 60 s, as seis fases, o relatório e a limpeza no `trap`.
-Sai com `rc≠0` e sem tocar em nada se o pré-voo recusar.
+O script faz pré-voo que recusa, sobe/derruba a 7890 por bloco, roda as 4
+células + 4 fases de eco + 4 de ventoinha, amostra RSS/swap a cada 60 s e
+imprime o relatório. O `trap` (EXIT/INT/TERM) devolve `live_stt_engine` e derruba
+tudo que subiu.
 
 ## Rollback por passo
 
 | onde parou | como voltar |
 |---|---|
 | pré-voo recusou | nada a desfazer; a mensagem diz o que falta |
-| fase C0 | o `trap` derruba o bench e a 7890; a produção nunca foi tocada |
-| entre C0 e C1 (POST de settings) | o `trap` devolve `live_stt_engine` ao valor lido no início |
-| fase C1 | idem: `trap` restaura a chave e derruba a 7890 |
-| bancada travada | `pkill -f live_bench; pkill -f fase_ruido.py; pkill -f "port 7890"` — e conferir `pgrep -f "port 7860"` = 1 |
-| produção suspeita | parar tudo e avisar o PM; **não** reiniciar a 7860 sem combinar |
-
-O `trap` roda em `EXIT INT TERM`, então `Ctrl-C` também limpa.
+| em qualquer célula | `trap` mata bench e fases, restaura a chave e derruba a 7890 |
+| bancada travada | `pkill -f live_bench; pkill -f fase_ruido.py; pkill -f "port 7890"`; conferir `pgrep -f "port 7860"` = 1 |
+| produção suspeita | parar tudo e avisar o PM; **não** reiniciar a 7860 sozinho |
 
 ## Depois
 
 1. Conferir no log da corrida: `7890 listeners: 0`, `uvicorn 7860: 1`, health 200.
-2. Publicar o relatório (`<dir>/corrida.log`) no #876 e a curva de RSS/swap no
-   #891.
-3. Se algum SLO sair FALHA, o C1 **não** vira default: a chave fica, o veredito
-   vai ao PM com o número.
-4. Evidência: o diretório inteiro da rodada é a prova; copiar para fora do mini.
-
-## O que o relatório mede
-
-`stt p50` e WER das falas A saem do log do app (estágio `stt`); falso turno por
-eco e por ventoinha saem das fases de ruído; S1–S4 saem do JSON da bancada; RSS
-e swap saem do amostrador. Cada linha traz PASS/FAIL contra os aceites do card —
-arquivo ausente vira INDETERMINADO, nunca PASSA por omissão.
+2. Publicar o relatório no #876 (motor) e no #870 (flag); a curva de RSS/swap
+   vai no #891.
+3. Veredito NÃO LIGA → a flag fica como está e o número vai ao PM. LIGA → o PM
+   decide a virada do default (é env, não settings).
+4. Evidência: o diretório inteiro da rodada; copiar para fora do mini.

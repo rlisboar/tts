@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""Relatório da janela C0 × C1 (#876): SLOs, eco falso e curva de RSS/swap.
+"""Relatório da janela 2×2 (#876 motor × #870 duck rápido): SLOs e veredito.
 
-Lê os JSONs que a bancada e as fases de ruído gravaram e imprime a comparação
-lado a lado com PASS/FAIL pelos aceites do card. Não coleta nada: é só leitura
-de arquivo, para a leitura da janela não depender de planilha à mão.
+Lê o que a rodada gravou e imprime as células lado a lado com PASS/FAIL. Não
+coleta nada — é leitura de arquivo, para o veredito não depender de planilha.
 
     .venv-mlx/bin/python tools/relatorio_rodada.py --dir /tmp/rodada-876 \
-        --sha <sha-no-ar>
+        --sha <sha-no-ar> --log /tmp/tts-studio.log --marcas <dir>/marcas.txt
 
-Espera em `--dir`: c0.json, c1.json, eco-c0.json, eco-c1.json,
-ventoinha-c0.json, ventoinha-c1.json, rss.csv (`<iso>,<rss_mb>,<swap_mb>`).
-Arquivo ausente vira `—` no relatório e o SLO correspondente sai INDETERMINADO
-(nunca PASSA por omissão).
+Células: `<f0|f1>-<c0|c1>` — f0/f1 é `TTS_LIVE_BARGE_DUCK_RAPIDO` desligada/
+ligada, c0/c1 é whisper/parakeet. Espera `c0.json`… na verdade `<celula>.json`,
+`eco-<celula>.json`, `ventoinha-<celula>.json`, `rss.csv` e `marcas.txt`
+(`<celula> <HH:MM:SS>`, uma por célula, na ordem de execução).
 
-O estágio `stt` NÃO vem do JSON da bancada: ele sai do log do app (`--log`),
-na mesma linha `stage_fim … stage=stt ms=N` que o `tools/stage_stt.py` lê — é o
-número do servidor, não do cliente.
+OS LIMITES SÃO DECLARADOS AQUI E NÃO SE MOVEM DEPOIS DE VER NÚMERO — estão
+copiados do cabeçalho do `rodada_c0c1.sh`. Arquivo ausente vira INDETERMINADO,
+nunca PASSA por omissão.
 """
 from __future__ import annotations
 
@@ -25,16 +24,13 @@ import re
 import sys
 from pathlib import Path
 
-LINHA_ESTAGIO = re.compile(r"stage_fim .*stage=stt ms=(\d+)")
+#: limites declarados ANTES da rodada (ver cabeçalho do rodada_c0c1.sh).
+LIM_DUCK_P50_MS = 300
+LIM_PAUSA_P95_MS = 800
+LIM_ECO_FALSO_DUCK_PCT = 5.0
 
-#: aceites do card #876 / #874 — mudar aqui é mudar o veredito.
-ACEITES = {
-    "stt_p50_ms": ("<=", 750, "stt p50 ≤ 0,75 s"),
-    "wer_a_delta_pp": ("<=", 2.0, "WER das falas A ≤ C0 + 2 pp"),
-    "eco_falso_delta_pp": ("<=", 0.0, "sem falso turno a mais (eco)"),
-    "vent_falso_delta_pp": ("<=", 0.0, "sem falso turno a mais (ventoinha)"),
-    "rss_delta_mb": ("<=", 0.0, "RSS ≤ C0"),
-}
+LINHA_ESTAGIO = re.compile(r"stage_fim .*stage=stt ms=(\d+)")
+CELULAS = ("f0-c0", "f0-c1", "f1-c0", "f1-c1")
 
 
 def _ler(p: Path) -> dict | None:
@@ -56,7 +52,25 @@ def _curva(p: Path) -> list[tuple[str, int, int]]:
     return out
 
 
-def _pct(serie: list[float], p: float) -> float | None:
+def _janelas(p: Path) -> dict[str, tuple[str, str]]:
+    """célula → (início, fim) pelas marcas; a última fecha na hora atual."""
+    import datetime
+    marcas = []
+    try:
+        for linha in p.read_text().splitlines():
+            partes = linha.split()
+            if len(partes) == 2:
+                marcas.append((partes[0], partes[1]))
+    except Exception:                                   # noqa: BLE001
+        return {}
+    out = {}
+    for i, (cel, ini) in enumerate(marcas):
+        fim = marcas[i + 1][1] if i + 1 < len(marcas) else datetime.datetime.now().strftime("%H:%M:%S")
+        out[cel] = (ini, fim)
+    return out
+
+
+def _pct(serie: list[float], p: float):
     if not serie:
         return None
     s = sorted(serie)
@@ -64,14 +78,13 @@ def _pct(serie: list[float], p: float) -> float | None:
     return round(s[i], 1)
 
 
-def _estagios(log: Path | None, desde: str, ate: str) -> list[int]:
-    """Durações do estágio stt no log, dentro da janela [desde, ate] (HH:MM:SS)."""
+def _estagios(log: Path | None, ini: str, fim: str) -> list[int]:
     if not log:
         return []
     out = []
     try:
         for linha in log.read_text(errors="replace").splitlines():
-            if not (desde <= linha[:8] <= ate):
+            if not (ini <= linha[:8] <= fim):
                 continue
             m = LINHA_ESTAGIO.search(linha)
             if m:
@@ -81,88 +94,143 @@ def _estagios(log: Path | None, desde: str, ate: str) -> list[int]:
     return out
 
 
-def _wer_a(rel: dict | None) -> float | None:
+def _s3(rel: dict | None) -> dict:
     if not rel:
-        return None
+        return {}
+    s3 = (rel.get("resumo") or {}).get("S3") or {}
+    inter = [l for l in rel.get("falas", []) if l.get("tipo") == "interrupcao"]
+    return {
+        "duck": _pct([l["s3_duck_ms"] for l in inter if l.get("s3_duck_ms") is not None], 50),
+        "duck_n": s3.get("duck_n"),
+        "pausa_p95": _pct([l["s3_pausa_ms"] for l in inter if l.get("s3_pausa_ms") is not None], 95),
+        "pausa_n": s3.get("pausa_n"),
+        "stop": _pct([l["s3_stop_ms"] for l in inter if l.get("s3_stop_ms") is not None], 50),
+        "stop_n": s3.get("stop_n"),
+        "eco_duck": s3.get("eco_falso_duck"),
+        "eco_duck_ic": s3.get("eco_falso_duck_ic95"),
+        "eco_corte": s3.get("eco_falso_corte"),
+        "eco_n": s3.get("eco_respostas"),
+    }
+
+
+def _s1(rel: dict | None) -> dict:
+    if not rel:
+        return {}
+    s1 = (rel.get("resumo") or {}).get("S1") or {}
     wer = [l["wer_ciclo"] for l in rel.get("falas", [])
            if l.get("papel") == "A" and l.get("wer_ciclo") is not None]
-    return round(sum(wer) / len(wer), 3) if wer else None
+    return {"aceitas": s1.get("pct_aceitas"),
+            "wer_a": round(sum(wer) / len(wer), 3) if wer else None}
 
 
-def _linha(nome: str, c0, c1, chave: str, unidade: str = "") -> str:
-    """Uma linha do relatório. `stt_p50_ms` compara o ABSOLUTO; o resto, o delta."""
-    op, limite, texto = ACEITES[chave]
-    if c0 is None or c1 is None:
-        veredito = "INDETERMINADO"
-        c1_txt = "—"
-    else:
-        delta = c1 - c0
-        if chave == "stt_p50_ms":
-            ok, c1_txt = c1 <= limite, f"{c1:.0f}{unidade}"
-        elif chave == "rss_delta_mb":
-            ok, c1_txt = delta <= limite, f"{c1:.0f}{unidade} ({delta:+.0f})"
-        else:
-            ok, c1_txt = delta <= limite, f"{c1:.1f}{unidade} ({delta:+.1f})"
-        veredito = "PASSA" if ok else "FALHA"
-    c0_txt = ("—" if c0 is None
-              else f"{c0:.0f}{unidade}" if unidade == "MB" else f"{c0:.1f}{unidade}")
-    return f"  {nome:<26} C0={c0_txt:<9} C1={c1_txt:<18} {veredito:<8} ({texto})"
+def _s2(rel: dict | None) -> dict:
+    if not rel:
+        return {}
+    s2 = (rel.get("resumo") or {}).get("S2") or {}
+    return {k: s2.get(k) for k in ("n", "p50_ms", "p95_ms", "llm_ttft_p50_ms",
+                                   "pos_llm_p50_ms")}
+
+
+def _cel(rot: str, v, unidade: str = "", dec: int = 0) -> str:
+    if v is None:
+        return "—"
+    return f"{v:.{dec}f}{unidade}"
+
+
+def _ok(cond: bool | None) -> str:
+    return "—" if cond is None else ("PASSA" if cond else "FALHA")
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--dir", type=Path, required=True)
-    ap.add_argument("--sha", default="?", help="SHA no ar durante a rodada")
-    ap.add_argument("--log", type=Path, help="log do app (para o estágio stt)")
-    ap.add_argument("--janela-c0", default="00:00:00-23:59:59",
-                    help="HH:MM:SS-HH:MM:SS da fase C0")
-    ap.add_argument("--janela-c1", default="00:00:00-23:59:59",
-                    help="HH:MM:SS-HH:MM:SS da fase C1")
+    ap.add_argument("--sha", default="?")
+    ap.add_argument("--log", type=Path)
+    ap.add_argument("--marcas", type=Path)
     args = ap.parse_args(argv)
     d = args.dir
 
-    c0, c1 = _ler(d / "c0.json"), _ler(d / "c1.json")
-    eco0, eco1 = _ler(d / "eco-c0.json"), _ler(d / "eco-c1.json")
-    ve0, ve1 = _ler(d / "ventoinha-c0.json"), _ler(d / "ventoinha-c1.json")
+    rels = {c: _ler(d / f"{c}.json") for c in CELULAS}
+    eco = {c: _ler(d / f"eco-{c}.json") for c in CELULAS}
+    vent = {c: _ler(d / f"ventoinha-{c}.json") for c in CELULAS}
+    janelas = _janelas(args.marcas) if args.marcas else {}
+    est = {c: _estagios(args.log, *janelas[c]) if c in janelas else [] for c in CELULAS}
+
+    print(f"# Janela 2×2 #876 × #870 — SHA {args.sha} — {d}")
+    print("# f0/f1 = TTS_LIVE_BARGE_DUCK_RAPIDO off/on · c0/c1 = whisper/parakeet")
+    print("# LIMITES DECLARADOS ANTES: pausa p95 ≤800 ms · duck p50 ≤300 ms · "
+          "eco_falso_duck ≤5 % (IC95 sup) · eco_falso_corte ≤ C1/f0 · S1 e S2 sem piora\n")
+    print("  célula   n_ciclos  stt_p50  werA    duck_p50  pausa_p95  stop_p50  "
+          "eco_duck%  eco_corte%")
+    for c in CELULAS:
+        s1, s3 = _s1(rels[c]), _s3(rels[c])
+        print(f"  {c:<8} {str(len(rels[c].get('falas', [])) if rels[c] else '—'):<9} "
+              f"{_cel('', _pct(est[c], 50)):<8} {_cel('', s1.get('wer_a'), '', 3):<7} "
+              f"{_cel('', s3.get('duck')):<9} {_cel('', s3.get('pausa_p95')):<10} "
+              f"{_cel('', s3.get('stop')):<9} "
+              f"{_cel('', (s3.get('eco_duck') or 0) * 100 if s3.get('eco_duck') is not None else None, '', 1):<10} "
+              f"{_cel('', (s3.get('eco_corte') or 0) * 100 if s3.get('eco_corte') is not None else None, '', 1)}")
+
+    # ── veredito da flag (#870), no motor novo (C1) ─────────────────────────
+    b, t = _s3(rels["f0-c1"]), _s3(rels["f1-c1"])
+    s1b, s1t = _s1(rels["f0-c1"]), _s1(rels["f1-c1"])
+    s2b, s2t = _s2(rels["f0-c1"]), _s2(rels["f1-c1"])
+    cond = {
+        "pausa p95 ≤ 800 ms": (None if t.get("pausa_p95") is None
+                               else t["pausa_p95"] <= LIM_PAUSA_P95_MS),
+        "duck p50 ≤ 300 ms": None if t.get("duck") is None else t["duck"] <= LIM_DUCK_P50_MS,
+        "eco_falso_duck ≤ 5 %": (None if not t.get("eco_duck_ic")
+                                 else t["eco_duck_ic"][1] <= LIM_ECO_FALSO_DUCK_PCT),
+        "eco_falso_corte ≤ C1/f0": (None if None in (t.get("eco_corte"), b.get("eco_corte"))
+                                    else t["eco_corte"] <= b["eco_corte"]),
+        "S1 sem piora": (None if None in (s1t.get("aceitas"), s1b.get("aceitas"))
+                         else s1t["aceitas"] >= s1b["aceitas"]),
+        "S2 sem piora": (None if None in (s2t.get("p50_ms"), s2b.get("p50_ms"))
+                         else s2t["p50_ms"] <= s2b["p50_ms"]),
+    }
+    print("\n## Veredito da flag `TTS_LIVE_BARGE_DUCK_RAPIDO` (célula f1-c1)\n")
+    for k, v in cond.items():
+        print(f"  {k:<28} {_ok(v)}")
+    if any(v is False for v in cond.values()):
+        veredito = "NÃO LIGA"
+    elif all(v is True for v in cond.values()):
+        veredito = "LIGA"
+    else:
+        veredito = "INDETERMINADO (falta amostra)"
+    print(f"\n  >>> {veredito}\n")
+
+    # ── eixo do #876 (motor), nas duas flag states ──────────────────────────
+    print("## Eixo do motor (#876): c0 × c1 dentro de cada flag state\n")
+    for f in ("f0", "f1"):
+        a, z = _s1(rels[f"{f}-c0"]), _s1(rels[f"{f}-c1"])
+        pa, pz = _pct(est[f"{f}-c0"], 50), _pct(est[f"{f}-c1"], 50)
+        da = None if None in (a.get("wer_a"), z.get("wer_a")) else (z["wer_a"] - a["wer_a"]) * 100
+        print(f"  {f}: stt p50 {_cel('', pa)} → {_cel('', pz)} ms "
+              f"({_ok(None if pz is None else pz <= 750)}) · WER A "
+              f"{_cel('', a.get('wer_a'), '', 3)} → {_cel('', z.get('wer_a'), '', 3)} "
+              f"({_cel('', da, ' pp', 1)}; {_ok(None if da is None else da <= 2.0)})")
+
+    print("\n## Falso turno por ruído (fases)\n")
+    for c in CELULAS:
+        e, v = eco.get(c) or {}, vent.get(c) or {}
+        print(f"  {c}: eco {_cel('', (e.get('taxa') or 0) * 100 if e.get('taxa') is not None else None, '%', 1)} "
+              f"IC95 {e.get('ic95')} (n={e.get('janelas')}) · "
+              f"ventoinha {_cel('', (v.get('taxa') or 0) * 100 if v.get('taxa') is not None else None, '%', 1)} "
+              f"(n={v.get('janelas')})")
+
+    print("\n## S1–S5 por célula\n")
+    for c in CELULAS:
+        r = rels[c]
+        if not r:
+            print(f"  {c}: (sem JSON)")
+            continue
+        print(f"  {c}: S1 {json.dumps(_s1(r), ensure_ascii=False)} "
+              f"S2 {json.dumps(_s2(r), ensure_ascii=False)}")
+        s5 = (r.get("resumo") or {}).get("S5") or {}
+        print(f"        S5 ws_vivo={s5.get('ws_vivo_no_fim')} erro={s5.get('erro_ws')} "
+              f"erros={(r.get('resumo') or {}).get('S5', {}).get('erros')}")
+
     curva = _curva(d / "rss.csv")
-
-    j0 = args.janela_c0.split("-")
-    j1 = args.janela_c1.split("-")
-    est0 = _estagios(args.log, j0[0], j0[-1])
-    est1 = _estagios(args.log, j1[0], j1[-1])
-    print(f"# Janela C0 × C1 (#876) — SHA {args.sha} — {d}")
-    print(f"# estágio stt: n C0={len(est0)} C1={len(est1)} (do log)")
-    print("\n## SLOs (C0 = whisper, C1 = parakeet)\n")
-    print(_linha("stt p50 do estágio", _pct(est0, 50), _pct(est1, 50),
-                 "stt_p50_ms", "ms"))
-    w0, w1 = _wer_a(c0), _wer_a(c1)
-    print(_linha("WER falas A", None if w0 is None else round(w0 * 100, 1),
-                 None if w1 is None else round(w1 * 100, 1), "wer_a_delta_pp", "%"))
-
-    def _taxa(r):
-        return None if not r or r.get("taxa") is None else round(r["taxa"] * 100, 1)
-    print(_linha("falso turno por ECO", _taxa(eco0), _taxa(eco1),
-                 "eco_falso_delta_pp", "%"))
-    print(_linha("falso turno por VENTOINHA", _taxa(ve0), _taxa(ve1),
-                 "vent_falso_delta_pp", "%"))
-    rss0 = (c0 or {}).get("resumo", {}).get("S5", {}).get("proc_fim", {}).get("rss_mb")
-    rss1 = (c1 or {}).get("resumo", {}).get("S5", {}).get("proc_fim", {}).get("rss_mb")
-    print(_linha("RSS ao fim", rss0, rss1, "rss_delta_mb", "MB"))
-
-    print("\n## S1–S4 (do resumo da bancada; ver o JSON para o detalhe)\n")
-    for k in ("S1", "S2", "S3", "S4"):
-        for rot, rel in (("C0", c0), ("C1", c1)):
-            v = ((rel or {}).get("resumo", {}) or {}).get(k)
-            if v is None:
-                continue
-            if k == "S2":
-                v = {x: v.get(x) for x in ("n", "p50_ms", "p95_ms", "llm_ttft_p50_ms",
-                                           "pos_llm_p50_ms")}
-            elif k == "S1":
-                v = {x: v.get(x) for x in ("falas", "pct_aceitas", "wer_ciclo_medio",
-                                           "falas_ge_0_8s_perdidas")}
-            print(f"  {k} {rot}: {json.dumps(v, ensure_ascii=False)}")
-
     print(f"\n## Curva RSS/swap ({len(curva)} amostras, 1/min)\n")
     if curva:
         print("  iso                       rss_mb   swap_mb")
@@ -171,12 +239,12 @@ def main(argv=None) -> int:
     else:
         print("  (sem amostras — rss.csv ausente)")
 
-    piores = [l for l in (eco1 or ve1 or {}).get("detalhe", []) if l.get("falso")]
-    if piores:
-        print(f"\n## Falsos no C1 ({len(piores)})\n")
-        for l in piores[:20]:
-            print(f"  k={l.get('k')} inicio_s={l.get('inicio_s')} "
-                  f"eventos={l.get('eventos')}")
+    falsos = [l for c in CELULAS for l in ((eco.get(c) or {}).get("detalhe") or [])
+              if l.get("falso")]
+    if falsos:
+        print(f"\n## Janelas de eco com falso turno ({len(falsos)})\n")
+        for l in falsos[:25]:
+            print(f"  k={l.get('k')} inicio_s={l.get('inicio_s')} eventos={l.get('eventos')}")
     return 0
 
 

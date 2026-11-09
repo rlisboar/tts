@@ -1,44 +1,52 @@
 #!/bin/zsh
-# Janela C0 → C1 do #876 (motor do STT do Live): UM comando, com rollback.
+# Janela 2×2 do #876 (motor do STT) × #870 (duck rápido): UM comando, com rollback.
 #
-# C0 = whisper (default) · C1 = parakeet (`live_stt_engine=parakeet`, commit
-# d107b9e). A troca é por `POST /api/settings`, SEM restart — as duas pontas
-# rodam no MESMO build e com o MESMO corpus/semente, senão a comparação não
-# vale. As fases de eco e ventoinha entram no mesmo run.
+# C0 = whisper (default) · C1 = parakeet (`live_stt_engine=parakeet`, d107b9e)
+# F0 = `TTS_LIVE_BARGE_DUCK_RAPIDO` desligada · F1 = ligada
 #
-#   tools/rodada_c0c1.sh --sha <sha-no-ar> [--corpus /tmp/live-bench-audio]
-#                        [--min-eco 5] [--min-ventoinha 5] [--ciclos 20]
+# POR QUE 2×2: o #870 é ENV (o motor nasce com a flag desligada), então a
+# pergunta "a flag pode ligar?" não se responde sem comparar F0 × F1 — e ela só
+# vale se o motor novo (C1) aguentar. Cada célula é medida lado a lado com as
+# outras; a troca de motor é por `POST /api/settings` (sem restart) e a de flag
+# é por restart da instância de BANCADA (a produção não reinicia).
 #
-# O que este script NÃO faz: deploy, restart da produção e abertura de modelo na
-# 7890 antes da hora. Ele assume a instância de bancada JÁ no ar na 7890, com
-# estado sintético (`TTS_STATE_DIR` em /tmp) — quem sobe é o passo 3 do runbook.
+# LIMITES DECLARADOS ANTES DA RODADA (não se move depois de ver número):
+#   liga a flag  ⇔  no C1: pausa p95 ≤ 800 ms  E  duck p50 ≤ 300 ms
+#                    E  eco_falso_duck ≤ 5 % (IC95 superior ≤ 5 %)
+#                    E  eco_falso_corte ≤ C1/F0  E  S1 e S2 sem piora vs C1/F0
+#   não liga     ⇔  qualquer um dos acima falhar (ou faltar amostra)
 #
-# Saída: `--dir` (padrão /tmp/rodada-876-<epoch>) com c0.json, c1.json,
-# eco-c0.json, eco-c1.json, ventoinha-c0.json, ventoinha-c1.json, rss.csv e o
-# relatório final. O `trap` derruba o bench, DEVOLVE a chave anterior e derruba
-# a 7890 mesmo se uma fase falhar.
+#   tools/rodada_c0c1.sh --app-dir ~/Documents/tts-rod --sha <sha-no-ar> \
+#       [--corpus /tmp/live-bench-audio] [--estado /tmp/bench-mini/.state-local] \
+#       [--ciclos 10] [--min-eco 3] [--min-ventoinha 3]
+#
+# O script sobe e derruba a instância da 7890 (nunca a 7860) e, no `trap`,
+# devolve `live_stt_engine` ao valor lido no início e mata tudo que subiu.
 set -u
 RAIZ="${0:A:h:h}"
-# worktree não tem `.venv-mlx` (gitignored): cai no python3 do sistema se faltar.
-PY="$RAIZ/.venv-mlx/bin/python"
-[ -x "$PY" ] || PY="$(command -v python3 || print -r -- python3)"
+APP_DIR="${RAIZ}"
+PY=""
 URL="ws://127.0.0.1:7890/api/live/ws"
 APP="http://127.0.0.1:7890"
-SHA=""; CORPUS=/tmp/live-bench-audio; DIR=""; CICLOS=20; MIN_ECO=5; MIN_VENT=5
-SEMENTE=875
+SHA=""; CORPUS=/tmp/live-bench-audio; ESTADO=/tmp/bench-mini/.state-local
+DIR=""; CICLOS=10; MIN_ECO=3; MIN_VENT=3; SEMENTE=875
 while [ $# -gt 0 ]; do
   case "$1" in
+    --app-dir) APP_DIR="${2:-}"; shift 2 ;;
     --sha) SHA="${2:-}"; shift 2 ;;
     --corpus) CORPUS="${2:-}"; shift 2 ;;
+    --estado) ESTADO="${2:-}"; shift 2 ;;
     --dir) DIR="${2:-}"; shift 2 ;;
-    --ciclos) CICLOS="${2:-20}"; shift 2 ;;
-    --min-eco) MIN_ECO="${2:-5}"; shift 2 ;;
-    --min-ventoinha) MIN_VENT="${2:-5}"; shift 2 ;;
+    --ciclos) CICLOS="${2:-10}"; shift 2 ;;
+    --min-eco) MIN_ECO="${2:-3}"; shift 2 ;;
+    --min-ventoinha) MIN_VENT="${2:-3}"; shift 2 ;;
     --semente) SEMENTE="${2:-875}"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
     *) print -r -- "sobrando: $1" >&2; exit 2 ;;
   esac
 done
+PY="$APP_DIR/.venv-mlx/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3 || print -r -- python3)"
 DIR="${DIR:-/tmp/rodada-876-$(date +%s)}"
 mkdir -p "$DIR" || exit 1
 LOG_CORRIDA="$DIR/corrida.log"
@@ -46,21 +54,22 @@ LOG_CORRIDA="$DIR/corrida.log"
 fala() { print -r -- "$*" | tee -a "$LOG_CORRIDA" }
 
 # ── rollback: sempre, em qualquer saída ─────────────────────────────────────
-ANTERIOR=""
-SAMPLER=""
+ANTERIOR=""; SAMPLER=""; SUBIU=0
+derruba() {
+  pkill -f "live_bench" 2>/dev/null
+  pkill -f "fase_ruido.py" 2>/dev/null
+  [ "$SUBIU" = 1 ] && { pkill -f "port 7890" 2>/dev/null; sleep 2; SUBIU=0 }
+}
 limpa() {
   local rc=$?
   print -r -- "== limpeza (rc=$rc)" | tee -a "$LOG_CORRIDA"
-  pkill -f "live_bench" 2>/dev/null
-  pkill -f "fase_ruido.py" 2>/dev/null
   [ -n "$SAMPLER" ] && kill "$SAMPLER" 2>/dev/null
-  if [ -n "$ANTERIOR" ]; then
+  if [ -n "$ANTERIOR" ] && [ "$SUBIU" = 1 ]; then
     curl -s -m 5 -o /dev/null -H "Content-Type: application/json" \
       -X POST "$APP/api/settings" -d "{\"live_stt_engine\": \"$ANTERIOR\"}" \
       && fala "   chave live_stt_engine devolvida para '$ANTERIOR'"
   fi
-  pkill -f "port 7890" 2>/dev/null
-  sleep 2
+  derruba
   fala "   7890 listeners: $(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')"
   fala "   uvicorn 7860: $(pgrep -f 'port 7860' | wc -l | tr -d ' ')"
   fala "   prod health: $(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:7860/health)"
@@ -68,23 +77,21 @@ limpa() {
 }
 trap limpa EXIT INT TERM
 
-# ── pré-voo ─────────────────────────────────────────────────────────────────
+# ── pré-voo (antes de subir qualquer coisa) ─────────────────────────────────
 fala "== pré-voo  $(date -Iseconds)"
-[ -x "$PY" ] || { fala "sem venv em $PY"; exit 1; }
+[ -d "$APP_DIR" ] || { fala "sem app-dir: $APP_DIR"; exit 1; }
 [ -d "$CORPUS" ] || { fala "corpus ausente: $CORPUS"; exit 1; }
-[ "$(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -ge 1 ] \
-  || { fala "nada escutando na 7890 — suba a instância de bancada primeiro"; exit 1; }
+[ -f "$ESTADO/settings.json" ] || { fala "estado sintético ausente: $ESTADO/settings.json"; exit 1; }
+[ "$(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ] \
+  || { fala "7890 já ocupada — derrube a outra instância antes"; exit 1; }
 [ "$(pgrep -f 'port 7860' | wc -l | tr -d ' ')" -eq 1 ] \
   || { fala "esperava 1 uvicorn na 7860 (produção intocada)"; exit 1; }
 PROD_PID="$(pgrep -f 'port 7860' | head -1)"
-NO_AR="$(cd "$RAIZ" && git rev-parse --short HEAD 2>/dev/null)"
+NO_AR="$(cd "$APP_DIR" && git rev-parse --short HEAD 2>/dev/null)"
 fala "   prod pid=$PROD_PID no ar em $NO_AR"
 if [ -n "$SHA" ] && [ "${NO_AR}" != "$(print -r -- "$SHA" | cut -c1-7)" ]; then
   fala "   [aviso] SHA pedido ($SHA) difere do worktree ($NO_AR)"
 fi
-ANTERIOR="$(curl -s -m 5 "$APP/api/settings" \
-  | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("live_stt_engine") or "")')"
-fala "   live_stt_engine anterior: '${ANTERIOR}'"
 fala "   corpus: $(ls "$CORPUS" | wc -l | tr -d ' ') arquivos · semente $SEMENTE"
 
 # amostrador de memória (1/min): é a curva do #891
@@ -97,43 +104,67 @@ fala "   corpus: $(ls "$CORPUS" | wc -l | tr -d ' ') arquivos · semente $SEMENT
   done ) &
 SAMPLER=$!
 
+# ── instância de bancada (o flag é ENV: sobe uma vez por estado) ────────────
+sobe() {                  # $1 = 0|1 (duck rápido)
+  fala "== sobe 7890 (duck_rapido=$1)  $(date -Iseconds)"
+  local K B M
+  K="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_api_key"])' 2>/dev/null)"
+  B="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_base_url"])' 2>/dev/null)"
+  M="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_model"])' 2>/dev/null)"
+  ( cd "$APP_DIR" && \
+    TTS_STATE_DIR="$ESTADO" TTS_OUTPUTS_DIR="$DIR/outputs" \
+    TTS_CHAT_BACKEND_LIVE=openai TTS_CHAT_BASE_URL="$B" TTS_CHAT_MODEL="$M" \
+    TTS_CHAT_API_KEY="$K" TTS_MARCA_PREWARM_BOOT=0 TTS_LIVE_TTL_S=1800 \
+    TTS_LIVE_BARGE_DUCK_RAPIDO="$1" TTS_ALLOWED_HOSTS=127.0.0.1,localhost \
+    nohup "$PY" -m uvicorn app:app --host 127.0.0.1 --port 7890 --log-level warning \
+      > "$DIR/app-$1.log" 2>&1 & )
+  SUBIU=1
+  local i
+  for i in $(seq 1 60); do
+    [ "$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$APP/health")" = "200" ] && break
+    sleep 2
+  done
+  [ "$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$APP/health")" = "200" ] \
+    || { fala "   7890 não subiu"; exit 1; }
+  fala "   health 200"
+}
+
 # ── fases ───────────────────────────────────────────────────────────────────
-roda_ciclos() {           # $1 = rótulo (c0|c1)
+roda_ciclos() {           # $1 = célula (f0-c0 …)
   fala "== ciclos $1  $(date -Iseconds)"
-  TTS_LIVE_DUMP_DIR="$DIR/dump-$1" "$PY" -I "$RAIZ/tools/live_bench.py" \
+  TTS_LIVE_DUMP_DIR="$DIR/dump-$1" "$PY" -I "$APP_DIR/tools/live_bench.py" \
     --audio "$CORPUS" --url "$URL" --seed "$SEMENTE" --ciclos "$CICLOS" \
-    --teto-turno-s 300 --rotulo "$1" --out "$DIR/$1.json" \
-    > "$DIR/$1.log" 2>&1
-  fala "   rc=$? $(grep -E '^S[1-5] ' "$DIR/$1.log" | head -1 | cut -c1-90)"
+    --teto-turno-s 300 --rotulo "$1" --out "$DIR/$1.json" > "$DIR/$1.log" 2>&1
+  fala "   rc=$? $(grep -E '^S1 ' "$DIR/$1.log" | cut -c1-80)"
 }
-roda_fase() {             # $1 = fase (eco|ventoinha)  $2 = rótulo
+roda_fase() {             # $1 = fase (eco|ventoinha)  $2 = célula
   fala "== fase $1 $2  $(date -Iseconds)"
-  "$PY" "$RAIZ/tools/fase_ruido.py" "$1" --url "$URL" --audio "$CORPUS" \
-    --minutos "$([ "$1" = eco ] && print -r -- "$MIN_ECO" || print -r -- "$MIN_VENT")" \
-    --out "$DIR/$1-$2.json" >> "$DIR/$1-$2.log" 2>&1
-  fala "   rc=$? $(tail -1 "$DIR/$1-$2.log" | cut -c1-90)"
+  local min=$MIN_VENT
+  [ "$1" = eco ] && min=$MIN_ECO
+  "$PY" "$APP_DIR/tools/fase_ruido.py" "$1" --url "$URL" --audio "$CORPUS" \
+    --minutos "$min" --out "$DIR/$1-$2.json" >> "$DIR/$1-$2.log" 2>&1
+  fala "   rc=$? $(tail -1 "$DIR/$1-$2.log" | cut -c1-80)"
+}
+celula() {                # $1 = f0|f1
+  local marca
+  marca="$(date +%H:%M:%S)"
+  print -r -- "$1 $marca" >> "$DIR/marcas.txt"
+  curl -s -m 5 -o /dev/null -H "Content-Type: application/json" \
+    -X POST "$APP/api/settings" -d '{"live_stt_engine": "whisper"}'
+  roda_ciclos "$1-c0"; roda_fase eco "$1-c0"; roda_fase ventoinha "$1-c0"
+  curl -s -m 5 -o /dev/null -H "Content-Type: application/json" \
+    -X POST "$APP/api/settings" -d '{"live_stt_engine": "parakeet"}'
+  roda_ciclos "$1-c1"; roda_fase eco "$1-c1"; roda_fase ventoinha "$1-c1"
 }
 
-MARCA_C0="$(date +%H:%M:%S)"
-roda_ciclos c0
-roda_fase eco c0
-roda_fase ventoinha c0
+ANTERIOR="$(curl -s -m 5 "$APP/api/settings" 2>/dev/null \
+  | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("live_stt_engine") or "")' 2>/dev/null)"
 
-fala "== troca para C1 (live_stt_engine=parakeet)"
-curl -s -m 5 -o /dev/null -H "Content-Type: application/json" \
-  -X POST "$APP/api/settings" -d '{"live_stt_engine": "parakeet"}' \
-  || { fala "POST /api/settings falhou"; exit 1; }
-fala "   agora: $(curl -s -m 5 "$APP/api/settings" \
-  | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("live_stt_engine"))')"
-MARCA_C1="$(date +%H:%M:%S)"
-
-roda_ciclos c1
-roda_fase eco c1
-roda_fase ventoinha c1
+sobe 0; celula f0; derruba
+sobe 1; celula f1; derruba
 
 # ── relatório ───────────────────────────────────────────────────────────────
 fala "== relatório  $(date -Iseconds)"
-"$PY" "$RAIZ/tools/relatorio_rodada.py" --dir "$DIR" --sha "${SHA:-$NO_AR}" \
-  --log /tmp/tts-studio.log --janela-c0 "${MARCA_C0}-${MARCA_C1}" \
-  --janela-c1 "${MARCA_C1}-$(date +%H:%M:%S)" 2>&1 | tee -a "$LOG_CORRIDA"
+"$PY" "$APP_DIR/tools/relatorio_rodada.py" --dir "$DIR" --sha "${SHA:-$NO_AR}" \
+  --log /tmp/tts-studio.log --marcas "$DIR/marcas.txt" 2>&1 | tee -a "$LOG_CORRIDA"
 fala "== fim  $(date -Iseconds) — saída em $DIR"
