@@ -591,6 +591,34 @@ def _estado_isolado(tmp_path_factory):
 # `tests/test_chaves_isoladas.py`.)
 
 
+import signal as _signal
+
+# Referências presas no import: um teste que troque `signal.getsignal` por
+# monkeypatch/atribuição não pode cegar a restauração abaixo.
+_GETSIGNAL = _signal.getsignal
+_SIGNAL = _signal.signal
+
+
+@pytest.fixture(autouse=True)
+def _sinais_do_processo_intactos():
+    """SIGTERM/SIGINT do processo do pytest voltam ao que eram depois de cada teste (#1071).
+
+    `test_handler_encaminha_para_o_handler_anterior` chama o
+    `_instala_rastro_de_sinal()` de verdade com um "anterior" falso que só anota:
+    o handler ficava instalado no processo e engolia SIGTERM e SIGINT pelo resto
+    da suíte. `kill`, Ctrl-C e o cancelamento do integrador não paravam nada (o
+    hook do #1051 commitou depois de um kill). O mesmo vale para qualquer
+    lifespan real que instale o rastro."""
+    antes = {s: _GETSIGNAL(s) for s in (_signal.SIGTERM, _signal.SIGINT)}
+    yield
+    for s, h in antes.items():
+        if _GETSIGNAL(s) is not h:
+            try:
+                _SIGNAL(s, h)
+            except (ValueError, OSError):    # fora da thread principal: nada a fazer
+                pass
+
+
 @pytest.fixture(autouse=True)
 def _apikeys_publicadas():
     """Republica o snapshot de chaves antes de cada teste (#799).
