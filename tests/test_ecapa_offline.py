@@ -112,8 +112,13 @@ def test_clone_cru_deriva_do_arquivo_versionado_sem_rede(tmp_path):
     shutil.copy(REPO / "models" / "sha256sums.txt", tmp_path / "models" / "sha256sums.txt")
     assert not (modelo / "label_encoder.ckpt").exists()
 
+    # Teto FOLGADO de propósito (#1086): a derivação hasheia os 83 MB dos pesos e a
+    # duração é dominada por I/O — medida de 52 s a 124 s com uma suíte inteira
+    # rodando ao lado, e o antigo 60 s derrubava a suíte cheia. Não é teste de
+    # performance: 420 s é ~3,4x o pior medido e deixa folga sob o `timeout(600)`
+    # do próprio teste, que continua sendo o teto de verdade.
     r = subprocess.run([shutil.which("zsh"), "-f", str(tmp_path / "tools" / "baixa_modelos.sh")],
-                       cwd=str(tmp_path), capture_output=True, text=True, timeout=60,
+                       cwd=str(tmp_path), capture_output=True, text=True, timeout=420,
                        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"})
     assert "derivado e conferido" in r.stdout, r.stdout + r.stderr
     ckpt = modelo / "label_encoder.ckpt"
