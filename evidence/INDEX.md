@@ -12,7 +12,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | arquivo | task | data | o que mostra |
 |---|---|---|---|
 | `1022-hipoteses-falsificacao.md` | #1022 | 2026-11-08 | 1022 — hipóteses de causa do pos_llm e critérios de FALSIFICAÇÃO (pré-registro) |
-| `1049-deploy-head-48b11d5.txt` | #1049 | — | == deploy 48b11d5 (main) — 2026-11-09T10:19:17-03:00 |
+| `1049-deploy-head-48b11d5.txt` | #1049 | 2026-11-09 | == deploy 48b11d5 (main) — 2026-11-09T10:19:17-03:00 |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
@@ -324,6 +324,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `875-hang-bffb1c9d09-relogio.jsonl` | #875 | 2026-11-08 | (sem descrição) |
 | `875-hang-log.txt` | #875 | 2026-11-08 | 15:20:23 [live] abre sess=d4930cc1e3 voz=4f6a75c20d retomado=False history=0 criadas=0 |
 | `876-c1-modelo-real.py` | #876 | 2026-11-08 | """#876 C1 com modelo REAL (script): turno do Live (`_stt_app`) e passada de comando, C0 × C1.""" |
+| `876-janela-2x2.md` | #876 | 2026-11-09 | Janela 2×2 do #876 (motor do STT) × #870 (duck rápido) — mini de produção |
 | `876-refs-mls.py` | #876 | 2026-11-08 | """#876 — transcrições do MLS PT (dev/test) por arquivo extraído. Lê só dados (pyarrow).""" |
 | `876-stt-bench-carga.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench-livre.json` | #876 | 2026-11-06 | "n": 20, |
