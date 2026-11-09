@@ -9918,7 +9918,9 @@ def _parakeet_cru(audio_path: Path):
 
 def _transcreve_cru_live(a, idioma, desistiu=None) -> str:
     """Passada de comando do barge (#876 C1): o MESMO motor do turno do Live, para
-    não manter dois modelos residentes no M3 de 16 GB. Quem chama segura o lock."""
+    não manter dois modelos residentes no M3 de 16 GB. Não pega lock: o caminho
+    COM prazo chama já sob o `_stt_lock` (o `Lock` não é reentrante); o caminho
+    sem prazo segue sem lock, como antes da chave."""
     if _stt_motor(live=True) == "parakeet":
         import numpy as _np
         _fd, nome = tempfile.mkstemp(prefix="tts-cmd-", suffix=".wav")
