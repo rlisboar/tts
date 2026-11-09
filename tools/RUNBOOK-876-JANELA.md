@@ -13,12 +13,16 @@ Só rodar com a janela autorizada pelo PM. Duas perguntas, uma rodada:
 ## Limites declarados ANTES da rodada (não se movem depois)
 
 Liga a flag ⇔ **no C1**: pausa p95 ≤ 800 ms **E** duck p50 ≤ 300 ms **E**
-`eco_falso_duck` ≤ 5 % (IC95 superior ≤ 5 %) **E** `eco_falso_corte` ≤ C1/F0
-**E** S1 e S2 sem piora contra C1/F0.
+`eco_falso_duck` ≤ 5 % (PONTO falsos/respostas) **E** `eco_falso_corte` ≤
+C1/F0 **E** S1, WER pareado, S2, S3, S4 e RSS sem piora contra C1/F0.
 
-Qualquer um falhando, ou amostra faltando → **não liga** (ou INDETERMINADO).
-Os limites estão no cabeçalho do `rodada_c0c1.sh` e nas constantes do
-`relatorio_rodada.py`.
+O critério do eco é o **ponto**, não o IC95: com n=10 e zero falso o Wilson dá
+`[0; 27,8]` e o ramo LIGA nunca passaria. O IC sai impresso junto, só como
+resolução. Faixas: ≤5 % PASSA · **5–10 % INDETERMINADO** · >10 % NÃO LIGA.
+
+Qualquer outro critério falhando, ou amostra faltando → **não liga** (ou
+INDETERMINADO). Os limites estão no cabeçalho do `rodada_c0c1.sh` e nas
+constantes do `relatorio_rodada.py`.
 
 ## Desenho
 
@@ -63,9 +67,10 @@ C1 da própria célula), senão o próprio duck vira confundidor.
 
 ## Antes
 
-1. O SHA no ar tem o C1 e o #870 (patch-id conferido pelo PM). Conferir
-   `git -C ~/Documents/tts-rod rev-parse --short HEAD` e o `codigo` do
-   `/api/build` com a chave.
+1. O SHA no ar tem o C1 e o #870 (patch-id conferido pelo PM). O `--sha` é
+   **obrigatório** e o pré-voo compara com o `codigo` do `/api/build`: não bateu,
+   `exit 1` antes de subir a 7890 — célula medida em build errado é número
+   perdido.
 2. `live_stt_engine` existe no `GET /api/settings`; sem a chave, parar.
 3. Corpus copiado (nunca mover o original de `voices/`):
    `mkdir -p /tmp/live-bench-audio && cp voices/*.wav voices/*.json /tmp/live-bench-audio/`
@@ -81,10 +86,14 @@ tools/rodada_c0c1.sh --app-dir "$PWD" --sha "$(git rev-parse --short HEAD)" \
   --corpus /tmp/live-bench-audio --estado /tmp/bench-mini/.state-local
 ```
 
-O script faz pré-voo que recusa, sobe/derruba a 7890 por bloco, roda as 4
+O script faz pré-voo que recusa (inclusive por SHA divergente), sobe/derruba a
+7890 por bloco — esperando o listener soltar antes de cada subida —, roda as 4
 células + 4 fases de eco + 4 de ventoinha, amostra RSS/swap a cada 60 s e
-imprime o relatório. O `trap` (EXIT/INT/TERM) devolve `live_stt_engine` e derruba
-tudo que subiu.
+imprime o relatório. Cada fase tem a própria marca de tempo: a janela do `stt`
+usa só a fase `ciclos` (a de eco injeta gatilhos de 0,7 s e puxaria o p50 para
+baixo). Cada estado de flag tem o seu log (`app-0.log`/`app-1.log`) — misturar
+os dois é misturar dois processos. O `trap` (EXIT/INT/TERM) devolve
+`live_stt_engine` (lido do arquivo de estado) e mata tudo pelo PID registrado.
 
 ## Rollback por passo
 

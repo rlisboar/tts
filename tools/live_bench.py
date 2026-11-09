@@ -800,60 +800,74 @@ def _servidor_proc(porta: int | None = None) -> dict:
         return {"erro": str(exc)}
 
 
-async def sessao(args, corpus: list[dict]) -> dict:
+async def abre_sessao(url: str, eco_db: float = -15.0, eco_atraso_ms: int = 100,
+                      ruido_dbfs: float = -60.0, voice: str = "",
+                      prewarm_s: float = 20.0):
+    """Conecta, faz o `setup` e espera `ready` + `prewarm` — o handshake ÚNICO.
+
+    Existe para a bancada de ciclos e as fases de ruído (`fase_ruido.py`) não
+    manterem duas cópias do handshake: a segunda envelhece calada quando a
+    primeira muda. Devolve `(ws, cliente, task_de_recepcao)`; o `mic` quem sobe é
+    o chamador, porque cada fase injeta um padrão diferente.
+    """
     import websockets
     try:
         from websockets.asyncio.client import connect
     except ImportError:                                            # websockets < 13
         connect = websockets.connect
+    ws = await connect(url, max_size=None, open_timeout=30,
+                       ping_interval=20, ping_timeout=60)
+    setup = {"type": "setup"}
+    if voice:
+        setup["voice_id"] = voice
+    await asyncio.wait_for(ws.send(json.dumps(setup)), 20)
+    c = Cliente(ws, eco_db, eco_atraso_ms, ruido_dbfs)
+    rx = asyncio.create_task(c.recebe())
+    if not await c.espera(lambda: c.evs(0, ("ready", "error")), 60):
+        raise SystemExit("sem `ready` em 60 s")
+    if c.evs(0, ("error",)):
+        raise SystemExit(f"setup recusado: {c.evs(0, ('error',))[0][2]}")
+    await c.espera(lambda: c.evs(0, ("prewarm",)), prewarm_s)
+    # O handshake do dsh é ASSÍNCRONO no setup e o prewarm do chat pode falhar
+    # antes dele (estado local sem provedor): sem esta folga o 1º turno paga o
+    # boot, estoura o teto de 1º delta e a sessão cai no openai — que no estado
+    # sintético não tem base URL.
+    await asyncio.sleep(6.0)
+    return ws, c, rx
 
+
+async def sessao(args, corpus: list[dict]) -> dict:
     from urllib.parse import urlparse
     porta = urlparse(args.url).port
     random.seed(args.seed)
     proc_ini = _servidor_proc(porta)
     linhas: list[dict] = []
     t_ini = time.time()
-    async with connect(args.url, max_size=None, open_timeout=30,
-                       ping_interval=20, ping_timeout=60) as ws:
-        setup = {"type": "setup"}
-        if args.voice:
-            setup["voice_id"] = args.voice
-        await asyncio.wait_for(ws.send(json.dumps(setup)), 20)
-        c = Cliente(ws, args.eco_db, args.eco_atraso_ms, args.ruido_dbfs)
-        rx = asyncio.create_task(c.recebe())
-        if not await c.espera(lambda: c.evs(0, ("ready", "error")), 60):
-            raise SystemExit("sem `ready` em 60 s")
-        if c.evs(0, ("error",)):
-            raise SystemExit(f"setup recusado: {c.evs(0, ('error',))[0][2]}")
-        await c.espera(lambda: c.evs(0, ("prewarm",)), args.prewarm_s)
-        # O handshake do dsh é ASSÍNCRONO no setup e o prewarm do chat pode
-        # falhar antes dele (estado local sem provedor): sem esta folga o 1º
-        # turno paga o boot, estoura o teto de 1º delta e a sessão cai no
-        # openai — que no estado sintético não tem base URL.
-        await asyncio.sleep(6.0)
-        mic = asyncio.create_task(c.mic())
-        await asyncio.sleep(1.5)                     # ruído de fundo antes da 1ª fala
-        ordem = list(corpus)
-        k = 0
-        prazo = time.monotonic() + args.sessao_min * 60 if args.sessao_min else None
-        while c.vivo:
-            if prazo is None and k >= args.ciclos:
-                break
-            if prazo is not None and time.monotonic() >= prazo:
-                break
-            if k % len(ordem) == 0:
-                random.shuffle(ordem)
-            fa = ordem[(2 * k) % len(ordem)]
-            fb = ordem[(2 * k + 1) % len(ordem)]
-            await ciclo(c, k, fa, fb, curta=(k % 2 == 1), args=args, linhas=linhas)
-            k += 1
-        vivo_no_fim = c.vivo
-        mic.cancel()
-        try:
-            await asyncio.wait_for(ws.close(), 5)
-        except Exception:                                         # noqa: BLE001
-            pass                    # socket pendurado não pode segurar o resumo
-        rx.cancel()
+    ws, c, rx = await abre_sessao(args.url, args.eco_db, args.eco_atraso_ms,
+                                  args.ruido_dbfs, args.voice, args.prewarm_s)
+    mic = asyncio.create_task(c.mic())
+    await asyncio.sleep(1.5)                     # ruído de fundo antes da 1ª fala
+    ordem = list(corpus)
+    k = 0
+    prazo = time.monotonic() + args.sessao_min * 60 if args.sessao_min else None
+    while c.vivo:
+        if prazo is None and k >= args.ciclos:
+            break
+        if prazo is not None and time.monotonic() >= prazo:
+            break
+        if k % len(ordem) == 0:
+            random.shuffle(ordem)
+        fa = ordem[(2 * k) % len(ordem)]
+        fb = ordem[(2 * k + 1) % len(ordem)]
+        await ciclo(c, k, fa, fb, curta=(k % 2 == 1), args=args, linhas=linhas)
+        k += 1
+    vivo_no_fim = c.vivo
+    mic.cancel()
+    try:
+        await asyncio.wait_for(ws.close(), 5)
+    except Exception:                                         # noqa: BLE001
+        pass                    # socket pendurado não pode segurar o resumo
+    rx.cancel()
     proc_fim = _servidor_proc(porta)
     resps = respostas(c)
     erros = [e.get("code") for _, ty, e in c.eventos if ty == "error"]

@@ -3,15 +3,17 @@
 
 As duas fases existem para provar que o motor do STT (C0 = whisper, C1 =
 Parakeet) não ganha turno falso. Elas rodam no MESMO run da bancada de ciclos e
-reusam o `Cliente` de `tools/live_bench.py` — mesmo mic em tempo real, mesma
-injeção de eco atrasado, mesmo piso de ruído. Não há segunda implementação de
-cliente para divergir.
+reusam o `Cliente` e o handshake (`abre_sessao`) de `tools/live_bench.py` — não
+há segunda implementação de cliente para divergir.
 
   eco       — o assistente fala (um gatilho curto de fala humana) e, durante o
               playback, NINGUÉM fala: o que voltar pelo mic é só o eco atenuado.
               Toda janela de playback que abre turno é FALSO TURNO por eco.
-  ventoinha — nenhuma fala, só o piso de ruído, por N minutos. Qualquer
-              `speech_start` é FALSO TURNO por ruído.
+  ventoinha — nenhuma fala, só o piso de ruído, por N minutos. Todo `speech_start`
+              é FALSO TURNO por ruído.
+
+Saída (JSON): `falsos` e `respostas` são CONTAGEM — a taxa é `falsos/respostas`.
+Booleano não serve: `1/10` viraria "100 %" e não daria para ler a resolução.
 
 Uso (dentro do mini, contra a instância de bancada da 7890):
 
@@ -19,9 +21,6 @@ Uso (dentro do mini, contra a instância de bancada da 7890):
         --url ws://127.0.0.1:7890/api/live/ws --minutos 5 --out /tmp/fase-eco.json
     .venv-mlx/bin/python tools/fase_ruido.py ventoinha --minutos 5 \
         --url ws://127.0.0.1:7890/api/live/ws --out /tmp/fase-ventoinha.json
-
-O JSON traz `janelas`, `falsos`, `taxa` e o IC95 de Wilson — o relatório da
-rodada compara C0 × C1 com esses números.
 """
 from __future__ import annotations
 
@@ -36,7 +35,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import live_bench as lb  # noqa: E402 — o Cliente mora na bancada
+import live_bench as lb  # noqa: E402 — o Cliente e o handshake moram na bancada
 
 #: gatilho de fala humana: curto de propósito (só para haver resposta tocando).
 GATILHO_S = 0.7
@@ -44,34 +43,10 @@ GATILHO_S = 0.7
 JANELA_MAX_S = 40.0
 
 
-def _ic95(k: int, n: int) -> list[float] | None:
-    return lb._ic95(k, n)
-
-
-async def _conecta(args):
-    import websockets
-    try:
-        from websockets.asyncio.client import connect
-    except ImportError:                                    # websockets < 13
-        connect = websockets.connect
-    ws = await connect(args.url, max_size=None, open_timeout=30,
-                       ping_interval=20, ping_timeout=60)
-    c = lb.Cliente(ws, args.eco_db, args.eco_atraso_ms, args.ruido_dbfs)
-    rx = asyncio.create_task(c.recebe())
-    await asyncio.wait_for(ws.send(json.dumps({"type": "setup"})), 20)
-    if not await c.espera(lambda: c.evs(0, ("ready", "error")), 60):
-        raise SystemExit("sem `ready` em 60 s")
-    if c.evs(0, ("error",)):
-        raise SystemExit(f"setup recusado: {c.evs(0, ('error',))[0][2]}")
-    await c.espera(lambda: c.evs(0, ("prewarm",)), args.prewarm_s)
-    await asyncio.sleep(6.0)          # prewarm do chat é assíncrono no setup
-    return ws, c, rx
-
-
 async def fase_eco(c: lb.Cliente, corpus: list[dict], minutos: float) -> dict:
     """Só eco no mic: cada janela de playback que abre turno é falso turno."""
     prazo = time.monotonic() + minutos * 60
-    janelas = falsos = 0
+    respostas = falsos = 0
     detalhe: list[dict] = []
     k = 0
     while time.monotonic() < prazo and c.vivo:
@@ -85,7 +60,7 @@ async def fase_eco(c: lb.Cliente, corpus: list[dict], minutos: float) -> dict:
             detalhe.append({"k": k, "sem_audio": True})
             continue
         ini = c.bin_apos(fim_fala)
-        janelas += 1
+        respostas += 1
         # janela = playback correndo SEM fala humana injetada
         await c.espera(lambda: (len(c.play) == 0
                                 or c.agora() - ini > JANELA_MAX_S
@@ -100,11 +75,11 @@ async def fase_eco(c: lb.Cliente, corpus: list[dict], minutos: float) -> dict:
                         "eventos": eventos})
         c.play = np.zeros(0, dtype=np.float32)     # descarta a cauda do turno
         await asyncio.sleep(1.0)
-    return {"janelas": janelas, "falsos": falsos, "detalhe": detalhe}
+    return {"respostas": respostas, "falsos": falsos, "detalhe": detalhe}
 
 
 async def fase_ventoinha(c: lb.Cliente, minutos: float) -> dict:
-    """Nenhuma fala: só o piso de ruído. Qualquer turno aberto é falso."""
+    """Nenhuma fala: só o piso de ruído. Todo turno aberto é falso."""
     t_ini = c.agora()
     prazo = time.monotonic() + minutos * 60
     while time.monotonic() < prazo and c.vivo:
@@ -112,7 +87,9 @@ async def fase_ventoinha(c: lb.Cliente, minutos: float) -> dict:
     fim = c.agora()
     evs = [(t, ty) for t, ty, _ in c.evs(t_ini, ("speech_start", "transcript_user",
                                                  "turn_complete"), ate=fim)]
-    return {"janelas": 1, "falsos": int(bool(evs)),
+    # `respostas` aqui é o nº de janelas de observação — 1 por fase, e a taxa
+    # sai em falsos por fase (não há turno esperado para servir de denominador).
+    return {"respostas": 1, "falsos": len(evs),
             "duracao_s": round(fim - t_ini, 1),
             "eventos": [ty for _, ty in evs],
             "detalhe": [{"k": i, "inicio_s": round(t, 2), "eventos": [ty]}
@@ -136,7 +113,8 @@ async def main(argv=None) -> int:
     if args.fase == "eco" and not corpus:
         raise SystemExit("fase eco precisa de --audio com gravações e ref_text")
 
-    ws, c, rx = await _conecta(args)
+    ws, c, rx = await lb.abre_sessao(args.url, args.eco_db, args.eco_atraso_ms,
+                                     args.ruido_dbfs, prewarm_s=args.prewarm_s)
     mic = asyncio.create_task(c.mic())
     await asyncio.sleep(1.5)
     try:
@@ -151,11 +129,12 @@ async def main(argv=None) -> int:
         except Exception:                                  # noqa: BLE001
             pass
 
-    n, k = r["janelas"], r["falsos"]
+    n, k = r["respostas"], r["falsos"]
     r.update({"fase": args.fase, "quando": time.strftime("%Y-%m-%dT%H:%M:%S"),
-              "taxa": round(k / n, 3) if n else None, "ic95": _ic95(k, n),
+              "taxa": round(k / n, 3) if n else None, "ic95": lb._ic95(k, n),
               "erro_ws": c.erro,
-              "meta": "falso turno ≤5 % — IC95 é de Wilson"})
+              "meta": "falso turno ≤5 % — ponto; IC95 de Wilson vai junto só como "
+                      "resolução"})
     if args.out:
         args.out.write_text(json.dumps(r, ensure_ascii=False, indent=1))
     print(f"{args.fase}: {k}/{n} falso(s) — taxa {r['taxa']} "

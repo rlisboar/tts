@@ -12,9 +12,13 @@
 #
 # LIMITES DECLARADOS ANTES DA RODADA (não se move depois de ver número):
 #   liga a flag  ⇔  no C1: pausa p95 ≤ 800 ms  E  duck p50 ≤ 300 ms
-#                    E  eco_falso_duck ≤ 5 % (IC95 superior ≤ 5 %)
-#                    E  eco_falso_corte ≤ C1/F0  E  S1 e S2 sem piora vs C1/F0
+#                    E  eco_falso_duck ≤ 5 % (PONTO falsos/respostas; o IC95 vai
+#                       junto só como resolução — com n=10 e zero falso o Wilson
+#                       dá [0; 27,8] e o ramo LIGA nunca passaria)
+#                    E  eco_falso_corte ≤ C1/F0  E  S1, S2, S3 e S4 sem piora
+#                    E  RSS ≤ C1/F0
 #   não liga     ⇔  qualquer um dos acima falhar (ou faltar amostra)
+#   eco entre 5 % e 10 % → INDETERMINADO naquele critério; > 10 % → NÃO LIGA
 #
 #   tools/rodada_c0c1.sh --app-dir ~/Documents/tts-rod --sha <sha-no-ar> \
 #       [--corpus /tmp/live-bench-audio] [--estado /tmp/bench-mini/.state-local] \
@@ -26,7 +30,8 @@
 # amostra (o bloco reinicia o app e o `_cond_for` em cache miss custa ~1500 ms).
 #
 # O script sobe e derruba a instância da 7890 (nunca a 7860) e, no `trap`,
-# devolve `live_stt_engine` ao valor lido no início e mata tudo que subiu.
+# devolve `live_stt_engine` ao valor lido do estado sintético e mata tudo que
+# subiu — sempre pelo PID registrado, nunca por padrão de linha de comando.
 set -u
 RAIZ="${0:A:h:h}"
 APP_DIR="${RAIZ}"
@@ -35,6 +40,7 @@ URL="ws://127.0.0.1:7890/api/live/ws"
 APP="http://127.0.0.1:7890"
 SHA=""; CORPUS=/tmp/live-bench-audio; ESTADO=/tmp/bench-mini/.state-local
 DIR=""; CICLOS=10; AQUEC=1; MIN_ECO=3; MIN_VENT=3; SEMENTE=875
+MODULOS=(app.py common.py backends.py tts_worker.py live_pipeline.py live_turns.py dsh_client.py)
 while [ $# -gt 0 ]; do
   case "$1" in
     --app-dir) APP_DIR="${2:-}"; shift 2 ;;
@@ -47,7 +53,7 @@ while [ $# -gt 0 ]; do
     --min-eco) MIN_ECO="${2:-3}"; shift 2 ;;
     --min-ventoinha) MIN_VENT="${2:-3}"; shift 2 ;;
     --semente) SEMENTE="${2:-875}"; shift 2 ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) print -r -- "sobrando: $1" >&2; exit 2 ;;
   esac
 done
@@ -57,16 +63,22 @@ DIR="${DIR:-/tmp/rodada-876-$(date +%s)}"
 mkdir -p "$DIR" || exit 1
 LOG_CORRIDA="$DIR/corrida.log"
 
-fala() { print -r -- "$*" | tee -a "$LOG_CORRIDA" }
+fala() { print -r -- "$*" | tee -a "$LOG_CORRIDA"; }
+
+# `codigo` do /api/build: sha256-8 dos módulos na ordem do app (mesma conta do
+# remote/deploy_mini.sh). É o que separa "código novo no disco" de "código novo
+# CARREGADO" — o `--sha` só vale se o hash bater com o rev pedido.
+codigo_esperado() {
+  { for m in "${MODULOS[@]}"; do
+      git -C "$APP_DIR" show "${1}:$m" 2>/dev/null || print -rn -- '<ausente>'
+    done } | shasum -a 256 | cut -c1-8
+}
 
 # ── rollback: sempre, em qualquer saída ─────────────────────────────────────
 ANTERIOR=""; SAMPLER=""; APP_PID=""; SUBIU=0
 derruba() {
   pkill -f "live_bench" 2>/dev/null
   pkill -f "fase_ruido.py" 2>/dev/null
-  # O app sai pelo PID que ESTE script registrou: casar a linha de comando
-  # (`pkill -f "port 7890"`) não alcança o app do pos_llm (7895) nem sobrevive
-  # a um uvicorn cujo argv mude — o mesmo padrão do `mede_pos_llm.sh`.
   if [ -n "$APP_PID" ]; then
     kill "$APP_PID" 2>/dev/null
     local i
@@ -74,6 +86,13 @@ derruba() {
     kill -9 "$APP_PID" 2>/dev/null
     APP_PID=""; SUBIU=0
   fi
+  # o `pkill`/`kill` é ASSÍNCRONO: sem esperar o listener soltar, o `sobe`
+  # seguinte leva 200 do processo VELHO e a célula roda com a flag errada, calada.
+  local j
+  for j in $(seq 1 20); do
+    [ "$(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ] && break
+    sleep 0.5
+  done
 }
 limpa() {
   local rc=$?
@@ -95,6 +114,7 @@ trap limpa EXIT INT TERM
 # ── pré-voo (antes de subir qualquer coisa) ─────────────────────────────────
 fala "== pré-voo  $(date -Iseconds)"
 [ -d "$APP_DIR" ] || { fala "sem app-dir: $APP_DIR"; exit 1; }
+[ -n "$SHA" ] || { fala "--sha é obrigatório (o rev que o deploy subiu)"; exit 1; }
 [ -d "$CORPUS" ] || { fala "corpus ausente: $CORPUS"; exit 1; }
 [ -f "$ESTADO/settings.json" ] || { fala "estado sintético ausente: $ESTADO/settings.json"; exit 1; }
 [ "$(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ] \
@@ -111,11 +131,15 @@ done
 [ "$(pgrep -f 'port 7860' | wc -l | tr -d ' ')" -eq 1 ] \
   || { fala "esperava 1 uvicorn na 7860 (produção intocada)"; exit 1; }
 PROD_PID="$(pgrep -f 'port 7860' | head -1)"
-NO_AR="$(cd "$APP_DIR" && git rev-parse --short HEAD 2>/dev/null)"
-fala "   prod pid=$PROD_PID no ar em $NO_AR"
-if [ -n "$SHA" ] && [ "${NO_AR}" != "$(print -r -- "$SHA" | cut -c1-7)" ]; then
-  fala "   [aviso] SHA pedido ($SHA) difere do worktree ($NO_AR)"
-fi
+# O SHA tem de ser o que a produção CARREGOU. Aviso não serve: célula medida em
+# build errado é número perdido.
+ESPERADO="$(codigo_esperado "$SHA")"
+NO_AR="$(curl -s -m 5 http://127.0.0.1:7860/api/build 2>/dev/null \
+  | sed -n 's/.*"codigo": *"\([0-9a-f]*\)".*/\1/p' | head -1)"
+fala "   sha pedido=$SHA · codigo esperado=$ESPERADO · no ar=${NO_AR:-<vazio>} · prod pid=$PROD_PID"
+[ -n "$NO_AR" ] || { fala "não consegui ler o /api/build da produção"; exit 1; }
+[ "$NO_AR" = "$ESPERADO" ] \
+  || { fala "código no ar ($NO_AR) ≠ rev pedido ($ESPERADO) — deploy diferente do combinado"; exit 1; }
 fala "   corpus: $(ls "$CORPUS" | wc -l | tr -d ' ') arquivos · semente $SEMENTE"
 
 # amostrador de memória (1/min): é a curva do #891
@@ -156,15 +180,20 @@ sobe() {                  # $1 = 0|1 (duck rápido)
 }
 
 # ── fases ───────────────────────────────────────────────────────────────────
+marca() { print -r -- "$1 $2 $(date +%H:%M:%S)" >> "$DIR/marcas.txt"; }
 roda_ciclos() {           # $1 = célula (f0-c0 …)
   fala "== ciclos $1  $(date -Iseconds)"
+  marca "$1" ciclos
+  # AQUECIMENTO: +$AQUEC ciclo(s) fora da amostra (o bloco reinicia o app e o
+  # `_cond_for` em cache miss custa ~1500 ms). O relatório descarta os primeiros.
   TTS_LIVE_DUMP_DIR="$DIR/dump-$1" "$PY" -I "$APP_DIR/tools/live_bench.py" \
-    --audio "$CORPUS" --url "$URL" --seed "$SEMENTE" --ciclos "$CICLOS" \
+    --audio "$CORPUS" --url "$URL" --seed "$SEMENTE" --ciclos "$((CICLOS + AQUEC))" \
     --teto-turno-s 300 --rotulo "$1" --out "$DIR/$1.json" > "$DIR/$1.log" 2>&1
   fala "   rc=$? $(grep -E '^S1 ' "$DIR/$1.log" | cut -c1-80)"
 }
 roda_fase() {             # $1 = fase (eco|ventoinha)  $2 = célula
   fala "== fase $1 $2  $(date -Iseconds)"
+  marca "$2" "$1"
   local min=$MIN_VENT
   [ "$1" = eco ] && min=$MIN_ECO
   "$PY" "$APP_DIR/tools/fase_ruido.py" "$1" --url "$URL" --audio "$CORPUS" \
@@ -172,22 +201,19 @@ roda_fase() {             # $1 = fase (eco|ventoinha)  $2 = célula
   fala "   rc=$? $(tail -1 "$DIR/$1-$2.log" | cut -c1-80)"
 }
 celula() {                # $1 = f0|f1  $2 = c0|c1
-  local marca motor
+  local motor
   motor=parakeet; [ "$2" = c0 ] && motor=whisper
-  marca="$(date +%H:%M:%S)"
-  print -r -- "$1-$2 $marca" >> "$DIR/marcas.txt"
   curl -s -m 5 -o /dev/null -H "Content-Type: application/json" \
     -X POST "$APP/api/settings" -d "{\"live_stt_engine\": \"$motor\"}"
   roda_ciclos "$1-$2"; roda_fase eco "$1-$2"; roda_fase ventoinha "$1-$2"
 }
 
-ANTERIOR=""; LIDO=0
+# valor ORIGINAL da chave: lido do ARQUIVO de estado (a porta ainda está livre
+# na pré-voo, então perguntar ao app daria vazio e o `trap` não restauraria nada)
+ANTERIOR="$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("live_stt_engine") or "")' \
+  "$ESTADO/settings.json" 2>/dev/null)"
+fala "   live_stt_engine no estado: '${ANTERIOR}'"
 
-# ORDEM CONTRABALANÇADA: com blocos sequenciais e flag em ENV, deriva térmica e
-# de RSS ficam coladas na ORDEM — se f0 rodasse sempre antes de f1, a diferença
-# entre as flags carregaria o aquecimento da máquina. f0c0 → f1c0 → f1c1 → f0c1
-# põe cada estado de flag nas duas pontas da corrida. O app reinicia só quando a
-# flag MUDA; a ordem executada vai para o relatório.
 ORDEM=(f0-c0 f1-c0 f1-c1 f0-c1)
 print -r -- "${ORDEM[*]}" > "$DIR/ordem.txt"
 FLAG_ATUAL=""
@@ -197,20 +223,15 @@ for cel in "${ORDEM[@]}"; do
     derruba
     sobe "$([ "$flag" = f0 ] && print -r -- 0 || print -r -- 1)"
     FLAG_ATUAL="$flag"
-    if [ "$LIDO" = 0 ]; then      # valor original: lido com o app recém-subido
-      ANTERIOR="$(curl -s -m 5 "$APP/api/settings" \
-        | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("live_stt_engine") or "")' 2>/dev/null)"
-      LIDO=1
-      fala "   live_stt_engine anterior: '$ANTERIOR'"
-    fi
   fi
   celula "${cel%%-*}" "${cel##*-}"
 done
 derruba
+print -r -- "fim $(date +%H:%M:%S)" >> "$DIR/marcas.txt"
 
 # ── relatório ───────────────────────────────────────────────────────────────
 fala "== relatório  $(date -Iseconds)"
-"$PY" "$APP_DIR/tools/relatorio_rodada.py" --dir "$DIR" --sha "${SHA:-$NO_AR}" \
-  --log /tmp/tts-studio.log --marcas "$DIR/marcas.txt" --ordem "$DIR/ordem.txt" \
-  --aquecimento "$AQUEC" 2>&1 | tee -a "$LOG_CORRIDA"
+"$PY" "$APP_DIR/tools/relatorio_rodada.py" --dir "$DIR" --sha "$SHA" \
+  --logs "$DIR/app-0.log" "$DIR/app-1.log" --marcas "$DIR/marcas.txt" \
+  --ordem "$DIR/ordem.txt" --aquecimento "$AQUEC" 2>&1 | tee -a "$LOG_CORRIDA"
 fala "== fim  $(date -Iseconds) — saída em $DIR"
