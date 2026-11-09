@@ -202,7 +202,7 @@ _com_teto() {
 # ligado, cobrar esse arquivo reprovava sem nenhuma suíte culpada (medido: +171 B
 # em 40 s com o dono intocado). As métricas seguem na rodada como NOTA, com o mesmo
 # diff, sem entrar em `FALHAS`.
-_ARQ_DONO=(settings.json .apikeys.json .apikey)
+_ARQ_DONO=(settings.json .apikeys.json .apikey .speaker-profiles.json)
 # Onde o app escreveria o estado SEM override: a MESMA regra do
 # `_dir_de_estado_padrao` do app (#721) — `TTS_STATE_DIR` vence; worktree/cópia
 # (`.git` ARQUIVO) usa `<árvore>/.state-local`; só a RAIZ PRINCIPAL usa o
@@ -231,11 +231,19 @@ _probe_na_lista() {
 if _probe_na_lista; then
     if [ -z "${TTS_DONO_DIR:-}" ]; then
         TTS_DONO_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dono-sonda.XXXXXX")" || exit 1
-        for a in "${_ARQ_DONO[@]}"; do
-            # `cp` SEM `-p`: o `-p` leva junto a flag `uchg` do arquivo do dono e a
-            # cópia fica impossível de escrever (e de apagar no fim).
-            [ -f "$DONO_PADRAO/$a" ] && cp "$DONO_PADRAO/$a" "$TTS_DONO_DIR/$a" && chmod 600 "$TTS_DONO_DIR/$a"
-        done
+        # #1018: estado SINTÉTICO, não cópia do dono (#728). O veredito da sonda é
+        # DIFF, então o conteúdo só precisa existir — e nenhum segredo real vai parar
+        # em /tmp (antes: `cp` do `settings.json`/`.apikey*` reais, que ficavam lá
+        # quando o `rm` do trap era o do PATH). O settings nasce em JSON com o formato
+        # do app porque a sonda `reescreve_o_dono.sh` relê o arquivo.
+        printf '{"pre_prompt": "", "model": "sintetico", "marcador": "estado-sintetico-da-sonda"}\n' \
+            > "$TTS_DONO_DIR/settings.json"
+        printf '{"keys": [{"id": "sonda", "role": "admin", "secret": "chave-sintetica-da-sonda"}]}\n' \
+            > "$TTS_DONO_DIR/.apikeys.json"
+        printf 'chave-sintetica-da-sonda\n' > "$TTS_DONO_DIR/.apikey"
+        printf '{}\n' > "$TTS_DONO_DIR/.speaker-profiles.json"
+        chmod 600 "$TTS_DONO_DIR"/settings.json "$TTS_DONO_DIR"/.apikeys.json \
+            "$TTS_DONO_DIR"/.apikey "$TTS_DONO_DIR"/.speaker-profiles.json
         export TTS_DONO_DIR
         trap '/bin/rm -rf "$TTS_DONO_DIR"' EXIT
     elif [ "$(cd "$TTS_DONO_DIR" 2>/dev/null && pwd -P)" = "$(cd "$RAIZ" && pwd -P)" ]; then

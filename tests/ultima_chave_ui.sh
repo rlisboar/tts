@@ -194,7 +194,7 @@ try:
         apikeys.unlink(missing_ok=True)
         porta2 = porta_livre()
         env2 = {**env_proc, "TTS_ROD_API_KEY": "chave-de-ambiente-teste-998"}
-        log2 = pathlib.Path(f"/tmp/ultima_chave_env-{SUF}.log")   # único por execução (#1017)
+        log2 = pathlib.Path(f"/tmp/ultima_chave_env-{SUF}-{porta2}.log")   # SUF: porta pode repetir
         proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app",
                                  "--host", "127.0.0.1", "--port", str(porta2),
                                  "--log-level", "warning"],

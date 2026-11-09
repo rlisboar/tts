@@ -888,6 +888,36 @@ def test_sonda_sem_dono_dir_nao_escreve_na_raiz(tmp_path, settings_na_raiz):
     assert "TTS_DONO_DIR" in d.stderr, d.stderr
 
 
+def test_sonda_semeia_estado_sintetico_e_nao_copia_o_dono(tmp_path):
+    """#1018 (regra #728): o "dono" da sonda é SINTÉTICO, não cópia do real.
+
+    O runner copiava `settings.json`/`.apikey*` do dono para `/tmp` — e, com o `rm`
+    do PATH no trap, a cópia ficava lá (56 diretórios `dono-sonda.*` achados em
+    08/11). Aqui o estado "real" é um `TTS_STATE_DIR` com marcador: se a cópia
+    voltar, o marcador aparece na sonda e a célula cai."""
+    real = tmp_path / "estado-real"
+    real.mkdir()
+    (real / "settings.json").write_text('{"marcador": "SO-NO-ARQUIVO-REAL"}\n')
+    (real / ".apikey").write_text("chave-real-123\n")
+    (real / ".speaker-profiles.json").write_text('{"perfil": "REAL"}\n')
+    saida = _sonda_saida(tmp_path)
+    r = _rodar("navegador", env={"SUITES": str(SONDAS / "mostra_dono.sh"),
+                                 "TTS_STATE_DIR": str(real), "TTS_DONO_DIR": "",
+                                 "SONDA_SAIDA": saida})
+    assert r.returncode == 0, r.stdout + r.stderr
+    r.stdout = pathlib.Path(saida).read_text()   # o runner só imprime a suíte que falha
+    assert "SO-NO-ARQUIVO-REAL" not in r.stdout, "copiou o settings REAL do dono"
+    assert "chave-real-123" not in r.stdout, "copiou a chave REAL do dono"
+    assert '"perfil": "REAL"' not in r.stdout, "copiou os perfis REAIS do dono"
+    for arq in ("settings.json", ".apikeys.json", ".apikey", ".speaker-profiles.json"):
+        assert f"{arq}=(ausente)" not in r.stdout, f"o runner não semeou {arq}: {r.stdout}"
+    assert "estado-sintetico-da-sonda" in r.stdout, r.stdout
+    assert "modo 600" in r.stdout, f"os arquivos semeados não ficaram 0600: {r.stdout}"
+    # e o trap apaga a cópia: sem isso cada rodada deixa um diretório com estado em /tmp
+    dir_sonda = pathlib.Path(r.stdout.split("dir=", 1)[1].splitlines()[0])
+    assert not dir_sonda.exists(), f"o trap deixou a cópia em /tmp: {dir_sonda}"
+
+
 def test_segredo_do_dono_deixado_em_tmp_derruba_a_rodada(tmp_path):
     """Suíte que deixa a chave do dono em `/tmp` tem de ser acusada (#723).
 

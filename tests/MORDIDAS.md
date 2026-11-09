@@ -768,6 +768,20 @@ conferem que ele **não** foi usado.
 | `rm` removido do caminho de recuperação | `…_zera_contador_e_limpa_a_flag` **FAILED** ("a flag ficou aberta") |
 | `rm` removido do `uninstall` | `test_uninstall_tira_o_agente` **FAILED** ("o uninstall deixou o plist no lugar") |
 
+## #1018 — a sonda copiava o estado REAL do dono para /tmp
+
+O runner semeava o "dono" da sonda com `cp` do `settings.json`/`.apikey*` reais. Com
+o `rm` do PATH no trap, a cópia nunca era apagada: 56 diretórios `dono-sonda.*`
+acumulados em /tmp, 12 deles com o arquivo do dono dentro (viola a regra #728 — o
+segredo real não deveria sair da máquina dele). Agora o estado é SINTÉTICO e o trap
+usa `/bin/rm`.
+
+| Sabotagem | Resultado |
+|---|---|
+| seeding volta para o `cp` do arquivo real | `test_sonda_semeia_estado_sintetico_e_nao_copia_o_dono` **FAILED** ("copiou o settings REAL do dono") |
+| trap volta para o `rm` do PATH | a mesma célula **FAILED** na cobrança de o diretório sumir do /tmp |
+| arquivo semeado fora de 0600 | a célula **FAILED** em `modo 600` |
+
 ## #797 / #915 — marca fora do `_gen_lock`
 
 O filho isolado grava o PCM cru (marcar no filho segurava o `_gen_lock` do pai
