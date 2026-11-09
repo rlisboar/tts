@@ -266,6 +266,10 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
     # worker, emissão do PCM): fecha a soma POR CONSTRUÇÃO, e é ele que diz se o
     # critério "gen > 80 % do tts" falhou por setup ou por algo fora do
     # `_tts_app`. Qualquer sub-marca ausente → `tts_fora` None (não inventa).
+    # NEGATIVO é possível e NÃO é grampeado: os marcos do `latency` são `int`
+    # truncado e as sub-marcas `round` — até ~4 ms abaixo de zero é só
+    # arredondamento. Muito abaixo disso, uma sub-marca foi medida fora do
+    # intervalo do `tts` e o instrumento está errado; grampear em 0 esconderia.
     modelo, cond = g("tts_modelo_ms"), g("tts_cond_ms")
     prep, gen = g("tts_prep_ms"), g("tts_gen_ms")
     subs = (modelo, cond, prep, gen)
