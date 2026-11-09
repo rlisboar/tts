@@ -22,8 +22,10 @@ repetição), WER (o áudio volta ao STT e é comparado com o texto de origem) e
 Custo: cronometrado em volta do `generate`, modelo quente. O mini é ~2,1× mais
 lento que o MBP no mesmo trabalho — número do MBP não vale aqui.
 
-    TTS_STATE_DIR=/tmp/1079/estado TTS_OUTPUTS_DIR=/tmp/1079/out \
-      ./.venv-mlx/bin/python evidence/1079-piso-passos.py /tmp/1079
+    SAIDA="$(mktemp -d /tmp/1079-XXXXXX)"      # único por execução (classe #1079)
+    mkdir -p "$SAIDA/estado" "$SAIDA/out"
+    TTS_STATE_DIR="$SAIDA/estado" TTS_OUTPUTS_DIR="$SAIDA/out" \
+      ./.venv-mlx/bin/python evidence/1079-piso-passos.py "$SAIDA"
 
 Não toca produção (7860) nem a bancada (7890): geração in-process.
 """
@@ -32,6 +34,7 @@ from __future__ import annotations
 import json
 import random
 import sys
+import tempfile
 import time
 import wave
 from pathlib import Path
@@ -99,7 +102,10 @@ def wer(ref: str, hip: str) -> float:
 
 
 def main() -> int:
-    saida = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/1079")
+    # sem argumento, o diretório é NOVO a cada execução: o script não relê saída
+    # anterior, então caminho fixo só criaria disputa entre duas rodadas
+    saida = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
+        tempfile.mkdtemp(prefix="1079-"))
     (saida / "wav").mkdir(parents=True, exist_ok=True)
 
     app._settings["omni_precision"] = "bf16"
