@@ -74,11 +74,20 @@ for ((i = 1; i <= $#; i++)); do
   case "${@[i]}" in
     http*) url="${@[i]}" ;;
     -X) metodo="${@[i+1]}" ;;
+    -m) tempo="${@[i+1]}"; tem_m=1 ;;
     -H) [[ "${@[i+1]}" == X-API-Key:* ]] && tem_chave=1 ;;
     --http1.1) http1=1 ;;
     -w) so_codigo=1 ;;
   esac
 done
+# `-m` não numérico: o curl REAL sai rc=2 sem corpo (#1076). O shim ignorava o
+# `-m`, então a guarda do TIMEOUT ficava sem mordida — com o valor cru na linha
+# de comando toda leitura "divergia" e um deploy BOM era revertido pelo #345.
+if [ "${tem_m:-0}" = 1 ]; then
+  case "${tempo:-}" in
+    ''|*[!0-9]*) print -r -- "curl: option -m: expected a proper numerical parameter" >&2; exit 2 ;;
+  esac
+fi
 print -r -- "$metodo $url" >> "$T_CURL_LOG"
 codigo=200; corpo=""; arquivo=""
 case "$url" in
@@ -999,6 +1008,35 @@ def test_index_leituras_invalido_cai_no_padrao_e_nao_gira(amb, valor):
         pytest.fail(f"INDEX_LEITURAS={valor!r}: laço da paridade não parou (teto inerte)")
     assert r.returncode == 1, _saida(r)
     assert r.stdout.count("em 3 leitura(s)") == 2, _saida(r)   # LAN + público
+
+
+# --- #1076: as outras duas guardas da paridade do index.html também precisam
+# morder. `INDEX_TIMEOUT` cru ia para o `-m` do curl: com valor não numérico o
+# curl real sai rc=2 SEM corpo, toda leitura diverge e o #345 reverte um deploy
+# bom. `INDEX_PAUSA` cru vira `sleep abc` (rc 1, barulho no stderr).
+@pytest.mark.parametrize("valor", ["abc", "3s", "", "-1"])
+def test_index_timeout_invalido_cai_no_padrao_e_deploy_passa(amb, valor):
+    """`TTS_MINI_INDEX_TIMEOUT` inválido não pode virar `-m` inválido: cai no
+    padrão e o deploy segue verde (sem a guarda, todo `-m` sai rc=2 e reverte)."""
+    amb["TTS_MINI_INDEX_TIMEOUT"] = valor
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 0, _saida(r)
+    assert "SMOKE VERMELHO" not in r.stdout and "REVERTIDO" not in r.stdout
+    assert "expected a proper numerical parameter" not in r.stderr
+    assert "[ok] público index.html" in r.stdout
+
+
+@pytest.mark.parametrize("valor", ["abc", "", "-1"])
+def test_index_pausa_invalida_cai_no_padrao_sem_barulho(amb, valor):
+    """`TTS_MINI_INDEX_PAUSA` inválido não pode chegar no `sleep`: a releitura
+    tem de acontecer calada, e o deploy fechar verde."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    amb["T_CURL_INDEX_CORTA_N"] = "1"              # força a releitura (e o sleep)
+    amb["TTS_MINI_INDEX_PAUSA"] = valor
+    r = _run(amb, "smoke")
+    assert r.returncode == 0, _saida(r)
+    assert "divergiu na leitura 1" in r.stdout     # a releitura aconteceu
+    assert "invalid time interval" not in r.stderr
 
 
 # --- #252: a novidade do boot é ancorada no marcador do restart (.deploy-mini-boot),
