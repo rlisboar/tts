@@ -313,3 +313,30 @@ def test_resposta_de_b_por_interrupted_nao_queima_o_teto_triplo(monkeypatch):
     assert dt < teto * 2, f"queimei o teto triplo: {dt:.3f}s (teto*3={teto * 3:.3f})"
     assert len(linhas) == 2, linhas
     assert linhas[1].get("eco_falso_corte") is True, linhas[1]
+
+
+def test_turno_que_fechou_com_playback_pendente_nao_esmaga_o_teto():
+    """#1021: `turn_complete` com `play` ainda cheio solta a espera na hora.
+
+    Medido uma vez em 20 ciclos (fala 35 do #875): o turno fechou, o `play` do
+    cliente tinha 12 s de eco na fila e não esvaziou — a espera só saiu nos 900 s
+    do teto triplo."""
+    c = _cliente(_WS())
+    c.play = np.ones(48000, np.float32)        # 12 s de playback pendente
+    c.eventos.append((1.0, "turn_complete", {"type": "turn_complete"}))
+    assert lb._turno_b_encerrou(c, 0.9, 1.0) is True
+
+
+def test_interrupted_de_continuacao_nao_fecha_e_o_terminal_fecha():
+    """A contraprova do #942 segue: continuação não solta; terminal solta mesmo
+    com playback pendente (o cliente já zerou a fila)."""
+    c = _cliente(_WS())
+    c.play = np.ones(4800, np.float32)
+    c.eventos.append((1.0, "interrupted", {"motivo": "continuacao"}))
+    assert lb._turno_b_encerrou(c, 0.9, 1.0) is False
+    c.eventos.append((1.1, "interrupted", {"motivo": "eco"}))
+    assert lb._turno_b_encerrou(c, 0.9, 1.0) is True
+    # o `interrupted` que cortou A (antes do áudio de B) não conta
+    c2 = _cliente(_WS())
+    c2.eventos.append((0.5, "interrupted", {"motivo": "barge"}))
+    assert lb._turno_b_encerrou(c2, 0.9, 1.0) is False

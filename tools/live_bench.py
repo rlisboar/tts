@@ -455,19 +455,24 @@ def _b_recusada_identidade(c: Cliente, desde: float, recusados_antes: int) -> bo
 
 
 def _turno_b_encerrou(c: Cliente, b_fim: float, t_audio_b: float | None) -> bool:
-    """Turno de B fechou e o playback esvaziou.
+    """Turno de B FECHOU (por qualquer via terminal).
 
     `turn_complete` / `error` seguem o contrato antigo. O eco que corta a
     resposta DEPOIS de `t_audio_b` emite `interrupted` com motivo diferente
     de `continuacao`: o cliente já zerou `play` e o servidor não manda
     `turn_complete`. Sem isso a espera queima `teto_turno_s * 3` (#942).
 
+    O `play` vazio NÃO entra mais na condição (#1021): com o turno já fechado o
+    que sobra é a cauda do playback, e um `play` que não esvazia (medido uma vez
+    em 20 ciclos, 12 s de eco na fala B) prendia o ciclo os 900 s do teto triplo.
+    A cauda ganha uma carência curta em `ciclo`, não o teto.
+
     Não conta o `interrupted` que cortou A (anterior a `t_audio_b`, mesmo
     que tenha caído depois de `b_fim`) nem `motivo:"continuacao"` (a fila fica).
     """
-    if c.evs(b_fim, ("turn_complete", "error")) and len(c.play) == 0:
+    if c.evs(b_fim, ("turn_complete", "error")):
         return True
-    if t_audio_b is None or len(c.play) != 0:
+    if t_audio_b is None:
         return False
     return any(e.get("motivo") != "continuacao"
                for _t, _ty, e in c.evs(t_audio_b, ("interrupted",)))
@@ -571,6 +576,10 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
         t_audio_b = c.bin_apos(max(b_fim, (c.evs(b_ini, ("interrupted",)) or [(b_fim,)])[0][0]))
         turno_b = bool(c.evs(b_fim, ("turn_complete", "error")))
         recusada = t_audio_b is None and not turno_b and recusou()
+    # cauda: o turno já fechou, mas o eco do playback ainda pode estar na fila do
+    # cliente — carência CURTA (a condição não depende mais dela, #1021)
+    if len(c.play):
+        await c.espera(lambda: len(c.play) == 0, 2.0)
     eco_fim = c.agora()
     # S2 DECOMPOSTO: o `latency` do turno chega no FECHAMENTO e separa o 1º
     # token da LLM (TTS + fila). `first_token_ms` conta do início da thread do

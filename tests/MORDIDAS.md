@@ -1000,3 +1000,15 @@ O piso do `misto` no smoke caiu de 35 % para 10 %. Os 35 % vieram do AS-norm com
 uma coorte que CONTÉM os locutores 1673 e 2277 do corpus (vazamento). Dono e
 terceiro ao mesmo tempo, sem separação, é limitação conhecida até a separação do
 turno (#533 item 2). O piso do terceiro (≤1 turno falso em 10 min) segue duro.
+## #1021 — turno que FECHOU não pode esperar o playback esvaziar
+
+Uma vez em 20 ciclos da rodada final do #875 (fala 35): o `turn_complete` chegou, o
+`play` do cliente tinha 12 s de eco na fila e não esvaziou — a espera só saiu nos
+900 s do teto triplo, sem `llm_corte` (o app estava ocioso). O `play` vazio deixou de
+ser condição: turno fechado por qualquer via terminal solta, e a cauda ganha uma
+carência de 2 s.
+
+| Sabotagem | Resultado |
+|---|---|
+| condição volta a exigir `len(c.play) == 0` | `test_turno_que_fechou_com_playback_pendente_nao_esmaga_o_teto` **FAILED** |
+| contar qualquer `interrupted` (sem olhar o motivo) | `test_interrupted_de_continuacao_nao_fecha_e_o_terminal_fecha` **FAILED** |
