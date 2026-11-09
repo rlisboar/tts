@@ -168,6 +168,21 @@ os.environ["TTS_STATE_DIR"] = _TMP_ESTADO
 # valor é o da sessão de teste, não o ambiente dele.
 os.environ["TTS_LIVE_RNNOISE"] = "0"
 
+# #1050: o prazo C do watchdog do /health (#915) fica DESLIGADO na sessão. O
+# `faulthandler.dump_traceback_later` despeja de uma thread C SEM a GIL; quando o
+# laço que rearma só atrasou (CPU disputada, duas suítes) e o principal segue
+# rodando Python, o despejo lê frame que acabou de ser liberado e falha em
+# `dump_frame` — SIGSEGV num processo limpo, e sob pytest a thread do faulthandler
+# gira a 100 % de CPU no mesmo endereço. O rearme seguinte chama
+# `cancel_dump_traceback_later()`, que espera essa thread SEGURANDO a GIL: o
+# processo inteiro congela e o SIGALRM do `pytest-timeout` nunca roda. A pilha
+# truncada em `_mean` / `  File ` no log era o despejo morrendo, não o teste.
+# Quem cobra o watchdog (`tests/test_health_watchdog.py`) arma por `monkeypatch`.
+# O log vai para o tmp da sessão: o default do app é o arquivo do servidor do
+# dono, e era escrito por toda suíte que rodasse ao mesmo tempo.
+os.environ["TTS_HEALTH_TRAVADO_S"] = "0"
+os.environ["TTS_WATCHDOG_LOG"] = os.path.join(_TMP_ESTADO, "tts-watchdog.log")
+
 # `DeprecationWarning: builtin type SwigPyPacked/SwigPyObject has no __module__
 # attribute`. EMISSOR pinçado: os bindings SWIG que entram junto com
 # `import onnxruntime` (o primeiro a carregar é
