@@ -254,7 +254,7 @@ def req(metodo, caminho, chave, corpo=None):
 s = req("GET", "/api/settings", use)
 assert s["is_admin"] is False, f"chave de uso não devia ser admin: {s['is_admin']}"
 assert "admin_fields" in s and s["admin_fields"], "servidor não mandou admin_fields"
-mascarados = [k for k in ("remote_api_key", "remote_stt_key", "chat_api_key")
+mascarados = [k for k in ("remote_api_key", "chat_api_key")
               if str(s.get(k, "")).startswith("••••")]
 print(f"  is_admin=False · {len(s['admin_fields'])} campos admin · segredos mascarados: {mascarados or '(vazios)'}")
 
@@ -429,8 +429,9 @@ with sync_playwright() as p:
                f"o teto travado não diz o motivo ({teto['titulo']!r})")
         cobrar(teto["valor"] not in ("", None), "o teto não veio preenchido do servidor")
 
-    # #586: os dois campos que viviam na lista de exceções agora travam de verdade
-    campos_novos = pg.evaluate("""() => ["remoteTtsModel", "translateModel"].map(id => {
+    # #586: o campo que vivia na lista de exceções agora trava de verdade; a Base
+    # URL do LLM é a conexão externa que sobrou depois do #1059
+    campos_novos = pg.evaluate("""() => ["remoteBaseUrl", "translateModel"].map(id => {
         const el = document.getElementById(id);
         return el ? { id, desab: el.disabled, titulo: el.title || "" } : { id, falta: true };
     })""")
@@ -704,8 +705,8 @@ with sync_playwright() as p:
     cobrar(not erros, "erros de JS (admin): " + "; ".join(erros[:3]))
 
     # --- resguardo: servidor protegendo campo SEM marcador no HTML ---
-    # #586: agora é REPROVAÇÃO, não aviso. Os dois que viviam na lista de exceções
-    # (`translate_model`, `remote_tts_model`) ganharam input com marcador; qualquer
+    # #586: agora é REPROVAÇÃO, não aviso. O que vivia na lista de exceções
+    # (`translate_model`) ganhou input com marcador, como o `remote_base_url`; qualquer
     # campo admin novo sem `data-admin-setting`/`data-setting` (e sem estar em
     # `ADMIN_SEM_UI`) derruba a suíte em vez de virar aviso eterno.
     avisos = []
@@ -725,8 +726,8 @@ with sync_playwright() as p:
             ADMIN.fields = new Set([...ADMIN.fields, "campo_novo_sem_marcador"]);
             aplicarPoliticaAdmin();                       // deve avisar 1×
             const comNovo = vistos.length;
-            ADMIN.fields = new Set(["translate_model", "remote_tts_model"]);
-            aplicarPoliticaAdmin();     // os dois do #586: agora TÊM marcador, sem aviso
+            ADMIN.fields = new Set(["translate_model", "remote_base_url"]);
+            aplicarPoliticaAdmin();     // os dois TÊM marcador: sem aviso
             const comSemUi = vistos.length;
             // a exceção explícita continua valendo (campo que só existe por API)
             ADMIN_SEM_UI.add("campo_so_api");
@@ -747,7 +748,7 @@ with sync_playwright() as p:
     cobrar(sim["comNovo"] == 1, f"o resguardo deveria avisar o campo sem marcador: {sim}")
     cobrar("campo_novo_sem_marcador" in sim["vistos"], f"o aviso precisa nomear o campo: {sim['vistos']}")
     cobrar(sim["comSemUi"] == 1,
-           f"campo com marcador (`translate_model`/`remote_tts_model`) não pode avisar: {sim['vistos']}")
+           f"campo com marcador (`translate_model`/`remote_base_url`) não pode avisar: {sim['vistos']}")
     cobrar(sim["comExcecao"] == sim["comSemUi"],
            f"a exceção explícita (ADMIN_SEM_UI) precisa calar o aviso: {sim['vistos']}")
     if sim["dinamicos"]:

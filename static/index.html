@@ -2919,7 +2919,7 @@
         <div class="view-head-main">
           <span class="view-eyebrow">Sistema</span>
           <h1>Configurações</h1>
-          <p class="view-desc">Modelo, geração, áudio, rede remota e memória</p>
+          <p class="view-desc">Modelo, geração, áudio, provedor do LLM e memória</p>
         </div>
         <div class="view-head-actions">
           <span id="cfgAdminBadge" class="badge-soft" hidden></span>
@@ -3037,7 +3037,7 @@
           <label>Agudo (5 kHz) <output id="audHighOut">0 dB</output>
             <input type="range" id="audHigh" min="-12" max="12" step="0.5" value="0"></label>
         </div>
-        <p class="hint">Vale local e remoto. Distorcido/estridente? Baixe Agudo e o Ganho.</p>
+        <p class="hint">Distorcido/estridente? Baixe Agudo e o Ganho.</p>
         <div class="divider"></div>
         <label class="check"><input type="checkbox" id="speechQueue" checked> Fila de falas (sem sobreposição)</label>
         <label class="cfg-label">Folga extra após a fala (s)
@@ -3190,71 +3190,35 @@
       </section>
             </div>
             <div class="settings-pane" data-spane="rede" role="tabpanel" id="spane-rede" aria-labelledby="stab-rede" tabindex="0">
-        <p class="hint" id="redeResumoSaida">Tudo roda no Mac: nada do seu áudio ou texto sai
-          daqui <b>por padrão</b>. Sai só o que você ligar abaixo — áudio da fala (TTS/STT
-          remoto), texto (tradução/Conversa) — para a URL configurada em cada bloco. No TTS
-          remoto com voz clonada, a <b>amostra daquela voz</b> (e o texto de referência) sobe
-          uma vez para o servidor remoto.</p>
+        <p class="hint" id="redeResumoSaida">TTS, transcrição e tradução rodam <b>só no Mac</b>
+          (#1059): não existe modo remoto para eles. O que pode sair daqui é o texto da
+          Conversa e do Live, para o provedor do LLM configurado abaixo — e só quando você
+          aponta um.</p>
 <section class="cfg-sec">
-        <h3 class="cfg-sec-h">TTS remoto (ex.: RTX)</h3>
-        <label class="check"><input data-admin-setting="remote_tts" type="checkbox" id="remoteTts"> Síntese numa máquina remota</label>
-        <label class="cfg-label">URL OmniVoice
-          <input data-admin-setting="remote_tts_url" type="text" id="remoteTtsUrl" placeholder="http://rtx-host:8800/tts"></label>
-        <p class="hint">Síntese remota no OmniVoice (646 idiomas, rápido).</p>
-        <label class="cfg-label">Voz remota (nome/preset)
-          <input type="text" id="remoteTtsVoice" placeholder="vazio = padrão do servidor"></label>
-        <label class="cfg-label">Modelo remoto (repo/nome no servidor)
-          <input data-admin-setting="remote_tts_model" type="text" id="remoteTtsModel"
-                 placeholder="vazio = padrão do servidor remoto"></label>
-        <label class="cfg-label">API key (opcional)
-          <input data-admin-setting="remote_api_key" type="password" id="remoteApiKey" placeholder="vazio se não exigir" autocomplete="off"></label>
-        <label class="cfg-label">Parâmetros extra (JSON)
-          <textarea data-admin-setting="remote_tts_extra" id="remoteTtsExtra" style="min-height:42px; font-family:var(--mono); font-size:12px" placeholder='{"voice":"alloy"}'></textarea></label>
-      </section>
-<section class="cfg-sec">
-        <h3 class="cfg-sec-h">Tradução / STT · memória</h3>
-        <label class="cfg-label">Base URL (termina em /v1)
+        <h3 class="cfg-sec-h">Provedor do LLM (Conversa/Live) · modelos locais · memória</h3>
+        <label class="cfg-label">Base URL do LLM (termina em /v1)
           <input data-admin-setting="remote_base_url" type="text" id="remoteBaseUrl" placeholder="https://api.openai.com/v1"></label>
-        <label class="check"><input data-admin-setting="remote_translate" type="checkbox" id="remoteTranslate"> Tradução via API</label>
-        <label class="cfg-label">Modelo de tradução (API)
-          <input data-admin-setting="remote_translate_model" type="text" id="remoteTranslateModel" placeholder="gpt-4o-mini"></label>
+        <label class="cfg-label">API key do LLM (opcional)
+          <input data-admin-setting="remote_api_key" type="password" id="remoteApiKey" placeholder="vazio se não exigir" autocomplete="off"></label>
+        <p class="hint" style="margin-top:0">Base herdada pela Conversa e pelo Live quando os campos próprios deles (abaixo) estão vazios.</p>
         <label class="cfg-label">Modelo do tradutor LOCAL (repo MLX)
           <input data-admin-setting="translate_model" type="text" id="translateModel"
                  placeholder="vazio = padrão do app"></label>
-        <p class="hint" style="margin-top:0">Na RTX: <code>qwen2.5-14b-instruct</code> ou <code>qwen2.5-7b-instruct</code>.</p>
-        <label class="cfg-label">Modelo de transcrição (STT)
-          <select data-admin-setting="remote_stt" id="sttEngine">
-            <option value="voxtral">Voxtral 24B — RTX (qualidade pt-BR)</option>
-            <option value="whisper-rtx">Whisper large-v3 — RTX (mais rápido)</option>
+        <label class="cfg-label">Motor de transcrição (STT)
+          <select id="sttEngine">
             <option value="local">Whisper local — Mac (offline)</option>
             <option value="local-parakeet">Parakeet 0.6B — Mac (offline, ~30×)</option>
-            <option value="api">API externa (OpenAI-compat)</option>
           </select></label>
-        <p class="hint" style="margin-top:0"><b>Voxtral</b> = qualidade · <b>Whisper-RTX</b> = rápido · <b>Local</b> = offline · <b>API</b> = externo</p>
-        <p class="hint" style="margin-top:0">Beam p/ Whisper remoto (API/RTX). O local no Mac roda greedy — p/ mais precisão lá, use o large-v3 completo.</p>
         <label class="cfg-label">Modelo Whisper local (Mac)
           <select data-admin-setting="stt_whisper_repo" id="sttWhisperModel">
             <option value="">large-v3-turbo — rápido (padrão)</option>
             <option value="mlx-community/whisper-large-v3-mlx">large-v3 completo — máxima precisão (~3× mais lento)</option>
           </select></label>
-        <label class="cfg-label">Beam do STT (Whisper) <output id="sttBeamOut">5</output>
-          <input type="range" id="sttBeam" min="1" max="8" step="1" value="5"></label>
-        <p class="hint" style="margin-top:0">Beam p/ Whisper remoto (API/RTX); o local no Mac roda greedy — p/ mais precisão, use o large-v3 completo.</p>
+        <p class="hint" style="margin-top:0">O Whisper local roda greedy — para mais precisão, use o large-v3 completo.</p>
         <label class="cfg-label">Histórico de operação: guardar por <output id="metricsTtlOut">14</output> dia(s)
           <input type="range" id="metricsTtl" data-admin-setting="metrics_ttl_dias"
                  min="0" max="90" step="1" value="14"></label>
         <p class="hint" style="margin-top:0">Metadado por requisição (rota, ms, código, estágio) em <code>state/metrics/</code>; nenhum texto ou áudio. 0 apaga na próxima poda. Ver <code>GET /api/metrics</code> (admin).</p>
-
-        <div id="sttAdvanced">
-          <label class="check"><input data-admin-setting="remote_stt" type="checkbox" id="remoteStt"> Transcrição via API</label>
-          <label class="cfg-label">Nome do modelo
-            <input data-admin-setting="remote_stt_model" type="text" id="remoteSttModel" placeholder="ex.: gpt-4o-mini-transcribe"></label>
-          <label class="cfg-label">URL do STT (termina em /v1)
-            <input data-admin-setting="remote_stt_base_url" type="text" id="remoteSttBaseUrl" placeholder="https://api.openai.com/v1"></label>
-          <label class="cfg-label">Chave do STT (opcional)
-            <input data-admin-setting="remote_stt_key" type="password" id="remoteSttKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
-          <p class="hint">Provedor OpenAI-compatível. Roteia só a transcrição.</p>
-        </div>
         <div class="divider"></div>
         <label class="cfg-label">Backend da IA da Conversa
           <select data-admin-setting="chat_backend" id="chatBackend">
@@ -3292,9 +3256,9 @@
         <div id="chatOpenaiBox">
         <p class="hint" id="chatOpenaiNota" style="margin-top:0" hidden>⚠ Estes campos valem também para o <b>Live</b> — ele está no endpoint por escolha própria.</p>
         <label class="cfg-label">IA da Conversa — Base URL (termina em /v1)
-          <input data-admin-setting="chat_base_url" type="text" id="chatBaseUrl" placeholder="vazio = usa a Base URL de tradução"></label>
+          <input data-admin-setting="chat_base_url" type="text" id="chatBaseUrl" placeholder="vazio = usa a Base URL do LLM acima"></label>
         <label class="cfg-label">Modelo da Conversa
-          <input data-admin-setting="chat_model" type="text" id="chatModel" placeholder="vazio = usa o modelo de tradução"></label>
+          <input data-admin-setting="chat_model" type="text" id="chatModel" placeholder="vazio = gpt-4o-mini"></label>
         <label class="cfg-label">Chave da Conversa (opcional)
           <input data-admin-setting="chat_api_key" type="password" id="chatApiKey" placeholder="vazio = usa a chave acima" autocomplete="off"></label>
         </div>
@@ -3374,7 +3338,6 @@
         <div id="spProfiles" class="hint" style="margin-top:4px"></div>
         <button type="button" class="ghost small" data-goto-audio>🎙 Filtros do microfone e anti-ruído</button>
         <div class="divider"></div>
-        <label class="check"><input type="checkbox" id="freeLocalOnRemote"> Liberar RAM: descarregar local quando usar remoto</label>
         <label class="cfg-label">Descarregar por ociosidade (min)
           <input type="number" id="idleUnloadMin" min="0" max="1440" step="1" value="10"></label>
         <p class="hint" style="margin-top:0">Após N min sem uso, libera a RAM. <b>0 = nunca</b>. Padrão 10.</p>
@@ -3530,11 +3493,7 @@ let ADMIN = { is: true, fields: new Set() };
 // nome técnico da setting -> rótulo que aparece na tela (só para a mensagem)
 const ROTULO_SETTING = {
   model: "modelo", translate_model: "modelo do tradutor", stt_whisper_repo: "Whisper local",
-  remote_tts: "síntese remota", remote_tts_url: "URL do TTS remoto", remote_tts_model: "modelo remoto",
-  remote_api_key: "chave da API remota", remote_base_url: "Base URL",
-  remote_translate: "tradução via API", remote_translate_model: "modelo de tradução",
-  remote_stt: "transcrição via API", remote_stt_base_url: "URL do STT",
-  remote_stt_model: "modelo do STT", remote_stt_key: "chave do STT",
+  remote_api_key: "chave do LLM", remote_base_url: "Base URL do LLM",
   chat_base_url: "Base URL da Conversa", chat_model: "modelo da Conversa", chat_api_key: "chave da Conversa",
   metrics_ttl_dias: "retenção do histórico",
   speaker_gate: "gate de locutor", speaker_threshold: "rigor do locutor",
@@ -3543,9 +3502,9 @@ const ROTULO_SETTING = {
 const rotuloSetting = k => ROTULO_SETTING[k] || k;
 // Administrativos que existem no servidor mas ainda não têm input na tela: sem
 // isto o aviso de marcador faltante (abaixo) acusaria estes dois para sempre.
-// Campos administrativos que ainda NÃO têm controle na tela. Hoje vazia: os dois
-// que faltavam (`translate_model`, `remote_tts_model`) ganharam input marcado no
-// #586 e o resguardo do `admin_ui_flow` reprova qualquer novo sem marcador.
+// Campos administrativos que ainda NÃO têm controle na tela. O `translate_model`
+// ganhou input marcado no #586 e o resguardo do `admin_ui_flow` reprova qualquer
+// novo sem marcador.
 const ADMIN_SEM_UI = new Set([
   // protegidos no servidor e SEM controle na tela ainda: o aviso de marcador
   // faltante acusaria os dois para sempre (#657/#791)
@@ -3680,7 +3639,6 @@ function tratarRespostaSettings(dados) {
 // Sem dizer isso, a pessoa lê o campo como se fosse o valor e estranha o formato.
 function marcarSegredosMascarados() {
   for (const [id, chave] of [["remoteApiKey", "remote_api_key"],
-                             ["remoteSttKey", "remote_stt_key"],
                              ["chatApiKey", "chat_api_key"]]) {
     const el = $(id);
     if (!el) continue;
@@ -5222,90 +5180,21 @@ if ($("metricsTtl")) {
     .then((r) => { if (sucessoPodeFalar(r)) toast("Retenção do histórico: " + $("metricsTtl").value + " dia(s)"); })
     .catch((e) => toast("Falha ao salvar retenção: " + e.message));
 }
-if ($("sttBeam")) {
-  $("sttBeam").oninput = () => { $("sttBeamOut").textContent = $("sttBeam").value; };
-  $("sttBeam").onchange = () => {
-    api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ stt_beam: parseInt($("sttBeam").value, 10) }) })
-      .then(() => toast("Beam do STT: " + $("sttBeam").value)).catch(e => toast("Erro: " + e.message));
-  };
-}
 
-/* Seletor de engine de STT: aplica na hora (sem o Salvar) e mostra os campos
-   manuais só no modo "API externa". */
-// host do RTX = o mesmo do TTS/tradução remota (remote_base_url). Sem base
-// configurada sobra o placeholder, que falha com erro de DNS claro (melhor que
-// um IP de exemplo que simplesmente daria timeout).
-function rtxHost() {
-  const m = ($("remoteBaseUrl")?.value || "").match(/^https?:\/\/([^\/\s]+)/);
-  return m ? m[1] : "rtx-host";
-}
-const VOXTRAL_URL = () => `http://${rtxHost()}:8802/v1`;
-const WHISPER_RTX_URL = () => `http://${rtxHost()}:8800/v1`;
-let prevSttEngine = null;   // p/ backup/restauração da config de API externa
+/* Seletor do motor de STT LOCAL: aplica na hora (sem o Salvar). Desde o #1059
+   não existe STT remoto — só Whisper ou Parakeet, os dois no Mac. */
 function applySttEngine(persist) {
-  const eng = $("sttEngine").value;
-  // saiu do modo API -> guarda o que o usuário digitou (o preset vai sobrescrever os campos)
-  if (persist && prevSttEngine === "api" && eng !== "api") {
-    localStorage.setItem("sttApiBackup", JSON.stringify({
-      url: $("remoteSttBaseUrl").value, model: $("remoteSttModel").value, key: $("remoteSttKey").value }));
-  }
-  let body;
-  // Nos presets, os campos de API são DErivados (host + porta). Só reescrevê-los
-  // quando o USADOR escolheu o preset: no load (persist=false) o valor salvo é a
-  // verdade, e sobrescrevê-lo fazia o próximo "Salvar" gravar um URL inventado
-  // por cima do que a pessoa digitou — a config "não persistia".
-  const escreve = (url, mod) => {
-    $("remoteSttBaseUrl").value = url; $("remoteSttModel").value = mod; $("remoteSttKey").value = "";
-  };
-  if (eng === "voxtral") {
-    $("remoteStt").checked = true;
-    $("sttAdvanced").style.display = "none";
-    if (persist) escreve(VOXTRAL_URL(), "voxtral");
-    body = { remote_stt: true,
-             remote_stt_base_url: $("remoteSttBaseUrl").value.trim() || VOXTRAL_URL(),
-             remote_stt_model: $("remoteSttModel").value.trim() || "voxtral",
-             remote_stt_key: $("remoteSttKey").value };
-  } else if (eng === "whisper-rtx") {
-    $("remoteStt").checked = true;
-    $("sttAdvanced").style.display = "none";
-    if (persist) escreve(WHISPER_RTX_URL(), "whisper-large-v3");
-    body = { remote_stt: true,
-             remote_stt_base_url: $("remoteSttBaseUrl").value.trim() || WHISPER_RTX_URL(),
-             remote_stt_model: $("remoteSttModel").value.trim() || "whisper-large-v3",
-             remote_stt_key: $("remoteSttKey").value };
-  } else if (eng === "local") {
-    $("remoteStt").checked = false;
-    $("sttAdvanced").style.display = "none";
-    body = { remote_stt: false, stt_local_engine: "whisper" };
-  } else if (eng === "local-parakeet") {
-    $("remoteStt").checked = false;
-    $("sttAdvanced").style.display = "none";
-    body = { remote_stt: false, stt_local_engine: "parakeet" };
-  } else {   // api externa: revela os campos e usa o que o usuário preencheu
-    if (persist) {   // voltou pro modo API -> restaura o que tinha
-      try { const b = JSON.parse(localStorage.getItem("sttApiBackup") || "null");
-        if (b) { $("remoteSttBaseUrl").value = b.url; $("remoteSttModel").value = b.model; $("remoteSttKey").value = b.key; } } catch {}
-    }
-    $("remoteStt").checked = true;
-    $("sttAdvanced").style.display = "";
-    body = { remote_stt: true, remote_stt_base_url: $("remoteSttBaseUrl").value.trim(),
-             remote_stt_model: $("remoteSttModel").value.trim(), remote_stt_key: $("remoteSttKey").value };
-  }
-  if (persist) {
-    api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-      .then(r => { if ((r && r.admin_ignored || []).length) return;
-        toast("STT: " + ({ voxtral: "Voxtral (RTX)", "whisper-rtx": "Whisper large-v3 (RTX)", local: "Whisper local (Mac)", "local-parakeet": "Parakeet local (Mac)", api: "API externa" }[eng] || eng)); })
-      .catch(e => toast("Erro: " + e.message));
-  }
+  const eng = $("sttEngine").value === "local-parakeet" ? "parakeet" : "whisper";
+  if (!persist) return;
+  api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stt_local_engine: eng }) })
+    .then(r => { if (sucessoPodeFalar(r))
+      toast("STT: " + (eng === "parakeet" ? "Parakeet local (Mac)" : "Whisper local (Mac)")); })
+    .catch(e => toast("Erro: " + e.message));
 }
-$("sttEngine").onchange = () => { applySttEngine(true); prevSttEngine = $("sttEngine").value; };
+$("sttEngine").onchange = () => applySttEngine(true);
 function inferSttEngine(s) {
-  if (!s.remote_stt) return s.stt_local_engine === "parakeet" ? "local-parakeet" : "local";
-  const url = s.remote_stt_base_url || "";
-  if (s.remote_stt_model === "voxtral" || url.includes(":8802")) return "voxtral";
-  if (url.includes(":8800") || (s.remote_stt_model || "").includes("whisper-large")) return "whisper-rtx";
-  return "api";
+  return s.stt_local_engine === "parakeet" ? "local-parakeet" : "local";
 }
 
 if ($("oReset")) $("oReset").onclick = () => {
@@ -5773,8 +5662,8 @@ $("micFxMonitor").onclick = async () => {
 
 function rotuloStt() {
   const s = LAST_SETTINGS || {};
-  return s.remote_stt
-    ? `STT remoto ${(s.remote_stt_model || "whisper-1")}`
+  return s.stt_local_engine === "parakeet"
+    ? "Parakeet local"
     : `Whisper local ${(s.stt_whisper_repo || "?").split("/").pop()}`;
 }
 
@@ -5801,7 +5690,7 @@ async function transcreveMonitor(blob, t0) {
     tempo.textContent = msg;
   } catch (e) {
     caixa.value = "";
-    tempo.textContent = "✖ " + ((e && e.message) || e);   // ex.: STT remoto sem URL
+    tempo.textContent = "✖ " + ((e && e.message) || e);
   }
 }
 
@@ -6271,7 +6160,7 @@ function flushChunk(st, continuing, clean = true) {  // fatia o PCM acumulado ->
   const sr = g.sr, dur = performance.now() - st.uttStart;
   const samples = grabPcm(g, st.chunkStart, g.head);
   // captura é contínua -> zero gap; só vira trecho se durou o mínimo e tem áudio real
-  // em "voz real" (ttsMuted) nem enfileira -> não traduz nem sintetiza (zero RTX).
+  // em "voz real" (ttsMuted) nem enfileira -> não traduz nem sintetiza.
   if (dur >= VAD.minUtterMs && samples.length > sr * 0.2 && !ttsMuted) {
     const wav = encodeWav(samples, sr);             // WAV pronto (blobToWav reamostra p/ 24k)
     chunkMeta.set(wav, { onset: st.uttStart, flush: performance.now() });
@@ -7182,7 +7071,6 @@ async function loadSettings() {
     if ($("autoCleanMax")) $("autoCleanMax").value = s.auto_cleanup_max_outputs ?? 500;
     $("langSelect").value = s.language;
     $("cfgPrecision").value = s.omni_precision || "bf16";
-    if ($("sttBeam")) { $("sttBeam").value = s.stt_beam ?? 5; $("sttBeamOut").textContent = s.stt_beam ?? 5; }
     if ($("metricsTtl")) { $("metricsTtl").value = s.metrics_ttl_dias ?? 14; $("metricsTtlOut").textContent = s.metrics_ttl_dias ?? 14; }
     for (const [sl, out, key] of [["audGain", "audGainOut", "audio_gain_db"], ["audLow", "audLowOut", "audio_eq_low_db"],
         ["audMid", "audMidOut", "audio_eq_mid_db"], ["audHigh", "audHighOut", "audio_eq_high_db"]]) {
@@ -7196,20 +7084,9 @@ async function loadSettings() {
     // formulário em branco: este bloco era um try/catch vazio gigante, então a
     // config aparecia "não salva" depois do restart quando na verdade só tinha
     // parado de ser preenchida.
-    cfgChk("remoteTts", s.remote_tts);
-    cfgChk("remoteTranslate", s.remote_translate);
-    cfgChk("remoteStt", s.remote_stt);
-    cfgTxt("remoteTtsUrl", s.remote_tts_url);
-    cfgTxt("remoteTtsVoice", s.remote_tts_voice);
-    cfgTxt("remoteTtsModel", s.remote_tts_model);
-    cfgTxt("remoteTtsExtra", s.remote_tts_extra);
     cfgTxt("remoteBaseUrl", s.remote_base_url);
     cfgTxt("remoteApiKey", s.remote_api_key);
-    cfgTxt("remoteTranslateModel", s.remote_translate_model || "gpt-4o-mini");
     cfgTxt("translateModel", s.translate_model);
-    cfgTxt("remoteSttModel", s.remote_stt_model || "whisper-1");
-    cfgTxt("remoteSttBaseUrl", s.remote_stt_base_url);
-    cfgTxt("remoteSttKey", s.remote_stt_key);
     cfgTxt("chatBaseUrl", s.chat_base_url);
     cfgTxt("chatModel", s.chat_model);
     cfgTxt("chatApiKey", s.chat_api_key);
@@ -7244,10 +7121,7 @@ async function loadSettings() {
     if ($("spThrOut")) $("spThrOut").textContent = (+($("spThr").value)).toFixed(2);
     spFarAlvoAplica(s.speaker_far_alvo);    spExtratorAviso(s.extrator_efetivo);   // ausente = servidor sem o campo
     if (typeof refreshSpProfiles === "function") refreshSpProfiles();
-    $("sttEngine").value = inferSttEngine(s);   // seleciona o engine + ajusta visibilidade
-    applySttEngine(false);
-    prevSttEngine = $("sttEngine").value;
-    cfgChk("freeLocalOnRemote", s.free_local_on_remote);
+    $("sttEngine").value = inferSttEngine(s);
     cfgNum("idleUnloadMin", s.idle_unload_minutes, 10);
     cfgNum("whisperArquivoTtl", s.whisper_arquivo_ttl_s, 600);
     // speech_queue: default true se a API ainda não mandar a chave
@@ -7733,12 +7607,11 @@ $("spTest")?.addEventListener("click", async () => {
 // marca "alterações não salvas" nos campos estáticos (controles dinâmicos usam markCfgDirty direto)
 const CFG_DIRTY_IDS = ["cfgModel","cfgModelCustom","cfgPrePrompt","cfgLang","cfgVoice","cfgChunk","cfgSpeed",
   "cfgPrecision","audGain","audLow","audMid","audHigh",
-  "remoteTts","remoteTtsUrl","remoteTtsVoice","remoteTtsExtra","remoteBaseUrl","remoteApiKey",
-  "remoteTranslate","remoteTranslateModel","translateModel","remoteTtsModel",
+  "remoteBaseUrl","remoteApiKey","translateModel",
   "vdGender","vdAge","vdPitch","vdAccent","vdWhisper",
-  "freeLocalOnRemote","idleUnloadMin","whisperArquivoTtl","speechQueue","speechQueueGap",
+  "idleUnloadMin","whisperArquivoTtl","speechQueue","speechQueueGap",
   "sttFiltros","sttDenoise",
-  // faltavam: editar estes não marcava nada (B6). `sttBeam` fica de fora porque
+  // faltavam: editar estes não marcava nada (B6). `sttEngine` fica de fora porque
   // já persiste no onchange, como o `oSeed`.
   "speakerGate","sttWhisperModel","audioInDevice","audioOutDevice"];
   // oSeed fora da lista: o onchange dele já persiste na hora (marcaria "não salvo" à toa)
@@ -7762,15 +7635,6 @@ window.addEventListener("beforeunload", e => {
 CFG_DIRTY_IDS.forEach(id => { const el = $(id); if (el) { el.addEventListener("input", markCfgDirty); el.addEventListener("change", markCfgDirty); } });
 
 $("cfgSave").onclick = async () => {
-  // valida o JSON dos parâmetros extras antes de salvar
-  const extraEl = $("remoteTtsExtra");
-  if (extraEl) {
-    extraEl.style.borderColor = "";
-    if (extraEl.value.trim()) {
-      try { JSON.parse(extraEl.value); }
-      catch { extraEl.style.borderColor = "var(--danger)"; toast("Parâmetros extra (JSON) inválidos — corrija antes de salvar", 5000); return; }
-    }
-  }
   const model = $("cfgModel").value === "__custom__"
     ? $("cfgModelCustom").value.trim() : $("cfgModel").value;
   const ctl = collectControlSettings();
@@ -7787,20 +7651,9 @@ $("cfgSave").onclick = async () => {
       audio_eq_low_db: parseFloat($("audLow").value) || 0,
       audio_eq_mid_db: parseFloat($("audMid").value) || 0,
       audio_eq_high_db: parseFloat($("audHigh").value) || 0,
-      remote_tts: $("remoteTts").checked,
-      remote_translate: $("remoteTranslate").checked,
-      remote_stt: $("remoteStt").checked,
-      remote_tts_url: $("remoteTtsUrl").value,
-      remote_tts_voice: $("remoteTtsVoice").value,
-      remote_tts_extra: $("remoteTtsExtra").value,
       remote_base_url: $("remoteBaseUrl").value,
       remote_api_key: $("remoteApiKey").value,
-      remote_translate_model: $("remoteTranslateModel").value,
       translate_model: $("translateModel")?.value || "",
-      remote_tts_model: $("remoteTtsModel")?.value || "",
-      remote_stt_model: $("remoteSttModel").value,
-      remote_stt_base_url: $("remoteSttBaseUrl").value,
-      remote_stt_key: $("remoteSttKey").value,
       chat_base_url: $("chatBaseUrl")?.value || "",
       chat_model: $("chatModel")?.value || "",
       chat_api_key: $("chatApiKey")?.value || "",
@@ -7818,7 +7671,6 @@ $("cfgSave").onclick = async () => {
       stt_whisper_repo: $("sttWhisperModel")?.value || "",
       stt_anti_ruido: $("sttFiltros")?.checked !== false,
       stt_denoise: $("sttDenoise")?.checked !== false,
-      free_local_on_remote: $("freeLocalOnRemote").checked,
       idle_unload_minutes: parseInt($("idleUnloadMin")?.value, 10) || 0,
       whisper_arquivo_ttl_s: parseInt($("whisperArquivoTtl")?.value, 10) || 0,
       speech_queue: !!$("speechQueue")?.checked,
