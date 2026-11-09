@@ -490,7 +490,9 @@ class TurnEvent:
     t_ms: int                       # início do evento no stream (retroagido)
     ts: float
     amostra: int
-    t_decisao_ms: int = 0           # quando o detector DECIDIU (latência real)
+    # #1022: no `speech_end` é DURAÇÃO (o silêncio que o detector esperou);
+    # nos demais eventos é carimbo do início da sessão. 0 = sem valor.
+    t_decisao_ms: int = 0
     audio: bytes = b""              # PCM16 16k mono
     prob: float = 0.0
     rms_dbfs: float = -120.0
