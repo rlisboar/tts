@@ -53,7 +53,12 @@ porta = porta_livre()
 DIR = pathlib.Path("/tmp") / f"voz_recad_{porta}"
 for _sub in ("outputs", "voices", "state"):
     (DIR / _sub).mkdir(parents=True, exist_ok=True)
-(DIR / "settings.json").write_text("{}")
+# `speaker_guardar_audio: false` (#1002): com o padrão (true) cada amostra grava um
+# `.wav` e o GET da lista sobe a REEXTRAÇÃO em segundo plano, que promove o perfil
+# sozinha ao bater o mínimo — a corrida fazia o assert de "2 parciais" cair de vez
+# em quando (medido: `[speaker] perfil 'Antigo' reextraído … 3 amostra(s)`). Sem
+# áudio guardado a reextração é no-op e a contagem manual é determinística.
+(DIR / "settings.json").write_text(json.dumps({"speaker_guardar_audio": False}))
 SPEAKER = DIR / "speaker.json"
 # perfil LEGADO sintético: 2 amostras de um extrator que nunca é o efetivo
 SPEAKER.write_text(json.dumps({
@@ -206,8 +211,12 @@ try:
             esperar(lambda: pg.wait_for_function(
                 f"() => /faltam {3 - i}/.test(document.getElementById('spProgresso').textContent)",
                 timeout=90000), f"a amostra {i} do recadastro")
+        # se algum dia a reextração voltar a competir (ex.: guardar_audio ligado),
+        # o motivo aparece aqui em vez do "não acumulou 2 parciais" seco
         cobrar((perfil("Antigo").get("pendente") or {}).get("samples") == 2,
-               f"o servidor não acumulou 2 parciais: {perfil('Antigo')}")
+               "o servidor não acumulou 2 parciais "
+               f"(guardar_audio={json.loads((DIR / 'settings.json').read_text()).get('speaker_guardar_audio')!r}): "
+               f"{perfil('Antigo')}")
         pg.click("#spEnroll")
         esperar(lambda: pg.wait_for_function(
             "() => /recadastro de \"Antigo\" concluído/.test(document.getElementById('spProgresso').textContent)",
