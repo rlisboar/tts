@@ -891,10 +891,14 @@ async def sessao(args, corpus: list[dict]) -> dict:
     proc_fim = _servidor_proc(porta)
     resps = respostas(c)
     erros = [e.get("code") for _, ty, e in c.eventos if ty == "error"]
+    # a MENSAGEM do erro é a única pista quando o estágio morre em 20 ms: sem ela
+    # só dá para dizer "erro", não o quê (o app não loga o `message`)
+    erros_msg = [str(e.get("message"))[:160] for _, ty, e in c.eventos
+                 if ty == "error" and e.get("message")][:5]
     textos = {"falas": [{"fala": l["fala"], "voz": l["voz"], "hip": l.pop("_hip", "")}
                         for l in linhas],
               "respostas": [r.pop("_resp") for r in resps]}
-    return {"linhas": linhas, "respostas": resps, "erros": erros, "textos": textos,
+    return {"linhas": linhas, "respostas": resps, "erros": erros, "erros_msg": erros_msg, "textos": textos,
             "proc_ini": proc_ini,
             "proc_fim": proc_fim, "sessao_s": round(time.time() - t_ini),
             "ciclos": k, "ws_vivo_no_fim": vivo_no_fim, "erro_ws": c.erro}
@@ -929,6 +933,8 @@ def resumo(res: dict, args) -> dict:
     eco = [l for l in L if "eco_falso_corte" in l]
     resp = [r for r in res["respostas"] if r["chars"]]
     r = {
+        "erros": res.get("erros") or [],
+        "erros_msg": res.get("erros_msg") or [],
         "S1": {"falas": len(obs), "aceitas": sum(l.get("aceito", False) for l in obs),
                "pct_aceitas": round(100 * sum(l.get("aceito", False) for l in obs) / max(1, len(obs)), 1),
                "aceitas_ic95": _ic95(sum(l.get("aceito", False) for l in obs), len(obs)),

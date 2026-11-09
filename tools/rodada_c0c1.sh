@@ -42,7 +42,7 @@ URL="ws://127.0.0.1:7890/api/live/ws"
 APP="http://127.0.0.1:7890"
 SHA=""; CORPUS=/tmp/live-bench-audio; ESTADO=/tmp/bench-mini/.state-local
 DIR=""; CICLOS=10; AQUEC=1; MIN_ECO=3; MIN_VENT=3; SEMENTE=875
-LLM_FAKE=0; LLM_FAKE_PORTA=7898; FAKE_PID=""
+LLM_FAKE=0; LLM_FAKE_PORTA=7898; FAKE_PID=""; ARVORE_SUJA=0
 MODULOS=(app.py common.py backends.py tts_worker.py live_pipeline.py live_turns.py dsh_client.py)
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -57,6 +57,7 @@ while [ $# -gt 0 ]; do
     --min-ventoinha) MIN_VENT="${2:-3}"; shift 2 ;;
     --semente) SEMENTE="${2:-875}"; shift 2 ;;
     --llm-fake) LLM_FAKE=1; shift ;;
+    --arvore-suja) ARVORE_SUJA=1; shift ;;
     --llm-fake-porta) LLM_FAKE_PORTA="${2:-7898}"; shift 2 ;;
     -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) print -r -- "sobrando: $1" >&2; exit 2 ;;
@@ -173,8 +174,16 @@ NO_AR="$(curl -s -m 5 http://127.0.0.1:7860/api/build 2>/dev/null \
   | sed -n 's/.*"codigo": *"\([0-9a-f]*\)".*/\1/p' | head -1)"
 fala "   sha pedido=$SHA · codigo esperado=$ESPERADO · no ar=${NO_AR:-<vazio>} · prod pid=$PROD_PID"
 [ -n "$NO_AR" ] || { fala "não consegui ler o /api/build da produção"; exit 1; }
-[ "$NO_AR" = "$ESPERADO" ] \
-  || { fala "código no ar ($NO_AR) ≠ rev pedido ($ESPERADO) — deploy diferente do combinado"; exit 1; }
+if [ "$NO_AR" = "$ESPERADO" ]; then
+  fala "   código no ar confere com o rev pedido"
+elif [ "$ARVORE_SUJA" = 1 ]; then
+  # correção medida na hora, ainda não deployada: o número passa a valer para
+  # `rev + patch` e o diff TEM de ir para a evidência
+  fala "   ⚠ árvore suja: no ar $NO_AR ≠ rev $ESPERADO — medindo $SHA + patch local:"
+  git -C "$APP_DIR" diff --stat | sed 's/^/     /' | tee -a "$LOG_CORRIDA"
+else
+  fala "código no ar ($NO_AR) ≠ rev pedido ($ESPERADO) — deploy diferente do combinado"; exit 1
+fi
 fala "   corpus: $(ls "$CORPUS" | wc -l | tr -d ' ') arquivos · semente $SEMENTE"
 # LLM vivo: sem ele não há TTS, então S2 fica nulo e as fases de eco/ventoinha
 # não têm playback para medir (a rodada inteira vira INDETERMINADO).

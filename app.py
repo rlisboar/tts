@@ -9884,6 +9884,8 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
 
 
 _pk = {"model": None, "repo": ""}
+_pk_exec = None          # executor de 1 thread: o stream do MLX é por thread
+_pk_stream = None
 
 
 def _com_aviso_remoto(res, caiu: bool, erro: str = ""):
@@ -9907,13 +9909,33 @@ def _aviso_remoto_headers(alvo, r: dict) -> None:
 def _parakeet_cru(audio_path: Path):
     """Parakeet SEM trava. Quem chama decide o lock: o `_transcribe_parakeet` segura
     o `_stt_lock`, e a passada de comando com prazo do barge já o segura (o `Lock`
-    não é reentrante)."""
+    não é reentrante).
+
+    Roda numa THREAD DEDICADA (#876): o stream default do MLX é por thread e no
+    Live a transcrição vem da thread do turno, onde ele não existe — a carga e o
+    `transcribe` estouram `RuntimeError: There is no Stream(gpu, 0) in current
+    thread`. Um executor de 1 thread dá o mesmo fio a todas as chamadas, e o
+    stream é criado nele uma vez; o `.result()` devolve a exceção para quem chamou
+    (o whisper não sofre porque o `mlx_whisper` abre o próprio stream)."""
+    global _pk_exec
+    if _pk_exec is None:
+        _pk_exec = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="parakeet")
+    return _pk_exec.submit(_parakeet_mesma_thread, audio_path).result()
+
+
+def _parakeet_mesma_thread(audio_path: Path):
+    global _pk_stream
+    import mlx.core as mx
     from parakeet_mlx import from_pretrained
 
-    if _pk["model"] is None or _pk["repo"] != PARAKEET_REPO:
-        _pk["model"] = from_pretrained(PARAKEET_REPO)
-        _pk["repo"] = PARAKEET_REPO
-    return _pk["model"].transcribe(audio_path)
+    if _pk_stream is None:
+        _pk_stream = mx.new_stream(mx.gpu)
+    with mx.stream(_pk_stream):
+        if _pk["model"] is None or _pk["repo"] != PARAKEET_REPO:
+            _pk["model"] = from_pretrained(PARAKEET_REPO)
+            _pk["repo"] = PARAKEET_REPO
+        return _pk["model"].transcribe(audio_path)
 
 
 def _transcreve_cru_live(a, idioma, desistiu=None) -> str:
