@@ -65,7 +65,7 @@ uvicorn.run(app.app, host="127.0.0.1", port=int(os.environ["XSS_PORTA"]))' \
 fi
 # #1018: sem `TTS_VOICES_DIR` o alvo é o do APP (import), não o caminho fixo
 # da árvore — assim o script não lê o `voices/` do dono por conta própria.
-VOZES="${TTS_VOICES_DIR:-$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); import app; print(app.VOICES_DIR)' "$RAIZ" 2>/dev/null)}"
+VOZES="${TTS_VOICES_DIR:-$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); import app; print(getattr(app, "VOICES_DIR"))' "$RAIZ" 2>/dev/null)}"
 [ -n "$VOZES" ] || { echo "✖ não consegui resolver o diretório de vozes" >&2; exit 1; }
 # sufixo por execução: duas rodadas simultâneas usavam os MESMOS nomes e a
 # limpeza de uma apagava os arquivos da outra (falso vermelho, não regressão).

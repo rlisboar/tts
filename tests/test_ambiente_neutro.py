@@ -111,9 +111,9 @@ def test_suite_nao_e_refem_do_arquivo_do_dono(tmp_path, valor):
     openai e ficavam vermelhos com o código certo (achado #205)."""
     if os.environ.get(ARQ_MARCADOR):
         return          # já estamos no filho: quem cobra lá é o teste de baixo
-    origem = BASE / "settings.json"
-    dados = json.loads(origem.read_text()) if origem.exists() else {}
-    dados[ARQ_CAMPO] = valor
+    # #1018: base SINTÉTICA — não lê o `settings.json` do dono (regra #728). O
+    # que o filho mede é o CAMPO hostil; o resto é default do app.
+    dados = {ARQ_CAMPO: valor}
     destino = tmp_path / "settings.json"
     destino.write_text(json.dumps(dados, ensure_ascii=False))
     _rodar_filho(ARQ_FILHOS,
@@ -222,4 +222,4 @@ def test_variavel_vazia_cai_no_default(tmp_path):
         [sys.executable, "-c", "import app; print(app.APIKEYS_PATH, app.VOICES_DIR)"],
         cwd=str(BASE), env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr[-2000:]
-    assert r.stdout.split() == [_esperado("APIKEYS_PATH"), str(BASE / "voices")]
+    assert r.stdout.split() == [_esperado("APIKEYS_PATH"), _esperado("VOICES_DIR")]
