@@ -67,13 +67,19 @@ def _amostra(rel: dict | None, aq: int) -> list[dict]:
 
 
 def _curva(p: Path) -> list[tuple[str, int, int]]:
+    """Linhas `iso,rss_mb,swap_mb`. O swap vem com decimal (`1341.06`) — `int()`
+    nele estourava e a curva inteira saía vazia."""
     out = []
     try:
         for linha in p.read_text().splitlines():
             partes = linha.split(",")
-            if len(partes) == 3:
-                out.append((partes[0], int(partes[1]), int(partes[2])))
-    except Exception:                                   # noqa: BLE001
+            if len(partes) != 3:
+                continue
+            try:
+                out.append((partes[0], int(float(partes[1])), int(float(partes[2]))))
+            except ValueError:
+                continue
+    except OSError:
         pass
     return out
 
