@@ -13,6 +13,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 |---|---|---|---|
 | `1022-hipoteses-falsificacao.md` | #1022 | 2026-11-08 | 1022 — hipóteses de causa do pos_llm e critérios de FALSIFICAÇÃO (pré-registro) |
 | `1049-deploy-head-48b11d5.txt` | #1049 | 2026-11-09 | == deploy 48b11d5 (main) — 2026-11-09T10:19:17-03:00 |
+| `1067-live-aec-diag.png` | #1067 | 2026-11-09 | (imagem) |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
