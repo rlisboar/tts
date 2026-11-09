@@ -55,7 +55,7 @@ PATH="${(j.:.)_novo_path}"
 # calar um import que só existe para virar fixture de teste, use
 # `# noqa: F401` na linha do import (o `__all__` que existia por causa da
 # limitação antiga foi removido). Exemplo vivo: tests/test_qa_gate176.py.
-"$PY" -m ruff check app.py common.py tts_worker.py backends.py dsh_client.py smoke_sintese.py remote/*.py \
+"$PY" -m ruff check app.py common.py tts_worker.py backends.py dsh_client.py smoke_sintese.py \
     live_turns.py smoke_live_turns.py live_pipeline.py smoke_worker_persist.py live_rnnoise.py \
     live_eco_dump.py \
     tts_cache.py metrics_hist.py \

@@ -1,304 +1,23 @@
-# Deploy remoto (servidores RTX) — inventário
+# Produção no Mac mini — deploy, CI e monitoração
 
-> **Status: PARCIAL.** Os caminhos, portas e variáveis vêm dos arquivos versionados
-> (fato). O **host/IP e o usuário do servidor RTX ainda NÃO estão confirmados** pelo
-> dono — em 2026-09-24 uma varredura inteira não achou a máquina (seção 2). Tudo que
-> depende de confirmação está marcado com `❓`.
+> O app roda em produção no **Mac mini** (`tts.the-dudes.com`); este arquivo cobre o
+> deploy (`remote/deploy_mini.sh`, §6), o runner de CI (§7) e o probe de saúde (§8).
 >
-> A **produção** do app (Mac mini / `tts.the-dudes.com`) é outro alvo e está na §6 —
-> ela existe, é usada e tem deploy próprio (`remote/deploy_mini.sh`).
->
-> Última atualização: 2026-09-30 (infra-remote, task #231 — §6 nova: produção no Mac mini). Como atualizar: assim que o dono confirmar
-> host/serviço, rode `remote/deploy.sh recon` (§4) e troque os `❓` por valores reais;
-> mantenha a data no topo.
-
-**O que falta do dono — uma linha só, para repassar:**
-
-```
-host ou IP do servidor RTX  +  usuário de ssh  +  unit e porta do Voxtral
-```
-
-Só isso destrava o `recon`/`compare` (read-only) e, com o OK dele, o `deploy --apply`
-que fecha as tasks #27, #14 e #35. Nada mais está pendente de código: os três patches
-estão versionados e verdes, e o deploy é aditivo — sem `onnxruntime` no venv de lá o
-VAD cai no mesmo jit de hoje, com aviso no log.
-
-## 1. Inventário
-
-### Confirmado pelo código versionado
-| peça | valor | fonte |
-|---|---|---|
-| Serviço do OmniVoice | `omnivoice-tts.service` (systemd), drop-in define `CUDA_VISIBLE_DEVICES=1,0` | `remote/omni_server.py` (docstring) |
-| Como o OmniVoice sobe | `uvicorn server:app --host 0.0.0.0 --port 8800` | idem |
-| Porta do OmniVoice | **8800** (exposta pelo drop-in) | idem |
-| Arquivo no servidor (OmniVoice) | `/root/omnivoice/server.py` | `VOICES_DIR`/`model_local` absolutos no código |
-| Vozes clonadas | `/root/omnivoice/voices` (`.wav` + `.txt` de `ref_text`) | `remote/omni_server.py:41` |
-| Modelo do OmniVoice | `/root/omnivoice/model_local` (bf16) | `remote/omni_server.py:62` |
-| ffmpeg do servidor | `/usr/local/bin/ffmpeg8` | `remote/omni_server.py:39` |
-| GPUs esperadas | 2 NVIDIA: `cuda:0` = RTX 4090 (OmniVoice+Whisper), `cuda:1` = RTX 4070 (tradutor 14B, thread isolada) | `remote/omni_server.py` (docstring) |
-| Arquivo no servidor (Voxtral) | `/root/voxtral/server.py` | `remote/voxtral_server.py` (docstring) |
-| Deploy (os dois servidores) | `remote/deploy.sh recon|compare|deploy --apply|rollback --apply|smoke` (§4) | `remote/deploy.sh` |
-| Modelo do Voxtral | HF `mistralai/Voxtral-Small-24B-2507` (bnb nf4, `VOXTRAL_REPO` troca) | `remote/voxtral_server.py:35` |
-| VAD (anti-alucinação) | `_load_vad()` pede **ONNX explícito** e cai no jit do torch com aviso no log se `onnxruntime` faltar | `remote/voxtral_server.py` |
-| Deps do VAD no venv remoto | `onnxruntime` (caminho ONNX) **e** `importlib_resources` (backport; sem ele o `silero_vad/model.py` usa `importlib.resources.path()`, deprecado desde o py3.11 — task #35) | `recon` imprime `dep:` e `silero DeprecationWarning:` |
-| Como conferir qual VAD subiu | `GET /health` devolve `"vad": "onnx"` \| `"torch-jit"` | idem |
-| Autenticação | `OMNI_API_KEY` e `VOXTRAL_API_KEY` **obrigatórias** (fail closed: sem elas o processo não sobe; escape hatch `<PREFIXO>_ALLOW_NO_AUTH=1`) | `remote/auth_policy.py`, README §"servidores `remote/`" |
-| Arquivo de política no servidor | `auth_policy.py` ao lado do `server.py` (`/root/omnivoice/`, `/root/voxtral/`) — **copiar junto no deploy** | `remote/auth_policy.py` |
-| **Unit versionado** (reconstruído) | `remote/systemd/omnivoice-tts.service` + drop-in `cuda-visible-devices.conf` + `secrets.conf.example`; o `recon` compara com o `FragmentPath` do host (`[IGUAL]`/`[DIFERENTE]` com diff; sem `FragmentPath` é `[INDETERMINADO]`, não chute) | `remote/systemd/`, `remote/deploy.sh` (§4) |
-| **Agente do mini versionado** | `remote/launchd/studio.tts.server.plist` + `start-server.sh` (cópia literal do que roda; sem segredo — a chave fica em `.apikey`) | `remote/launchd/` |
-
-### Não confirmado (❓)
-| peça | o que falta |
-|---|---|
-| ❓ host/IP do servidor RTX | **não está em lugar nenhum do repo** (o commit `a14c596` anonimizou os exemplos: `rtx-host`, `seu-dominio`). Pedir ao dono. |
-| ❓ usuário de SSH | os deploys citam caminhos `/root/...`, então provavelmente `root` — confirmar |
-| ❓ serviço/porta do Voxtral | o código não declara porta (`uvicorn` fica no unit do lado do servidor); o app aponta via `remote_stt_base_url` em `settings.json`. Confirmar nome do unit e porta |
-| ❓ `omnivoice-tts.service` na máquina | o arquivo versionado é RECONSTRUÍDO dos fatos documentados, não lido do host: rode `recon` e copie o `[DIFERENTE]` |
-| ❓ unit/porta do Voxtral no repo | `voxtral.service` ainda não tem arquivo versionado (só o nome por chute) — o `recon` diz `(nenhum em …)` |
-| ❓ RAM/VRAM e pressão de memória | nunca medida; a máquina estava inalcançável |
-
-### Variáveis de ambiente esperadas nos servidores
-`OMNI_API_KEY`, `OMNI_MAX_UPLOAD_MB`, `OMNI_TTS_WORKERS`, `OMNI_ASR_WORKERS`,
-`OMNI_IO_WORKERS`, `OMNI_LOAD_WHISPER`, `OMNI_LOAD_TURBO`, `OMNI_LOAD_MT_FAST`,
-`OMNI_MT_REPO`, `OMNI_MT_DEV`, `OMNI_MT_FAST_REPO`, `OMNI_MT_FAST_DEV` (omni) ·
-`VOXTRAL_API_KEY`, `VOXTRAL_REPO`, `VOXTRAL_MAX_NEW`, `VOXTRAL_MIN_SPEECH`,
-`VOXTRAL_MAX_UPLOAD_MB` (voxtral). Escapes (opcionais, uma por servidor):
-`OMNI_ALLOW_NO_AUTH`, `VOXTRAL_ALLOW_NO_AUTH`.
-
-`GIT_REV` (#347) é opcional: o `/health` publica o rev e, sem ele, o servidor lê
-um `.rev` gravado ao lado do `server.py`. O deploy grava esse arquivo (com sufixo
-`-dirty` quando o arquivo que subiu tinha WIP) — é assim que se confere o que
-roda no ar sem ssh.
-
-Com `OMNI_LOAD_WHISPER=0` (STT externo) os endpoints de transcrição respondem
-**503** com motivo, e o `/health` publica `asr: null` em vez de anunciar um Whisper
-que não está carregado. O tradutor 7B tem fila própria (`MT_FAST_POOL`): o
-"rápido" não espera o 14B.
-
-### Autenticação: política e migração (task #26)
-O servidor sobe em `0.0.0.0` (LAN inteira): sem chave, o middleware liberava
-**todos** os endpoints e nada avisava. Agora a política é explícita e fail
-closed, em `remote/auth_policy.py`:
-
-| ambiente | efeito |
-|---|---|
-| `<PREFIXO>_API_KEY` preenchida | exige `Authorization: Bearer <chave>` ou `X-API-Key` em tudo, menos `/health` e `OPTIONS` |
-| chave ausente, sem escape | o processo **não sobe** (mensagem no journal, antes de carregar os modelos na VRAM) |
-| chave ausente + `<PREFIXO>_ALLOW_NO_AUTH=1` | sobe **aberto** (modo legado), com aviso no log |
-
-`GET /health` fica fora da chave e devolve `"auth": "required" | "open"` — é como
-se confere a política do servidor no ar sem ssh. Comportamento antigo: qualquer
-valor em `_ALLOW_NO_AUTH` que não seja exatamente `1` conta como desligado.
-
-Migração (num host onde o unit **já** tem a chave, nada muda; onde não tem, usar
-a escape hatch ou definir a chave antes do restart): o app manda a chave por
-`remote_api_key` / `remote_stt_key` (Configurações → Modelos remotos) e é
-`Bearer` — não precisa mexer no app se a chave for a mesma dos dois lados.
-
-Ao subir código novo, copie **os dois** arquivos (`server.py` e `auth_policy.py`);
-faltando o `auth_policy.py` o import falha e o serviço não sobe (barulhento, não
-silencioso).
-
-### Endpoints úteis para smoke test
-- OmniVoice: `GET /health`, `GET /voices`, `POST /tts`, `POST /v1/audio/speech`,
-  `POST /v1/audio/transcriptions`, `POST /v1/audio/translations`, `POST /v1/chat/completions`
-- Voxtral: `GET /health`, `POST /v1/audio/transcriptions`, `POST /v1/audio/translations`
-  (`/health` fica fora do middleware de chave; o resto exige `Authorization: Bearer <KEY>`)
-
-## 2. O que já foi descartado (varredura de 2026-09-24)
-
-Feita a partir do Mac (`Rodrigos-MacBook-Pro`, 192.168.15.48). Tudo read-only.
-**Resumo: nenhuma máquina alcançável tem GPU ou os arquivos do deploy.** Nenhum host
-respondeu na 8800 (OmniVoice) nem na 8000.
-
-| alvo | resultado |
-|---|---|
-| LAN `192.168.15.1-254`, portas 22/7860/8800/8000 | só respondem SSH: `.1` (roteador, dropbear), `.31` (Mac `lisboa--mac.local`), `.34` (Mac mini — roda o TTS-STUDIO na 7860 e o conector Cloudflare), `.59` (ubuntu-vm de CI, 3 runners do GitHub). **Nenhum com `nvidia-smi`.** |
-| `192.168.15.49` (aparece no history do dono) | **offline** (ARP `incomplete`, ssh timeout) |
-| Frota `213.155.16.5-43` (varridos `.5-.10` e `.34-.43`) | dumbledore, flamel, fawkes, buckbeak, hedwig, dobby, kreacher, winky — SSH ok com a chave do Mac; sem `/dev/nvidia*`, sem `/root/voxtral\|omnivoice`. RAM: dumbledore 63 GB, fawkes 1,5 TB (os mesmos hostnames aparecem em mais de um IP — parece VIP/round-robin) |
-| Frota `217.179.88.2-44` (varridos `.5-.10` e `.20-.43`) | voldemort, bellatrix, barty, aragog, norbert, fluffy, nagini, scabbers, trevor — mesma coisa: sem GPU, sem os arquivos do deploy |
-| Jump hosts `64.34.89.186` / `64.34.88.234` (de `~/.ssh/config.audit`) | timeout a partir do Mac em 2026-09-24 |
-| `buckbeak.gryffindor.eonf.ltd` | resolve para `213.155.16.6`, responde ssh, **sem GPU** |
-| `104.131.165.53`, `146.190.162.37`, `167.99.122.185`, `138.197.73.46`, `136.248.119.231`, `104.131.29.0` (hostname `gr-bet4all-online`) e `134.209.41.55` (hostname `wp-bg-bet4all-online`) | respondem ssh, **sem GPU** (`136.248.119.231` exige usuário `ubuntu`) |
-| `192.168.200.32` | inalcançável daqui |
-
-Leitura provável: a máquina CUDA estava **desligada** (ou fora do alcance desta rede) em
-2026-09-24. Antes de repetir a varredura, pergunte o host ao dono.
-
-**Recon extra de 2026-09-24 (tasks #35/#27) — nada novo, não repita:**
-
-| alvo | resultado |
-|---|---|
-| LAN `192.168.15.0/24`, portas 22/8800/8000 | só `.1`, `.34`, `.59` (identificado com o recon anterior) |
-| faixas inteiras `213.155.16.0/24` e `217.179.88.0/24`, portas **8800 e 8000** | **nenhuma porta aberta** (o OmniVoice sobe na 8800: se a máquina estivesse de pé e exposta, apareceria aqui) |
-| `grindelwald.gryffindor.eonf.ltd` (único host do `~/.ssh/config.audit` que a varredura anterior não tinha testado) | resolve `213.155.16.36`, ssh dá timeout |
-| `settings.json` do app (`remote_base_url`/`remote_stt_base_url`) | hoje estão **vazios** (`remote_tts`/`remote_stt` desligados) — não dá para tirar o host daí |
-| `~/.ssh/config` (sem os audit) e `~/.zsh_history` | só `vm59`; histórico com `192.168.15.49` (offline) e os hosts da frota |
-| `~/.ssh/known_hosts` | nomes da frota (`*.gryffindor|slytherin.eonf.ltd`) já cobertos na tabela acima |
-
-**Recon de 2026-09-29 (infra-remote, tasks #14/#27/#35) — varredura maior, mesma conclusão:**
-
-Neste dia a VPN Firezone estava de pé no Mac (`utun4`, cliente 1.5.18, `100.89.3.11`),
-o que abriu as duas faixas da frota por TCP — foi a primeira vez que deu para **entrar**
-nos hosts e checar GPU por dentro em vez de só sondar porta.
-
-| alvo | resultado |
-|---|---|
-| LAN `192.168.15.0/24` (22/8000/8800/7860 + 2222/22022/2022/22222/9000/11434/5000/8080) | ssh só em `.1` (roteador, pede senha — sem chave, leases DHCP não lidos), `.31`, `.34`, `.59`; `.254` responde só na 8080. **Nada na 8800 nem na 8000** |
-| frota `213.155.16.0/22` + `217.179.88.0/22` (68 hosts vivos, ssh OK em todos com a chave do Mac) | `lspci` sem NVIDIA, sem `/dev/nvidia*`, sem `/root/voxtral`\|`/root/omnivoice` — **nenhum tem GPU**. A porta 8000 dos 4 hosts slytherin de controle (`.20/.34/.43/.54`) é um serviço `java`, não o OmniVoice |
-| 27 IPs DigitalOcean do `~/.ssh/known_hosts` (wp-*/gr-*/builder/spark/vpn-server/…) | ssh OK, **nenhum com GPU** nem com os diretórios do deploy |
-| rotas do Firezone | recursos publicados são só `213.155.16.0/22` (gryffindor) e `217.179.88.0/22` (LAX); a VPN **não** alcança nenhuma outra rede |
-| inventário Ansible do `voldemort` (`/root/ansible-canonical/inventory/hosts.yml`) | 12 baremetal (6 gryffindor + 6 slytherin), os mesmos da tabela acima — a máquina CUDA não está no inventário |
-| `~/.ssh/config.audit` / jump hosts `64.34.89.186` e `64.34.88.234` (TCP 22) | seguem **timeout**; existe perfil OpenVPN para `64.34.89.186:1194/udp` (não conectado) e os `.ovpn` do OpenVPN Connect cobrem 10 destinos (w3block, archanjo, home-sc, AWS…) |
-| `192.168.15.49`, `192.168.200.32` | timeout nas 3 portas |
-| VPS `136.248.119.231` (nginx do `the-dudes`) | só faz proxy para `127.0.0.1:8787`/`7860` — nada do RTX |
-
-Leitura: nem a LAN, nem a frota, nem a VPN, nem o DO, nem o inventário Ansible conhecem a
-máquina. Ela está **fora de todas as redes que este Mac alcança** (desligada, ou numa rede
-própria) — continuar varrendo tem retorno decrescente; o que falta é o dono dizer o host.
-
-Reconferido no mesmo dia às 13:48 (LAN e as duas faixas da frota, portas 22/8000/8800):
-resultado idêntico — 8000 só nos quatro hosts slytherin de controle (serviço `java`),
-**nada na 8800** em nenhum alvo.
-
-Dica para a próxima: `python3 -c` com socket + ThreadPool em 2 portas × 2 faixas leva ~1 min
-e responde "existe GPU exposta?"; `nvidia-smi` ausente não é conclusivo sozinho (ver §3) —
-e, com a VPN de pé, o discriminante rápido por host é `lspci | grep -ci nvidia` **e**
-`ls /dev/nvidia*` (os dois juntos; `lspci` sozinho pode faltar em imagem mínima).
-
-## 3. Recon read-only (copiar e colar)
-
-```sh
-# armadilha: o ~/.ssh/config usa ControlMaster com socket em ~/.ssh/cm — se o HOME
-# não for gravável (sandbox do agente/CI) o ssh morre com "cannot bind to path".
-# Por isso: -o ControlMaster=no -o ControlPath=none
-ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath=none root@HOST '
-  hostname; uname -srm; free -m | head -2
-  nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv
-  ls -d /root/omnivoice /root/voxtral
-  systemctl status "omnivoice*" "voxtral*" --no-pager | head -30
-  ss -ltnp | grep -E ":8800|:8[0-9]{3}"'
-```
-
-Dicas que economizam tempo:
-- `nvidia-smi` ausente **não** é conclusivo sozinho: confira `/dev/nvidia*` e, se o
-  `lspci` existir na imagem (em VM mínima ele pode faltar), `lspci -n | grep -i 10de`
-  (10de = vendor NVIDIA). Foi assim que as máquinas da frota foram descartadas.
-- `ru_maxrss` do `resource.getrusage` é **bytes no macOS e KB no Linux** (divisor
-  diferente ao medir RSS em cada máquina).
-- Varrer a /24 inteira por TCP (portas 22, 7860, 8800, 8000) com ~64 threads leva
-  segundos e responde "existe máquina aqui?" melhor que ping (que pode estar bloqueado).
-
-## 4. Deploy reproduzível (`remote/deploy.sh`)
-
-O script faz o ciclo inteiro offline-quando-possível e só muda o servidor com
-`--apply`. Ele **não** adivinha host: passe `host` ou exporte `TTS_REMOTE_HOST`
-(e, se unit/porta/pastas forem diferentes do ❓ abaixo, `OMNI_REMOTE_*` /
-`VOXTRAL_REMOTE_*`).
-
-```sh
-./remote/deploy.sh recon    [host]              # read-only: units, portas, venv, sha256, gpu
-./remote/deploy.sh compare  [host]              # sha256 do repo × o que está no ar (rc=1 se difere)
-./remote/deploy.sh deploy   [host] --apply      # backup → scp → ast.parse → restart → smoke
-./remote/deploy.sh rollback [host] --apply      # volta o PAR do último server.py.bak-* e reinicia
-./remote/deploy.sh smoke    [host]              # /health 200 com "auth" + 401 sem chave
-```
-
-`--service voxtral|omni|all` limita o alvo (padrão `all`). O que o script garante:
-
-- **sem diff, sem restart, MAS com smoke**: igual ao repo → não reinicia (restart
-  recarrega os modelos na VRAM, não é de graça), e o smoke roda de todo jeito:
-  "nada a fazer" é sobre o que o deploy mudaria, não sobre a produção estar boa
-  (caminho "nada a fazer" com `/health` vermelho sai ≠0 sem rollback, porque nada
-  foi reiniciado — #495);
-- **backup do PAR antes de subir** (`server.py.bak-<data>` + `auth_policy.py.bak-<data>`,
-  mesmo stamp) e `ast.parse` nos **dois** arquivos que sobem (`server.py` e
-  `auth_policy.py`) — sintaxe reprovada **para antes do restart**
-  (`[PARA] sintaxe reprovada`, nada é reiniciado) e o rev vai para `.rev`
-  (`-dirty` se o arquivo tinha WIP), que o `/health` publica;
-- **árvore suja avisa**: o que sobe é o arquivo da árvore, não o commit — o aviso
-  mostra o que está sujo para ninguém achar que subiu o commit do `rev`;
-- **smoke vermelho desfaz sozinho** (#345): o rev novo já está no disco e rodando,
-  então sair e deixar assim é servidor quebrado esperando alguém digitar outro
-  comando. O script volta **aquele** backup, reinicia e repete o smoke; a volta é
-  do PAR (`server.py` + `auth_policy.py` do MESMO stamp) — se o `auth_policy.py`
-  não existia antes, ele é removido, senão o rollback deixaria `server.py` velho
-  com `auth_policy.py` novo, estado que nunca existiu (#494). Se o smoke do
-  rollback também falhar, diz em destaque (`✖ REVERTIDO PARA …, MAS O SMOKE DO
-  ROLLBACK TAMBÉM FALHOU`) em vez de mascarar com o erro original. As dependências
-  do venv não voltam sozinhas — é do dono, se o rev novo mexeu nelas;
-- **nada de segredo na saída**: `Environment=` sai com o valor redigido
-  (`OMNI_API_KEY=<len 32>`) — presença dá para conferir, chave não vaza para o chat;
-- `deploy` copia **dois** arquivos (`server.py` + `auth_policy.py`, importado por
-  ele) e o `recon` registra o `pip freeze`/versão do python para o item de ambiente.
-
-Antes do primeiro deploy, confirme a chave (senão o serviço não sobe — §1, política
-de auth): `recon` mostra o `Environment` do unit; sem `*_API_KEY` ou defina a chave
-ou acrescente `Environment=<PREFIXO>_ALLOW_NO_AUTH=1` (modo legado, aberto).
-
-### Passo manual equivalente (se preferir na mão)
-
-```sh
-ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath=none root@HOST \
-  'cd /root/voxtral && cp -a server.py server.py.bak-$(date +%F)'
-scp remote/auth_policy.py remote/voxtral_server.py root@HOST:/root/voxtral/
-scp remote/auth_policy.py root@HOST:/root/omnivoice/
-ssh root@HOST 'cd /root/voxtral && python3 -c "import ast,pathlib;ast.parse(pathlib.Path(\"server.py\").read_text())" \
-  && systemctl restart ❓voxtral*.service && systemctl is-active ❓voxtral*.service'
-curl -s http://HOST:❓PORTA/health      # 200 + "auth"; sem chave num endpoint → 401
-```
-
-Dependência nova no venv remoto: `ssh root@HOST 'python3 -m pip install --dry-run <pacote>'`
-e depois sem `--dry-run` — antes do restart. Hoje são duas, do VAD (espelho do
-`requirements.txt` do Mac, tasks #14 e #35): `onnxruntime importlib_resources`.
-
-Conferir depois (read-only, é o aceite da #35):
-
-```sh
-./remote/deploy.sh recon   # linhas "dep: onnxruntime True", "dep: importlib_resources True"
-                           # e "silero DeprecationWarning: 0"
-# equivalente na mão (só o número tem de ser 0):
-ssh root@HOST 'python3 -W always::DeprecationWarning -c "import silero_vad; silero_vad.load_silero_vad(onnx=True)" 2>&1 | grep -c DeprecationWarning'
-```
-
-> O aviso é invisível no serviço (sem pytest/`-W`): vale para os ambientes não
-> divergirem. Com `-W error::DeprecationWarning` o comando sai 0 **mesmo sem** o
-> backport — o próprio `silero_vad` captura a exceção e cai no `files()`. Por isso
-> a checagem discriminante é a de cima (contar o warning).
-
-> **Pendência conhecida (2026-09-24):** o arquivo versionado já pede o VAD em ONNX, mas
-> o servidor no ar ainda roda o jit do torch — o deploy não aconteceu porque a máquina
-> nunca foi localizada (seção 2). Enquanto isso, `remote/voxtral_server.py` **não bate
-> 100% com o que está no ar**: subir sem instalar `onnxruntime` não quebra nada (cai no
-> mesmo jit, agora com aviso no log); para migrar de verdade, instale a dependência
-> antes. Confira pelo `GET /health` → campo `vad`.
-
-### Unit real e venv remoto (❓ até o dono confirmar)
-
-Pendente de confirmação (item 1). Quando o dono responder, `recon` preenche:
-
-| peça | valor |
-|---|---|
-| ❓ unit do Voxtral / porta | `VOXTRAL_REMOTE_UNIT` / `VOXTRAL_REMOTE_PORT` (hoje chutes) |
-| ❓ `WorkingDirectory` e `ExecStart` do unit | saída do `recon` (`FragmentPath`, `ExecStart`) |
-| ❓ python/venv que serve os dois | saída do `recon` (`python:`, `pacotes no venv:`); é o mesmo que o `pip install` deve atingir |
-| ❓ hash do que está no ar | saída do `compare` (com o `repo` no mesmo commit, `compare` tem de dizer `[IGUAL]`) |
+> As §1–§4 eram do stack RTX (servidores OmniVoice/Voxtral na máquina CUDA, deploy
+> por systemd). A máquina não volta (decisão do dono, 2026-11-09) e o stack saiu do
+> repo no #1058; o histórico fica no git. A numeração das seções que ficaram foi
+> mantida porque o código e o README citam §6–§9.
 
 ## 5. Segurança (leia antes de rodar ssh no escuro)
 
 - **A chave `~/.ssh/id_ed25519` do Mac abre dezenas de máquinas públicas da frota.** Um
-  `ssh` no host errado funciona e parece certo — confirme com `hostname`/`ls -d /root/...`
-  antes de concluir qualquer coisa. Recon é read-only; `pip install` e `systemctl restart`
-  já são intervenção (pedir OK).
-- Nunca imprimir token/chave: o token do tunnel mora no plist, e as chaves de API
-  (`OMNI_API_KEY`, `VOXTRAL_API_KEY`) em `Environment=` do unit. `deploy.sh recon` redige
-  o valor (`OMNI_API_KEY=<len 32>`) — presença dá para conferir sem vazar para o chat;
-  `systemctl cat` cru mostra.
-- Autenticação é **fail closed** (política em `remote/auth_policy.py`): sem
-  `OMNI_API_KEY`/`VOXTRAL_API_KEY` o processo **não sobe**; com a escape hatch
-  `<PREFIXO>_ALLOW_NO_AUTH=1` ele sobe aberto — aí sim, só atrás de firewall/VPN.
-  `/health` fica fora da chave e publica o modo em `auth`.
-- Túnel do app (não confundir): o destino é **sempre o IP de LAN da máquina do TTS**,
+  `ssh` no host errado funciona e parece certo — confirme com `hostname` antes de
+  concluir qualquer coisa. Recon é read-only; `pip install` e restart de serviço já
+  são intervenção (pedir OK).
+- Nunca imprimir token/chave: o token do Cloudflare Tunnel mora no plist (600) e a
+  chave do app no `.apikey` do mini (Application Support); o `deploy_mini.sh` lê por ssh e a
+  usa só no `curl`.
+- Túnel do app: o destino é **sempre o IP de LAN da máquina do TTS**,
   nunca `127.0.0.1` (loopback na VPS dispensa chave). O `tunnel.sh` **valida** isso
   (só 10/8, 172.16/12, 192.168/16) e recusa o resto com o motivo; para provar o
   lado público sem apply, `curl` sem chave em `/api/voices` tem de dar **401**
@@ -306,7 +25,7 @@ Pendente de confirmação (item 1). Quando o dono responder, `recon` preenche:
 
 ## 6. Produção no Mac mini (tts.the-dudes.com)
 
-Alvo **diferente** dos servidores RTX: a produção do app é um **checkout git no Mac mini**
+A produção do app é um **checkout git no Mac mini**
 (`192.168.15.34`, usuário `lisboa`, `~/Documents/tts-rod`), servido pelo agente launchd
 `studio.tts.server` (que é um `ssh lisboa@127.0.0.1 start-server.sh` com `KeepAlive`; o
 script faz `pkill` do `run.sh`/`uvicorn` e re-executa) e exposto ao público pelo
@@ -537,6 +256,6 @@ até lá, quem tem acesso ao mini descobre por `status`/flag.
 
 ## 9. Arquivos relacionados
 
-`remote/deploy.sh` · `remote/deploy_mini.sh` · `remote/auth_policy.py` · `remote/omni_server.py` · `remote/voxtral_server.py` · `remote/ci_runner.sh` · `remote/health_probe.sh` · `.github/workflows/ci.yml` · `README.md` §"servidores `remote/`"
+`remote/deploy_mini.sh` · `remote/ci_runner.sh` · `remote/health_probe.sh` · `.github/workflows/ci.yml` · `README.md` §"servidores `remote/`"
 · `tunnel.sh` (Mac↔VPS) · `cloudflare.sh` (conector no Mac mini).
 

@@ -2,8 +2,8 @@
 
 Sem `importlib_resources` no ambiente, o `silero_vad/model.py` cai no
 `importlib.resources.path()` — deprecado desde o py3.11, 1 warning por load.
-Espelha a aceite da task #35: no servidor remoto o mesmo comando roda no venv de
-lá (`remote/deploy.sh recon` imprime as linhas `dep:` e `silero DeprecationWarning:`).
+Nasceu da aceite da task #35 (VAD do servidor RTX, removido no #1058); o que fica é
+o VAD LOCAL, que este arquivo cobre.
 
 Atenção ao filtro: `DeprecationWarning` de biblioteca é *ignorado* por padrão em
 script solto, e sob `-W error` o próprio `silero_vad` captura a exceção e cai no

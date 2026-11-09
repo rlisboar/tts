@@ -85,39 +85,6 @@ Atenção a dois detalhes de medição:
 
 Gate: `task_b91d2003` (veredito APROVADO, com a ressalva da mordida composta).
 
-## #494 — rollback do `deploy.sh` voltava só o `server.py`
-
-O deploy copia DOIS arquivos (`server.py` + `auth_policy.py`): o rollback tem de
-cobrir o mesmo conjunto. Sabotagem de uma linha (voltar o `cp -a '$bak' server.py`
-e largar o par) deixa as três células vermelhas — medido:
-
-| Sabotagem | Resultado |
-|---|---|
-| `restaurar_par` copia só o `server.py` | `test_rollback_automatico_volta_o_auth_policy_junto` **FAILED**, `test_rollback_automatico_remove_o_auth_policy_que_nao_existia` **FAILED** e `test_rollback_manual_volta_o_par` **FAILED** (3/3) |
-
-A célula do `auth_policy.py` AUSENTE antes do deploy é a que pega o caso sutil: a
-volta é **remover** o arquivo (deixar o novo seria, de novo, um estado que nunca
-existiu). Mordida medida com `git stash push -- remote/deploy.sh` e `git stash
-pop` — o `.pyc` não entra na conta porque o script é shell.
-
-## #497 — `test_7b_nao_espera_o_14b` não mordia (chamava o pool, não o handler)
-
-A célula original exercitava `MT_FAST_POOL` direto: o pool estava certo e o
-roteamento do handler podia quebrar em silêncio. Sabotagem de uma linha (passar
-`MT_POOL` no `offload` do `/v1/chat/completions`, omni_server.py:361) e o teste
-antigo continua verde; a célula nova **FAILED** com o 14B preso (medido: 3,06 s
-de espera contra 0,05 s pelo pool certo).
-
-| Sabotagem | Resultado |
-|---|---|
-| `offload(MT_FAST_POOL if fast else MT_POOL, …)` → `offload(MT_POOL, …)` | `test_7b_nao_espera_o_14b` **FAILED** (espera > 1 s e `x_gen_seconds` alto) |
-| rotear TUDO para o `MT_FAST_POOL` | `test_14b_continua_indo_pelo_pool_lento` **FAILED** (o controle negativo) |
-
-O `x_gen_seconds` é a medida do handler, e o nome do thread (`mt7b` × `mt`) diz
-por qual pool a geração passou — as duas pontas ficam presas. O 14B fica preso
-por um `Event` que só é solto no `finally` (e, no controle negativo, por um
-`Timer` de 0,5 s).
-
 ## #499 — probe não via o conector caído (queda parcial verde)
 
 O `/health` público pode continuar 200 por um tempo com o conector do Cloudflare
@@ -132,35 +99,19 @@ controle do `TTS_PROBE_CONECTOR=0`.
 
 ## #495 — caminho "nada a fazer" engolia o smoke
 
-`deploy_mini.sh` saía 0 com `[FALHA]` no log e o `deploy.sh` nem rodava smoke sem
-diff: "nada a fazer" era lido como "produção boa". Sabotagem: voltar
-`POS_DEPLOY=0 … smoke; return 0` (mini) e tirar o `smoke_do_servico` do ramo
-`! tem_diff` (`deploy.sh`) —
+`deploy_mini.sh` saía 0 com `[FALHA]` no log: "nada a fazer" era lido como
+"produção boa". Sabotagem: voltar `POS_DEPLOY=0 … smoke; return 0` —
 
 | Sabotagem | Resultado |
 |---|---|
 | caminho "nada a fazer" volta a sair 0 | `test_nada_a_fazer_com_smoke_vermelho_nao_sai_verde` **FAILED** |
-| `deploy.sh` sem diff deixa de rodar o smoke | `test_deploy_apply_sem_diff_ainda_faz_smoke_e_reprova` **FAILED** |
 
-O controle `test_nada_a_fazer_com_smoke_verde_continua_zero` passa nos dois lados
-de propósito. A célula do mini usa `T_CURL_HEALTH_CODE` (knob novo do shim) e não
+O controle `test_nada_a_fazer_com_smoke_verde_continua_zero` passa de propósito. A célula do mini usa `T_CURL_HEALTH_CODE` (knob novo do shim) e não
 o `/api/build`: o build vermelho tira a condição `-n "$(codigo_no_ar)"` e o
 caminho deixa de ser "nada a fazer" — medido, era um falso alvo.
 
-## #498 — gate de sintaxe do `auth_policy.py` e `.rev -dirty` (medidos, sem prova)
-
-Duas sabotagens, um teste cada — ambas caem:
-
-| Sabotagem | Resultado |
-|---|---|
-| `ast.parse` só no `server.py` (tirar o `$COMPARTILHADO` do comando) | `test_sintaxe_quebrada_no_auth_policy_para_antes_do_restart` **FAILED** |
-| publicar `$local_rev` sem o sufixo `-dirty` | `test_rev_publicado_marca_dirty_quando_o_que_sobe_tem_wip` **FAILED** |
-
-Os controles (`test_sintaxe_do_par_ok_quando_os_dois_parseiam`,
-`test_rev_publicado_sem_dirty_na_arvore_limpa`) passam nos dois lados. A fixture
-`script_proprio` copia `remote/` com um git PRÓPRIO: editar `auth_policy.py` na
-árvore compartilhada por vários agentes mexeria no repo de todo mundo, e sem o
-git próprio o `rev` do `.rev` nem existiria.
+(A metade do servidor RTX desta célula e as seções #494, #497, #498 e #500 saíram
+no #1058, junto com o código e os testes que mediam; o histórico fica no git.)
 
 ## #496 — `_destino_do_tunel` casava qualquer `ssh -R` da máquina
 
@@ -177,21 +128,6 @@ individualiza pelo NOSSO plist (host + porta remota do ProgramArguments).
 sem nada disso, aceitar é melhor que ficar cego. Cuidado medido aqui: a primeira
 rodada de sabotagem passou por `.pyc` velho — a regra da #238 vale também para
 este arquivo grande (`PYTHONDONTWRITEBYTECODE=1` na medição).
-
-## #500 — recon mandava "compare à mão" com o `FragmentPath` do próprio repo
-
-O `|| [ "$frag" = "$local_unit" ]` jogava no ramo de "não devolveu
-FragmentPath" também quando o host DEVOLVIA o caminho do repo — e aí o diff (e o
-`[IGUAL]`) se perdiam. Sabotagem: devolver a condição com o `||` e o texto
-`[DIFERENTE]` —
-
-| Sabotagem | Resultado |
-|---|---|
-| `elif [ -z "$frag" ] \|\| [ "$frag" = "$local_unit" ]` de volta | `test_recon_compara_quando_o_fragmentpath_e_o_do_repo` **FAILED** |
-| dizer `[DIFERENTE]` quando o host não devolve `FragmentPath` | `test_recon_sem_fragmentpath_diz_indeterminado_e_nao_diferente` **FAILED** |
-
-O shim passou a usar `${T_FRAGMENT-…}` (com `-`, sem `:`): com `:-`, `T_FRAGMENT=""`
-caía no default e o caso "host sem FragmentPath" nem era exercitável.
 
 ## #555 — mordida do `live_ws.sh` gravava no `.apikeys.json` do DONO
 

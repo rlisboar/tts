@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Deploy da instância de PRODUÇÃO no Mac mini (tts.the-dudes.com) — reproduzível
-# e verificável, no mesmo padrão do remote/deploy.sh.
+# e verificável.
 #
 # Por que existe: a produção NÃO é esta máquina. O hostname público é servido pelo
 # app do Mac mini (192.168.15.34:7860), exposto pelo Cloudflare Tunnel do próprio

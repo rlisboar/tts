@@ -1,6 +1,6 @@
 """Marca d'água no caminho REMOTO (#812).
 
-O servidor CUDA (`remote/omni_server.py`) não marca — o contrato é o CLIENTE marcar
+O servidor CUDA (removido do repo no #1058) não marca — o contrato é o CLIENTE marcar
 o que volta, no mesmo ponto em que o caminho isolado marca. Estas células seguram
 esse contrato, inclusive o caso `remote_fallback` (#114), em que o trecho cai no
 local e não pode ser marcado duas vezes.

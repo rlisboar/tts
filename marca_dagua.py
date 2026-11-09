@@ -19,7 +19,7 @@ DOIS LIMITES DECLARADOS (#845) — não são furo, são desenho:
    modelo copia o timbre dela, então marcar a referência enfia a marca na linhagem
    da voz sem melhorar detecção nenhuma (a saída já sai marcada). O gancho está no
    `sf.write` de `save_design_voice` (app.py).
-2. O SERVIDOR REMOTO (`remote/omni_server.py`) não marca: quem marca é o CLIENTE,
+2. O SERVIDOR REMOTO (OmniVoice da RTX, removido no #1058) não marca: quem marca é o CLIENTE,
    no app, ao gravar (`_marca_arquivo` no trecho; `_marca_saida_isolada` na saída
    do filho isolado, depois que ele sai; `_marca_pcm` no Live). Consumidor DIRETO
    do servidor recebe áudio cru — é contrato do cliente, e o aviso está lá.

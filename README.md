@@ -44,7 +44,7 @@ e guarda no navegador. Aceita `Authorization: Bearer` ou `X-API-Key`.
 | `tts_worker.py`     | Worker isolado (crash do Metal não derruba) |
 | `common.py`         | Texto/DSP/modelo compartilhados app↔worker  |
 | `static/index.html` | Interface web (gravação e gerenciamento)    |
-| `remote/`           | Servidores RTX opcionais (OmniVoice, Voxtral)|
+| `remote/`           | Deploy, CI e monitoração do Mac mini         |
 | `client/`           | Roteador de microfone (BlackHole)           |
 | `voices/`           | Amostras de voz gravadas (`.wav` + `.json`) |
 | `outputs/`          | Áudios gerados                              |
@@ -508,7 +508,7 @@ O detector alimenta o gate de locutor com `speaker_anticlone` ligado (`anticlone
 
 **Dois lugares ficam SEM marca, de propósito (#845):** a amostra de *voice design*,
 que é referência e contamina a linhagem da voz se for marcada (a saída já sai
-marcada), e o `remote/omni_server.py`, que serve áudio cru — quem marca é o
+marcada), e o servidor remoto (removido no #1058), que servia áudio cru — quem marca é o
 CLIENTE, então consumidor direto do servidor recebe sem marca. A saída normal do
 app sai marcada em todos os caminhos (job local, família isolada, retorno remoto e
 Live).
@@ -838,15 +838,7 @@ servindo nada" — e, no caso do loopback, aberto para a internet sem chave.
 Sem escolha manual (caso do LaunchAgent no boot) ele insiste por ~1 min antes de
 desistir; `TTS_TUNNEL_TENTATIVAS` ajusta.
 
-Os servidores opcionais em `remote/` exigem chave: `OMNI_API_KEY` no servidor
-OmniVoice e `VOXTRAL_API_KEY` no servidor Voxtral (o app envia por
-`remote_api_key` / `remote_stt_key`). Sem a variável o processo **não sobe** —
-antes ele subia em `0.0.0.0` sem avisar que estava aberto; para assumir o modo
-legado (só atrás de firewall/VPN) exporte `OMNI_ALLOW_NO_AUTH=1` ou
-`VOXTRAL_ALLOW_NO_AUTH=1`. `/health` não exige chave e publica o modo em
-`auth`; a política mora em `remote/auth_policy.py`.
-
-Inventário do deploy (host, serviço, portas, recon e comandos de subida):
+Deploy da produção (Mac mini), CI e monitoração:
 [`remote/DEPLOY.md`](remote/DEPLOY.md).
 
 ## Acesso pela internet (Cloudflare Tunnel)
@@ -1162,7 +1154,7 @@ navegador.
 # deriva (mesma fonte do estágio `estatica` do CI). Doc com cópia à mão já deixou
 # `live_rnnoise.py` fora do gate (#288/#389).
 ./.venv-mlx/bin/python tests/_pyflakes_gate.py
-# (29 alvos explícitos hoje; `tests/*.py` é glob e não conta —
+# (26 alvos explícitos hoje; `tests/*.py` é glob e não conta —
 #  ao acrescentar módulo ao hook, atualize aqui: um teste compara)
 # o linter é o ruff (conjunto `F` = o mesmo do pyflakes que ele substituiu), config
 # no `pyproject.toml`. `# noqa` VALE: import que só existe para virar fixture de
