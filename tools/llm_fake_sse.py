@@ -45,6 +45,18 @@ def faz_handler(ttft_s: float, intervalo_s: float, resposta: str):
         def log_message(self, *a):          # silencioso: a régua não polui o log
             pass
 
+        def do_GET(self):
+            """`/models` — é o que o pré-voo da janela consulta para saber se o
+            provedor está de pé. Sem esta rota o `BaseHTTPRequestHandler` responde
+            501 e o provedor vivo é lido como morto."""
+            corpo = json.dumps({"object": "list", "data": [
+                {"id": "fake", "object": "model"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(corpo)))
+            self.end_headers()
+            self.wfile.write(corpo)
+
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
             pedido = json.loads(self.rfile.read(n) or b"{}")
