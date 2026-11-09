@@ -228,7 +228,14 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
     - `marca`: PCM pronto → marca d'água aplicada;
     - `envio`: marca → entrega ao sender;
     - `resto`: `s2_ms − first_audio_ms` (fio, cliente e VAD).
-    Marco ausente → trecho `None` (não inventa zero)."""
+    Marco ausente → trecho `None` (não inventa zero).
+
+    RESSALVA do `resto` (medida local, #1022): ele mistura DOIS relógios. O
+    `s2_ms` conta do fim da fala no CLIENTE da bancada; o `first_audio_ms` conta
+    do início da thread do turno, DEPOIS da decisão do VAD. `resto` pode então
+    sair NEGATIVO (−121 ms no p50 de n=2) e a soma dos trechos não fecha exata
+    com o `pos_llm`. Não é erro do pipeline; é offset de instrumento. Ler `resto`
+    como ordem de grandeza (fio + cliente + VAD), nunca como tempo absoluto."""
     def g(k):
         v = lat.get(k)
         return float(v) if isinstance(v, (int, float)) else None
