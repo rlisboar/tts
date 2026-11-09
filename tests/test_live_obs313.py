@@ -210,6 +210,79 @@ def test_pipeline_publica_a_espera_pelo_lock_no_latency(monkeypatch):
     assert lat["lock_espera_ms"] == 640
 
 
+def test_sub_marcas_do_tts_chegam_ao_latency(monkeypatch):
+    """#1022: o `tts` é caixa preta de ~1430 ms no mini — as sub-marcas a abrem.
+
+    Elas vêm do `_tts_app` (get_model, clone prompt, geração) pelo mesmo `espera`
+    do `lock_espera_ms`. Sem elas, setup e síntese ficam indistinguíveis.
+    """
+    import numpy as np
+
+    eventos: list = []
+    p = lp.LivePipeline(eventos.append, lambda pcm: None,
+                        stt=lambda pcm, l: "fala",
+                        llm=lambda msgs: iter(["resposta curta. "]),
+                        prewarm=lambda: None)
+
+    def tts(texto, omni):                # finge os marcos medidos pelo `_tts_app`
+        p._espera.update({"tts_modelo_ms": 12, "tts_cond_ms": 48, "tts_gen_ms": 900})
+        return np.zeros(8, dtype=np.float32)
+
+    p._tts = tts
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False)
+    lat = next(e for e in eventos if e["type"] == "latency")
+    assert (lat["tts_modelo_ms"], lat["tts_cond_ms"], lat["tts_gen_ms"]) == (12, 48, 900)
+
+
+def test_sub_marca_ausente_nao_vira_zero():
+    """Sem o marco, o campo não entra — zero seria medida inventada."""
+    import numpy as np
+
+    eventos: list = []
+    p = lp.LivePipeline(eventos.append, lambda pcm: None,
+                        stt=lambda pcm, l: "fala",
+                        llm=lambda msgs: iter(["resposta. "]),
+                        tts=lambda t, o: np.zeros(8, dtype=np.float32),
+                        prewarm=lambda: None)
+    p.push_pcm(b"\x00\x01" * 400)
+    p.end_of_speech(inicia_thread=False)
+    lat = next(e for e in eventos if e["type"] == "latency")
+    assert not [k for k in lat if k.startswith("tts_") and k.endswith("_ms")
+                and k not in ("tts_start_ms", "tts_first_pcm_ms")]
+
+
+def test_tts_app_marca_setup_e_geracao(monkeypatch, tmp_path):
+    """O `_tts_app` grava os marcos no `espera` do turno (#1022).
+
+    Sem estes marcos o `tts` de ~1430 ms no mini não se distingue entre setup do
+    modelo, clone prompt e geração — que é exatamente a pergunta do card.
+    """
+    import types as _t
+
+    import numpy as np
+
+    import app as app_mod
+
+    monkeypatch.setattr(app_mod, "_get_model", lambda: _t.SimpleNamespace(sample_rate=24000))
+    monkeypatch.setattr(app_mod, "_current_backend",
+                        lambda: {"family": "omnivoice", "meta": {}})
+    monkeypatch.setattr(app_mod, "_cond_for", lambda *a, **k: {"cond": 1})
+    monkeypatch.setattr(app_mod, "_voice_ref_text", lambda *a: None)
+    monkeypatch.setattr(app_mod, "_generate_chunk",
+                        lambda *a, **k: np.zeros(8, dtype=np.float32))
+    monkeypatch.setattr(app_mod, "_reamostra", lambda a, sr, alvo: a)
+
+    (tmp_path / "voz-x.wav").write_bytes(b"RIFF")     # `path.exists()` decide o ramo
+    monkeypatch.setattr(app_mod, "VOICES_DIR", tmp_path)
+    espera: dict = {}
+    lp._tts_app("Claro,", {"num_steps": 16}, voice_id="voz-x", espera=espera)
+
+    assert espera.get("modelo_ms") is not None      # setup medido
+    assert espera.get("cond_ms") is not None        # clone prompt medido
+    assert espera.get("gen_ms") is not None         # geração medida
+
+
 def test_espera_ausente_nao_inventa_campo(monkeypatch):
     import numpy as np
 

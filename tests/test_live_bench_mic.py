@@ -349,16 +349,20 @@ def test_interrupted_de_continuacao_nao_fecha_e_o_terminal_fecha():
 def test_estagios_do_pos_llm_fecham_com_os_marcos_do_latency():
     lat = {"first_token_ms": 1000, "first_clause_ms": 1600, "tts_start_ms": 1610,
            "tts_first_pcm_ms": 2900, "lock_espera_ms": 300, "marca_ms": 3100,
-           "send_ms": 3120, "first_audio_ms": 3125, "t_decisao_ms": 200}
+           "send_ms": 3120, "first_audio_ms": 3125, "t_decisao_ms": 200,
+           "tts_modelo_ms": 40, "tts_cond_ms": 50, "tts_gen_ms": 900}
     e = lb.estagios_pos_llm(lat, s2_ms=3400)
     assert e == {"llm_frase": 600, "fila_tts": 10, "lock": 300, "tts": 990,
-                 "marca": 200, "envio": 20, "resto": 275, "vad": 200, "fio": 75}
+                 "marca": 200, "envio": 20, "resto": 275, "vad": 200, "fio": 75,
+                 "tts_modelo": 40, "tts_cond": 50, "tts_gen": 900}
     # a soma dos trechos fecha com o pos_llm da bancada (s2 − 1º token), a menos
-    # do intervalo send → first_audio, que é o emit (5 ms aqui). `vad`/`fio`
-    # ficam de fora: eles DECOMPÕEM o `resto`, não somam com ele.
-    assert sum(v for k, v in e.items() if k not in ("vad", "fio")) == \
+    # do intervalo send → first_audio, que é o emit (5 ms aqui). `vad`/`fio` e as
+    # sub-marcas do `tts` ficam de fora: eles DECOMPÕEM, não somam.
+    assert sum(v for k, v in e.items()
+               if k not in ("vad", "fio", "tts_modelo", "tts_cond", "tts_gen")) == \
         3400 - 1000 - (3125 - 3120)
     assert e["vad"] + e["fio"] == e["resto"]
+    assert e["tts_modelo"] + e["tts_cond"] + e["tts_gen"] <= e["tts"] + e["lock"]
 
 
 def test_marco_ausente_vira_none_e_nao_zero():

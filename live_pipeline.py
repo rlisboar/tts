@@ -1272,6 +1272,12 @@ class LivePipeline:
                     lat["first_audio_ms"] = _ms(t0)
                     if espera.get("lock_espera_ms") is not None:
                         lat["lock_espera_ms"] = int(espera["lock_espera_ms"])
+                    # #1022: sub-marcas do `tts` (ausente = fora do evento, como
+                    # o resto). Fora da guarda do lock: caminho sem espera também
+                    # tem setup e geração para medir.
+                    for _k in ("modelo", "cond", "gen", "prep"):
+                        if espera.get(f"tts_{_k}_ms") is not None:
+                            lat[f"tts_{_k}_ms"] = int(espera[f"tts_{_k}_ms"])
                     self.ultima_latencia = dict(lat)
                     primeiro = False
                 # libera VRAM FORA do caminho crítico: o áudio acima já foi emitido
@@ -1862,12 +1868,19 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
     _m = [_t.perf_counter()]
     def _marco(rot):
         _m.append(_t.perf_counter())
+        # #1022: o mesmo marco que o debug imprime vai para o `latency`. Sem
+        # isso o `tts` é caixa preta de ~1430 ms no mini contra 635 ms da
+        # síntese isolada do MESMO texto — fator que não é conteúdo e só o
+        # caminho real separa (`modelo` = get_model, `cond` = clone prompt,
+        # `gen` = a geração). `trava` reusa o `lock_espera_ms` do #313.
+        if espera is not None:
+            espera[f"{rot}_ms"] = round((_m[-1] - _m[-2]) * 1000)
         if _DEBUG_TTS:
             print(f"[live][dbg] {rot} {(_m[-1]-_m[-2])*1000:.0f} ms", flush=True)
     voice_id = (voice_id or app._settings.get("default_voice")
                 or app.DESIGN_VOICE_ID)
     model = app._get_model()
-    _marco("get_model")
+    _marco("modelo")
     sr = int(getattr(model, "sample_rate", 24000) or 24000)
     be = app._current_backend()
     path = app.VOICES_DIR / f"{voice_id}.wav"
@@ -1876,7 +1889,7 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
     ref_text = None
     if be["family"] == "omnivoice" and path.exists():
         conds = app._cond_for(model, voice_id, path)
-        _marco("conds(clone_prompt)")
+        _marco("cond")
         ref_text = app._voice_ref_text(voice_id)
     elif path.exists():
         ref_audio = str(path)
@@ -1890,7 +1903,7 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
         r = app._generate_chunk(model, texto, _idioma_tts(),
                                 conds, ref_text, omni, ref_audio=ref_audio,
                                 family=be["family"], meta=be.get("meta"), sr=sr)
-    _marco("generate")
+    _marco("gen")
     # #805: o modelo dita a taxa (Fish 44,1k, VoxCPM2/MOSS 48k); o fio é 24k
     return app._reamostra(r, sr, _TTS_SR)
 
