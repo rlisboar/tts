@@ -1,0 +1,54 @@
+== início 2026-11-08T17:28:12-03:00 — log /tmp/deploy-head-20261108-172812.log
+rev alvo: afc3f429660ffdc5f5fe60f20e21944d15c54c8a (fix(bancada): interrupted terminal de B não queima teto*3 (#942))
+== deploy (rev alvo afc3f429660f… (afc3f429660ffdc5f5fe60f20e21944d15c54c8a))
+  push: publicar o rev alvo em origin/main (22 commit(s) à frente do origin)
+== mini
+  deps: pip install -r requirements.txt -c requirements.lock (ambos do rev alvo)
+    preview: /tmp/deploy-mini-requirements-preview-48904  (fora da árvore do mini)
+    nada a instalar (o venv já satisfaz o requirements)
+  pesos: todos conferem com models/sha256sums.txt
+To github.com:rlisboar/tts.git
+   c3f4a78..afc3f42  afc3f429660ffdc5f5fe60f20e21944d15c54c8a -> main
+  push: ok (origin/main = rev alvo)
+  backup do estado atual:
+    sha=c3f4a78014ed270ca48181cb3216531883c9727e
+    data=2026-11-08 17:28:22
+  fetch + switch para o rev alvo:
+    agora: afc3f42 fix(bancada): interrupted terminal de B não queima teto*3 (#942)
+    
+    [notice] A new release of pip is available: 26.1.2 -> 26.3
+    [notice] To update, run: /Users/lisboa/Documents/tts-rod/.venv-mlx/bin/python3.12 -m pip install --upgrade pip
+      websockets 17.1
+  deps: venv IDÊNTICO ao freeze anterior (nada se moveu)
+  reiniciando studio.tts.server…
+    kickstart-ok
+  esperando 6s o run.sh subir a porta…
+== smoke (rev alvo afc3f429660f…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN Host público (tts.the-dudes.com) aceito → 200
+  [ok] LAN prefixo duplo sem chave → 401
+  [ok] LAN com a chave do mini → 200
+  [ok] LAN /api/build codigo=fb93039b = rev alvo afc3f429660f…
+  [ok] processo novo (boot 1794169712s ≥ marcador do restart 1794169709s — #252)
+  [ok] LAN WebSocket 101 (uvicorn com upgrade)
+  [ok] LAN index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] LAN POST /api/tts real: job 7626d6e641 em ~9s, peça 0 com 95484 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público Host público (tts.the-dudes.com) aceito → 200
+  [ok] público prefixo duplo sem chave → 401
+  [ok] público com a chave do mini → 200
+  [ok] público /api/build codigo=fb93039b = rev alvo afc3f429660f…
+  [ok] processo novo (boot 1794169712s ≥ marcador do restart 1794169709s — #252)
+  [ok] público WebSocket 101 (uvicorn com upgrade)
+  [ok] público index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] público POST /api/tts real: job b2bc861d16 em ~1s, peça 0 com 95484 bytes
+  [ok] marca d'água aplicada (sem aviso de 'SEM marca' no log)
+== deploy rc=0 em 2026-11-08T17:29:02-03:00
+== pós: health/rev/uptime
+health=200
+rev no mini: afc3f42
+sujo:        0
+uptime processo: 00:31
+== fim rc=0

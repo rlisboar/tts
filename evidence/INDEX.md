@@ -11,6 +11,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 
 | arquivo | task | data | o que mostra |
 |---|---|---|---|
+| `1022-hipoteses-falsificacao.md` | #1022 | — | 1022 — hipóteses de causa do pos_llm e critérios de FALSIFICAÇÃO (pré-registro) |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
@@ -313,8 +314,8 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `869-repro-cru.py` | #869 | 2026-11-06 | """#869 — reproduz o descarte `motivo=vad` do Live com áudio gravado. |
 | `875-bancada-afc3f42-PARCIAL.json` | #875 | 2026-11-08 | "rotulo": "afc3f42", |
 | `875-bancada-afc3f42-PARCIAL.log` | #875 | 2026-11-08 | (sem descrição) |
-| `875-bancada-e2bb4f7.json` | #875 | — | "rotulo": "e2bb4f7", |
-| `875-bancada-e2bb4f7.log` | #875 | — | (sem descrição) |
+| `875-bancada-e2bb4f7.json` | #875 | 2026-11-08 | "rotulo": "e2bb4f7", |
+| `875-bancada-e2bb4f7.log` | #875 | 2026-11-08 | (sem descrição) |
 | `875-hang-README.md` | #875 | 2026-11-08 | 875 — hang do turno no Live (rodada final INCOMPLETA, build `afc3f42`) |
 | `875-hang-b50ec5a60b-relogio.jsonl` | #875 | 2026-11-08 | (sem descrição) |
 | `875-hang-bffb1c9d09-relogio.jsonl` | #875 | 2026-11-08 | (sem descrição) |
