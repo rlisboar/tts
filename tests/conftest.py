@@ -124,7 +124,8 @@ _RETRATO_APP_SUPPORT = _retrato_app_support()
 # (`TTS_TEST_WORKER`/`TTS_LIVE_WORKER` seguem de fora: são interruptores.)
 _ENV_ESTADO = ("TTS_STATE_DIR", "TTS_SETTINGS_PATH", "TTS_APIKEYS_PATH",
                "TTS_LEGACY_APIKEY_PATH", "TTS_SPEAKER_PATH",
-               "TTS_SPEAKER_AUDIO_DIR", "TTS_OUTPUTS_DIR", "TTS_VOICES_DIR")
+               "TTS_SPEAKER_AUDIO_DIR", "TTS_OUTPUTS_DIR", "TTS_VOICES_DIR",
+               "TTS_JOBS_HIST_PATH", "TTS_METRICS_DIR")
 
 # ── #206: o AMBIENTE do dono não decide o veredito ───────────────────────────────
 # O env TEM PRECEDÊNCIA sobre o settings (por desenho, #112): um

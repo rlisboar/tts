@@ -214,14 +214,20 @@ def pytest_skip(motivo: str) -> None:
 from _dono_leem import LEEM_O_DONO  # noqa: E402
 
 #: caminho para o estado do dono: `BASE / "<arquivo>"` (ou `REPO /`, qualquer nome
-#: à esquerda), `app.VOICES_DIR` e o shell. A varredura inclui `conftest.py`,
-#: helpers `_*.py` e SUBDIRETÓRIOS (#1018) — o guarda do estado sintético também
-#: pode virar leitor, e arquivo novo em `tests/fixtures/` não escapa.
+#: à esquerda) e o mesmo no shell (`$RAIZ/…`, `${REPO}/…`). A varredura inclui
+#: `conftest.py`, helpers `_*.py` e SUBDIRETÓRIOS (#1018) — o guarda do estado
+#: sintético também pode virar leitor, e arquivo novo em `tests/fixtures/` não
+#: escapa. Ler `app.SETTINGS_PATH`/`app.VOICES_DIR` NÃO entra: é a forma
+#: sancionada (o conftest redireciona os caminhos de estado; o resto é default).
 _LEITURA_DO_DONO = re.compile(
     r"""(?:(?:app\.)?BASE|\w*REPO\w*)\s*/\s*["'](?:settings\.json|\.apikeys\.json|
         \.apikey|\.speaker-profiles\.json|voices)["']""",
     re.X)
-_LEITURA_SHELL = re.compile(r"\$(?:RAIZ|AQUI|BASE)/voices(?![\w-])|app\.VOICES_DIR")
+_LEITURA_SHELL = re.compile(
+    r"""\$\{?(?:RAIZ|AQUI|BASE|ROOT|REPO)\}?/                    # $RAIZ/… e ${RAIZ}/…
+        (?:settings\.json|\.apikeys?(?![\w-])|\.speaker-profiles\.json|
+           voices(?![\w-]))""",
+    re.X)
 
 
 def _arquivos_que_leem_o_dono() -> set[str]:
