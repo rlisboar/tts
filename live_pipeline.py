@@ -1075,6 +1075,11 @@ class LivePipeline:
                 raise caixa_stt["erro"]
             texto = caixa_stt["texto"]
             lat["stt_ms"] = _ms(t0)
+            if self._stt is _stt_app:
+                # #876 C1: o release do MLX que o STT adiou sai agora, em segundo
+                # plano — corre junto com o LLM (rede), fora do caminho crítico
+                import app as _app
+                _app._stt_solta_adiado()
             # a separação do turno (#533) vai no `latency` e nos `turn_complete`
             # de descarte: é o instrumento do aceite (`stats.motor.voz`)
             sep = dict(julga.get("separacao") or {})
@@ -1476,8 +1481,14 @@ def _stt_aquece(app) -> None:
     qualquer forma (medido: 5 s no 1º turno do smoke). `_stt_lock`: sem ele o
     prewarm roda Metal junto com um STT em curso. Falha aqui não derruba nada."""
     try:
-        import mlx_whisper
         tom = (np.sin(np.linspace(0, 2 * np.pi * 220, 8000)) * 0.3).astype(np.float32)
+        if app._stt_motor(live=True) == "parakeet":
+            # #876 C1: aquece o MOTOR do Live — senão o 1º turno paga a carga do
+            # Parakeet, que é o que o #880 já tinha consertado para o turbo
+            with app._stt_lock, app._stt_do_live():
+                app._transcreve_cru_live(tom, "pt")
+            return
+        import mlx_whisper
         # #876: aquece o repo do LIVE (turbo), não o de arquivo. Sem a marca, o
         # mini compilava o large-v3 aqui e o 1º turno pagava a carga do turbo.
         with app._stt_lock, app._stt_do_live():

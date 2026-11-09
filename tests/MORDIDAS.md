@@ -1030,3 +1030,23 @@ carência de 2 s.
 |---|---|
 | condição volta a exigir `len(c.play) == 0` | `test_turno_que_fechou_com_playback_pendente_nao_esmaga_o_teto` **FAILED** |
 | contar qualquer `interrupted` (sem olhar o motivo) | `test_interrupted_de_continuacao_nao_fecha_e_o_terminal_fecha` **FAILED** |
+
+### #876 C1 — motor do STT do Live (`live_stt_engine`) e release do MLX fora do caminho
+
+Duas chaves que valem na hora, ambas com default que não muda nada:
+- `live_stt_engine` (vazio = segue o `stt_local_engine`) escolhe o motor do turno,
+  da passada de comando do barge e do prewarm do Live;
+- `live_stt_release_adiado` tira o `_release_mlx_memory` de dentro do estágio `stt`
+  e o roda em segundo plano depois do texto, sob o `_stt_lock` e só com o
+  `_gen_lock` livre.
+
+| Sabotagem | Resultado |
+|---|---|
+| `_stt_motor` ignorar a chave do Live | `test_turno_do_live_com_parakeet_...`, `test_passada_de_comando_usa_o_motor_do_live[0.0/5.0]`, `test_prewarm_aquece_o_parakeet_...` **FAILED** |
+| `_transcribe` voltar a ler só o `stt_local_engine` | `test_turno_do_live_com_parakeet_e_o_arquivo_segue_no_whisper` **FAILED** |
+| passada de comando sempre no Whisper | `test_passada_de_comando_usa_o_motor_do_live[0.0/5.0]`, `test_prewarm_...` **FAILED** |
+| release sempre dentro do STT | `test_release_adiado_sai_do_stt_e_volta_depois` **FAILED** |
+| release adiado ESPERAR o `_gen_lock` (prende o `_stt_lock` enquanto o TTS gera) | `test_release_adiado_nao_cruza_com_a_geracao_do_tts` **FAILED** |
+| o turno não chamar o `_stt_solta_adiado` | `test_turno_do_pipeline_solta_o_release_depois_do_stt` **FAILED** |
+| prewarm só aquecer o Whisper | `test_prewarm_aquece_o_parakeet_quando_e_o_motor_do_live` **FAILED** |
+| default `live_stt_engine = "whisper"` (mudaria quem já usa `stt_local_engine=parakeet`) | `test_motor_do_live_vazio_segue_o_stt_local_engine[whisper/parakeet]` **FAILED** |

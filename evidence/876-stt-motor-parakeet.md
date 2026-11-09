@@ -87,3 +87,18 @@ nenhuma transcrição falsa a mais que C0, RSS ≤ C0.
 - A latência local não é a do mini; o que se transfere é a proporção.
 - Sem TTS em paralelo nesta bancada (a disputa de GPU está no `876-stt-live.md`).
 - MLS é audiolivro; a fala do Live é conversa.
+
+## 6. C1 implementada (atrás das chaves) — modelo REAL pelo caminho do Live
+
+`evidence/876-c1-modelo-real.py`: `live_pipeline._stt_app` (o turno de produção,
+com o juiz) e `_live_transcreve_trecho(cru=True, prazo_s=5)` (a passada de comando),
+40 falas do MLS PT, modelos quentes, local.
+
+| | turno p50 | turno p95 | WER médio | passada de comando p50 |
+|---|---|---|---|---|
+| C0 (`live_stt_engine=""`, release dentro) | 380 ms | 457 ms | 5,77 % | 182 ms |
+| C1 (`parakeet` + `live_stt_release_adiado`) | **232 ms** | **294 ms** | 8,09 % | **103 ms** |
+
+O turno cai **−39 %** e a passada de comando **−43 %**. O WER subiu **+2,3 pp** nestas
+40 falas: fica na beira do aceite (≤ C0 + 2 pp) e quem decide é a medição das falas
+A no mini, com as mesmas falas nas duas configurações.

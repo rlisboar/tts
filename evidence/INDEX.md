@@ -322,16 +322,17 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `875-hang-b50ec5a60b-relogio.jsonl` | #875 | 2026-11-08 | (sem descrição) |
 | `875-hang-bffb1c9d09-relogio.jsonl` | #875 | 2026-11-08 | (sem descrição) |
 | `875-hang-log.txt` | #875 | 2026-11-08 | 15:20:23 [live] abre sess=d4930cc1e3 voz=4f6a75c20d retomado=False history=0 criadas=0 |
-| `876-refs-mls.py` | #876 | — | """#876 — transcrições do MLS PT (dev/test) por arquivo extraído. Lê só dados (pyarrow).""" |
+| `876-c1-modelo-real.py` | #876 | — | """#876 C1 com modelo REAL (script): turno do Live (`_stt_app`) e passada de comando, C0 × C1.""" |
+| `876-refs-mls.py` | #876 | 2026-11-08 | """#876 — transcrições do MLS PT (dev/test) por arquivo extraído. Lê só dados (pyarrow).""" |
 | `876-stt-bench-carga.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench-livre.json` | #876 | 2026-11-06 | "n": 20, |
 | `876-stt-bench.py` | #876 | 2026-11-06 | """#876 — latência e WER do STT local do Live por modelo, com e sem TTS em paralelo. |
-| `876-stt-decompoe.py` | #876 | — | """#876 — onde vai o tempo do STT do turno (turbo): Silero, decode, release do MLX.""" |
+| `876-stt-decompoe.py` | #876 | 2026-11-08 | """#876 — onde vai o tempo do STT do turno (turbo): Silero, decode, release do MLX.""" |
 | `876-stt-frio-prewarm.md` | #876 | 2026-11-08 | 876 — STT do 1º turno frio: o prewarm do Live o deixa igual ao quente (0,23 s × 1,25 s sem) |
 | `876-stt-frio-prewarm.py` | #876 | 2026-11-08 | """#876 — 1º turno frio isolado (script do A/B do prewarm): processo NOVO, com × sem `_stt_aquece`, mede o |
 | `876-stt-live.md` | #876 | 2026-11-06 | 876 — STT do Live: modelo e beam (bancada local, antes do Mini) |
-| `876-stt-motor-parakeet.md` | #876 | — | 876 — STT do Live: no mini já é o turbo greedy; o próximo ganho é o motor (Parakeet −30 %) e tirar o release d |
-| `876-stt-motor-parakeet.py` | #876 | — | """#876 — motor do STT do Live: Whisper turbo (o de hoje) × Parakeet TDT 0.6B v3. |
+| `876-stt-motor-parakeet.md` | #876 | 2026-11-08 | 876 — STT do Live: no mini já é o turbo greedy; o próximo ganho é o motor (Parakeet −30 %) e tirar o release d |
+| `876-stt-motor-parakeet.py` | #876 | 2026-11-08 | """#876 — motor do STT do Live: Whisper turbo (o de hoje) × Parakeet TDT 0.6B v3. |
 | `942-bancada-mini-c3f4a78.json` | #942 | 2026-11-07 | "rotulo": "c3f4a78-mini", |
 | `942-bancada-mini-c3f4a78.md` | #942 | 2026-11-07 | 942 — bancada no mini sobre c3f4a78 (4º deploy), janela 16:16–16:50 BRT |
 | `979-asnorm-topk.py` | #979 | 2026-11-08 | """#979 — mesma fala, mesma coorte: só muda o K do AS-norm (app top-10 × R2 top-50).""" |

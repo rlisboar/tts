@@ -163,6 +163,18 @@ devolve a lista em `admin_ignored`, que a tela exibe com nome humano. Ação que
 exige admin e leva `403` abre a faixa de chave com o passo a passo
 (`Configurações → Acesso → Nova chave → papel admin`).
 
+**STT do Live** (admin, só por `POST /api/settings`; a tela não tem campo):
+`live_stt_whisper_repo` escolhe o Whisper do Live (vazio = turbo; o
+`stt_whisper_repo` segue no STT de arquivo). `live_stt_engine` escolhe o MOTOR do
+turno e da passada de comando do barge: vazio = segue o `stt_local_engine` (o
+comportamento de sempre), `"whisper"` ou `"parakeet"`. O Parakeet TDT 0.6B v3 foi
+~30–40 % mais rápido que o turbo em PT, com ~1–2 pp de WER a mais
+(`evidence/876-stt-motor-parakeet.md`). Ele não traz `no_speech_prob`, então o juiz
+anti-alucinação fica só com VAD, tamanho e blacklist. `live_stt_release_adiado`
+(default `false`) tira o release do cache do MLX de dentro do estágio `stt` e o faz
+em segundo plano, logo depois do texto, sem cruzar com uma geração do TTS. As duas
+valem na hora, sem reiniciar.
+
 `remote_tts_extra` (JSON de parâmetros extras do servidor remoto) é campo de
 **admin**: ele é aplicado sobre o corpo de *todos* os trechos, então uma chave de
 uso que mandasse `{"text": …}` reescreveria o job alheio. `text` e `voice` dentro

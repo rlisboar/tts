@@ -549,6 +549,13 @@ _SETTINGS_DEFAULTS = {
     # turbo: no Live a latência manda e o large-v3 custa 1,5–2,4× sem ganho medido de
     # WER (evidence/876-stt-live.md). O `stt_whisper_repo` do dono segue no ditado/arquivo.
     "live_stt_whisper_repo": "",
+    # #876 C1: MOTOR do STT do Live (turno + passada de comando do barge). Vazio =
+    # segue o `stt_local_engine` (o de sempre); "parakeet" é ~30 % mais rápido que o
+    # turbo em PT, com ~1 pp de WER a mais (evidence/876-stt-motor-parakeet.md).
+    "live_stt_engine": "",
+    # #876 C1: o Live solta o cache do MLX DEPOIS do STT, fora do caminho crítico
+    # (custava ~16 % do estágio stt). Desligado = o release segue dentro do STT.
+    "live_stt_release_adiado": False,
     "stt_beam": 5,                    # beam do STT remoto: 1=rápido, 5=padrão, 8=qualidade
     # Histórico de operação (#376): TTL em dias do JSONL do /api/metrics e teto de
     # tamanho por arquivo. Política de RECURSO (não é admin): quem gera fala pode
@@ -5276,6 +5283,7 @@ def shutdown(request: Request):
 # ---------------------------------------------------------------------------
 _SETTINGS_ADMIN = frozenset({
     "model", "translate_model", "stt_whisper_repo", "live_stt_whisper_repo",
+    "live_stt_engine", "live_stt_release_adiado",
     "remote_tts", "remote_translate", "remote_stt",
     "remote_base_url", "remote_api_key", "remote_tts_url",
     "remote_stt_base_url", "remote_stt_key",
@@ -5810,6 +5818,15 @@ def _apply_settings(payload: dict):
         if repo and (not re.fullmatch(r"[\w.\-/]+", repo) or "whisper" not in repo.lower()):
             raise HTTPException(400, "live_stt_whisper_repo inválido (esperado repo HF do whisper)")
         _settings["live_stt_whisper_repo"] = repo
+    if "live_stt_engine" in payload:
+        eng = str(payload["live_stt_engine"] or "").strip().lower()
+        if eng not in ("", "whisper", "parakeet"):
+            raise HTTPException(400, "live_stt_engine inválido (vazio|whisper|parakeet)")
+        _settings["live_stt_engine"] = eng
+    if "live_stt_release_adiado" in payload:
+        v = payload["live_stt_release_adiado"]
+        _settings["live_stt_release_adiado"] = (v if isinstance(v, bool) else
+                                                str(v).strip().lower() in ("1", "true", "on"))
     if "stt_beam" in payload:
         _settings["stt_beam"] = int(_clamp(payload["stt_beam"], 1, 10, 5))
     # Histórico de operação (#376): 1..365 dias (0 apaga tudo na próxima poda) e
@@ -9761,6 +9778,61 @@ def _whisper_repo(live: bool | None = None) -> str:
     return (_settings.get("stt_whisper_repo") or "").strip() or WHISPER_REPO
 
 
+def _stt_motor(live: bool | None = None) -> str:
+    """Motor do STT local: "whisper" ou "parakeet".
+
+    No Live (#876 C1), `live_stt_engine` escolhe; vazio segue o `stt_local_engine`
+    (o comportamento de antes da chave). Fora do Live vale só o `stt_local_engine`."""
+    if live is None:
+        live = bool(getattr(_stt_ctx, "live", False))
+    if live:
+        eng = (_settings.get("live_stt_engine") or "").strip().lower()
+        if eng in ("whisper", "parakeet"):
+            return eng
+    return (_settings.get("stt_local_engine") or "whisper").strip().lower()
+
+
+#: release do MLX que o STT do Live deixou para depois (#876 C1)
+_stt_release_pendente = threading.Event()
+
+
+def _stt_release() -> None:
+    """Solta o cache do MLX depois do STT — ou adia, no Live com a chave ligada.
+
+    Dentro do estágio `stt` o release custava ~38 ms local (~150 ms no mini, 16 %
+    do estágio). Adiado, quem solta é `_stt_solta_adiado`, chamado pelo turno logo
+    que o texto sai — em paralelo com o LLM, que é rede e não usa o Metal."""
+    if getattr(_stt_ctx, "live", False) and _settings.get("live_stt_release_adiado"):
+        _stt_release_pendente.set()
+        return
+    _release_mlx_memory()
+
+
+def _stt_solta_adiado() -> bool:
+    """Faz o release adiado em segundo plano. False = nada pendente.
+
+    Sob o `_stt_lock` (não cruza com outro STT nem com a passada de comando) e
+    SÓ se a geração local estiver livre: release no meio de um generate do TTS
+    disputaria o Metal (#803). Ocupada, fica pendente para a próxima vez — é só
+    um corte de cache, adiar não custa nada."""
+    if not _stt_release_pendente.is_set():
+        return False
+
+    def _solta() -> None:
+        with _stt_lock:
+            if not _gen_lock.acquire(blocking=False):
+                return                    # TTS gerando: tenta no próximo turno
+            try:
+                if _stt_release_pendente.is_set():
+                    _stt_release_pendente.clear()
+                    _release_mlx_memory()
+            finally:
+                _gen_lock.release()
+
+    threading.Thread(target=_solta, name="stt-release", daemon=True).start()
+    return True
+
+
 def _com_vad_aviso(res: dict, aviso: str) -> dict:
     """Carimba o motivo do fail-open do VAD, quando houve."""
     if aviso and isinstance(res, dict) and "vad_aviso" not in res:
@@ -9788,7 +9860,7 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
     # de saber que o guarda anti-alucinação ficou desligado neste trecho (#282)
     vad_aviso = _vad_erro
 
-    if (_settings.get("stt_local_engine") or "whisper").lower() == "parakeet":
+    if _stt_motor() == "parakeet":
         return _com_vad_aviso(
             _com_aviso_remoto(_transcribe_parakeet(audio_path), caiu_remoto, erro_remoto),
             vad_aviso)
@@ -9807,7 +9879,7 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
         r = _transcreve_em_janelas(audio, lang)
     del audio
     _touch_use("stt")
-    _release_mlx_memory()
+    _stt_release()
     return _com_vad_aviso(_com_aviso_remoto(r, caiu_remoto, erro_remoto), vad_aviso)
 
 
@@ -9832,19 +9904,46 @@ def _aviso_remoto_headers(alvo, r: dict) -> None:
         alvo["X-TTS-Remote-Error"] = msg.encode("ascii", "replace").decode()
 
 
+def _parakeet_cru(audio_path: Path):
+    """Parakeet SEM trava. Quem chama decide o lock: o `_transcribe_parakeet` segura
+    o `_stt_lock`, e a passada de comando com prazo do barge já o segura (o `Lock`
+    não é reentrante)."""
+    from parakeet_mlx import from_pretrained
+
+    if _pk["model"] is None or _pk["repo"] != PARAKEET_REPO:
+        _pk["model"] = from_pretrained(PARAKEET_REPO)
+        _pk["repo"] = PARAKEET_REPO
+    return _pk["model"].transcribe(audio_path)
+
+
+def _transcreve_cru_live(a, idioma, desistiu=None) -> str:
+    """Passada de comando do barge (#876 C1): o MESMO motor do turno do Live, para
+    não manter dois modelos residentes no M3 de 16 GB. Quem chama segura o lock."""
+    if _stt_motor(live=True) == "parakeet":
+        import numpy as _np
+        _fd, nome = tempfile.mkstemp(prefix="tts-cmd-", suffix=".wav")
+        os.close(_fd)
+        caminho = Path(nome)
+        try:
+            with wave.open(str(caminho), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes((_np.clip(a, -1, 1) * 32767).astype("<i2").tobytes())
+            return (_parakeet_cru(caminho).text or "").strip()
+        finally:
+            caminho.unlink(missing_ok=True)
+    return (_transcreve_em_janelas(a, idioma, desistiu=desistiu).get("text") or "").strip()
+
+
 def _transcribe_parakeet(audio_path: Path) -> dict:
     """STT local com NVIDIA Parakeet TDT 0.6B v3 (multilíngue, ~30x tempo real):
     pontuação/acento nativos, timestamps por sentença. Sem probs de no-speech —
     os filtros de alucinação são VAD + tamanho do texto + blacklist (_stt_ok)."""
-    from parakeet_mlx import from_pretrained
-
     with _stt_lock:
-        if _pk["model"] is None or _pk["repo"] != PARAKEET_REPO:
-            _pk["model"] = from_pretrained(PARAKEET_REPO)
-            _pk["repo"] = PARAKEET_REPO
-        r = _pk["model"].transcribe(audio_path)
+        r = _parakeet_cru(audio_path)
     _touch_use("stt")
-    _release_mlx_memory()
+    _stt_release()
     return {"text": (r.text or "").strip(),
             "language": "",
             "segments": [{"start": float(s.start), "end": float(s.end),
@@ -13449,8 +13548,8 @@ def _live_transcreve_trecho(sess: dict, audio: bytes, cru: bool = False,
             a = a[:24000]                      # ~1,5 s do INÍCIO: o comando vem no
                                                # ataque, não no fim do trecho
             if prazo_s <= 0:
-                with _stt_do_live():     # #876: Whisper do Live
-                    return (_transcreve_em_janelas(a, idioma).get("text") or "").strip()
+                with _stt_do_live():     # #876: motor do Live
+                    return _transcreve_cru_live(a, idioma)
             # PRAZO por passada: o STT sob carga leva segundos e sem prazo a fila
             # de passadas cresce até estourar o teto de 2 s do cliente (#503).
             # `shutdown(wait=False)` é ESSENCIAL (#547): com o `with`, o
@@ -13475,8 +13574,7 @@ def _live_transcreve_trecho(sess: dict, audio: bytes, cru: bool = False,
                 with _stt_lock, _stt_do_live():     # #876: thread do pool, marca aqui
                     if _desistiu():
                         return ""
-                    return _transcreve_em_janelas(a, idioma,
-                                                  desistiu=_desistiu).get("text") or ""
+                    return _transcreve_cru_live(a, idioma, desistiu=_desistiu)
 
             pool = _cf.ThreadPoolExecutor(max_workers=1)
             fut = pool.submit(_roda)

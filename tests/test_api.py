@@ -2166,6 +2166,20 @@ def test_stt_whisper_repo_setting(client, auth):
     client.post("/api/settings", headers=auth, json={"stt_whisper_repo": ""})
 
 
+def test_settings_validam_as_chaves_do_c1_876(client, auth):
+    for chave in ("live_stt_engine", "live_stt_release_adiado"):
+        assert chave in app._SETTINGS_ADMIN
+    r = client.post("/api/settings", headers=auth, json={"live_stt_engine": "gpt-4"})
+    assert r.status_code == 400
+    r = client.post("/api/settings", headers=auth,
+                    json={"live_stt_engine": "parakeet", "live_stt_release_adiado": True})
+    assert r.status_code == 200
+    assert app._settings["live_stt_engine"] == "parakeet"
+    assert app._settings["live_stt_release_adiado"] is True
+    client.post("/api/settings", headers=auth,
+                json={"live_stt_engine": "", "live_stt_release_adiado": False})
+
+
 def test_live_stt_whisper_repo_setting(client, auth):
     r = client.post("/api/settings", headers=auth,
                     json={"live_stt_whisper_repo": "mlx-community/whisper-large-v3-mlx"})
