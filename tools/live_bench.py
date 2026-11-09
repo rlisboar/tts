@@ -216,8 +216,8 @@ _PARA_FALA, _LIMPA_DE = _carrega_limpador()
 #: sobra até o 1º áudio no CLIENTE (fio + fila do sender + decisão do VAD, que o
 #: `first_token_ms` não enxerga porque conta do início da thread do turno).
 ESTAGIOS_POS_LLM = ("llm_frase", "fila_tts", "lock", "tts", "marca", "envio", "resto",
-                    "vad", "fio", "tts_modelo", "tts_cond", "tts_prep", "tts_gen",
-                    "tts_fora")
+                    "vad", "fio", "fio_rx", "fio_cliente", "tts_modelo", "tts_cond",
+                    "tts_prep", "tts_gen", "tts_fora")
 
 
 def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
@@ -231,7 +231,10 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
     - `envio`: marca → entrega ao sender;
     - `resto`: `s2_ms − first_audio_ms` (fio, cliente e VAD).
     - `vad`: parcela do `resto` que é a decisão do detector (`t_decisao_ms`);
-    - `fio`: `resto − vad` — o que sobra é transporte/fila, sem o VAD.
+    - `fio`: `resto − vad` — o que sobra é transporte/fila, sem o VAD;
+    - `fio_rx`: parcela SERVIDOR do `fio` (decisão do VAD → turno abrir),
+      `decisao_para_audio_ms − first_audio_ms`;
+    - `fio_cliente`: `fio − fio_rx` — buffer do mic, WS e playback no cliente.
     Marco ausente → trecho `None` (não inventa zero).
 
     RESSALVA do `resto` (medida local, #1022): ele mistura DOIS relógios. O
@@ -276,12 +279,23 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
     fora = (tts - sum(round(x) for x in subs)
             if tts is not None and all(x is not None for x in subs) else None)
     vad = g("t_decisao_ms") or g("decisao_ms") or None   # 0 = sem carimbo
+    # #1022: o `fio` se parte em SERVIDOR (`fio_rx`: da decisão do VAD até o turno
+    # abrir — fila do event loop, gate do prewarm, pendência) e CLIENTE/transporte
+    # (`fio_cliente`: buffer do mic, WS de ida e volta, playback). O servidor já
+    # publica as duas pontas: `decisao_para_audio_ms` = `first_audio_ms` + (abre −
+    # decisão), então a diferença é o trecho do servidor sem marca nova no app.
+    dpa = g("decisao_para_audio_ms")
+    rx = dpa - aud if dpa is not None and aud is not None else None
     return {"llm_frase": d(tok, cla), "fila_tts": d(cla, ini),
             "lock": round(lock) if lock is not None else None, "tts": tts,
             "marca": d(pcm, mar), "envio": d(mar, env), "resto": resto,
             "vad": round(vad) if vad is not None else None,
             "fio": (resto - round(vad) if resto is not None and vad is not None
                     else None),
+            "fio_rx": round(rx) if rx is not None else None,
+            "fio_cliente": (resto - round(vad) - round(rx)
+                            if resto is not None and vad is not None and rx is not None
+                            else None),
             "tts_modelo": round(modelo) if modelo is not None else None,
             "tts_cond": round(cond) if cond is not None else None,
             "tts_prep": round(prep) if prep is not None else None,

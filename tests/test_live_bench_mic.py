@@ -351,20 +351,23 @@ def test_estagios_do_pos_llm_fecham_com_os_marcos_do_latency():
            "tts_first_pcm_ms": 2900, "lock_espera_ms": 300, "marca_ms": 3100,
            "send_ms": 3120, "first_audio_ms": 3125, "t_decisao_ms": 200,
            "tts_modelo_ms": 40, "tts_cond_ms": 50, "tts_prep_ms": 15,
-           "tts_gen_ms": 880}
+           "tts_gen_ms": 880, "decisao_para_audio_ms": 3150}
     e = lb.estagios_pos_llm(lat, s2_ms=3400)
     assert e == {"llm_frase": 600, "fila_tts": 10, "lock": 300, "tts": 990,
                  "marca": 200, "envio": 20, "resto": 275, "vad": 200, "fio": 75,
+                 "fio_rx": 25, "fio_cliente": 50,
                  "tts_modelo": 40, "tts_cond": 50, "tts_prep": 15, "tts_gen": 880,
                  "tts_fora": 5}
     # a soma dos trechos fecha com o pos_llm da bancada (s2 − 1º token), a menos
-    # do intervalo send → first_audio, que é o emit (5 ms aqui). `vad`/`fio` e as
-    # sub-marcas do `tts` ficam de fora: eles DECOMPÕEM, não somam.
+    # do intervalo send → first_audio, que é o emit (5 ms aqui). `vad`/`fio`, a
+    # partição do `fio` e as sub-marcas do `tts` ficam de fora: DECOMPÕEM, não somam.
     assert sum(v for k, v in e.items()
-               if k not in ("vad", "fio", "tts_modelo", "tts_cond", "tts_prep",
-                            "tts_gen", "tts_fora")) == \
+               if k not in ("vad", "fio", "fio_rx", "fio_cliente", "tts_modelo",
+                            "tts_cond", "tts_prep", "tts_gen", "tts_fora")) == \
         3400 - 1000 - (3125 - 3120)
     assert e["vad"] + e["fio"] == e["resto"]
+    # #1022: o `fio` se parte em servidor + cliente, sem sobra.
+    assert e["fio_rx"] + e["fio_cliente"] == e["fio"]
     # #1022 (gate #1065): as sub-marcas FECHAM o `tts` — sem o `prep` a soma não
     # fechava e o critério "gen > 80 % do tts" lia setup como fora do worker.
     assert (e["tts_modelo"] + e["tts_cond"] + e["tts_prep"] + e["tts_gen"]
@@ -383,6 +386,15 @@ def test_marco_ausente_vira_none_e_nao_zero():
     e = lb.estagios_pos_llm({"first_token_ms": 900, "first_audio_ms": 2000}, None)
     assert set(e) == set(lb.ESTAGIOS_POS_LLM)
     assert all(v is None for v in e.values())
+
+
+def test_fio_sem_decisao_para_audio_nao_inventa_particao():
+    """#1022: sem `decisao_para_audio_ms` (turno sem decisão do VAD) o `fio` ainda
+    sai, mas a partição servidor/cliente fica `None` — nada de zero inventado."""
+    e = lb.estagios_pos_llm({"first_token_ms": 900, "first_audio_ms": 2000,
+                             "t_decisao_ms": 600}, 2900)
+    assert e["fio"] == 300
+    assert e["fio_rx"] is None and e["fio_cliente"] is None
 
 
 def test_resto_abre_em_vad_e_fio():
