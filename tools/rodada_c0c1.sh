@@ -54,11 +54,20 @@ LOG_CORRIDA="$DIR/corrida.log"
 fala() { print -r -- "$*" | tee -a "$LOG_CORRIDA" }
 
 # ── rollback: sempre, em qualquer saída ─────────────────────────────────────
-ANTERIOR=""; SAMPLER=""; SUBIU=0
+ANTERIOR=""; SAMPLER=""; APP_PID=""; SUBIU=0
 derruba() {
   pkill -f "live_bench" 2>/dev/null
   pkill -f "fase_ruido.py" 2>/dev/null
-  [ "$SUBIU" = 1 ] && { pkill -f "port 7890" 2>/dev/null; sleep 2; SUBIU=0 }
+  # O app sai pelo PID que ESTE script registrou: casar a linha de comando
+  # (`pkill -f "port 7890"`) não alcança o app do pos_llm (7895) nem sobrevive
+  # a um uvicorn cujo argv mude — o mesmo padrão do `mede_pos_llm.sh`.
+  if [ -n "$APP_PID" ]; then
+    kill "$APP_PID" 2>/dev/null
+    local i
+    for i in $(seq 1 20); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.5; done
+    kill -9 "$APP_PID" 2>/dev/null
+    APP_PID=""; SUBIU=0
+  fi
 }
 limpa() {
   local rc=$?
@@ -84,6 +93,15 @@ fala "== pré-voo  $(date -Iseconds)"
 [ -f "$ESTADO/settings.json" ] || { fala "estado sintético ausente: $ESTADO/settings.json"; exit 1; }
 [ "$(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ] \
   || { fala "7890 já ocupada — derrube a outra instância antes"; exit 1; }
+# NÃO rodar em paralelo com o mede_pos_llm.sh (#1022): ele sobe app E LLM falso
+# e as duas cópias do OmniVoice na GPU não cabem no swap do mini. As portas não
+# colidem (7890 × 7895/7899) — o recurso escasso é a GPU.
+for p in 7895 7899; do
+  [ "$(lsof -nP -iTCP:$p -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ] \
+    || { fala "porta $p ocupada (mede_pos_llm.sh no ar?) — rode em SÉRIE"; exit 1; }
+done
+[ -z "$(pgrep -f 'live_bench.py|fase_ruido.py')" ] \
+  || { fala "já há bancada rodando — uma por vez"; exit 1; }
 [ "$(pgrep -f 'port 7860' | wc -l | tr -d ' ')" -eq 1 ] \
   || { fala "esperava 1 uvicorn na 7860 (produção intocada)"; exit 1; }
 PROD_PID="$(pgrep -f 'port 7860' | head -1)"
@@ -118,6 +136,8 @@ sobe() {                  # $1 = 0|1 (duck rápido)
     TTS_LIVE_BARGE_DUCK_RAPIDO="$1" TTS_ALLOWED_HOSTS=127.0.0.1,localhost \
     nohup "$PY" -m uvicorn app:app --host 127.0.0.1 --port 7890 --log-level warning \
       > "$DIR/app-$1.log" 2>&1 & )
+  # `nohup` faz exec: `$!` já é o PID do uvicorn e é ele que o `trap` mata
+  APP_PID="$!"
   SUBIU=1
   local i
   for i in $(seq 1 60); do
@@ -125,8 +145,8 @@ sobe() {                  # $1 = 0|1 (duck rápido)
     sleep 2
   done
   [ "$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$APP/health")" = "200" ] \
-    || { fala "   7890 não subiu"; exit 1; }
-  fala "   health 200"
+    || { fala "   7890 não subiu (pid $APP_PID)"; exit 1; }
+  fala "   health 200 (pid $APP_PID)"
 }
 
 # ── fases ───────────────────────────────────────────────────────────────────

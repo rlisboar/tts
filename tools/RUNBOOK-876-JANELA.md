@@ -39,7 +39,12 @@ entre os blocos — a produção (7860) nunca.
 ## Regras
 
 - Produção intocada: nada de restart da 7860, nada de `settings.json` do dono.
-- Porta 7890; o script sobe e derruba a instância sozinho.
+- Porta 7890; o script sobe e derruba a instância sozinho, **pelo PID que ele
+  mesmo registra** (casar linha de comando não alcança o app do pos_llm).
+- **Em SÉRIE com o `mede_pos_llm.sh` (#1022), nunca em paralelo.** Ele sobe app
+  e LLM falso; as duas cópias do OmniVoice na GPU não cabem no swap do mini. As
+  portas não colidem (7890 × 7895/7899) — o recurso escasso é a GPU. O pré-voo
+  recusa se 7895/7899 estiverem no ar ou se já houver bancada rodando.
 - Uma rodada por vez. Swap acima de ~1,5 GB ou sessão Live do dono aberta: não
   começar.
 - **A primeira execução é teste do instrumento.** Se o pré-voo ou o `trap`
@@ -76,8 +81,8 @@ tudo que subiu.
 | onde parou | como voltar |
 |---|---|
 | pré-voo recusou | nada a desfazer; a mensagem diz o que falta |
-| em qualquer célula | `trap` mata bench e fases, restaura a chave e derruba a 7890 |
-| bancada travada | `pkill -f live_bench; pkill -f fase_ruido.py; pkill -f "port 7890"`; conferir `pgrep -f "port 7860"` = 1 |
+| em qualquer célula | `trap` mata bench e fases, restaura a chave e mata o app pelo PID registrado |
+| bancada travada | o `trap` já matou o app; se sobrar algo: `pgrep -f 'live_bench|fase_ruido|port 7890'` e `kill` no PID; conferir `pgrep -f "port 7860"` = 1 |
 | produção suspeita | parar tudo e avisar o PM; **não** reiniciar a 7860 sozinho |
 
 ## Depois
