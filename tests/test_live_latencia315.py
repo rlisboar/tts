@@ -57,6 +57,36 @@ def test_latency_sem_primeiro_audio_ainda_publica_a_decisao():
     assert ev["decisao_ms"] == 480 and "decisao_para_audio_ms" not in ev
 
 
+# -- 1b. o marcador CRU do detector (#1038) -------------------------------
+def test_latency_publica_o_marcador_cru_da_decisao():
+    """`t_decisao_ms` vai no evento com o valor do detector, sem arredondar.
+
+    É o que deixa o readout descontar o VAD do `resto` (dois relógios, #1022).
+    """
+    sess = _sess(t_decisao=time.monotonic(), t_abre_turno=time.monotonic())
+    ev = {"type": "latency", "first_audio_ms": 900}
+    app._live_observa(sess, ev)
+    assert ev["t_decisao_ms"] == 480
+
+
+def test_latency_sem_carimbo_publica_none_e_nao_zero():
+    """Sem carimbo o campo existe como `None` — zero seria medida inventada."""
+    sess = _sess(t_decisao=time.monotonic(), t_abre_turno=time.monotonic())
+    del sess["t_decisao_ms"]
+    ev = {"type": "latency", "first_audio_ms": 900}
+    app._live_observa(sess, ev)
+    assert "t_decisao_ms" in ev and ev["t_decisao_ms"] is None
+    assert ev["decisao_ms"] == 0            # o derivado mantém o contrato antigo
+
+
+def test_latency_sem_decisao_nao_publica_o_marcador_cru():
+    """Sem decisão no turno, nem o cru nem o derivado entram (nada de valor velho)."""
+    sess = _sess(t_decisao=None, t_abre_turno=None)
+    ev = {"type": "latency", "first_audio_ms": 900}
+    app._live_observa(sess, ev)
+    assert "t_decisao_ms" not in ev
+
+
 def test_speech_end_carimba_a_decisao():
     """O carimbo do relógio tem de nascer no evento que ABRE o turno."""
     class Ev:

@@ -12202,6 +12202,12 @@ def _live_observa(sess: dict, obj) -> None:
         # dois, o alvo do épico (1,5 s) não é auditável com o dado de produção.
         decisao, abre = sess.get("t_decisao"), sess.get("t_abre_turno")
         if decisao is not None:
+            # #1038: o marcador CRU do detector, na regra do instrumento (ausente
+            # = `None`). `decisao_ms` abaixo é derivado e cai em 0 quando não há
+            # carimbo; o `resto` da bancada precisa do cru para DESCONTAR o VAD e
+            # separar fio/cliente do que foi decisão — sem ele o `resto` sai
+            # negativo sem conta (dois relógios, ver `estagios_pos_llm`).
+            obj["t_decisao_ms"] = sess.get("t_decisao_ms")
             obj["decisao_ms"] = int(sess.get("t_decisao_ms") or 0)
         if decisao is not None and abre is not None and obj.get("first_audio_ms") is not None:
             obj["decisao_para_audio_ms"] = int(obj["first_audio_ms"]) + max(
