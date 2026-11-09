@@ -1,0 +1,32 @@
+# deploy de e8ea9df no mini — 2026-11-09 20:33
+
+gate: task_24eb80c7 (#1087) APROVADO · integração com hook: 2103 passed, 7 skipped
+patch-id 6861241 -> e8ea9df: 42338bc7c3602fc7 (idêntico)
+
+## incidente do switch (não repetir)
+arquivo solto `evidence/1079-piso-passos.py` no mini (hash 76c4459c = blob de 8a919f6) abortou o checkout na 1a tentativa.
+removido com backup em /tmp/1079-solto-*.py no mini; 2a tentativa passou.
+
+## smoke (LAN + público, todos ok)
+== smoke (rev alvo e8ea9df8bf08…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN Host público (tts.the-dudes.com) aceito → 200
+  [ok] LAN prefixo duplo sem chave → 401
+  [ok] LAN com a chave do mini → 200
+  [ok] LAN /api/build codigo=03f55a99 = rev alvo e8ea9df8bf08…
+  [ok] processo novo (boot 1794267211s ≥ marcador do restart 1794267207s — #252)
+  [ok] LAN WebSocket 101 (uvicorn com upgrade)
+  [ok] LAN index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] LAN POST /api/tts real: job 089c6d76fd em ~8s, peça 0 com 95484 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público Host público (tts.the-dudes.com) aceito → 200
+  [ok] público prefixo duplo sem chave → 401
+  [ok] público com a chave do mini → 200
+  [ok] público /api/build codigo=03f55a99 = rev alvo e8ea9df8bf08…
+  [ok] processo novo (boot 1794267211s ≥ marcador do restart 1794267207s — #252)
+  [ok] público WebSocket 101 (uvicorn com upgrade)
+  [ok] público index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] público POST /api/tts real: job 813fc25e55 em ~2s, peça 0 com 95484 bytes
+  [ok] marca d'água aplicada (sem aviso de 'SEM marca' no log)
