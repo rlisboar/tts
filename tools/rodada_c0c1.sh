@@ -233,7 +233,10 @@ for cel in "${ORDEM[@]}"; do
   fi
   celula "${cel%%-*}" "${cel##*-}"
 done
-derruba
+# fim de rodada: se a porta não liberar o relatório ainda sai, mas o rc fica
+# vermelho — porta suja no fim é instância vazada para a próxima janela
+RC_FIM=0
+derruba || RC_FIM=1
 print -r -- "fim $(date +%H:%M:%S)" >> "$DIR/marcas.txt"
 
 # ── relatório ───────────────────────────────────────────────────────────────
@@ -242,3 +245,4 @@ fala "== relatório  $(date -Iseconds)"
   --logs "$DIR/app-0.log" "$DIR/app-1.log" --marcas "$DIR/marcas.txt" \
   --aquecimento "$AQUEC" 2>&1 | tee -a "$LOG_CORRIDA"
 fala "== fim  $(date -Iseconds) — saída em $DIR"
+exit "$RC_FIM"
