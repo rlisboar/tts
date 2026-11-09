@@ -20,7 +20,5 @@ LEEM_O_DONO = {
         'original = app.BASE / ".apikeys.json"',
         'dono = app.BASE / ".apikeys.json"',
     },
-    "xss_frontend_repro.sh": {
-        'VOZES="${TTS_VOICES_DIR:-$RAIZ/voices}"',
-    },
+    "xss_frontend_repro.sh": "usa `voices/` como áudio de fixture (hoje via `app.VOICES_DIR`)",
 }

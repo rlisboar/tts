@@ -205,47 +205,45 @@ def pytest_skip(motivo: str) -> None:
 
 
 # ── #1018: quem ainda LÊ o estado real do dono ────────────────────────────────
-# A lista mora em `tests/_dono_leem.py` (fora do `test_*`): os próprios trechos
-# listados casariam com a varredura se ficassem aqui. O alvo é ela ir a zero.
+# A regra #728 é estado SINTÉTICO: teste que monta settings a partir do arquivo
+# real (ou usa `voices/` como fixture) fica refém da máquina do dono — e copia
+# segredo para o /tmp. O alvo é esta lista ir a zero; enquanto sobrar, o card
+# #1018 tira um a um. Por ARQUIVO (o leitor novo num arquivo já listado não é
+# pego aqui — a lista é o retrato do que falta, não um contrato de linha).
 from _dono_leem import LEEM_O_DONO  # noqa: E402
 
-#: `BASE / "<estado>"` em Python e `$RAIZ/voices` no shell
+#: caminho para o estado do dono: `BASE / "<arquivo>"`, `app.VOICES_DIR` e o shell
 _LEITURA_DO_DONO = re.compile(
     r"""(?:app\.)?BASE\s*/\s*["'](?:settings\.json|\.apikeys\.json|\.apikey|
                                      \.speaker-profiles\.json|voices)["']""",
     re.X)
-_LEITURA_SHELL = re.compile(r"\$(?:RAIZ|AQUI|BASE)/voices(?![\w-])")
+_LEITURA_SHELL = re.compile(r"\$(?:RAIZ|AQUI|BASE)/voices(?![\w-])|app\.VOICES_DIR")
 
 
-def _arquivos_que_leem_o_dono() -> dict[str, set[str]]:
-    """{arquivo: {trechos}} que montam caminho para o estado REAL do dono."""
-    achados: dict[str, set[str]] = {}
+def _arquivos_que_leem_o_dono() -> set[str]:
+    """Arquivos que montam caminho para o estado REAL do dono."""
+    achados: set[str] = set()
     for arq in sorted((BASE / "tests").glob("*")):
         if arq.name == "conftest.py" or arq.name.startswith("_") \
                 or arq.suffix not in (".py", ".sh"):
             continue
         padrao = _LEITURA_SHELL if arq.suffix == ".sh" else _LEITURA_DO_DONO
-        trechos = {linha.strip() for linha in arq.read_text(errors="replace").splitlines()
-                   if padrao.search(linha) and not linha.lstrip().startswith("#")}
-        if trechos:
-            achados[arq.name] = trechos
+        if any(padrao.search(linha) and not linha.lstrip().startswith("#")
+               for linha in arq.read_text(errors="replace").splitlines()):
+            achados.add(arq.name)
     return achados
 
 
 def test_nenhum_teste_nao_listado_le_o_estado_real_do_dono():
     """Leitor NOVO do dono tem de entrar na lista (ou virar sintético) — #1018.
 
-    Bidirecional: trecho da lista que não casa mais também falha, senão a lista
-    vira decoração e ninguém percebe que o alvo é zero."""
+    Bidirecional: arquivo da lista que não lê mais o dono também falha, senão a
+    lista vira decoração e ninguém percebe que o alvo é zero."""
     achados = _arquivos_que_leem_o_dono()
-    novos = {arq: sorted(trechos - LEEM_O_DONO.get(arq, set()))
-             for arq, trechos in achados.items()}
-    novos = {a: t for a, t in novos.items() if t}
+    novos = sorted(achados - set(LEEM_O_DONO))
     assert not novos, (
         "teste(s) lendo o estado REAL do dono (regra #728 — use TTS_*_PATH/tmp_path "
         f"ou justifique em tests/_dono_leem.py): {novos}")
-    obsoletos = {arq: sorted(trechos - achados.get(arq, set()))
-                 for arq, trechos in LEEM_O_DONO.items()}
-    obsoletos = {a: t for a, t in obsoletos.items() if t}
+    obsoletos = sorted(set(LEEM_O_DONO) - achados)
     assert not obsoletos, (
-        f"tests/_dono_leem.py lista trecho(s) que não existem mais — remova: {obsoletos}")
+        f"tests/_dono_leem.py lista arquivo(s) que não leem mais o dono — remova: {obsoletos}")
