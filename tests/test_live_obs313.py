@@ -306,7 +306,6 @@ def test_tts_app_mede_a_espera_do_lock(monkeypatch, tmp_path):
     import threading
     import numpy as np
 
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: False)
     monkeypatch.setattr(app, "_get_model", lambda: type("M", (), {"sample_rate": 24000})())
     monkeypatch.setattr(app, "_current_backend", lambda: {"family": "omnivoice"})
     monkeypatch.setattr(app, "_cond_for", lambda m, v, p: None)

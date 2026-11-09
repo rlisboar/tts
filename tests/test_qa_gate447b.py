@@ -339,7 +339,6 @@ def test_voz_de_design_publica_por_temporario(tmp_path, monkeypatch, client, aut
     resultado."""
     monkeypatch.setattr(app, "VOICES_DIR", tmp_path / "voices")
     (tmp_path / "voices").mkdir()
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: False)
     monkeypatch.setattr(app, "_get_model", lambda *a, **k: type("M", (), {"sample_rate": 16000})())
     monkeypatch.setattr(app, "_generate_chunk",
                         lambda *a, **k: np.zeros(16000 * 2, dtype=np.float32) + 0.1)

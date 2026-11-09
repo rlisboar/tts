@@ -808,14 +808,12 @@ classificador `modelo` decidia com referência vazia.
 | usar uma trava NOVA de módulo no passo (não a `_stt_lock`) | `test_comando_e_turno_disputam_a_MESMA_trava_do_whisper` **FAILED** ("whisper chamado 2x") |
 | parar de repassar `desistiu=` na rota | `test_rota_do_comando_adianta_o_desistiu_ate_as_janelas` **FAILED** |
 
-### #804 — `remote_tts` ligado não pode pular o `_gen_lock`
+### #804 — o Live não pode pular o `_gen_lock`
 
-`_tts_app`, o prewarm e o worker geram LOCAL (`_generate_chunk`/filho MLX) mesmo com
-o modo remoto: quem paraleliza no servidor de lá é o job, não estes caminhos.
-
-| Sabotagem | Resultado |
-|---|---|
-| voltar `trava = _NO_LOCK if _use_remote_tts() else _gen_lock` | `test_remoto_tambem_serializa_a_geracao_local` **FAILED** ("gerou local concorrente com o modo remoto") |
+A mordida original (o modo de TTS remoto pulando a trava) saiu junto com o TTS
+remoto (#1059). A trava do Live segue coberta por `test_live_metal_lock.py` e
+`test_tts_do_turno_segura_o_gen_lock_como_o_job_normal` (contraprova com
+`contextlib.nullcontext()` no lugar do `_gen_lock`).
 
 ### #805 — taxa do modelo × taxa do fio
 

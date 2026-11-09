@@ -495,11 +495,6 @@ _SETTINGS_DEFAULTS = {
     "omni_position_temperature": 5.0, # temp. da escolha de posição a revelar (0–20)
     "omni_layer_penalty_factor": 5.0, # penalidade por camada de codebook (0–20)
     "omni_t_shift": 0.1,              # deslocamento do cronograma de difusão (0–1)
-    "omni_denoise": True,             # limpa ruído do áudio gerado (config do modelo)
-    "omni_preprocess_prompt": True,   # pré-processa o prompt/texto antes de gerar
-    "omni_postprocess_output": True,  # pós-processa o áudio de saída
-    "omni_audio_chunk_duration": 15.0,   # chunking interno de texto longo: duração (s)
-    "omni_audio_chunk_threshold": 30.0,  # chunking interno: limiar p/ dividir (s)
     "omni_instruct": "",              # voice design textual (ex.: "female, low pitch")
     "omni_seed": 42,                  # seed da geração: voz reprodutível (mesmo instruct=mesma voz). -1 = aleatório
     "omni_duration_s": None,          # força duração fixa em s (None = automático)
@@ -556,32 +551,19 @@ _SETTINGS_DEFAULTS = {
     # #876 C1: o Live solta o cache do MLX DEPOIS do STT, fora do caminho crítico
     # (custava ~16 % do estágio stt). Desligado = o release segue dentro do STT.
     "live_stt_release_adiado": False,
-    "stt_beam": 5,                    # beam do STT remoto: 1=rápido, 5=padrão, 8=qualidade
     # Histórico de operação (#376): TTL em dias do JSONL do /api/metrics e teto de
     # tamanho por arquivo. Política de RECURSO (não é admin): quem gera fala pode
     # ajustar sem repontar conexão. Ver `metrics_hist.py`.
     "metrics_ttl_dias": 14,
     "metrics_teto_mb": 8,
-    # Modelos remotos (API OpenAI-compatível). base_url deve terminar em /v1
-    # (ex.: http://rtx-host:8000/v1). api_key opcional. Tudo local por padrão.
-    # base_url + api_key ficam locais (settings.json é gitignored). Vazio = local.
-    "remote_tts": False,              # síntese (OmniVoice) numa máquina remota (ex.: RTX)
-    "remote_tts_url": "",             # URL completa do endpoint, ex.: http://rtx-host:8800/tts
-    "remote_tts_voice": "",           # nome/preset da voz no servidor remoto (vai como `voice`)
-    "remote_tts_extra": "",           # JSON com params extras do servidor (speed, num_steps…)
-    "remote_tts_model": "tts-1",      # (compat OpenAI) nome do modelo, se o servidor usar
-    "remote_translate": False,        # tradução (LLM) via API remota
-    "remote_stt": False,              # transcrição (STT) via API remota
-    "remote_base_url": "",            # ex.: http://rtx-host:8000/v1
+    # Só modelos LOCAIS de áudio (#1059): TTS, STT e tradução rodam nesta máquina.
+    # A única coisa remota é o LLM da Conversa e do Live (exceção do dono). Estes
+    # dois campos são a base herdada dele quando `chat_base_url`/`chat_api_key`
+    # estão vazios; o nome ficou por compatibilidade com o settings que já existe.
+    "remote_base_url": "",            # ex.: https://api.openai.com/v1 (OpenAI-compatível)
     "remote_api_key": "",             # chave do provedor (guardada localmente; opcional)
-    "remote_translate_model": "gpt-4o-mini",
-    "remote_stt_model": "whisper-1",
-    # STT pode apontar p/ uma API DEDICADA (proxy externo) sem mexer no translate/TTS.
-    # vazio = usa remote_base_url/remote_api_key compartilhados.
-    "remote_stt_base_url": "",        # ex.: https://api.openai.com/v1 (OpenAI-compatível)
-    "remote_stt_key": "",             # chave dessa API de STT (vazio = usa remote_api_key)
     # Conversa (decide o texto por chat com IA). Provedor OpenAI-compatível;
-    # vazio = herda remote_base_url/remote_api_key/remote_translate_model.
+    # vazio = herda remote_base_url/remote_api_key; modelo vazio = gpt-4o-mini.
     "chat_base_url": "",              # ex.: https://api.openai.com/v1
     "chat_model": "",                 # ex.: gpt-4o-mini
     "chat_api_key": "",               # vazio = usa remote_api_key
@@ -637,7 +619,6 @@ _SETTINGS_DEFAULTS = {
     "live_so_minha_voz": {"on": False, "perfil": "", "rigor_far": "1.8",
                           "limiar": 0.0, "separacao": False},
     "translate_model": "",            # repo MLX do tradutor LOCAL; vazio = padrão (TRANSLATE_REPO)
-    "free_local_on_remote": False,    # descarrega o modelo LOCAL correspondente quando o remoto está ativo
     # Memória: descarrega TTS/STT/tradutor/SER após N minutos sem uso (0 = nunca)
     "idle_unload_minutes": 10,
     # Whisper de ARQUIVO (large-v3) sai sozinho; o turbo do Live não entra neste
@@ -690,11 +671,43 @@ def _protege_streams() -> None:
 
 _protege_streams()     # stdout morto não pode derrubar boot/Live/STT (#770)
 
+# Chaves que existiram e saíram (#1059: TTS, STT e tradução remotos, e os
+# parâmetros que só o servidor PyTorch da RTX lia). O settings que já existe no
+# disco (o do mini tem todas) NÃO quebra o boot: o load só lê chave conhecida, e
+# o `_save_settings` DESCARTA estas em vez de preservá-las como "de build mais
+# nova" (#197) — senão cada gravação avisaria "instância desatualizada?" e o
+# segredo `remote_stt_key` ficaria no arquivo para sempre.
+_SETTINGS_OBSOLETAS = frozenset({
+    "remote_tts", "remote_tts_url", "remote_tts_voice", "remote_tts_extra",
+    "remote_tts_model", "remote_tts_fallback", "remote_translate",
+    "remote_translate_model", "remote_stt", "remote_stt_model",
+    "remote_stt_base_url", "remote_stt_key", "free_local_on_remote", "stt_beam",
+    "omni_denoise", "omni_preprocess_prompt", "omni_postprocess_output",
+    "omni_audio_chunk_duration", "omni_audio_chunk_threshold",
+})
+#: modelo do LLM quando nem env nem `chat_model` dizem qual
+_CHAT_MODELO_PADRAO = "gpt-4o-mini"
+
+
+def _migra_settings_obsoletas(salvo, alvo: dict) -> None:
+    """Leva para o campo novo o que uma chave obsoleta ainda decide.
+
+    Só uma decide: com `chat_model` vazio, o LLM da Conversa/Live usava o modelo
+    do tradutor remoto. Sem migrar, quem tinha um modelo próprio ali passaria a
+    falar com o `gpt-4o-mini` em silêncio — o LLM é a exceção que FICA."""
+    if not isinstance(salvo, dict):
+        return
+    antigo = str(salvo.get("remote_translate_model") or "").strip()
+    if antigo and antigo != _CHAT_MODELO_PADRAO and not str(alvo.get("chat_model") or "").strip():
+        alvo["chat_model"] = antigo[:80]
+
+
 _settings = dict(_SETTINGS_DEFAULTS)
 if SETTINGS_PATH.exists():
     try:
         salvo = json.loads(SETTINGS_PATH.read_text())
         _settings.update({k: salvo[k] for k in _SETTINGS_DEFAULTS if k in salvo})
+        _migra_settings_obsoletas(salvo, _settings)
     except Exception as exc:  # noqa: BLE001
         # corrompido (crash na escrita): preserva p/ recuperação, segue com defaults
         try:
@@ -728,7 +741,8 @@ def _save_settings():
     except Exception:  # noqa: BLE001 — sem arquivo/ilegível: o payload conhecido basta
         disco = {}
     if isinstance(disco, dict):
-        extras = {k: v for k, v in disco.items() if k not in _SETTINGS_DEFAULTS}
+        extras = {k: v for k, v in disco.items()
+                  if k not in _SETTINGS_DEFAULTS and k not in _SETTINGS_OBSOLETAS}
         if extras:
             payload.update(extras)       # as nossas têm prioridade; as de fora sobrevivem
             novas = set(extras) - _settings_desconhecidas_avisadas
@@ -2195,7 +2209,6 @@ _model_lock = threading.Lock()
 # RLock: a cadeia de limpeza pode ser chamada de dentro de quem já segura a trava
 _gen_lock = threading.RLock()  # geração LOCAL (MLX) não é thread-safe; serializa
 import contextlib
-_NO_LOCK = contextlib.nullcontext()  # remoto pode rodar concorrente (sem serializar)
 _model_state = {"status": "idle", "device": None, "model": _settings["model"],
                 "error": None, "progress": None, "precision": None, "path": None}
 
@@ -2778,8 +2791,8 @@ def _anomalo(audio, sr: int, chunk: str, speed: float = 1.0) -> bool:
 
 
 def _apply_audio_fx(audio, sr: int):
-    """EQ/ganho das settings (ver common.apply_audio_fx) — worker e remoto
-    recebem os mesmos valores via cfg/omni."""
+    """EQ/ganho das settings (ver common.apply_audio_fx) — o worker recebe os
+    mesmos valores via cfg/omni."""
     return apply_audio_fx(
         audio, sr,
         g_low=float(_settings.get("audio_eq_low_db", 0.0)),
@@ -2814,7 +2827,7 @@ def _cache_audio():
 
 
 def _cache_chave(chunk: str, *, voice_id: str, voice_path: Path, family: str,
-                 model: str, language: str, alvo_remoto: bool, omni: dict) -> str:
+                 model: str, language: str, omni: dict) -> str:
     try:
         mtime = voice_path.stat().st_mtime_ns
     except OSError:
@@ -2825,7 +2838,9 @@ def _cache_chave(chunk: str, *, voice_id: str, voice_path: Path, family: str,
     return _tts_cache.chave(
         texto=chunk, voice_id=voice_id, voice_mtime=mtime, family=family,
         model=str(_settings.get("model") or ""), precision=str(_settings.get("omni_precision") or ""),
-        language=language, motor="remoto" if alvo_remoto else "local",
+        # "local" fixo: só existe motor local desde o #1059, e o valor segue na
+        # chave para as entradas já guardadas continuarem acertando
+        language=language, motor="local",
         omni={**omni, **params})
 
 
@@ -2839,7 +2854,7 @@ def _cache_limpa() -> int:
 def _pos_processa(audio, sr: int, pad_s: float = PAD_CAUDA_S):
     """Pós de UM trecho, num lugar só: trim → normalize → EQ/ganho → fade.
 
-    Serve o job (lote e remoto) E o Live. Antes cada caminho tinha a sua — o Live,
+    Serve o job E o Live. Antes cada caminho tinha a sua — o Live,
     nenhuma: o mesmo texto saía 2-3 dB mais baixo lá, com clique nas bordas e
     áudio mudo aceito como bom (#305).
 
@@ -3577,7 +3592,7 @@ CHAT_SYSTEM = (
 
 
 def _chat_provider() -> tuple[str, str, str]:
-    """(base_url, model, api_key) efetivos — chat_* com fallback p/ tradução.
+    """(base_url, model, api_key) efetivos — chat_* com fallback p/ `remote_*`.
 
     `TTS_CHAT_BASE_URL` / `TTS_CHAT_MODEL` / `TTS_CHAT_API_KEY` (ambiente) têm
     PRECEDÊNCIA sobre as settings: é o que permite teste/smoke apontar para um stub
@@ -3591,7 +3606,7 @@ def _chat_provider() -> tuple[str, str, str]:
         or (_settings.get("remote_base_url") or "").strip()
     model = (os.environ.get("TTS_CHAT_MODEL") or "").strip() \
         or (_settings.get("chat_model") or "").strip() \
-        or (_settings.get("remote_translate_model") or "gpt-4o-mini")
+        or _CHAT_MODELO_PADRAO
     key = (os.environ.get("TTS_CHAT_API_KEY") or "").strip() \
         or (_settings.get("chat_api_key") or "").strip() \
         or (_settings.get("remote_api_key") or "").strip()
@@ -5204,12 +5219,11 @@ def shutdown(request: Request):
 # Gerar fala é uma coisa; repontar a instalação para outro provedor (e ler a
 # credencial dele) é outra. `_SETTINGS_ADMIN` = campos que só admin altera:
 # conexões externas (URLs, chaves, toggles de envio remoto) e escolha de modelo
-# (que dispara download/load de repo) e o formato do payload remoto
-# (`remote_tts_extra` — ele sobrepõe `text`/`speed` de TODO mundo) e as políticas
+# (que dispara download/load de repo) e as políticas
 # de LIMPEZA do `outputs/` (`auto_cleanup*`): uma chave `use` remota mandando
 # `auto_cleanup_max_outputs: 1` faz o próximo laço apagar tudo menos 1 arquivo do
-# dono (#543). Fora da lista: `remote_tts_voice` e políticas de recurso por
-# geração (idle_unload, free_local_on_remote, speech_queue).
+# dono (#543). Fora da lista: políticas de recurso por geração (idle_unload,
+# speech_queue).
 #
 # Compatibilidade: quem não quer separação nenhuma não muda NADA — sem
 # `TTS_ROD_ADMIN_KEY` e sem `role` nas chaves, toda chave válida segue admin.
@@ -5217,17 +5231,11 @@ def shutdown(request: Request):
 _SETTINGS_ADMIN = frozenset({
     "model", "translate_model", "stt_whisper_repo", "live_stt_whisper_repo",
     "live_stt_engine", "live_stt_release_adiado",
-    "remote_tts", "remote_translate", "remote_stt",
-    "remote_base_url", "remote_api_key", "remote_tts_url",
-    "remote_stt_base_url", "remote_stt_key",
-    "remote_tts_model", "remote_translate_model", "remote_stt_model",
+    "remote_base_url", "remote_api_key",
     "chat_base_url", "chat_model", "chat_api_key",
     "chat_backend", "chat_backend_live", "chat_dsh_bin", "chat_dsh_profile",
     "chat_dsh_model",
     "chat_dsh_effort",
-    # o override é JSON aplicado sobre o corpo de TODOS os trechos: uma chave de
-    # uso que manda `{"text": ...}` reescreveria o job alheio (#282)
-    "remote_tts_extra",
     # limpeza do `outputs/`: APAGA arquivo do dono (#543)
     "auto_cleanup", "auto_cleanup_minutes", "auto_cleanup_max_outputs",
     # retenção do histórico de operação: APAGA série histórica (#791) — mesma
@@ -5252,7 +5260,7 @@ _SETTINGS_ADMIN = frozenset({
     "speaker_gate", "speaker_threshold", "speaker_far_alvo", "speaker_anticlone",
     "live_so_minha_voz",
 })
-_SETTINGS_SECRETS = ("remote_api_key", "remote_stt_key", "chat_api_key")
+_SETTINGS_SECRETS = ("remote_api_key", "chat_api_key")
 # marcador da máscara: começa com "•" e nunca é confundido com chave de verdade.
 # O POST que devolver a máscara (a UI recarrega o form e reenvia o blob) mantém
 # o segredo guardado em vez de gravar "••••1234" por cima dele.
@@ -5296,8 +5304,8 @@ def get_settings(request: Request):
 def _settings_vista(request) -> dict:
     """Corta o que a requisição não pode VER: segredos de serviços externos.
 
-    Chave de uso (e visitante sem chave admin) não recebe `remote_api_key`,
-    `remote_stt_key` nem `chat_api_key` em claro — são credenciais de terceiros,
+    Chave de uso (e visitante sem chave admin) não recebe `remote_api_key`
+    nem `chat_api_key` em claro — são credenciais de terceiros,
     não material para gerar fala. Admin/mac continua vendo tudo."""
     adm = _admin_is_allowed(request)
     extra = {"is_admin": adm, "admin_fields": sorted(_SETTINGS_ADMIN)}
@@ -5411,11 +5419,6 @@ def _resolve_omni(payload: dict, family: str | None = None) -> dict:
         "position_temperature": _pick("position_temperature", "omni_position_temperature", 0.0, 20.0, 5.0),
         "layer_penalty_factor": _pick("layer_penalty_factor", "omni_layer_penalty_factor", 0.0, 20.0, 5.0),
         "t_shift": _pick("t_shift", "omni_t_shift", 0.0, 1.0, 0.1),
-        "denoise": bool(payload["denoise"]) if "denoise" in payload else _settings.get("omni_denoise", True),
-        "preprocess_prompt": bool(payload["preprocess_prompt"]) if "preprocess_prompt" in payload else _settings.get("omni_preprocess_prompt", True),
-        "postprocess_output": bool(payload["postprocess_output"]) if "postprocess_output" in payload else _settings.get("omni_postprocess_output", True),
-        "audio_chunk_duration": _pick("audio_chunk_duration", "omni_audio_chunk_duration", 1.0, 60.0, 15.0),
-        "audio_chunk_threshold": _pick("audio_chunk_threshold", "omni_audio_chunk_threshold", 5.0, 120.0, 30.0),
         "instruct": instruct,
         "duration_s": (_resolve_duration_s(payload["duration_s"], _settings["omni_duration_s"])
                        if "duration_s" in payload else _settings["omni_duration_s"]),
@@ -5481,12 +5484,7 @@ def update_settings(request: Request, payload: dict):
                 # a config JÁ está gravada; falhar a descarga não pode virar erro do
                 # POST (o cliente perderia a informação de que salvou)
                 avisos.append(f"não foi possível descarregar o modelo antigo: {exc}")
-    # efeitos pós-commit, na ordem: primeiro libera recurso que a config nova tornou
-    # redundante, depois sobe o que ela pediu
-    try:
-        _autofree_local()
-    except Exception as exc:             # noqa: BLE001
-        avisos.append(f"autofree não rodou: {exc}")
+    # efeito pós-commit: sobe o que a config nova pediu
     if tuple(_settings.get(k) for k in _CAMPOS_DHS_BACKEND) != \
             tuple(_antes.get(k) for k in _CAMPOS_DHS_BACKEND):
         # trocou de backend/ajuste do dsh: já sobe o processo em thread, para quem
@@ -5509,7 +5507,7 @@ def _voice_path(v) -> Path | None:
     """Path do WAV de `v` — e só se ele ficar DENTRO de `voices/`.
 
     `VOICES_DIR / f"{v}.wav"` aceita qualquer coisa: `"../fora"` aponta para um
-    arquivo fora do diretório de vozes e ele seguia para o worker/remoto como se
+    arquivo fora do diretório de vozes e ele seguia para o worker como se
     fosse voz cadastrada.
 
     O critério segue o ARQUIVO de propósito (decisão do PM na #69): só vale o que
@@ -5650,13 +5648,6 @@ def _apply_settings(payload: dict):
         _settings["omni_layer_penalty_factor"] = _clamp(payload["omni_layer_penalty_factor"], 0.0, 20.0, 5.0)
     if "omni_t_shift" in payload:
         _settings["omni_t_shift"] = _clamp(payload["omni_t_shift"], 0.0, 1.0, 0.1)
-    for chave in ("omni_denoise", "omni_preprocess_prompt", "omni_postprocess_output"):
-        if chave in payload:
-            _settings[chave] = bool(payload[chave])
-    if "omni_audio_chunk_duration" in payload:
-        _settings["omni_audio_chunk_duration"] = _clamp(payload["omni_audio_chunk_duration"], 1.0, 60.0, 15.0)
-    if "omni_audio_chunk_threshold" in payload:
-        _settings["omni_audio_chunk_threshold"] = _clamp(payload["omni_audio_chunk_threshold"], 5.0, 120.0, 30.0)
     if "omni_instruct" in payload:
         _settings["omni_instruct"] = str(payload["omni_instruct"] or "").strip()[:300]
     if "omni_seed" in payload:
@@ -5760,8 +5751,6 @@ def _apply_settings(payload: dict):
         v = payload["live_stt_release_adiado"]
         _settings["live_stt_release_adiado"] = (v if isinstance(v, bool) else
                                                 str(v).strip().lower() in ("1", "true", "on"))
-    if "stt_beam" in payload:
-        _settings["stt_beam"] = int(_clamp(payload["stt_beam"], 1, 10, 5))
     # Histórico de operação (#376): 1..365 dias (0 apaga tudo na próxima poda) e
     # 1..64 MB por arquivo antes de abrir sufixo `-2`, `-3`…
     if "metrics_ttl_dias" in payload:
@@ -5771,15 +5760,6 @@ def _apply_settings(payload: dict):
     for chave in ("stt_anti_ruido", "stt_denoise"):
         if chave in payload:
             _settings[chave] = bool(payload[chave])
-    for chave in ("remote_tts", "remote_translate", "remote_stt"):
-        if chave in payload:
-            _settings[chave] = bool(payload[chave])
-    if "remote_tts_url" in payload:
-        _settings["remote_tts_url"] = str(payload["remote_tts_url"] or "").strip()[:300]
-    if "remote_tts_voice" in payload:
-        _settings["remote_tts_voice"] = str(payload["remote_tts_voice"] or "").strip()[:120]
-    if "remote_tts_extra" in payload:
-        _settings["remote_tts_extra"] = str(payload["remote_tts_extra"] or "").strip()[:2000]
     if "remote_base_url" in payload:
         _settings["remote_base_url"] = str(payload["remote_base_url"] or "").strip()[:300]
     if "public_url" in payload:
@@ -5788,10 +5768,6 @@ def _apply_settings(payload: dict):
         _settings["public_url"] = _public_url_normaliza(payload["public_url"])
     if "remote_api_key" in payload:
         _settings["remote_api_key"] = str(payload["remote_api_key"] or "").strip()[:300]
-    if "remote_stt_base_url" in payload:
-        _settings["remote_stt_base_url"] = str(payload["remote_stt_base_url"] or "").strip()[:300]
-    if "remote_stt_key" in payload:
-        _settings["remote_stt_key"] = str(payload["remote_stt_key"] or "").strip()[:300]
     if "chat_base_url" in payload:
         _settings["chat_base_url"] = str(payload["chat_base_url"] or "").strip()[:300]
     if "chat_model" in payload:
@@ -5887,13 +5863,8 @@ def _apply_settings(payload: dict):
                     atual[k] = (v if v in ("1", "0.1") else _VOZ_RIGOR_JOELHO
                                 if v in ("joelho", "1.8") else _VOZ_RIGOR_PADRAO)
             _settings["live_so_minha_voz"] = atual
-    for chave in ("remote_tts_model", "remote_translate_model", "remote_stt_model"):
-        if chave in payload:
-            _settings[chave] = str(payload[chave] or "").strip()[:120]
     if "translate_model" in payload:   # repo MLX do tradutor local (recarrega sob demanda)
         _settings["translate_model"] = str(payload["translate_model"] or "").strip()[:120]
-    if "free_local_on_remote" in payload:
-        _settings["free_local_on_remote"] = bool(payload["free_local_on_remote"])
     if "idle_unload_minutes" in payload:
         # 0 = nunca descarrega por ociosidade; máx. 24 h
         _settings["idle_unload_minutes"] = int(_clamp(payload["idle_unload_minutes"], 0, 1440, 10))
@@ -5973,17 +5944,12 @@ def save_design_voice(payload: dict):
             "t_shift": _settings["omni_t_shift"], "instruct": instruct,
             "duration_s": None, "speed": 1.0, "seed": seed}
 
-    remote = _use_remote_tts()
-    sr = 24000
     try:
-        with (_NO_LOCK if remote else _gen_lock):
-            if remote:
-                audio = _tts_remote_chunk(OMNI_PRESET_SEED, _settings["language"], omni, sr, None)
-            else:
-                model = _get_model()
-                sr = getattr(model, "sample_rate", 24000)
-                audio = _generate_chunk(model, OMNI_PRESET_SEED, _settings["language"],
-                                        None, None, omni, sr=sr)
+        with _gen_lock:
+            model = _get_model()
+            sr = getattr(model, "sample_rate", 24000)
+            audio = _generate_chunk(model, OMNI_PRESET_SEED, _settings["language"],
+                                    None, None, omni, sr=sr)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"Falha ao gerar a amostra do design: {repr(e)[:200]}")
 
@@ -5994,8 +5960,7 @@ def save_design_voice(payload: dict):
     # enfia a marca na linhagem da voz e todo áudio futuro herda uma marca que
     # ninguém pediu, sem que a detecção melhore (a saída já sai marcada no job).
     # Quem for "consertar" a ausência daqui precisa saber disto: o gancho é este
-    # `sf.write`, e o par dele no caminho remoto é `_tts_remote_chunk` (que também
-    # devolve áudio para o job marcar, não para a referência).
+    # `sf.write`.
     _grava_wav_atomico(VOICES_DIR / f"{voice_id}.wav", audio, sr)
     meta = {"id": voice_id, "name": name, "from_design": True,
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -7002,9 +6967,6 @@ def voice_peaks(voice_id: str, n: int = 160):
 def delete_voice(request: Request, voice_id: str):
     _exige_admin(request)
     voice_id = _safe_id(voice_id)
-    # a entrada do cache remoto é por `voice_id`: recriar a voz com o MESMO id
-    # (import) reusaria o envio antigo se o mtime coincidisse — some junto
-    _remote_voice_cache.pop(voice_id, None)
     removed = False
     for ext in ("wav", "json", "orig.wav"):     # o original vai junto (#443)
         path = VOICES_DIR / f"{voice_id}.{ext}"
@@ -7048,7 +7010,7 @@ _jobs_lock = threading.RLock()
 
 # ---------------------------------------------------------------------------
 # Fila de falas (speech_queue): gate serial por ticket.
-# - Vários jobs podem GERAR em paralelo (quando remoto / após liberar gen_lock).
+# - Vários jobs podem GERAR em paralelo (após liberar gen_lock).
 # - Só um job ENTREGA por vez, na ordem de chegada.
 # - Após entregar, bloqueia a próxima pela duração REAL do WAV (+ folga).
 # - Trechos (pieces) só contam no job depois da entrega — endpoint também barra.
@@ -7972,21 +7934,18 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
     import soundfile as sf
 
     job = _jobs[job_id]
-    remote = False
-    local_carregou = False     # modelo local carregado no fallback? (libera no fim)
     sq = _speech_queue_begin(job_id) if use_queue else None
     hold_pieces = sq is not None  # com fila: grava trechos mas só libera na entrega
     # `model_override` = modelo DESTE pedido. Vale sem trocar o global: quem não é
     # admin manda `model` no body e gera com ele (ver /api/tts); admin também
     # persiste, então os dois caminhos ficam idênticos aqui.
     try:
-        remote = _use_remote_tts()
         be = _current_backend(model_override)
         family = be["family"]
         be_meta = be.get("meta") or {}
 
         # Qwen/Fish/etc.: processo isolado (não trava/derruba o servidor)
-        if not remote and family in _ISOLATED_FAMILIES:
+        if family in _ISOLATED_FAMILIES:
             _run_tts_job_isolated(job_id, text, voice_id, voice_path, language, omni, be,
                                   sq=sq, model=model_override)
             # worker morreu: garante pool Metal limpo no pai + apaga trechos depois
@@ -8001,19 +7960,17 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         pdir.mkdir(exist_ok=True)
         _job_owner_write(pdir)      # dono: o boot de outro processo consulta
 
-        # remoto: sem lock global -> jobs concorrentes (o servidor RTX paraleliza);
-        # local: serializa load+gen no _gen_lock (evita 2 modelos MLX em paralelo / segfault).
-        with (_NO_LOCK if remote else _gen_lock):
+        # serializa load+gen no _gen_lock (evita 2 modelos MLX em paralelo / segfault)
+        with _gen_lock:
             started = time.time()
             job["status"] = "running"
-            if not remote:
-                job["progress"] = {
-                    "stage": f"carregando {be['meta'].get('label') or be['id']}…",
-                    "backend": be.get("id"), "family": family,
-                }
-                _model_state["progress"] = job["progress"]["stage"]
-            model = None if remote else _get_model(model_override)
-            sr = 24000 if remote else int(getattr(model, "sample_rate", 24000) or 24000)
+            job["progress"] = {
+                "stage": f"carregando {be['meta'].get('label') or be['id']}…",
+                "backend": be.get("id"), "family": family,
+            }
+            _model_state["progress"] = job["progress"]["stage"]
+            model = _get_model(model_override)
+            sr = int(getattr(model, "sample_rate", 24000) or 24000)
             # voz de VOICE DESIGN salva: REGENERA do instruct+seed (determinístico) em
             # vez de clonar a amostra -> é EXATAMENTE a voz projetada, sem drift de clone.
             is_design = voice_id == DESIGN_VOICE_ID
@@ -8031,21 +7988,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             conds = None
             ref_text = None
             ref_audio = None
-            rvoice = None
-            if remote:
-                # voz de design: ignora a "Voz remota" fixa (o timbre vem do instruct+seed).
-                # senão: campo "Voz remota" fixo OU sobe a voz local e usa o nome dela
-                rvoice = None if is_design else ((_settings.get("remote_tts_voice") or "").strip() or None)
-                if not rvoice and not is_design and voice_path.exists():
-                    job["progress"] = {"stage": "enviando voz ao servidor remoto…"}
-                    rvoice = _ensure_remote_voice(voice_id, voice_path)
-                    if not rvoice:
-                        # upload falhou (rede/endpoint): o job segue com a voz
-                        # PADRÃO do servidor remoto — avisar, senão parece voz errada
-                        job["warning"] = ("voz local não pôde ser enviada ao "
-                                          "servidor remoto — usando voz padrão")
-                        job["progress"] = {"stage": "⚠ " + job["warning"]}
-            elif is_design:
+            if is_design:
                 ref_text = None       # sem ref de clone -> o timbre vem só do instruct
                 conds = None
             elif family == "omnivoice":
@@ -8076,61 +8019,9 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             soma_quad, n_amostras = 0.0, 0
             ganho_max = 0.0     # maior amplificação aplicada pela normalização (#439)
 
-            # CAMINHO efetivo do job. Começa remoto quando pedido e vira LOCAL de
-            # vez se o remoto falhar ou insistir em devolver áudio anômalo: trecho
-            # perdido nunca, o pior caso é local lento (#304).
-            alvo_remoto = remote
-            if remote:
-                local = {"model": None, "sr": sr, "conds": None,
-                         "ref_text": None, "ref_audio": None}
-            else:
-                local = {"model": model, "sr": sr, "conds": conds,
-                         "ref_text": ref_text, "ref_audio": ref_audio}
-
-            def _prepara_local() -> bool:
-                """Carrega o modelo local UMA vez, só no fallback. False = não deu."""
-                if local["model"] is not None:
-                    return True
-                nonlocal local_carregou
-                try:
-                    with _gen_lock:          # Metal exclusivo, como o job local
-                        m = _get_model(model_override)
-                except Exception as exc:     # noqa: BLE001
-                    _log(f"[tts] fallback local não carregou "
-                          f"({type(exc).__name__}: {exc})")
-                    return False
-                local_carregou = True
-                local["model"] = m
-                local["sr"] = int(getattr(m, "sample_rate", sr) or sr)
-                if is_design:
-                    pass
-                elif family == "omnivoice":
-                    if voice_id in OMNI_PRESETS and not voice_path.exists():
-                        try:
-                            _materialize_preset(m, local["sr"], voice_id)
-                        except Exception:    # noqa: BLE001 — preset que falha não impede
-                            pass
-                    local["ref_text"] = _voice_ref_text(voice_id)
-                    if voice_path.exists():
-                        local["conds"] = _cond_for(m, voice_id, voice_path)
-                elif voice_path.exists():
-                    local["ref_audio"] = str(voice_path)
-                    local["ref_text"] = _voice_ref_text(voice_id)
-                return True
-
-            def _gera_local(chunk: str, i: int, sob_lock: bool = False):
-                """Trecho pelo modelo LOCAL — caminho normal E fallback do remoto.
-
-                `sob_lock` só é verdadeiro no FALLBACK: lá o job segura `_NO_LOCK`
-                (entrou pelo remoto), então sem pegar o `_gen_lock` aqui a geração
-                local correria junto com outro job no mesmo Metal. No caminho local
-                o job já segura o lock; a trava fica em volta do `generate` e não
-                de `_prepara_local` — com `RLock` a reentrada seria tolerada, mas
-                pegar duas vezes só para chamar quem já pega esconde o desenho, e
-                o `_prepara_local` também é chamado de fora (troca de modelo).
-                """
-                if not _prepara_local():
-                    raise RuntimeError("sem modelo local para o trecho")
+            def _gera_local(chunk: str, i: int):
+                """Trecho pelo modelo local, com até 2 tentativas se sair anômalo.
+                O job já segura o `_gen_lock` (Metal exclusivo)."""
                 motivo = ""
                 for tentativa in (1, 2):
                     o_try = omni
@@ -8148,13 +8039,10 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                                 o_try["class_temperature"] = 0.4
                             if float(o_try.get("temperature") or 0) < 0.5:
                                 o_try["temperature"] = 0.7
-                    with (_gen_lock if sob_lock else _NO_LOCK):
-                        audio = _generate_chunk(
-                            local["model"], chunk, language, local["conds"],
-                            local["ref_text"], o_try, ref_audio=local["ref_audio"],
-                            family=family, meta=be_meta, sr=local["sr"],
-                        )
-                    audio = _reamostra(audio, local["sr"], sr)
+                    audio = _generate_chunk(
+                        model, chunk, language, conds, ref_text, o_try,
+                        ref_audio=ref_audio, family=family, meta=be_meta, sr=sr,
+                    )
                     motivo = _motivo_anomalia(
                         audio, sr, chunk, speed=float(omni.get("speed") or 1.0))
                     if not motivo:
@@ -8191,61 +8079,20 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                 # pontuação do corte preservada: vírgula/dois-pontos NÃO viram
                 # ponto (fim de frase no meio da frase — #319)
                 chunk = _pontua_corte(chunk, ultimo=(i == len(chunks) - 1))
-                audio = None
-                caiu_agora = False     # este trecho veio do remoto? (só aí a trava é nossa)
-                if alvo_remoto:
-                    motivo = ""
-                    for tentativa in (1, 2):
-                        try:
-                            audio = _tts_remote_chunk(chunk, language, omni, sr, rvoice)
-                        except Exception as exc:      # noqa: BLE001
-                            audio = None
-                            motivo = f"{type(exc).__name__}: {exc}"
-                            _log(f"[tts] remoto falhou no trecho {i + 1} "
-                                  f"(tentativa {tentativa}/2): {motivo[:160]}")
-                            continue
-                        motivo = _motivo_anomalia(
-                            audio, sr, chunk, speed=float(omni.get("speed") or 1.0))
-                        if not motivo:
-                            break
-                        job["retries"] = job.get("retries", 0) + 1
-                        anomalias.append(f"trecho {i + 1} remoto (tentativa {tentativa}): {motivo}")
-                        _log(f"[tts] trecho {i + 1}/{len(chunks)} REMOTO anômalo "
-                              f"[{motivo}] — tentativa {tentativa}/2")
-                    if audio is None or motivo:
-                        if not _fallback_ligado():
-                            # desligado: comportamento antigo (erro ou trecho ruim entra)
-                            if audio is None:
-                                raise RuntimeError(f"TTS remoto falhou: {motivo}")
-                            _log(f"[tts] remoto anômalo e fallback desligado — trecho "
-                                  f"{i + 1} entra assim")
-                        else:
-                            # remoto fora (2 erros) ou 2 tentativas anômalas: o job
-                            # passa a LOCAL e ESTE trecho é regerado local (nunca error)
-                            alvo_remoto = False
-                            job["remote_fallback"] = True
-                            aviso = (f"TTS remoto falhou no trecho {i + 1} ({motivo}) — "
-                                     f"job segue LOCAL")
-                            _log(f"[tts] {aviso}")
-                            job["warning"] = (f"{job['warning']} | {aviso}"
-                                              if job.get("warning") else aviso)
-                            audio = None
-                            caiu_agora = True
                 # cache (desligado por padrão): guarda o PCM já pós-processado, então
                 # o acerto PULA a geração e o pós dos dois caminhos (#325)
                 cache = _cache_audio()
                 chave_audio = _cache_chave(
                     chunk, voice_id=voice_id, voice_path=voice_path, family=family,
                     model=str(_settings.get("model") or ""), language=language,
-                    alvo_remoto=alvo_remoto, omni=omni) if cache is not None else ""
+                    omni=omni) if cache is not None else ""
                 guardado = (cache.pega(chave_audio, _tts_cache._ttl_s(_settings))
                             if chave_audio else None)
                 if guardado is not None:
                     audio = guardado
                     job["cache_hits"] = job.get("cache_hits", 0) + 1
                 else:
-                    if audio is None:
-                        audio = _gera_local(chunk, i, sob_lock=caiu_agora)
+                    audio = _gera_local(chunk, i)
                     audio, ganho_trecho = _pos_processa_com_ganho(audio, sr)
                     ganho_max = max(ganho_max, ganho_trecho)
                     if chave_audio:
@@ -8267,9 +8114,8 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                 if not hold_pieces:
                     job["pieces"] = i + 1  # publica só depois da marca no disco
                 # MLX acumula blocos no pool Metal; sem clear a RAM sobe a cada trecho
-                if not alvo_remoto:
-                    _release_mlx_memory()
-                    _touch_use("tts")
+                _release_mlx_memory()
+                _touch_use("tts")
         elapsed = round(time.time() - started, 1)
 
         # arquivo final do histórico = exatamente o que foi tocado (stream, sem concat total)
@@ -8333,7 +8179,6 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
             "ganho_normalizacao_db": round(ganho_max, 1),
             "rms_bruto": round(float(np.sqrt(soma_quad / n_amostras)) if n_amostras else 0.0, 4),
             "lufs_ganho_db": lufs_db,
-            "remote_fallback": bool(job.get("remote_fallback")),
             "cache_hits": int(job.get("cache_hits", 0)),
         }
         write_json_atomic(OUTPUTS_DIR / f"{out_id}.json", meta)
@@ -8361,8 +8206,7 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         job["progress"] = None
         if _model_state.get("status") != "error":
             _model_state["progress"] = None
-        if not remote or local_carregou:
-            _release_mlx_memory(aggressive=True)
+        _release_mlx_memory(aggressive=True)
 
 
 @app.post("/api/tts")
@@ -8436,8 +8280,6 @@ def synthesize(request: Request, payload: dict):
             # design sem instruct em OmniVoice: usa instruct das settings se houver
             if family == "omnivoice" and not (omni.get("instruct") or "").strip():
                 raise HTTPException(400, "Voice design vazio — descreva a voz no campo instruct")
-    elif _use_remote_tts():
-        pass  # o servidor remoto valida/mapeia a voz
     elif not voice_path.exists() and voice_id not in OMNI_PRESETS:
         if no_sample_ok:
             pass
@@ -8946,8 +8788,6 @@ def _unload_local_models(tts=True, stt=True, mt=True, ser=True,
         import torch
         if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
             torch.mps.empty_cache()
-        if hasattr(torch, "cuda") and torch.cuda.is_available():
-            torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001
         pass
     corpo = {"unloaded": freed}
@@ -9061,16 +8901,6 @@ def _idle_unload_loop():
             pass
 
 
-def _autofree_local():
-    """Se a opção estiver ligada, descarrega os locais cujo remoto está ativo."""
-    if not _settings.get("free_local_on_remote"):
-        return
-    _unload_local_models(
-        tts=_use_remote_tts(), stt=_use_remote_stt(),
-        mt=_use_remote_translate(), ser=False,
-    )
-
-
 # alucinações comuns do Whisper em silêncio/ruído (pt + en). Comparadas após
 # normalizar (lower + tira pontuação/aspas das pontas), então cobrem variações.
 _STT_BLACKLIST = {
@@ -9125,149 +8955,11 @@ def _wav_to_mono16k(audio_path: Path):
     return np.ascontiguousarray(audio, dtype=np.float32)
 
 
-# --- Modelos remotos (API OpenAI-compatível): tradução e transcrição opcionais ---
-def _env_base(nome: str) -> str:
-    """Base vinda do AMBIENTE (o override do #103/#107). Vazio = sem override."""
-    return (os.environ.get(nome) or "").strip()
-
-
-def _remote_ready() -> bool:
-    # base_url basta; api_key é opcional (endpoints em LAN, ex.: RTX, não têm auth)
-    return bool(_settings.get("remote_base_url"))
-
-
-def _use_remote_translate() -> bool:
-    """Caminho remoto do tradutor.
-
-    ENV PRIMEIRO e já basta: com `TTS_TRANSLATE_BASE_URL` no ambiente o remoto está
-    ativo mesmo com URLs/toggles vazios no settings — senão o override ficava
-    INERTE e o cliente caía no local em silêncio (medido no gate #109: 200 com texto
-    vazio em vez do erro do provedor). Sem env, a regra antiga (toggle + base)."""
-    return bool(_env_base("TTS_TRANSLATE_BASE_URL")) or (
-        bool(_settings.get("remote_translate")) and _remote_ready())
-
-
-def _use_remote_stt() -> bool:
-    # idem: env dedicado do STT (ou a base do tradutor) basta para o remoto
-    return bool(_env_base("TTS_STT_BASE_URL") or _env_base("TTS_TRANSLATE_BASE_URL")) \
-        or (bool(_settings.get("remote_stt")) and bool(
-            _settings.get("remote_stt_base_url") or _settings.get("remote_base_url")))
-
-
-def _fallback_ligado() -> bool:
-    """Remoto que falha pode cair para LOCAL? Ligado por padrão (#304).
-
-    `TTS_REMOTE_TTS_FALLBACK=0` (ou `remote_tts_fallback: false` nas settings)
-    volta ao comportamento antigo: falha persistente do remoto derruba o job.
-    """
-    env = (os.environ.get("TTS_REMOTE_TTS_FALLBACK") or "").strip()
-    if env:
-        return env != "0"
-    return bool(_settings.get("remote_tts_fallback", True))
-
-
-def _use_remote_tts() -> bool:
-    return bool(_settings.get("remote_tts")) and bool(_settings.get("remote_tts_url"))
-
-
-def _extra_remoto(bruto) -> dict:
-    """JSON de `remote_tts_extra` saneado: sem `text`/`voice` (por trecho).
-
-    Chave fora de formato → dict vazio (o padrão do provedor vale). Avisa UMA vez
-    por valor problemático: override ignorado é degradação silenciosa (#282)."""
-    texto = (bruto or "").strip()
-    if not texto:
-        return {}
-    try:
-        extra = json.loads(texto)
-    except (ValueError, TypeError):
-        if texto not in _extra_remoto_avisados:
-            _extra_remoto_avisados.add(texto)
-            print("[tts-remoto] remote_tts_extra não é JSON válido — ignorado "
-                  f"({texto[:60]!r})", file=sys.stderr, flush=True)
-        return {}
-    if not isinstance(extra, dict):
-        return {}
-    for campo in ("text", "voice"):
-        if campo in extra:
-            # uma vez por (campo, valor): o helper roda por TRECHO, e um job de 30
-            # trechos repetiria a mesma linha 30x no stderr
-            if (campo, texto) not in _extra_remoto_avisados:
-                _extra_remoto_avisados.add((campo, texto))
-                print(f"[tts-remoto] remote_tts_extra traz '{campo}' — não vale "
-                      f"para todos os trechos, ignorado", file=sys.stderr, flush=True)
-            extra = {k: v for k, v in extra.items() if k != campo}
-    return extra
-
-
-_extra_remoto_avisados: set = set()
-
-
-def _remote_origin() -> str:
-    """scheme://host:port da URL do TTS remoto (p/ os endpoints /voices).
-
-    `urlsplit` vem do import do topo (desde a guarda de `Origin`, #290) — o
-    import local daqui ficou redundante e saiu."""
-    u = urlsplit((_settings.get("remote_tts_url") or "").strip())
-    return f"{u.scheme}://{u.netloc}" if u.scheme and u.netloc else ""
-
-
-#: `voice_id` -> (origin, nome, mtime_ns) do envio remoto já feito. Dict SEM teto
-#: crescia com o uso e a entrada não saía na deleção da voz (#282): teto com
-#: evicção do mais ANTIGO (ordem de inserção) + `pop` explícito na deleção.
-_REMOTE_VOICE_CACHE_MAX = 64
-_remote_voice_cache: dict = {}
-
-
-def _remote_voice_cache_guarda(voice_id: str, key: tuple) -> None:
-    _remote_voice_cache[voice_id] = key
-    while len(_remote_voice_cache) > _REMOTE_VOICE_CACHE_MAX:
-        _remote_voice_cache.pop(next(iter(_remote_voice_cache)), None)
-
-
-def _ensure_remote_voice(voice_id: str, voice_path: Path):
-    """Garante que a voz local exista no servidor remoto (sobe 1x por mtime).
-    Devolve o nome remoto (sanitizado) ou None se não der."""
-    import re as _re
-
-    import requests
-
-    origin = _remote_origin()
-    if not origin or not voice_path.exists():
-        return None
-    name = _re.sub(r"[^a-zA-Z0-9_-]", "_", _voice_display_name(voice_id))[:64] or "voz"
-    key = (origin, name, voice_path.stat().st_mtime_ns)
-    if _remote_voice_cache.get(voice_id) == key:
-        return name
-    headers = {}
-    if _settings.get("remote_api_key"):
-        headers["Authorization"] = f"Bearer {_settings['remote_api_key']}"
-    try:
-        with open(voice_path, "rb") as fh:
-            r = requests.post(f"{origin}/voices", headers=headers,
-                              files={"audio": ("voz.wav", fh, "audio/wav")},
-                              data={"name": name, "ref_text": _voice_ref_text(voice_id) or ""},
-                              timeout=120)
-        if r.ok:
-            _remote_voice_cache_guarda(voice_id, key)
-            return r.json().get("voice", name)
-    except Exception:  # noqa: BLE001
-        pass
-    return None
-
-
-def _voice_display_name(voice_id: str) -> str:
-    try:
-        return json.loads((VOICES_DIR / f"{voice_id}.json").read_text()).get("name") or voice_id
-    except Exception:  # noqa: BLE001
-        return voice_id
-
-
 def _reamostra(audio, de: int, para: int):
     """Reamostra para o sample-rate do job (o modelo local pode não ser 24 kHz).
 
-    O job remoto fixa `sr` em 24000; se o fallback local carregar um modelo de
-    outra taxa, misturar as duas no mesmo WAV tocaria na velocidade errada.
+    O Live entrega na taxa do fio (24 kHz) e o modelo/filho pode gerar em outra
+    (Fish 44,1k, VoxCPM2/MOSS 48k): sem reamostrar, tocaria na velocidade errada.
     """
     import numpy as np
 
@@ -9281,87 +8973,6 @@ def _reamostra(audio, de: int, para: int):
     g = gcd(int(de), int(para))
     return np.asarray(resample_poly(audio, int(para) // g, int(de) // g),
                       dtype=np.float32)
-
-
-def _tts_remote_chunk(text: str, language: str, omni: dict, sr: int = 24000, voice: str = None):
-    """Encaminha um trecho ao servidor de TTS remoto (ex.: OmniVoice numa RTX) e
-    devolve o áudio como array float32 no sample-rate local. Manda os params do
-    OmniVoice configurados + text/language (+ voice se houver clone remoto)."""
-    import io
-
-    import numpy as np
-    import requests
-    import soundfile as sf
-
-    headers = {"Content-Type": "application/json"}
-    if _settings.get("remote_api_key"):
-        headers["Authorization"] = f"Bearer {_settings['remote_api_key']}"
-    # OmniVoice (masked-diffusion): params canônicos do generate
-    url = _settings["remote_tts_url"].strip()
-    body = {
-        "num_steps": int(omni.get("num_steps") or OMNI_STEPS_FAST),
-        "guidance_scale": omni.get("guidance_scale", 2.0),
-        "class_temperature": omni.get("class_temperature", 0.0),
-        "position_temperature": omni.get("position_temperature", 5.0),
-        "layer_penalty_factor": omni.get("layer_penalty_factor", 5.0),
-        "t_shift": omni.get("t_shift", 0.1),
-        "speed": 1.0,   # servidor gera na duração natural; velocidade vira time-stretch local
-    }
-    # params extras do OmniVoiceGenerationConfig (o server RTX faz whitelist)
-    for k in ("denoise", "preprocess_prompt", "postprocess_output",
-              "audio_chunk_duration", "audio_chunk_threshold"):
-        if omni.get(k) is not None:
-            body[k] = omni[k]
-    if (omni.get("instruct") or "").strip():
-        body["instruct"] = omni["instruct"]
-    if omni.get("seed") is not None and int(omni["seed"]) >= 0:
-        body["seed"] = int(omni["seed"])
-    if omni.get("duration_s") is not None:
-        body["duration_s"] = omni["duration_s"]
-    if voice:
-        body["voice"] = voice
-    body["text"] = text
-    lang_name = LANG_DISPLAY.get((language or "").lower())
-    if lang_name and "language" not in body:
-        body["language"] = lang_name
-    # JSON extra do usuário sobrepõe/adiciona — MENOS `text`/`voice`, que são
-    # por TRECHO: com eles no extra, um único valor fixo sobrescrevia o texto de
-    # todo trecho do job (o campo passou a ser admin, mas admin também se
-    # surpreendia). Ver `_extra_remoto`.
-    body.update(_extra_remoto(_settings.get("remote_tts_extra")))
-    # 1 retry p/ falha transitória (rede/Wi-Fi/5xx): um erro no trecho 20 de 30
-    # não pode matar o job inteiro
-    r = None
-    for tentativa in (1, 2):
-        try:
-            r = requests.post(url, headers=headers, json=body, timeout=300)
-        except requests.RequestException as exc:
-            r = None
-            if tentativa == 2:
-                raise RuntimeError(f"TTS remoto inacessível (2 tentativas): {exc}") from exc
-            time.sleep(2.0)
-            continue
-        if r.status_code < 500 or tentativa == 2:
-            break
-        time.sleep(2.0)   # 5xx: servidor ocupado/carregando modelo — tenta de novo
-    if r is None or not r.ok:
-        raise RuntimeError(f"TTS remoto falhou ({getattr(r, 'status_code', '?')}): "
-                           f"{getattr(r, 'text', '')[:200]}")
-    data, src_sr = sf.read(io.BytesIO(r.content), dtype="float32")
-    if data.ndim > 1:
-        data = data.mean(axis=1)
-    if int(src_sr) != sr:
-        from math import gcd
-
-        from scipy.signal import resample_poly
-        g = gcd(int(src_sr), sr)
-        data = resample_poly(data, sr // g, int(src_sr) // g)
-    data = np.asarray(data, dtype=np.float32)
-    # velocidade: time-stretch (preserva tom, não pula palavras), igual ao local
-    speed = float(omni.get("speed") or 1.0)
-    if abs(speed - 1.0) > 1e-3:
-        data = _time_stretch(data, speed, sr)
-    return data
 
 
 # rótulo PT da emoção -> palavra inglesa p/ o prompt do LLM
@@ -9390,75 +9001,6 @@ def _translate_prompt(text: str, target: str, emotion: str | None = None) -> str
         base += (f" Word it so it sounds {emo_en} when spoken aloud "
                  f"(punctuation, emphasis, natural interjections) without changing the meaning.")
     return f"{base}\n\nText: {text}"
-
-
-def _traducao_remota_cfg() -> tuple[str, str]:
-    """(base_url, modelo) do tradutor remoto — env > settings, com erro EXPLICATIVO.
-
-    NÃO passa pelo `_chat_provider` de propósito (decisão do PM no mini-gate): o
-    tradutor fala com o 14B do RTX pelo OmniVoice, unificar mudaria a semântica.
-    `TTS_TRANSLATE_BASE_URL`/`TTS_TRANSLATE_MODEL` existem para smoke isolado, no
-    mesmo padrão do `TTS_CHAT_*`.
-    Base vazia antes virava `MissingSchema: Invalid URL '/chat/completions'` cru."""
-    base = (os.environ.get("TTS_TRANSLATE_BASE_URL") or "").strip() \
-        or (_settings.get("remote_base_url") or "").strip()
-    if not base:
-        raise HTTPException(400, "Tradutor remoto não configurado — informe a Base URL "
-                                 "do provedor (Configurações → Rede) ou defina "
-                                 "TTS_TRANSLATE_BASE_URL")
-    modelo = (os.environ.get("TTS_TRANSLATE_MODEL") or "").strip() \
-        or (_settings.get("remote_translate_model") or "gpt-4o-mini")
-    return base.rstrip("/"), modelo
-
-
-def _translate_remote(text: str, target: str, emotion: str | None = None) -> str:
-    import requests
-
-    base, modelo = _traducao_remota_cfg()
-    r = requests.post(
-        f"{base}/chat/completions",
-        headers={"Authorization": f"Bearer {_settings['remote_api_key']}",
-                 "Content-Type": "application/json"},
-        json={"model": modelo,
-              "temperature": 0.4 if emotion else 0.2,
-              "messages": [{"role": "user", "content": _translate_prompt(text, target, emotion)}]},
-        timeout=60,
-    )
-    if not r.ok:
-        raise RuntimeError(f"tradução remota falhou ({r.status_code}): {r.text[:200]}")
-    return r.json()["choices"][0]["message"]["content"].strip().strip('"').strip()
-
-
-def _transcribe_remote(audio_path: Path, language: str | None):
-    import requests
-
-    # URL/chave dedicadas do STT, se definidas; senão as compartilhadas (RTX).
-    # Mesmo defeito do tradutor se ambas estiverem vazias: mensagem explicativa.
-    base = ((os.environ.get("TTS_STT_BASE_URL") or "").strip()
-            or (_settings.get("remote_stt_base_url") or "").strip()
-            or (_settings.get("remote_base_url") or "").strip())
-    if not base:
-        raise HTTPException(400, "STT remoto não configurado — informe a URL do "
-                                 "provedor (Configurações → Rede) ou defina TTS_STT_BASE_URL")
-    base = base.rstrip("/")
-    key = _settings.get("remote_stt_key") or _settings.get("remote_api_key") or ""
-    data = {"model": _settings.get("remote_stt_model") or "whisper-1",
-            "response_format": "verbose_json",
-            "beam_size": int(_settings.get("stt_beam", 5))}   # qualidade↔velocidade
-    if language and language not in ("auto",):
-        data["language"] = language
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
-    with open(audio_path, "rb") as fh:
-        r = requests.post(
-            f"{base}/audio/transcriptions",
-            headers=headers,
-            files={"file": ("audio.wav", fh, "audio/wav")}, data=data, timeout=(5, 60),
-        )
-    if not r.ok:
-        raise RuntimeError(f"transcrição remota falhou ({r.status_code}): {r.text[:200]}")
-    j = r.json()
-    return {"text": j.get("text", ""), "language": (j.get("language") or "").strip().lower(),
-            "segments": j.get("segments") or []}
 
 
 _vad_model = None
@@ -9773,30 +9315,17 @@ def _com_vad_aviso(res: dict, aviso: str) -> dict:
     return res
 
 
-def _transcribe(audio_path: Path, language: str | None = None, allow_remote: bool = True):
-    caiu_remoto, erro_remoto = False, ""
-    if allow_remote and _use_remote_stt():
-        try:
-            return _transcribe_remote(audio_path, language)
-        except Exception as e:  # noqa: BLE001 — RTX fora do ar cai pro local
-            print(f"[stt] remoto indisponível ({str(e)[:120]}) — usando local", flush=True)
-            # o cliente precisa distinguir "transcrição vazia" de "o remoto morreu":
-            # vai no resultado (as rotas traduzem para header/campo)
-            caiu_remoto, erro_remoto = True, str(e)[:200]
-
+def _transcribe(audio_path: Path, language: str | None = None):
     # Silero VAD: se o áudio não tem fala, o STT nem roda (mata alucinação)
     fala = _vad_tem_fala(audio_path)
     if not fala:
-        return _com_aviso_remoto({"text": "", "language": "", "segments": []},
-                                 caiu_remoto, erro_remoto)
+        return {"text": "", "language": "", "segments": []}
     # o VAD falha ABERTO por desenho (não bloqueia o pipeline), mas o cliente tem
     # de saber que o guarda anti-alucinação ficou desligado neste trecho (#282)
     vad_aviso = _vad_erro
 
     if _stt_motor() == "parakeet":
-        return _com_vad_aviso(
-            _com_aviso_remoto(_transcribe_parakeet(audio_path), caiu_remoto, erro_remoto),
-            vad_aviso)
+        return _com_vad_aviso(_transcribe_parakeet(audio_path), vad_aviso)
 
     # language fixo (ex.: "pt") melhora muito a precisão em trechos curtos: o
     # whisper deixa de adivinhar o idioma a cada frase. None = auto-detecta.
@@ -9813,30 +9342,12 @@ def _transcribe(audio_path: Path, language: str | None = None, allow_remote: boo
     del audio
     _touch_use("stt")
     _stt_release()
-    return _com_vad_aviso(_com_aviso_remoto(r, caiu_remoto, erro_remoto), vad_aviso)
+    return _com_vad_aviso(r, vad_aviso)
 
 
 _pk = {"model": None, "repo": ""}
 _pk_exec = None          # executor de 1 thread: o stream do MLX é por thread
 _pk_stream = None
-
-
-def _com_aviso_remoto(res, caiu: bool, erro: str = ""):
-    """Marca o resultado do STT quando o remoto falhou e o local assumiu."""
-    if caiu and isinstance(res, dict):
-        return {**res, "remote_fallback": True, "remote_error": erro}
-    return res
-
-
-def _aviso_remoto_headers(alvo, r: dict) -> None:
-    """Aviso no HEADER (o `/v1/audio/*` também devolve text/srt/vtt, então campo no
-    corpo não cobriria tudo). `alvo` é `response.headers` ou o header de um Response."""
-    if not r.get("remote_fallback"):
-        return
-    alvo["X-TTS-Remote-Fallback"] = "1"
-    msg = str(r.get("remote_error") or "")[:150]
-    if msg:
-        alvo["X-TTS-Remote-Error"] = msg.encode("ascii", "replace").decode()
 
 
 def _parakeet_cru(audio_path: Path):
@@ -10092,9 +9603,6 @@ def _clean_translation(s: str) -> str:
 
 
 def _translate(text: str, target: str, emotion: str | None = None) -> str:
-    if _use_remote_translate():
-        return _clean_translation(_translate_remote(text, target, emotion))
-
     from mlx_lm import generate, load
 
     repo = _mt_repo()
@@ -10203,33 +9711,27 @@ def _emotion_instruct(path: Path, text: str, mode: str):
 def translate_warmup():
     """Carrega whisper + LLM de tradução em background — chamado quando o usuário
     abre/começa o tradutor, p/ os modelos ficarem quentes antes da 1ª frase."""
-    # não aquece o que vai pro remoto quando "liberar local" está ligado
-    skip_stt = _settings.get("free_local_on_remote") and _use_remote_stt()
-    skip_mt = _settings.get("free_local_on_remote") and _use_remote_translate()
-
     def _warm():
-        if not skip_stt:
-            try:
-                import numpy as np
-                import mlx_whisper
-                with _stt_lock:
-                    mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32),
-                                           path_or_hf_repo=_whisper_repo(), language="pt")
-                _touch_use("stt")
-                _release_mlx_memory()
-            except Exception:  # noqa: BLE001
-                pass
-        if not skip_mt:
-            try:
-                from mlx_lm import load
-                repo = _mt_repo()
-                with _mt_lock:
-                    if _mt["model"] is None or _mt.get("repo") != repo:
-                        _mt["model"], _mt["tok"] = load(repo)
-                        _mt["repo"] = repo
-                _touch_use("mt")
-            except Exception:  # noqa: BLE001
-                pass
+        try:
+            import numpy as np
+            import mlx_whisper
+            with _stt_lock:
+                mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32),
+                                       path_or_hf_repo=_whisper_repo(), language="pt")
+            _touch_use("stt")
+            _release_mlx_memory()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from mlx_lm import load
+            repo = _mt_repo()
+            with _mt_lock:
+                if _mt["model"] is None or _mt.get("repo") != repo:
+                    _mt["model"], _mt["tok"] = load(repo)
+                    _mt["repo"] = repo
+            _touch_use("mt")
+        except Exception:  # noqa: BLE001
+            pass
     threading.Thread(target=_warm, daemon=True).start()
     return {"ok": True}
 
@@ -10237,7 +9739,8 @@ def translate_warmup():
 @app.post("/api/models/unload")
 def unload_models(request: Request, payload: dict = None):
     """Descarrega modelos LOCAIS (MLX) p/ liberar RAM. Sem corpo = todos os locais.
-    {"only_remote": true} = só os que têm remoto ativo.
+    {"only_remote": true} (cliente antigo) não descarrega nada: desde o #1059 não
+    existe modelo remoto ativo, então "só os que têm remoto" é o conjunto vazio.
 
     Com job in-process em voo o `_gen_lock` está tomado e o POST ficava PENDURADO
     até o fim da geração (#282): agora espera `_GEN_ESPERA_UNLOAD_S` e, se não der,
@@ -10246,11 +9749,8 @@ def unload_models(request: Request, payload: dict = None):
     from fastapi.responses import JSONResponse
     p = payload or {}
     if p.get("only_remote"):
-        r = _unload_local_models(tts=_use_remote_tts(), stt=_use_remote_stt(),
-                                 mt=_use_remote_translate(),
-                                 espera_gen_s=_GEN_ESPERA_UNLOAD_S)
-    else:
-        r = _unload_local_models(espera_gen_s=_GEN_ESPERA_UNLOAD_S)
+        return {"unloaded": []}
+    r = _unload_local_models(espera_gen_s=_GEN_ESPERA_UNLOAD_S)
     if r.get("tts_pendente"):
         return JSONResponse(
             {"detail": "Geração local em curso segurando o modelo; nada foi "
@@ -11794,13 +11294,12 @@ async def speaker_check(audio: UploadFile = None):
 def transcribe_audio(response: Response, audio: UploadFile = None,
                      source_lang: str = Form("auto"), speaker_alvo: str = Form("")):
     """Transcrição pura (sem tradução/TTS): áudio -> texto + segmentos. Usa o
-    Whisper local ou remoto, conforme as configurações de modelos remotos.
+    STT local (Whisper ou Parakeet, conforme `stt_local_engine`).
 
     `speaker_alvo` (nome de perfil, opcional): separa o áudio e transcreve SÓ a voz
     daquele perfil (#534). Sem o parâmetro o contrato é o de sempre."""
     if audio is None:
         raise HTTPException(400, "Áudio obrigatório")
-    aviso = {}
     tmp = _save_audio_upload(audio)
     extra_alvo: dict = {}
     if _settings.get("speaker_anticlone"):
@@ -11822,20 +11321,14 @@ def transcribe_audio(response: Response, audio: UploadFile = None,
                 tmp_stt.unlink(missing_ok=True)
     finally:
         tmp.unlink(missing_ok=True)
-    # remoto caiu e o local assumiu: o cliente PRECISA saber (senão "vazio" e
-    # "provedor morto" ficam indistinguíveis num 200). Header sempre; campo no corpo
-    # porque esta rota é JSON de ponta a ponta.
-    _aviso_remoto_headers(response.headers, r)
-    aviso = {"remote_fallback": True, "remote_error": r.get("remote_error", "")} \
-        if r.get("remote_fallback") else {}
     # filtro anti-alucinação (blacklist "e aí", fragmentos, sem-fala): o
     # /api/transcribe alimenta a Conversa — ruído não vira mensagem
     texto = (r.get("text") or "").strip()
     ok, motivo = _stt_ok(r, texto)
     if not ok:
-        return {**aviso, "rejected": True, "reason": motivo, "text": ""}
+        return {"rejected": True, "reason": motivo, "text": ""}
     segs = r.get("segments") or []
-    out = {**aviso, "text": (r.get("text") or "").strip(),
+    out = {"text": (r.get("text") or "").strip(),
            "language": (r.get("language") or "").strip().lower(),
            "segments": [{"start": float(s.get("start") or 0.0),
                          "end": float(s.get("end") or 0.0),
@@ -15357,7 +14850,7 @@ def _openai_stt(file, language, response_format, translate, response=None,
                 speaker_alvo=""):
     """STT OpenAI-compatível: áudio -> texto (+ segmentos). translate=True traduz p/ inglês.
 
-    `response` é a resposta injetada pela rota: o aviso de fallback do remoto vai no
+    `response` é a resposta injetada pela rota: os avisos do gate de locutor vão no
     HEADER (vale para json/verbose_json/text/srt/vtt; um campo no corpo não cobriria
     os formatos de texto).
 
@@ -15397,21 +14890,17 @@ def _openai_stt(file, language, response_format, translate, response=None,
     rf = (response_format or "json").lower()
     if rf == "text":
         resp = Response(text + "\n", media_type="text/plain; charset=utf-8")
-        _aviso_remoto_headers(resp.headers, r)
         _headers_speaker_stt(resp.headers, gate)
         return resp
     if rf == "srt":
         resp = Response(_segs_to_srt(segs), media_type="application/x-subrip; charset=utf-8")
-        _aviso_remoto_headers(resp.headers, r)
         _headers_speaker_stt(resp.headers, gate)
         return resp
     if rf == "vtt":
         resp = Response(_segs_to_vtt(segs), media_type="text/vtt; charset=utf-8")
-        _aviso_remoto_headers(resp.headers, r)
         _headers_speaker_stt(resp.headers, gate)
         return resp
     if response is not None:
-        _aviso_remoto_headers(response.headers, r)
         _headers_speaker_stt(response.headers, gate)
     if rf == "verbose_json":
         dur = max((s["end"] for s in segs), default=0.0)

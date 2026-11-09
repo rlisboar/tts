@@ -13,19 +13,21 @@ com o Metal do MLX e pagaria setup no caminho do primeiro áudio. Sem os pesos, 
 O detector é a outra ponta: `detecta_prob()` serve o gate de locutor (anti-clone)
 e o filtro de eco do Live. O limiar é do CHAMADOR (0,5 é o que o R3 usou).
 
-DOIS LIMITES DECLARADOS (#845) — não são furo, são desenho:
+UM LIMITE DECLARADO (#845) — não é furo, é desenho:
 
 1. AMOSTRA DE VOICE DESIGN não é marcada. Ela é REFERÊNCIA: condiciona o clone e o
    modelo copia o timbre dela, então marcar a referência enfia a marca na linhagem
    da voz sem melhorar detecção nenhuma (a saída já sai marcada). O gancho está no
    `sf.write` de `save_design_voice` (app.py).
-2. O SERVIDOR REMOTO (OmniVoice da RTX, removido no #1058) não marca: quem marca é o CLIENTE,
-   no app, ao gravar (`_marca_arquivo` no trecho; `_marca_saida_isolada` na saída
-   do filho isolado, depois que ele sai; `_marca_pcm` no Live). Consumidor DIRETO
-   do servidor recebe áudio cru — é contrato do cliente, e o aviso está lá.
+2. O SERVIDOR REMOTO (OmniVoice da RTX, removido no #1058) não marcava: quem marca
+   é o CLIENTE, no app, ao gravar (`_marca_arquivo` no trecho; `_marca_saida_isolada`
+   na saída do filho isolado, depois que ele sai; `_marca_pcm` no Live). Consumidor
+   DIRETO do servidor recebia áudio cru — é contrato do cliente. Saiu com o stack
+   remoto (#1059).
 
-Nenhum dos dois vale para a saída normal do app, que sai marcada em todos os
-caminhos: job local, família isolada, retorno remoto e Live. A chave
+Isso não vale para a saída normal do app, que sai marcada em todos os
+caminhos: job local (`_marca_arquivo` no trecho), família isolada
+(`_marca_saida_isolada`, depois que o filho sai) e Live (`_marca_pcm`). A chave
 `live_marca_primeiro_trecho` (default True; dono, 2026-10-28: marca em toda
 saída) mantém o AudioSeal também no 1º PCM do Live. False é o atalho do #901:
 só esse PCM sai sem marca; do 2º chunk em diante a marca volta.

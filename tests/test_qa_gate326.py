@@ -43,7 +43,6 @@ def amb(tmp_path, monkeypatch, voices_tmp):
     """Backend in-process falso + gerador com ganho controlável."""
     monkeypatch.setattr(app, "_current_backend",
                         lambda *a, **k: {"id": "fake", "family": "kokoro", "meta": {}, "path": "x"})
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: False)
     # sem worker de verdade aqui: o gerador stubado é que controla o nível, e o
     # caminho isolado tem teste próprio (que roda o `main()` do worker)
     monkeypatch.setattr(app, "_ISOLATED_FAMILIES", frozenset())

@@ -157,12 +157,11 @@ Client → POST /api/live/ticket (one-use) → WS /api/live/ws?key=…|ticket=�
 
 ## 9. Rede / Acesso Remoto (default OFF)
 
+TTS, STT e tradução são só locais (#1059). O que pode sair:
+
 | Controle | O que sai | Destino |
 |---|---|---|
-| `remote_tts` | Texto + referência | `remote_tts_url` |
-| `remote_stt` | Áudio | `remote_stt_base_url` |
-| `remote_translate` | Texto | `remote_base_url` |
-| `chat_base_url` | Histórico + preprompt | LLM remoto |
+| `chat_base_url` (ou `remote_base_url`) | Histórico + preprompt | LLM remoto |
 | `chat_backend: "dsh"` | Texto do turno | Provider route |
 
 Hugging Face metadata check no Whisper (DNS, zero áudio). `HF_HUB_OFFLINE=1` desativa.

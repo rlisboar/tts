@@ -825,10 +825,9 @@ def _voz_de_fixture(monkeypatch, tmp_path) -> str:
     return "voz-sintetica"
 
 
-def _job_de_render(monkeypatch, tmp_path, gerador, texto="x", remoto=False):
+def _job_de_render(monkeypatch, tmp_path, gerador, texto="x"):
     """Monta o mínimo para rodar `_run_tts_job` sem modelo nem Metal."""
     monkeypatch.setattr(app, "OUTPUTS_DIR", tmp_path)
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: remoto)
     monkeypatch.setattr(app, "_current_backend", lambda *a, **k: {
         "id": "omnivoice", "family": "omnivoice", "is_shortcut": True,
         "path": "omnivoice", "meta": {"label": "Omni"}})
@@ -1015,125 +1014,6 @@ def test_render_avisa_quando_nao_da_para_medir_loudness(monkeypatch, tmp_path):
         assert "loudness" in (job.get("warning") or "")
         assert "loudness" in job["output"]["warning"]
         assert job["output"]["lufs_ganho_db"] is None
-    finally:
-        app._jobs.pop(job_id, None)
-
-
-# ---------------------------------------------------------------------------
-# #304 — remoto: anomalia detectada e fallback local (nunca job error)
-# ---------------------------------------------------------------------------
-
-def _so_local(monkeypatch):
-    """Caminho local mínimo para o fallback: modelo falso, sem voz em disco."""
-    monkeypatch.setattr(app, "_ensure_remote_voice", lambda *a, **k: None)
-    monkeypatch.setitem(app._settings, "remote_tts_voice", "")
-
-
-def test_remoto_com_silencio_regera_local(monkeypatch, tmp_path):
-    """200 com silêncio não passa como bom: 2 tentativas remotas e vira LOCAL."""
-    import soundfile as sf
-
-    _so_local(monkeypatch)
-    remotos = {"n": 0}
-
-    def _remoto(*a, **k):
-        remotos["n"] += 1
-        return np.zeros(24000, dtype=np.float32)          # 200 com mudo
-
-    locais = {"n": 0}
-
-    def _local(*a, **k):
-        locais["n"] += 1
-        return _bom()
-
-    monkeypatch.setattr(app, "_tts_remote_chunk", _remoto)
-    job_id = _job_de_render(monkeypatch, tmp_path, _local,
-                            texto=_TEXTO_1_TRECHO, remoto=True)
-    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
-                     "pt", {"num_steps": 4}, use_queue=False)
-    job = app._jobs[job_id]
-    try:
-        assert job["status"] == "done", job
-        assert remotos["n"] == 2, "o silêncio remoto não foi tentado 2x"
-        assert locais["n"] >= 1, "o trecho não foi regerado local"
-        assert job.get("remote_fallback") is True
-        assert job["output"]["remote_fallback"] is True
-        assert "LOCAL" in (job.get("warning") or "")
-        assert job["output"]["rms"] > 0.05, "gravássemos mudo"
-        wav, _ = sf.read(str(tmp_path / f"{job['output']['id']}.wav"), dtype="float32")
-        assert float(np.sqrt(np.mean(wav ** 2))) > 0.05
-    finally:
-        app._jobs.pop(job_id, None)
-
-
-def test_remoto_que_estoura_cai_para_local_sem_error(monkeypatch, tmp_path):
-    """500 persistente: job termina `done` marcado, não `error`."""
-    _so_local(monkeypatch)
-    chamadas = {"n": 0}
-
-    def _remoto(*a, **k):
-        chamadas["n"] += 1
-        raise RuntimeError("TTS remoto falhou (500)")
-
-    def _local(*a, **k):
-        return _bom()
-
-    monkeypatch.setattr(app, "_tts_remote_chunk", _remoto)
-    job_id = _job_de_render(monkeypatch, tmp_path, _local,
-                            texto=_TEXTO_1_TRECHO, remoto=True)
-    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
-                     "pt", {"num_steps": 4}, use_queue=False)
-    job = app._jobs[job_id]
-    try:
-        assert job["status"] == "done", job
-        assert chamadas["n"] == 2, "não insistiu 2x antes de desistir"
-        assert job["output"]["remote_fallback"] is True
-        assert job["output"]["rms"] > 0.05
-    finally:
-        app._jobs.pop(job_id, None)
-
-
-def test_remoto_saudavel_nao_marca_fallback(monkeypatch, tmp_path):
-    """Remoto bom: nenhum aviso, nenhum fallback, e o local não é tocado."""
-    _so_local(monkeypatch)
-    locais = {"n": 0}
-
-    def _local(*a, **k):
-        locais["n"] += 1
-        return _bom()
-
-    monkeypatch.setattr(app, "_tts_remote_chunk", lambda *a, **k: _bom())
-    job_id = _job_de_render(monkeypatch, tmp_path, _local,
-                            texto=_TEXTO_1_TRECHO, remoto=True)
-    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
-                     "pt", {"num_steps": 4}, use_queue=False)
-    job = app._jobs[job_id]
-    try:
-        assert job["status"] == "done"
-        assert locais["n"] == 0, "gerou local com o remoto saudável"
-        assert job["output"]["remote_fallback"] is False
-        assert not job.get("warning")
-    finally:
-        app._jobs.pop(job_id, None)
-
-
-def test_fallback_desligado_volta_a_dar_error(monkeypatch, tmp_path):
-    """`TTS_REMOTE_TTS_FALLBACK=0`: falha do remoto derruba o job (comportamento antigo)."""
-    _so_local(monkeypatch)
-    monkeypatch.setenv("TTS_REMOTE_TTS_FALLBACK", "0")
-
-    def _remoto(*a, **k):
-        raise RuntimeError("TTS remoto falhou (500)")
-
-    monkeypatch.setattr(app, "_tts_remote_chunk", _remoto)
-    job_id = _job_de_render(monkeypatch, tmp_path, lambda *a, **k: _bom(),
-                            texto=_TEXTO_1_TRECHO, remoto=True)
-    app._run_tts_job(job_id, _TEXTO_1_TRECHO, "voz-x", tmp_path / "voz-x.wav",
-                     "pt", {"num_steps": 4}, use_queue=False)
-    job = app._jobs[job_id]
-    try:
-        assert job["status"] == "error"
-        assert "remoto" in (job.get("error") or "").lower()
     finally:
         app._jobs.pop(job_id, None)
 
@@ -1848,17 +1728,6 @@ def test_stt_fatia_em_janelas_com_sobreposicao(monkeypatch):
     assert r["text"] == "pedaço"
     # o segundo segmento começa depois do primeiro (offset da janela aplicado)
     assert r["segments"][1]["start"] > r["segments"][0]["start"] + 20
-
-
-def test_cache_de_voz_remota_tem_teto(monkeypatch):
-    monkeypatch.setattr(app, "_REMOTE_VOICE_CACHE_MAX", 3)
-    app._remote_voice_cache.clear()
-    try:
-        for i in range(10):
-            app._remote_voice_cache_guarda(f"v{i}", ("origem", f"v{i}", i))
-        assert len(app._remote_voice_cache) == 3
-    finally:
-        app._remote_voice_cache.clear()
 
 
 def test_preset_materializado_reesorteia_semente_ruim(tmp_path, monkeypatch, capsys):

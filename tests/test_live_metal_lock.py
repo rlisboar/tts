@@ -4,20 +4,18 @@ Contexto (smoke do dono): com o Live e a UI gerando ao mesmo tempo, o processo d
 servidor MORREU com `Command buffer execution failed: GPU Timeout Error` (exit
 134). O app já serializa a geração local no `_gen_lock` (o job da UI o segura
 desde sempre); o que este teste fixa é que o caminho do LIVE entra no MESMO lock
-(`live_pipeline._tts_app`: `trava = app._NO_LOCK if app._use_remote_tts() else app._gen_lock`).
+(`live_pipeline._tts_app`: `trava = app._gen_lock`).
 
 Instrumento: um dublê do `app._generate_chunk` (a folha que de fato toca o Metal)
 que dorme, conta entradas/saídas e detecta SOBREPOSIÇÃO. Sem MLX carregado.
 
 O que cada caso cobre:
 - Live × Live (duas sessões em paralelo) — o caso medido no gate do #102;
-- Live × job da UI, NOS DOIS sentidos (quem começa primeiro não importa);
-- contraprova: com TTS remoto o Live não usa o lock local (por desenho) e a
-  sobreposição aparece — provando que o silêncio dos outros casos é mérito do lock.
+- Live × job da UI, NOS DOIS sentidos (quem começa primeiro não importa).
+(A contraprova pelo TTS remoto saiu com ele, #1059; a de fora, abaixo, segue.)
 
-Contraprova por fora (rodei: 3 dos 4 testes falham): copie a árvore e troque as
-DUAS linhas `trava = app._NO_LOCK if app._use_remote_tts() else app._gen_lock` de
-`live_pipeline.py` (521 e 677 — prewarm e turno) por `trava = app._NO_LOCK`.
+Contraprova por fora: copie a árvore e troque as DUAS linhas `trava = app._gen_lock`
+de `live_pipeline.py` (prewarm e turno) por `trava = contextlib.nullcontext()`.
 Trocar só a primeira não basta: o caminho do turno continua travado.
 """
 
@@ -72,7 +70,6 @@ def gerador(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "_current_backend",
                         lambda *a, **k: {"id": "fake", "family": "omnivoice", "meta": {}})
     monkeypatch.setattr(app, "VOICES_DIR", tmp_path)      # sem wav → sem clone prompt
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: False)
     return g
 
 
@@ -126,13 +123,3 @@ def test_turno_live_e_job_da_ui_nao_sobrepoem(gerador, primeiro):
     assert gerador.sobrepostas == 0
 
 
-def test_remoto_tambem_serializa_a_geracao_local(monkeypatch, gerador):
-    """#804: com `remote_tts` ligado o Live AINDA gera local — e tem de serializar.
-
-    `_tts_app` chama `_generate_chunk`, que é a folha LOCAL: pular a trava no modo
-    remoto deixava o MLX concorrente com a UI e o Metal estourava (exit 134)."""
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: True)
-    _em_threads(lambda: lp._tts_app("turno remoto", {}, "voz"), _job_da_ui)
-    assert gerador.chamadas == 2
-    assert gerador.max_simultaneas == 1, "gerou local concorrente com o modo remoto"
-    assert gerador.sobrepostas == 0

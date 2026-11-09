@@ -34,7 +34,7 @@ def _pipeline(fala, texto, *, language="pt"):
 def _stt_falso(monkeypatch):
     import app
 
-    def _transcreve(_path, language=None, allow_remote=True):
+    def _transcreve(_path, language=None):
         texto, lang = p_atual["p"]._transcricao
         return {"text": texto, "language": lang,
                 "segments": [{"no_speech_prob": 0.05, "avg_logprob": -0.2,

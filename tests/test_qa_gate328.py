@@ -80,7 +80,6 @@ def amb_cache(tmp_path, monkeypatch, voices_tmp):
     app._jobs.clear()
     monkeypatch.setattr(app, "_current_backend",
                         lambda *a, **k: {"id": "fake", "family": "kokoro", "meta": {}, "path": "x"})
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: False)
     # sem processo isolado: o job roda aqui dentro (o cache está no laço de geração,
     # e um worker de verdade custaria ~30 s por pedido)
     monkeypatch.setattr(app, "_ISOLATED_FAMILIES", frozenset())
@@ -171,7 +170,7 @@ def test_chave_estavel_para_entradas_iguais(amb_cache):
     """Contraprova da sensibilidade: igual tem de dar a MESMA chave (senão nunca há hit)."""
     def _chave(**mud):
         base = dict(chunk="a", voice_id="v", voice_path=app.VOICES_DIR / "v.wav",
-                    family="kokoro", model="m", language="pt", alvo_remoto=False,
+                    family="kokoro", model="m", language="pt",
                     omni={"num_steps": 4})
         base.update(mud)
         return app._cache_chave(**base)

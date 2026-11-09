@@ -2651,7 +2651,6 @@ def test_comando_e_turno_disputam_a_MESMA_trava_do_whisper(monkeypatch):
                 dentro["agora"] -= 1
 
     monkeypatch.setattr(app, "_transcreve_em_janelas", whisper_falso)
-    monkeypatch.setattr(app, "_use_remote_stt", lambda: False)
     monkeypatch.setattr(app, "_vad_tem_fala", lambda *a, **k: True)
     monkeypatch.setattr(app, "_wav_to_mono16k", lambda *a, **k: np.zeros(1600, np.float32))
     monkeypatch.setattr(app, "_release_mlx_memory", lambda *a, **k: None)

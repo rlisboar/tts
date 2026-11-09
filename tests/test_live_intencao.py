@@ -292,11 +292,10 @@ def test_stats_publica_vivo_e_rss(tmp_path):
 
 def test_modo_local_nao_chama_nada_de_fora(tmp_path, monkeypatch):
     """EGRESS: no modo local, nem com o worker morto, nada externo é consultado."""
-    import app
+    import requests
 
     chamadas = []
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: chamadas.append("tts") or False)
-    monkeypatch.setattr(app, "_use_remote_translate", lambda: chamadas.append("tr") or False)
+    monkeypatch.setattr(requests, "post", lambda *a, **k: chamadas.append("http"))
     monkeypatch.setattr(__import__("dsh_client"), "DshClient",
                         lambda *a, **k: chamadas.append("dsh"))
     inc = _inc(tmp_path)

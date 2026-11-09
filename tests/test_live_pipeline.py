@@ -1105,8 +1105,8 @@ def test_tts_do_turno_segura_o_gen_lock_como_o_job_normal(monkeypatch):
 
     Sem o `_gen_lock`, um turno do Live e uma geração da UI rodam MLX ao mesmo
     tempo e MATAM o servidor. Aqui a seção crítica é alargada de propósito: dois
-    turnos simultâneos não podem se sobrepor. Contraprova no mesmo teste: com o
-    caminho sem trava (`_use_remote_tts` → `_NO_LOCK`) eles se sobrepõem.
+    turnos simultâneos não podem se sobrepor. Contraprova no mesmo teste: sem a
+    trava (um `nullcontext` no lugar do `_gen_lock`) eles se sobrepõem.
     """
     import app as app_mod
 
@@ -1135,20 +1135,14 @@ def test_tts_do_turno_segura_o_gen_lock_como_o_job_normal(monkeypatch):
         for t in ths:
             t.join(10)
 
-    monkeypatch.setattr(app_mod, "_use_remote_tts", lambda: False)
     sobrepostas.update(agora=0, max=0, chamadas=0)
     dispara()
     assert sobrepostas["chamadas"] == 3
     assert sobrepostas["max"] == 1, "com o _gen_lock não pode haver geração concorrente"
 
-    # #804: `remote_tts` NÃO dispensa a trava (o caminho gera local)
-    monkeypatch.setattr(app_mod, "_use_remote_tts", lambda: True)
-    sobrepostas.update(agora=0, max=0, chamadas=0)
-    dispara()
-    assert sobrepostas["max"] == 1, "com remote_tts a geração local ainda serializa"
-
     # contraprova do próprio harness: sem trava a sobreposição APARECE
-    monkeypatch.setattr(app_mod, "_gen_lock", app_mod._NO_LOCK)
+    import contextlib
+    monkeypatch.setattr(app_mod, "_gen_lock", contextlib.nullcontext())
     sobrepostas.update(agora=0, max=0, chamadas=0)
     dispara()
     assert sobrepostas["max"] > 1, "sem trava, a contraprova TEM de se sobrepor"

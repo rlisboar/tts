@@ -24,7 +24,7 @@ import app
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_api import _voz_fake, auth, chave_de_uso, client, voices_tmp  # noqa: E402,F401
+from test_api import auth, chave_de_uso, client  # noqa: E402,F401
 
 # Fixtures consumidas pelos testes do arquivo; o `ruff` cobre com `noqa`, o
 # `pyflakes` (que o ignora) precisa do `__all__`. Inerte em runtime.
@@ -32,7 +32,6 @@ __all__ = [
     "auth",
     "chave_de_uso",
     "client",
-    "voices_tmp",
 ]
 
 
@@ -213,28 +212,6 @@ def test_unload_sem_geracao_responde_200(client, auth, monkeypatch):
 
 
 # ----------------------------------------------------------------- caches (4)
-
-def test_cache_de_voz_remota_tem_teto_e_evicta(monkeypatch):
-    monkeypatch.setattr(app, "_REMOTE_VOICE_CACHE_MAX", 2)
-    app._remote_voice_cache.clear()
-    for vid in ("a", "b", "c"):
-        app._remote_voice_cache_guarda(vid, (1, 2))
-    assert len(app._remote_voice_cache) == 2
-    assert "a" not in app._remote_voice_cache, "não evictou o mais antigo"
-
-
-def test_apagar_a_voz_remove_a_entrada_do_cache(client, auth, voices_tmp):
-    _voz_fake(app.VOICES_DIR, "v1")
-    app._remote_voice_cache_guarda("v1", (9, 9))
-    assert client.delete("/api/voices/v1", headers=auth).status_code == 200
-    assert "v1" not in app._remote_voice_cache
-
-
-def test_delecao_que_falha_nao_limpa_OUTRAS_entradas(client, auth, voices_tmp):
-    """O `pop` é pelo id pedido; 404 não pode derrubar entrada de outra voz."""
-    app._remote_voice_cache["outra"] = (1, 1)
-    assert client.delete("/api/voices/fantasma", headers=auth).status_code == 404
-    assert app._remote_voice_cache.get("outra") == (1, 1)
 
 
 # ------------------------------------------------------- unidade do histórico (5)

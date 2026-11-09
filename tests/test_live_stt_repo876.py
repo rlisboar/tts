@@ -32,7 +32,6 @@ def repos(monkeypatch):
     monkeypatch.setitem(app._settings, "stt_whisper_repo", LARGE)
     monkeypatch.setitem(app._settings, "live_stt_whisper_repo", "")
     monkeypatch.setattr(app, "_vad_tem_fala", lambda p, minimo_s=0.3: True)
-    monkeypatch.setattr(app, "_use_remote_stt", lambda: False)
     monkeypatch.setitem(app._settings, "stt_local_engine", "whisper")
     monkeypatch.setattr(app, "_live_voz_ligado", lambda: None)
     return pedidos

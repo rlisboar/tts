@@ -68,7 +68,7 @@ padrão).
 ## Administração x uso (chave de uso)
 
 Administrar = gerenciar chaves (`/api/apikeys*`), mexer nas **conexões externas**
-do `/api/settings` (`remote_*`, `chat_*`, `remote_api_key`, `chat_api_key`) e
+do `/api/settings` (`remote_base_url`, `remote_api_key`, `chat_*`) e
 trocar de **modelo** (`model`, `translate_model`, `stt_whisper_repo`). O resto —
 gerar fala, voz, transcrição, ajustes de qualidade — é uso e qualquer chave faz.
 
@@ -175,17 +175,11 @@ anti-alucinação fica só com VAD, tamanho e blacklist. `live_stt_release_adiad
 em segundo plano, logo depois do texto, sem cruzar com uma geração do TTS. As duas
 valem na hora, sem reiniciar.
 
-`remote_tts_extra` (JSON de parâmetros extras do servidor remoto) é campo de
-**admin**: ele é aplicado sobre o corpo de *todos* os trechos, então uma chave de
-uso que mandasse `{"text": …}` reescreveria o job alheio. `text` e `voice` dentro
-do extra são ignorados de propósito (são por trecho) — o servidor avisa no stderr;
-o resto (`speed`, `num_steps`, …) vale.
-
 Para quem mexe no HTML: um campo administrativo precisa do marcador
 `data-admin-setting="<nome da setting>"` — é ele que faz o travamento valer (o
 servidor decide a lista, a UI cruza). Se o servidor promover um nome a admin sem
 marcador, a UI avisa no console no load; os que ainda não têm campo na tela
-(`translate_model`, `remote_tts_model`) ficam numa lista explícita para não
+(`translate_model`) ficam numa lista explícita para não
 virar aviso eterno.
 
 ## Modelo
@@ -506,12 +500,11 @@ O detector alimenta o gate de locutor com `speaker_anticlone` ligado (`anticlone
 `marcado`/`cru`/`indisponivel` + `anticlone_prob`). Detalhe de custo e pino:
 `evidence/657-marca-dagua.txt`.
 
-**Dois lugares ficam SEM marca, de propósito (#845):** a amostra de *voice design*,
+**Um lugar fica SEM marca, de propósito (#845):** a amostra de *voice design*,
 que é referência e contamina a linhagem da voz se for marcada (a saída já sai
-marcada), e o servidor remoto (removido no #1058), que servia áudio cru — quem marca é o
-CLIENTE, então consumidor direto do servidor recebe sem marca. A saída normal do
-app sai marcada em todos os caminhos (job local, família isolada, retorno remoto e
-Live).
+marcada). O servidor remoto (removido no #1058) também não marcava — quem marca é
+o CLIENTE, então consumidor direto dele recebia sem marca. A saída normal do app
+sai marcada em todos os caminhos (job local, família isolada e Live).
 
 ### Modos do gate
 
@@ -1073,19 +1066,17 @@ confirmação explícita do humano é o gatilho do `text` final.
 
 ### O que pode sair da máquina
 
-Tudo é processado localmente até você apontar para um serviço externo. Estes são
-os únicos caminhos de saída, **todos desligados por padrão** (Configurações →
-Rede):
+TTS, STT e tradução rodam só nesta máquina — não existe modo remoto para eles
+(#1059). O único modelo fora é o LLM da Conversa e do Live, e só quando você
+aponta para um provedor. Estes são os únicos caminhos de saída, **todos
+desligados por padrão** (Configurações → Rede):
 
 | Controle | O que sai | Para onde |
 |---|---|---|
-| TTS remoto (`remote_tts`) | o texto da fala e, em voz clonada, a amostra dessa voz + o texto de referência (sobe uma vez por mudança; some com `remote_tts_voice` preenchido) | `remote_tts_url` (ou `remote_base_url`) |
-| STT remoto (`remote_stt`) | o áudio da fala a transcrever | `remote_stt_base_url` (ou `remote_base_url`) |
-| Tradução remota (`remote_translate`) | o texto a traduzir | `remote_base_url` |
 | Base URL da Conversa (`chat_base_url`) | histórico da conversa + preprompt | `chat_base_url` (ou `remote_base_url`) |
 | Backend de IA pelo harness `dsh` (`chat_backend: "dsh"`, na Conversa e no Live) | o texto do turno; no modo histórico, o histórico renderizado. **Nada de áudio.** | a rota do provedor escolhida no `chat_dsh_model` — que, por default, é um provedor remoto; trocar o modelo pode trocar a rota |
 
-A chave do provedor (`remote_api_key`, `remote_stt_key`, `chat_api_key`) vai no
+A chave do provedor (`remote_api_key`, `chat_api_key`) vai no
 header da requisição, só para a URL configurada — e com uma chave de uso ela nem
 é lida em claro (ver *Administração x uso*). No caminho `dsh` a credencial fica
 com o próprio harness (`~/.dsh/.credentials.yaml`): o app não lê nem copia o

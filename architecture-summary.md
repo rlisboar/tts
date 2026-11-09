@@ -79,7 +79,7 @@ Arquiteto principal: servidor FastAPI (Python) com backends TTS baseados em MLX.
 ### Chat Subsystem
 - Sessions com DSH local agent pool (`_CHAT_DSH_POOL_MAX=3`, `_DSH_MAX_PROCESSOS=5`), OpenAI remote fallback.
 - Histórico: `_live_hist_guarda`, `_live_hist_comprime` (.compressa metade mais antiga; limiar `_LIVE_HIST_MAX_MSGS`/`_LIVE_HIST_MAX_CHARS`), `_live_hist_pos_turno`, `_live_hist_ja_comprimindo`.
-- Resumidor: `_live_resumidor(sess)` via `TTS_TRANSLATE_BASE_URL`/remote.
+- Resumidor: `_live_resumidor(sess)` pelo provedor do LLM da conversa.
 
 ### Live WS (`/api/live/ws`)
 - **Autenticação**: `?key=` ou `?ticket=`; loopback dispensa.
@@ -102,8 +102,7 @@ Arquiteto principal: servidor FastAPI (Python) com backends TTS baseados em MLX.
 - yt-dlp com host allowlist (`youtube.com`, `youtube-nocookie.com`, `youtu.be`), redirect safety checks, 10min max, ffmpeg post-processing.
 
 ### Remote Integration
-- `_ensure_remote_voice` posts `.wav` to remote origin `/voices`, 64-entry LRU cache keyed by (origin, name, mtime_ns).
-- `_translate_remote` uses `remote_api_key`; STT uses dedicated `remote_stt_key` or shared key.
+- Só o LLM da Conversa/Live sai da máquina; TTS, STT e tradução são locais (#1059).
 - `_upload_limit_bytes(default_mb=64)`: env `TTS_MAX_UPLOAD_MB` capped 0–2048, streams write in 1MB blocks.
 
 ### Startup
@@ -128,7 +127,7 @@ Arquiteto principal: servidor FastAPI (Python) com backends TTS baseados em MLX.
 - CORS registrado por último para que 401/429 cruzem CORS.
 
 ### Settings View
-- `_settings_vista` mascara segredos (`remote_api_key`, `remote_stt_key`, `chat_api_key`) para non-admin.
+- `_settings_vista` mascara segredos (`remote_api_key`, `chat_api_key`) para non-admin.
 - `_SETTINGS_ADMIN` fields hidden from non-admin POST.
 - `_apply_settings` clamps: `speed` 0.25–4.0, `chunk_max_chars` 60–200 (default 140), `auto_cleanup_minutes` 1–1440, `omni_num_steps` 4–64, `live_num_steps` 4–64, `omni_guidance_scale` 0.0–10.0, `gen_temperature` 0.0–2.0, `speech_queue_gap_s` 0.0–5.0, `speaker_threshold` 0.35–0.9, `idle_unload_minutes` 0–1440 (0=never).
 - `_sanitize_instruct`: restringe OmniVoice a vocabulary fechado (`_OMNI_INSTRUCT_VALID`).
@@ -244,8 +243,8 @@ Live WS: Client → /api/live/ws
 ## 8. Environment Variables (Key)
 
 - `TTS_MAX_UPLOAD_MB`: upload limit (0–2048)
-- `TTS_TRANSLATE_BASE_URL` / `remote_base_url`: translation/LLM endpoint
-- `remote_api_key`, `remote_stt_key`, `chat_api_key`: remote service keys
+- `remote_base_url`: base herdada do LLM da Conversa/Live (`chat_base_url` vazio)
+- `remote_api_key`, `chat_api_key`: chaves do provedor do LLM
 - `VOICES_DIR`, `OUTPUTS_DIR`, `BASE`: paths
 - `_RATE_DEFAULT`, `_RATE_HEAVY`, `_RATE_POLL`: rate limits
 - `speech_queue_gap_s`: queue gap (0.0–5.0)

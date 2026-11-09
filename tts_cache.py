@@ -9,7 +9,7 @@ Regras que importam:
 - desligado por padrão (`TTS_TTS_CACHE=1` ou `tts_cache: true`); TTL em segundos
   (`tts_cache_ttl_s`, padrão 1 h) e teto de entradas (`tts_cache_max`);
 - só acerta com a chave INTEIRA igual: texto normalizado, voz + mtime, família,
-  modelo, precisão, idioma, motor (local/remoto) e todos os parâmetros que mudam
+  modelo, precisão, idioma, motor e todos os parâmetros que mudam
   o áudio — inclusive EQ/ganho, que entram depois da geração;
 - nada do TEXTO vai para o disco, só o hash: o cache é local e não expõe o que
   foi falado;
@@ -29,8 +29,7 @@ from pathlib import Path
 _CHAVES_OMNI = (
     "num_steps", "guidance_scale", "class_temperature", "position_temperature",
     "layer_penalty_factor", "t_shift", "instruct", "seed", "speed", "duration_s",
-    "denoise", "preprocess_prompt", "postprocess_output", "audio_chunk_duration",
-    "audio_chunk_threshold", "temperature", "top_p", "top_k", "repetition_penalty",
+    "temperature", "top_p", "top_k", "repetition_penalty",
     "max_tokens", "exaggeration", "cfg_weight", "min_p", "chunk_length",
     "speaker", "kokoro_voice", "pocket_voice", "voxtral_voice", "lfm3_voice",
     # EQ/ganho são aplicados DEPOIS da geração, mas mudam o áudio: o app os põe

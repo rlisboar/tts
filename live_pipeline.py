@@ -1551,10 +1551,8 @@ def _prewarm_app(voice_id: str | None = None, tts_in_process: bool = True) -> No
                 ref_text = app._voice_ref_text(voice_id)
             elif path and path.exists():
                 ref_audio = str(path)
-            # SEMPRE o lock local (#804): `_generate_chunk` é a folha LOCAL mesmo
-            # com `remote_tts` ligado — quem fala com o servidor remoto é o job,
-            # não este caminho. Pular a trava deixava o Live gerar MLX concorrente
-            # com a UI e o Metal estourava (`GPU Timeout`, exit 134).
+            # SEMPRE o lock (#804): pular a trava deixava o Live gerar MLX
+            # concorrente com a UI e o Metal estourava (`GPU Timeout`, exit 134).
             trava = app._gen_lock
             with trava:                   # mesmo lock do turno: Metal é serial
                 app._generate_chunk(modelo, "Ok.", "pt", conds, ref_text, omni,
@@ -1864,9 +1862,6 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
     Segura o `_gen_lock`, como o job normal faz: sem isso um turno do Live e uma
     geração da UI rodam MLX ao mesmo tempo e o Metal estoura — medido no smoke, o
     servidor MORREU com "Command buffer execution failed: GPU Timeout Error".
-
-    O lock vale TAMBÉM com `remote_tts` ligado (#804): esta função gera LOCAL
-    (`_generate_chunk`), então o modo remoto não a paraleliza.
 
     `espera` (#313) é o dict do turno que recebe `lock_espera_ms`: o lock é GLOBAL
     e um job de lote o segura pelo job inteiro, então esse tempo some dentro do

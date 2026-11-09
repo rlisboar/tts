@@ -171,7 +171,6 @@ def test_timeout_vira_worker_morto(filho, monkeypatch):
 def test_gerar_segura_o_gen_lock(filho, monkeypatch):
     """Enquanto o pedido está em voo, o `_gen_lock` está tomado (um Metal por vez)."""
     monkeypatch.setenv("STUB_DORME", "0.4")
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: False)
     w = filho(voice_id="v")
     w.start()
     livre = []
@@ -419,7 +418,6 @@ def test_caminho_in_process_reamostra_para_a_taxa_do_fio(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "_current_backend",
                         lambda *a, **k: {"id": "fake", "family": "omnivoice", "meta": {}})
     monkeypatch.setattr(app, "VOICES_DIR", tmp_path)      # sem wav → sem clone prompt
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: False)
 
     audio = lp._tts_app("um dois três", {}, "voz")
     assert audio.size == pytest.approx(24000, rel=0.02), f"{audio.size} amostras"

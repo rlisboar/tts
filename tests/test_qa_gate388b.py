@@ -78,15 +78,6 @@ def test_24_7_vira_palavra_falada():
     assert common.sanitize_text("aberto 24/7") == "aberto vinte e quatro por sete."
 
 
-def test_cache_de_voz_remota_podado(monkeypatch):
-    monkeypatch.setattr(app, "_REMOTE_VOICE_CACHE_MAX", 3)
-    app._remote_voice_cache.clear()
-    for i in range(10):
-        app._remote_voice_cache_guarda(f"v{i}", ("o", f"v{i}", i))
-    assert len(app._remote_voice_cache) == 3
-    app._remote_voice_cache.clear()
-
-
 def test_speed_nao_e_no_op_no_fallback_do_qwen():
     vistos = {}
 

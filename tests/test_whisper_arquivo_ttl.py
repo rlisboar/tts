@@ -113,17 +113,16 @@ def test_arquivo_marca_o_relogio_e_o_live_nao(monkeypatch, tmp_path):
     monkeypatch.setitem(app._settings, "live_stt_whisper_repo", "")
     monkeypatch.setitem(app._settings, "stt_local_engine", "whisper")
     monkeypatch.setattr(app, "_vad_tem_fala", lambda p, minimo_s=0.3: True)
-    monkeypatch.setattr(app, "_use_remote_stt", lambda: False)
     monkeypatch.setattr(app, "_wav_to_mono16k", lambda p: np.zeros(16000, dtype=np.float32))
     app._whisper_arquivo_uso = 0.0
 
-    app._transcribe(tmp_path / "a.wav", language="pt", allow_remote=False)
+    app._transcribe(tmp_path / "a.wav", language="pt")
     assert app._whisper_arquivo_uso == 1000.0
     assert Holder.model_path == LARGE
 
     agora[0] = 1500.0
     with app._stt_do_live():
-        app._transcribe(tmp_path / "a.wav", language="pt", allow_remote=False)
+        app._transcribe(tmp_path / "a.wav", language="pt")
     assert app._whisper_arquivo_uso == 1000.0, "o Live renovou o relógio do large-v3"
     assert Holder.model_path == app.LIVE_WHISPER_PADRAO
     # vencido o prazo, o que está carregado é o turbo: não sai

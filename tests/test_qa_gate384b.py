@@ -149,9 +149,6 @@ class _WorkerZerosMentindo(lp._LiveWorker):
 
 
 def _com_zeros(monkeypatch, mentira):
-    import app
-
-    monkeypatch.setattr(app, "_use_remote_tts", lambda: False)
     p = _pipe(monkeypatch)
     p._worker = _WorkerZerosMentindo(np.zeros(2400, dtype=np.float32), mentira)
     p._tts_app = lambda texto, omni, voice_id=None, espera=None: _cru(2400)

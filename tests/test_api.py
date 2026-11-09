@@ -830,13 +830,13 @@ def test_settings_400_nao_deixa_ram_divergindo_do_disco(client):
     auth = auth_headers(client)
     disco_antes = (app.SETTINGS_PATH.read_text()
                    if app.SETTINGS_PATH.exists() else None)
-    beam_antes = client.get("/api/settings", headers=auth).json()["stt_beam"]
+    teto_antes = client.get("/api/settings", headers=auth).json()["metrics_teto_mb"]
 
-    payload = {"stt_beam": 3, "chat_extra": "reasoning=low"}    # o 2º é inválido
+    payload = {"metrics_teto_mb": 3, "chat_extra": "reasoning=low"}    # o 2º é inválido
     r = client.post("/api/settings", headers=auth, json=payload)
     assert r.status_code == 400
-    assert app._settings["stt_beam"] == beam_antes, "rollback: nada aplicado na RAM"
-    assert client.get("/api/settings", headers=auth).json()["stt_beam"] == beam_antes
+    assert app._settings["metrics_teto_mb"] == teto_antes, "rollback: nada aplicado na RAM"
+    assert client.get("/api/settings", headers=auth).json()["metrics_teto_mb"] == teto_antes
     disco_depois = (app.SETTINGS_PATH.read_text()
                     if app.SETTINGS_PATH.exists() else None)
     # Compara as CHAVES DO POST, não o arquivo inteiro: o contrato é "nada do
@@ -848,8 +848,8 @@ def test_settings_400_nao_deixa_ram_divergindo_do_disco(client):
         "rollback: nada do POST inválido foi ao disco"
 
     # um save válido volta a persistir de fato (não só em memória)
-    assert client.post("/api/settings", headers=auth, json={"stt_beam": 4}).status_code == 200
-    assert _json.loads(app.SETTINGS_PATH.read_text())["stt_beam"] == 4
+    assert client.post("/api/settings", headers=auth, json={"metrics_teto_mb": 4}).status_code == 200
+    assert _json.loads(app.SETTINGS_PATH.read_text())["metrics_teto_mb"] == 4
 
 
 def test_settings_anti_ruido_persiste(client, auth):
@@ -2116,7 +2116,7 @@ def test_stt_local_engine_dispatch(monkeypatch):
                         lambda p: chamado.update(engine="parakeet") or
                         {"text": "ok", "language": "", "segments": []})
     app._settings["stt_local_engine"] = "parakeet"
-    r = app._transcribe(Path("x.wav"), language="pt", allow_remote=False)
+    r = app._transcribe(Path("x.wav"), language="pt")
     assert chamado["engine"] == "parakeet" and r["text"] == "ok"
     # whisper: parakeet NÃO é chamado (mlx_whisper fake via sys.modules)
     chamado.clear()
@@ -2132,7 +2132,7 @@ def test_stt_local_engine_dispatch(monkeypatch):
     monkeypatch.setattr(app, "_release_mlx_memory", lambda *a, **k: liberou.append(1))
     antes = {m for m in sys.modules if m == "mlx" or m.startswith("mlx.")}
     app._settings["stt_local_engine"] = "whisper"
-    r = app._transcribe(Path("x.wav"), language="pt", allow_remote=False)
+    r = app._transcribe(Path("x.wav"), language="pt")
     assert r["text"] == "w" and "engine" not in chamado
     assert liberou, "_transcribe (whisper) deve chamar _release_mlx_memory"
     depois = {m for m in sys.modules if m == "mlx" or m.startswith("mlx.")}
@@ -2196,14 +2196,14 @@ def test_transcribe_filtra_alucinacao(client, auth, monkeypatch):
     monkeypatch.setitem(app._settings, "stt_anti_ruido", True)   # independe do settings.json real
     monkeypatch.setattr(app, "_vad_tem_fala", lambda p: True)
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None:
                         {"text": "E aí", "language": "pt", "segments": []})
     r = client.post("/api/transcribe", headers=auth, data={"source_lang": "pt"},
                     files={"audio": ("a.wav", b"x", "audio/wav")})
     d = r.json()
     assert d["rejected"] and d["text"] == ""
     # fala real → passa
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None:
                         {"text": "pode mandar o texto", "language": "pt", "segments": []})
     r = client.post("/api/transcribe", headers=auth, data={"source_lang": "pt"},
                     files={"audio": ("a.wav", b"x", "audio/wav")})
@@ -2270,7 +2270,7 @@ def test_transcribe_avisa_a_escala_do_escore_quando_o_limiar_e_asnorm(client, au
     monkeypatch.setattr(app, "_speaker_load_estado", lambda: (perfis, ""))
     monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: [1.0, 0.0])
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None:
                         {"text": "pode mandar o texto", "language": "pt", "segments": []})
     monkeypatch.setitem(app._settings, "speaker_gate", "label")
     monkeypatch.setattr(app, "_speaker_limiar", lambda m: (0.5, "asnorm"))
@@ -3179,8 +3179,7 @@ def test_settings_chave_de_uso_nao_le_segredo(client, auth, chave_de_uso):
 def test_settings_chave_de_uso_nao_muda_conexao_externa(client, auth, chave_de_uso):
     antes = dict(app._settings)
     r = client.post("/api/settings", headers=chave_de_uso, json={
-        "remote_base_url": "http://rtx:8000/v1", "remote_tts": True,
-        "remote_tts_url": "http://rtx:8000", "model": "outro/modelo",
+        "remote_base_url": "http://llm:8000/v1", "model": "outro/modelo",
         "chat_api_key": "sk-nova-chave", "speed": 2.5, "pre_prompt": "cabeçalho",
         # limpeza APAGA arquivo do dono: `use` não decide (#543)
         "auto_cleanup": True, "auto_cleanup_minutes": 7,
@@ -3191,14 +3190,14 @@ def test_settings_chave_de_uso_nao_muda_conexao_externa(client, auth, chave_de_u
     assert r.status_code == 200, r.text
     body = r.json()
     assert set(body["admin_ignored"]) == {
-        "remote_base_url", "remote_tts", "remote_tts_url", "model", "chat_api_key",
+        "remote_base_url", "model", "chat_api_key",
         "auto_cleanup", "auto_cleanup_minutes", "auto_cleanup_max_outputs",
         "metrics_ttl_dias"}
     # o que é de uso passou e foi persistido
     assert body["speed"] == 2.5 and body["pre_prompt"] == "cabeçalho"
     assert app._settings["speed"] == 2.5
     # as conexões e a limpeza ficaram intactas (não é 403: a UI manda blob único)
-    for k in ("remote_base_url", "remote_tts", "remote_tts_url", "model",
+    for k in ("remote_base_url", "model",
               "chat_api_key", "auto_cleanup", "auto_cleanup_minutes",
               "auto_cleanup_max_outputs", "metrics_ttl_dias"):
         assert app._settings[k] == antes[k], k
@@ -3238,8 +3237,7 @@ def test_settings_admin_muda_a_limpeza_do_outputs(client, auth):
 
 
 def test_settings_admin_e_loopback_aplicam_tudo(client, auth):
-    payload = {"remote_base_url": "http://rtx:8000/v1", "remote_tts": True,
-               "remote_tts_url": "http://rtx:8000", "model": "outro/modelo",
+    payload = {"remote_base_url": "http://llm:8000/v1", "model": "outro/modelo",
                "remote_api_key": _SEGREDO_REMOTO, "chat_api_key": "sk-nova", "speed": 1.75}
     body = client.post("/api/settings", headers=auth, json=payload).json()
     assert body.get("admin_ignored") == []
@@ -3274,10 +3272,10 @@ def test_settings_post_nao_devolve_segredo_em_claro_para_chave_de_uso(client, au
     """#61: a resposta do POST É as settings, então tem de passar pela MESMA vista do
     GET — antes a chave de uso lia o segredo cru no retorno do Salvar."""
     client.post("/api/settings", headers=auth,
-                json={"remote_api_key": _SEGREDO_REMOTO, "remote_stt_key": _SEGREDO_CHAT})
+                json={"remote_api_key": _SEGREDO_REMOTO, "chat_api_key": _SEGREDO_CHAT})
     corpo = client.post("/api/settings", headers=chave_de_uso, json={"speed": 1.5}).json()
     assert corpo["is_admin"] is False and corpo["speed"] == 1.5
-    for campo, cru in (("remote_api_key", _SEGREDO_REMOTO), ("remote_stt_key", _SEGREDO_CHAT)):
+    for campo, cru in (("remote_api_key", _SEGREDO_REMOTO), ("chat_api_key", _SEGREDO_CHAT)):
         assert corpo[campo] != cru, campo
         assert corpo[campo].startswith("••••") and corpo[campo].endswith(cru[-4:]), campo
 
@@ -3288,7 +3286,7 @@ def test_settings_post_nao_devolve_segredo_em_claro_para_chave_de_uso(client, au
     # não sobrescreve o segredo guardado
     client.post("/api/settings", headers=chave_de_uso, json=corpo)
     assert app._settings["remote_api_key"] == _SEGREDO_REMOTO
-    assert app._settings["remote_stt_key"] == _SEGREDO_CHAT
+    assert app._settings["chat_api_key"] == _SEGREDO_CHAT
 
 
 def test_settings_metrics_ttl_dias_admin_muda(client, auth, chave_de_uso):
@@ -4030,59 +4028,6 @@ def test_models_unload_com_geracao_em_curso_devolve_409(client, auth, monkeypatc
     assert client.post("/api/models/unload", headers=auth, json={}).status_code == 200
 
 
-def test_cache_de_voz_remota_tem_teto_e_sai_na_delecao(client, auth, monkeypatch,
-                                                       vozes_isoladas):
-    monkeypatch.setattr(app, "_remote_voice_cache", {})
-    monkeypatch.setattr(app, "_REMOTE_VOICE_CACHE_MAX", 2)
-    app._remote_voice_cache_guarda("v1", ("http://r", "v1", 1))
-    app._remote_voice_cache_guarda("v2", ("http://r", "v2", 1))
-    app._remote_voice_cache_guarda("v3", ("http://r", "v3", 1))
-    assert list(app._remote_voice_cache) == ["v2", "v3"], "o mais antigo sai pelo teto"
-
-    monkeypatch.setattr(app, "_REMOTE_VOICE_CACHE_MAX", 64)
-    app._remote_voice_cache["morta"] = ("http://r", "morta", 1)
-    assert client.delete("/api/voices/naoexiste01", headers=auth).status_code == 404
-    assert "morta" in app._remote_voice_cache        # 404 não limpa nada
-    app._remote_voice_cache["existe"] = ("http://r", "existe", 1)
-    # `voices/` em tmp (fixture): com o diretório REAL, duas suítes concorrentes
-    # disputam o mesmo nome de arquivo e uma apaga o da outra (#435/concorrência)
-    vd, _sentinela = vozes_isoladas
-    (vd / "existe.wav").write_bytes(b"RIFF")
-    assert client.delete("/api/voices/existe", headers=auth).status_code == 200
-    assert "existe" not in app._remote_voice_cache
-
-
-def test_remote_tts_extra_e_campo_admin(client, auth, chave_de_uso, sem_admin_key):
-    """O extra sobrepõe o corpo de TODO trecho: chave de uso não pode trocá-lo."""
-    admin = client.get("/api/settings", headers=auth).json()["remote_tts_extra"]
-    assert admin == "{}" or admin == ""
-    r = client.post("/api/settings", headers=chave_de_uso,
-                    json={"remote_tts_extra": '{"speed": 0.9}'})
-    assert "remote_tts_extra" in r.json()["admin_ignored"]
-    assert app._settings["remote_tts_extra"] != '{"speed": 0.9}'
-    r = client.post("/api/settings", headers=auth, json={"remote_tts_extra": '{"speed": 0.9}'})
-    assert "remote_tts_extra" not in r.json()["admin_ignored"]
-    assert app._settings["remote_tts_extra"] == '{"speed": 0.9}'
-
-
-def test_extra_remoto_sem_text_nem_voice(monkeypatch, capsys):
-    """`text`/`voice` do extra não valem para todos os trechos: são descartados
-    com aviso (override que muda sozinho é degradação silenciosa)."""
-    monkeypatch.setattr(app, "_extra_remoto_avisados", set())
-    assert app._extra_remoto('{"speed": 0.9, "num_steps": 8}') == {"speed": 0.9, "num_steps": 8}
-    assert app._extra_remoto('{"text": "fixo", "speed": 1.1}') == {"speed": 1.1}
-    assert app._extra_remoto('{"voice": "x"}') == {}
-    saida = capsys.readouterr()
-    assert "traz 'text'" in saida.err and "traz 'voice'" in saida.err
-    assert saida.out == ""
-    # JSON quebrado e não-dict também são ignorados, e o lixo é avisado UMA vez
-    assert app._extra_remoto("{nao e json") == {}
-    assert app._extra_remoto("[]") == {}
-    assert app._extra_remoto("{nao e json") == {}
-    assert capsys.readouterr().err.count("não é JSON válido") == 1
-    assert app._extra_remoto("") == {} and app._extra_remoto(None) == {}
-
-
 def test_zip_do_mic_router_exige_admin(client, auth, chave_de_uso, sem_admin_key):
     """O zip carrega a chave primária em claro: credencial, logo admin."""
     r = client.get("/api/client/mic-router", headers=chave_de_uso)
@@ -4402,24 +4347,33 @@ def test_speaker_gate_label_avisa_sem_embedding(tmp_path, monkeypatch):
 
 
 def test_efeitos_de_settings_rodam_depois_do_commit(client, auth, monkeypatch):
-    """Erro no efeito pós-commit não perde a config salva: 200 + `avisos`."""
-    def _explode():
-        raise RuntimeError("autofree quebrou")
+    """Erro no efeito pós-commit não perde a config salva: 200 + `avisos`.
 
-    monkeypatch.setattr(app, "_autofree_local", _explode)
-    r = client.post("/api/settings", headers=auth, json={"speed": 1.15})
+    O efeito que sobrou com aviso é a descarga do modelo ao trocar a precisão
+    (o autofree do remoto saiu no #1059)."""
+    def _explode(*a, **k):
+        raise RuntimeError("descarga quebrou")
+
+    monkeypatch.setattr(app, "_unload_local_models", _explode)
+    monkeypatch.setattr(app, "_jobs_snapshot", lambda: [])
+    nova = "q8" if app._settings.get("omni_precision") != "q8" else "q4"
+    r = client.post("/api/settings", headers=auth, json={"speed": 1.15, "omni_precision": nova})
     assert r.status_code == 200, r.text
     assert r.json()["speed"] == 1.15 and r.json()["avisos"]
-    assert app._settings["speed"] == 1.15
+    assert app._settings["speed"] == 1.15 and app._settings["omni_precision"] == nova
 
 
 def test_settings_invalido_nao_dispara_efeito(client, auth, monkeypatch):
     """Falhou a validação: a RAM volta e o efeito NEM roda (antes ele já tinha rodado)."""
     chamadas = []
-    monkeypatch.setattr(app, "_autofree_local", lambda: chamadas.append(1))
+    monkeypatch.setattr(app, "_unload_local_models", lambda *a, **k: chamadas.append(1))
+    monkeypatch.setattr(app, "_chat_dsh_prewarm", lambda *a, **k: chamadas.append(2))
+    monkeypatch.setattr(app, "_jobs_snapshot", lambda: [])
     antes = dict(app._settings)
+    nova = "q8" if antes.get("omni_precision") != "q8" else "q4"
     r = client.post("/api/settings", headers=auth,
-                    json={"speed": 1.2, "chat_backend": "invalido"})
+                    json={"speed": 1.2, "omni_precision": nova, "chat_dsh_effort": "high",
+                          "chat_backend": "invalido"})
     assert r.status_code == 400
     assert chamadas == [] and app._settings["speed"] == antes["speed"]
 
@@ -5545,11 +5499,10 @@ def test_chat_provider_sem_env_segue_a_cadeia_antiga(monkeypatch):
     for var in ("TTS_CHAT_BASE_URL", "TTS_CHAT_MODEL", "TTS_CHAT_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setitem(app._settings, "chat_base_url", "")
-    monkeypatch.setitem(app._settings, "remote_base_url", "http://traducao.example/v1")
+    monkeypatch.setitem(app._settings, "remote_base_url", "http://llm.example/v1")
     monkeypatch.setitem(app._settings, "chat_model", "")
-    monkeypatch.setitem(app._settings, "remote_translate_model", "gpt-4o-mini")
     base, model, _ = app._chat_provider()
-    assert base == "http://traducao.example/v1" and model == "gpt-4o-mini"
+    assert base == "http://llm.example/v1" and model == "gpt-4o-mini"
 
 
 def test_chat_provider_env_vazio_nao_conta(monkeypatch):
@@ -6419,52 +6372,6 @@ def test_status_publica_historicos(client, auth, hist_limpo):
 
 
 # ---------------------------------------------------------------------------
-# #107 — tradutor/STT remotos: base vazia dá erro EXPLICATIVO (não MissingSchema).
-# ---------------------------------------------------------------------------
-
-@pytest.fixture()
-def sem_bases_remotas(monkeypatch):
-    for var in ("TTS_TRANSLATE_BASE_URL", "TTS_TRANSLATE_MODEL", "TTS_STT_BASE_URL"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setitem(app._settings, "remote_base_url", "")
-    monkeypatch.setitem(app._settings, "remote_stt_base_url", "")
-
-
-def test_traducao_base_vazia_da_400_explicativo(sem_bases_remotas):
-    """Antes: `MissingSchema: Invalid URL '/chat/completions'` cru."""
-    with pytest.raises(HTTPException) as exc:
-        app._traducao_remota_cfg()
-    assert exc.value.status_code == 400 and "Base URL" in exc.value.detail
-    with pytest.raises(HTTPException) as exc2:      # e pelo caminho que o cliente usa
-        app._translate_remote("olá", "en")
-    assert exc2.value.status_code == 400
-
-
-def test_traducao_env_tem_precedencia(sem_bases_remotas, monkeypatch):
-    monkeypatch.setitem(app._settings, "remote_base_url", "http://rtx.example/v1")
-    monkeypatch.setenv("TTS_TRANSLATE_BASE_URL", "http://127.0.0.1:53993/v1")
-    monkeypatch.setenv("TTS_TRANSLATE_MODEL", "modelo-do-smoke")
-    assert app._traducao_remota_cfg() == ("http://127.0.0.1:53993/v1", "modelo-do-smoke")
-
-
-def test_traducao_sem_env_segue_a_cadeia_antiga(sem_bases_remotas, monkeypatch):
-    monkeypatch.setitem(app._settings, "remote_base_url", "http://rtx.example/v1/")
-    base, modelo = app._traducao_remota_cfg()
-    assert base == "http://rtx.example/v1" and modelo == app._settings["remote_translate_model"]
-
-
-def test_stt_remoto_base_vazia_tambem_e_explicativo(sem_bases_remotas, tmp_path):
-    import wave as _wave
-    p = tmp_path / "a.wav"
-    with _wave.open(str(p), "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
-        w.writeframes(b"\x00\x00" * 160)
-    with pytest.raises(HTTPException) as exc:
-        app._transcribe_remote(p, "pt")
-    assert exc.value.status_code == 400 and "STT remoto" in exc.value.detail
-
-
-# ---------------------------------------------------------------------------
 # #101/#108 — contraprova dos filtros do venv: o que é NOSSO não pode sumir.
 # ---------------------------------------------------------------------------
 
@@ -6824,113 +6731,6 @@ def test_live_ws_log_só_metadados(ws_client, live_limpo, pipeline_fake, caplog)
     assert any(m.startswith("fecha") for m in msgs)
 
 
-def test_gates_do_remoto_ligam_com_env_mesmo_com_settings_vazio(sem_bases_remotas, monkeypatch):
-    """#112: o override do tradutor/STT era INERTE — os gates só olhavam o settings,
-    então o cliente caía no local em silêncio (200 vazio em vez do erro do provedor)."""
-    assert app._use_remote_translate() is False and app._use_remote_stt() is False
-    monkeypatch.setenv("TTS_TRANSLATE_BASE_URL", "http://127.0.0.1:53992/v1")
-    assert app._use_remote_translate() is True, "env sozinho tem de ativar o remoto"
-    assert app._use_remote_stt() is True, "STT herda a base do tradutor"
-    monkeypatch.delenv("TTS_TRANSLATE_BASE_URL")
-    assert app._use_remote_translate() is False
-    monkeypatch.setenv("TTS_STT_BASE_URL", "http://127.0.0.1:53992/v1")
-    assert app._use_remote_stt() is True and app._use_remote_translate() is False
-
-
-def test_gates_sem_env_seguem_a_regra_antiga(monkeypatch):
-    for var in ("TTS_TRANSLATE_BASE_URL", "TTS_STT_BASE_URL"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setitem(app._settings, "remote_base_url", "")
-    monkeypatch.setitem(app._settings, "remote_translate", True)
-    monkeypatch.setitem(app._settings, "remote_stt", True)
-    assert app._use_remote_translate() is False, "toggle sem base continua local"
-    monkeypatch.setitem(app._settings, "remote_base_url", "http://rtx.example/v1")
-    assert app._use_remote_translate() is True and app._use_remote_stt() is True
-
-
-def test_traducao_com_env_usa_o_remoto_de_verdade(sem_bases_remotas, monkeypatch):
-    """Caminho do cliente: com o env setado, `_translate` vai ao remoto (o chamador
-    vê o erro do provedor em vez de cair no local)."""
-    chamadas = []
-
-    class _Resp:
-        ok = True
-        text = ""
-        status_code = 200
-
-        def json(self):
-            return {"choices": [{"message": {"content": "olá"}}]}
-
-    def _post(url, **kw):
-        chamadas.append(url)
-        return _Resp()
-
-    import requests
-    monkeypatch.setattr(requests, "post", _post)
-    monkeypatch.setenv("TTS_TRANSLATE_BASE_URL", "http://127.0.0.1:53992/v1")
-    assert app._translate("hello", "pt") == "olá"
-    assert chamadas == ["http://127.0.0.1:53992/v1/chat/completions"]
-
-
-# ---------------------------------------------------------------------------
-# #114 — remoto morto cai no local: o cliente distingue "vazio" de "caiu".
-# ---------------------------------------------------------------------------
-
-@pytest.fixture()
-def remoto_morto(monkeypatch):
-    """Gate do STT ligado (env) + remoto que estoura + VAD dizendo "sem fala"."""
-    monkeypatch.setenv("TTS_STT_BASE_URL", "http://127.0.0.1:53992/v1")
-    def _morre(*a, **k):
-        raise RuntimeError("HTTP 530 do provedor")
-    monkeypatch.setattr(app, "_transcribe_remote", _morre)
-    monkeypatch.setattr(app, "_vad_tem_fala", lambda p: False)
-
-
-def _sobe_wav(client, rota="/api/transcribe", **kw):
-    buf = io.BytesIO(_wav_bytes(0.2))
-    return client.post(rota, headers=auth_headers(client),
-                       files={"audio": ("a.wav", buf.getvalue(), "audio/wav")}, **kw)
-
-
-def test_transcribe_avisa_quando_o_remoto_cai(client, remoto_morto):
-    """Antes: 200 com texto vazio e só um print no servidor — indistinguível."""
-    r = _sobe_wav(client)
-    assert r.status_code == 200
-    assert r.headers.get("x-tts-remote-fallback") == "1"
-    assert "530" in r.headers.get("x-tts-remote-error", "")
-    body = r.json()
-    assert body["remote_fallback"] is True and body["remote_error"]
-    assert body["text"] == ""
-
-
-def test_transcribe_sem_queda_nao_avisa(client, monkeypatch):
-    """Sem queda do remoto: sem header e sem campo de fallback.
-
-    O dublê devolve "ok" de propósito. Com `stt_anti_ruido` ligado a blacklist
-    rejeita a frase inteira e o 200 volta com texto vazio — o teste só ficava
-    verde enquanto o settings.json do dono tinha o filtro desligado (virou
-    true às 23:31). Pina o filtro aqui. A blacklist não muda: em produção,
-    com o filtro ligado, "ok" continua rejeitado.
-    """
-    monkeypatch.setitem(app._settings, "stt_anti_ruido", False)
-    monkeypatch.setenv("TTS_STT_BASE_URL", "http://127.0.0.1:53992/v1")
-    monkeypatch.setattr(app, "_transcribe_remote",
-                        lambda p, lang: {"text": "ok", "language": "pt", "segments": []})
-    r = _sobe_wav(client)
-    assert r.status_code == 200 and r.json()["text"] == "ok"
-    assert "x-tts-remote-fallback" not in r.headers
-    assert "remote_fallback" not in r.json()
-
-
-def test_openai_transcriptions_avisa_no_header_ate_em_texto(client, remoto_morto):
-    """O formato `text` não tem corpo JSON: o header é o que cobre todos."""
-    buf = io.BytesIO(_wav_bytes(0.2))
-    r = client.post("/v1/audio/transcriptions", headers=auth_headers(client),
-                    files={"file": ("a.wav", buf.getvalue(), "audio/wav")},
-                    data={"response_format": "text"})
-    assert r.status_code == 200 and r.headers.get("x-tts-remote-fallback") == "1"
-
-
 def test_binario_do_fake_acp_sobrevive_ao_teardown_do_teste(dsh_fake_bin, dsh_limpo):
     """#464: o wrapper não pode morar no `tmp_path` do próprio teste.
 
@@ -6981,7 +6781,7 @@ def test_transcribe_com_speaker_alvo_usa_o_fluxo_do_perfil(client, auth, monkeyp
 
     monkeypatch.setattr(separa_voz, "separa_alvo", _separa)
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
-    def _transcreve(p, language=None, allow_remote=True):
+    def _transcreve(p, language=None):
         visto["stt"] = p
         return {"text": "só o alvo", "language": "pt", "segments": []}
 
@@ -7004,7 +6804,7 @@ def test_transcribe_sem_speaker_alvo_nao_mexe_no_contrato(client, auth, monkeypa
 
     monkeypatch.setattr(separa_voz, "separa_alvo", _explode)
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None:
                         {"text": "oi", "language": "pt", "segments": []})
     corpo = client.post("/api/transcribe", headers=auth,
                         files={"audio": ("a.wav", b"x", "audio/wav")}).json()
@@ -7029,7 +6829,7 @@ def test_sem_separador_o_transcript_sai_normal_com_aviso(client, auth, monkeypat
     monkeypatch.setattr(separa_voz, "disponivel", lambda: False)
     monkeypatch.setattr(separa_voz, "motivo", lambda: "pesos ausentes em /x")
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None:
                         {"text": "original", "language": "pt", "segments": []})
     corpo = client.post("/api/transcribe", headers=auth, data={"speaker_alvo": "eu"},
                         files={"audio": ("a.wav", b"x", "audio/wav")}).json()
@@ -7046,7 +6846,7 @@ def test_v1_transcriptions_aceita_speaker_alvo_como_extensao(client, auth, monke
     monkeypatch.setattr(separa_voz, "separa_alvo",
                         lambda wav, vecs: (Path(str(wav) + ".a.wav"), {"escores": [1.0, 0.0]}))
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None:
                         {"text": "so alvo", "language": "pt", "segments": []})
     r = client.post("/v1/audio/transcriptions", headers=auth, data={"speaker_alvo": "eu"},
                     files={"file": ("a.wav", b"x", "audio/wav")})
@@ -7063,7 +6863,7 @@ def test_speaker_alvo_aceita_chave_de_uso(client, auth, monkeypatch):
     monkeypatch.setattr(separa_voz, "disponivel", lambda: False)
     monkeypatch.setattr(separa_voz, "motivo", lambda: "x")
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("falso.wav"))
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None:
                         {"text": "oi", "language": "pt", "segments": []})
     segredo = app._apikeys["keys"][0]["secret"]
     app._apikeys["keys"][0]["role"] = "use"
@@ -7569,7 +7369,7 @@ def test_transcribe_preque_ao_detector_com_anticlone_ligado(monkeypatch):
     aqueceu = []
     monkeypatch.setattr(marca_dagua, "prewarm", lambda: aqueceu.append(1))
     monkeypatch.setattr(app, "_save_audio_upload", lambda up, prefix=".stt": Path("f.wav"))
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True:
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None:
                         {"text": "oi", "language": "pt", "segments": []})
     cliente = TestClient(app.app, raise_server_exceptions=False)
     chave = app._primary_api_key()
@@ -7942,7 +7742,6 @@ def test_poda_de_voices_nao_casa_nada_que_nao_seja_temporario(voices_tmp):
     temporarios = ["%sdenoise-abc-1234.wav" % prefixo, "%sorig-abc-1234" % prefixo]
     for nome in temporarios:
         assert _glob.fnmatch.fnmatch(nome, padrao), f"{nome} não casaria a poda"
-
 
 
 def test_poda_nao_apaga_temporario_recente(voices_tmp):
@@ -10372,7 +10171,7 @@ def test_v1_transcriptions_enforce_autorizado_transcreve(client, auth, monkeypat
     monkeypatch.setattr(app, "_speaker_gate_ok", lambda _p: {})
     vistos = []
 
-    def _ok(p, language=None, allow_remote=True):
+    def _ok(p, language=None):
         vistos.append(language)
         return {"text": "olá mundo", "language": "pt", "segments": []}
 
@@ -10418,7 +10217,7 @@ def test_v1_label_etiqueta_em_todos_os_formatos(client, auth, monkeypatch, tmp_p
     gate = {"speaker": "Ana — casa", "speaker_sim": 0.812,
             "speaker_escore_modo": "asnorm"}
     monkeypatch.setattr(app, "_speaker_gate_ok", lambda _p: gate)
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True: {
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None: {
         "text": "olá mundo", "language": "pt",
         "segments": [{"start": 0.0, "end": 1.25, "text": "olá mundo"}]})
     for fmt in ("json", "verbose_json", "text", "srt", "vtt"):
@@ -10466,7 +10265,7 @@ def test_v1_translations_gate_e_speaker_alvo(client, auth, monkeypatch, tmp_path
 
     monkeypatch.setattr(app, "_speaker_gate_ok", lambda _p: {})
     monkeypatch.setattr(app, "_aplica_speaker_alvo", _aplica)
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True: {
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None: {
         "text": "hola mundo", "language": "es", "segments": []})
     monkeypatch.setattr(app, "_translate", lambda text, lang, emotion=None: "hello world")
     r = _post_arquivo(client, auth, "/v1/audio/translations", "file",
@@ -10479,7 +10278,7 @@ def test_v1_off_transcreve_sem_header_de_gate(client, auth, monkeypatch, tmp_pat
     monkeypatch.setitem(app._settings, "speaker_gate", "off")
     _upload_falso(monkeypatch, tmp_path)
     # off devolve {} sem ler perfil: a função real é que tem de correr
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True: {
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None: {
         "text": "olá mundo", "language": "pt", "segments": []})
     r = _post_arquivo(client, auth, "/v1/audio/transcriptions", "file")
     assert r.status_code == 200 and r.json() == {"text": "olá mundo"}
@@ -10503,7 +10302,7 @@ def test_modify_speech_label_devolve_speaker(client, auth, monkeypatch, tmp_path
     _upload_falso(monkeypatch, tmp_path)
     monkeypatch.setattr(app, "_speaker_gate_ok", lambda _p: {
         "speaker": "eu", "speaker_sim": 0.9, "speaker_escore_modo": "asnorm"})
-    monkeypatch.setattr(app, "_transcribe", lambda p, language=None, allow_remote=True: {
+    monkeypatch.setattr(app, "_transcribe", lambda p, language=None: {
         "text": "olá mundo", "language": "pt", "segments": []})
     monkeypatch.setattr(app, "_run_tts_job", lambda *a, **k: None)
     r = _post_arquivo(client, auth, "/api/modify-speech", "audio",
