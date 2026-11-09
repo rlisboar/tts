@@ -781,6 +781,9 @@ usa `/bin/rm`.
 | seeding volta para o `cp` do arquivo real | `test_sonda_semeia_estado_sintetico_e_nao_copia_o_dono` **FAILED** ("copiou o settings REAL do dono") |
 | trap volta para o `rm` do PATH | a mesma célula **FAILED** na cobrança de o diretório sumir do /tmp |
 | arquivo semeado fora de 0600 | a célula **FAILED** em `modo 600` |
+| `TTS_*_PATH` de estado volta a ser herdado do shell (sai do `_ENV_ESTADO`) | `test_caminho_de_estado_do_dono_nao_atravessa` **FAILED**: "TTS_SETTINGS_PATH atravessou a neutralização (#1018)" |
+| varredura do qa volta a `glob("*")` e a pular `conftest.py`/`_*.py` | a célula **FAILED** com `conftest.py` em "lendo o estado REAL do dono" |
+| varredura volta a exigir `BASE /` (sem `REPO /`) — ponto cego 5 | arquivo de teste com `REPO / "settings.json"` passa verde e a célula **FAILED** o acusando |
 
 ## #797 / #915 — marca fora do `_gen_lock`
 

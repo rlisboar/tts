@@ -113,8 +113,18 @@ def _retrato_app_support() -> dict:
 
 # o retrato tem de ser ANTES do primeiro `import app` (é ele que migra/grava)
 _RETRATO_APP_SUPPORT = _retrato_app_support()
-_TMP_ESTADO = tempfile.mkdtemp(prefix="tts-estado-")
-os.environ["TTS_STATE_DIR"] = _TMP_ESTADO
+
+# ── #1018: os CAMINHOS de estado do dono também não decidem ─────────────────────
+# `TTS_*_PATH`/`TTS_*_DIR` de estado vencem o `TTS_STATE_DIR` (por desenho, #461).
+# Com um `export TTS_SETTINGS_PATH=…` no shell do dono, a fixture `_estado_isolado`
+# copiava o arquivo REAL para o basetemp: o estado deixava de ser sintético e o
+# segredo voltava para o /tmp — o #206 não pegava porque só neutralizava
+# `TTS_CHAT_*`/`TTS_LIVE_*`/`TTS_TEST_*`/`TTS_ROD_*`. Tirados ANTES do primeiro
+# `import app`; quem precisa de outro caminho usa `monkeypatch` no próprio teste.
+# (`TTS_TEST_WORKER`/`TTS_LIVE_WORKER` seguem de fora: são interruptores.)
+_ENV_ESTADO = ("TTS_STATE_DIR", "TTS_SETTINGS_PATH", "TTS_APIKEYS_PATH",
+               "TTS_LEGACY_APIKEY_PATH", "TTS_SPEAKER_PATH",
+               "TTS_SPEAKER_AUDIO_DIR", "TTS_OUTPUTS_DIR", "TTS_VOICES_DIR")
 
 # ── #206: o AMBIENTE do dono não decide o veredito ───────────────────────────────
 # O env TEM PRECEDÊNCIA sobre o settings (por desenho, #112): um
@@ -141,7 +151,15 @@ os.environ["TTS_STATE_DIR"] = _TMP_ESTADO
 _ENV_NEUTRO = ("TTS_CHAT_", "TTS_LIVE_", "TTS_TEST_", "TTS_ROD_")
 _ENV_INTERRUPTOR = ("TTS_TEST_WORKER", "TTS_LIVE_WORKER")
 _ENV_DO_DONO = {k: os.environ.pop(k) for k in sorted(os.environ)
-                if k.startswith(_ENV_NEUTRO) and k not in _ENV_INTERRUPTOR}
+                if (k.startswith(_ENV_NEUTRO) or k in _ENV_ESTADO)
+                and k not in _ENV_INTERRUPTOR}
+
+# DEPOIS da retirada: o estado sintético da sessão é o DESTE diretório. Se a
+# atribuição viesse antes, o próprio `_ENV_ESTADO` levaria o `TTS_STATE_DIR` embora
+# e o app cairia no default da árvore (`.state-local/`) — só aparece quando algo
+# recarrega o módulo, por isso a suíte inteira pegou e o arquivo isolado não.
+_TMP_ESTADO = tempfile.mkdtemp(prefix="tts-estado-")
+os.environ["TTS_STATE_DIR"] = _TMP_ESTADO
 
 # #278: o RNNoise do Live sobe um ffmpeg por sessão. Default do app é ligado;
 # a suíte não paga isso — o filtro real está em tests/test_live_rnnoise.py.

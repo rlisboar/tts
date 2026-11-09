@@ -6,7 +6,9 @@ São os DOIS vetores da família "teste refém do estado do dono":
   `TTS_TEST_*`/`TTS_ROD_*` (as duas exceções são interruptores do dono:
   `TTS_TEST_WORKER` e `TTS_LIVE_WORKER`). O `TTS_ROD_*` entrou no #384: dois deles
   decidem o modelo de papel e são lidos no import (app.py:521-522) — com
-  `TTS_ROD_ADMIN_KEY` exportada a suíte verde virava 11 failed + 6 errors.
+  `TTS_ROD_ADMIN_KEY` exportada a suíte verde virava 11 failed + 6 errors. Os
+  `TTS_*_PATH`/`TTS_*_DIR` de ESTADO entram junto desde o #1018: eles vencem o
+  `TTS_STATE_DIR` sintético e faziam a fixture copiar o arquivo REAL do dono.
 - ARQUIVO: o `conftest` COPIA o `settings.json` do dono — o caminho é isolado, o
   CONTEÚDO não: um campo escolhido na tela (ex.: `chat_backend_live`) atravessa.
   O que o barra é a fixture `dsh_limpo` (`tests/test_api.py`), usada pelos testes
@@ -100,6 +102,43 @@ def test_knobs_do_dono_nao_chegam_nos_testes():
     import app
     assert app._chat_backend_live() == (app._settings.get("chat_backend_live") or
                                         app._chat_backend()), "env ainda vencendo o settings"
+
+
+#: #1018: caminhos de estado que o dono exporta e que VENCIAM o `TTS_STATE_DIR`
+#: sintético — a fixture `_estado_isolado` então copiava o arquivo real.
+_ENV_ESTADO_HOSTIL = ("TTS_SETTINGS_PATH", "TTS_APIKEYS_PATH", "TTS_LEGACY_APIKEY_PATH",
+                      "TTS_SPEAKER_PATH")
+
+_FILHO_ESTADO = """
+import sys
+sys.path.insert(0, "tests")
+import conftest                      # a neutralização: tira os TTS_*_PATH do dono
+import app, os
+for var in {vars!r}:
+    assert var not in os.environ, f"{{var}} atravessou a neutralização (#1018)"
+for campo in ("SETTINGS_PATH", "APIKEYS_PATH", "LEGACY_APIKEY_PATH", "SPEAKER_PATH"):
+    caminho = getattr(app, campo)
+    assert caminho.parent == app.STATE_DIR, f"{{campo}} fora do estado sintético: {{caminho}}"
+print("ok")
+"""
+
+
+def test_caminho_de_estado_do_dono_nao_atravessa(tmp_path):
+    """`export TTS_SETTINGS_PATH=…` no shell não pode fazer a suíte ler o arquivo real.
+
+    Antes do #1018 ele vencia o `TTS_STATE_DIR` sintético e a fixture copiava o
+    `settings.json` do dono para o basetemp (segredo no /tmp, veredito refém da
+    máquina). O filho exporta os caminhos apontando para uma SENTINELA e cobra que
+    o app não esteja nela — se a variável atravessar, `SETTINGS_PATH` é a sentinela
+    e a asserção cai."""
+    sentinela = tmp_path / "sentinela.json"
+    sentinela.write_text(json.dumps({"QA1018_SENTINELA": True}))
+    env = _sem_vars_de_caminho()
+    env.update({var: str(sentinela) for var in _ENV_ESTADO_HOSTIL})
+    r = subprocess.run([sys.executable, "-c", _FILHO_ESTADO.format(vars=_ENV_ESTADO_HOSTIL)],
+                       cwd=str(BASE), env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert r.stdout.strip() == "ok"
 
 
 @pytest.mark.parametrize("valor", ["openai", "dsh"])

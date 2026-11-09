@@ -213,25 +213,29 @@ def pytest_skip(motivo: str) -> None:
 # pego aqui — a lista é o retrato do que falta, não um contrato de linha).
 from _dono_leem import LEEM_O_DONO  # noqa: E402
 
-#: caminho para o estado do dono: `BASE / "<arquivo>"`, `app.VOICES_DIR` e o shell
+#: caminho para o estado do dono: `BASE / "<arquivo>"` (ou `REPO /`, qualquer nome
+#: à esquerda), `app.VOICES_DIR` e o shell. A varredura inclui `conftest.py`,
+#: helpers `_*.py` e SUBDIRETÓRIOS (#1018) — o guarda do estado sintético também
+#: pode virar leitor, e arquivo novo em `tests/fixtures/` não escapa.
 _LEITURA_DO_DONO = re.compile(
-    r"""(?:app\.)?BASE\s*/\s*["'](?:settings\.json|\.apikeys\.json|\.apikey|
-                                     \.speaker-profiles\.json|voices)["']""",
+    r"""(?:(?:app\.)?BASE|\w*REPO\w*)\s*/\s*["'](?:settings\.json|\.apikeys\.json|
+        \.apikey|\.speaker-profiles\.json|voices)["']""",
     re.X)
 _LEITURA_SHELL = re.compile(r"\$(?:RAIZ|AQUI|BASE)/voices(?![\w-])|app\.VOICES_DIR")
 
 
 def _arquivos_que_leem_o_dono() -> set[str]:
     """Arquivos que montam caminho para o estado REAL do dono."""
+    raiz = BASE / "tests"
     achados: set[str] = set()
-    for arq in sorted((BASE / "tests").glob("*")):
-        if arq.name == "conftest.py" or arq.name.startswith("_") \
-                or arq.suffix not in (".py", ".sh"):
+    for arq in sorted(raiz.rglob("*")):
+        # só a própria lista fica de fora; `conftest.py` e `_*.py` ENTRAM (#1018)
+        if arq.name == "_dono_leem.py" or arq.suffix not in (".py", ".sh"):
             continue
         padrao = _LEITURA_SHELL if arq.suffix == ".sh" else _LEITURA_DO_DONO
         if any(padrao.search(linha) and not linha.lstrip().startswith("#")
                for linha in arq.read_text(errors="replace").splitlines()):
-            achados.add(arq.name)
+            achados.add(arq.relative_to(raiz).as_posix())
     return achados
 
 
