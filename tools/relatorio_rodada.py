@@ -199,7 +199,11 @@ def _ok(cond: bool | None) -> str:
 
 
 def _faixa_eco(falsos: int | None, n: int | None) -> bool | str | None:
-    """Ponto: ≤5 % PASSA · 5–10 % INDETERMINADO · >10 % FALHA (zero falso PASSA)."""
+    """Ponto (falsos/respostas, NÃO IC): ≤5 % PASSA · 5–10 % INDETERMINADO · >10 % FALHA.
+
+    Zero falso em 10 PASSA com a resolução declarada. O IC95 nunca reprova
+    sozinho: com n=10 e zero falso ele dá [0; 27,8] e o ramo LIGA morreria.
+    """
     if not n or falsos is None:
         return None
     p = 100 * falsos / n
@@ -208,6 +212,23 @@ def _faixa_eco(falsos: int | None, n: int | None) -> bool | str | None:
     if p <= LIM_ECO_FALSO_INDET_PCT:
         return "INDETERMINADO"
     return False
+
+
+def _texto_eco(falsos, n, ic) -> str:
+    """O veredito do eco POR EXTENSO, na redação que o critério manda."""
+    if not n or falsos is None:
+        return "sem amostra de eco"
+    p = 100 * falsos / n
+    if falsos == 0:
+        return (f"LIGA neste critério — 0 falso em {n}, resolução declarada "
+                f"(ponto 0,0 %; IC95 {ic} com n={n})")
+    if p <= LIM_ECO_FALSO_DUCK_PCT:
+        return (f"LIGA neste critério — {falsos}/{n} = {p:.1f} % ≤ 5 % "
+                f"(IC95 {ic} com n={n})")
+    if p <= LIM_ECO_FALSO_INDET_PCT:
+        return (f"INDETERMINADO — {falsos}/{n} = {p:.1f} % cai na faixa 5–10 % "
+                f"(IC95 {ic} com n={n})")
+    return f"NÃO LIGA — {falsos}/{n} = {p:.1f} % acima de 10 % (IC95 {ic} com n={n})"
 
 
 def main(argv=None) -> int:
@@ -284,7 +305,10 @@ def main(argv=None) -> int:
     }
     print("\n## Veredito da flag `TTS_LIVE_BARGE_DUCK_RAPIDO` (célula f1-c1)\n")
     for k, v in cond.items():
-        print(f"  {k:<28} {'INDETERMINADO' if v == 'INDETERMINADO' else _ok(v)}")
+        if k.startswith("eco_falso_duck"):
+            print(f"  {k:<28} {_texto_eco(t.get('eco_duck'), t.get('eco_n'), ic_duck)}")
+        else:
+            print(f"  {k:<28} {'INDETERMINADO' if v == 'INDETERMINADO' else _ok(v)}")
     if any(v is False for v in cond.values()):
         veredito = "NÃO LIGA"
     elif all(v is True for v in cond.values()):
@@ -292,8 +316,9 @@ def main(argv=None) -> int:
     else:
         veredito = "INDETERMINADO (falta amostra ou faixa 5–10 % no eco)"
     print(f"\n  >>> {veredito}")
-    print(f"  resolução: eco_falso_duck {t['eco_duck']}/{t['eco_n']} "
-          f"(IC95 {ic_duck}) · WER pareado em {n_par} fala(s)")
+    print(f"  eco_falso_duck: {_texto_eco(t.get('eco_duck'), t.get('eco_n'), ic_duck)}")
+    print(f"  eco_falso_corte: {t['eco_corte']}/{t['eco_n']} na f1-c1 × "
+          f"{b['eco_corte']}/{b['eco_n']} na C1/F0 · WER pareado em {n_par} fala(s)")
     # A p95 com n pequeno é frouxa POR CONSTRUÇÃO: mediana e máximo vão escritos
     # ao lado e a ressalva é fixa — a decisão não sai só da p95.
     _n = t.get("pausa_n") or 0
