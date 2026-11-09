@@ -292,7 +292,7 @@ EOF
 
   uninstall)
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-    rm -f "$PLIST"
+    /bin/rm -f "$PLIST"
     echo "Conector removido ($LABEL)."
     # Sair dizendo só "o tunnel e o DNS seguem" escondia o que continua PUBLICADO:
     # um ingress apontando para o IP errado (ou vivo com o conector parado) dá 502

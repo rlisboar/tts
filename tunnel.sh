@@ -75,7 +75,7 @@ _motivo_destino() { # $1 = interface, $2 = ip; imprime o motivo e devolve 1, ou 
 case "$cmd" in
   uninstall)
     launchctl bootout "gui/$UID/$PLIST_LABEL" 2>/dev/null || true
-    rm -f "$PLIST"
+    /bin/rm -f "$PLIST"
     echo "LaunchAgent removido ($PLIST_LABEL)."
     exit 0 ;;
   install)

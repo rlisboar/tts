@@ -90,10 +90,15 @@ _teto_matar() {
 # (~1,5 MB de log por rodada). O teto troca o laço infinito por erro claro, com o
 # caminho na mensagem — vale também se o `rm` falhar de verdade (permissão, disco).
 _serial_remove_trava() {
-  local n=0
+  local n=0 teto="${TTS_SERIAL_REMOCAO_TETO:-5}"
+  # #1013: teto não numérico (ou 0) fazia o `-gt` errar e o teto ficar INERTE —
+  # de volta ao laço infinito. Só inteiro positivo vale; o resto cai no 5.
+  case "$teto" in
+    ''|*[!0-9]*|0*) teto=5 ;;
+  esac
   until [ ! -e "$_TRAVA_DIR" ]; do
     n=$((n + 1))
-    if [ "$n" -gt "${TTS_SERIAL_REMOCAO_TETO:-5}" ]; then
+    if [ "$n" -gt "$teto" ]; then
       echo "  [serial] não consegui remover a trava $_TRAVA_DIR (rm não apaga?) — desisto" >&2
       return 1
     fi

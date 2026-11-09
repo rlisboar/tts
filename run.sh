@@ -90,7 +90,7 @@ fi
 # isso o `/api/shutdown` faz o mesmo teardown antes de sair.
 # Sweeper: sessões dsh do TTS >48h viram lixo (handshakes antigos) e o scandir
 # delas é o que estoura EMFILE — manter o diretório raso em cada boot.
-find "$DSH_HOME/sessions" -mindepth 2 -maxdepth 2 -type d -mtime +2 -exec rm -rf {} + 2>/dev/null &
+find "$DSH_HOME/sessions" -mindepth 2 -maxdepth 2 -type d -mtime +2 -exec /bin/rm -rf {} + 2>/dev/null &
 
 while true; do
   ./.venv-mlx/bin/uvicorn app:app --host 0.0.0.0 --port 7860

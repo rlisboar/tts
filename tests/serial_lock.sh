@@ -113,6 +113,28 @@ cobrar "$([ "$(grep -c 'assumindo' "$TMPD/h.log")" = "1" ] && echo 1 || echo 0)"
 cobrar "$(grep -c 'DENTRO' "$TMPD/h.log")" "o worker entrou mesmo com o rm quebrado"
 /bin/rm -rf "$TTS_SERIAL_LOCK"
 
+# ─── 2d) teto inválido não pode desligar o teto (#1013) ─────────────────────
+# Trava que nem o `/bin/rm` tira (pai sem escrita). Com `TTS_SERIAL_REMOCAO_TETO=abc`
+# o `[ n -gt abc ]` errava, o teto ficava inerte e o laço girava para sempre. Sem o
+# fix a célula estoura o prazo de 5 s (o processo é morto) e cai.
+mkdir -p "$TMPD/pai-ro/trava"; chmod 555 "$TMPD/pai-ro"
+for teto in abc "" 0 -3; do
+  TTS_SERIAL_LOCK="$TMPD/pai-ro/trava" TTS_SERIAL_REMOCAO_TETO="$teto" \
+      bash -c 'source "$1/tests/serial.sh"; _serial_remove_trava' _ "$RAIZ" \
+      > "$TMPD/teto.log" 2>&1 &
+  pid_teto=$!
+  for _ in $(seq 50); do kill -0 "$pid_teto" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$pid_teto" 2>/dev/null; then
+    kill "$pid_teto" 2>/dev/null; wait "$pid_teto" 2>/dev/null
+    cobrar 0 "teto '$teto': laço girou >5 s (teto inerte)"
+  else
+    wait "$pid_teto"; rc_teto=$?
+    cobrar "$([ "$rc_teto" != "0" ] && grep -q 'desisto' "$TMPD/teto.log" && echo 1 || echo 0)" \
+           "teto '$teto' cai no padrão 5 e desiste com erro claro (rc=$rc_teto)"
+  fi
+done
+chmod 755 "$TMPD/pai-ro"
+
 # ─── 3) timeout curto devolve erro em vez de pendurar a bateria ─────────────
 mkdir -p "$TTS_SERIAL_LOCK"; echo $$ > "$TTS_SERIAL_LOCK/pid"; echo "eu.sh" > "$TTS_SERIAL_LOCK/qual"
 TTS_SERIAL_ESPERA=1 bash "$TMPD/worker.sh" apressada.sh > "$TMPD/d.log" 2>&1

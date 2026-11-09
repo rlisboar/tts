@@ -67,7 +67,7 @@ case "${1:-}" in
     curl -fsSL -o "$DIR/$ARQ" \
       "https://github.com/actions/runner/releases/download/v$V/actions-runner-osx-arm64-$V.tar.gz" \
       || { print -r -- "download falhou (versão v$V)" >&2; exit 1; }
-    tar -xzf "$DIR/$ARQ" -C "$DIR" && rm -f "$DIR/$ARQ"
+    tar -xzf "$DIR/$ARQ" -C "$DIR" && /bin/rm -f "$DIR/$ARQ"
     TOKEN="$(_registration_token)"
     [ -n "$TOKEN" ] || { print -r -- "sem token de registro (precisa de admin no repo)" >&2; exit 1; }
     "$DIR/config.sh" --unattended --replace \
@@ -136,7 +136,7 @@ EOF
 
   uninstall)
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-    rm -f "$PLIST"
+    /bin/rm -f "$PLIST"
     [ -x "$DIR/config.sh" ] && "$DIR/config.sh" remove --unattended 2>/dev/null || true
     print -r -- "Runner desregistrado e agente removido. $DIR fica (apague à mão se quiser)."
     exit 0 ;;
