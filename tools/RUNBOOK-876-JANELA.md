@@ -22,19 +22,29 @@ Os limites estão no cabeçalho do `rodada_c0c1.sh` e nas constantes do
 
 ## Desenho
 
-4 células, 10 ciclos cada (40 ciclos = 80 falas, o mesmo volume de um 20+20),
-cada célula seguida de 3 min de eco puro e 3 min de ventoinha:
+4 células, **10 ciclos contados + 1 de aquecimento descartado** cada, seguidas de
+3 min de eco puro e 3 min de ventoinha. O aquecimento existe porque cada bloco
+reinicia o app e o `_cond_for` em cache miss custa ~1500 ms — sem ele a 1ª
+amostra envenena 10 % da célula.
 
-| célula | motor | flag |
-|---|---|---|
-| `f0-c0` | whisper | off |
-| `f0-c1` | parakeet | off |
-| `f1-c0` | whisper | on |
-| `f1-c1` | parakeet | on |
+**Ordem contrabalançada** (cada estado de flag numa ponta da corrida, para a
+deriva térmica e de RSS não se colar na ordem):
 
-A troca de motor é por `POST /api/settings` (sem restart). A troca de flag é por
-`TTS_LIVE_BARGE_DUCK_RAPIDO` no ambiente, então a instância da 7890 **reinicia**
-entre os blocos — a produção (7860) nunca.
+| # | célula | motor | flag |
+|---|---|---|---|
+| 1 | `f0-c0` | whisper | off |
+| 2 | `f1-c0` | whisper | on |
+| 3 | `f1-c1` | parakeet | on |
+| 4 | `f0-c1` | parakeet | off |
+
+A ordem executada vai para o relatório. A troca de motor é por
+`POST /api/settings` (sem restart). A troca de flag é por
+`TTS_LIVE_BARGE_DUCK_RAPIDO` no ambiente, então a instância da 7890 reinicia
+quando a flag muda — a produção (7860) nunca.
+
+n=10 não sustenta p95: o relatório traz p50 e máximo ao lado e o veredito diz
+que a decisão não sai só da p95. A base do `eco_falso_corte` é **C1/F0** (não o
+C1 da própria célula), senão o próprio duck vira confundidor.
 
 ## Regras
 

@@ -18,7 +18,12 @@
 #
 #   tools/rodada_c0c1.sh --app-dir ~/Documents/tts-rod --sha <sha-no-ar> \
 #       [--corpus /tmp/live-bench-audio] [--estado /tmp/bench-mini/.state-local] \
-#       [--ciclos 10] [--min-eco 3] [--min-ventoinha 3]
+#       [--ciclos 10] [--aquecimento 1] [--min-eco 3] [--min-ventoinha 3]
+#
+# ORDEM CONTRABALANÇADA (f0c0 → f1c0 → f1c1 → f0c1): com blocos sequenciais e
+# flag em ENV, deriva térmica/de RSS fica colada na ordem; assim cada estado de
+# flag cai numa ponta da corrida. Cada bloco roda 1 ciclo de AQUECIMENTO fora da
+# amostra (o bloco reinicia o app e o `_cond_for` em cache miss custa ~1500 ms).
 #
 # O script sobe e derruba a instância da 7890 (nunca a 7860) e, no `trap`,
 # devolve `live_stt_engine` ao valor lido no início e mata tudo que subiu.
@@ -29,7 +34,7 @@ PY=""
 URL="ws://127.0.0.1:7890/api/live/ws"
 APP="http://127.0.0.1:7890"
 SHA=""; CORPUS=/tmp/live-bench-audio; ESTADO=/tmp/bench-mini/.state-local
-DIR=""; CICLOS=10; MIN_ECO=3; MIN_VENT=3; SEMENTE=875
+DIR=""; CICLOS=10; AQUEC=1; MIN_ECO=3; MIN_VENT=3; SEMENTE=875
 while [ $# -gt 0 ]; do
   case "$1" in
     --app-dir) APP_DIR="${2:-}"; shift 2 ;;
@@ -38,6 +43,7 @@ while [ $# -gt 0 ]; do
     --estado) ESTADO="${2:-}"; shift 2 ;;
     --dir) DIR="${2:-}"; shift 2 ;;
     --ciclos) CICLOS="${2:-10}"; shift 2 ;;
+    --aquecimento) AQUEC="${2:-1}"; shift 2 ;;
     --min-eco) MIN_ECO="${2:-3}"; shift 2 ;;
     --min-ventoinha) MIN_VENT="${2:-3}"; shift 2 ;;
     --semente) SEMENTE="${2:-875}"; shift 2 ;;
@@ -165,26 +171,46 @@ roda_fase() {             # $1 = fase (eco|ventoinha)  $2 = célula
     --minutos "$min" --out "$DIR/$1-$2.json" >> "$DIR/$1-$2.log" 2>&1
   fala "   rc=$? $(tail -1 "$DIR/$1-$2.log" | cut -c1-80)"
 }
-celula() {                # $1 = f0|f1
-  local marca
+celula() {                # $1 = f0|f1  $2 = c0|c1
+  local marca motor
+  motor=parakeet; [ "$2" = c0 ] && motor=whisper
   marca="$(date +%H:%M:%S)"
-  print -r -- "$1 $marca" >> "$DIR/marcas.txt"
+  print -r -- "$1-$2 $marca" >> "$DIR/marcas.txt"
   curl -s -m 5 -o /dev/null -H "Content-Type: application/json" \
-    -X POST "$APP/api/settings" -d '{"live_stt_engine": "whisper"}'
-  roda_ciclos "$1-c0"; roda_fase eco "$1-c0"; roda_fase ventoinha "$1-c0"
-  curl -s -m 5 -o /dev/null -H "Content-Type: application/json" \
-    -X POST "$APP/api/settings" -d '{"live_stt_engine": "parakeet"}'
-  roda_ciclos "$1-c1"; roda_fase eco "$1-c1"; roda_fase ventoinha "$1-c1"
+    -X POST "$APP/api/settings" -d "{\"live_stt_engine\": \"$motor\"}"
+  roda_ciclos "$1-$2"; roda_fase eco "$1-$2"; roda_fase ventoinha "$1-$2"
 }
 
-ANTERIOR="$(curl -s -m 5 "$APP/api/settings" 2>/dev/null \
-  | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("live_stt_engine") or "")' 2>/dev/null)"
+ANTERIOR=""; LIDO=0
 
-sobe 0; celula f0; derruba
-sobe 1; celula f1; derruba
+# ORDEM CONTRABALANÇADA: com blocos sequenciais e flag em ENV, deriva térmica e
+# de RSS ficam coladas na ORDEM — se f0 rodasse sempre antes de f1, a diferença
+# entre as flags carregaria o aquecimento da máquina. f0c0 → f1c0 → f1c1 → f0c1
+# põe cada estado de flag nas duas pontas da corrida. O app reinicia só quando a
+# flag MUDA; a ordem executada vai para o relatório.
+ORDEM=(f0-c0 f1-c0 f1-c1 f0-c1)
+print -r -- "${ORDEM[*]}" > "$DIR/ordem.txt"
+FLAG_ATUAL=""
+for cel in "${ORDEM[@]}"; do
+  flag="${cel%%-*}"
+  if [ "$flag" != "$FLAG_ATUAL" ]; then
+    derruba
+    sobe "$([ "$flag" = f0 ] && print -r -- 0 || print -r -- 1)"
+    FLAG_ATUAL="$flag"
+    if [ "$LIDO" = 0 ]; then      # valor original: lido com o app recém-subido
+      ANTERIOR="$(curl -s -m 5 "$APP/api/settings" \
+        | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("live_stt_engine") or "")' 2>/dev/null)"
+      LIDO=1
+      fala "   live_stt_engine anterior: '$ANTERIOR'"
+    fi
+  fi
+  celula "${cel%%-*}" "${cel##*-}"
+done
+derruba
 
 # ── relatório ───────────────────────────────────────────────────────────────
 fala "== relatório  $(date -Iseconds)"
 "$PY" "$APP_DIR/tools/relatorio_rodada.py" --dir "$DIR" --sha "${SHA:-$NO_AR}" \
-  --log /tmp/tts-studio.log --marcas "$DIR/marcas.txt" 2>&1 | tee -a "$LOG_CORRIDA"
+  --log /tmp/tts-studio.log --marcas "$DIR/marcas.txt" --ordem "$DIR/ordem.txt" \
+  --aquecimento "$AQUEC" 2>&1 | tee -a "$LOG_CORRIDA"
 fala "== fim  $(date -Iseconds) — saída em $DIR"
