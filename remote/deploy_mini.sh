@@ -53,6 +53,13 @@ PUBLICO="${TTS_PUBLIC_HOST:-tts.the-dudes.com}"
 ESPERA="${TTS_MINI_ESPERA:-6}"                    # run.sh sobe o uvicorn; smoke espera a porta
 BOOT_MS_MAX="${TTS_MINI_BOOT_MS:-120000}"         # pós-deploy: processo novo, não instância velha
 TTS_TIMEOUT="${TTS_MINI_TTS_TIMEOUT:-120}"        # teto do job de síntese real no smoke
+# Paridade do index.html (#1051): ~500 KB pelo túnel logo depois do restart. Uma
+# leitura cortada no transporte (timeout do curl, borda do Cloudflare) dá sha de
+# NENHUM rev e disparava o revert (#345) num deploy bom. Releitura só no vermelho;
+# divergência REAL (arquivo errado no disco) persiste e continua reprovando.
+INDEX_TIMEOUT="${TTS_MINI_INDEX_TIMEOUT:-30}"     # teto por leitura (era 10 s fixo)
+INDEX_LEITURAS="${TTS_MINI_INDEX_LEITURAS:-3}"    # leituras antes de [FALHA]
+INDEX_PAUSA="${TTS_MINI_INDEX_PAUSA:-2}"          # s entre leituras
 ESTADO=".deploy-mini-estado"                      # no repo do mini (untracked; só o --apply escreve)
 BOOT_MARKER=".deploy-mini-boot"                   # instantâneo (epoch) do restart, no repo do mini
 LOG_MARKER=".deploy-mini-logmarca"                # tamanho do log no restart (âncora da marca d'água)
@@ -101,6 +108,16 @@ sha_arq()  { distante "shasum -a 256 '$1' 2>/dev/null | awk '{print \$1}'" | hea
 # O app injeta `nonce="…"` por request no HTML servido (CSP): tira dos dois lados
 # antes de comparar conteúdo.
 sem_nonce() { sed -E 's/ nonce="[^"]*"//g'; }
+# Uma leitura do index servido → "sha_sem_nonce rc_do_curl bytes" (#1051). Arquivo
+# temporário e não pipe: o rc do curl e o tamanho são o que separa corte de
+# transporte (rc 28/18, bytes a menos) de conteúdo errado (rc 0, tamanho cheio).
+index_no_ar() { # $1 = base
+  local tmp rc
+  tmp="$(mktemp "${TMPDIR:-/tmp}/deploy-mini-index.XXXXXX")" || { print -r -- "- ? ?"; return; }
+  curl -s -m "$INDEX_TIMEOUT" "$1/" > "$tmp" 2>/dev/null; rc=$?
+  print -r -- "$(sem_nonce < "$tmp" | shasum -a 256 | awk '{print $1}') $rc $(wc -c < "$tmp" | tr -d ' ')"
+  /bin/rm -f "$tmp"
+}
 # A rota existe no CÓDIGO DO REV ALVO? (rota ausente ≠ falha do smoke)
 tem_rota() { git -C "$LOCAL_REPO" show "${1}:app.py" 2>/dev/null | grep -qF "$2"; }
 git_remoto() { distante "cd $(cd_remoto) && git $1"; }
@@ -309,13 +326,28 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
   # Paridade de conteúdo: o index servido tem que ser o blob do rev alvo. O app
   # injeta `nonce="…"` POR REQUEST no HTML (CSP), então a paridade é do conteúdo —
   # o nonce sai dos dois lados antes do sha (sem isso a checagem nunca fecha).
-  local sha_no_ar sha_esperado
-  sha_no_ar="$(curl -s -m 10 "$base/" 2>/dev/null | sem_nonce | shasum -a 256 | awk '{print $1}')"
+  # #1051: a leitura cortada no transporte não é divergência — relê antes de
+  # reprovar, e cada leitura vermelha diz rc do curl e bytes (o diagnóstico que
+  # faltou no falso vermelho do 48b11d5).
+  local sha_esperado leitura sha_no_ar rc_idx bytes_idx n_idx=1
   sha_esperado="$(conteudo_blob "$REV_ALVO" static/index.html | sem_nonce | shasum -a 256 | awk '{print $1}')"
+  while :; do
+    leitura=($(index_no_ar "$base"))
+    sha_no_ar="${leitura[1]:-}"; rc_idx="${leitura[2]:-?}"; bytes_idx="${leitura[3]:-?}"
+    [ "$sha_no_ar" = "$sha_esperado" ] && break
+    [ "$n_idx" -ge "$INDEX_LEITURAS" ] && break
+    print -r -- "  [aviso] $rotulo index.html divergiu na leitura $n_idx (${sha_no_ar[1,12]}…, curl rc=$rc_idx, $bytes_idx bytes) — relendo em ${INDEX_PAUSA}s (#1051)"
+    sleep "$INDEX_PAUSA"
+    n_idx=$((n_idx + 1))
+  done
   if [ "$sha_no_ar" = "$sha_esperado" ]; then
-    print -r -- "  [ok] $rotulo index.html = blob do rev alvo (nonce do CSP ignorado)"
+    if [ "$n_idx" -gt 1 ]; then
+      print -r -- "  [ok] $rotulo index.html = blob do rev alvo na leitura $n_idx (as anteriores foram transporte, não conteúdo)"
+    else
+      print -r -- "  [ok] $rotulo index.html = blob do rev alvo (nonce do CSP ignorado)"
+    fi
   else
-    print -r -- "  [FALHA] $rotulo index.html (${sha_no_ar[1,12]}…) ≠ rev alvo (${sha_esperado[1,12]}…)"
+    print -r -- "  [FALHA] $rotulo index.html (${sha_no_ar[1,12]}…) ≠ rev alvo (${sha_esperado[1,12]}…) em $n_idx leitura(s); última: curl rc=$rc_idx, $bytes_idx bytes"
     falhas=1
   fi
   [ "$TTS" = 1 ] && smoke_tts "$base" "$rotulo" "$chave"

@@ -137,6 +137,13 @@ if [ $so_codigo = 1 ] && [ -n "${T_CURL_CODE_PRIMEIRO:-}" ]; then
   [ "${n:-0}" -le 1 ] && codigo="$T_CURL_CODE_PRIMEIRO"
 fi
 if [ $so_codigo = 1 ]; then print -rn -- "$codigo"
+elif [ -n "$arquivo" ] && [ -n "${T_CURL_INDEX_CORTA_N:-}" ] \\
+     && [ "$(( $(cat "$T_CURL_INDEX_CONTA" 2>/dev/null || print 0) + 1 ))" -le "$T_CURL_INDEX_CORTA_N" ]; then
+  # #1051: as primeiras N leituras do index saem CORTADAS no transporte (meio
+  # arquivo + rc 28 do timeout do curl) — o falso vermelho do deploy do 48b11d5
+  print -r -- "$(( $(cat "$T_CURL_INDEX_CONTA" 2>/dev/null || print 0) + 1 ))" > "$T_CURL_INDEX_CONTA"
+  head -c 7 "$arquivo"
+  exit 28
 elif [ -n "$arquivo" ]; then
   # o app real injeta nonce="…" POR REQUEST no HTML servido (CSP): o shim imita
   if [ -n "${nonce:-}" ]; then sed -E 's/<html/<html nonce="rnd${RANDOM}"/' "$arquivo"
@@ -177,6 +184,8 @@ def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
         TTS_MINI_DIR=str(tmp_path / "mini"),
         TTS_MINI_LABEL=LABEL,
         TTS_MINI_ESPERA="0",
+        TTS_MINI_INDEX_PAUSA="0",                  # #1051: releitura sem dormir
+        T_CURL_INDEX_CONTA=str(tmp_path / "index.conta"),
         TTS_MINI_REPO=str(tmp_path / "dev"),
         TTS_PUBLIC_HOST="tts.exemplo.test",
         # preview isolado por teste (#240): o /tmp GLOBAL do script é estado
@@ -928,6 +937,52 @@ def test_caminho_feliz_nao_faz_rollback(amb):
     assert r.returncode == 0, _saida(r)
     assert "SMOKE VERMELHO" not in r.stdout and "REVERTIDO" not in r.stdout
     assert len(_log(amb, "launch")) == 1
+
+
+# --- #1051: leitura do index.html cortada no transporte não derruba deploy bom,
+# e divergência que persiste continua revertendo (#345).
+def test_index_cortado_uma_vez_rele_e_nao_reverte(amb):
+    """O falso vermelho do 48b11d5: a 1ª leitura pública volta cortada (rc 28,
+    poucos bytes). Antes reprovava e revertia um deploy bom; agora relê, passa e
+    o aviso diz rc/bytes da leitura ruim."""
+    amb["T_CURL_INDEX_CORTA_N"] = "1"
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 0, _saida(r)
+    assert "SMOKE VERMELHO" not in r.stdout and "REVERTIDO" not in r.stdout
+    assert "divergiu na leitura 1" in r.stdout and "curl rc=28, 7 bytes" in r.stdout
+    assert "na leitura 2 (as anteriores foram transporte" in r.stdout
+    assert len(_log(amb, "launch")) == 1, "releitura verde não pode reiniciar de novo"
+
+
+def test_index_que_segue_divergente_ainda_reverte(amb):
+    """Mordida do outro lado: divergência que não some em INDEX_LEITURAS leituras
+    é [FALHA] e o #345 reverte para o rev anterior, como antes."""
+    anterior = _sha(amb, "HEAD~1")                 # v2
+    amb["TTS_MINI_REV"] = anterior
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    Path(amb["T_LAUNCH_LOG"]).unlink()
+    amb.pop("TTS_MINI_REV", None)                  # alvo v3
+    # só as leituras do smoke do deploy saem erradas: LAN gasta 3 e acabou;
+    # as do smoke do rollback (contador > 3) voltam a bater
+    amb["T_CURL_INDEX_CORTA_N"] = "3"
+    r = _run(amb, "deploy", "--apply")
+    assert r.returncode == 1, _saida(r)
+    assert "[FALHA] LAN index.html" in r.stdout and "em 3 leitura(s)" in r.stdout
+    assert "SMOKE VERMELHO" in r.stdout and "REVERTIDO" in r.stdout
+    assert _head(amb, "mini") == anterior, "divergência real tem que reverter"
+    assert len(_log(amb, "launch")) == 2
+
+
+def test_index_leituras_1_reprova_na_primeira_divergencia(amb):
+    """TTS_MINI_INDEX_LEITURAS=1 devolve o comportamento antigo (sem releitura)."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    amb["T_CURL_INDEX_CORTA_N"] = "1"
+    amb["TTS_MINI_INDEX_LEITURAS"] = "1"
+    r = _run(amb, "smoke")
+    assert r.returncode == 1, _saida(r)
+    assert "[FALHA] LAN index.html" in r.stdout and "em 1 leitura(s)" in r.stdout
+    assert "relendo" not in r.stdout
+    assert "[ok] público index.html" in r.stdout      # contador passou de 1: bate
 
 
 # --- #252: a novidade do boot é ancorada no marcador do restart (.deploy-mini-boot),
