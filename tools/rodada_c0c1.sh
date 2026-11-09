@@ -120,6 +120,12 @@ trap limpa EXIT INT TERM
 
 # ── pré-voo (antes de subir qualquer coisa) ─────────────────────────────────
 fala "== pré-voo  $(date -Iseconds)"
+# O C1 (parakeet_mlx) decodifica áudio por `ffmpeg` (shutil.which). Sem ele o
+# motor novo não transcreve NADA e a célula C1 sai com WER 1,0 e cobertura 0 —
+# medido no mini, onde o binário existe em /opt/homebrew/bin mas não no PATH.
+PATH="/opt/homebrew/bin:$PATH"; export PATH
+command -v ffmpeg >/dev/null \
+  || { fala "ffmpeg fora do PATH — o C1 (parakeet) não decodifica áudio"; exit 1; }
 [ -d "$APP_DIR" ] || { fala "sem app-dir: $APP_DIR"; exit 1; }
 [ -n "$SHA" ] || { fala "--sha é obrigatório (o rev que o deploy subiu)"; exit 1; }
 [ -d "$CORPUS" ] || { fala "corpus ausente: $CORPUS"; exit 1; }
@@ -148,6 +154,20 @@ fala "   sha pedido=$SHA · codigo esperado=$ESPERADO · no ar=${NO_AR:-<vazio>}
 [ "$NO_AR" = "$ESPERADO" ] \
   || { fala "código no ar ($NO_AR) ≠ rev pedido ($ESPERADO) — deploy diferente do combinado"; exit 1; }
 fala "   corpus: $(ls "$CORPUS" | wc -l | tr -d ' ') arquivos · semente $SEMENTE"
+# LLM vivo: sem ele não há TTS, então S2 fica nulo e as fases de eco/ventoinha
+# não têm playback para medir (a rodada inteira vira INDETERMINADO).
+_LLM_B="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_base_url"])' 2>/dev/null)"
+_LLM_K="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_api_key"])' 2>/dev/null)"
+if [ -n "$_LLM_B" ]; then
+  _code="$(curl -s -m 12 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $_LLM_K" "$_LLM_B/models")"
+  fala "   LLM: $_LLM_B/models → HTTP $_code"
+  case "$_code" in
+    2*|3*|4*) : ;;
+    *) fala "   LLM sem resposta ($_code) — S2 e as fases de eco ficariam vazios"; exit 1 ;;
+  esac
+else
+  fala "   LLM: chat_base_url ausente no settings.json da árvore"
+fi
 
 # amostrador de memória (1/min): é a curva do #891
 ( while :; do
@@ -171,7 +191,7 @@ sobe() {                  # $1 = 0|1 (duck rápido)
   # acertava o nada e a instância ficava de pé (medido na 1ª rodada real: pid
   # 20167 morto, uvicorn 20196 órfão com a 7890 presa). Com `exec`, `$!` É o
   # uvicorn, e as redireções do subshell continuam valendo.
-  ( cd "$APP_DIR" && exec env \
+  ( cd "$APP_DIR" && exec env PATH="$PATH" \
     TTS_STATE_DIR="$ESTADO" TTS_OUTPUTS_DIR="$DIR/outputs" \
     TTS_CHAT_BACKEND_LIVE=openai TTS_CHAT_BASE_URL="$B" TTS_CHAT_MODEL="$M" \
     TTS_CHAT_API_KEY="$K" TTS_MARCA_PREWARM_BOOT=0 TTS_LIVE_TTL_S=1800 \
