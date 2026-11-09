@@ -89,7 +89,8 @@ resto  p50 918  =  vad p50 608  +  fio p50 310
 ```
 
 O `vad` bate com o `silence_ms` de 600 do config (608 = 19 frames de 32 ms), o que valida a
-medida. Ou seja: **o maior trecho do pos_llm é o hangover do VAD, e o segundo é fio/fila** —
+medida. Ou seja: **2/3 do `resto` é o hangover do VAD**; o terço restante é fio/fila. O `resto`
+inteiro, porém, NÃO é o maior trecho — o `tts` é (1429–1448 ms de p50, contra 656–1014). Também
 não é LLM (29 ms), não é `_cond_for` (52 ms), não é `marca` (0 ms com a marca desligada).
 
 Cortar o `vad` tem piso declarado no próprio código: `SILENCE_MS_MINIMO_STT = 500` (abaixo
@@ -110,7 +111,11 @@ ainda não têm dono.
 
 ### Consequência para o passo 2
 
-`resto` (~900 ms) é o maior trecho e o único que ainda não tem conta aberta: **600 ms dele
-são o hangover do VAD** (`silence_ms`, mínimo 500) e o resto é fio/fila. Antes de cortar
-qualquer coisa, a bancada precisa gravar `t_decisao_ms` — hoje o `resto` é uma caixa preta
-de 900 ms e cortar sem separar é o erro que o histórico do repositório já cobrou uma vez.
+A ordem de ataque é **`tts` → `fio` → VAD**, e não pelo tamanho do `resto`: o `tts` é o maior
+trecho (1429–1448 ms) e o que mais rende; o `fio` (310 ms) vem depois e precisa de decomposição
+própria; o VAD fica por último porque o piso dele é 500 ms e o S1 ainda está em 80–85 % — o
+`silence_ms` fica em 600 e os 100 ms não pagam o risco de cortar sílaba.
+
+O `resto` tinha razão de ser caixa preta até aqui: a bancada não gravava `t_decisao_ms` e o
+campo, quando passou a ser publicado, vinha como carimbo de sessão. Com o `vad`/`fio` abertos,
+cortar sem separar deixa de ser chute.
