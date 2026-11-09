@@ -77,24 +77,29 @@ codigo_esperado() {
 }
 
 # ── rollback: sempre, em qualquer saída ─────────────────────────────────────
+# Devolve 1 se a 7890 NÃO liberar — quem chama tem de parar, não seguir.
+# `kill`/`pkill` são assíncronos: sem esta espera o `sobe` seguinte leva 200 do
+# processo VELHO, a célula `f1` roda com a flag em 0 e o health 200 esconde.
 ANTERIOR=""; SAMPLER=""; APP_PID=""; SUBIU=0
 derruba() {
   pkill -f "live_bench" 2>/dev/null
   pkill -f "fase_ruido.py" 2>/dev/null
+  local i j
   if [ -n "$APP_PID" ]; then
     kill "$APP_PID" 2>/dev/null
-    local i
     for i in $(seq 1 20); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.5; done
     kill -9 "$APP_PID" 2>/dev/null
+    for i in $(seq 1 10); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.5; done
     APP_PID=""; SUBIU=0
   fi
-  # o `pkill`/`kill` é ASSÍNCRONO: sem esperar o listener soltar, o `sobe`
-  # seguinte leva 200 do processo VELHO e a célula roda com a flag errada, calada.
-  local j
+  # asserção de porta livre: é o que separa "mandei matar" de "está morto"
   for j in $(seq 1 20); do
-    [ "$(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ] && break
+    [ "$(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ] && return 0
     sleep 0.5
   done
+  fala "   ✖ porta 7890 AINDA ocupada após 10 s de kill — NÃO sigo:"
+  lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | tee -a "$LOG_CORRIDA"
+  return 1
 }
 limpa() {
   local rc=$?
@@ -105,7 +110,7 @@ limpa() {
       -X POST "$APP/api/settings" -d "{\"live_stt_engine\": \"$ANTERIOR\"}" \
       && fala "   chave live_stt_engine devolvida para '$ANTERIOR'"
   fi
-  derruba
+  derruba || rc=1
   fala "   7890 listeners: $(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')"
   fala "   uvicorn 7860: $(pgrep -f 'port 7860' | wc -l | tr -d ' ')"
   fala "   prod health: $(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:7860/health)"
@@ -222,7 +227,7 @@ FLAG_ATUAL=""
 for cel in "${ORDEM[@]}"; do
   flag="${cel%%-*}"
   if [ "$flag" != "$FLAG_ATUAL" ]; then
-    derruba
+    derruba || { fala "porta 7890 não liberou — paro aqui para não medir no processo velho"; exit 1; }
     sobe "$([ "$flag" = f0 ] && print -r -- 0 || print -r -- 1)"
     FLAG_ATUAL="$flag"
   fi
