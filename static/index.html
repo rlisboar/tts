@@ -3554,6 +3554,9 @@ const ADMIN_SEM_UI = new Set([
   // #946: vermelhos da suíte de admin no rebase — protegidos no servidor e ainda
   // sem controle na tela. Saem daqui quando o input marcado existir.
   "live_stt_whisper_repo", "public_url",
+  // #876 C1: motor do STT do Live e release adiado do MLX — admin no servidor,
+  // ainda sem controle na tela (o `admin_ui_flow` reprovava a main sem isto)
+  "live_stt_engine", "live_stt_release_adiado",
 ]);
 
 // Trava os campos administrativos e diz POR QUE estão travados: campo travado
