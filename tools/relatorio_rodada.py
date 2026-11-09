@@ -238,6 +238,7 @@ def main(argv=None) -> int:
     ap.add_argument("--logs", type=Path, nargs="+", default=[])
     ap.add_argument("--marcas", type=Path)
     ap.add_argument("--aquecimento", type=int, default=1)
+    ap.add_argument("--llm", default="", help="base_url do chat (ressalva do S2)")
     args = ap.parse_args(argv)
     d, aq = args.dir, max(0, args.aquecimento)
 
@@ -258,6 +259,11 @@ def main(argv=None) -> int:
           f"· aquecimento descartado: {aq} ciclo(s) por célula")
     print("# LIMITES DECLARADOS ANTES: pausa p95 ≤800 ms · duck p50 ≤300 ms · "
           "eco_falso_duck ≤5 % (PONTO) · eco_falso_corte ≤ C1/F0 · S1-S4 e RSS sem piora")
+    if args.llm:
+        print(f"# LLM do chat: {args.llm}")
+        if "127.0.0.1" in args.llm or "localhost" in args.llm:
+            print("# LLM FIXO (fake): o S2 ABSOLUTO é PISO, não produção — o veredito do eixo "
+                  "usa o `pos_llm` e o delta entre células; o `llm_ttft` fica constante.")
     print(f"# n<{N_MINIMO_P95} por célula: a p95 é frouxa — leia com a mediana e o "
           "máximo ao lado; a decisão NÃO sai só da p95.\n")
     print("  célula   n_falas  stt_p50  duck_p50  pausa_p50  pausa_p95  pausa_max  "

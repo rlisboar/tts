@@ -24,6 +24,24 @@ Qualquer outro critério falhando, ou amostra faltando → **não liga** (ou
 INDETERMINADO). Os limites estão no cabeçalho do `rodada_c0c1.sh` e nas
 constantes do `relatorio_rodada.py`.
 
+## Provedor de LLM (a régua do S2)
+
+O S2 é `STT + 1º token da LLM + TTS + fila`. Se o provedor oscila, a comparação
+C0×C1 e F0×F1 fica refém da rede. Com `--llm-fake` o script sobe o
+`tools/llm_fake_sse.py` na 7898 (TTFT fixo de 300 ms, sem sair da máquina) e
+aponta a instância de bancada para ele; o `trap` derruba o fake junto.
+
+**O que isso obriga a declarar no relatório:** o S2 absoluto vira PISO — em
+produção o TTFT é 0,8–1,3 s, então o número sai otimista e NÃO serve para o
+aceite `p50 ≤ 1,5 s` sem essa etiqueta. O que continua comparável é o
+`s2_pos_llm_ms` (STT + TTS + fila) e o delta entre células; o `llm_ttft` fica
+constante e auditável. O relatório imprime a ressalva sozinho quando a base é
+local.
+
+Sem `--llm-fake` o script usa o `chat_base_url` do `settings.json` da árvore e
+recusa a rodada se o `/models` responder 5xx/000 (foi o que pegou o provedor
+morto em 530).
+
 ## Desenho
 
 4 células, **10 ciclos contados + 1 de aquecimento descartado** cada, seguidas de

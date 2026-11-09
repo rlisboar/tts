@@ -42,6 +42,7 @@ URL="ws://127.0.0.1:7890/api/live/ws"
 APP="http://127.0.0.1:7890"
 SHA=""; CORPUS=/tmp/live-bench-audio; ESTADO=/tmp/bench-mini/.state-local
 DIR=""; CICLOS=10; AQUEC=1; MIN_ECO=3; MIN_VENT=3; SEMENTE=875
+LLM_FAKE=0; LLM_FAKE_PORTA=7898; FAKE_PID=""
 MODULOS=(app.py common.py backends.py tts_worker.py live_pipeline.py live_turns.py dsh_client.py)
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -55,6 +56,8 @@ while [ $# -gt 0 ]; do
     --min-eco) MIN_ECO="${2:-3}"; shift 2 ;;
     --min-ventoinha) MIN_VENT="${2:-3}"; shift 2 ;;
     --semente) SEMENTE="${2:-875}"; shift 2 ;;
+    --llm-fake) LLM_FAKE=1; shift ;;
+    --llm-fake-porta) LLM_FAKE_PORTA="${2:-7898}"; shift 2 ;;
     -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) print -r -- "sobrando: $1" >&2; exit 2 ;;
   esac
@@ -111,6 +114,10 @@ limpa() {
       && fala "   chave live_stt_engine devolvida para '$ANTERIOR'"
   fi
   derruba || rc=1
+  if [ -n "$FAKE_PID" ]; then
+    kill "$FAKE_PID" 2>/dev/null; FAKE_PID=""
+    fala "   LLM falso derrubado"
+  fi
   fala "   7890 listeners: $(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')"
   fala "   uvicorn 7860: $(pgrep -f 'port 7860' | wc -l | tr -d ' ')"
   fala "   prod health: $(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:7860/health)"
@@ -128,6 +135,21 @@ command -v ffmpeg >/dev/null \
   || { fala "ffmpeg fora do PATH — o C1 (parakeet) não decodifica áudio"; exit 1; }
 [ -d "$APP_DIR" ] || { fala "sem app-dir: $APP_DIR"; exit 1; }
 [ -n "$SHA" ] || { fala "--sha é obrigatório (o rev que o deploy subiu)"; exit 1; }
+if [ "$LLM_FAKE" = 1 ]; then
+  [ "$(lsof -nP -iTCP:$LLM_FAKE_PORTA -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ] \
+    || { fala "porta $LLM_FAKE_PORTA ocupada (o LLM falso precisa dela livre)"; exit 1; }
+  nohup "$PY" "$APP_DIR/tools/llm_fake_sse.py" --porta "$LLM_FAKE_PORTA" --ttft-ms 300 \
+    > "$DIR/llm-fake.log" 2>&1 < /dev/null &
+  FAKE_PID="$!"
+  export TTS_CHAT_BASE_URL="http://127.0.0.1:$LLM_FAKE_PORTA/v1"
+  export TTS_CHAT_MODEL=fake TTS_CHAT_API_KEY=fake TTS_CHAT_BACKEND_LIVE=openai
+  _espera=0
+  while [ "$_espera" -lt 20 ]; do
+    [ "$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$TTS_CHAT_BASE_URL/models")" = "200" ] && break
+    sleep 0.3; _espera=$((_espera + 1))
+  done
+  fala "   LLM falso na $LLM_FAKE_PORTA (pid $FAKE_PID, TTFT fixo 300 ms)"
+fi
 [ -d "$CORPUS" ] || { fala "corpus ausente: $CORPUS"; exit 1; }
 [ -f "$ESTADO/settings.json" ] || { fala "estado sintético ausente: $ESTADO/settings.json"; exit 1; }
 [ "$(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ] \
@@ -156,8 +178,17 @@ fala "   sha pedido=$SHA · codigo esperado=$ESPERADO · no ar=${NO_AR:-<vazio>}
 fala "   corpus: $(ls "$CORPUS" | wc -l | tr -d ' ') arquivos · semente $SEMENTE"
 # LLM vivo: sem ele não há TTS, então S2 fica nulo e as fases de eco/ventoinha
 # não têm playback para medir (a rodada inteira vira INDETERMINADO).
-_LLM_B="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_base_url"])' 2>/dev/null)"
-_LLM_K="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_api_key"])' 2>/dev/null)"
+# Com `--llm-fake` o provedor é o `tools/llm_fake_sse.py` na 7898: TTFT fixo, sem
+# rede. O S2 absoluto vira PISO (o real tem TTFT de 0,8-1,3 s), então o veredito
+# do eixo usa o `pos_llm` e o delta entre células — o `llm_ttft` fica constante e
+# auditável.
+_LLM_B="${TTS_CHAT_BASE_URL:-}"
+if [ -z "$_LLM_B" ]; then
+  _LLM_B="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_base_url"])' 2>/dev/null)"
+  _LLM_K="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_api_key"])' 2>/dev/null)"
+else
+  _LLM_K="${TTS_CHAT_API_KEY:-fake}"
+fi
 if [ -n "$_LLM_B" ]; then
   _code="$(curl -s -m 12 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $_LLM_K" "$_LLM_B/models")"
   fala "   LLM: $_LLM_B/models → HTTP $_code"
@@ -183,9 +214,9 @@ SAMPLER=$!
 sobe() {                  # $1 = 0|1 (duck rápido)
   fala "== sobe 7890 (duck_rapido=$1)  $(date -Iseconds)"
   local K B M
-  K="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_api_key"])' 2>/dev/null)"
-  B="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_base_url"])' 2>/dev/null)"
-  M="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_model"])' 2>/dev/null)"
+  K="${TTS_CHAT_API_KEY:-$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_api_key"])' 2>/dev/null)}"
+  B="${TTS_CHAT_BASE_URL:-$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_base_url"])' 2>/dev/null)}"
+  M="${TTS_CHAT_MODEL:-$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_model"])' 2>/dev/null)}"
   # `exec` no subshell: sem ele o `&` põe o SUBSHELL em background, o subshell
   # morre no mesmo instante e `$!` vira um PID já morto — o `kill` do `trap`
   # acertava o nada e a instância ficava de pé (medido na 1ª rodada real: pid
@@ -272,6 +303,6 @@ print -r -- "fim $(date +%H:%M:%S)" >> "$DIR/marcas.txt"
 fala "== relatório  $(date -Iseconds)"
 "$PY" "$APP_DIR/tools/relatorio_rodada.py" --dir "$DIR" --sha "$SHA" \
   --logs "$DIR/app-0.log" "$DIR/app-1.log" --marcas "$DIR/marcas.txt" \
-  --aquecimento "$AQUEC" 2>&1 | tee -a "$LOG_CORRIDA"
+  --aquecimento "$AQUEC" --llm "${TTS_CHAT_BASE_URL:-}" 2>&1 | tee -a "$LOG_CORRIDA"
 fala "== fim  $(date -Iseconds) — saída em $DIR"
 exit "$RC_FIM"
