@@ -97,6 +97,16 @@ Cortar o `vad` tem piso declarado no próprio código: `SILENCE_MS_MINIMO_STT = 
 disso o STT come a última sílaba). São 100 ms disponíveis ali, contra 310 ms de `fio` que
 ainda não têm dono.
 
+**Como ler o `fio` (escrito ANTES da re-rodada, #1084).** Ele se parte em `fio_rx` (servidor:
+decisão do VAD → turno abrir) e `fio_cliente` (mic, WS, playback). Dois cuidados, os dois
+casuais de leitura errada:
+
+- **`fio_rx` nunca sai negativo**, e não é mérito do servidor: `decisao_para_audio_ms` é
+  PSEUDO-CARIMBO (`first_audio_ms + max(0, abre − decisão)`), então o `max(0, …)` engole o
+  caso `abre < decisão` e joga a parcela negativa INTEIRA no `fio_cliente`.
+- Logo, **`fio_cliente` negativo pode ser relógio cruzado, não transporte**. Não leia o sinal
+  como "o cliente demorou": leia como "as duas pontas não são comparáveis neste turno".
+
 ### O que o número já derruba, e o que ele não sustenta
 
 - **A hipótese do `_cond_for` caiu por medição direta**, não pela janela. Sonda isolada

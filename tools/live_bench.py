@@ -237,6 +237,15 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
     - `fio_cliente`: `fio − fio_rx` — buffer do mic, WS e playback no cliente.
     Marco ausente → trecho `None` (não inventa zero).
 
+    CUIDADO com `fio_rx` NEGATIVO (#1084): ele nunca é, por construção.
+    `decisao_para_audio_ms` é PSEUDO-CARIMBO — vale `first_audio_ms +
+    max(0, abre − decisão)` (`app.py`) —, então a subtração em `fio_rx` não pode
+    dar negativo: o `max(0, …)` engole o caso `abre < decisão` e a parcela
+    negativa inteira cai no `fio_cliente`. Consequência prática: **`fio_cliente`
+    negativo pode ser relógio cruzado, não transporte**. Não leia o sinal dele
+    como "o cliente demorou"; leia como "as duas pontas não são comparáveis
+    neste turno".
+
     RESSALVA do `resto` (medida local, #1022): ele mistura DOIS relógios. O
     `s2_ms` conta do fim da fala no CLIENTE da bancada; o `first_audio_ms` conta
     do início da thread do turno, DEPOIS da decisão do VAD. `resto` pode então
