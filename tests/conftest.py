@@ -168,10 +168,10 @@ os.environ["TTS_STATE_DIR"] = _TMP_ESTADO
 # valor é o da sessão de teste, não o ambiente dele.
 os.environ["TTS_LIVE_RNNOISE"] = "0"
 
-# #1050: o prazo C do watchdog do /health (#915) fica DESLIGADO na sessão. O
-# `faulthandler.dump_traceback_later` despeja de uma thread C SEM a GIL; quando o
-# laço que rearma só atrasou (CPU disputada, duas suítes) e o principal segue
-# rodando Python, o despejo lê frame que acabou de ser liberado e falha em
+# #1050: o watchdog do /health (#915) fica DESLIGADO na sessão (`<= 0`). O prazo C
+# (`faulthandler.dump_traceback_later`, que saiu do app no task_ee97f0f6)
+# despejava de uma thread C SEM a GIL; quando o laço que rearma só atrasou (CPU
+# disputada, duas suítes) e o principal segue rodando Python, o despejo lê frame que acabou de ser liberado e falha em
 # `dump_frame` — SIGSEGV num processo limpo, e sob pytest a thread do faulthandler
 # gira a 100 % de CPU no mesmo endereço. O rearme seguinte chama
 # `cancel_dump_traceback_later()`, que espera essa thread SEGURANDO a GIL: o

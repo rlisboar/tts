@@ -33,5 +33,4 @@ def test_health_e_laco_nao_armam_o_despejo_c(monkeypatch):
         assert cliente.get("/health").status_code == 200
     # o laço `health-watchdog` passa a cada 0,05–0,25 s
     time.sleep(0.6)
-    app._saude_rearma()
     assert armados == [], armados

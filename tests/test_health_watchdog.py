@@ -214,43 +214,53 @@ def test_health_rapido_nao_despeja(tmp_path, monkeypatch):
     _sem_despejo(arq)
 
 
-def test_watchdog_c_despeja_com_a_gil_presa(tmp_path, monkeypatch):
-    """A thread C do faulthandler escreve com a GIL presa numa chamada C.
+def test_nenhum_caminho_arma_o_prazo_c(tmp_path, monkeypatch):
+    """task_ee97f0f6: o prazo C (`faulthandler.dump_traceback_later`) saiu.
 
-    `time.sleep` e um ctypes comum soltam a GIL: o laço rearmaria e o prazo
-    não estouraria. `PyDLL` não solta. Um `nanosleep` só (não um laço de
-    `usleep`, que devolve a GIL entre as voltas) segura o prazo inteiro.
-    O arquivo nasce com `Timeout (`.
+    Ele despeja sem a GIL; com a GIL só disputada, lê frame liberado e o
+    processo cai (SIGSEGV) ou fica parado a 100 % de CPU (#1050). O despejo
+    que resta é o Python, com a GIL. Esta célula passa pelo laço, por um
+    /health rápido e por um /health preso: nenhum arma o prazo C.
     """
-    import ctypes
     import faulthandler
 
+    armados = []
+    monkeypatch.setattr(faulthandler, "dump_traceback_later",
+                        lambda *a, **k: armados.append((a, k)))
     arq = tmp_path / "watchdog.log"
-    _arma(monkeypatch, arq, teto=0.4)
-    app._saude_rearma()
-    assert arq.is_file(), "o rearme não criou o log"
-    assert arq.stat().st_mode & 0o777 == 0o600
-    antes = arq.read_text(encoding="utf-8", errors="replace")
-    assert "Timeout (" not in antes
+    _arma(monkeypatch, arq)
+    cliente = TestClient(app.app, raise_server_exceptions=False)
+    assert cliente.get("/health").status_code == 200
+    solta = asyncio.Event()
+    entrou = asyncio.Event()
 
-    class _Timespec(ctypes.Structure):
-        _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+    async def preso(scope, receive, send):
+        entrou.set()
+        await solta.wait()
 
-    libc = ctypes.PyDLL(None, use_errno=True)
-    libc.nanosleep.argtypes = [
-        ctypes.POINTER(_Timespec), ctypes.POINTER(_Timespec)]
-    libc.nanosleep.restype = ctypes.c_int
-    # 1,2 s cobre o prazo de 0,4 s inteiro dentro da chamada que segura a GIL.
-    req = _Timespec(1, 200_000_000)
-    rem = _Timespec(0, 0)
+    async def cenario():
+        mw = app._SaudeWatchdog(preso)
+        tarefa = asyncio.create_task(mw(
+            {"type": "http", "path": "/health"}, _receive_vazio, _send_mudo))
+        await asyncio.wait_for(entrou.wait(), 2)
+        _espera(arq, "[watchdog]")
+        solta.set()
+        await asyncio.wait_for(tarefa, 2)
+
     try:
-        rc = libc.nanosleep(ctypes.byref(req), ctypes.byref(rem))
-        texto = arq.read_text(encoding="utf-8", errors="replace")
+        asyncio.run(cenario())
     finally:
-        faulthandler.cancel_dump_traceback_later()
-    assert rc == 0, f"nanosleep rc={rc} errno={ctypes.get_errno()}"
-    assert "Timeout (" in texto
-    assert "test_watchdog_c_despeja_com_a_gil_presa" in texto
-    assert "[watchdog]" not in texto
-    assert len(texto) > len(antes)
-    assert arq.stat().st_mode & 0o777 == 0o600
+        _zera_voo()
+    assert armados == [], armados
+    assert not hasattr(app, "_saude_rearma")
+
+
+def test_teto_zero_desliga_e_nao_despeja_sem_nada_em_voo(tmp_path, monkeypatch):
+    """`<= 0` desliga. Antes, com nada em voo, `atraso()` = 0.0 e `0.0 < 0` é
+    falso: o laço despejava todas as pilhas a cada 30 s, para sempre."""
+    arq = tmp_path / "watchdog.log"
+    _arma(monkeypatch, arq, teto=0)
+    monkeypatch.setattr(app, "_SAUDE_DESPEJO_INTERVALO_S", 0.0)
+    app._saude_watchdog_passo()
+    time.sleep(0.6)            # o laço `health-watchdog` passa algumas vezes
+    assert not arq.exists(), arq.read_text(errors="replace")[:300]

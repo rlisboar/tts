@@ -812,19 +812,25 @@ tira o ticket. Sem dono, espera curto e o prazo vale.
 
 `abort` é o mesmo ramo de `_pula_morto`. Com o conserto, deliver e abort voltam no prazo (CPU da thread abaixo de 0,25 s) e `status()` lê `speech_queue_depth == 2` com o buraco aberto.
 
-## #915 — watchdog C sem a GIL
+## #915 → task_ee97f0f6 — watchdog só Python (o prazo C saiu)
 
-`dump_traceback_later(repeat=True)` corre numa thread C. O laço e cada
-`/health` cancelam e armam de novo; com a GIL presa numa chamada C ninguém
-rearma e o log nasce em 0600 com `Timeout (`. A célula segura a GIL com
-`ctypes.PyDLL.nanosleep` (um `time.sleep` soltaria a GIL e o laço rearmaria).
+Até o #1050 o watchdog também armava `dump_traceback_later(repeat=True)`, uma
+thread C que despeja SEM a GIL. Com a GIL só disputada (o laço atrasou e outras
+threads seguem em Python), ela lê frame liberado e falha em `dump_frame`: SIGSEGV,
+ou a thread girando a 100 % de CPU enquanto o `cancel_dump_traceback_later` do
+rearme a espera SEGURANDO a GIL, com o processo vivo e parado. Ficou só o
+despejo Python (`_saude_despeja`, com a GIL). `<= 0` desliga; antes, 0 despejava a
+cada 30 s sem nada em voo, porque `0.0 < 0` é falso.
 
 | Sabotagem | Resultado |
 |---|---|
-| `_saude_rearma` volta na hora, sem armar | `test_watchdog_c_despeja_com_a_gil_presa` **FAILED**: `o rearme não criou o log` |
-| comentar `app.add_middleware(_SaudeWatchdog)` | `test_watchdog_esta_registrado_por_fora_do_teto` **FAILED** (0,31 s, bytecode limpo): `_SaudeWatchdog` ausente de `user_middleware`; a camada de fora vira `_TetoDeCorpo` |
+| voltar o `app.py` com o prazo C (rearme no laço e no /health) | `test_nenhum_caminho_arma_o_prazo_c` **FAILED** (`dump_traceback_later` chamado) e `test_teto_zero_desliga_e_nao_despeja_sem_nada_em_voo` **FAILED** (log nasce com teto 0) |
+| tirar o `if limite <= 0: return` do passo | `test_teto_zero_desliga_e_nao_despeja_sem_nada_em_voo` **FAILED** |
+| `tests/conftest.py` sem `TTS_HEALTH_TRAVADO_S=0` | `test_sessao_nasce_sem_prazo_c_e_com_log_isolado` **FAILED** (`3.0 == 0`) |
+| comentar `app.add_middleware(_SaudeWatchdog)` | `test_watchdog_esta_registrado_por_fora_do_teto` **FAILED**: `_SaudeWatchdog` ausente de `user_middleware` |
 
-Com o rearme, o mesmo `nanosleep` de 1,2 s (prazo 0,4 s) faz o arquivo crescer com `Timeout (` e o nome da célula, modo 0600, sem o cabeçalho `[watchdog]` da trilha Python. Com o registro, `_SaudeWatchdog` fica num índice menor que `_TetoDeCorpo` (Starlette insere o último `add_middleware` na frente). A célula do despejo monta o middleware à mão e passaria mesmo sem esta linha.
+Ponto cego aceito: com a GIL presa numa chamada C o laço não roda e não há
+despejo. Para esse caso, amostrador de fora (`sample <pid>`).
 
 ## #812 — retorno remoto: onde a marca é contada
 
