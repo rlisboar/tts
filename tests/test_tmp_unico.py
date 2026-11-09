@@ -61,6 +61,8 @@ COMPARTILHADOS = {
     "e2e-terceiro.wav": "bancada #984/#982: WAV de entrada já gravado fora do repo; o script só lê",
     "ab869": "bancada #979: lê a coorte PT já extraída em /tmp/ab869; o script não cria o diretório",
     "tts-bakeoff": "bancada #979/#640: corpus FLEURS local em /tmp/tts-bakeoff, compartilhado de propósito; o script só lê",
+    "live-bench-audio": "bancada #1036: corpus de áudio já extraído, lido pela rodada C0×C1; o script só lê",
+    "bench-mini": "bancada #1036: estado do app de bancada no mini (`--estado`), compartilhado entre as pontas da rodada",
 }
 
 # `os.environ` entra porque a linha do fallback lê a variável que a suíte exporta
@@ -75,7 +77,7 @@ COMPARTILHADOS = {
 # isso) — o sufixo não é literal, é gerado em runtime.
 TOKEN_POR_EXECUCAO = re.compile(
     r"\$\$|\$RUN|\$\{RUN\}|\$SUF|\$T\b|\$PORTA|XXXXXX|\{os\.getpid\(\)\}|\{porta\}|\{SUF\}|"
-    r"process\.pid|\$\{process\.pid\}|<pid>|\*|mktemp|os\.environ")
+    r"process\.pid|\$\{process\.pid\}|<pid>|\*|mktemp|os\.environ|\$\(date")
 LITERAL = re.compile(r"/tmp/([A-Za-z0-9._-]+)")
 
 
