@@ -7,7 +7,8 @@ de lá, um deles de crista alta. O que tem de valer:
   ±1 dB do alvo (antes ele era normalizado pelo PICO e saía o mais baixo);
 - o cumprimento curto não pode ser o mais baixo dos quatro;
 - loudness integrada do WAV final em −18 LUFS ±1 (medida com `ffmpeg ebur128`);
-- caminho remoto e in-process com o MESMO ganho;
+- duas rodadas do MESMO texto dão o mesmo ganho (o ganho é do job, não sobra
+  estado entre renders — o caminho remoto saiu no #1059);
 - `_fade_edges` e o limiter seguem atuando: bordas em zero e pico ≤ 1,0;
 - mordida: voltar ao ganho acoplado ao pico reprova tudo isso.
 """
@@ -49,10 +50,9 @@ def _gerador(crista: bool = True):
     return _gera
 
 
-def _roda(monkeypatch, tmp_path, *, remoto=False, crista=True):
+def _roda(monkeypatch, tmp_path, *, crista=True):
     monkeypatch.setitem(app._settings, "chunk_max_chars", 60)
-    jid = _job_de_render(monkeypatch, tmp_path, _gerador(crista),
-                         texto=PARAGRAFO, remoto=remoto)
+    jid = _job_de_render(monkeypatch, tmp_path, _gerador(crista), texto=PARAGRAFO)
     app._run_tts_job(jid, PARAGRAFO, "voz-x", tmp_path / "voz-x.wav",
                      "pt", {"num_steps": 4}, use_queue=False)
     job = app._jobs.pop(jid)
@@ -98,11 +98,14 @@ def test_bordas_rampeadas_e_pico_limitado(monkeypatch, tmp_path):
         assert float(np.abs(y).max()) <= 1.0 + 1e-6
 
 
-def test_remoto_e_in_process_com_o_mesmo_ganho(monkeypatch, tmp_path):
-    """Mesmo conteúdo pelos dois motores: o ganho do job não pode depender dele."""
-    jid_local, _ = _roda(monkeypatch, tmp_path, remoto=False)
-    jid_remoto, _ = _roda(monkeypatch, tmp_path, remoto=True)
-    r_local = _rms_pecas(jid_local)
-    r_remoto = _rms_pecas(jid_remoto)
-    dif_db = 20 * math.log10(float(np.mean(r_local)) / float(np.mean(r_remoto)))
-    assert abs(dif_db) <= 1.0, (round(dif_db, 2), r_local, r_remoto)
+def test_mesmo_texto_duas_rodadas_mesmo_ganho(monkeypatch, tmp_path):
+    """O ganho é do job: dois renders do MESMO texto dão o mesmo nível final
+    (nada acumula entre jobs). Era esta a metade que sobrava do caminho remoto,
+    que saiu no #1059."""
+    def _rms_final(job):
+        y, _ = sf.read(str(tmp_path / f"{job['output']['id']}.wav"), dtype="float32")
+        return float(np.sqrt(np.mean(y ** 2)))
+    _j1, job_1 = _roda(monkeypatch, tmp_path)
+    _j2, job_2 = _roda(monkeypatch, tmp_path)
+    dif_db = 20 * math.log10(_rms_final(job_1) / _rms_final(job_2))
+    assert abs(dif_db) <= 0.2, round(dif_db, 2)
