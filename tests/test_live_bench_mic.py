@@ -477,3 +477,30 @@ def test_turno_cancelado_antes_do_audio_nao_mede_s2():
 def test_sem_latency_nenhum_devolve_none():
     c = _cliente(_WS())
     assert lb.latencia_com_audio(c, 0.0) is None
+
+
+def test_resto_e_pos_llm_saem_dos_marcos_de_A_e_nao_dos_de_B():
+    """O sintoma do defeito, não só a escolha do evento (gate #1078).
+
+    Com o pareamento errado, `resto` virava `s2 − first_audio` do turno de B e
+    `pos_llm` virava `s2 − first_token` de B — números de outro turno, separados
+    por segundos. Igualdade exata contra os marcos de A: não depende de sinal,
+    porque `resto` é negativo com pareamento CERTO sempre que o `s2` do cliente é
+    menor que o `first_audio` do servidor (dois relógios diferentes).
+    """
+    c = _cliente(_WS())
+    c.eventos = [
+        # turno de A: interrompido, mas com áudio emitido — é dele que se mede
+        (10.0, "latency", {"cancelado": True, "first_token_ms": 1400,
+                           "first_clause_ms": 1500, "tts_start_ms": 1520,
+                           "tts_first_pcm_ms": 2900, "first_audio_ms": 2900}),
+        (40.0, "latency", {"first_token_ms": 300, "first_clause_ms": 350,
+                           "tts_start_ms": 360, "tts_first_pcm_ms": 700,
+                           "first_audio_ms": 700}),
+    ]
+    e = lb.latencia_com_audio(c, 9.0)
+    est = lb.estagios_pos_llm(e, s2_ms=2600)
+    assert est["resto"] == 2600 - 2900          # first_audio de A, não 700
+    assert est["llm_frase"] == 1500 - 1400      # cláusula de A, não 350 − 300
+    assert est["tts"] == 2900 - 1520            # geração de A, não 700 − 360
+    assert est["resto"] != 2600 - 700           # o valor que o defeito produzia
