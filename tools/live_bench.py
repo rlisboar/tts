@@ -800,6 +800,21 @@ def _servidor_proc(porta: int | None = None) -> dict:
         return {"erro": str(exc)}
 
 
+def _marca(args, fase: str) -> None:
+    """Marca '<rotulo> <fase> <hora>' no arquivo — a janela de cada fase sai daí.
+
+    Quem lê é o `relatorio_rodada.py`: a janela do `stt` é a da fase `ciclos`,
+    que começa no FIM do aquecimento (não no começo da célula).
+    """
+    if not args.marca:
+        return
+    try:
+        with args.marca.open("a") as f:
+            f.write(f"{args.rotulo} {fase} {time.strftime('%H:%M:%S')}\n")
+    except OSError as exc:
+        print(f"aviso: marca em {args.marca}: {exc}", flush=True)
+
+
 async def abre_sessao(url: str, eco_db: float = -15.0, eco_atraso_ms: int = 100,
                       ruido_dbfs: float = -60.0, voice: str = "",
                       prewarm_s: float = 20.0):
@@ -850,11 +865,16 @@ async def sessao(args, corpus: list[dict]) -> dict:
     ordem = list(corpus)
     k = 0
     prazo = time.monotonic() + args.sessao_min * 60 if args.sessao_min else None
+    _marca(args, "aquec" if args.aquecimento else "ciclos")
     while c.vivo:
         if prazo is None and k >= args.ciclos:
             break
         if prazo is not None and time.monotonic() >= prazo:
             break
+        if args.aquecimento and k == args.aquecimento:
+            # a amostra começa no FIM do aquecimento: o 1º turno do bloco paga o
+            # cache miss do `_cond_for` (~1500 ms) e puxaria a mediana para cima
+            _marca(args, "ciclos")
         if k % len(ordem) == 0:
             random.shuffle(ordem)
         fa = ordem[(2 * k) % len(ordem)]
@@ -1024,6 +1044,11 @@ def main(argv=None):
     ap.add_argument("--out", type=Path, help="JSON de métricas (sem texto/áudio)")
     ap.add_argument("--textos", type=Path, help="transcripts/respostas (fica em /tmp)")
     ap.add_argument("--rotulo", default="", help="ex.: o SHA no ar")
+    ap.add_argument("--marca", type=Path,
+                    help="arquivo de marcas: escreve '<rotulo> aquec|ciclos <hora>'")
+    ap.add_argument("--aquecimento", type=int, default=0,
+                    help="ciclos iniciais FORA da amostra (a marca `ciclos` é "
+                         "escrita no fim deles)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
     if "voices" in args.audio.resolve().parts:

@@ -24,10 +24,12 @@
 #       [--corpus /tmp/live-bench-audio] [--estado /tmp/bench-mini/.state-local] \
 #       [--ciclos 10] [--aquecimento 1] [--min-eco 3] [--min-ventoinha 3]
 #
-# ORDEM CONTRABALANÇADA (f0c0 → f1c0 → f1c1 → f0c1): com blocos sequenciais e
-# flag em ENV, deriva térmica/de RSS fica colada na ordem; assim cada estado de
-# flag cai numa ponta da corrida. Cada bloco roda 1 ciclo de AQUECIMENTO fora da
-# amostra (o bloco reinicia o app e o `_cond_for` em cache miss custa ~1500 ms).
+# ORDEM CONTRABALANÇADA (f0: c0, c1 → f1: c1, c0): só o MOTOR inverte entre os
+# blocos de flag. Assim o motor novo cai no fim de um bloco e no começo do outro,
+# e a deriva térmica/de RSS não fica colada num motor só. Cada bloco roda 1 ciclo
+# de AQUECIMENTO fora da amostra, com marca própria: o turno de aquecimento é o
+# que paga o cache miss do `_cond_for` (~1500 ms) depois do restart, e a janela do
+# `stt` começa no FIM dele. A ordem executada é lida do `marcas.txt` no relatório.
 #
 # O script sobe e derruba a instância da 7890 (nunca a 7860) e, no `trap`,
 # devolve `live_stt_engine` ao valor lido do estado sintético e mata tudo que
@@ -183,11 +185,11 @@ sobe() {                  # $1 = 0|1 (duck rápido)
 marca() { print -r -- "$1 $2 $(date +%H:%M:%S)" >> "$DIR/marcas.txt"; }
 roda_ciclos() {           # $1 = célula (f0-c0 …)
   fala "== ciclos $1  $(date -Iseconds)"
-  marca "$1" ciclos
-  # AQUECIMENTO: +$AQUEC ciclo(s) fora da amostra (o bloco reinicia o app e o
-  # `_cond_for` em cache miss custa ~1500 ms). O relatório descarta os primeiros.
+  # AQUECIMENTO: +$AQUEC ciclo(s) fora da amostra. O `live_bench` escreve a
+  # marca `aquec` antes e `ciclos` no fim dele — a janela do stt começa ali.
   TTS_LIVE_DUMP_DIR="$DIR/dump-$1" "$PY" -I "$APP_DIR/tools/live_bench.py" \
     --audio "$CORPUS" --url "$URL" --seed "$SEMENTE" --ciclos "$((CICLOS + AQUEC))" \
+    --aquecimento "$AQUEC" --marca "$DIR/marcas.txt" \
     --teto-turno-s 300 --rotulo "$1" --out "$DIR/$1.json" > "$DIR/$1.log" 2>&1
   fala "   rc=$? $(grep -E '^S1 ' "$DIR/$1.log" | cut -c1-80)"
 }
@@ -214,8 +216,8 @@ ANTERIOR="$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("l
   "$ESTADO/settings.json" 2>/dev/null)"
 fala "   live_stt_engine no estado: '${ANTERIOR}'"
 
-ORDEM=(f0-c0 f1-c0 f1-c1 f0-c1)
-print -r -- "${ORDEM[*]}" > "$DIR/ordem.txt"
+ORDEM=(f0-c0 f0-c1 f1-c1 f1-c0)
+: > "$DIR/marcas.txt"
 FLAG_ATUAL=""
 for cel in "${ORDEM[@]}"; do
   flag="${cel%%-*}"
@@ -233,5 +235,5 @@ print -r -- "fim $(date +%H:%M:%S)" >> "$DIR/marcas.txt"
 fala "== relatório  $(date -Iseconds)"
 "$PY" "$APP_DIR/tools/relatorio_rodada.py" --dir "$DIR" --sha "$SHA" \
   --logs "$DIR/app-0.log" "$DIR/app-1.log" --marcas "$DIR/marcas.txt" \
-  --ordem "$DIR/ordem.txt" --aquecimento "$AQUEC" 2>&1 | tee -a "$LOG_CORRIDA"
+  --aquecimento "$AQUEC" 2>&1 | tee -a "$LOG_CORRIDA"
 fala "== fim  $(date -Iseconds) — saída em $DIR"

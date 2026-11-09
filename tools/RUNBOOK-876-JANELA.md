@@ -29,20 +29,24 @@ constantes do `relatorio_rodada.py`.
 4 células, **10 ciclos contados + 1 de aquecimento descartado** cada, seguidas de
 3 min de eco puro e 3 min de ventoinha. O aquecimento existe porque cada bloco
 reinicia o app e o `_cond_for` em cache miss custa ~1500 ms — sem ele a 1ª
-amostra envenena 10 % da célula.
+amostra envenena 10 % da célula. Ele é um turno com marca própria (`aquec`), e a
+janela do `stt` começa no FIM dele: o `live_bench` escreve `<célula> ciclos`
+quando o aquecimento acaba, e é dali que a janela conta.
 
-**Ordem contrabalançada** (cada estado de flag numa ponta da corrida, para a
-deriva térmica e de RSS não se colar na ordem):
+**Ordem contrabalançada, só o motor inverte** (o motor novo cai no fim de um
+bloco de flag e no começo do outro; a deriva térmica e de RSS não se cola num
+motor só):
 
 | # | célula | motor | flag |
 |---|---|---|---|
 | 1 | `f0-c0` | whisper | off |
-| 2 | `f1-c0` | whisper | on |
+| 2 | `f0-c1` | parakeet | off |
 | 3 | `f1-c1` | parakeet | on |
-| 4 | `f0-c1` | parakeet | off |
+| 4 | `f1-c0` | whisper | on |
 
-A ordem executada vai para o relatório. A troca de motor é por
-`POST /api/settings` (sem restart). A troca de flag é por
+A ordem executada é lida do próprio `marcas.txt` (ordem de 1ª aparição) e sai no
+topo do relatório — não há arquivo de ordem à parte para divergir. A troca de
+motor é por `POST /api/settings` (sem restart). A troca de flag é por
 `TTS_LIVE_BARGE_DUCK_RAPIDO` no ambiente, então a instância da 7890 reinicia
 quando a flag muda — a produção (7860) nunca.
 

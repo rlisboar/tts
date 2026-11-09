@@ -6,13 +6,15 @@ coleta nada — é leitura de arquivo, para o veredito não depender de planilha
 
     .venv-mlx/bin/python tools/relatorio_rodada.py --dir /tmp/rodada-876 \
         --sha <sha> --logs <dir>/app-0.log <dir>/app-1.log \
-        --marcas <dir>/marcas.txt --ordem <dir>/ordem.txt --aquecimento 1
+        --marcas <dir>/marcas.txt --aquecimento 1
 
 Células: `<f0|f1>-<c0|c1>` — f0/f1 é `TTS_LIVE_BARGE_DUCK_RAPIDO` desligada/
 ligada, c0/c1 é whisper/parakeet. `marcas.txt` tem uma linha por FASE
-(`<celula> <ciclos|eco|ventoinha> <HH:MM:SS>`) e uma `fim <HH:MM:SS>`: a janela
-do `stt` é só a fase `ciclos` da célula — a fase de eco injeta gatilhos de 0,7 s
-e, se entrasse, puxaria o p50 do estágio para baixo.
+(`<celula> <aquec|ciclos|eco|ventoinha> <HH:MM:SS>`) e uma `fim <HH:MM:SS>`: a
+janela do `stt` é só a fase `ciclos` da célula e começa no FIM do aquecimento —
+a fase de eco injeta gatilhos de 0,7 s e, se entrasse, puxaria o p50 para baixo.
+A ORDEM EXECUTADA sai das próprias marcas (ordem de 1ª aparição) e é impressa no
+topo: é ela que se confere, não um arquivo à parte.
 
 AQUECIMENTO: as `--aquecimento` primeiras falas-pares de cada célula são
 descartadas (o bloco reinicia o app e o `_cond_for` em cache miss custa
@@ -95,6 +97,19 @@ def _janelas(p: Path | None) -> dict[tuple[str, str], tuple[str, str]]:
         fim = marcas[i + 1][2] if i + 1 < len(marcas) else ini
         out[(cel, fase)] = (ini, fim)
     return out
+
+
+def _ordem_executada(p: Path | None) -> str:
+    """Células na ordem de 1ª aparição no `marcas.txt` (o que de fato rodou)."""
+    vistas: list[str] = []
+    try:
+        for linha in (p.read_text().splitlines() if p else []):
+            partes = linha.split()
+            if len(partes) == 3 and partes[0] not in vistas:
+                vistas.append(partes[0])
+    except Exception:                                   # noqa: BLE001
+        pass
+    return " ".join(vistas) or "(sem marcas)"
 
 
 def _pct(serie: list[float], p: float):
@@ -201,7 +216,6 @@ def main(argv=None) -> int:
     ap.add_argument("--sha", default="?")
     ap.add_argument("--logs", type=Path, nargs="+", default=[])
     ap.add_argument("--marcas", type=Path)
-    ap.add_argument("--ordem", type=Path)
     ap.add_argument("--aquecimento", type=int, default=1)
     args = ap.parse_args(argv)
     d, aq = args.dir, max(0, args.aquecimento)
@@ -215,11 +229,10 @@ def main(argv=None) -> int:
     janelas = _janelas(args.marcas)
     est = {c: _estagios(logs.get(c[:2]), *janelas[(c, "ciclos")])
            if (c, "ciclos") in janelas else [] for c in CELULAS}
-    ordem = (args.ordem.read_text().strip() if args.ordem and args.ordem.exists()
-             else " ".join(CELULAS))
+    ordem = _ordem_executada(args.marcas)
 
     print(f"# Janela 2×2 #876 × #870 — SHA {args.sha} — {d}")
-    print(f"# ORDEM EXECUTADA: {ordem}")
+    print(f"# ORDEM EXECUTADA (do marcas.txt): {ordem}")
     print("# f0/f1 = TTS_LIVE_BARGE_DUCK_RAPIDO off/on · c0/c1 = whisper/parakeet "
           f"· aquecimento descartado: {aq} ciclo(s) por célula")
     print("# LIMITES DECLARADOS ANTES: pausa p95 ≤800 ms · duck p50 ≤300 ms · "
@@ -281,10 +294,13 @@ def main(argv=None) -> int:
     print(f"\n  >>> {veredito}")
     print(f"  resolução: eco_falso_duck {t['eco_duck']}/{t['eco_n']} "
           f"(IC95 {ic_duck}) · WER pareado em {n_par} fala(s)")
-    if (t.get("pausa_n") or 0) < N_MINIMO_P95:
-        print(f"  (n={t.get('pausa_n')} interrupções: p95 sobre amostra pequena é "
-              f"frouxa — pausa p50={_cel(t.get('pausa_p50'))} ms, "
-              f"máx={_cel(t.get('pausa_max'))} ms; a decisão não sai só da p95)")
+    # A p95 com n pequeno é frouxa POR CONSTRUÇÃO: mediana e máximo vão escritos
+    # ao lado e a ressalva é fixa — a decisão não sai só da p95.
+    _n = t.get("pausa_n") or 0
+    print(f"  (pausa em {_n} interrupção(ões): p50={_cel(t.get('pausa_p50'))} ms · "
+          f"máx={_cel(t.get('pausa_max'))} ms"
+          + (f" · n<{N_MINIMO_P95}, p95 frouxa" if _n < N_MINIMO_P95 else "")
+          + " — a decisão não sai só da p95)")
 
     # ── eixo do #876 (motor), nas duas flag states ──────────────────────────
     print("\n## Eixo do motor (#876): c0 × c1 dentro de cada flag state\n")
