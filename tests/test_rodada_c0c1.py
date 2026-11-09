@@ -49,6 +49,18 @@ def test_rodada_tem_os_dois_um_liners_com_ponto_e_virgula() -> None:
         assert linha.rstrip().endswith("; }"), linha
 
 
+def test_sobe_registra_o_pid_do_listener_e_nao_o_do_subshell() -> None:
+    """O `&` no FIM de um subshell põe o SUBSHELL em background: sem `exec` o
+    `$!` é um PID que já morreu, o `kill` do `trap` acerta o nada e a instância
+    fica de pé com a 7890 presa (medido na 1ª rodada real)."""
+    fonte = (RAIZ / "tools" / "rodada_c0c1.sh").read_text()
+    assert "exec env" in fonte, "o subshell do `sobe` precisa de `exec`"
+    assert "listener da 7890 é" in fonte, "falta a conferência pid × dono do listener"
+    # a atribuição do APP_PID tem de vir DEPOIS do `&` do subshell com exec
+    sobe = fonte.split("sobe() {", 1)[1].split("\n}", 1)[0]
+    assert sobe.index("exec env") < sobe.index('APP_PID="$!"'), sobe
+
+
 def _faixa_eco(*a):
     import relatorio_rodada as rr
     return rr._faixa_eco(*a)

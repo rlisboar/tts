@@ -166,14 +166,18 @@ sobe() {                  # $1 = 0|1 (duck rápido)
   K="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_api_key"])' 2>/dev/null)"
   B="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_base_url"])' 2>/dev/null)"
   M="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_model"])' 2>/dev/null)"
-  ( cd "$APP_DIR" && \
+  # `exec` no subshell: sem ele o `&` põe o SUBSHELL em background, o subshell
+  # morre no mesmo instante e `$!` vira um PID já morto — o `kill` do `trap`
+  # acertava o nada e a instância ficava de pé (medido na 1ª rodada real: pid
+  # 20167 morto, uvicorn 20196 órfão com a 7890 presa). Com `exec`, `$!` É o
+  # uvicorn, e as redireções do subshell continuam valendo.
+  ( cd "$APP_DIR" && exec env \
     TTS_STATE_DIR="$ESTADO" TTS_OUTPUTS_DIR="$DIR/outputs" \
     TTS_CHAT_BACKEND_LIVE=openai TTS_CHAT_BASE_URL="$B" TTS_CHAT_MODEL="$M" \
     TTS_CHAT_API_KEY="$K" TTS_MARCA_PREWARM_BOOT=0 TTS_LIVE_TTL_S=1800 \
     TTS_LIVE_BARGE_DUCK_RAPIDO="$1" TTS_ALLOWED_HOSTS=127.0.0.1,localhost \
-    nohup "$PY" -m uvicorn app:app --host 127.0.0.1 --port 7890 --log-level warning \
-      > "$DIR/app-$1.log" 2>&1 & )
-  # `nohup` faz exec: `$!` já é o PID do uvicorn e é ele que o `trap` mata
+    "$PY" -m uvicorn app:app --host 127.0.0.1 --port 7890 --log-level warning ) \
+    > "$DIR/app-$1.log" 2>&1 &
   APP_PID="$!"
   SUBIU=1
   local i
@@ -183,6 +187,11 @@ sobe() {                  # $1 = 0|1 (duck rápido)
   done
   [ "$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$APP/health")" = "200" ] \
     || { fala "   7890 não subiu (pid $APP_PID)"; exit 1; }
+  # o PID registrado tem de ser o do DONO do listener, senão o `trap` mata o nada
+  local dono
+  dono="$(lsof -nP -iTCP:7890 -sTCP:LISTEN -t 2>/dev/null | head -1)"
+  [ "$dono" = "$APP_PID" ] \
+    || { fala "   listener da 7890 é $dono, não o pid registrado $APP_PID — trap mentiria"; exit 1; }
   fala "   health 200 (pid $APP_PID)"
 }
 
