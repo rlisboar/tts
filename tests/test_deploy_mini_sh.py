@@ -985,6 +985,22 @@ def test_index_leituras_1_reprova_na_primeira_divergencia(amb):
     assert "[ok] público index.html" in r.stdout      # contador passou de 1: bate
 
 
+@pytest.mark.parametrize("valor", ["abc", "", "0", "-1"])
+def test_index_leituras_invalido_cai_no_padrao_e_nao_gira(amb, valor):
+    """`[ n -ge abc ]` errava e o laço relia para sempre (gate #1069). Valor
+    inválido vale o padrão 3: divergência persistente reprova em 3 leituras."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    amb["T_CURL_INDEX_CORTA_N"] = "99"             # LAN e público sempre cortados
+    amb["TTS_MINI_INDEX_LEITURAS"] = valor
+    try:
+        r = subprocess.run([ZSH, "-f", str(SCRIPT), "smoke"], env=amb, capture_output=True,
+                           text=True, cwd=str(REPO), timeout=60)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"INDEX_LEITURAS={valor!r}: laço da paridade não parou (teto inerte)")
+    assert r.returncode == 1, _saida(r)
+    assert r.stdout.count("em 3 leitura(s)") == 2, _saida(r)   # LAN + público
+
+
 # --- #252: a novidade do boot é ancorada no marcador do restart (.deploy-mini-boot),
 # não numa janela fixa de 120 s — que mentia quando o processo novo demorava a
 # carregar o modelo (ou quando o smoke rodava tarde depois do restart).

@@ -60,6 +60,12 @@ TTS_TIMEOUT="${TTS_MINI_TTS_TIMEOUT:-120}"        # teto do job de síntese real
 INDEX_TIMEOUT="${TTS_MINI_INDEX_TIMEOUT:-30}"     # teto por leitura (era 10 s fixo)
 INDEX_LEITURAS="${TTS_MINI_INDEX_LEITURAS:-3}"    # leituras antes de [FALHA]
 INDEX_PAUSA="${TTS_MINI_INDEX_PAUSA:-2}"          # s entre leituras
+# Valor não numérico fazia o `[ n -ge abc ]` errar (falso) e o laço da paridade
+# nunca parar de reler (achado do qa no gate #1069). Só inteiro vale; o resto
+# cai no padrão. LEITURAS e TIMEOUT têm de ser ≥1; PAUSA aceita 0.
+case "$INDEX_LEITURAS" in ''|*[!0-9]*|0*) INDEX_LEITURAS=3 ;; esac
+case "$INDEX_TIMEOUT"  in ''|*[!0-9]*|0*) INDEX_TIMEOUT=30 ;; esac
+case "$INDEX_PAUSA"    in ''|*[!0-9]*) INDEX_PAUSA=2 ;; esac
 ESTADO=".deploy-mini-estado"                      # no repo do mini (untracked; só o --apply escreve)
 BOOT_MARKER=".deploy-mini-boot"                   # instantâneo (epoch) do restart, no repo do mini
 LOG_MARKER=".deploy-mini-logmarca"                # tamanho do log no restart (âncora da marca d'água)
