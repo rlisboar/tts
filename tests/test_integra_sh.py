@@ -33,11 +33,16 @@ def _repo(tmp_path: Path) -> tuple[Path, Path]:
     _git("config", "user.email", "teste@exemplo.invalid", cwd=raiz)
     _git("config", "user.name", "teste", cwd=raiz)
     (raiz / "a.txt").write_text("base\n")
-    _git("add", "a.txt", cwd=raiz)
+    (raiz / ".gitignore").write_text("/.venv-mlx\n")
+    _git("add", "a.txt", ".gitignore", cwd=raiz)
     _git("commit", "-q", "-m", "base", cwd=raiz)
 
     wt = tmp_path / "tts-rod-wt" / "agente"
     _git("worktree", "add", "-q", "-b", "wt/agente", str(wt), cwd=raiz)
+    # o `integra.sh` exige o venv do worktree antes do hook (#1113)
+    (wt / ".venv-mlx" / "bin").mkdir(parents=True)
+    (wt / ".venv-mlx" / "bin" / "python").write_text("#!/bin/sh\nexit 0\n")
+    (wt / ".venv-mlx" / "bin" / "python").chmod(0o755)
     (wt / "b.txt").write_text("mudanca\n")
     _git("add", "b.txt", cwd=wt)
     _git("commit", "-q", "-m", "mudanca", cwd=wt)

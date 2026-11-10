@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -114,6 +115,7 @@ case "$url" in
   */api/tts/jobs/*/pieces/*) codigo="${T_CURL_PIECE_CODE:-200}"; corpo="RIFF-fake-audio" ;;
   */api/tts/jobs/*)
       # #1109: janela para o teste mandar sinal com o header da rodada no disco
+      [ -n "${T_CURL_PID:-}" ] && print -r -- $$ >> "$T_CURL_PID"   # #1113: quem dorme
       [ -n "${T_CURL_DORME:-}" ] && sleep "$T_CURL_DORME"
       if [ $tem_chave = 1 ]; then corpo="{\\"status\\":\\"${T_CURL_JOB_STATUS:-done}\\"}"; else codigo=401; fi ;;
   */api/tts)
@@ -314,9 +316,37 @@ exit 0
 _SEM_TTY = dict(stdin=subprocess.DEVNULL, start_new_session=True)
 
 
-def _run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([ZSH, "-f", str(SCRIPT), *args], env=env, capture_output=True,
-                          text=True, cwd=str(REPO), **_SEM_TTY)
+def _run(env: dict[str, str], *args: str,
+         timeout: float | None = None) -> subprocess.CompletedProcess:
+    """Roda o `deploy_mini.sh` sem tty (#1111) e NUNCA deixa a árvore dele órfã (#1113).
+
+    Com `start_new_session` o script e os filhos (zsh, shims de ssh/curl, `sleep`)
+    ficam num grupo PRÓPRIO, fora do alcance do Ctrl-C/kill do grupo do pytest. O
+    `subprocess.run` só mata o filho DIRETO quando a espera é interrompida
+    (pytest-timeout, `TimeoutExpired`, KeyboardInterrupt): o resto do grupo seguia
+    vivo, órfão. Aqui o `finally` derruba o GRUPO inteiro."""
+    p = subprocess.Popen([ZSH, "-f", str(SCRIPT), *args], env=env, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, cwd=str(REPO), **_SEM_TTY)
+    try:
+        out, err = p.communicate(timeout=timeout)
+    finally:
+        if p.poll() is None or _grupo_vivo(p.pid):
+            for sinal in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(p.pid, sinal)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.2)
+            p.wait()
+    return subprocess.CompletedProcess(p.args, p.returncode, out, err)
+
+
+def _grupo_vivo(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
 
 
 def _saida(r: subprocess.CompletedProcess) -> str:
@@ -1177,8 +1207,7 @@ def test_index_leituras_invalido_cai_no_padrao_e_nao_gira(amb, valor):
     amb["T_CURL_INDEX_CORTA_N"] = "99"             # LAN e público sempre cortados
     amb["TTS_MINI_INDEX_LEITURAS"] = valor
     try:
-        r = subprocess.run([ZSH, "-f", str(SCRIPT), "smoke"], env=amb, capture_output=True,
-                           text=True, cwd=str(REPO), timeout=60, **_SEM_TTY)
+        r = _run(amb, "smoke", timeout=60)
     except subprocess.TimeoutExpired:
         pytest.fail(f"INDEX_LEITURAS={valor!r}: laço da paridade não parou (teto inerte)")
     assert r.returncode == 1, _saida(r)
@@ -1444,3 +1473,51 @@ def test_todo_disparo_do_script_vai_sem_tty():
                    for k in no.keywords):
             sem.append(no.lineno)
     assert not sem, f"disparo do script sem _SEM_TTY nas linhas {sem}"
+
+
+# ------------------------------------------- #1113: árvore do script não fica órfã
+
+@pytest.mark.skipif(os.environ.get("T_APOIO_1113") != "1",
+                    reason="apoio da célula abaixo: só roda aninhado, com teto curto")
+def test__apoio_1113_smoke_pendurado(amb):
+    """Não é célula: é o alvo do pytest ANINHADO da célula seguinte. O smoke fica
+    preso no shim de curl (`sleep`) até o pytest-timeout estourar a espera."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    amb.update(T_CURL_DORME="60", T_CURL_PID=os.environ["T_CURL_PID"])
+    _run(amb, "smoke")
+
+
+def test_run_derruba_o_grupo_do_script_quando_a_espera_e_interrompida(tmp_path):
+    """#1113: com `start_new_session` (#1111) a árvore do `deploy_mini.sh` vive num
+    grupo próprio. Quando a espera do `_run` é interrompida por fora (aqui: o
+    pytest-timeout, método `signal`, estourando no meio do `communicate`), o
+    `subprocess.run` antigo matava só o zsh — o shim de curl e o `sleep` seguiam
+    vivos, órfãos. O `finally` do `_run` derruba o grupo: o processo que dormia
+    tem de estar morto quando o pytest aninhado termina."""
+    pids = tmp_path / "dormindo.pids"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env.update(T_APOIO_1113="1", T_CURL_PID=str(pids))
+    r = subprocess.run([sys.executable, "-m", "pytest", str(Path(__file__)),
+                        "-k", "test__apoio_1113_smoke_pendurado", "-q",
+                        "-p", "no:cacheprovider", "--timeout=8"],
+                       env=env, capture_output=True, text=True, timeout=120,
+                       stdin=subprocess.DEVNULL, cwd=str(REPO))
+    assert "Timeout" in r.stdout + r.stderr, r.stdout + r.stderr   # o teto estourou mesmo
+    assert pids.exists(), r.stdout + r.stderr                      # e pegou alguém dormindo
+    vivos = []
+    prazo = time.monotonic() + 5
+    for pid in {int(x) for x in pids.read_text().split()}:
+        while time.monotonic() < prazo:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            vivos.append(pid)
+    for pid in vivos:                       # não deixar lixo se a célula reprovar
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    assert not vivos, f"árvore do script órfã depois do teto: {vivos}"

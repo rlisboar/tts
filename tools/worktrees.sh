@@ -27,6 +27,8 @@
 #   tools/worktrees.sh lista
 #   tools/worktrees.sh remove <agente> [--forca]
 #   tools/worktrees.sh verifica [<agente>|--aqui]   # cópia do dado do dono?
+#   tools/worktrees.sh liga [<agente>|--aqui]       # adota worktree feito por fora
+#                       (`git worktree add` cru): liga .venv-mlx e os pesos (#1113)
 #
 # Integração do trabalho de volta na `main`: `tools/integra.sh <agente>`.
 set -uo pipefail
@@ -162,14 +164,43 @@ cria() {
     # commit apontando para o venv da raiz (#685). O `integra.sh` também recusa,
     # mas falhar já na criação é mais barato.
     if ! git -C "$RAIZ" check-ignore -q .venv-mlx; then
-        echo "✖ `.venv-mlx` não está no .gitignore — o symlink entrará no commit" >&2
-        echo "  ponha `/.venv-mlx` no .gitignore (sem barra no fim: symlink não é diretório)" >&2
+        echo "✖ \`.venv-mlx\` não está no .gitignore — o symlink entrará no commit" >&2
+        echo "  ponha \`/.venv-mlx\` no .gitignore (sem barra no fim: symlink não é diretório)" >&2
         exit 1
     fi
     echo "✔ worktree de $agente em $destino (branch wt/$agente, a partir de main)"
     echo "  compartilhados: .venv-mlx e os pesos de models/ (symlink)"
     echo "  próprios (nascem vazios): voices/, settings.json, .apikey*, outputs/, state/"
     echo "  integre com: tools/integra.sh $agente"
+}
+
+# #1113: worktree criado com `git worktree add` cru (sem o `cria`) nasce sem o
+# `.venv-mlx` e sem os pesos; o hook então para (e antes caía no python3 do
+# sistema: `No module named ruff`, sem dizer a causa). `liga` adota o worktree:
+# faz só a parte do `cria` que é symlink — nunca copia, nunca toca dado do dono.
+liga() {
+    local alvo="${1:-}" wt
+    if [ "$alvo" = "--aqui" ]; then
+        wt="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 2
+    else
+        _nome_ok "$alvo" || exit 2
+        wt="$(_destino "$alvo")"
+    fi
+    [ -d "$wt" ] || { echo "✖ não achei o worktree em $wt" >&2; exit 2; }
+    case "$(cd "$wt" && pwd -P)" in
+        "$(cd "$RAIZ" && pwd -P)") echo "✖ $wt é a árvore principal — o venv dela é o de verdade, não um link" >&2; exit 2 ;;
+    esac
+    if ! git -C "$RAIZ" check-ignore -q .venv-mlx; then
+        echo "✖ \`.venv-mlx\` não está no .gitignore — o symlink entraria no commit" >&2
+        exit 1
+    fi
+    _liga_o_que_nao_pode_copiar "$wt"
+    if [ -x "$wt/.venv-mlx/bin/python" ]; then
+        echo "✔ $wt ligado: .venv-mlx → $(readlink "$wt/.venv-mlx") e os pesos do manifesto"
+    else
+        echo "✖ $wt continua sem .venv-mlx/bin/python (a raiz tem venv?)" >&2
+        exit 1
+    fi
 }
 
 lista() {
@@ -199,5 +230,6 @@ case "${1:-}" in
     lista)  lista ;;
     remove) shift; remove "$@" ;;
     verifica) shift; verifica "$@" ;;
+    liga)   shift; liga "$@" ;;
     *)      _uso; exit 2 ;;
 esac

@@ -1117,3 +1117,21 @@ Na lista abaixo, as sabotagens injetadas dentro de `lxWsUrl` também derrubam
 | S10 `"/x?a=1&token=" + …` | `test_nenhuma_string_da_ui_monta_credencial_em_query` **FAILED** |
 | S11 `"/x?ticket=" + t` fora do fluxo do ticket | `test_nenhuma_string_da_ui_monta_credencial_em_query` **FAILED** |
 | S12 `new URLSearchParams({ api_key: k })` | `..._credencial_em_query` **FAILED** (+ `..._abre_por_ticket` por tabela) |
+
+### #1113 — `_run` derruba o grupo do script; worktree sem `.venv-mlx` para com conserto
+
+(1) Com `start_new_session` (#1111) a árvore do `deploy_mini.sh` fica num grupo
+próprio; o `subprocess.run` só matava o filho DIRETO quando a espera era
+interrompida (pytest-timeout, `TimeoutExpired`, Ctrl-C) — shim de curl e `sleep`
+ficavam órfãos. O `_run` agora é `Popen` + `finally` com `killpg` (TERM → KILL).
+(2) Hook e `integra.sh` param com a causa e o conserto quando falta o venv (a
+queda para o `python3` do sistema saiu); `tools/worktrees.sh liga [--aqui]` adota
+o worktree feito com `git worktree add` cru.
+
+| Sabotagem | Resultado |
+|---|---|
+| `_run` volta a ser `subprocess.run` | `test_run_derruba_o_grupo_do_script_quando_a_espera_e_interrompida` **FAILED** (órfão vivo) |
+| hook volta a `[ -x "$PY" ] \|\| PY=python3` | `test_hook_em_worktree_sem_venv_*`, `test_hook_na_raiz_sem_venv_*` **FAILED** |
+| `integra.sh` sem a checagem do venv | `test_integra_recusa_worktree_sem_venv_antes_do_hook` **FAILED** |
+| `worktrees.sh` sem o comando `liga` | `test_liga_aqui_*`, `test_liga_recusa_*` **FAILED** |
+| `liga` aceita a árvore principal | `test_liga_recusa_a_arvore_principal` **FAILED** |

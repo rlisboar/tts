@@ -20,7 +20,20 @@ if [ "$topo" != "$(cd "$(dirname "$comum_hook")" && pwd)" ]; then
     fi
 fi
 PY=.venv-mlx/bin/python
-[ -x "$PY" ] || PY=python3
+# #1113: sem o venv NÃO há gate. A queda antiga para o `python3` do sistema dava
+# `No module named ruff` sem dizer a causa (worktree feito com `git worktree add`
+# cru, sem os symlinks do `tools/worktrees.sh cria`) e empurrava para o
+# `--no-verify`. Para aqui, ANTES de ruff/pytest, dizendo o conserto.
+if [ ! -x "$PY" ]; then
+    echo "✖ [hook] sem .venv-mlx/bin/python em $topo — nada foi verificado" >&2
+    if [ "$topo" != "$(cd "$(dirname "$comum_hook")" && pwd)" ]; then
+        echo "  worktree sem os links da raiz: rode  tools/worktrees.sh liga --aqui" >&2
+        echo "  (worktree novo: crie com tools/worktrees.sh cria <agente>, que já liga)" >&2
+    else
+        echo "  árvore principal sem venv: crie o .venv-mlx (requirements.txt + requirements.lock)" >&2
+    fi
+    exit 1
+fi
 
 # Um commit parcial (`git commit -- <paths>`) exporta GIT_INDEX_FILE apontando
 # para o índice temporário do próprio commit; o pytest abaixo herda, e os

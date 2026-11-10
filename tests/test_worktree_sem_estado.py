@@ -149,6 +149,11 @@ def _falso(destino: Path) -> Path:
                                        "settings.json\n.apikey*\n.speaker-profiles.json\n")
     (destino / "models").mkdir()
     (destino / "models" / "sha256sums.txt").write_text("")
+    # venv de mentira na raiz (ignorado): o `cria` o liga no worktree e o
+    # `integra.sh` exige `.venv-mlx/bin/python` antes do hook (#1113)
+    (destino / ".venv-mlx" / "bin").mkdir(parents=True)
+    (destino / ".venv-mlx" / "bin" / "python").write_text("#!/bin/sh\nexit 0\n")
+    (destino / ".venv-mlx" / "bin" / "python").chmod(0o755)
     (destino / ".githooks").mkdir()
     (destino / ".githooks" / "pre-commit").write_text(
         # marca no próprio worktree (é o cwd do hook): prova que ele rodou

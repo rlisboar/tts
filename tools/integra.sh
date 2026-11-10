@@ -125,6 +125,9 @@ echo "→ hook no worktree (gate)"
 # a suíte DUAS vezes em toda reprovação (medido: 9 min a mais por vermelho).
 hook="$WT/.githooks/pre-commit"
 [ -x "$hook" ] || _aborta "não achei o hook executável em $hook"
+# #1113: sem o venv o hook não verifica nada — diz a causa e o conserto ANTES
+[ -x "$WT/.venv-mlx/bin/python" ] || _aborta \
+    "o worktree de $agente está sem .venv-mlx — rode: tools/worktrees.sh liga $agente"
 ( cd "$WT" && "$hook" ) || _aborta "o hook reprovou — nada foi integrado"
 fi
 
