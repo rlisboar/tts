@@ -223,13 +223,16 @@ def medir(mic: np.ndarray, ref: np.ndarray, linhas: list[dict] | None = None,
         out.update({"puro_p10": float(np.percentile(puro, 10)),
                     "puro_p50": float(np.percentile(puro, 50)),
                     "puro_p90": float(np.percentile(puro, 90))})
-    elif not vals_indef:
-        # só afirma "mic sempre com voz" quando a separação DE FATO rodou e
-        # achou voz em tudo. Com tudo indefinido, dizer "sempre com voz" é
-        # afirmar o que não se mediu — sem Silero não se sabe o que havia no mic
-        # (#1101). O aviso das indefinidas abaixo já nomeia o motivo.
-        out["aviso"] = (out["aviso"] + " · " if out["aviso"] else "") + \
-            "sem janela de eco puro (mic sempre com voz)"
+    else:
+        # "sem janela pura" é FATO em qualquer um dos casos; o parêntese é que
+        # depende. Só se afirma "mic sempre com voz" quando a separação de fato
+        # rodou e achou voz em tudo — com tudo indefinido, sem Silero, não se
+        # sabe o que havia no mic (#1101). O aviso das indefinidas abaixo
+        # nomeia o motivo, então as duas frases convivem sem se contradizer.
+        sem_puro = "sem janela de eco puro"
+        if not vals_indef:
+            sem_puro += " (mic sempre com voz)"
+        out["aviso"] = (out["aviso"] + " · " if out["aviso"] else "") + sem_puro
     if vals_indef:
         # separação parcial: o modelo caiu em ALGUMAS janelas. Dizer quantas é o
         # que separa "medi tudo junto" de "medi quase tudo, com buraco".

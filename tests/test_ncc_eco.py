@@ -507,6 +507,9 @@ def test_tudo_indefinido_nao_afirma_mic_com_voz(monkeypatch):
     r = ncc_eco.medir(eco, ref, linhas)
     assert "Silero indisponível" in r["aviso"]
     assert "mic sempre com voz" not in r["aviso"]
+    # o FATO "sem janela pura" continua e não pode ter sumido junto (#1102):
+    # é ele que diz por que o veredito não é do puro
+    assert "sem janela de eco puro" in r["aviso"]
 
 
 def test_sem_janela_pura_o_aviso_aparece(monkeypatch):
