@@ -260,9 +260,35 @@ def _perfis(monkeypatch, n_chunks: int) -> list[dict]:
 def test_perfil_rapido_no_primeiro_e_no_segundo_chunk(monkeypatch):
     usados = _perfis(monkeypatch, 4)
     assert len(usados) >= 3
-    assert usados[0]["num_steps"] <= lp._LIVE_MAX_STEPS      # 1º: teto 12
+    # #1092: o 1º trecho é VALOR MEDIDO (10, evidência 1079), não teto. A célula
+    # morde pelo valor: voltar para 16 (o ajuste do dono) ou para 12 (o teto
+    # antigo) cai aqui. `omni_num_steps` está em 64 no `_perfis`, então um
+    # `min()` ingênuo devolveria 64 e não 10 — o `fixo` é o que segura.
+    assert usados[0]["num_steps"] == lp._LIVE_STEPS_1O_TRECHO == 10
     assert usados[1]["num_steps"] == 20                      # 2º: `live_num_steps`
     assert usados[2]["num_steps"] == app._settings["omni_num_steps"]   # 3º: setting
+
+
+@pytest.mark.parametrize("ajuste", [64, 6])
+def test_primeiro_trecho_ignora_o_ajuste_do_dono(monkeypatch, ajuste):
+    """O 1º trecho é VALOR MEDIDO: nem sobe com o ajuste, nem desce para 6.
+
+    As duas direções importam e por motivos opostos. Para cima: um dono que sobe
+    `omni_num_steps` para qualidade levaria o 1º trecho junto e o `pos_llm`
+    inteiro de volta. Para baixo: com 6 o nível volta a ser um dos que a
+    evidência 1079 mediu e reprovou (o piso é 10).
+
+    É também a única célula que morde o `fixo` — o teto do construtor já é 10,
+    então sem ela um `min()` ingênuo continuaria verde no caminho feliz.
+    """
+    monkeypatch.setitem(app._settings, "omni_num_steps", ajuste)
+    assert lp._perfil_live(True, lp._LIVE_MAX_STEPS,
+                           fixo=lp._LIVE_STEPS_1O_TRECHO)["num_steps"] == 10
+
+
+def test_teto_de_maquina_mais_apertado_vence_o_piso(monkeypatch):
+    """Máquina que declara teto menor que 10 continua respeitada."""
+    assert lp._perfil_live(True, 8, fixo=lp._LIVE_STEPS_1O_TRECHO)["num_steps"] == 8
 
 
 def test_live_num_steps_absurdo_e_limitado(monkeypatch):

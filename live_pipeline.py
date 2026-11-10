@@ -248,6 +248,15 @@ class SentenceChunker:
 # ---------------------------------------------------------------------------
 
 
+# #1092: passos de unmasking do 1º TRECHO do turno. Medido em
+# `evidence/1079-piso-passos.md`: 10 corta 36 % do `gen` contra os 16 do ajuste
+# e custa 0,051 de cosseno ECAPA no tamanho real do 1º trecho; 8 corta 49 % mas
+# DOBRA a perda (0,127). O 1º trecho é o único que paga o `pos_llm`, então o
+# valor é por-trecho e não mexe no ajuste do dono — do 2º em diante vale o
+# `live_num_steps` dele.
+_LIVE_STEPS_1O_TRECHO = 10
+
+
 class LivePipeline:
     """Um por sessão do WS. `start()` aquece os modelos antes do 1º turno.
 
@@ -262,7 +271,7 @@ class LivePipeline:
                  history: list | None = None, stt=None, llm=None, tts=None,
                  first_max_chars: int = 18, max_chars: int = 160,
                  clausula_palavras: int | None = None,
-                 first_chunk_max_steps: int = 12, prewarm=None,
+                 first_chunk_max_steps: int = _LIVE_STEPS_1O_TRECHO, prewarm=None,
                  detectar_eco: bool = True, dsh=None, ao_morrer_dsh=None,
                  teto_primeiro_delta=None, bridge_estado=None):
         self.emit_json = emit_json
@@ -1217,7 +1226,8 @@ class LivePipeline:
         espera: dict = {}
         self._espera = espera
         omni_rapido = _perfil_live(primeiro_chunk=True,
-                                   max_steps=self.first_chunk_max_steps)
+                                   max_steps=self.first_chunk_max_steps,
+                                   fixo=_LIVE_STEPS_1O_TRECHO)
         # #315: 2º chunk também sai no perfil do Live (teto `live_num_steps`). Com
         # um chunk por vez e a geração serializada, o 1º só cobre o playback até o
         # 2º ficar pronto — mandar o 2º com o `num_steps` do setting (37, ~1,1 s)
@@ -1438,7 +1448,10 @@ def _pcm16(audio) -> bytes:
 # Ligações com o app (import tardio: app importa este módulo pela #91)
 # ---------------------------------------------------------------------------
 
-_LIVE_MAX_STEPS = 12          # teto de passos do 1º chunk: 16 p=0,45 s, 12 p=0,35 s
+# teto de passos do 1º chunk. É a MESMA constante do valor medido (#1092): quem
+# quiser apertar por máquina passa `first_chunk_max_steps`, e o `min()` abaixo
+# respeita; o ajuste do dono (`omni_num_steps`) não sobe o 1º trecho.
+_LIVE_MAX_STEPS = _LIVE_STEPS_1O_TRECHO
 # #315: teto do 2º chunk — o perfil do Live, configurável. Do 3º em diante volta o
 # `num_steps` do dono (a fila já tem folga e a voz volta ao ajuste dele).
 _LIVE_NUM_STEPS_PADRAO = 16
@@ -1461,11 +1474,19 @@ def _num_steps_live() -> int:
     return max(4, passos)
 
 
-def _perfil_live(primeiro_chunk: bool, max_steps: int) -> dict:
-    """Perfil de geração do LIVE: 1º chunk rápido, os seguintes com o setting."""
+def _perfil_live(primeiro_chunk: bool, max_steps: int,
+                 fixo: int | None = None) -> dict:
+    """Perfil de geração do LIVE: 1º chunk rápido, os seguintes com o setting.
+
+    `fixo` (#1092) trava o valor no 1º TRECHO: ele é o único que paga o
+    `pos_llm`, e o número é medido — o `omni_num_steps` do dono não o levanta.
+    Do 2º trecho em diante vale o `live_num_steps` dele, que é o `max_steps` dali.
+    """
     import app
     omni = app._resolve_omni({}, family=app._current_backend()["family"])
-    if primeiro_chunk:
+    if fixo is not None:
+        omni["num_steps"] = max(4, min(fixo, max_steps))
+    elif primeiro_chunk:
         try:
             passos = int(omni.get("num_steps") or _LIVE_MAX_STEPS)
         except (TypeError, ValueError):
@@ -1539,7 +1560,8 @@ def _prewarm_app(voice_id: str | None = None, tts_in_process: bool = True) -> No
             return
         _stt_aquece(app)
         try:                              # TTS: um chunk curto compila o decoder
-            omni = _perfil_live(primeiro_chunk=True, max_steps=_LIVE_MAX_STEPS)
+            omni = _perfil_live(primeiro_chunk=True, max_steps=_LIVE_MAX_STEPS,
+                                fixo=_LIVE_STEPS_1O_TRECHO)
             sr = int(getattr(modelo, "sample_rate", 24000) or 24000)
             be = app._current_backend()
             # MESMO caminho do turno: com o clone prompt da voz (senão o Metal
