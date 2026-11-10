@@ -204,10 +204,33 @@ def test_todo_send_no_ws_do_live_tem_teto():
     for n, linha in enumerate(linhas):
         if "ws.send_json(" not in linha and "ws.send_bytes(" not in linha:
             continue
-        if "wait_for(" in linha or "wait_for(" in (linhas[n - 1] if n else ""):
-            continue
-        soltos.append(f"{n + 1}: {linha.strip()}")
+        if not _tem_teto(linhas, n):
+            soltos.append(f"{n + 1}: {linha.strip()}")
     assert not soltos, "send sem teto no WS do Live:\n  " + "\n  ".join(soltos)
+
+
+def _tem_teto(linhas: list[str], i: int) -> bool:
+    """O `send_*` em `i` está dentro de um `wait_for` que PASSA o teto?
+
+    Exigir as duas coisas é o ponto: só `wait_for(` aceita a chamada sem o
+    argumento, que estoura `TypeError` em runtime e passa verde na guarda —
+    o `TypeError` é engolido pelo `except` de quem chama. O teto é o segundo
+    argumento, então ele pode estar muitas linhas abaixo (o `ready` monta um
+    dict de 15 linhas): por isso a varredura vai até fechar o `wait_for`.
+    """
+    if "wait_for(" in linhas[i]:
+        profundidade = 0
+    elif "wait_for(" in (linhas[i - 1] if i else ""):
+        profundidade = 1          # o `wait_for(` abriu na linha de cima
+    else:
+        return False
+    for j in range(i, min(len(linhas), i + 40)):
+        if "_LIVE_SEND_TIMEOUT_S" in linhas[j]:
+            return True
+        profundidade += linhas[j].count("(") - linhas[j].count(")")
+        if profundidade <= 0:     # o `wait_for` fechou sem o teto
+            return False
+    return False
 
 
 def test_send_json_pendurado_tambem_derruba_a_sessao(monkeypatch):
