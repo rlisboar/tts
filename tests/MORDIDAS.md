@@ -1091,3 +1091,16 @@ variável de shell (não exportada). Prova por shim com token sintético hostil.
 | sem o trap de TERM | `test_header_do_token_some_quando_o_script_leva_sinal` **FAILED** |
 | `export CF_TOKEN` | `test_token_da_api_*` **FAILED** (o token aparece no env do filho) |
 | sem `umask 077` | 4 **FAILED** (header e arquivos do token deixam de nascer 0600) |
+### #1107 — a UI não põe a chave em URL; o WS do Live entra só por ticket
+
+Guarda estática em `tests/test_ui_chave_fora_da_url_1107.py`. O index é lido sem
+comentários, porque são eles que explicam o `?key=` proibido.
+
+| Sabotagem | Resultado |
+|---|---|
+| `q = "?key=" + encodeURIComponent(KEY)` no lugar do ticket | 3 de 4 **FAILED** (`..._key_em_query`, `..._so_sai_..._no_header`, `..._abre_por_ticket_e_unico`) |
+| o catch do ticket degradar para `q = "?key=" + KEY` | 4 de 4 **FAILED** |
+| o catch do ticket seguir sem `return` (abre o WS sem credencial) | `test_ws_do_live_abre_por_ticket_e_unico`, `test_falha_do_ticket_vira_erro_sem_degradar_para_a_chave` **FAILED** |
+| `new WebSocket(lxWsUrl() + q + "&key=" + KEY, …)` | 3 de 4 **FAILED** |
+| `URLSearchParams().set("key", KEY)` dentro de `lxWsUrl` | `..._key_em_query`, `..._abre_por_ticket_e_unico` **FAILED** |
+| template `` `${location.host}?k=${KEY}` `` | `test_a_chave_so_sai_do_navegador_no_header` **FAILED** |
