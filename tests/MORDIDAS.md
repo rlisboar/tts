@@ -1043,3 +1043,24 @@ autenticado, e o diretório sai no trap (EXIT/HUP/INT/TERM). O `ticket_live` do
 | `escreve_hdr` sem `umask 077` (header 0644) | as 3 células **FAILED** |
 | sem `trap _limpa_hdr EXIT` | `test_nenhum_argv_*`, `test_sonda_do_ws_*` **FAILED** |
 | sem o trap de TERM | `test_header_da_rodada_some_quando_o_smoke_leva_sinal` **FAILED** |
+
+### #1109 — `admin_ui_flow.sh`: a suíte não herda a credencial do operador
+
+O `CHAVE_TESTE` caía para `TTS_ROD_ADMIN_KEY` (a credencial de OPERADOR do dono)
+e ia no argv de 5 `curl` — até no modo instância própria, onde o loopback
+dispensa chave. Contrato novo: instância própria e BASE em loopback sem header;
+BASE fora do loopback só com `TESTE_API_KEY` (sem ela, erro); header por arquivo
+0600 apagado no trap; `unset TTS_ROD_ADMIN_KEY` no topo. Prova numa cópia do
+script com shims de `curl`/`python3`/`ipconfig` (`test_admin_ui_flow_chave_1109.py`).
+
+| Sabotagem | Resultado |
+|---|---|
+| fallback `${TESTE_API_KEY:-${TTS_ROD_ADMIN_KEY:-}}` de volta (com o `unset` no lugar) | `test_script_nao_le_a_credencial_do_operador` **FAILED** (o `unset` neutraliza o efeito; a guarda estática pega o código) |
+| fallback de volta **e** sem o `unset` (o código antigo) | `test_instancia_propria_*`, `test_base_externo_sem_chave_*` **FAILED** |
+| sem o `unset TTS_ROD_ADMIN_KEY` | `test_instancia_propria_*` **FAILED** (a instância/navegador herdavam a env) |
+| header volta a `-H "X-API-Key: $CHAVE_TESTE"` | `test_base_externo_com_chave_*` **FAILED** |
+| instância própria monta header com `TESTE_API_KEY` | `test_instancia_propria_*` **FAILED** |
+| `encerra` sem `_limpa_hdr_chave` | `test_base_externo_com_chave_*` **FAILED** |
+| sem o trap antecipado (falha antes do `trap encerra`) | `test_header_sai_tambem_quando_a_suite_falha_antes_do_trap_principal` **FAILED** |
+
+`umask 077` sem mordida própria: o `mktemp` já cria 0600; a célula confere o modo.

@@ -15,7 +15,15 @@
 #
 #   ./tests/admin_ui_flow.sh                    # SOBE instância própria (padrão)
 #   BASE=http://127.0.0.1:53203 ./tests/admin_ui_flow.sh   # usa instância existente
+#   TESTE_API_KEY=<chave admin de TESTE> BASE=http://<LAN>:53203 ./tests/admin_ui_flow.sh
 #   ADMIN_UI_NO_DONO=1 ./tests/admin_ui_flow.sh # assume o :7860 do dono de propósito
+#
+# CHAVE (#1109): instância própria NÃO usa chave nenhuma (loopback é admin). BASE
+# externo fora do loopback exige `TESTE_API_KEY` — uma chave de TESTE, explícita;
+# sem ela a suíte para com erro. `TTS_ROD_ADMIN_KEY` (credencial de OPERADOR do
+# dono, a que o `run.sh` exporta) NÃO é lida e sai do ambiente logo no início: a
+# suíte não herda credencial do dono. A chave vai num header 0600 (`curl -H
+# @arquivo`), nunca no argv — apagado no trap.
 #
 # POR QUE INSTÂNCIA PRÓPRIA POR PADRÃO (#437): a suíte cria chaves de teste, e no
 # :7860 elas caem no `.apikeys.json` do DONO — durante a rodada, e para sempre se
@@ -28,6 +36,10 @@
 # IP não-loopback a UI enxerga uma chave de uso. Com bind só no loopback o
 # sintoma é `Connection refused` em `http://<LAN>:<porta>` e NÃO é regressão.
 set -euo pipefail
+
+# #1109: a credencial de operador do dono não entra na suíte — nem como chave dos
+# `curl` (o fallback antigo), nem no ambiente da instância própria nem do navegador
+unset TTS_ROD_ADMIN_KEY
 
 BASE_ORIGINAL="${BASE:-}"
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -125,29 +137,45 @@ fi
 # definição). Sem um cabeçalho nos `curl` daqui, o `cria_chave` toma 401 e o
 # `json.load` estoura com JSONDecodeError — sem dizer que era auth.
 # A chave NUNCA é impressa: só o comprimento/máscara.
-CHAVE_TESTE="${TESTE_API_KEY:-${TTS_ROD_ADMIN_KEY:-}}"
+#
+# Contrato (#1109): instância própria (sem BASE) e BASE em loopback → NENHUM
+# header (loopback é admin). BASE fora do loopback → só `TESTE_API_KEY`, e a
+# checagem abaixo para a suíte sem ela. Não há fallback para `TTS_ROD_ADMIN_KEY`.
+CHAVE_TESTE=""
 CABECALHO_CHAVE=()
-[ -n "$CHAVE_TESTE" ] && CABECALHO_CHAVE=(-H "X-API-Key: $CHAVE_TESTE")
+HDR_CHAVE=""
+_limpa_hdr_chave() { [ -n "${HDR_CHAVE:-}" ] && /bin/rm -f -- "$HDR_CHAVE"; return 0; }
+HOST_ALVO="${BASE#*://}"; HOST_ALVO="${HOST_ALVO%%/*}"; HOST_ALVO="${HOST_ALVO%:*}"
+if [ -n "$BASE_ORIGINAL" ]; then
+  case "$HOST_ALVO" in
+    127.0.0.1|localhost|'[::1]') ;;
+    *)
+      if [ -z "${TESTE_API_KEY:-}" ]; then
+        echo "✖ BASE fora do loopback precisa de chave de TESTE: exporte TESTE_API_KEY=<chave admin de teste>" >&2
+        echo "  (TTS_ROD_ADMIN_KEY, a credencial de operador, não é usada pela suíte — #1109)" >&2
+        echo "  a chave vai só no cabeçalho X-API-Key, por arquivo 0600, e não é impressa" >&2
+        exit 1
+      fi
+      CHAVE_TESTE="$TESTE_API_KEY" ;;
+  esac
+fi
+if [ -n "$CHAVE_TESTE" ]; then
+  # header por ARQUIVO (`-H @arquivo`): no argv a chave fica legível em `ps`.
+  # `printf` é builtin (não vira argv); umask 077 → 0600 desde a criação.
+  HDR_CHAVE="$(umask 077; mktemp "${TMPDIR:-/tmp}/adminui-hdr.XXXXXX")"
+  ( umask 077; printf 'X-API-Key: %s\n' "$CHAVE_TESTE" > "$HDR_CHAVE" )
+  CABECALHO_CHAVE=(-H "@$HDR_CHAVE")
+  # Até o `trap encerra` (mais abaixo) valem os traps do serial.sh — repostos aqui
+  # com a remoção do header junto, para uma falha antes dele não deixar o arquivo.
+  trap '_limpa_hdr_chave; serial_solta; _teto_matar' EXIT
+  trap '_limpa_hdr_chave; serial_solta; _teto_matar; exit 130' INT TERM
+fi
 
 if ! curl -sf -m 5 -o /dev/null "$BASE/"; then
   echo "✖ app não respondeu em $BASE — rode ./run.sh primeiro" >&2
   exit 1
 fi
 
-# Origem não-loopback exige credencial em todo request. Sem a chave, o 401 do
-# `cria_chave` virava JSONDecodeError três linhas depois — sem dizer o motivo.
-if [ -n "$BASE_ORIGINAL" ]; then
-  HOST_ALVO="${BASE#*://}"; HOST_ALVO="${HOST_ALVO%%/*}"; HOST_ALVO="${HOST_ALVO%%:*}"
-  case "$HOST_ALVO" in
-    127.0.0.1|localhost|'[::1]') ;;
-    *)
-      if [ -z "$CHAVE_TESTE" ]; then
-        echo "✖ BASE de LAN precisa de chave: exporte TESTE_API_KEY=<chave admin> (ou TTS_ROD_ADMIN_KEY)" >&2
-        echo "  a chave vai só no cabeçalho X-API-Key e não é impressa" >&2
-        exit 1
-      fi ;;
-  esac
-fi
 LANURL="http://$LAN:$PORTA"
 
 
@@ -217,6 +245,7 @@ CRIADAS=()
 # falha aborta o resto do trap (mesma classe do kill do cfg_sujo).
 encerra() {
   limpar
+  _limpa_hdr_chave           # depois do `limpar`: os DELETE ainda leem o header
   # `limpa_servidor` derruba o servidor E apaga as chaves/settings/vozes da rodada
   # — tem de valer na rodada VERMELHA também, senão sobra `/tmp/voices-adminui.*`
   # a cada falha. Só existe no modo de instância própria.
