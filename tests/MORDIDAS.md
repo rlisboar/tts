@@ -990,3 +990,20 @@ Duas chaves que valem na hora, ambas com default que não muda nada:
 | o turno não chamar o `_stt_solta_adiado` | `test_turno_do_pipeline_solta_o_release_depois_do_stt` **FAILED** |
 | prewarm só aquecer o Whisper | `test_prewarm_aquece_o_parakeet_quando_e_o_motor_do_live` **FAILED** |
 | default `live_stt_engine = "whisper"` (mudaria quem já usa `stt_local_engine=parakeet`) | `test_motor_do_live_vazio_segue_o_stt_local_engine[whisper/parakeet]` **FAILED** |
+
+### #1111 — suíte em `screen` + `timeout` morria em silêncio no `test_deploy_mini_sh`
+
+Causa (provada no 2×2, 2026-11-10): o `_run` disparava o `deploy_mini.sh` herdando o
+tty de quem roda a suíte. O shim de `ssh` faz `exec zsh -c` LOCAL, então o `read -r
+-d $'\0'` do `pesos_faltando` (zsh mexe no modo do terminal) rodava num grupo de
+FUNDO do pty quando o pytest estava sob `timeout` sem `--foreground` → SIGTTOU →
+grupo parado → `timeout` sai 1 → suíte morre sem resumo em `test_peso_ausente_*`.
+Mínimo: `printf 'a\0' | zsh -c 'read -r -d "" p'` sob `script` + `timeout` → rc 1.
+`stdin=/dev/null` NÃO resolve (não é leitura de stdin); `start_new_session` (sem
+terminal de controle, como o lado remoto de um `ssh` sem `-t`) resolve.
+
+| Sabotagem | Resultado |
+|---|---|
+| `_SEM_TTY` sem `start_new_session` | `test_suite_sob_tty_de_fundo_nao_morre_no_peso_ausente` **FAILED** |
+| `_run` sem `**_SEM_TTY` | a célula do pty + `test_todo_disparo_do_script_vai_sem_tty` **FAILED** |
+| `_SEM_TTY` sem `stdin=DEVNULL` | passa — esperado: o canal é o tty de controle, não o stdin (mantido como defesa) |

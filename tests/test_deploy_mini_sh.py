@@ -11,6 +11,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -284,9 +285,20 @@ exit 0
     return env
 
 
+# #1111: o script roda SEM terminal de controle, como do outro lado de um `ssh`
+# sem `-t` (BatchMode) — que é onde os comandos de `distante` rodam em produção.
+# O shim de `ssh` faz `exec zsh -c` LOCAL, então herdava o tty de quem roda a
+# suíte. Sob `screen` + `timeout` sem `--foreground` o pytest fica num grupo de
+# FUNDO desse tty, e o `read -r -d $'\0'` do `pesos_faltando` (zsh mexe no modo do
+# terminal) leva SIGTTOU: o grupo para, o `timeout` sai com 1 e a suíte cheia
+# morre sem resumo em `test_peso_ausente_*` (~39 %). `start_new_session` tira o
+# tty de toda a árvore do script; `stdin` nulo fecha a outra porta.
+_SEM_TTY = dict(stdin=subprocess.DEVNULL, start_new_session=True)
+
+
 def _run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess:
     return subprocess.run([ZSH, "-f", str(SCRIPT), *args], env=env, capture_output=True,
-                          text=True, cwd=str(REPO))
+                          text=True, cwd=str(REPO), **_SEM_TTY)
 
 
 def _saida(r: subprocess.CompletedProcess) -> str:
@@ -593,7 +605,8 @@ def test_dois_deploys_em_paralelo_nao_disputam_o_preview(amb):
     # é o cenário de produção (dois deploys concorrentes), não o do harness isolado
     amb.pop("TTS_MINI_PREVIEW")
     procs = [subprocess.Popen([ZSH, "-f", str(SCRIPT), "deploy"], env=amb,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                              **_SEM_TTY)
              for _ in range(2)]
     saidas = [p.communicate()[0] for p in procs]
     rcs = [p.returncode for p in procs]
@@ -1003,7 +1016,7 @@ def test_index_leituras_invalido_cai_no_padrao_e_nao_gira(amb, valor):
     amb["TTS_MINI_INDEX_LEITURAS"] = valor
     try:
         r = subprocess.run([ZSH, "-f", str(SCRIPT), "smoke"], env=amb, capture_output=True,
-                           text=True, cwd=str(REPO), timeout=60)
+                           text=True, cwd=str(REPO), timeout=60, **_SEM_TTY)
     except subprocess.TimeoutExpired:
         pytest.fail(f"INDEX_LEITURAS={valor!r}: laço da paridade não parou (teto inerte)")
     assert r.returncode == 1, _saida(r)
@@ -1219,3 +1232,53 @@ def test_smoke_nao_reprova_por_aviso_anterior_ao_restart(amb):
 
     assert r.returncode == 0, _saida(r)
     assert "[ok] marca d'água aplicada" in r.stdout, _saida(r)
+
+
+# ------------------------------------------------- #1111: suíte sob tty de fundo
+
+_TIMEOUT_BIN = shutil.which("timeout") or "/usr/bin/timeout"
+
+
+@pytest.mark.skipif(not (shutil.which("script") and Path(_TIMEOUT_BIN).exists()),
+                    reason="precisa de `script` (pty) e `timeout`")
+def test_suite_sob_tty_de_fundo_nao_morre_no_peso_ausente(tmp_path):
+    """#1111: a suíte cheia morria em silêncio (rc=1, sem resumo, ~39 %) em
+    `screen` + `timeout` sem `--foreground` — mesmo sozinha na máquina. Reprodução
+    com tty REAL: `script` dá um pty; o `timeout` põe o pytest num grupo de FUNDO
+    dele (é o que o screen fazia); a saída vai para arquivo. O `read -d` do
+    `pesos_faltando` (zsh, via shim de ssh) mexia no terminal → SIGTTOU → grupo
+    parado → `timeout` sai 1. Com o `_SEM_TTY` no `_run` o filho do teste não tem
+    terminal e a célula passa; tirar o `start_new_session` derruba esta."""
+    saida = tmp_path / "pytest-aninhado.log"
+    cmd = (f"cd {REPO} && {_TIMEOUT_BIN} 120 {sys.executable} -m pytest "
+           f"tests/test_deploy_mini_sh.py -k peso_ausente_no_mini -q -p no:cacheprovider "
+           f"> {saida} 2>&1; echo \"rc=$?\" >> {saida}")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    r = subprocess.run(["script", "-q", "/dev/null", "/bin/bash", "-c", cmd],
+                       stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                       timeout=180, env=env)
+    log = saida.read_text() if saida.exists() else ""
+    assert r.returncode == 0, (r.returncode, log)
+    assert log.rstrip().endswith("rc=0"), log
+    assert "1 passed" in log, log
+
+
+def test_todo_disparo_do_script_vai_sem_tty():
+    """Guarda estática do #1111: toda chamada que roda o `deploy_mini.sh` neste
+    arquivo passa o `_SEM_TTY` (um `subprocess` novo sem ele reabre a porta)."""
+    import ast
+    arvore = ast.parse(Path(__file__).read_text())
+    sem = []
+    for no in ast.walk(arvore):
+        if not (isinstance(no, ast.Call) and isinstance(no.func, ast.Attribute)
+                and no.func.attr in ("run", "Popen")
+                and isinstance(no.func.value, ast.Name) and no.func.value.id == "subprocess"):
+            continue
+        if not (no.args and isinstance(no.args[0], ast.List)
+                and any(isinstance(e, ast.Call) and getattr(e.func, "id", "") == "str"
+                        and getattr(e.args[0], "id", "") == "SCRIPT" for e in no.args[0].elts)):
+            continue
+        if not any(k.arg is None and getattr(k.value, "id", "") == "_SEM_TTY"
+                   for k in no.keywords):
+            sem.append(no.lineno)
+    assert not sem, f"disparo do script sem _SEM_TTY nas linhas {sem}"
