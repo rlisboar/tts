@@ -466,9 +466,83 @@ def test_eco_puro_e_separado_da_mistura(monkeypatch):
     assert r["eco"] is True
 
 
-def test_sem_janela_pura_o_aviso_aparece():
-    """Microfone sempre com voz: mede-se, mas o relatório diz que é mistura."""
+def test_sem_janela_pura_o_aviso_aparece(monkeypatch):
+    """Microfone sempre com voz: mede-se, mas o relatório diz que é mistura.
+
+    O `_par()` é ruído branco e o Silero real classifica tudo como PURO
+    (`voz_n=0`), então a célula nunca entrava no `else` do veredito nem olhava
+    o aviso — passava verde pelo motivo errado. O `_tem_voz` é forçado a True
+    para a célula exercitar o ramo que o nome dela promete.
+    """
+    monkeypatch.setattr(ncc_eco, "_tem_voz", lambda _j: True)
     ref, eco = _par()
     linhas = ncc_eco.relogio_pelo_indice(len(eco), len(ref))
     r = ncc_eco.medir(eco, ref, linhas)
-    assert r["puro_n"] + r["voz_n"] > 0
+    assert r["voz_n"] > 0
+    assert r["puro_n"] == 0
+    assert "sem janela de eco puro" in r["aviso"]
+    # sem puro o veredito cai no total, e o total TEM de ser o p10 de tudo
+    assert r["eco"] == (r["p10"] >= 0.8)
+
+
+def test_silero_indisponivel_avisa_e_nao_vira_puro(monkeypatch):
+    """Sem Silero a separação some — e o relatório NÃO pode dizer `puro` cheio.
+
+    Antes `_tem_voz` devolvia `False` na exceção, então o mesmo relatório saía
+    idêntico ao de "ninguém falou no mic": mentira do mesmo tipo que o
+    `captura` ausente fazia no `meta.json` (#1090).
+    """
+    monkeypatch.setattr(ncc_eco, "_tem_voz", lambda _j: None)
+    ref, eco = _par()
+    linhas = ncc_eco.relogio_pelo_indice(len(eco), len(ref))
+    r = ncc_eco.medir(eco, ref, linhas)
+    assert r["puro_n"] == 0, "janela indefinida não é evidência de eco puro"
+    assert r["indef_n"] == r["medidas"]
+    assert "Silero indisponível" in r["aviso"]
+    # o veredito continua saindo, das janelas indefinidas
+    assert r["puro_p10"] is not None
+
+
+def test_tem_voz_devolve_none_quando_o_silero_estoura(monkeypatch):
+    """O caminho REAL da exceção, não só o `None` injetado.
+
+    As outras duas células trocam `_tem_voz` inteiro, então não veem se o
+    `except` voltar a devolver `False` — foi o que a primeira mordida mostrou.
+    Aqui quem estoura é o `scorer_silero`.
+    """
+    def _explode(_janela):
+        raise RuntimeError("sem onnxruntime")
+
+    monkeypatch.setattr(lt, "scorer_silero", _explode)
+    assert ncc_eco._tem_voz(np.zeros(512, dtype=np.float32)) is None
+    ref, eco = _par()
+    linhas = ncc_eco.relogio_pelo_indice(len(eco), len(ref))
+    r = ncc_eco.medir(eco, ref, linhas)
+    assert r["indef_n"] == r["medidas"] > 0
+    assert "Silero indisponível" in r["aviso"]
+    # a linha tem de sair impressa: `aviso` some de quem corta a saída
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ncc_eco.imprime(r)
+    assert "indef n=" in buf.getvalue()
+
+
+def test_degradacao_parcial_diz_quantas_janelas(monkeypatch):
+    """Queda em ALGUMAS janelas: o aviso diz quantas, não vira silêncio."""
+    chamadas = {"n": 0}
+
+    def _as_vezes(_j):
+        chamadas["n"] += 1
+        return None if chamadas["n"] <= 3 else False
+
+    monkeypatch.setattr(ncc_eco, "_tem_voz", _as_vezes)
+    ref, eco = _par()
+    linhas = ncc_eco.relogio_pelo_indice(len(eco), len(ref))
+    r = ncc_eco.medir(eco, ref, linhas)
+    assert r["indef_n"] == 3
+    assert "Silero indisponível em 3 janela(s)" in r["aviso"]
+    # com puro de verdade presente, o veredito é dele, não das indefinidas
+    assert r["puro_n"] > 0

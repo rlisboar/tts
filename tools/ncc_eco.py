@@ -109,6 +109,7 @@ def _base(**kw) -> dict:
         "pausado": 0,
         "puro_n": 0,
         "voz_n": 0,
+        "indef_n": 0,
         "puro_p10": None,
         "puro_p50": None,
         "puro_p90": None,
@@ -163,6 +164,7 @@ def medir(mic: np.ndarray, ref: np.ndarray, linhas: list[dict] | None = None,
     vals: list[float] = []
     vals_puro: list[float] = []
     vals_voz: list[float] = []
+    vals_indef: list[float] = []
     lags: list[int] = []
     silencio = busca = fora = pausado = 0
     for linha in linhas:
@@ -196,7 +198,10 @@ def medir(mic: np.ndarray, ref: np.ndarray, linhas: list[dict] | None = None,
             continue
         # #870: eco PURO (ninguém falando) é a pergunta do diagnóstico. A mistura
         # tem valor próprio e não pode diluir a estatística do eco.
-        if _tem_voz(janela):
+        voz = _tem_voz(janela)
+        if voz is None:
+            vals_indef.append(float(par[0]))
+        elif voz:
             vals_voz.append(float(par[0]))
         else:
             vals_puro.append(float(par[0]))
@@ -205,6 +210,7 @@ def medir(mic: np.ndarray, ref: np.ndarray, linhas: list[dict] | None = None,
     out = _base(tipo=tipo, aviso=aviso, sem_relogio=sem_relogio, pasta=pasta,
                 medidas=len(vals), silencio=silencio, busca_curta=busca, fora=fora,
                 pausado=pausado, puro_n=len(vals_puro), voz_n=len(vals_voz),
+                indef_n=len(vals_indef),
                 mic_amostras=int(mic.size), ref_amostras=int(ref.size))
     if not vals:
         return out
@@ -220,6 +226,17 @@ def medir(mic: np.ndarray, ref: np.ndarray, linhas: list[dict] | None = None,
     else:
         out["aviso"] = (out["aviso"] + " · " if out["aviso"] else "") + \
             "sem janela de eco puro (mic sempre com voz)"
+    if vals_indef:
+        # separação parcial: o modelo caiu em ALGUMAS janelas. Dizer quantas é o
+        # que separa "medi tudo junto" de "medi quase tudo, com buraco".
+        out["aviso"] = (out["aviso"] + " · " if out["aviso"] else "") + \
+            (f"Silero indisponível em {len(vals_indef)} janela(s) — "
+             "separação puro × voz degradada")
+        if not vals_puro:
+            indef = np.asarray(vals_indef, dtype=np.float64)
+            out.update({"puro_p10": float(np.percentile(indef, 10)),
+                        "puro_p50": float(np.percentile(indef, 50)),
+                        "puro_p90": float(np.percentile(indef, 90))})
     p10 = float(np.percentile(a, 10))
     p50_lag = float(np.percentile(lag, 50))
     out.update({
@@ -231,17 +248,23 @@ def medir(mic: np.ndarray, ref: np.ndarray, linhas: list[dict] | None = None,
         "lag_p50": p50_lag,
         "lag_p50_ms": p50_lag * 1000.0 / lt.SAMPLE_RATE,
         "frac_075": float(np.mean(a >= lt._CORR_LIMIAR)),
-        "eco": bool((out["puro_p10"] if vals_puro else p10) >= 0.8),
+        "eco": bool((out["puro_p10"] if out["puro_p10"] is not None else p10) >= 0.8),
     })
     return out
 
 
-def _tem_voz(janela: np.ndarray) -> bool:
-    """Silero na janela do mic. Falha do modelo não derruba a medida — vira puro."""
+def _tem_voz(janela: np.ndarray) -> bool | None:
+    """Silero na janela do mic; `None` = modelo indisponível (#1090).
+
+    Antes a falha virava `False` (= puro), então sem Silero o relatório
+    imprimia `puro n=` cheio como se tivesse separado — o mesmo tipo de mentira
+    que o `captura` ausente fazia no `meta.json`. Agora a janela indefinida tem
+    contador próprio (`indef_n`) e aviso, e não é evidência de eco puro.
+    """
     try:
         return lt.scorer_silero(janela) >= _VOZ_PROB
     except Exception:  # noqa: BLE001 — sem Silero a separação some, a NCC fica
-        return False
+        return None
 
 
 def _le_wav(path: Path) -> tuple[np.ndarray, int]:
@@ -424,6 +447,10 @@ def imprime(r: dict) -> None:
     print(f"puro n={r['puro_n']} p10={_fmt(r['puro_p10'])} p50={_fmt(r['puro_p50'])} "
           f"p90={_fmt(r['puro_p90'])}")
     print(f"voz  n={r['voz_n']}")
+    if r["indef_n"]:
+        # linha própria: janela indefinida não é puro nem voz, e some se ficar
+        # só no `aviso` quando alguém corta a saída (#1090)
+        print(f"indef n={r['indef_n']} (Silero indisponível)")
     if r["lag_p50"] is None:
         print("lag_p50=null")
     else:
