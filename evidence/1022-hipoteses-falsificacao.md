@@ -131,3 +131,43 @@ própria; o VAD fica por último porque o piso dele é 500 ms e o S1 ainda está
 O `resto` tinha razão de ser caixa preta até aqui: a bancada não gravava `t_decisao_ms` e o
 campo, quando passou a ser publicado, vinha como carimbo de sessão. Com o `vad`/`fio` abertos,
 cortar sem separar deixa de ser chute.
+
+## Hipótese 5 — marca a frio no 1º trecho (PRÉ-REGISTRO, 2026-11-10, antes de medir)
+
+**Base:** `7cb4618` (main, no ar no mini desde 16:28) · **Card:** #1022 · **Aceita pelo PM** antes da medida.
+
+**Por que nasceu.** No A/B do piso (`tools/mede_pos_llm.sh`, mini, bloco `piso10a`, n=3) a
+`marca` deu p50 **62 ms** e p95 **4323 ms**: uma fala pagou o aquecimento do filho do AudioSeal.
+O log do mesmo bloco tem `[marca] aquecido em 4311 ms` e, depois, um SEGUNDO
+`carregado` + `aquecido em 3401 ms` dentro da mesma sessão. A hipótese 3 (marca inline) nunca foi
+testada com a marca ligada: na janela de 9/11 e na de 2026-11-10 16:31 o estado sintético da 7890
+tinha `tts_marca_dagua=False`, e o 0 ms era ausência.
+
+**O caminho, lido no código (`7cb4618`).** O PCM do 1º trecho passa por `emit_audio`, e o app
+aplica o AudioSeal ANTES do `send` (`live_pipeline.py:1262-1280`; `marca_ms` é carimbado antes
+de `first_audio_ms`). Ou seja, a marca está no S2. O filho tem `TTL_S=600` (`marca_dagua.py:57`)
+e é aquecido no boot (`tts_marca_prewarm_boot`) e na abertura do WS. Produção hoje:
+`tts_marca_dagua=True`, `live_marca_primeiro_trecho=True`, `tts_marca_prewarm_boot=True`, e o log
+da 7860 tem `aquecido em 3387–3717 ms`.
+
+| # | hipótese | MATA-SE se | Se sobreviver |
+|---|---|---|---|
+| 5 | a marca **a frio** no 1º trecho é a cauda do S2 p95 | com o filho **quente** (aquecido antes do 1º turno e TTL não vencido), `marca` p95 ≤ 100 ms **e** o S2 p95 **não** cai contra o braço a frio | (a) engenharia nossa: filho quente durante a sessão Live, com a marca LIGADA em todos os trechos; (b) só como opção quantificada para o dono: `live_marca_primeiro_trecho=False` ("custa X ms, compra Y") |
+
+**Desenho, fixado antes do número.**
+- Estado sintético (#446 §C), `tts_marca_dagua=True`, LLM falso, semente 875, no mini, em série e sem
+  bancada nem `pytest` concorrentes. `TTS_LIVE_DUMP_DIR` fora do env.
+- Braço **frio**: o 1º turno chega com o filho recém-subido (sessão aberta e fala imediata). Braço
+  **quente**: o 1º turno só depois de `[marca] aquecido` no log. **n ≥ 10 primeiros turnos por braço.**
+- Publicar por braço: `marca` p50/p95, S2 p50/p95, `tts` p50/p95 e a memória (swap, RSS 7860) no
+  início de cada bloco.
+- Leitura: se os blocos do mesmo braço divergirem entre si mais do que os braços, o veredito é
+  "ruído do ambiente", não "marca".
+
+**Pergunta aberta, fechada na mesma medida (é defeito por si, com ou sem a hipótese):** por que o
+filho foi **recarregado dentro da sessão** (`aquecido` 2× no mesmo bloco). Há três candidatos, a
+separar pelo log: o prazo curto do Live (1,5 s) matando o filho "mudo" durante a carga; o TTL; ou
+uma reabertura do WS.
+
+**Fora de escopo até o número:** qualquer mudança em produção ou em código. Desligar a marca, ou deixar
+algum trecho sem ela, é decisão do dono (2026-10-28: marca "on").
