@@ -1007,3 +1007,22 @@ terminal de controle, como o lado remoto de um `ssh` sem `-t`) resolve.
 | `_SEM_TTY` sem `start_new_session` | `test_suite_sob_tty_de_fundo_nao_morre_no_peso_ausente` **FAILED** |
 | `_run` sem `**_SEM_TTY` | a célula do pty + `test_todo_disparo_do_script_vai_sem_tty` **FAILED** |
 | `_SEM_TTY` sem `stdin=DEVNULL` | passa — esperado: o canal é o tty de controle, não o stdin (mantido como defesa) |
+### #1108 — sonda do WS do Live com ticket, não `?key=`
+
+A sonda do `deploy_mini.sh` (e o `live_ws.sh` contra servidor externo) abria
+`/api/live/ws?key=<chave>`: cada deploy gravava a chave do dono no access log do mini
+e a deixava no argv do `curl`. Agora `POST /api/live/ticket` com a chave em arquivo
+0600 (`-H @arquivo`, apagado no `always`) e WS com `?ticket=`. Rev sem a rota do
+ticket: sonda sem credencial (o 101 é do upgrade). Prova por shim, sem tocar o mini.
+
+| Sabotagem | Resultado |
+|---|---|
+| WS volta a `"$base/api/live/ws?key=$chave"` | as 3 células `sonda_*`/`rev_sem_rota_*` **FAILED** + `test_deploy_mini_nao_monta_key_na_url` |
+| ticket com `-H "X-API-Key: $chave"` (chave no argv) | `test_sonda_do_ws_usa_ticket_e_a_chave_nao_vai_a_url_nem_ao_argv` **FAILED** |
+| arquivo do header não é apagado (`rm` → `:`) | `test_sonda_do_ws_usa_ticket_*`, `test_sonda_reprova_sem_ticket_*` **FAILED** |
+| emissão falha → cai para `?key=$chave` | `test_sonda_reprova_sem_ticket_e_nunca_cai_para_a_chave` **FAILED** |
+| sem a guarda `tem_rota` (sempre pede ticket) | `test_rev_sem_rota_do_ticket_sonda_o_ws_sem_credencial` **FAILED** |
+| `live_ws.sh` volta a `?key={CHAVE}` | `test_live_ws_nao_monta_key_na_url`, `test_live_ws_conecta_com_ticket_pedido_por_post` **FAILED** |
+
+`chmod 600` não tem mordida própria: o `mktemp` já cria 0600; a célula confere o
+modo do arquivo que o `curl` leu.

@@ -537,7 +537,15 @@ async def principal():
         raise SystemExit(f"servidor não respondeu em {BASE} ({e})")
     print(f"  voz de teste: {voz} · fala de {len(pcm)/2/16000:.1f}s\n")
 
-    uri = f"{BASE.replace('http', 'ws')}/api/live/ws?key={CHAVE}"
+    # #1108: o WS abre por ticket (o caminho da UI), nunca `?key=` — com servidor
+    # EXTERNO a chave do dono caía no access log a cada rodada. O ticket sai por
+    # POST com a chave só no header (`H`), é de um uso e vale 60 s: pedido aqui,
+    # imediatamente antes de conectar. Sem ticket, a rodada para (sem degradar).
+    try:
+        ticket = http_post("/api/live/ticket", {})["ticket"]
+    except Exception as e:                    # noqa: BLE001
+        raise SystemExit(f"POST /api/live/ticket falhou em {BASE} ({e})")
+    uri = f"{BASE.replace('http', 'ws')}/api/live/ws?ticket={ticket}"
     try:
         async with websockets.connect(uri, max_size=None, ping_interval=None) as ws:
             # 1) handshake

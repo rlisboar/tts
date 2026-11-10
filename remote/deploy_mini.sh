@@ -188,6 +188,24 @@ chave_do_mini() {
 # curl sempre com -o /dev/null -w '%{http_code}'; tail -1 porque curl imprime 000 e
 # sai != 0 quando a conexão falha (não queremos "000\n000" na comparação).
 codigo_http() { curl -s -m 8 "$@" 2>/dev/null | tail -1; }
+# #1108: ticket do WS do Live (`POST /api/live/ticket`, um uso, 60 s). A sonda
+# abria o WS com `?key=<chave>`: a chave ia para o access log do mini (22 + 22
+# handshakes em claro, mais o aviso `[live] auth por ?key=`) e ficava no argv do
+# `curl`, onde `ps` mostra. Agora a chave vai num arquivo 0600 (`-H @arquivo`,
+# padrão do #1075), apagado no `always` mesmo se o curl falhar. Imprime o ticket
+# ("" quando a emissão falha — quem chama decide; NUNCA cai para `?key=`).
+ticket_live() { # $1 = base, $2 = chave
+  local base="$1" chave="$2" hdr corpo
+  hdr="$(mktemp "${TMPDIR:-/tmp}/deploy-mini-hdr.XXXXXX")" || return 0
+  {
+    chmod 600 "$hdr"
+    print -r -- "X-API-Key: $chave" > "$hdr"      # builtin: a chave não vira argv
+    corpo="$(curl -s -m 8 -X POST -H "@$hdr" "$base/api/live/ticket" 2>/dev/null)"
+  } always {
+    rm -f "$hdr"
+  }
+  print -r -- "$corpo" | sed -n 's/.*"ticket": *"\([A-Za-z0-9_-]*\)".*/\1/p' | head -1
+}
 # `codigo` que a INSTÂNCIA VIVA reporta — "" quando não dá para perguntar.
 codigo_no_ar() {
   local chave; chave="$(chave_do_mini)"
@@ -319,10 +337,25 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
   # cliente) o pedido chega no origin SEM upgrade e o middleware devolve 401 — o
   # probe false-vermelhava o caminho público embora o navegador (h1) conecte.
   # Achado do passo 2 NO AR (#247): sem a flag, o público acusa 401 e o LAN 101.
+  # #1108: credencial do WS é o ticket (o caminho da UI), nunca `?key=`. Rev sem a
+  # rota do ticket: a sonda vai SEM credencial — o 101 é do upgrade (o app aceita
+  # antes de autenticar), então ainda prova o `websockets`; só não prova a auth.
+  local ws_q="" tk
+  if tem_rota "$REV_ALVO" '@app.post("/api/live/ticket")'; then
+    tk="$(ticket_live "$base" "$chave")"
+    if [ -n "$tk" ]; then
+      ws_q="?ticket=$tk"
+      print -r -- "  [ok] $rotulo POST /api/live/ticket emitiu o ticket (chave só no header)"
+    else
+      print -r -- "  [FALHA] $rotulo POST /api/live/ticket não emitiu ticket (a UI não abre o Live)"; falhas=1
+    fi
+  else
+    print -r -- "  [aviso] $rotulo rev sem /api/live/ticket — sonda do WS sem credencial (a chave nunca vai na URL)"
+  fi
   c="$(curl -s -m 5 --http1.1 -o /dev/null -w '%{http_code}' \
        -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" \
        -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-       "$base/api/live/ws?key=$chave" 2>/dev/null | tail -1)"
+       "$base/api/live/ws$ws_q" 2>/dev/null | tail -1)"
   case "$c" in
     101) print -r -- "  [ok] $rotulo WebSocket 101 (uvicorn com upgrade)" ;;
     000) print -r -- "  [aviso] $rotulo WS sem resposta em 5s (timeout do curl, não necessariamente erro)" ;;

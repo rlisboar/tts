@@ -76,7 +76,13 @@ for ((i = 1; i <= $#; i++)); do
     http*) url="${@[i]}" ;;
     -X) metodo="${@[i+1]}" ;;
     -m) tempo="${@[i+1]}"; tem_m=1 ;;
-    -H) [[ "${@[i+1]}" == X-API-Key:* ]] && tem_chave=1 ;;
+    -H) [[ "${@[i+1]}" == X-API-Key:* ]] && tem_chave=1
+        # `-H @arquivo` (#1075/#1108): o curl real lê o header do arquivo
+        if [[ "${@[i+1]}" == @* ]]; then
+          hf="${${@[i+1]}#@}"
+          [ -n "${T_CURL_HDR_LOG:-}" ] && print -r -- "$hf $(stat -f %Lp "$hf" 2>/dev/null)" >> "$T_CURL_HDR_LOG"
+          grep -q '^X-API-Key: ' "$hf" 2>/dev/null && tem_chave=1
+        fi ;;
     --http1.1) http1=1 ;;
     -w) so_codigo=1 ;;
   esac
@@ -90,6 +96,8 @@ if [ "${tem_m:-0}" = 1 ]; then
   esac
 fi
 print -r -- "$metodo $url" >> "$T_CURL_LOG"
+# argv inteiro (#1108): a célula da sonda procura a chave aqui — é o que `ps` veria
+[ -n "${T_CURL_ARGV:-}" ] && print -r -- "$*" >> "$T_CURL_ARGV"
 codigo=200; corpo=""; arquivo=""
 case "$url" in
   */ttsproxy/ttsproxy/*) codigo="${T_CURL_PREFIXO_DUPLO_CODE:-401}" ;;
@@ -129,6 +137,12 @@ case "$url" in
         fi
         bm="${bm:-1000}"
         [ "$codigo" = 200 ] && corpo="{\\"ok\\":true,\\"codigo\\":\\"$c\\",\\"boot_ms\\":$bm}"
+      else codigo=401; fi ;;
+  */api/live/ticket)
+      # contrato do #1107: POST com a chave no header → {"ticket", "expires_in"}
+      if [ $tem_chave = 1 ] && [ "$metodo" = POST ]; then
+        codigo="${T_CURL_TICKET_CODE:-200}"
+        [ "$codigo" = 200 ] && corpo='{"ticket":"tk-fake_0123-ABC","expires_in":60}'
       else codigo=401; fi ;;
   */api/live/ws*)
       # o upgrade é mecanismo h1: pelo Cloudflare em h2 o origin recebe SEM upgrade
@@ -184,6 +198,8 @@ def amb(tmp_path: Path, shims: Path) -> dict[str, str]:
         T_SSH_LOG=str(tmp_path / "ssh.log"),
         T_LAUNCH_LOG=str(tmp_path / "launch.log"),
         T_CURL_LOG=str(tmp_path / "curl.log"),
+        T_CURL_ARGV=str(tmp_path / "curl.argv"),
+        T_CURL_HDR_LOG=str(tmp_path / "curl.hdr"),
         T_PIP_LOG=str(tmp_path / "pip.log"),
         T_PIP_FREEZE_N=str(tmp_path / "freeze.n"),
         T_MINI_DIR=str(tmp_path / "mini"),
@@ -314,6 +330,8 @@ APP_SEM_ROTAS = "# app.py versao 1 (sem as rotas novas)\n"
 APP_COM_ROTAS = ('# app.py versao 2\n'
                  '@app.get("/api/build")\n'
                  'def build(): ...\n'
+                 '@app.post("/api/live/ticket")\n'
+                 'def live_ticket(): ...\n'
                  '@app.websocket("/api/live/ws")\n'
                  'async def live_ws(ws): ...\n')
 
@@ -500,6 +518,82 @@ def test_ws_probe_faz_handshake_h1_como_o_navegador(amb):
     ws = [l for l in _log(amb, "curl") if l.startswith("WS ")]
     assert len(ws) == 2, ws                                # LAN + público
     assert all(l.endswith("h1=1") for l in ws), ws        # as duas com --http1.1
+    assert r.stdout.count("WebSocket 101") == 2
+
+
+TICKET_FAKE = "tk-fake_0123-ABC"
+
+
+def _smoke_isolado(amb, tmp_path, **depois):
+    """Deploy (fora da conta) e depois UM smoke com logs zerados e TMPDIR próprio.
+    `depois` entra no ambiente só para o smoke (o deploy tem de sair verde)."""
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    amb.update(depois)
+    for nome in ("T_CURL_LOG", "T_CURL_ARGV", "T_CURL_HDR_LOG"):
+        Path(amb[nome]).unlink(missing_ok=True)
+    tmpd = tmp_path / "tmpd-smoke"
+    tmpd.mkdir()
+    amb["TMPDIR"] = str(tmpd)
+    return _run(amb, "smoke"), tmpd
+
+
+def test_sonda_do_ws_usa_ticket_e_a_chave_nao_vai_a_url_nem_ao_argv(amb, tmp_path):
+    """#1108: a sonda abria `/api/live/ws?key=<chave>` — a chave do dono caía no
+    access log do mini a cada deploy (44 handshakes + 36 avisos `[live] auth por
+    ?key=`) e ficava no argv do `curl` (visível em `ps`). Agora: POST
+    /api/live/ticket com a chave num arquivo 0600 (`-H @arquivo`, apagado depois)
+    e o WS com `?ticket=`. Voltar o `?key=` (ou a chave no `-H` do ticket) derruba
+    esta célula."""
+    r, tmpd = _smoke_isolado(amb, tmp_path)
+    assert r.returncode == 0, _saida(r)
+    log = _log(amb, "curl")
+    # nenhuma URL da sonda (nem de nada no smoke) leva a chave na query
+    assert not [l for l in log if "key=" in l], log
+    tickets = [l for l in log if l.startswith("POST ") and l.endswith("/api/live/ticket")]
+    assert len(tickets) == 2, log                                # LAN + público
+    ws = [l for l in log if l.startswith("WS ")]
+    assert len(ws) == 2, ws
+    assert all(f"/api/live/ws?ticket={TICKET_FAKE} " in l for l in ws), ws
+    # argv das chamadas do Live: a chave não aparece (é o que `ps` mostraria)
+    argv_live = [l for l in Path(amb["T_CURL_ARGV"]).read_text().splitlines()
+                 if "/api/live/" in l]
+    assert len(argv_live) == 4, argv_live                        # 2 tickets + 2 WS
+    assert not [l for l in argv_live if CHAVE in l], argv_live
+    # o header foi por arquivo 0600, e o arquivo não sobra no TMPDIR
+    hdr = Path(amb["T_CURL_HDR_LOG"]).read_text().splitlines()
+    assert len(hdr) == 2, hdr
+    assert all(l.endswith(" 600") for l in hdr), hdr
+    assert all(not Path(l.rsplit(" ", 1)[0]).exists() for l in hdr), hdr
+    assert not list(tmpd.glob("deploy-mini-hdr.*"))
+    assert r.stdout.count("POST /api/live/ticket emitiu o ticket") == 2
+    assert CHAVE not in _saida(r)
+
+
+def test_sonda_reprova_sem_ticket_e_nunca_cai_para_a_chave(amb, tmp_path):
+    """#1108: se a emissão do ticket falha, a UI não abre o Live — o smoke reprova.
+    E a sonda NÃO degrada para `?key=` (seria a mesma gravação da chave no log)."""
+    r, tmpd = _smoke_isolado(amb, tmp_path, T_CURL_TICKET_CODE="500")
+    assert r.returncode == 1, _saida(r)
+    assert r.stdout.count("POST /api/live/ticket não emitiu ticket") == 2
+    log = _log(amb, "curl")
+    assert not [l for l in log if "key=" in l], log
+    ws = [l for l in log if l.startswith("WS ")]
+    assert ws and all("/api/live/ws h1=" in l for l in ws), ws   # sem credencial
+    assert not list(tmpd.glob("deploy-mini-hdr.*"))
+
+
+def test_rev_sem_rota_do_ticket_sonda_o_ws_sem_credencial(amb, tmp_path):
+    """#1108: rev anterior ao ticket (rollback antigo) — a sonda ainda prova o
+    upgrade (o app aceita antes de autenticar), sem credencial e sem `?key=`."""
+    dev = Path(amb["TTS_MINI_REPO"])
+    (dev / "app.py").write_text(APP_COM_ROTAS.replace(
+        '@app.post("/api/live/ticket")\ndef live_ticket(): ...\n', ""))
+    _git("commit", "-qam", "rev sem ticket", cwd=dev, env=amb)
+    r, _ = _smoke_isolado(amb, tmp_path)
+    assert r.returncode == 0, _saida(r)
+    assert r.stdout.count("rev sem /api/live/ticket") == 2
+    log = _log(amb, "curl")
+    assert not [l for l in log if "key=" in l or "/api/live/ticket" in l], log
     assert r.stdout.count("WebSocket 101") == 2
 
 
