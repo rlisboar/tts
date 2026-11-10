@@ -45,6 +45,21 @@ TOKEN_DIR="$HOME/.cloudflared"
 CERT="$TOKEN_DIR/cert.pem"
 API="https://api.cloudflare.com/client/v4"
 
+# #1110: o token da API da Cloudflare (controla tunnel e DNS) NUNCA vai ao argv do
+# `curl` — ali qualquer processo do usuário o lê em `ps`. O `_api` escreve o
+# header num arquivo 0600 (umask 077 acima; `print` é builtin, não vira argv) e o
+# `curl` lê com `-H @arquivo`. O arquivo mora num diretório 0700 desta rodada,
+# criado já aqui porque o `_api` roda em `$(…)` (subshell não devolve variável,
+# mas escreve no mesmo disco), e apagado no trap: saída normal, erro ou sinal.
+# `CF_TOKEN` é variável de SHELL, não exportada: os filhos não a herdam.
+HDR_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cloudflare-hdr.XXXXXX")" \
+  || { print -r -- "não consegui criar o diretório do header (mktemp -d)" >&2; exit 1; }
+_limpa_hdr() { [ -n "${HDR_DIR:-}" ] && /bin/rm -rf -- "$HDR_DIR"; HDR_DIR=""; }
+trap _limpa_hdr EXIT
+trap '_limpa_hdr; exit 129' HUP
+trap '_limpa_hdr; exit 130' INT
+trap '_limpa_hdr; exit 143' TERM
+
 # O cert.pem do `tunnel login` é um JSON em base64 com zoneID/accountID/apiToken.
 _cert_json() {
   python3 - "$CERT" <<'PY'
@@ -69,12 +84,13 @@ _xml_escape() {
 }
 
 _api() { # _api METHOD PATH [BODY] → rc≠0 quando a API responde success:false
-  local out
+  local out hdr="$HDR_DIR/authorization"
+  print -r -- "Authorization: Bearer $CF_TOKEN" > "$hdr"     # 0600 pelo umask 077
   if [ -n "${3:-}" ]; then
-    out="$(curl -s -X "$1" -H "Authorization: Bearer $CF_TOKEN" \
+    out="$(curl -s -X "$1" -H "@$hdr" \
           -H "Content-Type: application/json" --data "$3" "$API$2")"
   else
-    out="$(curl -s -X "$1" -H "Authorization: Bearer $CF_TOKEN" "$API$2")"
+    out="$(curl -s -X "$1" -H "@$hdr" "$API$2")"
   fi
   print -r -- "$out"
   # o rc tem de ser o do python (antes terminava no `print` acima = sempre 0 e um

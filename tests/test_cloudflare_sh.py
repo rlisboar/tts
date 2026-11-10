@@ -59,6 +59,19 @@ exit 0
 """,
     )
     _shim(bin_dir / "curl", """print -rl -- "$@" >> "$T_CURL_LOG"
+# `-H @arquivo` (#1110): o curl real lê o header do arquivo — o shim anota o
+# caminho e o modo (T_CURL_HDR) e o CONTEÚDO (T_CURL_HDR_CONTEUDO), à parte do argv
+prox=""
+for a in "$@"; do
+  if [ "$prox" = H ] && [ "${a#@}" != "$a" ]; then
+    print -r -- "${a#@} $(/usr/bin/stat -f %Lp "${a#@}" 2>/dev/null)" >> "$T_CURL_HDR"
+    cat -- "${a#@}" >> "$T_CURL_HDR_CONTEUDO" 2>/dev/null
+  fi
+  [ "$a" = -H ] && prox=H || prox=""
+done
+# item 2 do #1110: o token não pode estar no AMBIENTE do filho
+env | /usr/bin/grep -v "^T_TOKEN=" | /usr/bin/grep -cF -- "$T_TOKEN" >> "$T_CURL_ENV"   # menos a semente do teste
+[ -n "${T_CURL_DORME:-}" ] && sleep "$T_CURL_DORME"
 [ "${T_CURL_SUCCESS:-true}" = "false" ] && print -r -- '{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}' && exit 0
 # GET das configurations devolve um ingress (é o que o `status`/`ingress` lê):
 # o service sai de T_INGRESS_SERVICE, com o 404 final que o Cloudflare exige.
@@ -116,10 +129,15 @@ def amb(tmp_path: Path, bin_dir: Path) -> dict[str, str]:
         T_NAME=NAME,
         T_TOKEN=TOKEN,
         T_CURL_LOG=str(tmp_path / "curl.log"),
+        T_CURL_HDR=str(tmp_path / "curl.hdr"),
+        T_CURL_HDR_CONTEUDO=str(tmp_path / "curl.hdr.conteudo"),
+        T_CURL_ENV=str(tmp_path / "curl.env"),
+        TMPDIR=str(tmp_path / "tmpd"),
         T_BOOT_LOG=str(tmp_path / "boot.log"),
         T_CHMOD_LOG=str(tmp_path / "chmod.log"),
     )
     env.pop("CLOUDFLARE_LABEL", None)
+    (tmp_path / "tmpd").mkdir()
     return env
 
 
@@ -222,7 +240,9 @@ def test_provision_sem_eval_manda_o_token_e_a_conta_inteiros(amb):
     urls = [l for l in chamadas if l.startswith("https://")]
     assert urls, "o provision deveria ter chamado a API do Cloudflare"
     assert f"/accounts/{ACCT}/" in urls[0]
-    assert f"Authorization: Bearer {TOKEN}" in chamadas
+    # #1110: o token chega INTEIRO ao curl — pelo arquivo do header, não pelo argv
+    assert f"Authorization: Bearer {TOKEN}" in _escritos(Path(amb["T_CURL_HDR_CONTEUDO"]))
+    assert not [l for l in chamadas if TOKEN in l]
 
 
 def test_provision_nao_imprime_o_token(amb):
@@ -379,3 +399,62 @@ def test_uso_quando_nao_tem_subcomando(amb):
     r = _run(amb)
     assert r.returncode == 1
     assert "install --token-file" in r.stdout
+
+# ---------------------------------------------------------- #1110: token fora do ps
+
+def test_token_da_api_nao_vai_ao_argv_nem_ao_env_do_curl(amb):
+    """#1110: o `_api` passava `-H "Authorization: Bearer $CF_TOKEN"` — o token da
+    API da Cloudflare (tunnel e DNS) ficava no argv do `curl`, legível em `ps`.
+    Agora o header vem de um arquivo 0600 da rodada (`-H @arquivo`, dentro de um
+    diretório 0700), apagado no trap; e o `CF_TOKEN` não é exportado. Voltar o
+    header ao argv derruba esta célula."""
+    for args in (("provision", NAME, "tts.exemplo.test", "192.168.15.34"), ("status", NAME)):
+        r = _run(amb, *args)
+        assert r.returncode == 0, _saida(r)
+        assert TOKEN not in _saida(r)
+    chamadas = _escritos(Path(amb["T_CURL_LOG"]))
+    assert [l for l in chamadas if l.startswith("https://")], chamadas
+    assert not [l for l in chamadas if TOKEN in l or "Authorization" in l], chamadas
+    hdr = _escritos(Path(amb["T_CURL_HDR"]))
+    # PUT do ingress (provision) + GET das configurations (provision e status)
+    assert len(hdr) >= 2, hdr
+    assert all(l.rsplit(" ", 1)[1] == "600" for l in hdr), hdr
+    assert all("/cloudflare-hdr." in l for l in hdr), hdr
+    assert all(not Path(l.rsplit(" ", 1)[0]).exists() for l in hdr), hdr
+    conteudo = _escritos(Path(amb["T_CURL_HDR_CONTEUDO"]))
+    assert conteudo and set(conteudo) == {f"Authorization: Bearer {TOKEN}"}, conteudo
+    # nenhum filho com o token no ambiente (CF_TOKEN é variável de shell)
+    assert set(_escritos(Path(amb["T_CURL_ENV"]))) == {"0"}
+    assert not list((Path(amb["TMPDIR"])).iterdir())            # o trap limpou
+
+
+def test_header_do_token_some_quando_o_script_leva_sinal(amb):
+    """#1110: o diretório do header sai no trap também com SIGTERM no meio da
+    chamada à API (o `curl` dorme), não só na saída normal."""
+    import signal
+    import time
+    amb["T_CURL_DORME"] = "20"
+    p = subprocess.Popen([ZSH, "-f", str(SCRIPT), "provision", NAME, "tts.exemplo.test",
+                          "192.168.15.34"], env=amb, cwd=str(REPO), text=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+    tmpd = Path(amb["TMPDIR"])
+    try:
+        prazo = time.monotonic() + 30
+        while time.monotonic() < prazo:
+            dirs = list(tmpd.glob("cloudflare-hdr.*"))
+            if dirs and (dirs[0] / "authorization").exists():
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("o header do token nunca apareceu")
+        assert oct(dirs[0].stat().st_mode & 0o777) == "0o700"
+        assert oct((dirs[0] / "authorization").stat().st_mode & 0o777) == "0o600"
+        os.killpg(p.pid, signal.SIGTERM)
+        p.wait(timeout=30)
+    finally:
+        if p.poll() is None:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait()
+    assert p.returncode == 143, p.returncode
+    assert not list(tmpd.iterdir()), list(tmpd.iterdir())

@@ -1076,3 +1076,18 @@ do ambiente ao ler (`os.environ.pop`), então o navegador não herda.
 |---|---|
 | etapa de contrato volta a `"$PY" - "$LANURL" "$USE_KEY"` | `test_chaves_da_rodada_vao_ao_python_por_env_e_nao_pelo_argv` **FAILED** |
 | etapa de UI volta a passar `"$USE_KEY" "$ADM_KEY"` no argv | idem **FAILED** |
+### #1110 — `cloudflare.sh`: token da API da Cloudflare fora do argv do `curl`
+
+O `_api` passava `-H "Authorization: Bearer $CF_TOKEN"`: o token que controla
+tunnel e DNS ficava no argv do `curl`, legível em `ps`. Agora o header vem de um
+arquivo 0600 (`umask 077` + `print` builtin) num diretório 0700 da rodada
+(`mktemp -d`), `-H @arquivo`, apagado no trap (EXIT/HUP/INT/TERM). `CF_TOKEN` segue
+variável de shell (não exportada). Prova por shim com token sintético hostil.
+
+| Sabotagem | Resultado |
+|---|---|
+| header volta a `-H "Authorization: Bearer $CF_TOKEN"` | `test_provision_sem_eval_*`, `test_token_da_api_nao_vai_ao_argv_nem_ao_env_do_curl` **FAILED** |
+| sem `trap _limpa_hdr EXIT` | `test_token_da_api_*` **FAILED** |
+| sem o trap de TERM | `test_header_do_token_some_quando_o_script_leva_sinal` **FAILED** |
+| `export CF_TOKEN` | `test_token_da_api_*` **FAILED** (o token aparece no env do filho) |
+| sem `umask 077` | 4 **FAILED** (header e arquivos do token deixam de nascer 0600) |
