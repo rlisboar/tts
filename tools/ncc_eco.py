@@ -223,7 +223,11 @@ def medir(mic: np.ndarray, ref: np.ndarray, linhas: list[dict] | None = None,
         out.update({"puro_p10": float(np.percentile(puro, 10)),
                     "puro_p50": float(np.percentile(puro, 50)),
                     "puro_p90": float(np.percentile(puro, 90))})
-    else:
+    elif not vals_indef:
+        # só afirma "mic sempre com voz" quando a separação DE FATO rodou e
+        # achou voz em tudo. Com tudo indefinido, dizer "sempre com voz" é
+        # afirmar o que não se mediu — sem Silero não se sabe o que havia no mic
+        # (#1101). O aviso das indefinidas abaixo já nomeia o motivo.
         out["aviso"] = (out["aviso"] + " · " if out["aviso"] else "") + \
             "sem janela de eco puro (mic sempre com voz)"
     if vals_indef:

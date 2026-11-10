@@ -466,6 +466,49 @@ def test_eco_puro_e_separado_da_mistura(monkeypatch):
     assert r["eco"] is True
 
 
+def test_fallback_do_eco_le_as_janelas_indefinidas_nao_o_total(monkeypatch):
+    """Sem janela pura, o veredito cai nas INDEFINIDAS — não no total.
+
+    A forma antiga (`if vals_puro else p10`) lia o total, que aqui está
+    contaminado por 65 janelas de voz a 0,05. As 10 primeiras são indefinidas
+    com NCC alta (~0,998): o veredito tem de sair delas. Receita do gate #1100.
+    """
+    ref, eco = _par()
+    linhas = ncc_eco.relogio_pelo_indice(len(eco), len(ref))
+    chamadas = {"voz": 0, "ncc": 0}
+
+    def _tem_voz(_j):
+        chamadas["voz"] += 1
+        return None if chamadas["voz"] <= 10 else True
+
+    def _ncc(*_a, **_kw):
+        chamadas["ncc"] += 1
+        return (0.998, 160) if chamadas["ncc"] <= 10 else (0.05, 160)
+
+    monkeypatch.setattr(ncc_eco, "_tem_voz", _tem_voz)
+    monkeypatch.setattr(ncc_eco, "ncc_no_instante", _ncc)
+    r = ncc_eco.medir(eco, ref, linhas)
+    assert r["indef_n"] == 10
+    assert r["puro_n"] == 0
+    assert r["puro_p10"] >= 0.8, "o veredito veio do total contaminado, não das indefinidas"
+    assert r["eco"] is True
+    assert r["p10"] < 0.8, "o total tem de estar contaminado, senão a célula não separa nada"
+
+
+def test_tudo_indefinido_nao_afirma_mic_com_voz(monkeypatch):
+    """Sem Silero não se sabe o que havia no mic — as duas frases não podem sair.
+
+    Antes saíam juntas e a primeira afirmava o que não foi medido: "mic sempre
+    com voz" só vale quando a separação rodou (#1101).
+    """
+    monkeypatch.setattr(ncc_eco, "_tem_voz", lambda _j: None)
+    ref, eco = _par()
+    linhas = ncc_eco.relogio_pelo_indice(len(eco), len(ref))
+    r = ncc_eco.medir(eco, ref, linhas)
+    assert "Silero indisponível" in r["aviso"]
+    assert "mic sempre com voz" not in r["aviso"]
+
+
 def test_sem_janela_pura_o_aviso_aparece(monkeypatch):
     """Microfone sempre com voz: mede-se, mas o relatório diz que é mistura.
 
