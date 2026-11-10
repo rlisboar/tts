@@ -35,28 +35,62 @@ def _codigo() -> str:
     return "\n".join(re.sub(r"(^|\s)//.*$", r"\1", linha) for linha in fonte.splitlines())
 
 
-def test_nenhuma_string_da_ui_monta_key_em_query():
+# Nomes de credencial em query: o que o servidor aceita (`key` no WS, `ticket`) e
+# o que o mascaramento de log trata como segredo (`api_key`, `apikey`, `token`,
+# `secret`, …). O `ticket=` tem UM lugar legítimo, o fluxo do ticket em
+# `lxwsConectar`, e é contado à parte.
+_NOMES = r"(?:key|api[_-]?key|x-api-key|token|access_token|secret|ticket)"
+_TICKET_DO_FLUXO = '"?ticket=" + encodeURIComponent(t.ticket)'
+
+# De onde a chave sai no navegador: `KEY`, o `keyRead()` que a carrega e o storage
+# por trás dele. Cada um tem dono fixo: `keyRead()` só carrega `KEY` e o storage
+# da chave só é lido dentro do `keyRead`. Outra leitura contorna a guarda.
+_FONTE = r"(?:\bKEY\b|\bkeyRead\(\s*\))"
+
+
+def test_nenhuma_string_da_ui_monta_credencial_em_query():
     codigo = _codigo()
-    achados = re.findall(r"""["'`][^"'`\n]*[?&]key=[^"'`\n]*["'`]""", codigo)
-    assert not achados, f"a UI monta `key=` em query string: {achados}"
-    # a outra forma de montar a mesma URL
-    assert not re.search(r"""\.(?:set|append)\(\s*["']key["']""", codigo), \
-        "a UI põe `key` em URLSearchParams"
+    achados = re.findall(r"""["'`][^"'`\n]*[?&]""" + _NOMES + r"""=[^"'`\n]*["'`]""",
+                         codigo, flags=re.I)
+    assert achados == ['"?ticket="'], f"a UI monta credencial em query string: {achados}"
+    assert codigo.count(_TICKET_DO_FLUXO) == 1, "o `?ticket=` saiu do fluxo do ticket"
+    # as outras formas de montar a mesma URL
+    hit = re.search(r"""\.(?:set|append)\(\s*["'`]""" + _NOMES + r"""["'`]""", codigo, flags=re.I)
+    assert not hit, f"a UI põe credencial em URLSearchParams: {hit.group(0)!r}"
+    hit = re.search(r"URLSearchParams\(\s*\{[^}]*\b" + _NOMES + r"\b", codigo, flags=re.I)
+    assert not hit, f"a UI põe credencial em URLSearchParams: {hit.group(0)!r}"
 
 
 def test_a_chave_so_sai_do_navegador_no_header():
-    """`KEY` não entra em concatenação nem em template, só em `X-API-Key`."""
+    """`KEY`/`keyRead()` não entram em concatenação, template nem URLSearchParams."""
     codigo = _codigo()
     proibidos = [
-        r"encodeURIComponent\(\s*KEY\b",
-        r"\+\s*KEY\b(?!\s*\.)",       # `"…" + KEY` (o `KEY.slice` da máscara é leitura)
-        r"\bKEY\s*\+",
-        r"\$\{\s*KEY\b",
+        r"encodeURIComponent\(\s*" + _FONTE,
+        r"\+\s*" + _FONTE + r"(?!\s*\.)",   # `"…" + KEY` (o `KEY.slice` da máscara é leitura)
+        _FONTE + r"\s*\+",
+        r"\$\{\s*" + _FONTE,
+        r"\.(?:set|append)\([^,)]*,\s*" + _FONTE,
     ]
     for padrao in proibidos:
         hit = re.search(padrao, codigo)
-        assert not hit, f"`KEY` vira texto de URL/concatenação: {hit.group(0)!r}"
+        assert not hit, f"a chave vira texto de URL/concatenação: {hit.group(0)!r}"
     assert '"X-API-Key": KEY' in codigo, "a chave sumiu do header do `api()`"
+
+
+def test_a_chave_so_e_lida_por_um_caminho():
+    """`keyRead()` só carrega `KEY`; o storage da chave só é lido dentro do `keyRead`.
+
+    Sem isto, `searchParams.set("x", keyRead())` ou um `localStorage.getItem` da
+    chave levariam o segredo para a URL por fora de `KEY`.
+    """
+    codigo = _codigo()
+    chamadas = re.findall(r"[^\n]*\bkeyRead\(\s*\)[^\n]*", codigo)
+    assert [c.strip() for c in chamadas] == ["let KEY = keyRead();"], \
+        f"`keyRead()` usado fora da carga de `KEY`: {chamadas}"
+    leitor = codigo.split("const keyRead = () => {", 1)[1].split("};", 1)[0]
+    fora = codigo.replace(leitor, "")
+    hit = re.search(r"""\.getItem\(\s*["'`](?:ttsStudioKey|ttsRodKey)["'`]""", fora)
+    assert not hit, f"a chave é lida do storage fora do `keyRead`: {hit.group(0)!r}"
 
 
 def test_ws_do_live_abre_por_ticket_e_unico():

@@ -1091,16 +1091,29 @@ variável de shell (não exportada). Prova por shim com token sintético hostil.
 | sem o trap de TERM | `test_header_do_token_some_quando_o_script_leva_sinal` **FAILED** |
 | `export CF_TOKEN` | `test_token_da_api_*` **FAILED** (o token aparece no env do filho) |
 | sem `umask 077` | 4 **FAILED** (header e arquivos do token deixam de nascer 0600) |
-### #1107 — a UI não põe a chave em URL; o WS do Live entra só por ticket
+### #1107 — a UI não põe credencial em URL; o WS do Live entra só por ticket
 
-Guarda estática em `tests/test_ui_chave_fora_da_url_1107.py`. O index é lido sem
-comentários, porque são eles que explicam o `?key=` proibido.
+Guarda estática em `tests/test_ui_chave_fora_da_url_1107.py`, com 5 células. O
+index é lido sem comentários, porque são eles que explicam o `?key=` proibido.
+Nomes cobertos em query: `key`, `api_key`/`apikey`/`api-key`, `x-api-key`, `token`,
+`access_token`, `secret`, e `ticket` fora do fluxo do ticket. Fontes da chave:
+`KEY`, `keyRead()` e o storage (`ttsStudioKey`/`ttsRodKey`).
+
+Na lista abaixo, as sabotagens injetadas dentro de `lxWsUrl` também derrubam
+`..._abre_por_ticket_e_unico` por tabela, porque o corpo passa a conter "key".
 
 | Sabotagem | Resultado |
 |---|---|
-| `q = "?key=" + encodeURIComponent(KEY)` no lugar do ticket | 3 de 4 **FAILED** (`..._key_em_query`, `..._so_sai_..._no_header`, `..._abre_por_ticket_e_unico`) |
-| o catch do ticket degradar para `q = "?key=" + KEY` | 4 de 4 **FAILED** |
-| o catch do ticket seguir sem `return` (abre o WS sem credencial) | `test_ws_do_live_abre_por_ticket_e_unico`, `test_falha_do_ticket_vira_erro_sem_degradar_para_a_chave` **FAILED** |
-| `new WebSocket(lxWsUrl() + q + "&key=" + KEY, …)` | 3 de 4 **FAILED** |
-| `URLSearchParams().set("key", KEY)` dentro de `lxWsUrl` | `..._key_em_query`, `..._abre_por_ticket_e_unico` **FAILED** |
-| template `` `${location.host}?k=${KEY}` `` | `test_a_chave_so_sai_do_navegador_no_header` **FAILED** |
+| S1 `q = "?key=" + encodeURIComponent(KEY)` no lugar do ticket | 3 de 5 **FAILED** (`..._credencial_em_query`, `..._so_sai_..._no_header`, `..._abre_por_ticket_e_unico`) |
+| S2 o catch do ticket degradar para `q = "?key=" + KEY` | 4 de 5 **FAILED** (todas, menos `..._lida_por_um_caminho`) |
+| S3 o catch do ticket perder só o `return` (abre o WS sem credencial) | 1 **FAILED**: `test_falha_do_ticket_vira_erro_sem_degradar_para_a_chave` |
+| S3b o `return` do catch trocado por `q = ""` | 2 **FAILED**: `..._abre_por_ticket_e_unico` (q ganha 3ª atribuição) e `..._sem_degradar_para_a_chave` |
+| S4 `new WebSocket(lxWsUrl() + q + "&key=" + KEY, …)` | 3 de 5 **FAILED** |
+| S5 `URLSearchParams().set("key", KEY)` em `lxWsUrl` | 3 de 5 **FAILED** (`..._em_query`, `..._no_header`, `..._abre_por_ticket` por tabela) |
+| S6 template `` `${location.host}?k=${KEY}` `` | `test_a_chave_so_sai_do_navegador_no_header` **FAILED** |
+| S7 `searchParams.set("api_key", keyRead())` (P4 do veredito) | 4 de 5 **FAILED** (`..._em_query`, `..._no_header`, `..._lida_por_um_caminho`, `..._abre_por_ticket` por tabela) |
+| S8 `searchParams.set("x", keyRead())` (nome inocente) | `..._no_header`, `..._lida_por_um_caminho` **FAILED** (+ `..._abre_por_ticket` por tabela) |
+| S9 `searchParams.set("x", localStorage.getItem("ttsStudioKey"))` | `test_a_chave_so_e_lida_por_um_caminho` **FAILED** (+ `..._abre_por_ticket` por tabela) |
+| S10 `"/x?a=1&token=" + …` | `test_nenhuma_string_da_ui_monta_credencial_em_query` **FAILED** |
+| S11 `"/x?ticket=" + t` fora do fluxo do ticket | `test_nenhuma_string_da_ui_monta_credencial_em_query` **FAILED** |
+| S12 `new URLSearchParams({ api_key: k })` | `..._credencial_em_query` **FAILED** (+ `..._abre_por_ticket` por tabela) |
