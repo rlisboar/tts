@@ -109,6 +109,7 @@ limpa() {
   local rc=$?
   print -r -- "== limpeza (rc=$rc)" | tee -a "$LOG_CORRIDA"
   [ -n "$SAMPLER" ] && kill "$SAMPLER" 2>/dev/null
+  [ -n "$CABECALHO" ] && rm -f -- "$CABECALHO"
   if [ -n "$ANTERIOR" ] && [ "$SUBIU" = 1 ]; then
     curl -s -m 5 -o /dev/null -H "Content-Type: application/json" \
       -X POST "$APP/api/settings" -d "{\"live_stt_engine\": \"$ANTERIOR\"}" \
@@ -191,6 +192,8 @@ fala "   corpus: $(ls "$CORPUS" | wc -l | tr -d ' ') arquivos · semente $SEMENT
 # rede. O S2 absoluto vira PISO (o real tem TTFT de 0,8-1,3 s), então o veredito
 # do eixo usa o `pos_llm` e o delta entre células — o `llm_ttft` fica constante e
 # auditável.
+# --- INICIO PRE-VOO DA CHAVE (#1075) --- o teste recorta daqui até o fim do
+# bloco; mexer aqui sem rodar `test_rodada_c0c1` é o que deixa a chave vazar
 _LLM_B="${TTS_CHAT_BASE_URL:-}"
 if [ -z "$_LLM_B" ]; then
   _LLM_B="$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_base_url"])' 2>/dev/null)"
@@ -198,8 +201,26 @@ if [ -z "$_LLM_B" ]; then
 else
   _LLM_K="${TTS_CHAT_API_KEY:-fake}"
 fi
+# já copiada em `_LLM_K`: sai do ambiente para não ser herdada por live_bench,
+# fase_ruido nem pelo amostrador — só o `sobe` a repassa, e só para a 7890
+unset TTS_CHAT_API_KEY
+
+# A chave NÃO vai no argv: `ps` de outro processo do mesmo usuário lê argv, e a
+# espera de 60 × 2 s abaixo a deixaria exposta por até 12 s. O header vai por
+# arquivo 0600 (`-H @arquivo`), apagado no `trap` (#1075).
+# `unset` depois de copiar: variável exportada é herdada por TODOS os filhos
+# (`live_bench`, `fase_ruido`, amostrador), e só o `sobe` precisa dela.
+CABECALHO=""
+_LLM_H=()
+if [ -n "$_LLM_K" ]; then
+  CABECALHO="$(mktemp "${TMPDIR:-/tmp}/rodada-llm.XXXXXX")" \
+    && chmod 600 "$CABECALHO" \
+    && printf 'Authorization: Bearer %s\n' "$_LLM_K" > "$CABECALHO" \
+    && _LLM_H=(-H "@$CABECALHO") \
+    || { CABECALHO=""; _LLM_H=(); }
+fi
 if [ -n "$_LLM_B" ]; then
-  _code="$(curl -s -m 12 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $_LLM_K" "$_LLM_B/models")"
+  _code="$(curl -s -m 12 -o /dev/null -w '%{http_code}' "${_LLM_H[@]}" "$_LLM_B/models")"
   fala "   LLM: $_LLM_B/models → HTTP $_code"
   case "$_code" in
     2*|3*|4*) : ;;
@@ -208,6 +229,7 @@ if [ -n "$_LLM_B" ]; then
 else
   fala "   LLM: chat_base_url ausente no settings.json da árvore"
 fi
+# --- FIM PRE-VOO DA CHAVE (#1075) ---
 
 # amostrador de memória (1/min): é a curva do #891
 ( while :; do
@@ -223,7 +245,7 @@ SAMPLER=$!
 sobe() {                  # $1 = 0|1 (duck rápido)
   fala "== sobe 7890 (duck_rapido=$1)  $(date -Iseconds)"
   local K B M
-  K="${TTS_CHAT_API_KEY:-$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_api_key"])' 2>/dev/null)}"
+  K="${_LLM_K:-$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_api_key"])' 2>/dev/null)}"
   B="${TTS_CHAT_BASE_URL:-$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_base_url"])' 2>/dev/null)}"
   M="${TTS_CHAT_MODEL:-$("$PY" -c 'import json;print(json.load(open("settings.json"))["chat_model"])' 2>/dev/null)}"
   # `exec` no subshell: sem ele o `&` põe o SUBSHELL em background, o subshell

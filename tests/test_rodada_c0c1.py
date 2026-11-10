@@ -101,3 +101,63 @@ def test_texto_do_eco_declara_a_resolucao_no_zero() -> None:
     assert "LIGA" in t and "resolução declarada" in t and "27.8" in t and "n=10" in t
     assert "NÃO LIGA" in rr._texto_eco(5, 10, [23.7, 76.3])
     assert "INDETERMINADO" in rr._texto_eco(1, 10, [1.8, 40.4])
+
+
+# ── #1075: a chave do provedor não pode aparecer no argv do `curl` ──────────
+_SENHA = "sk-SENTINELA-1075"
+
+
+def _roda_prevoo(tmp_path: Path, env_extra: dict | None = None):
+    """Roda SÓ o bloco de pré-voo, com `curl` dublado que anota o argv.
+
+    O bloco é recortado pelos marcadores do próprio script: rodar o roteiro
+    inteiro exigiria mini, modelo e a 7890.
+    """
+    fonte = (RAIZ / "tools" / "rodada_c0c1.sh").read_text()
+    bloco = fonte.split("# --- INICIO PRE-VOO DA CHAVE (#1075) ---", 1)[1]
+    bloco = bloco.split("# --- FIM PRE-VOO DA CHAVE (#1075) ---", 1)[0]
+
+    (tmp_path / "settings.json").write_text(
+        '{"chat_base_url": "http://127.0.0.1:9/v1", "chat_api_key": "%s", '
+        '"chat_model": "x"}' % _SENHA)
+
+    argv = tmp_path / "argv.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> %s\necho 200\n' % ("%s", argv))
+    curl.chmod(0o755)
+
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path),
+           "TMPDIR": str(tmp_path), "PY": sys.executable,
+           "TTS_CHAT_BASE_URL": "http://127.0.0.1:9/v1"}
+    env.update(env_extra or {})
+    r = subprocess.run(["zsh", "-c", bloco], cwd=str(tmp_path), env=env,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return argv.read_text()
+
+
+def test_chave_do_provedor_nao_aparece_no_argv_do_curl(tmp_path: Path) -> None:
+    """`ps` de outro processo do mesmo usuário lê argv — a chave ia junto.
+
+    O header tem de ir por arquivo (`-H @caminho`), não colado no `-H`.
+    """
+    chamadas = _roda_prevoo(tmp_path, {"TTS_CHAT_API_KEY": _SENHA})
+    assert _SENHA not in chamadas, f"a chave vazou no argv:\n{chamadas}"
+    assert "-H @/" in chamadas, chamadas
+    arquivo = Path(chamadas.split("-H @", 1)[1].split()[0])
+    assert arquivo.read_text().strip() == f"Authorization: Bearer {_SENHA}"
+    assert oct(arquivo.stat().st_mode & 0o777) == "0o600", "o header tem de ser 0600"
+
+
+def test_chave_nao_e_herdada_pelos_filhos(tmp_path: Path) -> None:
+    """Só o `sobe` repassa a chave; o resto dos filhos não precisa dela."""
+    fonte = (RAIZ / "tools" / "rodada_c0c1.sh").read_text()
+    bloco = fonte.split("# --- INICIO PRE-VOO DA CHAVE (#1075) ---", 1)[1]
+    bloco = bloco.split("# --- FIM PRE-VOO DA CHAVE (#1075) ---", 1)[0]
+    # o `unset` tem de vir DEPOIS da captura e ANTES de qualquer filho
+    assert "unset TTS_CHAT_API_KEY" in bloco, "a chave fica exportada para todo filho"
+    assert bloco.index("_LLM_K=") < bloco.index("unset TTS_CHAT_API_KEY")
+    sobe = fonte.split("sobe() {", 1)[1].split("\n}", 1)[0]
+    assert '"${_LLM_K:-' in sobe, "o `sobe` tem de repassar a chave capturada"
