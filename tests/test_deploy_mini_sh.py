@@ -628,7 +628,7 @@ def test_header_da_rodada_some_quando_o_smoke_leva_sinal(amb, tmp_path):
     amb.update(TMPDIR=str(tmpd), T_CURL_DORME="20")
     p = subprocess.Popen([ZSH, "-f", str(SCRIPT), "smoke"], env=amb, cwd=str(REPO),
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                         start_new_session=True)
+                         **_SEM_TTY)          # #1111: já traz o grupo próprio do killpg
     try:
         prazo = time.monotonic() + 30
         while time.monotonic() < prazo:      # espera o header existir com a chave
