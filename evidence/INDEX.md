@@ -13,10 +13,11 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 |---|---|---|---|
 | `1022-hipoteses-falsificacao.md` | #1022 | 2026-11-09 | 1022 — hipóteses de causa do pos_llm e critérios de FALSIFICAÇÃO (pré-registro) |
 | `1049-deploy-head-48b11d5.txt` | #1049 | 2026-11-09 | == deploy 48b11d5 (main) — 2026-11-09T10:19:17-03:00 |
-| `1060-rede-so-llm.png` | #1060 | — | (imagem) |
+| `1060-rede-so-llm.png` | #1060 | 2026-11-09 | (imagem) |
 | `1067-live-aec-diag.png` | #1067 | 2026-11-09 | (imagem) |
-| `1079-piso-passos.md` | #1079 | — | 1079 — piso de `num_steps` do 1º trecho do Live |
-| `1079-piso-passos.py` | #1079 | — | """#1079 — piso de `num_steps` do 1º trecho do Live: custo, timbre (ECAPA), WER e ABX. |
+| `1079-piso-passos.md` | #1079 | 2026-11-09 | 1079 — piso de `num_steps` do 1º trecho do Live |
+| `1079-piso-passos.py` | #1079 | 2026-11-09 | """#1079 — piso de `num_steps` do 1º trecho do Live: custo, timbre (ECAPA), WER e ABX. |
+| `1087-deploy-head-e8ea9df.txt` | #1087 | 2026-11-09 | deploy de e8ea9df no mini — 2026-11-09 20:33 |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
