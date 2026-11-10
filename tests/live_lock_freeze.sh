@@ -175,8 +175,8 @@ ORIG = """    if ocupado:
         # lock preso; a outra corrotina bloqueava a THREAD do event loop — e a
         # primeira só retomava se o loop rodasse. O slot já foi decidido aqui,
         # nada mais depende do lock.
-        await ws.send_json(_live_erro(
-            "busy", f"máximo de {_LIVE_MAX_SESSIONS} sessões simultâneas"))
+        await asyncio.wait_for(ws.send_json(_live_erro(
+            "busy", f"máximo de {_LIVE_MAX_SESSIONS} sessões simultâneas")), _LIVE_SEND_TIMEOUT_S)
         await ws.close(code=1013)
         return
 """
@@ -197,7 +197,7 @@ PYM
     if mordida_patch restore 2>/dev/null; then
       :
     else
-      echo "  ⚠ o bloco do `busy` mudou durante a mordida — restaurando pelo backup"
+      echo "  ⚠ o bloco do busy mudou durante a mordida — restaurando pelo backup"
       cp "$BAK" "$APP"
     fi
     /bin/rm -f "$BAK"

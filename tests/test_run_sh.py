@@ -434,8 +434,11 @@ def test_live_lock_freeze_muta_uma_copia_e_deixa_a_arvore_intacta(tmp_path):
         assert r.returncode == 0, r.stdout + r.stderr
         texto = copia_app.read_text()
         assert sentinela in texto, "a cópia foi sobrescrita (restore por `cp` de foto velha)"
-        # fix = `await ws.send_json(...)` a 8 espaços, DENTRO do `if ocupado:` a 4
-        assert re.search(r"^    if ocupado:\n(?:.*\n)*?        await ws\.send_json",
+        # fix = o `send_json` do `busy` a 8 espaços, DENTRO do `if ocupado:` a 4.
+        # Desde o #1088 o envio vai embrulhado em `asyncio.wait_for(...)`, então o
+        # `await` é seguido do `wait_for`; aceitar as duas formas evita que a
+        # guarda quebre a cada mudança de forma do mesmo envio.
+        assert re.search(r"^    if ocupado:\n(?:.*\n)*?        await (?:asyncio\.wait_for\()?ws\.send_json",
                          texto, re.M), "o bloco do `busy` ficou revertido na cópia"
         assert copia_txt.is_file(), "a suíte não registrou a cópia de trabalho"
         assert not copia_txt.read_text().strip().startswith(str(AQUI.parent)), \

@@ -14166,8 +14166,9 @@ async def _live_sender(sess: dict, ws) -> None:
         motivo = _live_motivo_fechamento(sess)
         if motivo is not None:
             try:
-                await ws.send_json({"type": "error", "code": motivo[0],
-                                    "message": motivo[1]})
+                await asyncio.wait_for(
+                    ws.send_json({"type": "error", "code": motivo[0],
+                                  "message": motivo[1]}), _LIVE_SEND_TIMEOUT_S)
                 await ws.close(code=1000)
             except Exception:  # noqa: BLE001
                 pass
@@ -14335,12 +14336,12 @@ async def live_ws(ws: WebSocket):
         de_fora = _origem_estrangeira(ws)
         # 4403 para origem de terceiro (o cliente entende "não é a UI") e 4401 para
         # o resto; a mensagem diz o caminho em vez de só negar (#781)
-        await ws.send_json(_live_erro(
+        await asyncio.wait_for(ws.send_json(_live_erro(
             "unauthorized",
             ("Origem desconhecida: pegue um ticket em POST /api/live/ticket e use "
              "?ticket=<t> (ou ?key=<chave>)") if de_fora else
             ("Sem credencial: pegue um ticket em POST /api/live/ticket e use "
-             "?ticket=<t> (ou ?key=<chave>); loopback dispensa")))
+             "?ticket=<t> (ou ?key=<chave>); loopback dispensa"))), _LIVE_SEND_TIMEOUT_S)
         await ws.close(code=4403 if de_fora else 4401)
         return
     _live_sweep()
@@ -14350,30 +14351,40 @@ async def live_ws(ws: WebSocket):
     try:
         primeiro = await asyncio.wait_for(ws.receive(), _LIVE_SETUP_TIMEOUT_S)
     except asyncio.TimeoutError:
-        await ws.send_json(_live_erro("setup_timeout", "mande o `setup` primeiro"))
+        await asyncio.wait_for(
+            ws.send_json(_live_erro("setup_timeout", "mande o `setup` primeiro")),
+            _LIVE_SEND_TIMEOUT_S)
         await ws.close(code=4408)
         return
     if primeiro.get("type") == "websocket.disconnect":
         return
     if "text" not in primeiro:
-        await ws.send_json(_live_erro("setup_binario", "o 1º frame é o JSON `setup`"))
+        await asyncio.wait_for(
+            ws.send_json(_live_erro("setup_binario", "o 1º frame é o JSON `setup`")),
+            _LIVE_SEND_TIMEOUT_S)
         await ws.close(code=4400)
         return
     try:
         cfg = _live_valida_setup(json.loads(primeiro["text"]))
     except json.JSONDecodeError:
-        await ws.send_json(_live_erro("setup_json", "setup não é JSON válido"))
+        await asyncio.wait_for(
+            ws.send_json(_live_erro("setup_json", "setup não é JSON válido")),
+            _LIVE_SEND_TIMEOUT_S)
         await ws.close(code=4400)
         return
     except HTTPException as exc:
         # `_resolve_voice` levanta HTTPException (404 sem voz gravada) e ela NÃO é
         # ValueError: sem este ramo o handshake morria sem NENHUM frame (o cliente
         # ficava pendurado no receive e não sabia que faltava voz).
-        await ws.send_json(_live_erro("setup_invalido", str(exc.detail)))
+        await asyncio.wait_for(
+            ws.send_json(_live_erro("setup_invalido", str(exc.detail))),
+            _LIVE_SEND_TIMEOUT_S)
         await ws.close(code=4400)
         return
     except ValueError as exc:
-        await ws.send_json(_live_erro("setup_invalido", str(exc)))
+        await asyncio.wait_for(
+            ws.send_json(_live_erro("setup_invalido", str(exc))),
+            _LIVE_SEND_TIMEOUT_S)
         await ws.close(code=4400)
         return
 
@@ -14483,8 +14494,8 @@ async def live_ws(ws: WebSocket):
         # lock preso; a outra corrotina bloqueava a THREAD do event loop — e a
         # primeira só retomava se o loop rodasse. O slot já foi decidido aqui,
         # nada mais depende do lock.
-        await ws.send_json(_live_erro(
-            "busy", f"máximo de {_LIVE_MAX_SESSIONS} sessões simultâneas"))
+        await asyncio.wait_for(ws.send_json(_live_erro(
+            "busy", f"máximo de {_LIVE_MAX_SESSIONS} sessões simultâneas")), _LIVE_SEND_TIMEOUT_S)
         await ws.close(code=1013)
         return
     global _live_sweeper_iniciado
@@ -14492,24 +14503,38 @@ async def live_ws(ws: WebSocket):
         _live_sweeper_iniciado = True
         threading.Thread(target=_live_sweeper, daemon=True).start()
 
-    await ws.send_json({"type": "ready", "session_id": sid, "resumed": bool(retomado),
-                        "voice_id": sess["voice_id"],
-                        "audio": {"format": "pcm16", "sr": _LIVE_AUDIO_SR, "channels": 1},
-                        "in_audio": {"format": "pcm16", "sr": 16000, "channels": 1},
-                        # #313: quantas mensagens do `setup` caíram no teto de chars
-                        # (o cliente enxerga o que foi encurtado) e a `vad` APLICADA,
-                        # com `barge_ms` junto — o efetivo, não o pedido.
-                        "history_descartados": cfg.get("history_descartados", 0),
-                        "vad": sess["vad"]})
-    if _settings.get("tts_marca_dagua"):
-        try:                    # #657: sobe o marcador fora do caminho do 1º áudio
-            import marca_dagua
-
-            marca_dagua.prewarm()
-        except Exception:       # noqa: BLE001 — sem marca a sessão segue
-            pass
     sender = None
     try:
+        # #1088: a sessão JÁ está no registry. O `ready` sai ANTES da task de
+        # envio existir, e o sweeper só marca `vencida` — não fecha o socket nem
+        # devolve o slot. O `wait_for` fora deste `try` estourava e o
+        # `TimeoutError` nascia sem passar no `finally`: slot vazado para sempre,
+        # pior que a sessão muda. Aqui o estouro solta o slot e fecha.
+        try:
+            await asyncio.wait_for(ws.send_json({
+                "type": "ready", "session_id": sid, "resumed": bool(retomado),
+                "voice_id": sess["voice_id"],
+                "audio": {"format": "pcm16", "sr": _LIVE_AUDIO_SR, "channels": 1},
+                "in_audio": {"format": "pcm16", "sr": 16000, "channels": 1},
+                # #313: quantas mensagens do `setup` caíram no teto de chars
+                # (o cliente enxerga o que foi encurtado) e a `vad` APLICADA,
+                # com `barge_ms` junto — o efetivo, não o pedido.
+                "history_descartados": cfg.get("history_descartados", 0),
+                "vad": sess["vad"]}), _LIVE_SEND_TIMEOUT_S)
+        except Exception:                  # noqa: BLE001 — par não leu o ready
+            _live_log_kv("ready_morto", sess=sid)
+            try:
+                await asyncio.wait_for(ws.close(code=1011), _LIVE_SEND_TIMEOUT_S)
+            except Exception:              # noqa: BLE001 — close também pode pendurar
+                pass
+            return
+        if _settings.get("tts_marca_dagua"):
+            try:                    # #657: sobe o marcador fora do caminho do 1º áudio
+                import marca_dagua
+
+                marca_dagua.prewarm()
+            except Exception:       # noqa: BLE001 — sem marca a sessão segue
+                pass
         # dentro do try: o `finally` mata o ffmpeg mesmo se o pipeline não nascer.
         # O `abrir` corre enquanto o cliente liga o microfone. O NS do navegador
         # continua no Live; este é o outro filtro, no PCM, e não passa por afftdn.

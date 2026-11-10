@@ -13,6 +13,7 @@ Sem modelo e sem WS real — dublês.
 from __future__ import annotations
 
 import asyncio
+import pathlib
 
 import app
 
@@ -47,9 +48,14 @@ class _PipeFake:
 class _WsFalso:
     """WS de dublê: registra o que saiu; pode morrer ou travar no envio."""
 
-    def __init__(self, falhar: bool = False, travar: bool = False) -> None:
+    def __init__(self, falhar: bool = False, travar: bool = False,
+                 travar_json: int = 0) -> None:
         self.falhar = falhar
         self.travar = travar
+        # quantos `send_json` seguem pendurados (o ramo JSON precisa da mesma
+        # célula do áudio — achado 2 do gate #1088). Contador, e não booleano,
+        # para o `error`/`close` do fim ainda poder sair.
+        self.travar_json = travar_json
         self.enviados: list = []
         self.fechado: int | None = None
         self._solta = asyncio.Event()
@@ -57,6 +63,9 @@ class _WsFalso:
     async def send_json(self, obj) -> None:
         if self.falhar:
             raise RuntimeError("socket morto")
+        if self.travar_json > 0:
+            self.travar_json -= 1
+            await self._solta.wait()     # cliente que não lê: idem, no ramo JSON
         self.enviados.append(obj)
 
     async def send_bytes(self, payload: bytes) -> None:
@@ -179,6 +188,116 @@ def test_sender_nao_derruba_sessao_de_outra_conexao():
         assert app._live_sessions["s-fila"] is outra
     finally:
         app._live_sessions.pop("s-fila", None)
+
+
+def test_todo_send_no_ws_do_live_tem_teto():
+    """Guarda estática: NENHUM `ws.send_*` do app fica sem `wait_for` (#1088).
+
+    O conserto anterior cobria 3 de 12 e o gate reprovou — a célula dinâmica
+    cobre o caminho do sender, esta cobre os envios de handshake (`ready`,
+    `busy`, `unauthorized`, erros de `setup`), que são de outro escopo e onde o
+    `ready` é o pior caso: ele sai ANTES de a task de envio existir, então
+    pendurar ali nasce uma sessão muda sem ninguém para socorrer.
+    """
+    linhas = pathlib.Path(app.__file__).read_text().splitlines()
+    soltos = []
+    for n, linha in enumerate(linhas):
+        if "ws.send_json(" not in linha and "ws.send_bytes(" not in linha:
+            continue
+        if "wait_for(" in linha or "wait_for(" in (linhas[n - 1] if n else ""):
+            continue
+        soltos.append(f"{n + 1}: {linha.strip()}")
+    assert not soltos, "send sem teto no WS do Live:\n  " + "\n  ".join(soltos)
+
+
+def test_send_json_pendurado_tambem_derruba_a_sessao(monkeypatch):
+    """Mesmo teto no ramo JSON (achado 2 do gate #1088).
+
+    Só o `send_bytes` estava coberto: removendo o `wait_for` do `send_json` a
+    suíte ficava verde. Aqui o `turn_complete` pendura e a sessão tem de cair
+    igual — sem isso, mensagem de controle (inclusive o `ready`) fica sem teto.
+    """
+    monkeypatch.setattr(app, "_LIVE_SEND_TIMEOUT_S", 0.05)
+    # sem `stats` periódico: ele também é `send_json` e mascararia o ramo do item
+    monkeypatch.setattr(app, "_LIVE_STATS_MS", 0)
+    sess = _sess()
+    sess["pipe"] = _PipeFake()
+    ws = _WsFalso(travar_json=1)
+    app._live_sessions["s-fila"] = sess
+    try:
+        sess["fila"].put(("json", {"type": "turn_complete"}))
+
+        async def fluxo() -> None:
+            await asyncio.wait_for(app._live_sender(sess, ws), 2.0)
+
+        asyncio.run(fluxo())
+        assert ws.fechado == 1011
+        assert sess["pipe"].cancelado == 1
+    finally:
+        app._live_sessions.pop("s-fila", None)
+
+
+def test_ready_pendurado_solta_o_slot(monkeypatch):
+    """`ready` sem leitor devolve o slot (#1088).
+
+    A sessão entra no registry ANTES do `ready`, e a task de envio ainda não
+    existe. O sweeper só marca `vencida` — não fecha nem tira do registry. Se o
+    `wait_for` ficar fora do `finally`, o estouro vaza o slot para sempre; se
+    não houver `wait_for`, este teste estoura os 2 s.
+    """
+    monkeypatch.setattr(app, "_LIVE_SEND_TIMEOUT_S", 0.05)
+    # o sweeper real só marca `vencida` e dorme 15 s — não pode nascer neste teste
+    monkeypatch.setattr(app, "_live_sweeper_iniciado", True)
+    monkeypatch.setattr(app, "_live_autentica", lambda ws: True)
+    monkeypatch.setattr(app, "_live_engine_novo", lambda sess: None)
+    monkeypatch.setattr(app, "_live_valida_setup", lambda msg: {
+        "voice_id": "voz-teste", "voice_id_pedido": "", "session_id": "",
+        "system": "", "history": [], "history_descartados": 0,
+        "vad": {"silence_ms": 600, "prefix_ms": 100, "barge_ms": 400},
+    })
+    filtros = dict(app._settings.get("live_barge_filtros") or {})
+    filtros["modelo"] = {"on": False}
+    monkeypatch.setitem(app._settings, "live_barge_filtros", filtros)
+
+    def _proibido(*_a, **_k):
+        raise AssertionError("ready travado seguiu depois do teto")
+
+    monkeypatch.setattr(app, "_live_rnnoise_novo", _proibido)
+    monkeypatch.setattr(app, "_live_pipe_novo", _proibido)
+
+    class _Ws:
+        def __init__(self) -> None:
+            self.headers: dict = {}
+            self.fechado: int | None = None
+
+        async def accept(self, subprotocol=None) -> None:
+            return None
+
+        async def receive(self):
+            return {"type": "websocket.receive", "text": "{\"type\": \"setup\"}"}
+
+        async def send_json(self, obj) -> None:
+            await asyncio.Event().wait()
+
+        async def send_bytes(self, payload: bytes) -> None:
+            await asyncio.Event().wait()
+
+        async def close(self, code: int = 1000) -> None:
+            self.fechado = code
+
+    ws = _Ws()
+    antes = dict(app._live_sessions)
+    app._live_sessions.clear()
+    try:
+        async def fluxo() -> None:
+            await asyncio.wait_for(app.live_ws(ws), 2.0)
+
+        asyncio.run(fluxo())
+        assert app._live_sessions == {}
+        assert ws.fechado == 1011
+    finally:
+        app._live_sessions.clear()
+        app._live_sessions.update(antes)
 
 
 def test_cliente_que_nao_le_para_de_crescer_no_teto():
