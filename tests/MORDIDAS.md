@@ -1064,3 +1064,15 @@ script com shims de `curl`/`python3`/`ipconfig` (`test_admin_ui_flow_chave_1109.
 | sem o trap antecipado (falha antes do `trap encerra`) | `test_header_sai_tambem_quando_a_suite_falha_antes_do_trap_principal` **FAILED** |
 
 `umask 077` sem mordida própria: o `mktemp` já cria 0600; a célula confere o modo.
+
+### #1109 (resíduo) — chaves da rodada fora do argv do `python3`
+
+As etapas de contrato e de UI recebiam `USE_KEY`/`ADM_KEY` (chaves criadas pela
+rodada — vivas na instância alvo com BASE externo) no argv do `python3`. Agora vão
+por env só daquele filho (`ADMINUI_USE_KEY`/`ADMINUI_ADM_KEY`) e o python as tira
+do ambiente ao ler (`os.environ.pop`), então o navegador não herda.
+
+| Sabotagem | Resultado |
+|---|---|
+| etapa de contrato volta a `"$PY" - "$LANURL" "$USE_KEY"` | `test_chaves_da_rodada_vao_ao_python_por_env_e_nao_pelo_argv` **FAILED** |
+| etapa de UI volta a passar `"$USE_KEY" "$ADM_KEY"` no argv | idem **FAILED** |

@@ -78,10 +78,12 @@ exit 0
 printf '%s\\n' "$*" >> "$T_PY_ARGV"
 if [ "${{1:-}}" = "-" ]; then
   cat > /dev/null
-  printf 'admin=%s\\n' "${{TTS_ROD_ADMIN_KEY:-}}" >> "$T_PY_ENV"
+  printf 'admin=%s use=%s adm=%s\\n' "${{TTS_ROD_ADMIN_KEY:-}}" "${{ADMINUI_USE_KEY:-}}" \\
+    "${{ADMINUI_ADM_KEY:-}}" >> "$T_PY_ENV"
   case "${{2:-}}" in
-    [0-9]*) exec sleep 60 ;;          # "servidor": o encerra mata pelo pid
-    *) exit 0 ;;                      # etapas de UI/contrato: passam
+    http*) exit 0 ;;                  # etapas de contrato/UI: `- <url> [suf]`
+    [0-9]*) exec sleep 60 ;;          # "servidor" (`- <porta>`): o encerra mata pelo pid
+    *) exit 0 ;;
   esac
 fi
 exec "{sys.executable}" "$@"
@@ -125,7 +127,7 @@ def test_instancia_propria_nao_usa_chave_mesmo_com_a_do_operador_exportada(caixa
     assert not [l for l in tudo if OPERADOR in l or TESTE in l], tudo
     assert not _linhas(caixa, "curl.hdr")
     env = _linhas(caixa, "py.env")
-    assert env and all(l == "admin=" for l in env), env        # servidor + UI sem a env
+    assert env and all(l.startswith("admin= ") for l in env), env  # servidor + UI sem a env
     assert OPERADOR not in r.stdout + r.stderr
 
 
@@ -186,3 +188,21 @@ def test_script_nao_le_a_credencial_do_operador():
                 and not l.lstrip().startswith("echo ")]
     assert not leituras, leituras
     assert "unset TTS_ROD_ADMIN_KEY" in [l.strip() for l in codigo]
+
+
+def test_chaves_da_rodada_vao_ao_python_por_env_e_nao_pelo_argv(caixa):
+    """#1109 (resíduo): as chaves que a rodada cria (`USE_KEY`/`ADM_KEY`) iam no
+    argv do `python3` das etapas de contrato e de UI — com BASE externo são chaves
+    vivas na instância alvo, legíveis em `ps`. Agora vão por env só daquele filho
+    (`ADMINUI_USE_KEY`/`ADMINUI_ADM_KEY`). Voltar o argv derruba esta célula."""
+    r = _roda(caixa)
+    assert r.returncode == 0, r.stdout + r.stderr
+    argv = _linhas(caixa, "py.argv")
+    etapas = [l for l in argv if l.startswith("- http")]
+    assert len(etapas) == 2, argv                               # contrato + UI
+    assert not [l for l in argv if "segredo-sintetico" in l], argv
+    env = [l for l in _linhas(caixa, "py.env") if "use=segredo-sintetico" in l]
+    assert len(env) == 2, _linhas(caixa, "py.env")              # as duas etapas recebem
+    assert all("adm= " not in l for l in env[1:]), env          # a de UI recebe a admin
+    assert "adm=segredo-sintetico" in env[1], env
+    assert all(len(l.split()) == 3 for l in env), env           # sem a semente nos args

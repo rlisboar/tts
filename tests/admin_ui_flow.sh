@@ -270,9 +270,11 @@ echo "chaves de teste: use=${USE_KEY:0:8}… admin=${ADM_KEY:0:8}…"
 # ── 1. contrato no servidor ───────────────────────────────────────────────
 echo
 echo "→ contrato (chave de uso fala com $LANURL)"
-"$PY" - "$LANURL" "$USE_KEY" <<'PYEOF'
-import json, sys, urllib.request
-base, use = sys.argv[1], sys.argv[2]
+# #1109: as chaves da rodada vão por ENV só deste filho, não no argv (`ps`); o
+# python as tira do ambiente ao ler, então nada que ele dispare as herda.
+ADMINUI_USE_KEY="$USE_KEY" "$PY" - "$LANURL" <<'PYEOF'
+import json, os, sys, urllib.request
+base, use = sys.argv[1], os.environ.pop("ADMINUI_USE_KEY")
 
 def req(metodo, caminho, chave, corpo=None):
     dados = json.dumps(corpo).encode() if corpo is not None else None
@@ -307,14 +309,16 @@ PYEOF
 # ── 2. UI: chave de uso e chave admin ────────────────────────────────────
 echo
 echo "→ UI em $LANURL"
-"$PY" - "$LANURL" "$USE_KEY" "$ADM_KEY" "$SUF" <<'PYEOF'
+ADMINUI_USE_KEY="$USE_KEY" ADMINUI_ADM_KEY="$ADM_KEY" "$PY" - "$LANURL" "$SUF" <<'PYEOF'
 import json, os, sys, time, urllib.request
 from playwright.sync_api import sync_playwright
 
-SUF = sys.argv[4]                     # mesmo sufixo do shell ($SUF), não o pid do python:
+SUF = sys.argv[2]                     # mesmo sufixo do shell ($SUF), não o pid do python:
 NOME = f"probe-papel-{SUF}"            # senão o trap não reconhece as chaves como suas
 NOME2 = f"probe-adota-{SUF}"
-base, use, adm = sys.argv[1], sys.argv[2], sys.argv[3]
+# #1109: chaves por env (fora do argv) e fora do ambiente do navegador que sobe
+base = sys.argv[1]
+use, adm = os.environ.pop("ADMINUI_USE_KEY"), os.environ.pop("ADMINUI_ADM_KEY")
 falhas = []
 
 def cobrar(cond, msg):
