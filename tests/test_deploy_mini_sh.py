@@ -113,6 +113,8 @@ case "$url" in
       if [ $tem_chave = 1 ]; then codigo="${T_CURL_CHAVE_CODE:-200}"; else codigo="${T_CURL_SEM_CHAVE_CODE:-401}"; fi ;;
   */api/tts/jobs/*/pieces/*) codigo="${T_CURL_PIECE_CODE:-200}"; corpo="RIFF-fake-audio" ;;
   */api/tts/jobs/*)
+      # #1109: janela para o teste mandar sinal com o header da rodada no disco
+      [ -n "${T_CURL_DORME:-}" ] && sleep "$T_CURL_DORME"
       if [ $tem_chave = 1 ]; then corpo="{\\"status\\":\\"${T_CURL_JOB_STATUS:-done}\\"}"; else codigo=401; fi ;;
   */api/tts)
       # o job de síntese é quem escreveria o aviso de marca d'água no log (#938)
@@ -559,9 +561,9 @@ def test_sonda_do_ws_usa_ticket_e_a_chave_nao_vai_a_url_nem_ao_argv(amb, tmp_pat
                  if "/api/live/" in l]
     assert len(argv_live) == 4, argv_live                        # 2 tickets + 2 WS
     assert not [l for l in argv_live if CHAVE in l], argv_live
-    # o header foi por arquivo 0600, e o arquivo não sobra no TMPDIR
+    # o header foi por arquivo 0600 (o da rodada, #1109), e não sobra no TMPDIR
     hdr = Path(amb["T_CURL_HDR_LOG"]).read_text().splitlines()
-    assert len(hdr) == 2, hdr
+    assert len(hdr) >= 2, hdr
     assert all(l.endswith(" 600") for l in hdr), hdr
     assert all(not Path(l.rsplit(" ", 1)[0]).exists() for l in hdr), hdr
     assert not list(tmpd.glob("deploy-mini-hdr.*"))
@@ -580,6 +582,72 @@ def test_sonda_reprova_sem_ticket_e_nunca_cai_para_a_chave(amb, tmp_path):
     ws = [l for l in log if l.startswith("WS ")]
     assert ws and all("/api/live/ws h1=" in l for l in ws), ws   # sem credencial
     assert not list(tmpd.glob("deploy-mini-hdr.*"))
+
+
+def test_nenhum_argv_da_rodada_leva_a_chave_e_o_header_some(amb, tmp_path):
+    """#1109: além da sonda do #1108, os `curl` do smoke (`/api/voices`,
+    `/api/build`, `POST /api/tts`, jobs, peça) e o `codigo_no_ar` passavam
+    `-H "X-API-Key: $chave"` — a chave do dono no argv, visível em `ps` durante
+    o smoke inteiro (classe do #1075). Agora TODO `curl` autenticado lê o header
+    de UM arquivo 0600 da rodada (dentro de um diretório 0700), apagado no trap.
+    Voltar qualquer `-H "X-API-Key: $chave"` derruba esta célula."""
+    tmpd = tmp_path / "tmpd-rodada"
+    tmpd.mkdir()
+    amb["TMPDIR"] = str(tmpd)
+    # deploy (smoke LAN+público com TTS) · compare (sem curl autenticado) ·
+    # deploy de novo = "nada a fazer" (é onde o `codigo_no_ar` roda) · smoke
+    saidas = []
+    for acao in (("deploy", "--apply"), ("compare",), ("deploy", "--apply"), ("smoke",)):
+        r = _run(amb, *acao)
+        assert r.returncode == 0, _saida(r)
+        assert CHAVE not in _saida(r)
+        saidas.append(r.stdout)
+    assert "nada a fazer" in saidas[2], saidas[2]
+    argv = Path(amb["T_CURL_ARGV"]).read_text().splitlines()
+    autenticados = [l for l in argv if "@" in l and "/deploy-mini-hdr." in l]
+    assert len(autenticados) >= 20, argv
+    # o `codigo_no_ar` (LAN direto na porta) também foi pelo arquivo
+    assert [l for l in autenticados if "http://mini-fake:7860/api/build" in l], argv
+    assert not [l for l in argv if CHAVE in l], [l for l in argv if CHAVE in l]
+    assert not [l for l in argv if "X-API-Key" in l], [l for l in argv if "X-API-Key" in l]
+    hdr = Path(amb["T_CURL_HDR_LOG"]).read_text().splitlines()
+    assert hdr and all(l.endswith(" 600") for l in hdr), hdr
+    # um arquivo por RODADA (não por chamada): 3 rodadas autenticadas → 3 caminhos
+    assert len({l.rsplit(" ", 1)[0] for l in hdr}) == 3, hdr
+    assert not list(tmpd.iterdir()), list(tmpd.iterdir())     # trap limpou tudo
+
+
+def test_header_da_rodada_some_quando_o_smoke_leva_sinal(amb, tmp_path):
+    """#1109: o diretório do header sai no trap também com SIGTERM no meio do
+    smoke (Ctrl-C/kill do grupo) — não só na saída normal."""
+    import signal
+    import time
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    tmpd = tmp_path / "tmpd-sinal"
+    tmpd.mkdir()
+    amb.update(TMPDIR=str(tmpd), T_CURL_DORME="20")
+    p = subprocess.Popen([ZSH, "-f", str(SCRIPT), "smoke"], env=amb, cwd=str(REPO),
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         start_new_session=True)
+    try:
+        prazo = time.monotonic() + 30
+        while time.monotonic() < prazo:      # espera o header existir com a chave
+            dirs = list(tmpd.glob("deploy-mini-hdr.*"))
+            if dirs and (dirs[0] / "x-api-key").exists():
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("o header da rodada nunca apareceu")
+        assert oct(dirs[0].stat().st_mode & 0o777) == "0o700"
+        assert oct((dirs[0] / "x-api-key").stat().st_mode & 0o777) == "0o600"
+        os.killpg(p.pid, signal.SIGTERM)
+        p.wait(timeout=30)
+    finally:
+        if p.poll() is None:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait()
+    assert p.returncode == 143, p.returncode
+    assert not list(tmpd.iterdir()), list(tmpd.iterdir())
 
 
 def test_rev_sem_rota_do_ticket_sonda_o_ws_sem_credencial(amb, tmp_path):

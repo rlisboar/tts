@@ -1026,3 +1026,20 @@ ticket: sonda sem credencial (o 101 é do upgrade). Prova por shim, sem tocar o 
 
 `chmod 600` não tem mordida própria: o `mktemp` já cria 0600; a célula confere o
 modo do arquivo que o `curl` leu.
+
+### #1109 — `deploy_mini.sh`: nenhum `curl` com a chave no argv
+
+Além da sonda do #1108, 7 `curl` do smoke (`/api/voices`, `/api/build`,
+`POST /api/tts`, job, peça ×2) e o `codigo_no_ar` passavam `-H "X-API-Key: $chave"`:
+a chave do dono no argv, visível em `ps` durante o smoke (classe do #1075). Agora
+um header por RODADA (`$HDR_DIR/x-api-key`, dir 0700 por `mktemp -d`, arquivo 0600
+por `umask 077`, escrito por `print` builtin), `-H @arquivo` em todo `curl`
+autenticado, e o diretório sai no trap (EXIT/HUP/INT/TERM). O `ticket_live` do
+#1108 passou a usar o mesmo arquivo (o `always` próprio saiu).
+
+| Sabotagem | Resultado |
+|---|---|
+| cada um dos 8 pontos (ticket, `codigo_no_ar`, voices, build, POST tts, job, peça ×2) volta a `-H "X-API-Key: $chave"`, um por vez | `test_nenhum_argv_da_rodada_leva_a_chave_e_o_header_some` **FAILED** (8/8; o do ticket derruba também a célula da sonda) |
+| `escreve_hdr` sem `umask 077` (header 0644) | as 3 células **FAILED** |
+| sem `trap _limpa_hdr EXIT` | `test_nenhum_argv_*`, `test_sonda_do_ws_*` **FAILED** |
+| sem o trap de TERM | `test_header_da_rodada_some_quando_o_smoke_leva_sinal` **FAILED** |

@@ -34,7 +34,9 @@
 #     reiniciar (restart derruba a produção por alguns segundos);
 #   • `codigo` do /api/build tem que bater com o hash dos módulos do rev alvo: é o
 #     que separa "código novo no disco" de "código novo CARREGADO" (#190/#214);
-#   • nenhuma chave é impressa: a chave do mini é lida por ssh e usada só em curl.
+#   • nenhuma chave é impressa: a chave do mini é lida por ssh e usada só em curl,
+#     sempre por `-H @arquivo` (header 0600 da rodada, apagado no trap) — nunca no
+#     argv, onde `ps` mostra, nem na URL (#1108/#1109).
 #
 # Config (env): TTS_MINI_HOST (padrão 192.168.15.34), TTS_MINI_USER (lisboa),
 # TTS_MINI_DIR (Documents/tts-rod), TTS_MINI_LABEL (studio.tts.server),
@@ -103,6 +105,23 @@ if [ -z "$ACAO" ]; then
 fi
 
 falhas=0
+# #1109: a chave do mini NUNCA vai ao argv do `curl` (onde `ps` mostra — classe
+# do #1075). Ela fica num arquivo de header 0600, UM por rodada, dentro de um
+# diretório 0700 (`mktemp -d`); o `curl` lê com `-H @arquivo`. O diretório é
+# apagado no trap — saída normal, erro ou sinal. Fica criado desde já porque as
+# funções que escrevem nele rodam em `$(…)` (subshell não exporta variável de
+# volta, mas escreve no mesmo disco).
+HDR_DIR="$(mktemp -d "${TMPDIR:-/tmp}/deploy-mini-hdr.XXXXXX")" \
+  || { print -r -- "não consegui criar o diretório do header (mktemp -d)" >&2; exit 2; }
+HDR_CHAVE="$HDR_DIR/x-api-key"
+_limpa_hdr() { [ -n "${HDR_DIR:-}" ] && /bin/rm -rf -- "$HDR_DIR"; HDR_DIR=""; }
+trap _limpa_hdr EXIT
+trap '_limpa_hdr; exit 129' HUP
+trap '_limpa_hdr; exit 130' INT
+trap '_limpa_hdr; exit 143' TERM
+# $1 = chave → (re)escreve o header da rodada. `print` é builtin: a chave não
+# vira argv de processo nenhum. umask 077 no subshell: nasce 0600, sem janela.
+escreve_hdr() { ( umask 077; print -r -- "X-API-Key: $1" > "$HDR_CHAVE" ); }
 distante() { "${SSH[@]}" "$USUARIO@$HOST" "$1"; }         # $1 = comando (string única)
 # O diretório é expandido NO MINI ($HOME de lá), não aqui.
 cd_remoto() { case "$DIR" in /*) print -r -- "$DIR" ;; *) print -r -- "\$HOME/$DIR" ;; esac; }
@@ -191,26 +210,21 @@ codigo_http() { curl -s -m 8 "$@" 2>/dev/null | tail -1; }
 # #1108: ticket do WS do Live (`POST /api/live/ticket`, um uso, 60 s). A sonda
 # abria o WS com `?key=<chave>`: a chave ia para o access log do mini (22 + 22
 # handshakes em claro, mais o aviso `[live] auth por ?key=`) e ficava no argv do
-# `curl`, onde `ps` mostra. Agora a chave vai num arquivo 0600 (`-H @arquivo`,
-# padrão do #1075), apagado no `always` mesmo se o curl falhar. Imprime o ticket
-# ("" quando a emissão falha — quem chama decide; NUNCA cai para `?key=`).
+# `curl`, onde `ps` mostra. Agora a chave vai no header da rodada (`-H @arquivo`,
+# #1109 — 0600, apagado no trap). Imprime o ticket ("" quando a emissão falha —
+# quem chama decide; NUNCA cai para `?key=`).
 ticket_live() { # $1 = base, $2 = chave
-  local base="$1" chave="$2" hdr corpo
-  hdr="$(mktemp "${TMPDIR:-/tmp}/deploy-mini-hdr.XXXXXX")" || return 0
-  {
-    chmod 600 "$hdr"
-    print -r -- "X-API-Key: $chave" > "$hdr"      # builtin: a chave não vira argv
-    corpo="$(curl -s -m 8 -X POST -H "@$hdr" "$base/api/live/ticket" 2>/dev/null)"
-  } always {
-    rm -f "$hdr"
-  }
+  local base="$1" chave="$2" corpo
+  escreve_hdr "$chave"
+  corpo="$(curl -s -m 8 -X POST -H "@$HDR_CHAVE" "$base/api/live/ticket" 2>/dev/null)"
   print -r -- "$corpo" | sed -n 's/.*"ticket": *"\([A-Za-z0-9_-]*\)".*/\1/p' | head -1
 }
 # `codigo` que a INSTÂNCIA VIVA reporta — "" quando não dá para perguntar.
 codigo_no_ar() {
   local chave; chave="$(chave_do_mini)"
   [ -n "$chave" ] || return 0
-  curl -s -m 8 -H "X-API-Key: $chave" "http://$HOST:$PORTA/api/build" 2>/dev/null \
+  escreve_hdr "$chave"
+  curl -s -m 8 -H "@$HDR_CHAVE" "http://$HOST:$PORTA/api/build" 2>/dev/null \
     | sed -n 's/.*"codigo": *"\([0-9a-f]*\)".*/\1/p' | head -1
 }
 
@@ -270,7 +284,8 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
     print -r -- "  [aviso] sem a chave do mini (ssh falhou?) — pulando os testes autenticados"
     return 0
   fi
-  c="$(codigo_http -o /dev/null -w '%{http_code}' -H "X-API-Key: $chave" "$base/api/voices")"
+  escreve_hdr "$chave"
+  c="$(codigo_http -o /dev/null -w '%{http_code}' -H "@$HDR_CHAVE" "$base/api/voices")"
   if [ "$c" = 200 ]; then
     print -r -- "  [ok] $rotulo com a chave do mini → 200"
   else
@@ -282,7 +297,7 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
   if ! tem_rota "$REV_ALVO" '@app.get("/api/build")'; then
     print -r -- "  [ok] $rotulo /api/build ausente NESTE rev (anterior ao #190) — esperado"
   else
-  corpo="$(curl -s -m 8 -H "X-API-Key: $chave" "$base/api/build" 2>/dev/null)"
+  corpo="$(curl -s -m 8 -H "@$HDR_CHAVE" "$base/api/build" 2>/dev/null)"
   if print -r -- "$corpo" | grep -q '"codigo"'; then
     local no_ar esperado boot
     no_ar="$(print -r -- "$corpo" | sed -n 's/.*"codigo": *"\([0-9a-f]*\)".*/\1/p' | head -1)"
@@ -397,7 +412,7 @@ smoke_url() { # $1 = base, $2 = rótulo, $3 = chave ("" = pula autenticados)
 smoke_tts() { # $1 = base, $2 = rótulo, $3 = chave
   # `status` é read-only no zsh (alias de $?) — daí `estado_job`.
   local base="$1" rotulo="$2" chave="$3" corpo job estado_job t=0 cod_p tam
-  corpo="$(curl -s -m 20 -X POST -H "X-API-Key: $chave" -H 'Content-Type: application/json' \
+  corpo="$(curl -s -m 20 -X POST -H "@$HDR_CHAVE" -H 'Content-Type: application/json' \
            -d '{"text":"teste do deploy"}' "$base/api/tts" 2>/dev/null)"
   job="$(print -r -- "$corpo" | sed -n 's/.*"job_id": *"\([^"]*\)".*/\1/p' | head -1)"
   if [ -z "$job" ]; then
@@ -405,15 +420,15 @@ smoke_tts() { # $1 = base, $2 = rótulo, $3 = chave
     falhas=1; return 0
   fi
   while [ "$t" -lt "$TTS_TIMEOUT" ]; do
-    estado_job="$(curl -s -m 8 -H "X-API-Key: $chave" "$base/api/tts/jobs/$job" 2>/dev/null \
+    estado_job="$(curl -s -m 8 -H "@$HDR_CHAVE" "$base/api/tts/jobs/$job" 2>/dev/null \
                  | sed -n 's/.*"status": *"\([a-z]*\)".*/\1/p' | head -1)"
     [ "$estado_job" = "done" ] && break
     [ "$estado_job" = "error" ] && break
     sleep 1; t=$((t + 1))
   done
   if [ "$estado_job" = "done" ]; then
-    cod_p="$(codigo_http -o /dev/null -w '%{http_code}' -H "X-API-Key: $chave" "$base/api/tts/jobs/$job/pieces/0")"
-    tam="$(curl -s -m 15 -H "X-API-Key: $chave" "$base/api/tts/jobs/$job/pieces/0" 2>/dev/null | wc -c | tr -d ' ')"
+    cod_p="$(codigo_http -o /dev/null -w '%{http_code}' -H "@$HDR_CHAVE" "$base/api/tts/jobs/$job/pieces/0")"
+    tam="$(curl -s -m 15 -H "@$HDR_CHAVE" "$base/api/tts/jobs/$job/pieces/0" 2>/dev/null | wc -c | tr -d ' ')"
     if [ "$cod_p" = 200 ] && [ "${tam:-0}" -gt 0 ]; then
       print -r -- "  [ok] $rotulo POST /api/tts real: job $job em ~${t}s, peça 0 com ${tam} bytes"
     else
