@@ -240,11 +240,11 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
     CUIDADO com `fio_rx` NEGATIVO (#1084): ele nunca é, por construção.
     `decisao_para_audio_ms` é PSEUDO-CARIMBO — vale `first_audio_ms +
     max(0, abre − decisão)` (`app.py`) —, então a subtração em `fio_rx` não pode
-    dar negativo: o `max(0, …)` engole o caso `abre < decisão` e a parcela
-    negativa inteira cai no `fio_cliente`. Consequência prática: **`fio_cliente`
-    negativo pode ser relógio cruzado, não transporte**. Não leia o sinal dele
-    como "o cliente demorou"; leia como "as duas pontas não são comparáveis
-    neste turno".
+    dar negativo: o `max(0, …)` zera `fio_rx` no caso `abre < decisão` e DESCARTA
+    a parcela (não a joga no `fio_cliente`; este continua igual ao `fio`).
+    **`fio_cliente` negativo** é `fio_rx` grande ou `resto` negativo — relógio
+    cruzado, não transporte. Não leia o sinal dele como "o cliente demorou";
+    leia como "as duas pontas não são comparáveis neste turno".
 
     RESSALVA do `resto` (medida local, #1022): ele mistura DOIS relógios. O
     `s2_ms` conta do fim da fala no CLIENTE da bancada; o `first_audio_ms` conta
@@ -291,8 +291,9 @@ def estagios_pos_llm(lat: dict, s2_ms: float | None) -> dict:
     # #1022: o `fio` se parte em SERVIDOR (`fio_rx`: da decisão do VAD até o turno
     # abrir — fila do event loop, gate do prewarm, pendência) e CLIENTE/transporte
     # (`fio_cliente`: buffer do mic, WS de ida e volta, playback). O servidor já
-    # publica as duas pontas: `decisao_para_audio_ms` = `first_audio_ms` + (abre −
-    # decisão), então a diferença é o trecho do servidor sem marca nova no app.
+    # publica as duas pontas: `decisao_para_audio_ms` = `first_audio_ms` +
+    # `max(0, abre − decisão)`, então a diferença é o trecho do servidor sem
+    # marca nova no app. `abre < decisão` zera `fio_rx` e descarta a parcela.
     dpa = g("decisao_para_audio_ms")
     rx = dpa - aud if dpa is not None and aud is not None else None
     return {"llm_frase": d(tok, cla), "fila_tts": d(cla, ini),

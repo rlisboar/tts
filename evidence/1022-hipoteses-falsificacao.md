@@ -102,10 +102,12 @@ decisão do VAD → turno abrir) e `fio_cliente` (mic, WS, playback). Dois cuida
 casuais de leitura errada:
 
 - **`fio_rx` nunca sai negativo**, e não é mérito do servidor: `decisao_para_audio_ms` é
-  PSEUDO-CARIMBO (`first_audio_ms + max(0, abre − decisão)`), então o `max(0, …)` engole o
-  caso `abre < decisão` e joga a parcela negativa INTEIRA no `fio_cliente`.
-- Logo, **`fio_cliente` negativo pode ser relógio cruzado, não transporte**. Não leia o sinal
-  como "o cliente demorou": leia como "as duas pontas não são comparáveis neste turno".
+  PSEUDO-CARIMBO (`first_audio_ms + max(0, abre − decisão)`), então o `max(0, …)` zera
+  `fio_rx` no caso `abre < decisão` e DESCARTA a parcela — não a joga no `fio_cliente`
+  (este continua igual ao `fio`).
+- **`fio_cliente` negativo** é `fio_rx` grande ou `resto` negativo (dois relógios), não
+  transporte. Não leia o sinal como "o cliente demorou": leia como "as duas pontas não
+  são comparáveis neste turno".
 
 ### O que o número já derruba, e o que ele não sustenta
 
