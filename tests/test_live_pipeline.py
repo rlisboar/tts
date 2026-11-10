@@ -225,7 +225,10 @@ def test_primeiro_chunk_usa_perfil_rapido_e_os_seguintes_o_setting():
     p = _pipeline(fala, first_chunk_max_steps=16)
     p.end_of_speech(inicia_thread=False)
     primeiro, segundo = [o for _, o in p.gerados]
-    assert primeiro["num_steps"] <= 16
+    # #1092: 10 é valor MEDIDO (evidência 1079), não teto — com o teto do
+    # construtor em 16 um `<= 16` passa verde com 16 e não morde nada.
+    assert lp._LIVE_STEPS_1O_TRECHO == 10
+    assert primeiro["num_steps"] == 10
     assert segundo["num_steps"] >= primeiro["num_steps"]
 
 

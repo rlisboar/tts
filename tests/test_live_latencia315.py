@@ -239,7 +239,7 @@ def _espera(cond, limite: float) -> None:
 
 
 # -- 3. perfil do 2º chunk ------------------------------------------------
-def _perfis(monkeypatch, n_chunks: int) -> list[dict]:
+def _perfis(monkeypatch, n_chunks: int, **kw) -> list[dict]:
     usados: list[dict] = []
     monkeypatch.setitem(app._settings, "live_num_steps", 20)
     # o teto do perfil só aparece no `min()` se o setting global da família for
@@ -251,7 +251,7 @@ def _perfis(monkeypatch, n_chunks: int) -> list[dict]:
                         stt=lambda pcm, l: "fala",
                         llm=lambda msgs: iter(["um. ", "dois. ", "tres. ", "quatro. "]),
                         tts=lambda t, o: usados.append(o) or np.zeros(8, dtype=np.float32),
-                        prewarm=lambda: None)
+                        prewarm=lambda: None, **kw)
     p.push_pcm(b"\x00\x01" * 400)
     p.end_of_speech(inicia_thread=False)
     return usados
@@ -267,6 +267,53 @@ def test_perfil_rapido_no_primeiro_e_no_segundo_chunk(monkeypatch):
     assert usados[0]["num_steps"] == lp._LIVE_STEPS_1O_TRECHO == 10
     assert usados[1]["num_steps"] == 20                      # 2º: `live_num_steps`
     assert usados[2]["num_steps"] == app._settings["omni_num_steps"]   # 3º: setting
+
+
+def test_fiacao_do_piso_chega_ao_tts_com_teto_folgado(monkeypatch):
+    """PONTA A PONTA: o 10 do 1º trecho tem de SOBREVIVER à fiação do turno.
+
+    As células acima chamam `_perfil_live(fixo=…)` direto, então não mordem a
+    fiação: tirar o `fixo=` do `_fala_worker` deixava a suíte verde, porque o
+    teto do construtor já era 10 (#1092, achado do gate). Aqui o teto é 16 e o
+    `omni_num_steps` é 64 — os dois caminhos que um `min()` ingênuo devolveria.
+    """
+    usados = _perfis(monkeypatch, 2, first_chunk_max_steps=16)
+    assert usados, "o pipeline não chegou a sintetizar"
+    assert usados[0]["num_steps"] == 10
+
+
+def test_prewarm_compila_o_decoder_com_o_mesmo_piso(monkeypatch, tmp_path):
+    """O prewarm tem de gerar com o MESMO `num_steps` do 1º trecho real.
+
+    Ele existe para absorver a compilação do Metal no handshake. `_release_mlx_memory`
+    esvazia o pool logo depois, e o Metal compila por FORMA: se o prewarm usar
+    outro número de passos, o 1º turno paga a compilação de novo e o prewarm
+    vira enfeite — silenciosamente, porque a falha dele nem derruba a sessão.
+    """
+    vistos: list[dict] = []
+
+    def _gera(_modelo, _texto, _lang, _conds, _ref_text, omni, **_kw):
+        vistos.append(dict(omni))
+
+    monkeypatch.setattr(app, "_vad_load", lambda: None)
+    monkeypatch.setattr(app, "_get_model", lambda: type("M", (), {"sample_rate": 24000})())
+    monkeypatch.setattr(app, "_current_backend", lambda: {"family": "omnivoice", "meta": {}})
+    monkeypatch.setattr(app, "VOICES_DIR", tmp_path)          # sem .wav → sem conds
+    monkeypatch.setattr(app, "_generate_chunk", _gera)
+    monkeypatch.setattr(app, "_release_mlx_memory", lambda **_k: None)
+    monkeypatch.setattr(lp, "_stt_aquece", lambda _app: None)
+    monkeypatch.setattr(lp, "_prewarm_chat", lambda: None)
+    monkeypatch.setitem(app._settings, "omni_num_steps", 64)  # não pode vazar para cá
+    # o teto do prewarm é `_LIVE_MAX_STEPS`, hoje igual ao piso — com o teto
+    # FROUXO a célula separa os dois: sem o `fixo` o prewarm compilaria 16 e o
+    # 1º turno pagaria a compilação de novo por diferença de forma
+    monkeypatch.setattr(lp, "_LIVE_MAX_STEPS", 16)
+    monkeypatch.setattr(lp, "_PREWARM_FEITO", False)
+
+    lp._prewarm_app(voice_id=None, tts_in_process=True)
+
+    assert vistos, "o prewarm não gerou nada"
+    assert {v["num_steps"] for v in vistos} == {10}
 
 
 @pytest.mark.parametrize("ajuste", [64, 6])
