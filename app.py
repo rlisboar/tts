@@ -34,7 +34,7 @@ import wave
 from collections import OrderedDict
 from collections import defaultdict, deque
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse, urlsplit
+from urllib.parse import parse_qs, unquote_plus, urlparse, urlsplit
 from fastapi import (FastAPI, File, Form, HTTPException, Request, UploadFile,
                      WebSocket)
 from fastapi import WebSocketDisconnect
@@ -332,6 +332,76 @@ def _mascara_cmd(cmd: str) -> str:
     cmd = _RE_ARG_SEGREDO.sub(lambda m: m.group(1) + _mascara_segredo(m.group(2)), cmd)
     cmd = _RE_BEARER.sub(lambda m: m.group(1) + _mascara_segredo(m.group(2)), cmd)
     return _RE_QS_SEGREDO.sub(lambda m: m.group(1) + _mascara_segredo(m.group(2)), cmd)
+
+
+# Segredo em query string no LOG do uvicorn (#1106). O WS do Live ainda aceita
+# `?key=` (compat) e o uvicorn grava a URL com a query crua em dois lugares: o
+# access log HTTP (`uvicorn.access`, args[2] = path?query) e o handshake do WS
+# (`uvicorn.error`, `'%s - "WebSocket %s" [accepted]'`/403). A chave ia em claro
+# para `/tmp/tts-studio.log`. O nome do parâmetro é comparado DECODIFICADO
+# (`%6Bey=` autentica igual a `key=` no Starlette) e sem caixa; o `ticket` entra
+# também — é de um uso, mas um handshake que falhou antes de consumi-lo deixaria
+# um ticket ainda válido por até 60 s no log.
+_QS_NOMES_SEGREDO = frozenset({
+    "key", "apikey", "api_key", "api-key", "x-api-key", "token", "access_token",
+    "secret", "password", "senha", "ticket", "authorization",
+})
+_RE_QS_PAR = re.compile(r"([?&])([^=&\s?#\"']+)=([^&\s#\"']*)")
+
+
+def _mascara_query(texto: str) -> str:
+    """Texto com o VALOR dos parâmetros de segredo da query mascarado."""
+    if not texto or "=" not in texto:
+        return texto
+
+    def _troca(m: re.Match) -> str:
+        try:
+            nome = unquote_plus(m.group(2)).strip().lower()
+        except Exception:
+            nome = m.group(2).lower()
+        if nome not in _QS_NOMES_SEGREDO or not m.group(3):
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)}={_mascara_segredo(m.group(3))}"
+
+    return _RE_QS_PAR.sub(_troca, texto)
+
+
+class _FiltroSegredoLog(logging.Filter):
+    """Filtro de LOGGER (não de handler): roda antes de qualquer handler, inclusive
+    os que o `dictConfig` do uvicorn instala depois. Nunca derruba a linha — se a
+    máscara falhar, a linha sai como veio (log perdido é pior que log sem máscara
+    num arquivo 0600 local)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            args = record.args
+            if isinstance(args, tuple) and args:
+                record.args = tuple(_mascara_query(a) if isinstance(a, str) else a
+                                    for a in args)
+            elif isinstance(args, dict) and args:
+                record.args = {k: _mascara_query(v) if isinstance(v, str) else v
+                               for k, v in args.items()}
+            if isinstance(record.msg, str):
+                record.msg = _mascara_query(record.msg)
+        except Exception:
+            pass
+        return True
+
+
+_LOGGERS_COM_URL = ("uvicorn.access", "uvicorn.error", "uvicorn")
+
+
+def _instala_filtro_segredo_log() -> None:
+    """Idempotente (um filtro por logger, mesmo se o módulo for reimportado). O
+    `dictConfig` do uvicorn não remove filtros de logger já existentes, e no
+    `uvicorn app:app` ele roda ANTES do import do app de qualquer jeito."""
+    for nome in _LOGGERS_COM_URL:
+        lg = logging.getLogger(nome)
+        if not any(type(f).__name__ == "_FiltroSegredoLog" for f in lg.filters):
+            lg.addFilter(_FiltroSegredoLog())
+
+
+_instala_filtro_segredo_log()
 
 
 def _pid_vivo(pid) -> bool:

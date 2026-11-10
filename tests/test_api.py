@@ -10344,3 +10344,136 @@ def test_stt_partial_off_nao_consulta_o_gate(client, auth, monkeypatch, tmp_path
         "text": "olá mundo", "language": "pt"})
     r = _post_arquivo(client, auth, "/api/stt-partial", "audio")
     assert r.status_code == 200 and r.json()["text"] == "olá mundo"
+
+
+# ---------------------------------------------------------------------------
+# #1106 — chave em query não vai em claro para o log do uvicorn.
+# ---------------------------------------------------------------------------
+
+_SEGREDO_LOG = "sk-sintetica-1106-NAO-E-CHAVE-REAL-zz9q"   # #446 C: nada de .apikeys.json
+
+
+def test_mascara_query_cobre_nomes_de_segredo_e_preserva_o_resto():
+    s = _SEGREDO_LOG
+    for nome in ("key", "KEY", "apikey", "api_key", "api-key", "token",
+                 "access_token", "secret", "password", "ticket", "%6Bey", "k%65y"):
+        saida = app._mascara_query(f"/api/live/ws?voice=ana&{nome}={s}&x=1")
+        assert s not in saida, nome
+        assert f"{nome}=***{s[-4:]}" in saida, nome
+        assert "voice=ana" in saida and "x=1" in saida, nome
+    # nome que não é segredo segue intacto; `?key` sem valor não quebra
+    assert app._mascara_query("/v?keyboard=abc&monkey=1") == "/v?keyboard=abc&monkey=1"
+    assert app._mascara_query("/v?key") == "/v?key"
+    assert app._mascara_query("/v?key=") == "/v?key="
+    # texto livre (msg já formatada) também passa
+    linha = f'1.2.3.4:5 - "WebSocket /api/live/ws?key={s}" [accepted]'
+    assert s not in app._mascara_query(linha)
+
+
+def test_filtro_de_log_instalado_e_idempotente():
+    def _conta():
+        return {n: sum(type(f).__name__ == "_FiltroSegredoLog"
+                       for f in logging.getLogger(n).filters)
+                for n in app._LOGGERS_COM_URL}
+    # o IMPORT do app instala (é o que o `uvicorn app:app` exercita); conferir
+    # antes de chamar, senão esta célula mesma mascararia a falta da instalação
+    assert _conta() == {n: 1 for n in app._LOGGERS_COM_URL}
+    app._instala_filtro_segredo_log()
+    app._instala_filtro_segredo_log()
+    assert _conta() == {n: 1 for n in app._LOGGERS_COM_URL}
+
+
+def test_filtro_nunca_derruba_a_linha():
+    rec = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1,
+                            "%s %s", (object(), 7), None)
+    assert app._FiltroSegredoLog().filter(rec) is True
+
+
+def test_uvicorn_real_nao_loga_a_chave_em_http_nem_no_handshake_ws():
+    """#1106: sobe um uvicorn DE VERDADE (com o `LOGGING_CONFIG` padrão, o mesmo do
+    `run.sh`) e passa por ele HTTP, WS aceito e WS recusado (403) com `?key=` na
+    URL. As linhas que o próprio uvicorn grava (access + handshake no
+    `uvicorn.error`) não podem conter o segredo. Tirar o `_instala_filtro_…`
+    derruba a célula: as três linhas saem com a chave crua."""
+    import copy
+
+    import uvicorn
+    from uvicorn.config import LOGGING_CONFIG
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route, WebSocketRoute
+    from websockets.sync.client import connect as ws_connect
+    from websockets.exceptions import InvalidStatus
+
+    async def http_ok(_req):
+        return PlainTextResponse("ok")
+
+    async def ws_aceita(ws):
+        await ws.accept()
+        await ws.close()
+
+    async def ws_recusa(ws):
+        await ws.close()                      # antes do accept → uvicorn loga 403
+
+    mini = Starlette(routes=[Route("/h", http_ok), WebSocketRoute("/ws", ws_aceita),
+                             WebSocketRoute("/ws403", ws_recusa)])
+
+    nomes = app._LOGGERS_COM_URL
+    antes = {n: (lg.level, lg.propagate, list(lg.handlers), list(lg.filters))
+             for n in nomes for lg in [logging.getLogger(n)]}
+    linhas: list[str] = []
+
+    class _Coleta(logging.Handler):
+        def emit(self, record):
+            linhas.append(f"{record.name}|{self.format(record)}")
+
+    coleta = _Coleta()
+    try:
+        cfg = uvicorn.Config(mini, host="127.0.0.1", port=0, lifespan="off",
+                             ws="websockets", log_config=copy.deepcopy(LOGGING_CONFIG))
+        # o dictConfig acabou de rodar (no Config): o filtro de logger sobreviveu?
+        for n in ("uvicorn.access", "uvicorn.error"):
+            logging.getLogger(n).addHandler(coleta)
+        srv = uvicorn.Server(cfg)
+        t = threading.Thread(target=srv.run, daemon=True)
+        t.start()
+        prazo = time.monotonic() + 10
+        while not srv.started and time.monotonic() < prazo:
+            time.sleep(0.02)
+        assert srv.started, "uvicorn não subiu em 10 s"
+        porta = srv.servers[0].sockets[0].getsockname()[1]
+
+        import urllib.request as _ur
+        with _ur.urlopen(f"http://127.0.0.1:{porta}/h?key={_SEGREDO_LOG}", timeout=5) as r:
+            assert r.read() == b"ok"
+        with ws_connect(f"ws://127.0.0.1:{porta}/ws?key={_SEGREDO_LOG}", open_timeout=5):
+            pass
+        with pytest.raises(InvalidStatus):
+            with ws_connect(f"ws://127.0.0.1:{porta}/ws403?api_key={_SEGREDO_LOG}",
+                            open_timeout=5):
+                pass
+        prazo = time.monotonic() + 5            # o access log sai depois da resposta
+        while time.monotonic() < prazo and not (
+                any("GET /h?" in x for x in linhas)
+                and any("[accepted]" in x for x in linhas)
+                and any("/ws403?" in x for x in linhas)):
+            time.sleep(0.02)
+    finally:
+        for n in ("uvicorn.access", "uvicorn.error"):
+            logging.getLogger(n).removeHandler(coleta)
+        if "srv" in locals():
+            srv.should_exit = True
+            t.join(10)
+        for n, (lvl, prop, hs, fs) in antes.items():
+            lg = logging.getLogger(n)
+            lg.setLevel(lvl)
+            lg.propagate = prop
+            lg.handlers[:] = hs
+            lg.filters[:] = fs
+
+    texto = "\n".join(linhas)
+    assert any(x.startswith("uvicorn.access|") and "GET /h?key=***" in x for x in linhas), texto
+    assert any(x.startswith("uvicorn.error|") and "/ws?key=***" in x and "[accepted]" in x
+               for x in linhas), texto
+    assert any(x.startswith("uvicorn.error|") and "/ws403?api_key=***" in x for x in linhas), texto
+    assert _SEGREDO_LOG not in texto, texto
