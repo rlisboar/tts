@@ -84,7 +84,10 @@ codigo_esperado() {
 # Devolve 1 se a 7890 NÃO liberar — quem chama tem de parar, não seguir.
 # `kill`/`pkill` são assíncronos: sem esta espera o `sobe` seguinte leva 200 do
 # processo VELHO, a célula `f1` roda com a flag em 0 e o health 200 esconde.
-ANTERIOR=""; SAMPLER=""; APP_PID=""; SUBIU=0
+# `CABECALHO` entra aqui junto: o `limpa` o lê (:112) e o script roda com `set -u`
+# — qualquer `exit` de pré-voo ANTES de o header ser criado derrubava a limpeza
+# inteira (`parameter not set`) e deixava o `llm_fake_sse.py` órfão na 7898 (#1075).
+ANTERIOR=""; SAMPLER=""; APP_PID=""; SUBIU=0; CABECALHO=""
 derruba() {
   pkill -f "live_bench" 2>/dev/null
   pkill -f "fase_ruido.py" 2>/dev/null

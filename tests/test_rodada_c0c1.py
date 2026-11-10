@@ -161,3 +161,39 @@ def test_chave_nao_e_herdada_pelos_filhos(tmp_path: Path) -> None:
     assert bloco.index("_LLM_K=") < bloco.index("unset TTS_CHAT_API_KEY")
     sobe = fonte.split("sobe() {", 1)[1].split("\n}", 1)[0]
     assert '"${_LLM_K:-' in sobe, "o `sobe` tem de repassar a chave capturada"
+
+
+def test_exit_de_prevoo_nao_derruba_a_limpeza(tmp_path: Path) -> None:
+    """`set -u` + `CABECALHO` criado só no fim do pré-voo: sair ANTES matava o `limpa`.
+
+    O `limpa` lê `$CABECALHO`; qualquer `exit` de pré-voo anterior à criação do
+    header (aqui, `--sha` ausente) morria em `parameter not set` no meio da
+    limpeza e deixava o `llm_fake_sse.py` órfão na 7898. A célula cobra o
+    CONTRATO INTEIRO da limpeza: as linhas finais do `limpa` só saem se ele
+    atravessar o `rm` do header.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for nome, corpo in {
+        "lsof": "#!/bin/sh\nexit 0\n",       # nada escutando
+        "pkill": "#!/bin/sh\nexit 0\n",
+        "pgrep": "#!/bin/sh\necho 4242\n",   # 1 uvicorn na 7860
+        "curl": "#!/bin/sh\necho 200\n",
+    }.items():
+        p = bin_dir / nome
+        p.write_text(corpo)
+        p.chmod(0o755)
+
+    # sem `--sha`: o pré-voo para em "`--sha` é obrigatório"
+    r = subprocess.run(
+        ["zsh", str(RAIZ / "tools" / "rodada_c0c1.sh"), "--dir", str(tmp_path / "d")],
+        env={"PATH": f"{bin_dir}:/opt/homebrew/bin:/usr/bin:/bin",
+             "HOME": str(tmp_path), "TMPDIR": str(tmp_path)},
+        capture_output=True, text=True)
+    saida = r.stdout + r.stderr
+    assert r.returncode == 1, saida
+    assert "--sha é obrigatório" in saida
+    assert "parameter not set" not in saida, f"o `limpa` morreu no meio:\n{saida}"
+    # âncora: as três últimas linhas do `limpa` vêm DEPOIS do `rm` do header
+    assert "uvicorn 7860:" in saida, saida
+    assert "prod health:" in saida, saida
