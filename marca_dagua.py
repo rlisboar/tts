@@ -122,8 +122,15 @@ def _fecha(proc: subprocess.Popen | None) -> None:
 
 
 def _pega() -> subprocess.Popen:
-    global _proc, _vigia_thread
+    global _proc, _vigia_thread, _ultima
     with _trava:
+        # #1114: subir ou pedir o filho conta como uso. Sem isso o filho do
+        # `prewarm` nascia com `_ultima = 0.0`; o vigia, no 1º ciclo (5 s), via
+        # `monotonic() - 0` (dias de uptime) > `TTL_S` e o fechava logo depois
+        # do aquecimento. O 1º turno do Live subia outro e pagava 3–6 s de
+        # `marca` no S2. Vale também para filho vivo: o `prewarm` da abertura do
+        # Live renova o TTL de um filho prestes a vencer.
+        _ultima = time.monotonic()
         if _proc is not None and _proc.poll() is None:
             return _proc
         _proc = subprocess.Popen([sys.executable, str(WORKER)],
