@@ -50,7 +50,15 @@ porta = porta_livre()
 # settings em CÓPIA (#535): o boot/save do app não pode mexer no arquivo do dono
 _SETTINGS = pathlib.Path(f"/tmp/hash_deep_settings-{porta}.json")
 _SETTINGS.write_text("{}")     # defaults do app; nada do dono
-env = {**os.environ, "LIVE_UI_PORT": str(porta), "TTS_SETTINGS_PATH": str(_SETTINGS),
+# `voices/`, `outputs/` e os perfis de voz da raiz são do DONO (#728): a instância
+# de teste nasce com os dela, em tmp — nem como leitura, nem como destino de cadastro
+_VZ = pathlib.Path(f"/tmp/hash_deep_voz_{porta}")
+for _s in ("voices", "outputs"):
+    (_VZ / _s).mkdir(parents=True, exist_ok=True)
+_ISOLA_VOZ = {"TTS_VOICES_DIR": str(_VZ / "voices"), "TTS_OUTPUTS_DIR": str(_VZ / "outputs"),
+              "TTS_SPEAKER_PATH": str(_VZ / "speaker.json"),
+              "TTS_SPEAKER_AUDIO_DIR": str(_VZ / "speaker-audio")}
+env = {**os.environ, **_ISOLA_VOZ, "LIVE_UI_PORT": str(porta), "TTS_SETTINGS_PATH": str(_SETTINGS),
        # espelho legado de `_save_apikeys` (#535)
        "TTS_APIKEYS_PATH": f"/tmp/hash_deep_apikeys_{porta}.json",
        "TTS_LEGACY_APIKEY_PATH": f"/tmp/hash_deep_apikey_{porta}"}

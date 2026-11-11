@@ -47,7 +47,15 @@ log = pathlib.Path(f"/tmp/ultima_chave-{SUF}.log")   # único por execução (#1
 # espelho caía no arquivo do dono (#535)
 _SETTINGS = pathlib.Path(f"/tmp/settings_teste-{SUF}.json")
 _SETTINGS.write_text("{}")          # defaults do app; nada do dono
-env_proc = {**os.environ, "TTS_APIKEYS_PATH": str(apikeys),
+# `voices/`, `outputs/` e os perfis de voz da raiz são do DONO (#728): a instância
+# de teste nasce com os dela, em tmp — nem como leitura, nem como destino de cadastro
+_VZ = pathlib.Path(f"/tmp/ultima_chave_voz_{porta}")
+for _s in ("voices", "outputs"):
+    (_VZ / _s).mkdir(parents=True, exist_ok=True)
+_ISOLA_VOZ = {"TTS_VOICES_DIR": str(_VZ / "voices"), "TTS_OUTPUTS_DIR": str(_VZ / "outputs"),
+              "TTS_SPEAKER_PATH": str(_VZ / "speaker.json"),
+              "TTS_SPEAKER_AUDIO_DIR": str(_VZ / "speaker-audio")}
+env_proc = {**os.environ, **_ISOLA_VOZ, "TTS_APIKEYS_PATH": str(apikeys),
             "TTS_LEGACY_APIKEY_PATH": str(pathlib.Path(f"/tmp/apikey_teste-{SUF}")),
             "TTS_SETTINGS_PATH": str(_SETTINGS)}
 # #998: sem isto a suíte herda o `TTS_ROD_ADMIN_KEY` do runner e a linha readonly de

@@ -243,7 +243,7 @@ def fala_de_teste(segundos=2.4):
         idx = np.linspace(0, len(a) - 1, int(len(a) * 16000 / sr))
         a16 = np.interp(idx, np.arange(len(a)), a).astype(np.float32)
         return w.stem, (np.clip(a16, -1, 1) * 32767).astype("<i2").tobytes()
-    raise SystemExit("nenhuma voices/*.wav serviu como fala de teste")
+    raise SystemExit("a fixture tests/fixtures/voz_fala_5s_16k.wav não serviu como fala de teste")
 
 def limpa_sobras(manter_log=False):
     """Apaga os temporários DESTA rodada — log, arquivo de chaves e `.apikey`.

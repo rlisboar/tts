@@ -78,7 +78,7 @@ for w in [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]:
     audio16 = np.concatenate([(a16 * 32767), np.zeros(int(3.0 * 16000))])
     sf.write(str(wav_entrada), audio16.astype("<i2"), 16000, subtype="PCM_16")
     break
-if not wav_entrada: raise SystemExit("sem voices/*.wav para alimentar o mic falso")
+if not wav_entrada: raise SystemExit("sem tests/fixtures/voz_fala_5s_16k.wav para alimentar o mic falso")
 
 # ─── servidor próprio ────────────────────────────────────────────────────────
 porta = porta_livre()
@@ -86,7 +86,15 @@ porta = porta_livre()
 ESTADO = pathlib.Path("/tmp") / f"obs_ui_estado_{SUF}"
 ESTADO.mkdir(exist_ok=True)
 (ESTADO / "settings.json").write_text("{}")
-env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
+# `voices/`, `outputs/` e os perfis de voz da raiz são do DONO (#728): a instância
+# de teste nasce com os dela, em tmp — nem como leitura, nem como destino de cadastro
+_VZ = pathlib.Path(f"/tmp/obs_ui_voz_{porta}")
+for _s in ("voices", "outputs"):
+    (_VZ / _s).mkdir(parents=True, exist_ok=True)
+_ISOLA_VOZ = {"TTS_VOICES_DIR": str(_VZ / "voices"), "TTS_OUTPUTS_DIR": str(_VZ / "outputs"),
+              "TTS_SPEAKER_PATH": str(_VZ / "speaker.json"),
+              "TTS_SPEAKER_AUDIO_DIR": str(_VZ / "speaker-audio")}
+env = {**os.environ, **_ISOLA_VOZ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        "TTS_SETTINGS_PATH": str(ESTADO / "settings.json"),
        "TTS_APIKEYS_PATH": str(ESTADO / "apikeys.json"),
        "TTS_LEGACY_APIKEY_PATH": str(ESTADO / "apikey"),

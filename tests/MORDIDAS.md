@@ -1135,3 +1135,20 @@ o worktree feito com `git worktree add` cru.
 | `integra.sh` sem a checagem do venv | `test_integra_recusa_worktree_sem_venv_antes_do_hook` **FAILED** |
 | `worktrees.sh` sem o comando `liga` | `test_liga_aqui_*`, `test_liga_recusa_*` **FAILED** |
 | `liga` aceita a árvore principal | `test_liga_recusa_a_arvore_principal` **FAILED** |
+
+### #728 (#1126) — script não toca o `voices/` da árvore; instância de teste isola voz e saídas
+
+Guarda estática em `tests/test_suites_sem_voices_728.py` (6 células). A fala do mic
+falso das 5 suítes já vinha só da fixture; o vazamento era a INSTÂNCIA que elas sobem
+(`app.py` resolve `BASE / "voices"`), agora com `TTS_VOICES_DIR`/`TTS_OUTPUTS_DIR`/
+`TTS_SPEAKER_PATH`/`TTS_SPEAKER_AUDIO_DIR` em tmp.
+
+| Sabotagem | Resultado |
+|---|---|
+| `cp voices/*.wav` no `obs_ui.sh` | `test_nenhum_script_toca_o_voices_da_arvore` **FAILED** |
+| `sorted((RAIZ / "voices").glob(...))` no `live_ws.sh` | idem **FAILED** |
+| `pathlib.Path("voices").glob(...)` no `live_barge_rep.sh` | idem **FAILED** |
+| `live_ui.sh` sem `TTS_VOICES_DIR` | `test_toda_suite_que_sobe_o_app_isola_voz_e_saidas` e `test_as_cinco_suites_usam_so_a_fixture_como_fala` **FAILED** |
+| `live_dsh_fallback.sh` sem `TTS_OUTPUTS_DIR` | `test_toda_suite_que_sobe_o_app_isola_voz_e_saidas` **FAILED** |
+| `admin_ui_flow.sh` sem `TTS_OUTPUTS_DIR` | idem **FAILED** |
+| `live_dsh_fallback.sh` com a fala em `glob("tests/fixtures/*.wav")` | `test_as_cinco_suites_usam_so_a_fixture_como_fala` **FAILED** (antes de apertar a célula passava: a fixture ainda aparecia na mensagem de erro) |

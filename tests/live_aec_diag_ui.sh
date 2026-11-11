@@ -53,7 +53,15 @@ _SETTINGS = pathlib.Path(f"/tmp/live_aec_diag_settings-{porta}.json")
 _SETTINGS.write_text("{}")
 _KEYS = pathlib.Path(f"/tmp/live_aec_diag_apikeys_{porta}.json")
 _LEGACY = pathlib.Path(f"/tmp/live_aec_diag_apikey_{porta}")
-env = {**os.environ, "LIVE_UI_PORT": str(porta), "TTS_SETTINGS_PATH": str(_SETTINGS),
+# `voices/`, `outputs/` e os perfis de voz da raiz são do DONO (#728): a instância
+# de teste nasce com os dela, em tmp — nem como leitura, nem como destino de cadastro
+_VZ = pathlib.Path(f"/tmp/live_aec_diag_voz_{porta}")
+for _s in ("voices", "outputs"):
+    (_VZ / _s).mkdir(parents=True, exist_ok=True)
+_ISOLA_VOZ = {"TTS_VOICES_DIR": str(_VZ / "voices"), "TTS_OUTPUTS_DIR": str(_VZ / "outputs"),
+              "TTS_SPEAKER_PATH": str(_VZ / "speaker.json"),
+              "TTS_SPEAKER_AUDIO_DIR": str(_VZ / "speaker-audio")}
+env = {**os.environ, **_ISOLA_VOZ, "LIVE_UI_PORT": str(porta), "TTS_SETTINGS_PATH": str(_SETTINGS),
        "TTS_APIKEYS_PATH": str(_KEYS), "TTS_LEGACY_APIKEY_PATH": str(_LEGACY)}
 log = pathlib.Path(os.environ.get("LIVE_AEC_LOG") or f"/tmp/live_aec_diag_servidor-{porta}.log")
 _launcher = '''

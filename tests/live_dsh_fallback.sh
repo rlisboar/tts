@@ -74,7 +74,7 @@ for w in [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]:
     pcm = np.concatenate([(a16 * 32767), np.zeros(int(3 * 16000))]).astype("<i2").tobytes()
     wav = base64.b64encode(pcm).decode()
     break
-if not wav: raise SystemExit("sem voices/*.wav para alimentar o turno")
+if not wav: raise SystemExit("sem tests/fixtures/voz_fala_5s_16k.wav para alimentar o turno")
 
 porta = porta_livre()
 DIR_TMP = pathlib.Path("/tmp") / f"live_dsh_fallback_{SUF}"

@@ -43,7 +43,13 @@ while True:
   # ENV **ANTES** do import (#591): o import do app JÁ materializa settings
   # default e chave; caminho por atributo depois do import escreve no arquivo do
   # DONO. O env é lido quando o módulo resolve `TTS_*_PATH` (app.py:188-191).
+  # `voices/`, `outputs/` e os perfis de voz da raiz são do DONO (#728): o app da rodada
+  # nasce com os dele, em tmp
+  VZ="$(mktemp -d -t voz-cfgsujo.XXXXXX 2>/dev/null || echo "/tmp/voz-cfgsujo.$$")"
+  mkdir -p "$VZ/voices" "$VZ/outputs"
   TTS_SETTINGS_PATH="$SET" TTS_APIKEYS_PATH="$APK" TTS_LEGACY_APIKEY_PATH="$LEG" \
+  TTS_VOICES_DIR="$VZ/voices" TTS_OUTPUTS_DIR="$VZ/outputs" \
+  TTS_SPEAKER_PATH="$VZ/speaker.json" TTS_SPEAKER_AUDIO_DIR="$VZ/speaker-audio" \
   "$PY" - "$PORTA" > "$LOG" 2>&1 <<'PY' &
 import sys, uvicorn, app
 app._load_apikeys()
@@ -54,6 +60,7 @@ PY
   limpa_servidor() {
     [ -n "$SERVIDOR_PID" ] && kill "$SERVIDOR_PID" 2>/dev/null || true
     /bin/rm -f "$APK" "$SET" "$LEG"
+    [ -n "${VZ:-}" ] && /bin/rm -rf "$VZ"
   }
   trap 'limpa_servidor' EXIT INT TERM
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do

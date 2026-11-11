@@ -98,7 +98,7 @@ while True:
   # de chave morre em "as listas nem renderizaram". Worktree não tem `voices/` (não
   # é versionado), então a instância da rodada ganha a fixture — nada do dono.
   VOZES="$(mktemp -d -t voices-adminui.XXXXXX 2>/dev/null || echo "/tmp/voices-adminui.$$")"
-  mkdir -p "$VOZES"
+  mkdir -p "$VOZES" "$VOZES/saidas"   # as saídas (#728) também ficam na pasta da rodada
   cp "$(dirname "${BASH_SOURCE[0]}")/fixtures/voz_fala_5s_16k.wav" "$VOZES/fala.wav"
   printf '{"id":"fala","name":"fala","duration":5.0,"created_at":"2026-01-01 00:00:00"}' \
     > "$VOZES/fala.json"
@@ -107,7 +107,7 @@ while True:
   # import deixava essas duas escritas no arquivo do DONO — o caminho tem de estar
   # no ambiente quando o módulo resolve `TTS_*_PATH` (app.py:188-191).
   TTS_SETTINGS_PATH="$SET" TTS_APIKEYS_PATH="$APK" TTS_LEGACY_APIKEY_PATH="$LEG" \
-  TTS_VOICES_DIR="$VOZES" \
+  TTS_VOICES_DIR="$VOZES" TTS_OUTPUTS_DIR="$VOZES/saidas" \
   "$PY" - "$PORTA" > "$LOG" 2>&1 <<'PY' &
 import sys, uvicorn, app
 app._load_apikeys()

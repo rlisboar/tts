@@ -232,7 +232,7 @@ for w in [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]:
     else:
         fala_baixa = fala
     break
-if not fala: raise SystemExit("sem voices/*.wav")
+if not fala: raise SystemExit("sem tests/fixtures/voz_fala_5s_16k.wav")
 
 # ESTÍMULO DO BLOCO (#547): o áudio injetado é o do CONTEÚDO do bloco, não a
 # amostra de voz. Sem `say` a rodada avisa e mantém o comportamento antigo (a
@@ -264,7 +264,15 @@ settings_tmp = pathlib.Path(f"/tmp/live_barge_settings_{SUF}.json")
 # patch de `SETTINGS_PATH` do launcher vem depois — sem passar `TTS_SETTINGS_PATH`
 # o boot ainda lia o arquivo do DONO. Aqui o modo do bloco entra no arquivo.
 settings_tmp.write_text(json.dumps({"live_interrupcao": MODO_INTERRUPCAO}))
-env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
+# `voices/`, `outputs/` e os perfis de voz da raiz são do DONO (#728): a instância
+# de teste nasce com os dela, em tmp — nem como leitura, nem como destino de cadastro
+_VZ = pathlib.Path(f"/tmp/live_barge_voz_{porta}")
+for _s in ("voices", "outputs"):
+    (_VZ / _s).mkdir(parents=True, exist_ok=True)
+_ISOLA_VOZ = {"TTS_VOICES_DIR": str(_VZ / "voices"), "TTS_OUTPUTS_DIR": str(_VZ / "outputs"),
+              "TTS_SPEAKER_PATH": str(_VZ / "speaker.json"),
+              "TTS_SPEAKER_AUDIO_DIR": str(_VZ / "speaker-audio")}
+env = {**os.environ, **_ISOLA_VOZ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1",
        "TTS_CHAT_MODEL": "stub-barge", "TTS_CHAT_BACKEND": "openai",
        # o Live tem backend PRÓPRIO: sem este pin o dono com `chat_backend_live: dsh`
        # tirava o harness do stub e a contagem de barge media outra rota (#195)

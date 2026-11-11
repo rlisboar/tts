@@ -12,7 +12,7 @@ export LIVE_UI_LOG="${LIVE_UI_LOG:-/tmp/live_ui_servidor-$$.log}"
 # deixava o stub e falava com o harness (#143).
 #
 # Exercita o caminho REAL do cliente: mic (dispositivo falso do Chromium, alimentado
-# com fala de verdade de voices/*.wav) -> AudioWorklet 16 kHz -> frames de 100 ms ->
+# com a fala da fixture tests/fixtures/voz_fala_5s_16k.wav) -> AudioWorklet 16 kHz -> frames de 100 ms ->
 # WS -> turno com áudio de volta -> playback -> barge-in com corte medido.
 #
 #   ./tests/live_ui.sh            # sobe stub+servidor em portas livres e derruba no fim
@@ -96,7 +96,7 @@ for w in [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]:
     # barge-in disparar — o motor é invariante de escala aqui, e isso está medido
     # dos dois lados: dispara igual a -17 e a -9 dBFS RMS (audio-ml, no fix do
     # #115) e também sem ganho nenhum, a ~-21 dBFS (eu, com este harness). A
-    # normalização fica só para o teste não depender de qual voz de `voices/` caiu
+    # normalização fica só para o teste não depender de qual fala caiu
     # na ordenação.
     # Leitura que induzia a erro: o regime ANTIGO (flag de speaking pulsada por
     # chunk) fazia parecer que faltava ~+10 dB — o ganho era sintoma, não causa.
@@ -110,7 +110,7 @@ for w in [pathlib.Path("tests/fixtures/voz_fala_5s_16k.wav")]:
     audio16 = np.concatenate([(np.clip(a16, -1, 1) * 32767), np.zeros(int(5.0 * 16000))])
     sf.write(str(wav_entrada), audio16.astype("<i2"), 16000, subtype="PCM_16")
     break
-if not wav_entrada: raise SystemExit("sem voices/*.wav para alimentar o mic falso")
+if not wav_entrada: raise SystemExit("sem tests/fixtures/voz_fala_5s_16k.wav para alimentar o mic falso")
 
 # ─── servidor próprio com TTS_CHAT_* (settings do dono intocado) ─────────────
 # Estado do dono em CÓPIA/tmp (#535): settings sai do arquivo DELE, mas grava na cópia
@@ -123,7 +123,15 @@ _MTIME_ANTES = _PNG_VER.stat().st_mtime_ns if _PNG_VER.exists() else None
 _ESTADO = pathlib.Path(f"/tmp/live_ui_estado_{porta}")
 _ESTADO.mkdir(exist_ok=True)
 (_ESTADO / "settings.json").write_text("{}")   # defaults do app; nada do dono
-env = {**os.environ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1", "TTS_CHAT_MODEL": "stub-live",
+# `voices/`, `outputs/` e os perfis de voz da raiz são do DONO (#728): a instância
+# de teste nasce com os dela, em tmp — nem como leitura, nem como destino de cadastro
+_VZ = pathlib.Path(f"/tmp/live_ui_voz_{porta}")
+for _s in ("voices", "outputs"):
+    (_VZ / _s).mkdir(parents=True, exist_ok=True)
+_ISOLA_VOZ = {"TTS_VOICES_DIR": str(_VZ / "voices"), "TTS_OUTPUTS_DIR": str(_VZ / "outputs"),
+              "TTS_SPEAKER_PATH": str(_VZ / "speaker.json"),
+              "TTS_SPEAKER_AUDIO_DIR": str(_VZ / "speaker-audio")}
+env = {**os.environ, **_ISOLA_VOZ, "TTS_CHAT_BASE_URL": f"http://127.0.0.1:{stub_porta}/v1", "TTS_CHAT_MODEL": "stub-live",
        "TTS_SETTINGS_PATH": str(_ESTADO / "settings.json"),
        "TTS_APIKEYS_PATH": str(_ESTADO / "apikeys.json"),
        "TTS_LEGACY_APIKEY_PATH": str(_ESTADO / "apikey"),

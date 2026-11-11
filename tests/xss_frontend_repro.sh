@@ -390,7 +390,7 @@ PYEOF
 
 # a remoção em si é do trap (roda também quando o script sai por erro)
 if [ "$MANTER" = "1" ]; then
-  echo "· --keep: deixando voices/$STEM.{json,wav} e voices/${STEM}_V.json + ${STEM}_M.json p/ inspeção"
+  echo "· --keep: deixando $STEM.{json,wav} e ${STEM}_V.json + ${STEM}_M.json na pasta de vozes da rodada p/ inspeção"
 else
   echo "· diretório da rodada removido no fim (o trap também cobre rodada vermelha)"
 fi
