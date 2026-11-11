@@ -1259,3 +1259,18 @@ derruba o filho e solta; reentrante via `TTS_FILA_SEGURA`; o hook roda a suíte 
 | hook volta a rodar o pytest direto | `test_hook_roda_a_suite_cheia_pela_trava` **FAILED** |
 | `TTS_FILA=0` (escape) | `test_sem_a_trava_as_duas_rodam_juntas` documenta a sobreposição |
 | recuperação por `rm -rf` em vez de `mv` | **NÃO morde**: é uma corrida de milissegundos (o recuperador lento apaga a trava NOVA do mais rápido); 4 recuperadores não a provocam. O `mv` fica por desenho, não por célula. |
+
+**Correções do gate do qa (reprovado em `6aa050a`)**
+
+| Sabotagem | Resultado |
+|---|---|
+| sinal só para o pid do filho (sem `set -m` e sem `kill -- -pgid`) | `test_sinal_derruba_a_arvore_inteira_e_solta_a_trava` (TERM, INT e HUP) **FAILED**: o neto `sleep` sobrevive. A árvore da célula é real (`sh -c 'sleep 60 & wait'`), não `exec sleep` |
+| célula que falha deixa `fila_suite.sh` órfão | o `autouse` `_nao_deixa_orfao` derruba o GRUPO de cada processo aberto, passe ou falhe (`try/finally` real) |
+| recuperação de órfã sem mutex próprio (`mv` direto no nome da trava) | **corrida real, achada rodando as células depois do fix**: uma vez, `test_recuperadores_simultaneos_*` viu 2 suítes juntas (o recuperador lento move a trava NOVA do rápido). Agora `.recupera` (`mkdir`) serializa e a órfã é reconferida DENTRO dele. A sabotagem NÃO é reproduzível por célula (4 de 4 passaram sem o mutex): a correção é por desenho |
+
+| mutex `.recupera` órfão (recuperador morto com SIGKILL dentro dele) nunca expira | `test_mutex_de_recuperacao_orfao_expira_e_nao_trava_ninguem` **FAILED**: a fila fica presa até o teto de espera. Agora o mutex com mais de 10 s é apagado; um `.recupera` RECENTE é respeitado (`test_mutex_de_recuperacao_recente_nao_e_roubado`) |
+| recuperação que falha por mutex alheio volta ao topo (`; continue`) em vez de esperar | achado pela célula do `.recupera` recente: a fila girava sem `sleep` e sem teto de espera até o mutex expirar. Agora só volta ao topo se RECUPEROU (`&& continue`) |
+
+Documentado no cabeçalho de `fila_suite.sh`: qualquer descendente que herde `TTS_FILA_SEGURA`
+FURA a trava (por desenho; não exportá-la à mão).
+

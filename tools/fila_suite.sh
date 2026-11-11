@@ -22,7 +22,12 @@
 #   • trava de dono morto (SIGKILL) é recuperada por `mv` (atômico: só UM recuperador
 #     vence) — sem esperar TTL;
 #   • reentrância: o comando roda com `TTS_FILA_SEGURA=1`; um `roda` aninhado (o hook
-#     chamado de dentro de uma suíte já travada) só executa, sem pegar a trava de novo;
+#     chamado de dentro de uma suíte já travada) só executa, sem pegar a trava de novo.
+#     ATENÇÃO: isso vale para QUALQUER descendente que herde `TTS_FILA_SEGURA` — um filho
+#     que a exporte (ou a herde de um processo que a tenha) FURA a trava e roda junto
+#     com a suíte dona. Por desenho: confie em quem é seu descendente, não exporte-a à mão;
+#   • sinal (TERM/INT/HUP): derruba o GRUPO inteiro do comando (ele roda em job próprio,
+#     `set -m`), não só o pid — netos também saem — e só então solta a trava;
 #   • espera até TTS_FILA_ESPERA segundos (padrão 10800 = 3 h); depois sai 75.
 #   • TTS_FILA=0 desliga (executa direto) — escape para máquina sem concorrência.
 set -u
@@ -48,10 +53,25 @@ _status() {
 }
 
 _recupera_orfa() {
-  # `mv` de diretório é atômico: com N recuperadores só um move; os outros falham e
-  # voltam ao laço. O cadáver tem nome único, então ninguém apaga a trava NOVA.
-  local morto="$RAIZ/.orfa.$$.$RANDOM"
-  mv "$TRAVA" "$morto" 2>/dev/null && /bin/rm -rf "$morto" && echo "  [fila] trava órfã (dono morto) recuperada"
+  # Check-then-act no NOME da trava seria uma corrida: o recuperador A remove a órfã e
+  # cria a trava NOVA; o recuperador B, que leu o pid morto ANTES, move a trava nova de A
+  # (as duas suítes passam a rodar juntas — o teste de 4 recuperadores acusou). Por isso a
+  # recuperação é serializada por um mutex próprio (`mkdir`) e RECONFERE a órfã dentro
+  # dele: com a órfã presente ninguém consegue criar a trava, então entre a reconferência e
+  # o `mv` ela não muda. Mutex de recuperador morto expira em 10 s.
+  local rec="$RAIZ/.recupera"
+  if ! mkdir "$rec" 2>/dev/null; then
+    local idade=$(( $(_agora) - $(stat -f %m "$rec" 2>/dev/null || stat -c %Y "$rec" 2>/dev/null || _agora) ))
+    [ "$idade" -gt 10 ] && /bin/rm -rf "$rec"
+    return 1
+  fi
+  local morto="$RAIZ/.orfa.$$.$RANDOM" rc=1
+  if [ -d "$TRAVA" ] && ! _dono_vivo \
+     && { [ -n "$(_le pid)" ] || [ "$(( $(_agora) - $(stat -f %m "$TRAVA" 2>/dev/null || stat -c %Y "$TRAVA" 2>/dev/null || _agora) ))" -gt 5 ]; }; then
+    mv "$TRAVA" "$morto" 2>/dev/null && /bin/rm -rf "$morto" && echo "  [fila] trava órfã (dono morto) recuperada" && rc=0
+  fi
+  /bin/rm -rf "$rec"
+  return $rc
 }
 
 _solta() {
@@ -77,7 +97,9 @@ _pega() {
       # `mkdir` feito e `pid` ainda não escrito é uma janela de ms; com idade, é dono
       # morto entre os dois (SIGKILL).
       if [ -n "$(_le pid)" ] || [ "$(( $(_agora) - $(stat -f %m "$TRAVA" 2>/dev/null || stat -c %Y "$TRAVA" 2>/dev/null || _agora) ))" -gt 5 ]; then
-        _recupera_orfa; continue
+        # só volta ao topo se RECUPEROU; mutex de outro recuperador (rc 1) cai no teto de
+        # espera e no sleep abaixo, em vez de girar sem parar
+        _recupera_orfa && continue
       fi
     fi
     if [ $(( $(_agora) - t0 )) -gt "$ESPERA" ]; then
@@ -96,8 +118,22 @@ case "${1:-}" in
     if [ "${TTS_FILA:-1}" = 0 ] || [ "${TTS_FILA_SEGURA:-0}" = 1 ]; then exec "$@"; fi
     _pega "$@" || exit $?
     FILHO=""
-    # sinal: derruba o FILHO (senão a suíte fica órfã sem trava) e só então solta
-    _acaba() { [ -n "$FILHO" ] && kill -TERM "$FILHO" 2>/dev/null && wait "$FILHO" 2>/dev/null; _solta; exit "$1"; }
+    # `set -m`: o filho nasce no seu PRÓPRIO grupo de processos (pgid = pid dele), e o
+    # sinal vai para o GRUPO (`kill -- -pgid`). Matar só o pid deixava o NETO vivo
+    # (`sh -c 'sleep 60 & wait'`: a suíte e o que ela dispara ficavam órfãos, sem trava).
+    set -m
+    # sinal: derruba o GRUPO do filho (TERM, depois KILL se não sair em ~5 s) e só então
+    # solta a trava
+    _acaba() {
+      if [ -n "$FILHO" ]; then
+        kill -TERM -- "-$FILHO" 2>/dev/null
+        local i=0
+        while [ "$i" -lt 50 ] && kill -0 -- "-$FILHO" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
+        kill -KILL -- "-$FILHO" 2>/dev/null
+        wait "$FILHO" 2>/dev/null
+      fi
+      _solta; exit "$1"
+    }
     trap '_solta' EXIT
     trap '_acaba 143' TERM
     trap '_acaba 130' INT

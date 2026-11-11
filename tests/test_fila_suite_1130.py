@@ -26,10 +26,35 @@ def _env(tmp_path, **extra):
     return e
 
 
+_VIVOS: list[subprocess.Popen] = []
+
+
+@pytest.fixture(autouse=True)
+def _nao_deixa_orfao():
+    """#1130 (gate do qa): célula que falha NÃO pode deixar `fila_suite.sh` órfão (já deixou,
+    e o órfão segura a trava dos outros). `try/finally` de verdade: derruba o GRUPO de cada
+    processo que a célula abriu, passe ou falhe."""
+    yield
+    for p in _VIVOS:
+        for sinal in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(p.pid, sinal)          # start_new_session: pgid == pid
+            except (ProcessLookupError, PermissionError):
+                break
+            time.sleep(0.2)
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    _VIVOS.clear()
+
+
 def _roda(tmp_path, *cmd, **extra):
-    return subprocess.Popen([BASH, str(FILA), "roda", "--", *cmd], env=_env(tmp_path, **extra),
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                            stdin=subprocess.DEVNULL, start_new_session=True)
+    p = subprocess.Popen([BASH, str(FILA), "roda", "--", *cmd], env=_env(tmp_path, **extra),
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+    _VIVOS.append(p)
+    return p
 
 
 def _marca(tmp_path, nome, seg):
@@ -115,22 +140,43 @@ def test_recuperadores_simultaneos_de_orfa_nao_quebram_a_exclusao(tmp_path):
         assert 0 <= ativos <= 1, ev
 
 
-@pytest.mark.parametrize("sinal", [signal.SIGTERM, signal.SIGINT])
-def test_sinal_derruba_o_filho_e_solta_a_trava(tmp_path, sinal):
-    pidf = tmp_path / "filho.pid"
-    p = _roda(tmp_path, "sh", "-c", f"echo $$ > {pidf}; exec sleep 60")
+@pytest.mark.parametrize("sinal", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
+def test_sinal_derruba_a_arvore_inteira_e_solta_a_trava(tmp_path, sinal):
+    """Gate do qa: `kill` só do pid deixava o NETO vivo. Aqui a árvore é real:
+    `sh -c 'sleep 60 & echo $! > neto.pid; echo $$ > filho.pid; wait'` — o `sleep` é neto
+    da fila. Depois do sinal, filho E neto têm de estar mortos, e a trava solta."""
+    filho_f, neto_f = tmp_path / "filho.pid", tmp_path / "neto.pid"
+    p = _roda(tmp_path, "sh", "-c",
+              f"sleep 60 & echo $! > {neto_f}; echo $$ > {filho_f}; wait")
     for _ in range(80):
-        if pidf.exists() and pidf.read_text().strip():
+        if neto_f.exists() and filho_f.exists() and filho_f.read_text().strip():
             break
         time.sleep(0.1)
-    filho = int(pidf.read_text())
+    filho, neto = int(filho_f.read_text()), int(neto_f.read_text())
     p.send_signal(sinal)
     p.wait(timeout=30)
     assert p.returncode in (128 + sinal, -sinal), p.returncode
-    time.sleep(0.3)
-    with pytest.raises(ProcessLookupError):
-        os.kill(filho, 0)                       # a suíte não fica órfã
+    for nome, pid in (("filho", filho), ("neto", neto)):
+        for _ in range(30):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError(f"{nome} (pid {pid}) sobreviveu ao sinal {sinal.name}")
     assert not (tmp_path / "locks" / "suite").exists()      # trava solta
+
+
+def test_o_proprio_teste_nao_deixa_orfao_quando_falha(tmp_path):
+    """O fixture derruba o grupo mesmo se a célula abandonar o processo vivo."""
+    p = _roda(tmp_path, "sleep", "60")
+    for _ in range(50):
+        if (tmp_path / "locks" / "suite" / "cmd").exists():
+            break
+        time.sleep(0.1)
+    assert p.poll() is None
+    # (o teardown do autouse mata o grupo; a asserção de que mata é o `_VIVOS.clear()` + sem `ps` residual abaixo)
 
 
 def test_reentrante_hook_dentro_de_suite_travada_so_executa(tmp_path):
@@ -164,3 +210,36 @@ def test_hook_roda_a_suite_cheia_pela_trava():
     codigo = [l for l in (REPO / ".githooks" / "pre-commit").read_text().splitlines()
               if not l.lstrip().startswith("#")]
     assert any("tools/fila_suite.sh roda --" in l and "pytest tests/ -q" in l for l in codigo), codigo
+
+def test_mutex_de_recuperacao_orfao_expira_e_nao_trava_ninguem(tmp_path):
+    """Gate do PM: se o recuperador morrer (SIGKILL) DENTRO do mutex `.recupera`, ele fica no
+    disco. Não pode travar todo mundo para sempre: com mais de 10 s de idade o próximo
+    recuperador o apaga. Aqui a trava dona está morta E o `.recupera` órfão é antigo."""
+    raiz = tmp_path / "locks"
+    (raiz / "suite").mkdir(parents=True)
+    morto = subprocess.Popen(["true"]); morto.wait()
+    (raiz / "suite" / "pid").write_text(f"{morto.pid}\n")
+    rec = raiz / ".recupera"
+    rec.mkdir()
+    antigo = time.time() - 60
+    os.utime(rec, (antigo, antigo))
+    p = _roda(tmp_path, "echo", "rodou", TTS_FILA_ESPERA="20")
+    out = p.communicate(timeout=40)[0]
+    assert p.returncode == 0, out
+    assert "rodou" in out and "recuperada" in out, out
+    assert not rec.exists()
+
+
+def test_mutex_de_recuperacao_recente_nao_e_roubado(tmp_path):
+    """O outro lado do teto: um `.recupera` RECENTE é de um recuperador vivo e é respeitado
+    (a fila espera, e sai 75 pelo teto de espera em vez de roubar o mutex)."""
+    raiz = tmp_path / "locks"
+    (raiz / "suite").mkdir(parents=True)
+    morto = subprocess.Popen(["true"]); morto.wait()
+    (raiz / "suite" / "pid").write_text(f"{morto.pid}\n")
+    (raiz / ".recupera").mkdir()                       # mtime agora
+    r = subprocess.run([BASH, str(FILA), "roda", "--", "echo", "x"],
+                       env=_env(tmp_path, TTS_FILA_ESPERA="2"), capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL, timeout=30)
+    assert r.returncode == 75, (r.returncode, r.stdout, r.stderr)
+    assert (raiz / ".recupera").exists()
