@@ -106,6 +106,7 @@ def sintetico(n_por_preset: int = 6) -> int:
     comum.garante()
     sys.path.insert(0, str(comum.RAIZ_REPO))
     os.environ.setdefault("TTS_LIVE_WORKER", "0")
+    comum.isola_estado()
     import app  # noqa: E402
 
     app._settings["chunk_max_chars"] = 400

@@ -6,9 +6,13 @@ tudo debaixo de um diretório temporário (`BAKEOFF_DIR`, padrão /tmp/tts-bakeo
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
+import shutil
+import sys
+import tempfile
 from pathlib import Path
 
 RAIZ_REPO = Path(__file__).resolve().parents[2]
@@ -39,6 +43,50 @@ VENDIDO_SEPARA = RAIZ_REPO / "tools" / "separa_vend"
 def garante() -> None:
     for d in (FALA, RUIDO, MISTURA, CLONE, RESULTADOS):
         d.mkdir(parents=True, exist_ok=True)
+
+
+#: Caminhos de estado que o app lê no IMPORT (`app._caminho_estado_env`).
+#: São os mesmos do `_ENV_ESTADO` do `tests/conftest.py`. `VOICES_DIR`,
+#: `OUTPUTS_DIR` e `SPEAKER_AUDIO_DIR` caem na árvore do repo (`BASE`), não no
+#: `TTS_STATE_DIR`, por isso cada um é fixado à parte.
+ESTADO_ENV = {
+    "TTS_SETTINGS_PATH": "settings.json",
+    "TTS_APIKEYS_PATH": ".apikeys.json",
+    "TTS_LEGACY_APIKEY_PATH": ".apikey",
+    "TTS_SPEAKER_PATH": ".speaker-profiles.json",
+    "TTS_SPEAKER_AUDIO_DIR": "speaker-audio",
+    "TTS_OUTPUTS_DIR": "outputs",
+    "TTS_VOICES_DIR": "voices",
+    "TTS_JOBS_HIST_PATH": "jobs-hist.json",
+    "TTS_METRICS_DIR": "metrics",
+}
+_ESTADO: Path | None = None
+
+
+def isola_estado() -> Path:
+    """Aponta TODO o estado do app para um diretório temporário (#1127).
+
+    Tem de vir ANTES do `import app`: os caminhos são resolvidos no import. Sem
+    isso o bake-off lia o `settings.json`, as chaves e os perfis do dono, e o
+    `voices/`/`outputs/` da árvore. Sobrescreve até um `TTS_*_PATH` exportado no
+    shell (por desenho do #461 ele venceria o `TTS_STATE_DIR`). Idempotente; o
+    diretório é apagado na saída do processo.
+    """
+    global _ESTADO
+    if _ESTADO is not None:
+        return _ESTADO
+    if "app" in sys.modules:
+        raise RuntimeError("isola_estado() depois do `import app`: o app já leu o "
+                           "estado do dono — chame antes de importar")
+    raiz = Path(tempfile.mkdtemp(prefix="bakeoff-estado-"))
+    atexit.register(shutil.rmtree, raiz, True)
+    os.environ["TTS_STATE_DIR"] = str(raiz)
+    for nome, rel in ESTADO_ENV.items():
+        os.environ[nome] = str(raiz / rel)
+    for rel in ("voices", "outputs", "speaker-audio", "metrics"):
+        (raiz / rel).mkdir()
+    _ESTADO = raiz
+    return raiz
 
 
 def sha256(p: Path) -> str:

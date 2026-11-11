@@ -1,8 +1,8 @@
 """Reprodução da medição do #663 (alternado × sobreposto) com o corpus do R4.
 
 Uso (na raiz do repo, venv do app):
-    TTS_SETTINGS_PATH=/tmp/i663.json TTS_SPEAKER_PATH=/tmp/i663p.json \\
-      TTS_OUTPUTS_DIR=/tmp/i663o ./.venv-mlx/bin/python tools/bakeoff/mede_alvo_app.py
+    ./.venv-mlx/bin/python tools/bakeoff/mede_alvo_app.py
+O estado do app vai para um tmp (`comum.isola_estado`, #1127) — nada do dono.
 
 Corpus: LibriSpeech dev-clean público já montado por `corpus.py` (alvo 1272 ×
 concorrente 1462, 3 clipes de cada, 7 s por `junta`). Alternado = blocos de 2 s
@@ -13,12 +13,14 @@ import pathlib
 import sys
 
 
-sys.path.insert(0, "/Users/lisboa/Documents/tts-rod/tools/bakeoff")
-sys.path.insert(0, "/Users/lisboa/Documents/tts-rod")
+_AQUI = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(_AQUI))
+sys.path.insert(0, str(_AQUI.parents[1]))
 import comum, alvo as A, metricas, soundfile as sf
+comum.isola_estado()
 import app, separa_voz
 
-RAIZ = "/Users/lisboa/Documents/tts-rod"
+RAIZ = str(_AQUI.parents[1])
 fal = A._falantes()
 
 def cenarios():

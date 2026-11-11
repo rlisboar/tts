@@ -51,6 +51,7 @@ def _iguala_nivel(y: np.ndarray, ref: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def cand_atual(x, sr):
+    comum.isola_estado()
     import app
 
     t = time.perf_counter()
@@ -144,6 +145,7 @@ def _dnsmos(x: np.ndarray, sr: int) -> dict:
 
 
 def _wer(texto_ref: str, x: np.ndarray, sr: int) -> float:
+    comum.isola_estado()
     import app
 
     tmp = comum.BASE / "resultados" / "_wer.wav"

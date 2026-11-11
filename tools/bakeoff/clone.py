@@ -29,6 +29,7 @@ def main() -> int:
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 6
     comum.garante()
     sys.path.insert(0, str(comum.RAIZ_REPO))
+    comum.isola_estado()
     import app
 
     app._settings["chunk_max_chars"] = 400

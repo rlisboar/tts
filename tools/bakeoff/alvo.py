@@ -183,6 +183,7 @@ def seleciona(mix: np.ndarray, sr: int, ref: np.ndarray, eca,
 
 def _transcreve(x: np.ndarray, sr: int, idioma: str, tag: str) -> list[str]:
     sys.path.insert(0, str(comum.RAIZ_REPO))
+    comum.isola_estado()
     import app
 
     tmp = comum.BASE / "resultados" / f"_wer_{tag}.wav"
