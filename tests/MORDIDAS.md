@@ -1153,3 +1153,17 @@ falso das 5 suítes já vinha só da fixture; o vazamento era a INSTÂNCIA que e
 | `admin_ui_flow.sh` sem `TTS_OUTPUTS_DIR` | idem **FAILED** |
 | `live_dsh_fallback.sh` com a fala em `glob("tests/fixtures/*.wav")` | `test_as_cinco_suites_usam_so_a_fixture_como_fala` **FAILED** (antes de apertar a célula passava: a fixture ainda aparecia na mensagem de erro) |
 | (delta pós-#1125) `X = pathlib.Path("voices")` acrescentado ao `tools/live_bench.py`, isento por só CITAR `voices/` | `test_excecoes_de_bancada_so_citam_nao_montam_caminho` **FAILED** |
+
+### #1127 — bake-offs de `tools/bakeoff/` isolam o estado do app antes do `import app`
+
+Guarda estática + célula de comportamento em `tests/test_bakeoff_estado_isolado_1127.py`
+(3 células). `comum.isola_estado()` aponta `TTS_STATE_DIR` e os nove
+`TTS_*_PATH/_DIR` de estado para um `mkdtemp` (apagado no `atexit`) e levanta se o `app`
+já foi importado.
+
+| Sabotagem | Resultado |
+|---|---|
+| `tools/bakeoff/clone.py` sem a chamada `comum.isola_estado()` antes do `import app` | `test_todo_import_app_em_tools_vem_depois_de_isolar_o_estado` **FAILED** |
+| `isola_estado()` fixa só o `TTS_STATE_DIR` (sem os nove caminhos) | `test_app_importado_depois_de_isolar_nao_ve_nenhum_caminho_do_dono` **FAILED** |
+| `isola_estado()` sem a checagem de `"app" in sys.modules` | `test_isolar_depois_do_import_app_levanta` **FAILED** |
+| `isola_estado()` sem o `atexit.register(shutil.rmtree, …)` | `test_app_importado_depois_de_isolar_nao_ve_nenhum_caminho_do_dono` **FAILED** (o tmp fica para trás) |
