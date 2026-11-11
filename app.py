@@ -11623,6 +11623,46 @@ def _live_log_kv(evento: str, **campos) -> None:
                    " ".join(f"{k}={v}" for k, v in campos.items() if v is not None))
 
 
+#: #1129: cadência do nível de mic/eco DURANTE o playback (campo `niveis` do log).
+_LIVE_NIVEIS_MS = 500
+
+
+def _live_niveis(sess: dict) -> None:
+    """Pré-registro `22d2298` (#1129): `dbfs` do mic e `eco_dbfs` calibrado a cada
+    ~500 ms, SÓ enquanto a resposta toca. Só nível numérico: nenhuma amostra de áudio."""
+    if not sess.get("falando"):
+        return
+    agora = time.monotonic()
+    if agora < sess.get("niveis_prox", 0.0):
+        return
+    sess["niveis_prox"] = agora + _LIVE_NIVEIS_MS / 1000.0
+    eco = None
+    try:
+        eng = sess.get("engine")
+        if eng is not None:
+            eco = eng.estatisticas().get("eco_dbfs")
+    except Exception:                         # noqa: BLE001 — telemetria não derruba
+        eco = None
+    _live_log_kv("niveis", sess=sess["id"], dbfs=sess.get("st_dbfs"), eco_dbfs=eco)
+
+
+def _live_playback_borda(sess: dict, ligado: bool) -> None:
+    """Bordas do playback (`set_speaking`): `playback_inicio` e `playback_fim` com a
+    duração REAL tocada (`duracao_ms`, do 1º chunk ao último) — é o que reconstrói a
+    janela de eco na medida do #1129."""
+    agora = time.monotonic()
+    if ligado:
+        sess["playback_t0"] = agora
+        sess["playback_chunks"] = 0
+        sess["niveis_prox"] = 0.0
+        _live_log_kv("playback_inicio", sess=sess["id"], turno=sess.get("turno"))
+        return
+    t0 = sess.pop("playback_t0", None)
+    _live_log_kv("playback_fim", sess=sess["id"], turno=sess.get("turno"),
+                 duracao_ms=(int((agora - t0) * 1000) if t0 is not None else None),
+                 chunks=sess.get("playback_chunks"))
+
+
 def _live_stage(sess: dict, stage: str) -> None:
     """Estágio do turno (`idle|stt|llm|tts`) com o tempo do estágio anterior."""
     if sess.get("st_stage") == stage:
@@ -13796,7 +13836,8 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
                           fala_ms=_live_fala_ms_corte(sess, fala or None))
         elif ev.tipo == "speech_start":
             _live_log_kv("speech_start", sess=sess["id"], t_ms=ev.t_ms,
-                         prob=getattr(ev, "prob", None))
+                         prob=getattr(ev, "prob", None),
+                         barge_in=getattr(ev, "barge_in", None))   # #1129
             # #1115: a fala que começa vai pedir marca no 1º PCM da resposta.
             # Renova o TTL do filho (ou o sobe) agora, enquanto fala + STT + LLM
             # correm — com o Live aberto e ocioso > TTL_S o vigia já o fechou.
@@ -13805,6 +13846,7 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
                 _live_tenta_continuacao(sess)
         elif ev.tipo == "speech_end":
             _live_log_kv("speech_end", sess=sess["id"], t_ms=ev.t_ms,
+                         barge_in=getattr(ev, "barge_in", None),   # #1129
                          fala_ms=getattr(ev, "fala_ms", None),
                          curto=getattr(ev, "curto", None),
                          barge_falso=getattr(ev, "barge_falso", None),
@@ -14235,6 +14277,8 @@ async def _live_sender(sess: dict, ws) -> None:
                 if eng is not None:
                     if not sess.get("falando"):
                         sess["falando"] = True
+                        _live_playback_borda(sess, True)      # #1129
+                    sess["playback_chunks"] = sess.get("playback_chunks", 0) + 1
                     # #167: o cliente BUFFERIZA e ainda vai tocar este chunk — a
                     # janela de barge tem de cobrir a duração REAL dele. A chamada
                     # vai a CADA chunk (não só no 1º do turno): o backlog do motor
@@ -14252,6 +14296,7 @@ async def _live_sender(sess: dict, ws) -> None:
                     sess["audio_pendente"] = max(0, sess.get("audio_pendente", 1) - 1)
                     if sess["audio_pendente"] == 0:
                         sess["falando"] = False
+                        _live_playback_borda(sess, False)     # #1129
                         eng.set_speaking(False)
         motivo = _live_motivo_fechamento(sess)
         if motivo is not None:
@@ -14750,6 +14795,7 @@ async def _live_loop(sess: dict, ws) -> None:
             sess["st_bytes"] += len(pcm)
             sess["st_ultimo_frame"] = time.monotonic()
             sess["st_dbfs"] = round(_dbfs16(pcm), 1)
+            _live_niveis(sess)                  # #1129: dBFS mic/eco a cada ~500 ms de playback
             eng = sess.get("engine")
             if eng is not None:
                 # #870: a correlação do duck lê o CRU (antes do RNNoise). O

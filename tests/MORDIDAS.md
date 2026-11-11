@@ -1167,3 +1167,20 @@ já foi importado.
 | `isola_estado()` fixa só o `TTS_STATE_DIR` (sem os nove caminhos) | `test_app_importado_depois_de_isolar_nao_ve_nenhum_caminho_do_dono` **FAILED** |
 | `isola_estado()` sem a checagem de `"app" in sys.modules` | `test_isolar_depois_do_import_app_levanta` **FAILED** |
 | `isola_estado()` sem o `atexit.register(shutil.rmtree, …)` | `test_app_importado_depois_de_isolar_nao_ve_nenhum_caminho_do_dono` **FAILED** (o tmp fica para trás) |
+
+### #1129 — o log persistente carrega os 3 campos do pré-registro `22d2298`
+
+O qa reprovou o `e225b9c` (#1128): caminho e rotação certos, mas o log não tinha 3 dos 4
+campos que a medida do #1129 exige (`grep -c` dava 0 para `eco_dbfs`, `dbfs=` e
+`set_speaking` no log de produção). Agora, em `app.py`:
+(1) `speech_start` e `speech_end` logam `barge_in=`; (2) `niveis` (`dbfs=` do mic e
+`eco_dbfs=` calibrado) a cada ~500 ms, SÓ com a resposta tocando e só como número;
+(3) `playback_inicio` / `playback_fim` com `duracao_ms` (e `chunks`). Nada de áudio,
+transcrição nem nome de voz. Células em `tests/test_log_campos_1129.py`.
+
+| Sabotagem | Resultado |
+|---|---|
+| `speech_start` sem `barge_in=` (campo 1) | `test_speech_start_e_speech_end_levam_barge_in` **FAILED** |
+| frame sem a chamada de `_live_niveis` (campo 2) | `test_o_envio_do_audio_marca_as_bordas_e_o_frame_chama_o_niveis` **FAILED** |
+| `_live_niveis` loga mesmo fora do playback (campo 2) | `test_niveis_so_durante_o_playback_e_com_os_dois_campos` **FAILED** |
+| sem a borda `playback_fim` (campo 3) | `test_o_envio_do_audio_marca_as_bordas_e_o_frame_chama_o_niveis` **FAILED** |
