@@ -1212,3 +1212,16 @@ diverge do `duracao_ms`) e `ts`.
 O gate agora é `eng.estatisticas()["playback_ativo"]` (a JANELA do motor, que cobre o áudio que
 o cliente toca do buffer), e as bordas `playback_inicio`/`playback_fim` derivam dela, com
 `chunks`/`audio_ms`/`duracao_ms` acumulados por EPISÓDIO (no envio de cada chunk).
+
+**Mais 3 campos do speech (card do #1129)**
+
+(1) `tocando=<bool>` em cada `niveis` (de `estatisticas()["tocando"]`): o `playback_ativo` inclui os
+vãos de LLM/TTS (até 20 s) com o assistente calado, e sem esse campo o H2 dilui. (2) `n=`, os frames
+na janela (a 1ª do episódio tem 1). (3) `playback_fim` também quando a SESSÃO fecha com a janela
+aberta (`motivo=fechou`; o normal leva `motivo=janela`), pelo `_live_libera_sessao`.
+
+| Sabotagem | Resultado |
+|---|---|
+| `niveis` sem `tocando=` | `test_niveis_diz_se_esta_tocando_*`, `test_niveis_so_leva_numero_*` **FAILED** |
+| `niveis` sem `n=` | `test_niveis_traz_n_os_frames_da_janela`, `test_niveis_so_leva_numero_*` **FAILED** |
+| a sessão fecha sem emitir o `playback_fim` do episódio aberto | `test_sessao_fechando_com_a_janela_aberta_emite_playback_fim_fechou` **FAILED** |

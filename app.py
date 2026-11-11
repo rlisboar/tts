@@ -11681,14 +11681,28 @@ def _live_playback_janela(sess: dict, ativo: bool) -> None:
             pass
         _live_log_kv("playback_inicio", sess=sess["id"], turno=sess.get("turno"), ts=_live_ts())
         return
+    _live_playback_fim(sess, "janela")
+
+
+def _live_playback_fim(sess: dict, motivo: str) -> None:
+    """Fecha o episódio: `playback_fim` com a contabilidade e o `motivo` (`janela` = a janela
+    do motor fechou; `fechou` = a SESSÃO fechou com a janela ainda aberta)."""
     t0 = sess.pop("playback_t0", None)
     ult = sess.pop("playback_ultimo", None)
     _live_log_kv("playback_fim", sess=sess["id"], turno=sess.get("turno"), ts=_live_ts(),
+                 motivo=motivo,
                  duracao_ms=(int((ult - t0) * 1000) if t0 is not None and ult is not None else None),
                  audio_ms=(int(sess.get("playback_audio_ms", 0)) if t0 is not None else None),
                  chunks=sess.get("playback_chunks"))
     for k in ("playback_chunks", "playback_audio_ms"):
         sess.pop(k, None)
+
+
+def _live_playback_fecha(sess: dict) -> None:
+    """Sessão fechando com a janela de playback ABERTA: sem isto o episódio some do log (o
+    `playback_fim` só sairia na próxima janela fechada). Idempotente."""
+    if sess.pop("pb_ativo", False):
+        _live_playback_fim(sess, "fechou")
 
 
 def _live_niveis(sess: dict) -> None:
@@ -11724,7 +11738,10 @@ def _live_niveis(sess: dict) -> None:
         return
     sess["niveis_prox"] = agora + _LIVE_NIVEIS_MS / 1000.0
     n = sess.get("niv_n", 0)
-    _live_log_kv("niveis", sess=sess["id"], ts=_live_ts(),
+    # `tocando`: o `playback_ativo` inclui vãos de LLM/TTS (até 20 s) com o assistente
+    # CALADO; só `tocando` diz que há áudio audível — sem ele o H2 dilui. `n` = quadros
+    # (frames do cliente) na janela: a 1ª do episódio tem 1.
+    _live_log_kv("niveis", sess=sess["id"], ts=_live_ts(), n=n, tocando=st.get("tocando"),
                  dbfs_pico=sess.get("niv_pico"),
                  dbfs_media=(round(sess["niv_soma"] / n, 1) if n else None),
                  prob_pico=(round(sess["niv_prob"], 3) if "niv_prob" in sess else None),
@@ -14232,6 +14249,7 @@ def _live_libera_sessao(sess: dict, motivo: str) -> None:
     Idempotente: o pop de `intencao_ref` e a checagem de dono do registry
     garantem que duas chamadas não devolvem duas vezes nem apagam a sessão nova
     de uma retomada (#201)."""
+    _live_playback_fecha(sess)             # #1129: episódio aberto vira `playback_fim motivo=fechou`
     if sess.pop("intencao_ref", False):
         # devolve a referência do classificador compartilhado (#595): o worker
         # único só fecha quando a última sessão sai (ou pelo TTL)

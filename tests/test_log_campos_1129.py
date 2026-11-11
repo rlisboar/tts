@@ -35,12 +35,13 @@ class _Quadro:
 class _Motor:
     """Motor falso: `_historico` é o deque de quadros de 32 ms pontuados (como o real)."""
 
-    def __init__(self, eco, ruido=-60.0, prob=0.0, ativo=False):
-        self._eco, self._ruido, self.ativo = eco, ruido, ativo
+    def __init__(self, eco, ruido=-60.0, prob=0.0, ativo=False, tocando=True):
+        self._eco, self._ruido, self.ativo, self.tocando = eco, ruido, ativo, tocando
         self._historico = [_Quadro(0, prob)]
 
     def estatisticas(self):
-        return {"eco_dbfs": self._eco, "noise_dbfs": self._ruido, "playback_ativo": self.ativo}
+        return {"eco_dbfs": self._eco, "noise_dbfs": self._ruido, "playback_ativo": self.ativo,
+                "tocando": self.tocando}
 
     def quadros(self, *probs):
         """Um frame do cliente traz VÁRIOS quadros: injeta todos de uma vez."""
@@ -204,7 +205,7 @@ def test_niveis_so_leva_numero_e_carimbo_nenhum_audio(caplog):
     app._live_niveis(_sess(falando=True))
     (linha,) = _linhas(caplog, "niveis")
     assert re.fullmatch(
-        r"niveis sess=sx ts=\S+ dbfs_pico=-?[\d.]+ dbfs_media=-?[\d.]+ prob_pico=[\d.]+ "
+        r"niveis sess=sx ts=\S+ n=\d+ tocando=(True|False) dbfs_pico=-?[\d.]+ dbfs_media=-?[\d.]+ prob_pico=[\d.]+ "
         r"eco_dbfs=-?[\d.]+ noise_dbfs=-?[\d.]+", linha), linha
 
 
@@ -232,7 +233,7 @@ def test_bordas_derivam_da_janela_do_motor_e_somam_o_episodio(caplog, monkeypatc
     app._live_niveis(s)
     (fim,) = _linhas(caplog, "playback_fim")
     c = _campos(fim)
-    assert c["chunks"] == "3" and c["audio_ms"] == "1100", fim
+    assert c["chunks"] == "3" and c["audio_ms"] == "1100" and c["motivo"] == "janela", fim
     assert c["duracao_ms"] == "1000", fim        # 1º→último envio (t0=10.0, último=11.0)
     assert "ts" in c
 
@@ -305,3 +306,55 @@ def test_o_motor_expoe_o_eco_dbfs_que_o_log_le():
     """`_live_niveis` lê `estatisticas()["eco_dbfs"]`: o motor tem de continuar expondo."""
     src = (REPO / "live_turns.py").read_text()
     assert '"eco_dbfs": round(self._eco_dbfs' in src
+
+
+# --- acréscimos do speech (3): tocando, n, playback_fim ao fechar a sessão ---------
+
+def test_niveis_diz_se_esta_tocando_e_o_gap_de_geracao_aparece_como_false(caplog, monkeypatch):
+    """`playback_ativo` inclui vãos de LLM/TTS (até 20 s) com o assistente CALADO. Sem
+    `tocando=` o H2 dilui esses vãos. A janela está ativa nos dois casos; o campo separa."""
+    caplog.set_level(logging.INFO, logger="live")
+    t = [400.0]
+    monkeypatch.setattr(app.time, "monotonic", lambda: t[0])
+    s = _sess(falando=True)
+    app._live_niveis(s)
+    s["engine"].tocando = False                       # vão de geração: janela ativa, mudo
+    t[0] = 400.6
+    app._live_niveis(s)
+    a, b = (_campos(x) for x in _linhas(caplog, "niveis"))
+    assert a["tocando"] == "True" and b["tocando"] == "False", (a, b)
+
+
+def test_niveis_traz_n_os_frames_da_janela(caplog, monkeypatch):
+    caplog.set_level(logging.INFO, logger="live")
+    t = [500.0]
+    monkeypatch.setattr(app.time, "monotonic", lambda: t[0])
+    s = _sess(falando=True)
+    app._live_niveis(s)                               # 1ª do episódio: 1 frame
+    for dt in (0.1, 0.2, 0.3, 0.4):
+        t[0] = 500.0 + dt
+        app._live_niveis(s)
+    t[0] = 500.5
+    app._live_niveis(s)                               # fecha a janela com 5 frames
+    primeira, segunda = (_campos(x) for x in _linhas(caplog, "niveis"))
+    assert primeira["n"] == "1" and segunda["n"] == "5", (primeira, segunda)
+
+
+def test_sessao_fechando_com_a_janela_aberta_emite_playback_fim_fechou(caplog):
+    caplog.set_level(logging.INFO, logger="live")
+    s = _sess(falando=True)
+    s["pb_ativo"] = True
+    app._live_playback_chunk(s, _chunk(400))
+    app._live_playback_chunk(s, _chunk(400))
+    app._live_libera_sessao(s, "cliente_fechou")
+    (fim,) = _linhas(caplog, "playback_fim")
+    c = _campos(fim)
+    assert c["motivo"] == "fechou" and c["chunks"] == "2" and c["audio_ms"] == "800", fim
+    app._live_libera_sessao(s, "cliente_fechou")      # idempotente: não duplica
+    assert len(_linhas(caplog, "playback_fim")) == 1
+
+
+def test_sessao_fechando_com_a_janela_fechada_nao_inventa_playback_fim(caplog):
+    caplog.set_level(logging.INFO, logger="live")
+    app._live_libera_sessao(_sess(falando=False), "cliente_fechou")
+    assert not _linhas(caplog, "playback_fim")
