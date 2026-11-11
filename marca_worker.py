@@ -87,6 +87,17 @@ ALVO_DETECCAO = float(os.environ.get("TTS_MARCA_ALVO", "0.97"))
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+# #1116: SEM `torch.compile`. O AudioSeal 0.2 (via moshi) embrulha o `forward`
+# do SEANet, as convs e o RoPE em `torch_compile_lazy`, e o dynamo guarda o
+# formato EXATO do tensor (canais por camada, comprimento do trecho, instância
+# do gerador x detector). O aquecimento com `zeros(1, 1, 16000)` compilava um
+# formato só, e o 1º trecho real recompilava tudo: ~0,74 s no mini, ~1,2 s
+# aqui, num pedido de ~0,1 s. Em CPU o modo eager não perde nada no regime
+# (mesmos ms por trecho, medido) e o `pronto` sai em ~1,5 s, não ~6 s.
+# A chave é lida no IMPORT do audioseal (`torch_compile_lazy`), por isso fica
+# aqui, antes de `main()` importar o pacote. Exportar `NO_TORCH_COMPILE=` (vazio)
+# religa o compile, só para medir.
+os.environ.setdefault("NO_TORCH_COMPILE", "1")
 
 RAIZ = os.path.dirname(os.path.abspath(__file__))
 
@@ -154,8 +165,11 @@ def main() -> int:
     detector = AudioSeal.load_detector(detector_p, nbits=16).eval()
     _log(f"carregado em {round((time.perf_counter() - t) * 1000)} ms")
     t = time.perf_counter()
-    with torch.no_grad():                    # aquece o grafo do gerador
+    with torch.no_grad():                    # aquece o gerador E o detector
+        # (o `embute_conferido` usa os dois a cada trecho). Sem compile (#1116),
+        # o formato do aquecimento não precisa casar com o do trecho real.
         gerador(torch.zeros(1, 1, 16000), sample_rate=16000)
+        detector.detect_watermark(torch.zeros(1, 1, 16000), sample_rate=16000)
     # scipy entra aqui, no prewarm do filho: o 1º PCM não paga o import (~0,47 s).
     _regrade(np.zeros(8, dtype=np.float32), 24000, 16000)
     _log(f"aquecido em {round((time.perf_counter() - t) * 1000)} ms")
