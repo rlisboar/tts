@@ -1243,3 +1243,19 @@ zerada em `_live_cancela` (cancel do cliente e barge do motor); áudio audível 
 | `fila_ms` derivado do `tocando` do motor | `test_motor_real_vao_*`, `test_fila_ms_estima_o_audio_*` **FAILED** |
 | o gate do `niveis` de volta ao `tocando` | 4 células de janela/bordas **FAILED** |
 | `niveis` sem `fila_ms=` | `test_niveis_so_leva_numero_*`, `test_fila_ms_estima_o_audio_*` **FAILED** |
+### #1130 — trava atômica de máquina para a suíte cheia (`tools/fila_suite.sh`)
+
+As esperas por `pgrep` checavam "máquina vazia" e largavam depois: checar e largar não
+são atômicos, e duas suítes cheias largaram com 35 s de diferença. Agora quem larga é
+quem tem a trava (`mkdir`, atômico), em `~/.tts-rod-locks/suite` (fora do /tmp que o
+macOS varre às 00:00). Trava de dono morto sai por `mv` (só um recuperador vence); sinal
+derruba o filho e solta; reentrante via `TTS_FILA_SEGURA`; o hook roda a suíte pela trava.
+
+| Sabotagem | Resultado |
+|---|---|
+| `mkdir` vira "checa e depois cria" (não atômico) | `test_duas_largadas_*`, `test_recuperadores_simultaneos_*` **FAILED** |
+| sinal não mata o filho | `test_sinal_derruba_o_filho_*` (SIGTERM e SIGINT) **FAILED** |
+| sem reentrância (`TTS_FILA_SEGURA`) | `test_reentrante_*` **FAILED** (o aninhado espera a própria trava) |
+| hook volta a rodar o pytest direto | `test_hook_roda_a_suite_cheia_pela_trava` **FAILED** |
+| `TTS_FILA=0` (escape) | `test_sem_a_trava_as_duas_rodam_juntas` documenta a sobreposição |
+| recuperação por `rm -rf` em vez de `mv` | **NÃO morde**: é uma corrida de milissegundos (o recuperador lento apaga a trava NOVA do mais rápido); 4 recuperadores não a provocam. O `mv` fica por desenho, não por célula. |

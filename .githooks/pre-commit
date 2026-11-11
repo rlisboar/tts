@@ -95,7 +95,14 @@ if git diff --cached --name-only | grep -qE "$AREA_REAL" \
     export TTS_TEST_WORKER=1
     echo "[hook] área do worker no commit: o caminho real roda junto"
 fi
-"$PY" -m pytest tests/ -q || exit 1
+# #1130: a suíte cheia só roda com a TRAVA ATÔMICA de máquina (tools/fila_suite.sh):
+# duas esperas por `pgrep` largavam juntas. Reentrante (TTS_FILA_SEGURA) — um hook
+# chamado de dentro de uma suíte já travada só executa.
+if [ -x tools/fila_suite.sh ]; then
+    tools/fila_suite.sh roda -- "$PY" -m pytest tests/ -q || exit 1
+else
+    "$PY" -m pytest tests/ -q || exit 1
+fi
 
 # #387: suítes `.sh` do estágio RÁPIDO (sem navegador, auto-contido, ~19 s). Só
 # quando o diff toca área que elas podem regredir — no resto, um aviso basta. A
