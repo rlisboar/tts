@@ -64,7 +64,7 @@ _dispara_alerta() {
     print -r -- "público: https://$PUBLICO/health"
     print -r -- "log:     $LOG"
     print -r -- ""
-    print -r -- "Ação: ver o log do app (/tmp/tts-studio.log no mini), o agente"
+    print -r -- "Ação: ver o log do app (~/Library/Logs/tts-studio/tts-studio.log no mini), o agente"
     print -r -- "studio.tts.server e o conector ($LABEL de túnel). Limpar este arquivo"
     print -r -- "quando resolver — o probe volta a alertar na próxima sequência."
   } > "$FLAG"
@@ -181,7 +181,7 @@ case "${1:-check}" in
     # Corrige a permissão dos logs existentes (o app já grava 0644 em /tmp):
     # histórico operacional com a chave lida por curl não é segredo, mas 0600 é
     # o padrão das outras peças.
-    [ -f /tmp/tts-studio.log ] && chmod 600 /tmp/tts-studio.log 2>/dev/null || true
+    [ -f "$HOME/Library/Logs/tts-studio/tts-studio.log" ] && chmod 600 "$HOME/Library/Logs/tts-studio/tts-studio.log" 2>/dev/null || true
     cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

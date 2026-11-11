@@ -923,7 +923,7 @@ origem precisa de:
   política, recarregue a aba.
 
 Diagnóstico rápido: se o cliente falha com "Failed to fetch" e **nada** chega em
-`/tmp/tts-studio.log`, o problema é antes da rede (CSP ou base errada); se chega
+`~/Library/Logs/tts-studio/tts-studio.log` (no mini; `/tmp/tts-studio.log` no Mac de desenvolvimento), o problema é antes da rede (CSP ou base errada); se chega
 `401`, é chave.
 
 ## Conversa (decidir o texto com IA)

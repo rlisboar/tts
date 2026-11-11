@@ -24,8 +24,8 @@ O que conta como FECHAMENTO do intervalo (primeiro que aparecer depois do
 casos em que o áudio caiu na fila e o relógio corria sem STT em voo.
 
 Uso:
-    tools/stage_stt.py /tmp/tts-studio.log [--desde HH:MM:SS] [--ate HH:MM:SS]
-    ssh mini cat /tmp/tts-studio.log | tools/stage_stt.py -
+    tools/stage_stt.py ~/Library/Logs/tts-studio/tts-studio.log [--desde HH:MM:SS] [--ate HH:MM:SS]
+    ssh mini 'cat ~/Library/Logs/tts-studio/tts-studio.log' | tools/stage_stt.py -
 """
 from __future__ import annotations
 

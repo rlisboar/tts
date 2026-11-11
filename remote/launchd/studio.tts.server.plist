@@ -10,6 +10,11 @@
   limpa restos (um `run.sh` órfão segurando a 7860 faz o novo morrer com
   "address already in use"). `KeepAlive` + `ThrottleInterval` evitam laço quente.
 
+  LOG (#1128): fora de /tmp (o `tmp_cleaner` do macOS varre às 00:00 e o reboot zera).
+  O launchd NÃO cria o diretório: `mkdir -m 700 ~/Library/Logs/tts-studio` antes do
+  bootstrap. Trocar o StandardOutPath exige `bootout` + `bootstrap` (o `kickstart -k`
+  não relê o plist). Rotação: remote/log_rotate.sh install.
+
   Instalar (no mini): cp remote/launchd/studio.tts.server.plist
   ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) $_
   (o script fica em ~/.tts-studio/start-server.sh, ver remote/launchd/).
@@ -51,8 +56,8 @@
   <key>ThrottleInterval</key>
   <integer>5</integer>
   <key>StandardOutPath</key>
-  <string>/tmp/tts-studio.log</string>
+  <string>/Users/lisboa/Library/Logs/tts-studio/tts-studio.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/tts-studio.log</string>
+  <string>/Users/lisboa/Library/Logs/tts-studio/tts-studio.log</string>
 </dict>
 </plist>

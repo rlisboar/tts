@@ -71,7 +71,9 @@ case "$INDEX_PAUSA"    in ''|*[!0-9]*) INDEX_PAUSA=2 ;; esac
 ESTADO=".deploy-mini-estado"                      # no repo do mini (untracked; só o --apply escreve)
 BOOT_MARKER=".deploy-mini-boot"                   # instantâneo (epoch) do restart, no repo do mini
 LOG_MARKER=".deploy-mini-logmarca"                # tamanho do log no restart (âncora da marca d'água)
-LOG_MINI="${TTS_MINI_LOG:-/tmp/tts-studio.log}"   # log de produção (StandardOutPath do plist)
+# #1128: o log saiu de /tmp (varrido às 00:00 e zerado no reboot). O default é LITERAL
+# `$HOME/...` — quem expande é o shell do MINI (o valor só viaja em strings de `distante`).
+LOG_MINI="${TTS_MINI_LOG:-\$HOME/Library/Logs/tts-studio/tts-studio.log}"   # StandardOutPath do plist
 # O preview de deps vai para o /tmp DO MINI, não para a árvore do repo: sem isso o
 # dry-run sujava a árvore de produção (F1 do gate #232 — o script promete "nada muda").
 # E o nome leva $$: com caminho FIXO, dois deploys/suítes ao mesmo tempo reescrevem e
@@ -436,7 +438,7 @@ smoke_tts() { # $1 = base, $2 = rótulo, $3 = chave
       falhas=1
     fi
   elif [ "$estado_job" = "error" ]; then
-    print -r -- "  [FALHA] $rotulo job $job terminou em error (log do mini: /tmp/tts-studio.log)"
+    print -r -- "  [FALHA] $rotulo job $job terminou em error (log do mini: $LOG_MINI)"
     falhas=1
   else
     print -r -- "  [FALHA] $rotulo job $job não concluiu em ${TTS_TIMEOUT}s (status=${estado_job:-sem resposta})"
@@ -494,8 +496,8 @@ recon() {
   distante "cd $(cd_remoto) && ./.venv-mlx/bin/python -V 2>&1" | sed 's/^/  /'
   distante "cd $(cd_remoto) && ./.venv-mlx/bin/python -c 'import importlib.util as u; print(\"websockets\", bool(u.find_spec(\"websockets\"))); print(\"importlib_resources\", bool(u.find_spec(\"importlib_resources\")))' 2>&1" | sed 's/^/  dep: /'
   print -r -- "== uso (log de produção)"
-  distante "grep -c 'POST /api/tts' /tmp/tts-studio.log 2>/dev/null || echo 0" | sed 's|^|  POST /api/tts no log: |'
-  distante "ls -l /tmp/tts-studio.log 2>/dev/null | awk '{print \$5, \$6, \$7, \$8}'" | sed 's/^/  log: /'
+  distante "grep -c 'POST /api/tts' $LOG_MINI 2>/dev/null || echo 0" | sed 's|^|  POST /api/tts no log: |'
+  distante "ls -l $LOG_MINI 2>/dev/null | awk '{print \$5, \$6, \$7, \$8}'" | sed 's/^/  log: /'
   print -r -- "== estado do último deploy (se houve)"
   distante "cd $(cd_remoto) && cat $ESTADO 2>/dev/null || echo '(sem $ESTADO)'" | sed 's/^/  /'
   print -r -- "  chave do mini: $(chave_do_mini | wc -c | tr -d ' ') bytes"
