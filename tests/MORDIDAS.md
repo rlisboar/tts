@@ -1274,3 +1274,24 @@ derruba o filho e solta; reentrante via `TTS_FILA_SEGURA`; o hook roda a suíte 
 Documentado no cabeçalho de `fila_suite.sh`: qualquer descendente que herde `TTS_FILA_SEGURA`
 FURA a trava (por desenho; não exportá-la à mão).
 
+
+### #1131 — seguimento da trava: guarda do conftest, `status` com quem espera, nits do qa
+
+(a) **Guarda no `tests/conftest.py`**: `pytest_collection_finish` aborta com rc 75 e a mensagem
+"rode `tools/fila_suite.sh roda -- …`" quando a COLETA cobre ≥ 90 % dos `tests/test_*.py`
+(suíte cheia, sem número mágico de testes) e o ambiente não tem `TTS_FILA_SEGURA=1`. Escapes:
+`TTS_FILA=0` e `CI`. Rodada curta nunca é barrada. (b) **`status` lista quem espera**: cada
+espera registra `~/.tts-rod-locks/espera/<pid>` (agente, worktree, desde, cmd), sai na saída ou no
+sinal, e o de pid morto é varrido pelo `status`. (c) **Nits do qa**: o fixture de limpeza das
+células agora é uma função testada de verdade (mata filho E neto), e o fallback sem job control
+(`set -m` indisponível) cai para pid + filhos diretos, com aviso. (d) **`.gitattributes`**
+`tests/MORDIDAS.md merge=union`: o arquivo é só de append e já derrubou duas integrações.
+
+| Sabotagem | Resultado |
+|---|---|
+| guarda removida | `test_suite_cheia_sem_a_trava_aborta_com_rc_75_*` **FAILED** (a suíte larga sem trava) |
+| espera não se registra | `test_status_lista_quem_espera_*`, `test_espera_de_pid_morto_*`, `test_espera_que_recebe_sinal_*` **FAILED** |
+| limpeza das células sem `killpg` | `test_o_fixture_de_limpeza_mata_de_verdade_*` **FAILED** (filho/neto vivos) |
+| sem job control, o sinal continua indo para `-pgid` | `test_sem_job_control_*` **FAILED** (o neto sobrevive) |
+| `.gitattributes` sem a linha | `test_gitattributes_junta_o_mordidas_sem_conflito` **FAILED** (conflito de append) |
+| uma célula recarrega o `conftest.py` por `importlib` (o erro do 1º commit) | `test_nenhum_teste_recarrega_o_conftest` **FAILED**; antes dele, 3 testes de isolamento (`test_tmpdir_sem_credencial`, `test_watchdog_suite_1050`, `test_qa_gate194`) falhavam no mesmo processo (`TTS_OUTPUTS_DIR` None). A lógica pura do guarda mora em `tests/_guarda_trava.py` |

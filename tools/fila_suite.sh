@@ -41,15 +41,45 @@ _agora() { date +%s; }
 _le() { cat "$TRAVA/$1" 2>/dev/null || true; }
 _dono_vivo() { local p; p="$(_le pid)"; [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 
+# Quem ESPERA a trava também fica registrado (`$RAIZ/espera/<pid>`: agente, worktree, desde
+# quando, comando). Sem isso uma espera perdida (a do `commit1127`, por pgrep, sem trava)
+# não aparecia em lugar nenhum. O registro sai na saída; o de pid morto (SIGKILL) é varrido
+# pelo `status`.
+ESPERA_DIR="$RAIZ/espera"
+_registra_espera() {
+  mkdir -p "$ESPERA_DIR" && printf '%s|%s|%s|%s\n' \
+    "${TTS_AGENTE:-$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")}" \
+    "$PWD" "$(_agora)" "$*" > "$ESPERA_DIR/$$"
+}
+_tira_espera() { /bin/rm -f "$ESPERA_DIR/$$" 2>/dev/null; }
+
+_lista_espera() {
+  [ -d "$ESPERA_DIR" ] || return 0
+  local f p ag wt desde cmd n=0
+  for f in "$ESPERA_DIR"/*; do
+    [ -e "$f" ] || continue
+    p="$(basename "$f")"
+    if ! kill -0 "$p" 2>/dev/null; then /bin/rm -f "$f"; continue; fi   # esperador morto
+    IFS='|' read -r ag wt desde cmd < "$f"
+    n=$((n + 1))
+    echo "  espera #$n: há $(( $(_agora) - desde ))s — agente=$ag pid=$p worktree=$wt"
+    echo "              cmd: $cmd"
+  done
+  [ "$n" -eq 0 ] || return 0
+}
+
 _status() {
-  if [ ! -d "$TRAVA" ]; then echo "fila: livre"; return 0; fi
-  local p; p="$(_le pid)"
-  if _dono_vivo; then
-    echo "fila: OCUPADA há $(( $(_agora) - $(_le inicio_s) ))s — agente=$(_le agente) pid=$p worktree=$(_le worktree)"
-    echo "      cmd: $(_le cmd)"
+  if [ ! -d "$TRAVA" ]; then echo "fila: livre"
   else
-    echo "fila: trava ÓRFÃ (dono pid=${p:-?} morto; agente=$(_le agente)) — o próximo 'roda' a recupera"
+    local p; p="$(_le pid)"
+    if _dono_vivo; then
+      echo "fila: OCUPADA há $(( $(_agora) - $(_le inicio_s) ))s — agente=$(_le agente) pid=$p worktree=$(_le worktree)"
+      echo "      cmd: $(_le cmd)"
+    else
+      echo "fila: trava ÓRFÃ (dono pid=${p:-?} morto; agente=$(_le agente)) — o próximo 'roda' a recupera"
+    fi
   fi
+  _lista_espera
 }
 
 _recupera_orfa() {
@@ -105,7 +135,10 @@ _pega() {
     if [ $(( $(_agora) - t0 )) -gt "$ESPERA" ]; then
       echo "  [fila] não liberou em ${ESPERA}s — $(_status | head -1)" >&2; return 75
     fi
-    if [ -z "$avisou" ]; then echo "  [fila] esperando a vez — $(_status | head -1)"; avisou=1; fi
+    if [ -z "$avisou" ]; then
+      echo "  [fila] esperando a vez — $(_status | head -1)"; avisou=1
+      _registra_espera "$@"
+    fi
     sleep "0.$(( (RANDOM % 7) + 3 ))"
   done
 }
@@ -116,25 +149,45 @@ case "${1:-}" in
     shift; [ "${1:-}" = "--" ] && shift
     [ "$#" -gt 0 ] || { echo "uso: $0 roda -- <comando…>" >&2; exit 2; }
     if [ "${TTS_FILA:-1}" = 0 ] || [ "${TTS_FILA_SEGURA:-0}" = 1 ]; then exec "$@"; fi
-    _pega "$@" || exit $?
+    trap '_tira_espera' EXIT
+    trap '_tira_espera; exit 143' TERM
+    trap '_tira_espera; exit 130' INT
+    trap '_tira_espera; exit 129' HUP
+    _pega "$@"; rc=$?
+    _tira_espera
+    [ "$rc" -eq 0 ] || exit "$rc"
     FILHO=""
     # `set -m`: o filho nasce no seu PRÓPRIO grupo de processos (pgid = pid dele), e o
     # sinal vai para o GRUPO (`kill -- -pgid`). Matar só o pid deixava o NETO vivo
     # (`sh -c 'sleep 60 & wait'`: a suíte e o que ela dispara ficavam órfãos, sem trava).
-    set -m
+    # Sem job control (`set -m` pode falhar sem tty em alguns ambientes) o filho NÃO ganha
+    # grupo próprio, e `kill -- -pgid` acertaria o NOSSO grupo (ou nada). Detecta e cai para o
+    # pid + FILHOS DIRETOS (`pkill -P`), avisando — pega `sh -c 'sleep & wait'`, mas não
+    # netos de netos. `TTS_FILA_SEM_JOBCTRL=1` força esse caminho (teste).
+    JOBCTRL=1
+    if [ "${TTS_FILA_SEM_JOBCTRL:-0}" = 1 ]; then JOBCTRL=0; else set -m 2>/dev/null; fi
+    case "$-" in *m*) ;; *) JOBCTRL=0 ;; esac
+    [ "$JOBCTRL" = 1 ] || echo "  [fila] AVISO: sem job control — o sinal só alcança o filho e os filhos diretos" >&2
+    _mata_filho() { # $1 = sinal
+      if [ "$JOBCTRL" = 1 ]; then kill -"$1" -- "-$FILHO" 2>/dev/null
+      else pkill -"$1" -P "$FILHO" 2>/dev/null; kill -"$1" "$FILHO" 2>/dev/null; fi
+    }
+    _vivo_filho() {
+      if [ "$JOBCTRL" = 1 ]; then kill -0 -- "-$FILHO" 2>/dev/null; else kill -0 "$FILHO" 2>/dev/null; fi
+    }
     # sinal: derruba o GRUPO do filho (TERM, depois KILL se não sair em ~5 s) e só então
     # solta a trava
     _acaba() {
       if [ -n "$FILHO" ]; then
-        kill -TERM -- "-$FILHO" 2>/dev/null
+        _mata_filho TERM
         local i=0
-        while [ "$i" -lt 50 ] && kill -0 -- "-$FILHO" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
-        kill -KILL -- "-$FILHO" 2>/dev/null
+        while [ "$i" -lt 50 ] && _vivo_filho; do sleep 0.1; i=$((i + 1)); done
+        _mata_filho KILL
         wait "$FILHO" 2>/dev/null
       fi
       _solta; exit "$1"
     }
-    trap '_solta' EXIT
+    trap '_solta; _tira_espera' EXIT
     trap '_acaba 143' TERM
     trap '_acaba 130' INT
     trap '_acaba 129' HUP

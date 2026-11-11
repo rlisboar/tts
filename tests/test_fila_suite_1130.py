@@ -29,16 +29,12 @@ def _env(tmp_path, **extra):
 _VIVOS: list[subprocess.Popen] = []
 
 
-@pytest.fixture(autouse=True)
-def _nao_deixa_orfao():
-    """#1130 (gate do qa): célula que falha NÃO pode deixar `fila_suite.sh` órfão (já deixou,
-    e o órfão segura a trava dos outros). `try/finally` de verdade: derruba o GRUPO de cada
-    processo que a célula abriu, passe ou falhe."""
-    yield
+def _derruba_vivos():
+    """Derruba o GRUPO de cada processo que as células abriram (start_new_session: pgid == pid)."""
     for p in _VIVOS:
         for sinal in (signal.SIGTERM, signal.SIGKILL):
             try:
-                os.killpg(p.pid, sinal)          # start_new_session: pgid == pid
+                os.killpg(p.pid, sinal)
             except (ProcessLookupError, PermissionError):
                 break
             time.sleep(0.2)
@@ -47,6 +43,15 @@ def _nao_deixa_orfao():
         except subprocess.TimeoutExpired:
             pass
     _VIVOS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _nao_deixa_orfao():
+    """#1130 (gate do qa): célula que falha NÃO pode deixar `fila_suite.sh` órfão (já deixou,
+    e o órfão segura a trava dos outros). `try/finally` de verdade: derruba o GRUPO de cada
+    processo que a célula abriu, passe ou falhe."""
+    yield
+    _derruba_vivos()
 
 
 def _roda(tmp_path, *cmd, **extra):
@@ -168,15 +173,25 @@ def test_sinal_derruba_a_arvore_inteira_e_solta_a_trava(tmp_path, sinal):
     assert not (tmp_path / "locks" / "suite").exists()      # trava solta
 
 
-def test_o_proprio_teste_nao_deixa_orfao_quando_falha(tmp_path):
-    """O fixture derruba o grupo mesmo se a célula abandonar o processo vivo."""
-    p = _roda(tmp_path, "sleep", "60")
-    for _ in range(50):
-        if (tmp_path / "locks" / "suite" / "cmd").exists():
+def test_o_fixture_de_limpeza_mata_de_verdade_o_grupo_que_a_celula_abandonou(tmp_path):
+    """Nit do qa (#1131): a célula anterior só abandonava o processo e o teardown rodava DEPOIS
+    da asserção — não provava que o fixture mata. Aqui chamamos a mesma função de limpeza e
+    exigimos a morte do filho E do neto; sem o `killpg` na limpeza esta célula falha."""
+    filho_f, neto_f = tmp_path / "filho.pid", tmp_path / "neto.pid"
+    p = _roda(tmp_path, "sh", "-c", f"sleep 60 & echo $! > {neto_f}; echo $$ > {filho_f}; wait")
+    for _ in range(80):
+        if neto_f.exists() and filho_f.exists() and filho_f.read_text().strip():
             break
         time.sleep(0.1)
+    filho, neto = int(filho_f.read_text()), int(neto_f.read_text())
     assert p.poll() is None
-    # (o teardown do autouse mata o grupo; a asserção de que mata é o `_VIVOS.clear()` + sem `ps` residual abaixo)
+    _derruba_vivos()                          # exatamente o que o teardown do autouse faz
+    for pid in (p.pid, filho, neto):
+        with pytest.raises(ProcessLookupError):
+            for _ in range(30):
+                os.kill(pid, 0)
+                time.sleep(0.1)
+            os.kill(pid, 0)
 
 
 def test_reentrante_hook_dentro_de_suite_travada_so_executa(tmp_path):

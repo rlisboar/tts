@@ -223,6 +223,28 @@ def _sem_exit_de_verdade():
     app.os._exit = original
 
 
+# --- #1131: suíte cheia só pela trava de máquina (`tools/fila_suite.sh`) -----------------
+# Duas suítes cheias ao mesmo tempo flakam e se matam (#1111/#1130). O hook e o `integra.sh`
+# já passam pela trava, que exporta `TTS_FILA_SEGURA=1`. Quem rodar `pytest tests/` à mão, sem
+# ela, é barrado AQUI com rc 75 — antes de a primeira célula rodar. "Suíte cheia" = a COLETA
+# cobre (quase) todos os `tests/test_*.py`, e não um número mágico de testes que envelhece.
+# Rodada curta (um arquivo, `-k` estreito, o `pytest` aninhado de uma célula) não é afetada.
+# Escapes: `TTS_FILA=0` (explícito) e `CI` (o runner do GitHub não divide a máquina).
+from _guarda_trava import suite_cheia_fora_da_trava as _suite_cheia_fora_da_trava  # noqa: E402
+
+
+def pytest_collection_finish(session):
+    aqui = pathlib.Path(__file__).resolve().parent
+    todos = {p.name for p in aqui.glob("test_*.py")}
+    coletados = {pathlib.Path(str(i.fspath)).name for i in session.items}
+    if _suite_cheia_fora_da_trava(coletados, todos, os.environ):
+        pytest.exit(
+            "suíte cheia fora da trava de máquina (#1131): rode\n"
+            "    tools/fila_suite.sh roda -- ./.venv-mlx/bin/python -m pytest tests/ -q\n"
+            "(dentro de `screen`). Rodada curta (um arquivo) não precisa da trava; "
+            "escape explícito: TTS_FILA=0.", returncode=75)
+
+
 def pytest_configure(config):
     """Mesmo filtro do venv na via suportada pelo pytest (por MENSAGEM, não módulo)."""
     config.addinivalue_line(

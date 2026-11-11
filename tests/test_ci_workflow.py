@@ -20,6 +20,7 @@ a instalar `requirements.txt`, ele deixa de ficar vermelho em segundos — que �
 """
 
 import re
+import os
 import subprocess
 import sys
 
@@ -116,7 +117,10 @@ def _coleta(*markexpr: str) -> set[str]:
     cmd = [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q"]
     if markexpr:
         cmd += ["-m", markexpr[0]]
-    r = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True, timeout=600)
+    # #1131: a coleta aninhada da suíte INTEIRA não executa nada, mas o guarda do conftest a
+    # leria como "suíte cheia fora da trava" (rc 75) quando esta célula roda sozinha
+    env = {**os.environ, "TTS_FILA": "0"}
+    r = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True, timeout=600, env=env)
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-1000:]
     return {l.strip() for l in r.stdout.splitlines() if "::" in l and not l.startswith(" ")}
 
