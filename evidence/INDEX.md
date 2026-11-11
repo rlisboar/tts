@@ -20,6 +20,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `1087-deploy-head-e8ea9df.txt` | #1087 | 2026-11-09 | deploy de e8ea9df no mini — 2026-11-09 20:33 |
 | `1116-marca-sem-compile.md` | #1116 | 2026-11-10 | 1116 — marca d'água sem `torch.compile` (1º trecho quente) |
 | `1120-deploy-head-7303b8e.txt` | #1120 | 2026-11-10 | == deploy 7303b8e (main) no mini — 2026-11-10 22:45 (#1120, autorizado pelo dono 22:04) |
+| `1129-barge-nao-detectado-prereg.md` | #1129 | — | 1129 — interrupção do dono não detectada com AEC ligado: PRÉ-REGISTRO (2026-11-11, antes de medir) |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
