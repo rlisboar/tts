@@ -345,10 +345,48 @@ def test_snapshot_do_restore_e_duravel_antes_de_publicar(client, auth, estado,
             "publicou antes de o snapshot estar durável"
 
 
-def test_dois_restores_no_mesmo_segundo_nao_dividem_a_pasta(monkeypatch, tmp_path):
+class _TempoParado:
+    """`time` do app com o relógio de PAREDE parado (`strftime`); o resto é o real.
+
+    O fake antigo trocava o módulo `app.time` por uma classe só com `strftime`. A
+    thread GLOBAL `health-watchdog` lê o mesmo `app.time` e chama `time.sleep` no
+    laço: `AttributeError` → a thread morria e as células do watchdog que vinham
+    depois na suíte falhavam sem ninguém para despejar (#1121). Proxy em vez de
+    `monkeypatch.setattr(app.time, "strftime", …)` porque esse patcharia o
+    `time.strftime` do processo inteiro (o `logging` das outras threads usa)."""
+
+    def __getattr__(self, nome):
+        return getattr(time, nome)
+
+    @staticmethod
+    def strftime(*_a):
+        return "20260101-120000"
+
+
+@pytest.fixture()
+def tempo_parado(monkeypatch):
+    monkeypatch.setattr(app, "time", _TempoParado())
+
+
+def _watchdog_vivo() -> bool:
+    return any(t.name == "health-watchdog" and t.is_alive() for t in threading.enumerate())
+
+
+def test_tempo_parado_nao_mata_o_health_watchdog(tempo_parado):
+    """#1121: com o `time` do snapshot parado, a thread global `health-watchdog`
+    segue viva — o laço dela passa por `time.sleep` a cada 0,05–0,25 s."""
+    assert _watchdog_vivo(), "health-watchdog já estava morta antes do fake"
+    prazo = time.monotonic() + 1.0
+    while time.monotonic() < prazo:
+        assert _watchdog_vivo(), "health-watchdog morreu com o fake de `app.time`"
+        time.sleep(0.05)
+    assert app.time.strftime("%Y") == "20260101-120000"
+
+
+def test_dois_restores_no_mesmo_segundo_nao_dividem_a_pasta(monkeypatch, tmp_path, tempo_parado):
     """Dois snapshots no mesmo segundo têm de ser pastas distintas (#788)."""
     monkeypatch.setattr(app, "STATE_DIR", tmp_path)
-    monkeypatch.setattr(app, "time", type("T", (), {"strftime": staticmethod(lambda *a: "20260101-120000")}))
+    assert app.time.strftime("%Y%m%d-%H%M%S") == "20260101-120000"
     um = app._snapshot_duravel()
     dois = app._snapshot_duravel()
     assert um != dois
