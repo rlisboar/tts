@@ -490,9 +490,13 @@ novo só vale na RAM e um valor explícito no arquivo vence. Custo medido: **28 
 por segundo de áudio**. A carga fica no boot (`tts_marca_prewarm_boot`, admin,
 default ligado; `TTS_MARCA_PREWARM_BOOT=0` desliga mesmo com o setting ligado).
 Neste host, em 2026-11-06, o 1º turno com o filho pronto foi 58–75 ms; com a
-carga só na abertura do WS (pedido já no pipe) foi 5,0–5,9 s. RSS do filho
-depois do `pronto`: 648–691 MB. A abertura da sessão ainda chama o prewarm, então
-desligar o boot não tira a marca — empurra esses ~5–6 s para o 1º turno. Sem o
+carga só na abertura do WS (pedido já no pipe) foi 5,0–5,9 s — número ANTERIOR
+ao #1114 e ao #1116, que hoje vale menos. RSS do filho depois do `pronto`:
+648–691 MB. A abertura da sessão ainda chama o prewarm, então desligar o boot não
+tira a marca. O que ele empurra para o 1º turno é a subida do filho: o `pronto`
+dele no mini é **~1,1 s** (sem `torch.compile`, #1116; antes 3,6–4,5 s), e o
+aquecimento no boot de produção deu **576 ms** (`evidence/1116-marca-sem-compile.md`,
+`evidence/1120-deploy-head-7303b8e.txt`). Sem o
 pacote `audioseal` ou sem os pesos em `models/audioseal`, o áudio sai SEM marca
 e o log avisa uma vez — nada quebra.
 
