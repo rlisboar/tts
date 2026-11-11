@@ -111,3 +111,15 @@ do #870 sugeriu (dono a −27,6 dBFS no playback contra −23,5 fora dele)?
 - **P2, controle do eco falso:** em cada condição, a taxa de `eco_falso_duck` na fase A (playback sem
   fala B), como relatado pela bancada. Ela entra como dado, sem critério de morte.
 - O **stop** (n, p50, p95) e a **pausa** por condição entram como dado. Não decidem o P1.
+
+**Leitura por faixa de margem, fixada antes de rodar** (detectadas = barge em ≤ 1,5 s do `b_ini`):
+
+| resultado | o que o H1 conclui | alavanca |
+|---|---|---|
+| ≥ 9/10 em **todas** as faixas, inclusive ~4 dB (eco −6) | o **limiar não** perde a interrupção do dono. Se o H1 sobreviver na sessão, a causa é outra: AEC do Chrome em double-talk, nível ou jeito de falar do dono | nenhuma no limiar. A sessão decide |
+| ≥ 9/10 em ~8, ~13 e ~28 dB, **< 9/10 em ~4 dB** | o limiar exige **mais que ~4 dB** de margem sobre o eco calibrado, e perde a voz do dono na margem medida no replay | **limiar do barge com AEC**: margem sobre `eco_dbfs` e regra do degrau. A curva diz quanto |
+| < 9/10 também em ~8 dB (e > ~4 dB) | o limiar exige margem **alta**, mais que ~8 dB. Pior que o esperado | idem, com prioridade maior |
+| < 9/10 até em **~28 dB** (eco −30, quase sem eco) | **não é o limiar**. O motor perde fala limpa: a cadeia de decisão, os filtros ou o `min_fala` cortam | olhar a decisão (`barge_decisao`) e os filtros, não o limiar |
+
+**O H2 não sai deste proxy.** Saber se a "voz" no playback é resíduo de eco ou o dono **só a sessão anotada
+do dono decide**. O proxy não tem AEC real, não tem a sala e não tem o dono.
