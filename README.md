@@ -496,6 +496,15 @@ desligar o boot não tira a marca — empurra esses ~5–6 s para o 1º turno. S
 pacote `audioseal` ou sem os pesos em `models/audioseal`, o áudio sai SEM marca
 e o log avisa uma vez — nada quebra.
 
+O filho roda o AudioSeal **sem `torch.compile`**: o `main()` do `marca_worker.py`
+faz `setdefault` de `NO_TORCH_COMPILE=1` antes de importar o pacote (#1116). Com o
+compile, cada formato novo de trecho recompilava, e o 1º trecho do Live custava
+~0,7 s no mini, contra ~70 ms sem o compile. `NO_TORCH_COMPILE=` (vazio) no
+ambiente do app religa o compile. **Serve só para medir**, e o 1º trecho volta a
+pagar esses ~0,7 s. O filho herda o ambiente do app só quando nasce: a troca vale
+depois de reiniciar o serviço (no mini, o `~/.tts-studio/start-server.sh` do
+launchd). Números: `evidence/1116-marca-sem-compile.md`.
+
 O detector alimenta o gate de locutor com `speaker_anticlone` ligado (`anticlone`:
 `marcado`/`cru`/`indisponivel` + `anticlone_prob`). Detalhe de custo e pino:
 `evidence/657-marca-dagua.txt`.
