@@ -11627,40 +11627,110 @@ def _live_log_kv(evento: str, **campos) -> None:
 _LIVE_NIVEIS_MS = 500
 
 
-def _live_niveis(sess: dict) -> None:
-    """Pré-registro `22d2298` (#1129): `dbfs` do mic e `eco_dbfs` calibrado a cada
-    ~500 ms, SÓ enquanto a resposta toca. Só nível numérico: nenhuma amostra de áudio."""
-    if not sess.get("falando"):
+def _live_ts() -> str:
+    """Carimbo de PAREDE do servidor (ISO local, ms): casa com a hora que o dono anota."""
+    t = time.time()
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t)) + f".{int((t % 1) * 1000):03d}"
+
+
+def _live_prob_janela(sess: dict) -> float | None:
+    """MAIOR prob do Silero entre os quadros (32 ms) que o motor pontuou DESDE a última
+    chamada. Um frame do cliente traz vários quadros, e o último sozinho (ou o `st_prob`,
+    que só muda em evento) perde o pico: o barge decide em ~224 ms. O histórico do motor é
+    lido sem lock e de forma defensiva — o log nunca derruba a sessão."""
+    try:
+        quadros = list(sess["engine"]._historico)
+    except Exception:                         # noqa: BLE001
+        return None
+    visto = sess.get("niv_amostra", -1)
+    novos = [q for q in quadros if q.amostra > visto]
+    if not novos:
+        return None
+    sess["niv_amostra"] = max(q.amostra for q in novos)
+    return max(float(q.prob) for q in novos)
+
+
+def _live_playback_chunk(sess: dict, payload: bytes) -> None:
+    """Contabilidade do EPISÓDIO de playback, por chunk enviado (independe de `falando`):
+    `chunks`, `audio_ms` (soma das durações — o cliente bufferiza, então diverge do relógio)
+    e o 1º/último envio. Zera em `playback_fim`."""
+    agora = time.monotonic()
+    sess.setdefault("playback_t0", agora)
+    sess["playback_ultimo"] = agora
+    sess["playback_chunks"] = sess.get("playback_chunks", 0) + 1
+    sess["playback_audio_ms"] = sess.get("playback_audio_ms", 0.0) + _live_chunk_ms(payload)
+
+
+def _live_playback_janela(sess: dict, ativo: bool) -> None:
+    """Bordas do playback derivadas da JANELA do motor (`playback_ativo`), não de
+    `sess["falando"]`: no regime real o handler liga e desliga `falando` no mesmo instante
+    por chunk (~0 ms), e uma borda lida dele zera `audio_ms` e a âncora do histórico. A
+    janela cobre o áudio que o cliente ainda toca do buffer. `duracao_ms` vai do 1º ao
+    último chunk ENVIADO; `audio_ms` é a soma das durações dos chunks."""
+    antes = bool(sess.get("pb_ativo"))
+    if ativo == antes:
         return
+    sess["pb_ativo"] = ativo
+    if ativo:
+        for k in ("niv_n", "niv_soma", "niv_pico", "niv_prob", "niv_amostra"):
+            sess.pop(k, None)
+        sess["niveis_prox"] = 0.0
+        try:                                  # quadros ANTERIORES ao playback não entram
+            sess["niv_amostra"] = max(q.amostra for q in sess["engine"]._historico)
+        except Exception:                     # noqa: BLE001
+            pass
+        _live_log_kv("playback_inicio", sess=sess["id"], turno=sess.get("turno"), ts=_live_ts())
+        return
+    t0 = sess.pop("playback_t0", None)
+    ult = sess.pop("playback_ultimo", None)
+    _live_log_kv("playback_fim", sess=sess["id"], turno=sess.get("turno"), ts=_live_ts(),
+                 duracao_ms=(int((ult - t0) * 1000) if t0 is not None and ult is not None else None),
+                 audio_ms=(int(sess.get("playback_audio_ms", 0)) if t0 is not None else None),
+                 chunks=sess.get("playback_chunks"))
+    for k in ("playback_chunks", "playback_audio_ms"):
+        sess.pop(k, None)
+
+
+def _live_niveis(sess: dict) -> None:
+    """Pré-registro `22d2298` (#1129): níveis de mic/eco a cada ~500 ms, SÓ enquanto a
+    JANELA de playback do motor está ativa (`estatisticas()["playback_ativo"]`) e só como
+    número (nenhuma amostra de áudio). Chamado DEPOIS do `feed` do mesmo frame, para o
+    `prob_pico` não ficar um frame atrás. Uma amostra instantânea perde a fala curta (o
+    barge decide em ~224 ms), então a janela leva PICO e MÉDIA do `dbfs` do mic
+    (pós-RNNoise) e o PICO da prob do Silero entre os quadros novos; `eco_dbfs` e
+    `noise_dbfs` vêm do `estatisticas()`; `ts` é o relógio de parede do servidor."""
+    eng = sess.get("engine")
+    st: dict = {}
+    ativo = False
+    try:
+        if eng is not None:
+            st = eng.estatisticas()
+            ativo = bool(st.get("playback_ativo"))
+    except Exception:                         # noqa: BLE001 — telemetria não derruba
+        st, ativo = {}, False
+    _live_playback_janela(sess, ativo)
+    if not ativo:
+        return
+    dbfs = sess.get("st_dbfs")
+    if dbfs is not None:                      # acumula a CADA frame, emite a cada janela
+        sess["niv_n"] = sess.get("niv_n", 0) + 1
+        sess["niv_soma"] = sess.get("niv_soma", 0.0) + dbfs
+        sess["niv_pico"] = dbfs if sess.get("niv_pico") is None else max(sess["niv_pico"], dbfs)
+    prob = _live_prob_janela(sess)
+    if prob is not None:
+        sess["niv_prob"] = max(sess.get("niv_prob", 0.0), prob)
     agora = time.monotonic()
     if agora < sess.get("niveis_prox", 0.0):
         return
     sess["niveis_prox"] = agora + _LIVE_NIVEIS_MS / 1000.0
-    eco = None
-    try:
-        eng = sess.get("engine")
-        if eng is not None:
-            eco = eng.estatisticas().get("eco_dbfs")
-    except Exception:                         # noqa: BLE001 — telemetria não derruba
-        eco = None
-    _live_log_kv("niveis", sess=sess["id"], dbfs=sess.get("st_dbfs"), eco_dbfs=eco)
-
-
-def _live_playback_borda(sess: dict, ligado: bool) -> None:
-    """Bordas do playback (`set_speaking`): `playback_inicio` e `playback_fim` com a
-    duração REAL tocada (`duracao_ms`, do 1º chunk ao último) — é o que reconstrói a
-    janela de eco na medida do #1129."""
-    agora = time.monotonic()
-    if ligado:
-        sess["playback_t0"] = agora
-        sess["playback_chunks"] = 0
-        sess["niveis_prox"] = 0.0
-        _live_log_kv("playback_inicio", sess=sess["id"], turno=sess.get("turno"))
-        return
-    t0 = sess.pop("playback_t0", None)
-    _live_log_kv("playback_fim", sess=sess["id"], turno=sess.get("turno"),
-                 duracao_ms=(int((agora - t0) * 1000) if t0 is not None else None),
-                 chunks=sess.get("playback_chunks"))
+    n = sess.get("niv_n", 0)
+    _live_log_kv("niveis", sess=sess["id"], ts=_live_ts(),
+                 dbfs_pico=sess.get("niv_pico"),
+                 dbfs_media=(round(sess["niv_soma"] / n, 1) if n else None),
+                 prob_pico=(round(sess["niv_prob"], 3) if "niv_prob" in sess else None),
+                 eco_dbfs=st.get("eco_dbfs"), noise_dbfs=st.get("noise_dbfs"))
+    for k in ("niv_n", "niv_soma", "niv_pico", "niv_prob"):   # janela nova
+        sess.pop(k, None)
 
 
 def _live_stage(sess: dict, stage: str) -> None:
@@ -14277,8 +14347,7 @@ async def _live_sender(sess: dict, ws) -> None:
                 if eng is not None:
                     if not sess.get("falando"):
                         sess["falando"] = True
-                        _live_playback_borda(sess, True)      # #1129
-                    sess["playback_chunks"] = sess.get("playback_chunks", 0) + 1
+                    _live_playback_chunk(sess, payload)       # #1129: episódio por chunk
                     # #167: o cliente BUFFERIZA e ainda vai tocar este chunk — a
                     # janela de barge tem de cobrir a duração REAL dele. A chamada
                     # vai a CADA chunk (não só no 1º do turno): o backlog do motor
@@ -14296,7 +14365,6 @@ async def _live_sender(sess: dict, ws) -> None:
                     sess["audio_pendente"] = max(0, sess.get("audio_pendente", 1) - 1)
                     if sess["audio_pendente"] == 0:
                         sess["falando"] = False
-                        _live_playback_borda(sess, False)     # #1129
                         eng.set_speaking(False)
         motivo = _live_motivo_fechamento(sess)
         if motivo is not None:
@@ -14795,7 +14863,6 @@ async def _live_loop(sess: dict, ws) -> None:
             sess["st_bytes"] += len(pcm)
             sess["st_ultimo_frame"] = time.monotonic()
             sess["st_dbfs"] = round(_dbfs16(pcm), 1)
-            _live_niveis(sess)                  # #1129: dBFS mic/eco a cada ~500 ms de playback
             eng = sess.get("engine")
             if eng is not None:
                 # #870: a correlação do duck lê o CRU (antes do RNNoise). O
@@ -14811,6 +14878,7 @@ async def _live_loop(sess: dict, ws) -> None:
                 _live_trata_eventos(sess, eng.feed(pcm))
                 # depois do feed: _proxima_amostra já inclui o frame que correlacionou
                 _live_eco_marca(sess, eng)
+                _live_niveis(sess)      # #1129: DEPOIS do feed (prob do mesmo frame)
             elif sess.get("pipe") is not None:
                 sess["pipe"].push_pcm(pcm)   # sem FSM: pipeline por frame
             buf = sess["buffer"]

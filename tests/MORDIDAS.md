@@ -1184,3 +1184,31 @@ transcrição nem nome de voz. Células em `tests/test_log_campos_1129.py`.
 | frame sem a chamada de `_live_niveis` (campo 2) | `test_o_envio_do_audio_marca_as_bordas_e_o_frame_chama_o_niveis` **FAILED** |
 | `_live_niveis` loga mesmo fora do playback (campo 2) | `test_niveis_so_durante_o_playback_e_com_os_dois_campos` **FAILED** |
 | sem a borda `playback_fim` (campo 3) | `test_o_envio_do_audio_marca_as_bordas_e_o_frame_chama_o_niveis` **FAILED** |
+
+**Acréscimos pedidos pelo speech-pipeline (card do #1129)**
+
+Uma amostra instantânea perde a fala curta (o barge decide em ~224 ms), então o `niveis`
+passa a acumular CADA frame e emitir, a cada ~500 ms de playback: `dbfs_pico` e `dbfs_media`
+do mic (pós-RNNoise), `prob_pico` (o MÁXIMO da prob dos quadros de 32 ms da janela, de `eng._historico`, e não o último nem o `st_prob`), `noise_dbfs` do `estatisticas()` do
+motor e `ts` (relógio de parede do servidor, para casar com a anotação do dono). O
+`playback_fim` ganha `audio_ms` (soma das durações dos chunks; o cliente bufferiza, então
+diverge do `duracao_ms`) e `ts`.
+
+| Sabotagem | Resultado |
+|---|---|
+| `niveis` volta à amostra instantânea (sem acumular pico/média) | `test_niveis_so_durante_*`, `test_a_janela_de_500ms_*`, `test_cada_janela_*` **FAILED** |
+| sem `noise_dbfs` | `test_niveis_so_durante_*`, `test_niveis_so_leva_numero_*` **FAILED** |
+| sem acumular `audio_ms` no envio dos chunks | `test_o_envio_do_audio_marca_as_bordas_*` **FAILED** |
+| `niveis` sem `ts` | `test_niveis_so_durante_*`, `test_niveis_so_leva_numero_*` **FAILED** |
+| a janela não zera depois de emitir | `test_a_janela_de_500ms_*`, `test_cada_janela_*` **FAILED** |
+| `prob_pico` volta a ser só o último quadro da janela | `test_prob_pico_e_o_maximo_dos_quadros_da_janela_nao_o_ultimo` **FAILED** (quadro de 0,9 no meio de 0,1 → dá 0,1) |
+| `prob_pico` lê o `st_prob` (velho entre eventos) | idem **FAILED** |
+| a janela não ancora o histórico no início do playback | `test_quadros_de_antes_do_playback_nao_entram_na_janela` **FAILED** (voz de antes da resposta vaza) |
+| `dbfs_pico` perdido (só amostra instantânea) | `test_dbfs_pico_maior_que_a_media_com_um_pico_no_meio` **FAILED** |
+| o gate/bordas voltam a ler `sess["falando"]` (liga e desliga no mesmo instante por chunk) | `test_regime_real_um_chunk_por_vez_o_falando_volta_a_false` **FAILED** (motor REAL, `set_speaking(True)`/`(False)` por chunk, `falando` sem forçar): sem `niveis` e bordas de ~0 ms |
+| `_live_niveis` volta a rodar ANTES do `feed` | `test_o_envio_acumula_o_episodio_e_o_niveis_roda_depois_do_feed` **FAILED** (`prob_pico` um frame atrás) |
+| o episódio zera a cada chunk (`audio_ms`/`t0` reiniciados no envio) | `test_bordas_derivam_da_janela_*` e `test_regime_real_*` **FAILED** |
+
+O gate agora é `eng.estatisticas()["playback_ativo"]` (a JANELA do motor, que cobre o áudio que
+o cliente toca do buffer), e as bordas `playback_inicio`/`playback_fim` derivam dela, com
+`chunks`/`audio_ms`/`duracao_ms` acumulados por EPISÓDIO (no envio de cada chunk).
