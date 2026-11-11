@@ -1,0 +1,47 @@
+== deploy 13716e3 (main) no mini — 2026-11-11 17:19–17:21 (autorizado pelo dono; #1064, #1128, #1129)
+
+push: origin/main 4ceb57b -> 13716e3 (ff, 18 commits, sem force). O #1131 NÃO entrou (push próprio depois).
+commits no ar (cronológico, só os relevantes): #1128 log persistente 0a74ad2 · #1129 ac1045d (campos
+barge_in/niveis/bordas), c949ede (janela, pico/média/prob, ruído, ts, audio_ms), 02bf743 (tocando, n,
+playback_fim motivo=fechou), d655f59 (fila_ms) · #1130 trava 4ac9211 + 13716e3.
+
+pré-condição (via /api/status; a chave só em header de arquivo, fora do argv):
+  16:59 jobs_active=19 (cliente de narração submetendo continuamente), live_sessions=0 -> NÃO reiniciou
+  esperou até 17:18:52 (jobs_active 20 -> 0); 17:19:40 recheque: 0/0 e nenhum POST /api/tts novo em 45 s
+  (523 -> 523), 7890/7895/7899 sem listener.
+
+UM restart, no deploy (deploy_mini.sh, cópia local cujo restart é bootout+bootstrap, porque o
+`kickstart -k` NÃO relê o plist e o log novo exige plist novo):
+  antes (só em disco, sem restart): backups .bak-1064-* do plist e do start-server.sh; ~/Library/Logs/tts-studio
+  em 0700; plist com StandardOut/ErrorPath novos; `export TTS_LIVE_DUMP_DIR` fora do start-server.sh.
+  log antigo copiado byte a byte para o novo (2959266 bytes, 0600) imediatamente antes do restart.
+  deploy: pesos conferem com models/sha256sums.txt; backup do estado = 7303b8e; rollback pronto
+  (./remote/deploy_mini.sh rollback --apply).
+  smoke LAN e público: tudo [ok] (health, 401 sem chave, Host público, /api/build codigo=9a40afa4 = rev alvo,
+  processo novo, ticket do Live por header, WS 101, index = blob do rev, POST /api/tts real, marca d'água).
+
+conferência depois do restart:
+  /health rev=13716e3 na LAN e no público; 1 uvicorn (pid 73049); público /api/voices sem chave -> 401
+  TTS_LIVE_DUMP_DIR ausente do ambiente do processo novo
+  stdout/stderr do processo no log NOVO (~/Library/Logs/tts-studio/tts-studio.log, 0600, dir 0700), que cresce;
+  o /tmp/tts-studio.log antigo parou em 2959266
+  log novo: 0 `key=` sem máscara e 0 `ticket=` cru
+  [marca] carregado em 76 ms · aquecido em 610 ms; marca_worker vivo (pid 73088)
+  TTS_ROD_API_KEY do processo = fp 8933ae86 (a chave rotacionada no #1122; antiga morta)
+
+#1064 — dump do eco: `rm -rf` no caminho exato do dump (777 arquivos, 20 sessões, ~267 MB antes),
+  `test ! -e` ok, sem sobra no home do mini. Nada saiu do mini. A medida do #870 já tinha acabado (speech).
+
+#1128 — rotação do log sem root: agente com.local.tts-log-rotate (de hora em hora, 50 MB x 3 gz / 14 dias).
+  ACHADO: o agente do launchd NÃO lê ~/Documents (TCC): "can't open input file" na 1ª passada. O script
+  foi copiado para ~/.tts-studio/log_rotate.sh e o agente reinstalado de lá; a passada seguinte rodou
+  ("log com 2963952 bytes — sem rotação"). Seguimento: `log_rotate.sh install` deve copiar o script
+  para ~/.tts-studio por conta própria.
+
+#1129 — conversa curta de teste, SEM voz do dono (entrada: fixture sintética tests/fixtures/voz_fala_5s_16k.wav,
+  pelo loopback; voz da resposta: vd-podcast, predefinida) -> 13 linhas `niveis`, todas com fila_ms
+  (1682, 1177, 668, 160, 0, ...), ts de parede, n, tocando, dbfs_pico/media, prob_pico, eco_dbfs, noise_dbfs,
+  mais playback_inicio. Observação: `tocando=True` com fila_ms=0 no fim, como o speech apontou (#167);
+  o fila_ms é quem separa o vão mudo. Arquivos temporários do teste removidos do mini.
+
+não tocado: chave (sem nova rotação), /api/voices e o estado do dono.
