@@ -70,3 +70,44 @@ Do trecho de controle, sai a fração de frames com "voz" no playback sem o dono
 
 **Fora de escopo até o número:** qualquer mudança no motor, nos filtros de produção ou nos
 settings do dono. Mexer em `live_interrupcao` ou nos filtros de barge do dono é decisão dele.
+
+## Proxy sintético do H1 (PRÉ-REGISTRO, 2026-11-11, antes de rodar)
+
+**Por que existe.** A sessão anotada do dono decide o H1 e o H2 no uso real, mas depende dele. O
+mini ficou livre para a bancada, e o `live_bench` já injeta uma interrupção (fala B do FLEURS) **por
+cima do playback real**, com o **onset exato** (`b_ini`) como verdade de chão, e mede duck, pausa e
+stop. O stop é o `interrupted`, que passa pela decisão por conteúdo com STT real. Este proxy
+responde uma parte do H1, o **mecanismo do limiar**, e não substitui a sessão.
+
+**O que o proxy PROVA:** a curva de detecção e de tempo do motor em função da **margem voz − eco**, com
+verdade exata, na config de produção. Ou seja: o limiar atual perde interrupções na margem que o replay
+do #870 sugeriu (dono a −27,6 dBFS no playback contra −23,5 fora dele)?
+
+**O que só a sessão do dono prova:**
+- o **H2**: se a "voz" no playback é resíduo de eco ou o dono;
+- o **AEC real do Chrome**, inclusive a atenuação em double-talk. O AEC abafa a voz próxima enquanto o
+  alto-falante toca, o que explicaria os ~4 dB a menos;
+- a sala, o nível e o jeito de falar do dono, e o número real de perdas no uso.
+
+**Desenho:**
+- **Bancada:** clone `13716e3` (o que está no ar), estado sintético, LLM falso, corpus e voz FLEURS
+  (`~/tts-bench`), sem dump.
+- **Settings NÃO sensíveis de produção**, aplicados por `POST /api/settings` (só valores, nenhum dado do
+  dono): `live_stt_engine=parakeet`, `live_interrupcao=inteligente`, `live_barge_sem_decisao=continua`, e
+  os filtros de barge como no ar (todos ligados menos `identidade`).
+- **Condições:** `--eco-db` ∈ {−15, −6, −30, −10}, nesta ordem, para espalhar a deriva. Com a fala B
+  normalizada a −20 dBFS e o TTS a ~−18, a margem nominal é ≈ −2 − `eco_db`: ~13, ~4, ~28 e ~8 dB.
+  **A margem que vale é a medida** no log novo (`niveis`: `dbfs_pico` no onset de B contra `eco_dbfs`).
+- **Amostra:** `--ciclos 10` por condição, o que dá n = 10 interrupções B por condição.
+  `--interrompe-apos-ms 1500` (default).
+- **Validade:** `bancada.lock` presente, CI parado e 7860 sem `/api/tts` em cada condição, como na H6.
+
+**Critério, fixado antes:**
+- **P1, o mecanismo do limiar:** na condição **−6 dB** (margem ~4 dB, a do dono), se **≥ 9 de 10**
+  interrupções abrirem evento de barge (`speech_start` com barge, `barge_suspeito` ou `barge_pausa`) em
+  até **1,5 s** do `b_ini`, **o limiar NÃO é o que perde as interrupções do dono** (no proxy). Nesse caso
+  o H1, se sobreviver na sessão, tem outra causa: AEC, nível ou o próprio dono. Se forem **< 9/10**, o limiar
+  fica apontado, e a curva das 4 condições diz qual margem ele exige.
+- **P2, controle do eco falso:** em cada condição, a taxa de `eco_falso_duck` na fase A (playback sem
+  fala B), como relatado pela bancada. Ela entra como dado, sem critério de morte.
+- O **stop** (n, p50, p95) e a **pausa** por condição entram como dado. Não decidem o P1.
