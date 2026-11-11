@@ -171,3 +171,69 @@ uma reabertura do WS.
 
 **Fora de escopo até o número:** qualquer mudança em produção ou em código. Desligar a marca, ou deixar
 algum trecho sem ela, é decisão do dono (2026-10-28: marca "on").
+
+### Readout da hipótese 5 (2026-11-10, critério do `1b3775d` intocado)
+
+**Rodada:** mini, 20:06:47 → 21:24:36, `tools/mede_pos_llm.sh` (2 ciclos por amostra), LLM falso
+(TTFT 300 ms), semente 875, estado sintético, sem `TTS_LIVE_DUMP_DIR`. Dois clones descartáveis do
+`7cb4618`: **frio** = código como está; **quente** = + `_ultima = time.monotonic()` no `_pega` (a
+linha que virou o `76fbe8c`, #1114). Foram 10 pares alternados, com uma instância nova e uma sessão nova por
+amostra. A amostra é o 1º turno da sessão.
+
+| braço (n=10) | `marca` do 1º turno p50 / p95 | S2 do 1º turno p50 / p95 | subidas do filho por amostra |
+|---|---|---|---|
+| frio | **5309 / 5876 ms** | **10925 / 13795 ms** | 2 em 10/10 (boot + dentro do turno) |
+| quente | **739 / 907 ms** | **6265 / 6590 ms** | 1 em 10/10 (só o boot) |
+
+Faixas: frio 4763–6015 ms; quente 682–963 ms. Os braços não se sobrepõem, e a dispersão dentro de cada braço é
+muito menor que a distância entre eles.
+
+**Veredito: SOBREVIVEU.** O critério de morte (`marca` p95 ≤ 100 ms com o filho quente **e** S2 p95 sem
+queda) não se cumpriu nas duas pontas: a `marca` quente fica em 907 ms e o S2 p95 do 1º turno cai 7,2 s.
+
+**A causa, achada na mesma rodada:** `_ultima = 0.0` + `prewarm()` sem tocar `_ultima` faziam o vigia do
+TTL fechar todo filho de prewarm ~5 s depois de nascer (consertado no `76fbe8c`, #1114). O caso do Live
+aberto e ocioso > `TTL_S` vai para o #1115 (`prewarm()` no `speech_start`).
+
+**O que o número não fecha:**
+- Mesmo quente, o 1º pedido de marca custa ~0,74 s (contra 58–71 ms dos turnos seguintes). É
+  recompilação do `torch._dynamo` no 1º PCM real: o worker aquece com `zeros(1, 1, 16000)`, que não é a
+  forma do trecho do Live. Esse ponto ficou com o audio-ml.
+- O aquecimento precisa começar **≥ ~4,6 s** antes do 1º pedido (`carregado` 105–125 ms +
+  `aquecido` 3,3–4,7 s + import do filho, sem carimbo).
+- O S2 p95 sem o 1º turno (A/B do piso, n=17) é 4842 ms, e quem domina agora é o `tts_gen` (1445 / 3234).
+
+## Hipótese 6 — GPU/trava disputada entre o Live e os jobs de `/api/tts` (PRÉ-REGISTRO, 2026-11-10, antes de medir)
+
+**Base:** main `76fbe8c` · **Card:** #1022 · Aceita pelo PM para pré-registro, **ainda sem ordem de rodar**.
+
+**Por que nasceu.** Na H5 a 7860 de produção atendia jobs de `/api/tts` em sequência pelo túnel
+(narração), e o `tts` do 1º turno da bancada ficou em 2,6–3,2 s nos dois braços. No par 10, quando os
+jobs pararam, o `tts` caiu para **1,2 s** nos dois braços. A observação não foi controlada: a carga dependia
+da narração acontecer por acaso. Em produção o cenário é pior que o da H5, porque o Live e os jobs correm no
+**mesmo processo** (7860), e aí a disputa é de GPU **e** do `_gen_lock`.
+
+| # | hipótese | MATA-SE se | Se sobreviver |
+|---|---|---|---|
+| 6 | carga de `/api/tts` concorrente é a cauda do `tts`/S2 do Live | com carga, nos turnos do Live sem o 1º: `tts` p95 ≤ 1,2 × o p95 sem carga **e** `lock` + `fila_tts` p95 < 100 ms **e** S2 p95 ≤ 1,2 × sem carga | saída de engenharia = **prioridade/fila** (o Live na frente do lote no `_gen_lock`/GPU). Limitar a narração do dono é decisão **dele**, nunca nossa |
+
+**Desenho (não depende da narração do dono).**
+- Instância de **bancada** (`tools/mede_pos_llm.sh`, 7895/7899, estado sintético #446 §C, voz FLEURS,
+  sem dump) e LLM falso. O 1º turno de cada sessão fica fora da conta, para a marca a frio da H5 não contaminar.
+- **Carga sintética e controlada na MESMA instância de bancada**, que é o caso da produção (mesmo processo):
+  um gerador fecha o laço `POST /api/tts` → espera o job → repete, com 1 job por vez, texto fixo de
+  ~200 caracteres e voz do corpus FLEURS. O gerador só começa depois do `health` e só para no fim do bloco.
+  Condição de validade: **0 respostas 429** (o `/api/tts` está em `_RATE_HEAVY_EXATAS`). Se o limite morder,
+  o bloco é descartado e a carga é reduzida antes de repetir, sem relaxar o limite no código.
+- Braços **sem carga × com carga**, alternados (ABAB…), **n ≥ 12 turnos por braço** fora do 1º. Por bloco:
+  `tts`, `tts_gen`, `lock`, `fila_tts`, `marca` e S2 p50/p95, jobs concluídos durante o bloco, swap e
+  RSS da 7860 no início.
+- A 7860 de produção fica **ociosa de `/api/tts`** durante a rodada. Se aparecer job de narração no log da
+  7860 num bloco, o bloco é marcado e repetido: é carga fora do controle e entra nos dois braços por acaso.
+- Leitura: se os blocos do mesmo braço divergirem entre si mais do que os braços, o veredito é
+  "ruído do ambiente", não "carga".
+
+**Variante, só se a principal sobreviver:** a carga em OUTRO processo (como foi na H5) separa a disputa
+de GPU da disputa do `_gen_lock`. Fica de fora até o número da principal.
+
+**Fora de escopo até o número:** qualquer mudança em código ou em produção.
