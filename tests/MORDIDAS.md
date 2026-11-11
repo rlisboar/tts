@@ -1152,3 +1152,4 @@ falso das 5 suítes já vinha só da fixture; o vazamento era a INSTÂNCIA que e
 | `live_dsh_fallback.sh` sem `TTS_OUTPUTS_DIR` | `test_toda_suite_que_sobe_o_app_isola_voz_e_saidas` **FAILED** |
 | `admin_ui_flow.sh` sem `TTS_OUTPUTS_DIR` | idem **FAILED** |
 | `live_dsh_fallback.sh` com a fala em `glob("tests/fixtures/*.wav")` | `test_as_cinco_suites_usam_so_a_fixture_como_fala` **FAILED** (antes de apertar a célula passava: a fixture ainda aparecia na mensagem de erro) |
+| (delta pós-#1125) `X = pathlib.Path("voices")` acrescentado ao `tools/live_bench.py`, isento por só CITAR `voices/` | `test_excecoes_de_bancada_so_citam_nao_montam_caminho` **FAILED** |

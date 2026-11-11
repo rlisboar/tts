@@ -44,8 +44,10 @@ EXCECOES = {
     "tools/integra.sh": "lista de exclusão do que NÃO pode ir para a main (impede a cópia)",
     "tools/worktrees.sh": "documenta e VERIFICA que o worktree nasce sem `voices/` (só lê sha)",
     "tests/live_lock_freeze.sh": "copia a FIXTURE para o `voices/` da árvore TEMPORÁRIA da rodada",
-    "tools/live_bench.py": "receita velha `cp voices/*` — sai no #1125 (speech-pipeline, "
-                           "wt/speech-pipeline-728); sem esta linha o #728 esperaria por ele",
+    "tools/live_bench.py": "só CITA `voices/` em docstring e mensagem de erro da recusa em runtime "
+                           "(`recusa_dado_do_dono`, #1125): a receita `cp voices/*` saiu do uso",
+    "tools/corpus_bancada.py": "só CITA `voices/` na docstring e na mensagem que RECUSA fonte "
+                               "dentro dele (#1125): o corpus vem do FLEURS público",
 }
 
 
@@ -83,6 +85,18 @@ def test_excecoes_existem_e_tem_motivo():
     for rel, motivo in EXCECOES.items():
         assert (RAIZ / rel).is_file(), f"exceção de arquivo que sumiu: {rel}"
         assert len(motivo) > 20, f"exceção sem motivo de verdade: {rel}"
+
+
+def test_excecoes_de_bancada_so_citam_nao_montam_caminho():
+    """`live_bench.py`/`corpus_bancada.py` citam `voices/` em prosa e mensagem (recusa).
+
+    Montar o caminho (`Path("voices")`, `RAIZ / "voices"`, glob) continua proibido
+    neles: só a forma de CITAÇÃO é isenta."""
+    monta = re.compile("|".join(f"(?:{p})" for p in _PADROES[1:]))
+    for rel in ("tools/live_bench.py", "tools/corpus_bancada.py"):
+        achou = [(i, l.strip()[:80]) for i, l in _codigo((RAIZ / rel).read_text())
+                 if monta.search(l)]
+        assert not achou, f"{rel} monta caminho para o voices/ da árvore: {achou}"
 
 
 def test_toda_suite_que_sobe_o_app_isola_voz_e_saidas():
