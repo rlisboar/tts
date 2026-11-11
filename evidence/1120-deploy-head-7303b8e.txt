@@ -1,0 +1,64 @@
+== deploy 7303b8e (main) no mini — 2026-11-10 22:45 (#1120, autorizado pelo dono 22:04)
+
+push: origin/main 7cb4618 -> 7303b8e (ff, 18 commits, sem force)
+
+pré-condições (via /api/status com header, sem chave em argv):
+  22:39:00 jobs_active=6 live_sessions=0  -> esperou (narração do dono em curso)
+  22:44:01 jobs_active=0 live_sessions=0; sem POST /api/tts novo em 45 s (contagem 9039 estável)
+  última sessão Live: fecha sess=172475bc12 às 12:00:56
+
+comando: TTS_MINI_REV=7303b8e ./remote/deploy_mini.sh deploy --apply --sem-push  (rc=0)
+== deploy (rev alvo 7303b8e2587b… (7303b8e))
+  push: nada a publicar (origin já contém o rev alvo)
+== mini
+  deps: pip install -r requirements.txt -c requirements.lock (ambos do rev alvo)
+    preview: /tmp/deploy-mini-requirements-preview-94036  (fora da árvore do mini)
+    nada a instalar (o venv já satisfaz o requirements)
+  pesos: todos conferem com models/sha256sums.txt
+  backup do estado atual:
+    sha=7cb4618b074dd365754d86ff7ffd8aa0e1ec9dbd
+    data=2026-11-10 22:45:07
+  fetch + switch para o rev alvo:
+    agora: 7303b8e docs(evidence): indexa o `1116-marca-sem-compile.md` (#1116)
+      websockets 17.1
+  deps: venv IDÊNTICO ao freeze anterior (nada se moveu)
+  reiniciando studio.tts.server…
+    kickstart-ok
+  esperando 6s o run.sh subir a porta…
+== smoke (rev alvo 7303b8e2587b…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN Host público (tts.the-dudes.com) aceito → 200
+  [ok] LAN prefixo duplo sem chave → 401
+  [ok] LAN com a chave do mini → 200
+  [ok] LAN /api/build codigo=e89d6e4a = rev alvo 7303b8e2587b…
+  [ok] processo novo (boot 1794361517s ≥ marcador do restart 1794361513s — #252)
+  [ok] LAN POST /api/live/ticket emitiu o ticket (chave só no header)
+  [ok] LAN WebSocket 101 (uvicorn com upgrade)
+  [ok] LAN index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] LAN POST /api/tts real: job bb9318840b em ~8s, peça 0 com 95536 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público Host público (tts.the-dudes.com) aceito → 200
+  [ok] público prefixo duplo sem chave → 401
+  [ok] público com a chave do mini → 200
+  [ok] público /api/build codigo=e89d6e4a = rev alvo 7303b8e2587b…
+  [ok] processo novo (boot 1794361517s ≥ marcador do restart 1794361513s — #252)
+  [ok] público POST /api/live/ticket emitiu o ticket (chave só no header)
+  [ok] público WebSocket 101 (uvicorn com upgrade)
+  [ok] público index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] público POST /api/tts real: job 63940d2e27 em ~3s, peça 0 com 95536 bytes
+  [ok] marca d'água aplicada (sem aviso de 'SEM marca' no log)
+
+== conferência pós-deploy (22:45:54–22:46:03)
+  /health LAN e público: {"ok":true,"boot_ts":1794361515,"rev":"7303b8e"}
+  1 uvicorn: pid 27071 (o 97865 do 7cb4618 saiu)
+  shasum -a 256 -c models/sha256sums.txt: 27 OK, 0 falha
+  TTS_LIVE_DUMP_DIR presente no ps eww do pid novo (caminho omitido: dado do dono)
+  dump do eco: impressão (nome+tamanho) 8d8254cf… antes = depois; 771 arquivos; 19 sessões eco-*; 0 fora de 0600/0700
+  log do boot: [marca] carregado em 71 ms · [marca] aquecido em 576 ms
+  filho da marca (marca_worker) pid 27075, pai 27071, VIVO com 48 s de idade (> 10 s: #1114 em produção)
+  log desde o restart: 0 linhas com 'key=' e 0 'auth por ?key=' (sonda do #1108 por ticket)
+
+rollback: ./remote/deploy_mini.sh rollback --apply  (volta ao 7cb4618 salvo no .deploy-mini-estado)
+não tocado: chave (sem rotação) e /tmp/tts-studio.log (decisão do dono)
