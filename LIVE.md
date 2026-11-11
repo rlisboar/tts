@@ -714,7 +714,8 @@ espera o job de lote terminar (8,4 s no teste D do smoke) — sem atropelo, os d
 saem com áudio (RMS 0,0333).
 
 Cobertura: `tests/test_live_worker.py` (rápido, filho STUB — protocolo, reuso do
-processo, crash → fallback, lock, ciclo de vida; RODA no `pytest tests/ -q`) e a
+processo, crash → fallback, lock, ciclo de vida; RODA na suíte cheia, que só sai pela trava:
+`tools/fila_suite.sh roda -- ./.venv-mlx/bin/python -m pytest tests/ -q`) e a
 suíte opcional do caminho LIGADO com modelo real, marcada como **`worker_real`**:
 
 ```bash
@@ -723,7 +724,7 @@ TTS_TEST_WORKER=1 ./.venv-mlx/bin/python -m pytest -m worker_real -q
 
 (os tests `worker_real` — worker isolado por job, worker persistente `--serve` e o
 pipeline do Live usando o worker — ficam SKIPPED sem o env. O cabeçalho do pytest
-avisa em todo run que esse caminho está fora do default, senão `pytest tests/ -q`
+avisa em todo run que esse caminho está fora do default, senão a suíte cheia
 vira falso verde aqui.) Evidência de latência: `smoke_worker_persist.py`.
 
 **Bug de terceiro achado no caminho** (patch em
@@ -996,7 +997,7 @@ O bench sai 2 se não houver wav em `voices/` (grave uma voz na UI).
 ### Gate estático do épico (para o QA reusar)
 
 A lista **não é copiada aqui** — ela mora no `.githooks/pre-commit` (que roda isso
-+ `pytest tests/` antes de cada commit) e é derivada por
++ a suíte cheia pela trava, `tools/fila_suite.sh roda -- … pytest tests/ -q`, antes de cada commit) e é derivada por
 `tests/_pyflakes_gate.py`, chamado também pelo job `estatica` do CI. Corrigir a
 lista no doc e esquecer o hook foi como `live_rnnoise.py` ficou de fora do gate
 estático que este parágrafo ensina a rodar (#288/#389). Saída tem de ser **vazia**

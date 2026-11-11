@@ -1133,8 +1133,11 @@ navegador.
 ## Desenvolvimento
 
 ```bash
-# testes (funções puras + API via TestClient, sem carregar MLX)
-./.venv-mlx/bin/python -m pytest tests/ -q
+# testes (funções puras + API via TestClient, sem carregar MLX).
+# SUÍTE CHEIA só pela trava de máquina (#1130/#1131) — `pytest tests/` cru toma rc 75:
+#   tools/fila_suite.sh roda -- ./.venv-mlx/bin/python -m pytest tests/ -q     # dentro de `screen`
+# rodada curta (um arquivo) não precisa dela:
+./.venv-mlx/bin/python -m pytest tests/test_live_turns.py -q
 
 # o run tem teto de 90 s POR TESTE (`pytest-timeout`, no `pytest.ini`): um
 # ffmpeg/vad travado falha e sai com o nome do teste, em vez de prender o gate.
@@ -1143,7 +1146,7 @@ navegador.
 # COBERTURA — alvo SEPARADO do gate (é lento e não bloqueia commit). Rode antes
 # de fechar épico e compare com o piso abaixo: é queda de linha que interessa,
 # não a cor do número.
-./.venv-mlx/bin/python -m pytest tests/ -q \
+tools/fila_suite.sh roda -- ./.venv-mlx/bin/python -m pytest tests/ -q \
     --cov=app --cov=live_pipeline --cov=live_turns --cov=common --cov-report=term-missing
 # piso medido em 2026-10-21 (HEAD ff9ef65 + #384), `TOTAL`: 70 %. Por módulo:
 # app 64 %, common 81 %, live_pipeline 81 %, live_turns 93 %. Abaixo disso, o que

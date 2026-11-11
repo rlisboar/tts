@@ -56,13 +56,19 @@ case "${1:-}" in
   rotaciona) rotaciona ;;
   install)
     mkdir -p "$HOME/Library/LaunchAgents" "$DIR"; chmod 700 "$DIR"
+    # O agente do launchd NÃO lê `~/Documents` (TCC do macOS): "can't open input file" na 1ª
+    # passada (achado no deploy do #1064). O script se COPIA para `~/.tts-studio` e o plist
+    # aponta para a cópia — atualizar o script do repo exige reinstalar (`install` de novo).
+    ALVO="$HOME/.tts-studio/log_rotate.sh"
+    mkdir -p "$HOME/.tts-studio"
+    [ "${0:A}" = "$ALVO" ] || { cp -f "${0:A}" "$ALVO" && chmod 755 "$ALVO"; }
     cat > "$PLIST" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array>
-    <string>/bin/zsh</string><string>${0:A}</string><string>rotaciona</string>
+    <string>/bin/zsh</string><string>$ALVO</string><string>rotaciona</string>
   </array>
   <key>StartInterval</key><integer>3600</integer>
   <key>RunAtLoad</key><true/>

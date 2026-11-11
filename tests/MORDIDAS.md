@@ -1294,4 +1294,15 @@ células agora é uma função testada de verdade (mata filho E neto), e o fallb
 | limpeza das células sem `killpg` | `test_o_fixture_de_limpeza_mata_de_verdade_*` **FAILED** (filho/neto vivos) |
 | sem job control, o sinal continua indo para `-pgid` | `test_sem_job_control_*` **FAILED** (o neto sobrevive) |
 | `.gitattributes` sem a linha | `test_gitattributes_junta_o_mordidas_sem_conflito` **FAILED** (conflito de append) |
-| uma célula recarrega o `conftest.py` por `importlib` (o erro do 1º commit) | `test_nenhum_teste_recarrega_o_conftest` **FAILED**; antes dele, 3 testes de isolamento (`test_tmpdir_sem_credencial`, `test_watchdog_suite_1050`, `test_qa_gate194`) falhavam no mesmo processo (`TTS_OUTPUTS_DIR` None). A lógica pura do guarda mora em `tests/_guarda_trava.py` |
+| uma célula recarrega o `conftest.py` por `importlib` (o erro do 1º commit) | `test_nenhum_teste_recarrega_o_conftest` **FAILED**; antes dele, 2 testes de isolamento (`test_tmpdir_sem_credencial` e `test_watchdog_suite_1050`) falhavam no mesmo processo (`TTS_OUTPUTS_DIR` None; o `test_qa_gate194` falhou no commit original mas é intermitente: o gate reproduziu só os 2). A lógica pura do guarda mora em `tests/_guarda_trava.py` |
+
+### #1131 (nits) — o `install` do `log_rotate.sh` se copia para `~/.tts-studio`
+
+Achado no deploy do #1064: o agente do launchd não lê `~/Documents` (TCC) e a 1ª passada deu "can't
+open input file". O `install` copia o script para `~/.tts-studio/log_rotate.sh` e o plist aponta para a
+cópia. Também: `README.md`/`LIVE.md` deixam de ensinar `pytest tests/` cru (a suíte cheia só pela trava),
+e a contagem da regressão do conftest acima é **2** (o `test_qa_gate194` é intermitente).
+
+| Sabotagem | Resultado |
+|---|---|
+| o plist volta a apontar para o script do repo (`${0:A}`) | `test_install_copia_o_script_para_tts_studio_e_o_plist_aponta_para_a_copia` **FAILED** |

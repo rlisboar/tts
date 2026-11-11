@@ -119,3 +119,29 @@ class TestRotacao:
         subprocess.run([ZSH, "-f", str(ROT), "rotaciona"], env=e, check=True,
                        capture_output=True, stdin=subprocess.DEVNULL)
         assert not velha.exists()
+
+
+@pytest.mark.skipif(ZSH is None, reason="precisa de zsh")
+def test_install_copia_o_script_para_tts_studio_e_o_plist_aponta_para_a_copia(tmp_path):
+    """Achado do deploy do #1064: o agente do launchd NÃO lê `~/Documents` (TCC) — a 1ª passada
+    deu "can't open input file". O `install` se copia para `~/.tts-studio` e o plist aponta
+    para a cópia, nunca para o repo."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "launchctl").write_text("#!/bin/sh\nexit 0\n")
+    (bin_ / "launchctl").chmod(0o755)
+    e = dict(os.environ, HOME=str(tmp_path), PATH=f"{bin_}:{os.environ['PATH']}")
+    e.pop("TTS_LOG_DIR", None)
+    r = subprocess.run([ZSH, "-f", str(ROT), "install"], env=e, capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
+    assert r.returncode == 0, r.stdout + r.stderr
+    copia = tmp_path / ".tts-studio" / "log_rotate.sh"
+    assert copia.exists() and os.access(copia, os.X_OK)
+    assert copia.read_text() == ROT.read_text()
+    plist = (tmp_path / "Library" / "LaunchAgents" / "com.local.tts-log-rotate.plist").read_text()
+    assert f"<string>{copia}</string>" in plist, plist
+    assert str(ROT) not in plist, "o plist aponta para o repo (o launchd não lê ~/Documents)"
+    # reinstalar a partir da própria cópia não quebra (cp de arquivo sobre ele mesmo)
+    r2 = subprocess.run([ZSH, "-f", str(copia), "install"], env=e, capture_output=True, text=True,
+                        stdin=subprocess.DEVNULL)
+    assert r2.returncode == 0, r2.stdout + r2.stderr
