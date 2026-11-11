@@ -205,7 +205,7 @@ def test_niveis_so_leva_numero_e_carimbo_nenhum_audio(caplog):
     app._live_niveis(_sess(falando=True))
     (linha,) = _linhas(caplog, "niveis")
     assert re.fullmatch(
-        r"niveis sess=sx ts=\S+ n=\d+ tocando=(True|False) dbfs_pico=-?[\d.]+ dbfs_media=-?[\d.]+ prob_pico=[\d.]+ "
+        r"niveis sess=sx ts=\S+ n=\d+ tocando=(True|False) fila_ms=\d+ dbfs_pico=-?[\d.]+ dbfs_media=-?[\d.]+ prob_pico=[\d.]+ "
         r"eco_dbfs=-?[\d.]+ noise_dbfs=-?[\d.]+", linha), linha
 
 
@@ -310,19 +310,57 @@ def test_o_motor_expoe_o_eco_dbfs_que_o_log_le():
 
 # --- acréscimos do speech (3): tocando, n, playback_fim ao fechar a sessão ---------
 
-def test_niveis_diz_se_esta_tocando_e_o_gap_de_geracao_aparece_como_false(caplog, monkeypatch):
-    """`playback_ativo` inclui vãos de LLM/TTS (até 20 s) com o assistente CALADO. Sem
-    `tocando=` o H2 dilui esses vãos. A janela está ativa nos dois casos; o campo separa."""
+def test_motor_real_vao_de_geracao_tocando_true_e_fila_ms_zero_turno_fechado_cala(
+        caplog, monkeypatch):
+    """O motor REAL, config de produção. A célula antiga usava um motor falso com
+    `tocando=False` no vão e passava enganando: no motor real, com o turno ABERTO, o backlog
+    não escoa (#167) e `tocando` fica True com o assistente calado. Quem diz "mudo" é o
+    `fila_ms`. Turno FECHADO: a janela e o `tocando` caem sozinhos."""
+    import numpy as np
+    import live_turns
     caplog.set_level(logging.INFO, logger="live")
-    t = [400.0]
+    t = [100.0]
     monkeypatch.setattr(app.time, "monotonic", lambda: t[0])
-    s = _sess(falando=True)
-    app._live_niveis(s)
-    s["engine"].tocando = False                       # vão de geração: janela ativa, mudo
-    t[0] = 400.6
+    silencio = np.zeros(512 * 8, dtype=np.int16).tobytes()     # 256 ms
+
+    def envia(eng, s, ms):
+        eng.set_speaking(True, nivel_dbfs=-30.0, duracao_ms=ms)
+        app._live_playback_chunk(s, _chunk(ms))
+        eng.set_speaking(False)
+
+    # turno ABERTO (como no Live): 300 ms de áudio, depois um vão de geração de 2 s
+    aberto = live_turns.TurnEngine(scorer=lambda f: 0.05)
+    aberto.set_turno_aberto(True)
+    s = {"id": "sx", "turno": 3, "st_dbfs": -40.0, "engine": aberto, "falando": False}
+    envia(aberto, s, 300)
+    aberto.feed(silencio)
+    app._live_niveis(s)                                  # t=100,0: 300 ms na fila
+    t[0] = 100.7                                         # o áudio acabou há 400 ms
+    for _ in range(8):                                   # ~2 s de vão: o motor segue "tocando"
+        aberto.feed(silencio)
+    st = aberto.estatisticas()
+    assert st["playback_ativo"] is True and st["tocando"] is True, st
     app._live_niveis(s)
     a, b = (_campos(x) for x in _linhas(caplog, "niveis"))
-    assert a["tocando"] == "True" and b["tocando"] == "False", (a, b)
+    assert a["fila_ms"] == "300" and a["tocando"] == "True", a
+    assert b["fila_ms"] == "0" and b["tocando"] == "True", b   # mudo, e o motor não sabe
+
+    # turno FECHADO: depois da cauda a janela fecha e o `tocando` cai
+    caplog.clear()
+    t[0] = 200.0
+    fechado = live_turns.TurnEngine(scorer=lambda f: 0.05)
+    s2 = {"id": "sy", "turno": 4, "st_dbfs": -40.0, "engine": fechado, "falando": False}
+    envia(fechado, s2, 300)
+    fechado.feed(silencio)
+    app._live_niveis(s2)
+    for _ in range(12):                                  # ~3 s: backlog e cauda escoaram
+        fechado.feed(silencio)
+    st = fechado.estatisticas()
+    assert st["playback_ativo"] is False and st["tocando"] is False, st
+    t[0] = 203.0
+    app._live_niveis(s2)
+    assert len(_linhas(caplog, "playback_fim")) == 1
+    assert len(_linhas(caplog, "niveis")) == 1, "janela fechada não emite niveis"
 
 
 def test_niveis_traz_n_os_frames_da_janela(caplog, monkeypatch):
@@ -358,3 +396,50 @@ def test_sessao_fechando_com_a_janela_fechada_nao_inventa_playback_fim(caplog):
     caplog.set_level(logging.INFO, logger="live")
     app._live_libera_sessao(_sess(falando=False), "cliente_fechou")
     assert not _linhas(caplog, "playback_fim")
+
+
+# --- #1129c: `fila_ms` (áudio audível) no lugar do `tocando` do motor --------------------
+
+def test_fila_ms_estima_o_audio_que_o_cliente_ainda_toca_e_zera_no_vao(caplog, monkeypatch):
+    caplog.set_level(logging.INFO, logger="live")
+    t = [100.0]
+    monkeypatch.setattr(app.time, "monotonic", lambda: t[0])
+    s = _sess(falando=True)
+    app._live_playback_chunk(s, _chunk(400))     # 400 ms de áudio a t=100
+    app._live_playback_chunk(s, _chunk(400))     # o servidor manda mais rápido: fila 800 ms
+    assert app._live_fila_ms(s) == 800
+    t[0] = 100.5                                 # o cliente tocou 500 ms
+    assert app._live_fila_ms(s) == 300
+    t[0] = 101.0                                 # vão de geração: a fila secou há 200 ms
+    assert app._live_fila_ms(s) == 0
+    app._live_playback_chunk(s, _chunk(300))     # chunk novo depois do vão: recomeça de t
+    assert app._live_fila_ms(s) == 300
+    app._live_niveis(s)
+    (linha,) = _linhas(caplog, "niveis")
+    assert _campos(linha)["fila_ms"] == "300"
+
+
+def test_cancel_zera_a_fila_estimada_do_cliente():
+    import queue
+    import threading
+    s = _sess(falando=True)
+    s.update({"cancelado": threading.Event(), "turno": 1, "pb_fim_est": 9e9,
+              "fila": queue.Queue()})
+    app._live_cancela(s, forcar=True)
+    assert s["pb_fim_est"] == 0.0 and app._live_fila_ms(s) == 0
+
+
+def test_barge_in_zera_a_fila_estimada_do_cliente():
+    """O barge do motor chega por `_live_trata_eventos` e passa por `_live_cancela`: o
+    cliente descarta a fila no `interrupted`, então a estimativa tem de zerar."""
+    import queue
+    import threading
+    import types
+    s = _sess(falando=True)
+    s.update({"cancelado": threading.Event(), "turno": 2, "pb_fim_est": 9e9,
+              "fila": queue.Queue(), "id": "sb"})
+    ev = types.SimpleNamespace(tipo="barge_in", t_ms=0, prob=0.9, barge_in=True,
+                               fala_ms=0, to_json=lambda: {"type": "barge_in"})
+    app._live_trata_eventos(s, [ev])
+    assert s["cancelado"].is_set()
+    assert s["pb_fim_est"] == 0.0 and app._live_fila_ms(s) == 0

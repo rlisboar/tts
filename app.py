@@ -11655,10 +11655,20 @@ def _live_playback_chunk(sess: dict, payload: bytes) -> None:
     `chunks`, `audio_ms` (soma das durações — o cliente bufferiza, então diverge do relógio)
     e o 1º/último envio. Zera em `playback_fim`."""
     agora = time.monotonic()
+    ms = _live_chunk_ms(payload)
     sess.setdefault("playback_t0", agora)
     sess["playback_ultimo"] = agora
     sess["playback_chunks"] = sess.get("playback_chunks", 0) + 1
-    sess["playback_audio_ms"] = sess.get("playback_audio_ms", 0.0) + _live_chunk_ms(payload)
+    sess["playback_audio_ms"] = sess.get("playback_audio_ms", 0.0) + ms
+    # Fila ESTIMADA do cliente: ele toca em 1x o que o servidor manda mais rápido, então o
+    # áudio audível acaba em `pb_fim_est`. `tocando` do motor NÃO serve: com o turno aberto
+    # o backlog não escoa (#167) e ele fica True nos vãos de geração, em que ninguém fala.
+    sess["pb_fim_est"] = max(agora, sess.get("pb_fim_est", 0.0)) + ms / 1000.0
+
+
+def _live_fila_ms(sess: dict) -> int:
+    """Estimativa do áudio que o cliente ainda tem para tocar (0 = silêncio audível)."""
+    return max(0, round((sess.get("pb_fim_est", 0.0) - time.monotonic()) * 1000))
 
 
 def _live_playback_janela(sess: dict, ativo: bool) -> None:
@@ -11741,7 +11751,7 @@ def _live_niveis(sess: dict) -> None:
     # `tocando`: o `playback_ativo` inclui vãos de LLM/TTS (até 20 s) com o assistente
     # CALADO; só `tocando` diz que há áudio audível — sem ele o H2 dilui. `n` = quadros
     # (frames do cliente) na janela: a 1ª do episódio tem 1.
-    _live_log_kv("niveis", sess=sess["id"], ts=_live_ts(), n=n, tocando=st.get("tocando"),
+    _live_log_kv("niveis", sess=sess["id"], ts=_live_ts(), n=n, tocando=st.get("tocando"), fila_ms=_live_fila_ms(sess),
                  dbfs_pico=sess.get("niv_pico"),
                  dbfs_media=(round(sess["niv_soma"] / n, 1) if n else None),
                  prob_pico=(round(sess["niv_prob"], 3) if "niv_prob" in sess else None),
@@ -12847,6 +12857,7 @@ def _live_cancela(sess: dict, do_cliente: bool = False, *,
     única ele aponta o turno que está sendo de fato interrompido."""
     em_curso = forcar or _live_turno_em_curso(sess) or bool(sess.get("turno"))
     sess["cancelado"].set()
+    sess["pb_fim_est"] = 0.0         # #1129: o cliente descarta a fila no `interrupted`
     if do_cliente:
         # pop + zero na MESMA seção crítica do guarda (#221): sem isso o guarda
         # pode acumular entre o `pop` e o zero e o pendente NOVO nasce com o

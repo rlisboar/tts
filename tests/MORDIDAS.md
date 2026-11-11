@@ -1225,3 +1225,21 @@ aberta (`motivo=fechou`; o normal leva `motivo=janela`), pelo `_live_libera_sess
 | `niveis` sem `tocando=` | `test_niveis_diz_se_esta_tocando_*`, `test_niveis_so_leva_numero_*` **FAILED** |
 | `niveis` sem `n=` | `test_niveis_traz_n_os_frames_da_janela`, `test_niveis_so_leva_numero_*` **FAILED** |
 | a sessão fecha sem emitir o `playback_fim` do episódio aberto | `test_sessao_fechando_com_a_janela_aberta_emite_playback_fim_fechou` **FAILED** |
+
+### #1129c — `fila_ms`: o áudio audível, no lugar do `tocando` do motor
+
+O `tocando` do `estatisticas()` NÃO separa o vão mudo: com o turno aberto o backlog não escoa
+(#167) e o motor real segue em `tocando=True` com o assistente calado. A célula antiga do infra
+usava um motor FALSO com `tocando=False` no vão e passava enganando; foi trocada por uma com o
+`TurnEngine` REAL (`test_motor_real_vao_de_geracao_*`): turno aberto + vão de 2 s dá
+`tocando=True` e `fila_ms=0`; turno fechado deixa a janela e o `tocando` caírem sozinhos.
+`fila_ms` é a fila estimada do cliente (`pb_fim_est = max(agora, pb_fim_est) + dur_do_chunk`),
+zerada em `_live_cancela` (cancel do cliente e barge do motor); áudio audível = `fila_ms > 0`.
+
+| Sabotagem | Resultado |
+|---|---|
+| a fila não parte de `agora` (sem o `max(agora, …)`) | `test_motor_real_vao_*`, `test_fila_ms_estima_o_audio_*` **FAILED** |
+| o cancel/barge não zera a fila | `test_cancel_zera_*`, `test_barge_in_zera_*` **FAILED** |
+| `fila_ms` derivado do `tocando` do motor | `test_motor_real_vao_*`, `test_fila_ms_estima_o_audio_*` **FAILED** |
+| o gate do `niveis` de volta ao `tocando` | 4 células de janela/bordas **FAILED** |
+| `niveis` sem `fila_ms=` | `test_niveis_so_leva_numero_*`, `test_fila_ms_estima_o_audio_*` **FAILED** |
