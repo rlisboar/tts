@@ -237,3 +237,50 @@ da narração acontecer por acaso. Em produção o cenário é pior que o da H5,
 de GPU da disputa do `_gen_lock`. Fica de fora até o número da principal.
 
 **Fora de escopo até o número:** qualquer mudança em código ou em produção.
+
+### Readout da hipótese 6 (2026-11-11, critério do `1f5f3cf` intocado)
+
+**Rodada:** mini, 6 blocos alternados em duas janelas sem a narração do dono:
+`sem-a/com-a/sem-b/com-b` (17:33–19:05) + `sem-c/com-c` (19:50–20:32, bloco extra para fechar n ≥ 12).
+- **Bancada:** clone `13716e3`, o SHA no ar depois do deploy de 17:20. Esse deploy só acrescentou
+  telemetria (log persistente e campos do #1129) e **nenhuma decisão do Live mudou**.
+- **Ambiente:** LLM falso (TTFT 300 ms), corpus e voz FLEURS em `~/tts-bench`, estado sintético, sem dump.
+- **Carga dos blocos `com`:** `/tmp/h6_carga.py` → `~/tts-bench/h6_carga.py` na mesma instância, com 1 job
+  `/api/tts` por vez, texto fixo de ~200 caracteres e ≥ 3,5 s entre POSTs. Foram 78, 85 e 76 POSTs.
+- **Validade, conferida bloco a bloco:**
+  - 0 POST `/api/tts` na 7860;
+  - 0 amostra de CI (`Runner.Worker` ou `pytest`), com o detector incluído depois do achado do #1149;
+  - 0 respostas 429.
+- **Incidentes declarados:** o `sem-a` da 1ª tentativa (2026-11-10) se perdeu com o `/tmp` no reboot
+  da 01:00, e a H6 foi refeita inteira. Uma 2ª instância órfã do roteiro largou um `sem-a` às 17:30 com o CI
+  ativo; foi morta por PID, sem saída gravada, e **não conta**.
+
+Turnos fora do 1º da sessão (o 1º paga a marca a frio, H5), p50 / p95 em ms:
+
+| braço | n | S2 | `tts` | `tts_gen` | `lock` + `fila_tts` | `marca` |
+|---|---|---|---|---|---|---|
+| sem carga (sem-a, sem-b, sem-c) | 13 | 2356 / **2886** | 1249 / **1261** | 1247 / 1259 | 0 / **1** | 66 / 99 |
+| com carga (com-a, com-b, com-c) | 12 | 2870 / **5563** | 1250 / **1266** | 1181 / 1264 | 0 / **2654** | 75 / 96 |
+
+Por bloco, o `lock+fila` p95 sem carga foi 1 / 0 / 1 ms e com carga **1629 / 718 / 2769** ms. Os
+braços não se sobrepõem, então não é ruído do ambiente.
+
+**Veredito: SOBREVIVEU.** O critério de morte pedia as três condições juntas, e duas falham:
+- `tts` p95 ≤ 1,2×: vale (1,00×);
+- `lock+fila` p95 < 100 ms: **falha** (2654);
+- S2 p95 ≤ 1,2×: **falha** (1,93×).
+
+**Mecanismo:** o `tts_gen` é igual nos dois braços, então **não é disputa de GPU**. É **espera na fila do
+`_gen_lock`**, porque o job local de `/api/tts` segura a trava pelo job inteiro (load + todos os trechos)
+e o trecho do Live espera o job acabar. A variante pré-registrada (carga em outro processo) fica
+dispensada: o mecanismo já está separado pelos estágios.
+
+**Saída de engenharia, alçada nossa:** prioridade/fila, com o Live na frente do lote entre trechos e
+sem cancelar o trecho em curso. Desenho no card do #1022, código em `wt/speech-pipeline-genlock`. Limitar a
+narração do dono é decisão dele, e não foi proposto.
+
+**Observações, sem critério:**
+- na 1ª janela o swap do mini foi de 3,3 GB para **8,5 GB** a partir do `com-a`, e ficou nesse nível até o
+  fim; na janela do bloco extra ficou em ~2,4 GB;
+- o RSS da 7860 caiu de ~3,9 GB, no início, para 70–150 MB durante a carga (a produção foi paginada);
+- o `com-c` teve um S2 p95 de 7103 ms. A cauda acompanha o `lock+fila` do mesmo bloco (p95 2769).
