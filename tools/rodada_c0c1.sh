@@ -21,7 +21,7 @@
 #   eco entre 5 % e 10 % → INDETERMINADO naquele critério; > 10 % → NÃO LIGA
 #
 #   tools/rodada_c0c1.sh --app-dir ~/Documents/tts-rod --sha <sha-no-ar> \
-#       [--corpus /tmp/live-bench-audio] [--estado /tmp/bench-mini/.state-local] \
+#       [--corpus ~/tts-bench/corpus-live/corpus] [--estado ~/tts-bench/bench-mini/.state-local] \
 #       [--ciclos 10] [--aquecimento 1] [--min-eco 3] [--min-ventoinha 3]
 #
 # ORDEM CONTRABALANÇADA (f0: c0, c1 → f1: c1, c0): só o MOTOR inverte entre os
@@ -40,7 +40,11 @@ APP_DIR="${RAIZ}"
 PY=""
 URL="ws://127.0.0.1:7890/api/live/ws"
 APP="http://127.0.0.1:7890"
-SHA=""; CORPUS=/tmp/live-bench-audio; ESTADO=/tmp/bench-mini/.state-local
+# #728: corpus PÚBLICO (FLEURS, `tools/corpus_bancada.py`) e estado fora do /tmp
+# (o `tmp_cleaner` do macOS limpa o /tmp à meia-noite). Nunca voices/ do dono.
+BANCADA="${TTS_BANCADA_DIR:-$HOME/tts-bench}"
+SHA=""; CORPUS="$BANCADA/corpus-live/corpus"; VOZES="$BANCADA/corpus-live/voices"
+ESTADO="$BANCADA/bench-mini/.state-local"; VOZ_SESSAO=flvoz
 DIR=""; CICLOS=10; AQUEC=1; MIN_ECO=3; MIN_VENT=3; SEMENTE=875
 LLM_FAKE=0; LLM_FAKE_PORTA=7898; FAKE_PID=""; ARVORE_SUJA=0
 MODULOS=(app.py common.py backends.py tts_worker.py live_pipeline.py live_turns.py dsh_client.py)
@@ -155,7 +159,16 @@ if [ "$LLM_FAKE" = 1 ]; then
   done
   fala "   LLM falso na $LLM_FAKE_PORTA (pid $FAKE_PID, TTFT fixo 300 ms)"
 fi
+# corpus padrão ausente: monta do FLEURS (idempotente). Corpus passado à mão é
+# conferido pela própria bancada (`recusa_dado_do_dono`: voices/ ou JSON do cadastro).
+if [ ! -d "$CORPUS" ] && [ "$CORPUS" = "$BANCADA/corpus-live/corpus" ]; then
+  "$PY" "$APP_DIR/tools/corpus_bancada.py" --destino "$BANCADA/corpus-live" >/dev/null \
+    || { fala "não montei o corpus público em $BANCADA/corpus-live"; exit 1; }
+fi
 [ -d "$CORPUS" ] || { fala "corpus ausente: $CORPUS"; exit 1; }
+[ -f "$VOZES/$VOZ_SESSAO.wav" ] || { fala "voz da sessão ausente: $VOZES/$VOZ_SESSAO.wav (tools/corpus_bancada.py)"; exit 1; }
+"$PY" -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import live_bench as lb; from pathlib import Path; lb.recusa_dado_do_dono(Path(sys.argv[2]))' \
+  "$APP_DIR/tools" "$CORPUS" || { fala "corpus recusado (#728): $CORPUS"; exit 1; }
 [ -f "$ESTADO/settings.json" ] || { fala "estado sintético ausente: $ESTADO/settings.json"; exit 1; }
 [ "$(lsof -nP -iTCP:7890 -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ] \
   || { fala "7890 já ocupada — derrube a outra instância antes"; exit 1; }
@@ -257,7 +270,7 @@ sobe() {                  # $1 = 0|1 (duck rápido)
   # 20167 morto, uvicorn 20196 órfão com a 7890 presa). Com `exec`, `$!` É o
   # uvicorn, e as redireções do subshell continuam valendo.
   ( cd "$APP_DIR" && exec env PATH="$PATH" \
-    TTS_STATE_DIR="$ESTADO" TTS_OUTPUTS_DIR="$DIR/outputs" \
+    TTS_STATE_DIR="$ESTADO" TTS_OUTPUTS_DIR="$DIR/outputs" TTS_VOICES_DIR="$VOZES" \
     TTS_CHAT_BACKEND_LIVE=openai TTS_CHAT_BASE_URL="$B" TTS_CHAT_MODEL="$M" \
     TTS_CHAT_API_KEY="$K" TTS_MARCA_PREWARM_BOOT=0 TTS_LIVE_TTL_S=1800 \
     TTS_LIVE_BARGE_DUCK_RAPIDO="$1" TTS_ALLOWED_HOSTS=127.0.0.1,localhost \
@@ -287,7 +300,7 @@ roda_ciclos() {           # $1 = célula (f0-c0 …)
   # AQUECIMENTO: +$AQUEC ciclo(s) fora da amostra. O `live_bench` escreve a
   # marca `aquec` antes e `ciclos` no fim dele — a janela do stt começa ali.
   TTS_LIVE_DUMP_DIR="$DIR/dump-$1" "$PY" -I "$APP_DIR/tools/live_bench.py" \
-    --audio "$CORPUS" --url "$URL" --seed "$SEMENTE" --ciclos "$((CICLOS + AQUEC))" \
+    --audio "$CORPUS" --voice "$VOZ_SESSAO" --url "$URL" --seed "$SEMENTE" --ciclos "$((CICLOS + AQUEC))" \
     --aquecimento "$AQUEC" --marca "$DIR/marcas.txt" \
     --teto-turno-s 300 --rotulo "$1" --out "$DIR/$1.json" > "$DIR/$1.log" 2>&1
   fala "   rc=$? $(grep -E '^S1 ' "$DIR/$1.log" | cut -c1-80)"
@@ -297,7 +310,7 @@ roda_fase() {             # $1 = fase (eco|ventoinha)  $2 = célula
   marca "$2" "$1"
   local min=$MIN_VENT
   [ "$1" = eco ] && min=$MIN_ECO
-  "$PY" "$APP_DIR/tools/fase_ruido.py" "$1" --url "$URL" --audio "$CORPUS" \
+  "$PY" "$APP_DIR/tools/fase_ruido.py" "$1" --url "$URL" --audio "$CORPUS" --voice "$VOZ_SESSAO" \
     --minutos "$min" --out "$DIR/$1-$2.json" >> "$DIR/$1-$2.log" 2>&1
   fala "   rc=$? $(tail -1 "$DIR/$1-$2.log" | cut -c1-80)"
 }

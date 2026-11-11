@@ -15,12 +15,14 @@ settings, não derrubar o serviço, não deixar o app de bancada vivo depois.
    `TTS_CHAT_MODEL=deepseek-flash-41`, chave por env (não imprimir).
 5. Marca d'água desligada nas duas pontas (`tts_marca_dagua=false` no
    `settings.json` do estado sintético) — declarar no relatório.
-6. Copiar o áudio: `mkdir -p /tmp/live-bench-audio && cp voices/*.wav voices/*.json /tmp/live-bench-audio/`.
+6. Corpus PÚBLICO, nunca `voices/` nem cópia dele (#728): `.venv-mlx/bin/python tools/corpus_bancada.py`
+   (FLEURS em `~/tts-bench`, fora do `/tmp`). A instância de bancada sobe com
+   `TTS_VOICES_DIR=~/tts-bench/corpus-live/voices`.
 7. `sysctl vm.swapusage` antes, para registrar a folga.
 
 ## Rodada
 
-    .venv-mlx/bin/python -I /tmp/live_bench.py --audio /tmp/live-bench-audio \
+    .venv-mlx/bin/python -I tools/live_bench.py --audio ~/tts-bench/corpus-live/corpus --voice flvoz \
         --url ws://127.0.0.1:7890/api/live/ws --seed 875 \
         --ciclos 20 --teto-turno-s 300 \
         --out /tmp/live-bench-b2f6c33.json --rotulo b2f6c33-mini

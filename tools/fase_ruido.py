@@ -17,7 +17,7 @@ Booleano não serve: `1/10` viraria "100 %" e não daria para ler a resolução.
 
 Uso (dentro do mini, contra a instância de bancada da 7890):
 
-    .venv-mlx/bin/python tools/fase_ruido.py eco --audio /tmp/live-bench-audio \
+    .venv-mlx/bin/python tools/fase_ruido.py eco --audio ~/tts-bench/corpus-live/corpus --voice flvoz \
         --url ws://127.0.0.1:7890/api/live/ws --minutos 5 --out /tmp/fase-eco.json
     .venv-mlx/bin/python tools/fase_ruido.py ventoinha --minutos 5 \
         --url ws://127.0.0.1:7890/api/live/ws --out /tmp/fase-ventoinha.json
@@ -106,6 +106,8 @@ async def main(argv=None) -> int:
     ap.add_argument("--eco-atraso-ms", type=int, default=100)
     ap.add_argument("--ruido-dbfs", type=float, default=-60.0)
     ap.add_argument("--prewarm-s", type=float, default=20.0)
+    ap.add_argument("--voice", default="",
+                    help="voice_id da sessão (#728: na bancada, `flvoz` do corpus público)")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args(argv)
 
@@ -114,7 +116,8 @@ async def main(argv=None) -> int:
         raise SystemExit("fase eco precisa de --audio com gravações e ref_text")
 
     ws, c, rx = await lb.abre_sessao(args.url, args.eco_db, args.eco_atraso_ms,
-                                     args.ruido_dbfs, prewarm_s=args.prewarm_s)
+                                     args.ruido_dbfs, voice=args.voice,
+                                     prewarm_s=args.prewarm_s)
     mic = asyncio.create_task(c.mic())
     await asyncio.sleep(1.5)
     try:

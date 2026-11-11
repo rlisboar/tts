@@ -4,10 +4,11 @@ mede os SLOs S1–S5 do épico #874.
 
 Roda NO MINI, contra a instância que está no ar (loopback dispensa chave):
 
-    # o áudio é COPIADO para /tmp antes (nunca mova o original de voices/)
-    mkdir -p /tmp/live-bench-audio && cp voices/*.wav voices/*.json /tmp/live-bench-audio/
-    .venv-mlx/bin/python -I /tmp/live_bench.py --audio /tmp/live-bench-audio \
-        --url ws://127.0.0.1:7890/api/live/ws --out /tmp/live-bench-<sha>.json
+    # corpus PÚBLICO (FLEURS pt_br, CC BY 4.0) fora do /tmp — NUNCA voices/ (#728):
+    .venv-mlx/bin/python tools/corpus_bancada.py      # -> ~/tts-bench/corpus-live
+    .venv-mlx/bin/python -I tools/live_bench.py --audio ~/tts-bench/corpus-live/corpus \
+        --voice flvoz --url ws://127.0.0.1:7890/api/live/ws --out /tmp/live-bench-<sha>.json
+    # a instância de bancada sobe com TTS_VOICES_DIR=~/tts-bench/corpus-live/voices
 
 MODELO: `TTS_CHAT_MODEL=deepseek-flash-41` (produção do dono). `gpt-4o-mini` só
 como fallback — muda o p50 da LLM e o S2 deixa de ser comparável.
@@ -120,8 +121,35 @@ def _normaliza_rms(a: np.ndarray, dbfs: float = -20.0) -> np.ndarray:
     return np.clip(a, -0.99, 0.99).astype(np.float32)
 
 
+#: campos que só o CADASTRO de voz do app grava no `<id>.json` (`/api/voices`).
+#: O corpus público (`tools/corpus_bancada.py`) tem só `id`/`name`/`ref_text`.
+_CAMPOS_DO_CADASTRO = ("created_at", "denoised", "duration", "preset")
+
+
+def recusa_dado_do_dono(pasta: Path) -> None:
+    """#728: a bancada não lê voz do dono — nem `voices/`, nem CÓPIA dele.
+
+    A receita antiga mandava `cp voices/* /tmp/live-bench-audio` (d88fa54, #875):
+    a cópia fura a checagem por caminho, então o formato do JSON também recusa."""
+    if "voices" in Path(pasta).expanduser().resolve().parts:
+        raise SystemExit(f"corpus dentro de voices/ ({pasta}): a bancada usa o corpus "
+                         "público do FLEURS (tools/corpus_bancada.py), nunca voz do dono (#728)")
+    for js in sorted(Path(pasta).glob("*.json")):
+        try:
+            meta = json.loads(js.read_text())
+        except Exception:                         # noqa: BLE001
+            continue
+        campos = [c for c in _CAMPOS_DO_CADASTRO if c in meta]
+        if campos:
+            raise SystemExit(
+                f"{js.name} tem {', '.join(campos)}: é JSON do cadastro de voz (cópia de "
+                f"voices/?). A bancada usa o corpus público do FLEURS "
+                "(tools/corpus_bancada.py), nunca voz do dono (#728)")
+
+
 def carrega_corpus(pasta: Path) -> list[dict]:
-    """WAV + JSON (`ref_text`) de voices/ — só gravações reais (sem preset)."""
+    """WAV + JSON (`ref_text`) do corpus PÚBLICO da bancada (FLEURS, #728)."""
+    recusa_dado_do_dono(pasta)
     out = []
     for js in sorted(pasta.glob("*.json")):
         try:
@@ -1117,7 +1145,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--url", default="ws://127.0.0.1:7890/api/live/ws")
     ap.add_argument("--audio", type=Path, required=True,
-                    help="pasta com CÓPIA de voices/*.wav+*.json (nunca o original)")
+                    help="corpus público da bancada (tools/corpus_bancada.py); "
+                         "nunca voices/ nem cópia dele (#728)")
     ap.add_argument("--voice", default="", help="voice_id da sessão (padrão: o do servidor)")
     ap.add_argument("--ciclos", type=int, default=10, help="2 falas por ciclo")
     ap.add_argument("--sessao-min", type=float, default=0, help="S5: roda N minutos")
@@ -1140,9 +1169,6 @@ def main(argv=None):
                          "escrita no fim deles)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
-    if "voices" in args.audio.resolve().parts:
-        raise SystemExit("use uma CÓPIA do áudio (ex.: /tmp/live-bench-audio), não voices/")
-
     corpus = carrega_corpus(args.audio)
     res = asyncio.run(sessao(args, corpus))
     r = resumo(res, args)

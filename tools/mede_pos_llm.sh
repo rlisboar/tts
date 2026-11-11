@@ -5,7 +5,8 @@
 #   tools/mede_pos_llm.sh <rotulo> [ciclos]
 #
 # Env: PORTA (7895), PORTA_LLM (7899), TTFT_MS (300), TPS (40),
-#      FLEURS (/tmp/tts-bakeoff/fala_pt, montado por tools/bakeoff/wer_pt_real.py --monta)
+#      FLEURS (~/tts-bench/fleurs/fala_pt, montado por tools/bakeoff/wer_pt_real.py --monta;
+#      fora do /tmp: o tmp_cleaner do macOS o apaga)
 # Corpus e voz da sessão saem do FLEURS pt_br (CC BY 4.0) — NUNCA de voices/ (#728).
 # Saída: /tmp/pos-llm-<rotulo>-<pid>.json e .log (sufixo por execução: rodada
 # repetida com o mesmo rótulo não sobrescreve a anterior).
@@ -14,7 +15,7 @@ ROTULO="${1:?rótulo}"
 CICLOS="${2:-6}"
 PORTA="${PORTA:-7895}"
 PORTA_LLM="${PORTA_LLM:-7899}"
-FLEURS="${FLEURS:-/tmp/tts-bakeoff/fala_pt}"
+FLEURS="${FLEURS:-$HOME/tts-bench/fleurs/fala_pt}"
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
 PY="$RAIZ/.venv-mlx/bin/python"
 EST="$(mktemp -d /tmp/pos-llm-estado.XXXXXX)"
@@ -33,26 +34,9 @@ trap limpa EXIT INT TERM
 
 # corpus público no formato da bancada (wav + json com ref_text) e UMA voz de
 # clone para a sessão, as duas em tmp
-AUDIO="$EST/corpus"; mkdir -p "$AUDIO" "$EST/voices"
-VOZ="$("$PY" - "$FLEURS" "$AUDIO" "$EST/voices" <<'PY'
-import json, pathlib, shutil, sys
-src, dst, voz = map(pathlib.Path, sys.argv[1:])
-meta = json.loads((src / "meta.json").read_text())
-nomes = sorted(meta["refs"])
-for i, nome in enumerate(nomes):
-    vid = f"fl{i:02d}"
-    shutil.copy(src / nome, dst / f"{vid}.wav")
-    (dst / f"{vid}.json").write_text(json.dumps(
-        {"id": vid, "name": vid, "ref_text": meta["refs"][nome]}, ensure_ascii=False))
-# a voz da sessão é a última fala, que fica FORA do corpus do mic
-alvo, ult = "flvoz", f"fl{len(nomes)-1:02d}"
-(dst / f"{ult}.wav").rename(voz / f"{alvo}.wav")
-d = json.loads((dst / f"{ult}.json").read_text()); d["id"] = d["name"] = alvo
-(voz / f"{alvo}.json").write_text(json.dumps(d, ensure_ascii=False))
-(dst / f"{ult}.json").unlink()
-print(alvo)
-PY
-)"
+# corpus e voz da sessão do FLEURS (#728), pela mesma ferramenta da rodada
+"$PY" "$RAIZ/tools/corpus_bancada.py" --fleurs "$FLEURS" --destino "$EST" >/dev/null
+AUDIO="$EST/corpus"; VOZ=flvoz
 
 "$PY" "$RAIZ/tools/llm_fake_sse.py" --porta "$PORTA_LLM" \
   --ttft-ms "${TTFT_MS:-300}" --tps "${TPS:-40}" >>"$LOG" 2>&1 &

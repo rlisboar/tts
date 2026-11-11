@@ -94,10 +94,13 @@ C1 da própria célula), senão o próprio duck vira confundidor.
    `exit 1` antes de subir a 7890 — célula medida em build errado é número
    perdido.
 2. `live_stt_engine` existe no `GET /api/settings`; sem a chave, parar.
-3. Corpus copiado (nunca mover o original de `voices/`):
-   `mkdir -p /tmp/live-bench-audio && cp voices/*.wav voices/*.json /tmp/live-bench-audio/`
+3. Corpus PÚBLICO (FLEURS pt_br, CC BY 4.0), fora do `/tmp` (o `tmp_cleaner` do
+   macOS o apaga) e **nunca** `voices/` nem cópia dele (#728):
+   `.venv-mlx/bin/python tools/corpus_bancada.py` (gera `~/tts-bench/corpus-live/{corpus,voices}`;
+   precisa do FLEURS em `~/tts-bench/fleurs/fala_pt`, `tools/bakeoff/wer_pt_real.py --monta`).
+   A rodada monta sozinha se faltar.
 4. Estado sintético:
-   `mkdir -p /tmp/bench-mini/.state-local && printf '%s' '{"omni_num_steps":16,"live_num_steps":16,"tts_marca_dagua":false,"tts_marca_prewarm_boot":false}' > /tmp/bench-mini/.state-local/settings.json`
+   `mkdir -p ~/tts-bench/bench-mini/.state-local && printf '%s' '{"omni_num_steps":16,"live_num_steps":16,"tts_marca_dagua":false,"tts_marca_prewarm_boot":false}' > ~/tts-bench/bench-mini/.state-local/settings.json`
 5. `sysctl vm.swapusage` anotado.
 
 ## Execução
@@ -105,7 +108,7 @@ C1 da própria célula), senão o próprio duck vira confundidor.
 ```zsh
 cd ~/Documents/tts-rod
 tools/rodada_c0c1.sh --app-dir "$PWD" --sha "$(git rev-parse --short HEAD)" \
-  --corpus /tmp/live-bench-audio --estado /tmp/bench-mini/.state-local
+  --corpus ~/tts-bench/corpus-live/corpus --estado ~/tts-bench/bench-mini/.state-local
 ```
 
 O script faz pré-voo que recusa (inclusive por SHA divergente), sobe/derruba a
