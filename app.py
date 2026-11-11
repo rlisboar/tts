@@ -13725,6 +13725,22 @@ def _live_conta_barge(sess: dict, tipo: str, decisao_ms: int,
         st["modelo"].append(modelo_ms)
 
 
+def _live_marca_prewarm() -> None:
+    """Sobe ou renova o filho da marca sem bloquear quem chama (#657, #1115).
+
+    Chamado na abertura do Live e em todo `speech_start`. O `prewarm()` só checa
+    pesos/pacote aqui e passa o `_pega` (que pode esperar a trava de um pedido em
+    curso) para uma thread: o laço de eventos não para. Nunca levanta."""
+    if not _settings.get("tts_marca_dagua"):
+        return
+    try:
+        import marca_dagua
+
+        marca_dagua.prewarm()
+    except Exception:       # noqa: BLE001 — sem marca a sessão segue
+        pass
+
+
 def _live_trata_eventos(sess: dict, eventos) -> None:
     """Traduz a FSM (speech_start | speech_end | barge_in) para o protocolo.
 
@@ -13781,6 +13797,10 @@ def _live_trata_eventos(sess: dict, eventos) -> None:
         elif ev.tipo == "speech_start":
             _live_log_kv("speech_start", sess=sess["id"], t_ms=ev.t_ms,
                          prob=getattr(ev, "prob", None))
+            # #1115: a fala que começa vai pedir marca no 1º PCM da resposta.
+            # Renova o TTL do filho (ou o sobe) agora, enquanto fala + STT + LLM
+            # correm — com o Live aberto e ocioso > TTL_S o vigia já o fechou.
+            _live_marca_prewarm()
             if not getattr(ev, "barge_in", False):
                 _live_tenta_continuacao(sess)
         elif ev.tipo == "speech_end":
@@ -14598,13 +14618,7 @@ async def live_ws(ws: WebSocket):
             except Exception:              # noqa: BLE001 — close também pode pendurar
                 pass
             return
-        if _settings.get("tts_marca_dagua"):
-            try:                    # #657: sobe o marcador fora do caminho do 1º áudio
-                import marca_dagua
-
-                marca_dagua.prewarm()
-            except Exception:       # noqa: BLE001 — sem marca a sessão segue
-                pass
+        _live_marca_prewarm()       # #657: sobe o marcador fora do caminho do 1º áudio
         # dentro do try: o `finally` mata o ffmpeg mesmo se o pipeline não nascer.
         # O `abrir` corre enquanto o cliente liga o microfone. O NS do navegador
         # continua no Live; este é o outro filtro, no PCM, e não passa por afftdn.

@@ -95,11 +95,14 @@ def test_filho_ocioso_alem_do_ttl_ainda_morre(filho_de_mentira, monkeypatch):
 
 def test_prewarm_de_filho_vivo_renova_o_ttl(filho_de_mentira, monkeypatch):
     """A abertura do Live (`prewarm`) sobre filho perto do TTL o mantém vivo."""
-    monkeypatch.setattr(marca_dagua, "TTL_S", 0.6)
+    # Folga sob carga (#1115, gate do #1114): renova a cada 0,2 s contra TTL de
+    # 1,0 s (5×), e a janela total (2,0 s) passa o TTL com 1 s de sobra — sem a
+    # renovação o vigia solta o filho com folga para a célula ver.
+    monkeypatch.setattr(marca_dagua, "TTL_S", 1.0)
     proc = marca_dagua._pega()
     filho_de_mentira.append(proc)
-    for _ in range(4):                     # 4 × 0,3 s = 1,2 s > TTL de 0,6 s
-        _time.sleep(0.3)
+    for _ in range(10):                    # 10 × 0,2 s = 2,0 s > TTL de 1,0 s
+        _time.sleep(0.2)
         assert marca_dagua._pega() is proc
     assert proc.poll() is None
     assert marca_dagua._proc is proc
