@@ -87,17 +87,6 @@ ALVO_DETECCAO = float(os.environ.get("TTS_MARCA_ALVO", "0.97"))
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-# #1116: SEM `torch.compile`. O AudioSeal 0.2 (via moshi) embrulha o `forward`
-# do SEANet, as convs e o RoPE em `torch_compile_lazy`, e o dynamo guarda o
-# formato EXATO do tensor (canais por camada, comprimento do trecho, instância
-# do gerador x detector). O aquecimento com `zeros(1, 1, 16000)` compilava um
-# formato só, e o 1º trecho real recompilava tudo: ~0,74 s no mini, ~1,2 s
-# aqui, num pedido de ~0,1 s. Em CPU o modo eager não perde nada no regime
-# (mesmos ms por trecho, medido) e o `pronto` sai em ~1,5 s, não ~6 s.
-# A chave é lida no IMPORT do audioseal (`torch_compile_lazy`), por isso fica
-# aqui, antes de `main()` importar o pacote. Exportar `NO_TORCH_COMPILE=` (vazio)
-# religa o compile, só para medir.
-os.environ.setdefault("NO_TORCH_COMPILE", "1")
 
 RAIZ = os.path.dirname(os.path.abspath(__file__))
 
@@ -149,6 +138,18 @@ def main() -> int:
     # Antes do torch. Sem isto o pai, no prazo de 1,5 s do Live, mata a carga
     # (~2,6 s) e o áudio sai cru. O `pronto` continua no fim do aquecimento.
     print(json.dumps({"tipo": "subindo"}), flush=True)
+    # #1116: SEM `torch.compile`. O AudioSeal 0.2 (via moshi) embrulha o
+    # `forward` do SEANet, as convs e o RoPE em `torch_compile_lazy`, e o dynamo
+    # guarda o formato EXATO do tensor (canais por camada, comprimento do
+    # trecho, gerador x detector). O aquecimento com `zeros(1, 1, 16000)`
+    # compilava um formato só e o 1º trecho real recompilava tudo: ~0,74 s no
+    # mini, ~1,2 s no MBP, num pedido de ~0,1 s. Em CPU o eager não perde nada
+    # no regime (medido) e o `pronto` sai em ~1,5 s, não ~6 s.
+    # A chave é lida no IMPORT do audioseal, por isso vem antes dele. Fica em
+    # `main()`, não no topo do módulo: quem importa este arquivo (os testes
+    # do `embute_conferido`) não herda a chave. `NO_TORCH_COMPILE=` (vazio) no
+    # ambiente do pai religa o compile, só para medir.
+    os.environ.setdefault("NO_TORCH_COMPILE", "1")
     import numpy as np
     import soundfile as sf
     import torch

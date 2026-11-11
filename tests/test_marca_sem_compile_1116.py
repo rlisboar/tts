@@ -133,6 +133,23 @@ def test_worker_importa_audioseal_sem_compile_e_aquece_o_detector(tmp_path):
         f"detect_watermark — {tipos}")
 
 
+def test_chave_nao_vaza_para_quem_importa_o_worker_nem_para_o_app(tmp_path):
+    """A chave só vale DENTRO do processo do worker.
+
+    `import marca_worker` (os testes do `embute_conferido` fazem isso) e
+    `import marca_dagua` (o app) não podem pôr `NO_TORCH_COMPILE` no ambiente
+    de quem importou — senão vazaria para os outros filhos que ele sobe.
+    """
+    sonda = (
+        "import os, sys; sys.path.insert(0, sys.argv[1]); "
+        "import marca_dagua, marca_worker; "
+        "print(repr(os.environ.get('NO_TORCH_COMPILE')))")
+    saida = subprocess.run([sys.executable, "-c", sonda, str(RAIZ)], env=_ambiente(),
+                           capture_output=True, text=True, timeout=120, cwd=str(tmp_path))
+    assert saida.returncode == 0, saida.stderr[-800:]
+    assert saida.stdout.strip().splitlines()[-1] == "None", saida.stdout
+
+
 @pytest.mark.skipif(not marca_dagua.disponivel(),
                     reason=f"marca indisponível: {marca_dagua.motivo()}")
 def test_primeiro_trecho_do_live_nao_recompila_e_sai_marcado(tmp_path):
