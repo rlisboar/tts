@@ -284,3 +284,23 @@ narração do dono é decisão dele, e não foi proposto.
   fim; na janela do bloco extra ficou em ~2,4 GB;
 - o RSS da 7860 caiu de ~3,9 GB, no início, para 70–150 MB durante a carga (a produção foi paginada);
 - o `com-c` teve um S2 p95 de 7103 ms. A cauda acompanha o `lock+fila` do mesmo bloco (p95 2769).
+
+## Medida da prioridade do Live no `_gen_lock` (PRÉ-REGISTRO, 2026-11-11, antes de medir)
+
+**Código:** `wt/speech-pipeline-genlock` (`_GenArbitro`: o lote cede entre trechos e o Live passa na frente,
+sem cancelar o trecho em curso, com teto anti-starvation de 3 s ou 4 trechos). **Desenho:** o MESMO da H6
+(roteiro `h6c/h6x`, clone com o código novo, LLM falso, FLEURS, carga `/api/tts` na mesma instância, os mesmos
+guardas), com **n ≥ 12 por braço** fora do 1º turno.
+
+**O que o desenho promete, declarado antes:** o Live espera **no máximo um trecho de lote**. Com
+`chunk_max_chars=140` e o texto de carga de ~200 caracteres, um trecho leva **~1,2 s** (`tts_gen` p95 da H6:
+~1,26 s). Não promete < 100 ms. Esse é o alvo da alavanca seguinte (trecho menor para o lote com Live aberto).
+
+| critério | passa se | se falhar |
+|---|---|---|
+| **M1, a promessa do desenho** | braço com carga: `lock+fila` p95 **≤ 1300 ms**. Era 2654 ms na H6 | o árbitro não entrega o que promete. Volta ao código |
+| **M2, efeito no S2** | braço com carga: S2 p95 **< 5563 ms** (o da H6 com carga) **e** ≤ 1,5× o S2 p95 do braço sem carga da MESMA rodada | o ganho no lock não chega ao S2. Investigar o resto |
+| **M3, o lote não passa fome** | jobs de carga concluídos por bloco `com` ≥ **55** (a H6 teve 75–84) e 0 `jobs_erro` | o anti-starvation não segura. Rever o teto |
+| **M4, alvo esticado (só dado)** | `lock+fila` p95 < 100 ms | esperado não passar. Decide se a alavanca seguinte entra |
+
+A exclusividade do Metal (nunca dois `_generate_chunk` juntos) é provada pelas células do código, não por esta medida.
