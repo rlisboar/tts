@@ -527,6 +527,11 @@ def test_sem_janela_pura_o_aviso_aparece(monkeypatch):
     assert r["voz_n"] > 0
     assert r["puro_n"] == 0
     assert "sem janela de eco puro" in r["aviso"]
+    # #1105: separação rodou, achou voz em tudo e nenhuma indefinida — é o ÚNICO
+    # caso em que o parêntese pode sair. Sem esta linha, o mutante "parêntese
+    # nunca sai" passava a suíte (gate do 5decaf3).
+    assert r.get("indef_n", 0) == 0
+    assert "(mic sempre com voz)" in r["aviso"]
     # sem puro o veredito cai no total, e o total TEM de ser o p10 de tudo
     assert r["eco"] == (r["p10"] >= 0.8)
 
