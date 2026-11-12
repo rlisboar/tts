@@ -83,3 +83,31 @@ O trem cresceu antes da medida (regra do #446). O HEAD é o `5b12f9a` (`wt/speec
   **`pos_corte_com_audio` = 0** no braço depois. Mais 1 bloco **antes** (`50e352f`) como CONTROLE POSITIVO do
   instrumento. Ele não decide o C2, só mostra que o contador vê o vazamento quando existe. Se o controle der 0, o
   instrumento fica sob suspeita e o C2 não é dado como passado.
+
+### Readout P-a1/P-a2 (2026-11-12)
+
+Mini, screen `s3b`, 02:02–04:17, 4 blocos com `rc=0`, `prod_tts_no_bloco=0` e `ci_amostras=0`. Antes = `5b12f9a` com o
+`c5966d7` revertido; depois = `5b12f9a`. Brutos em `~/tts-bench/s3b-res/s3-eco{6,10}-{antes,depois}-*`.
+
+| | −6 antes | −6 depois | −10 antes | −10 depois |
+|---|---|---|---|---|
+| `palavras_corte` com texto que é eco da resposta | 1 ("Com calma.") | **3** ("Com calma, sem calma." ×2, "Com calma, sim.") | 1 ("Com calma.") | 0 |
+| … dessas, trecho EXATO da `RESPOSTA` (a definição do P-a1) | 1 | 0 | 1 | 0 |
+| "Com calma." exato decidido como `eco` | — | 1 | — | — |
+| falas B / com playback | 5 / 1 | 7 / 4 | 5 / 3 | 6 / 4 |
+| com playback: detectadas / em ≤ 1,5 s | 1 / 0 | 4 / 0 | 3 / 1 | 4 / 1 |
+| falso corte / falso duck (bancada) | 0/6 / 5/6 | 0/7 / 3/7 | 0/8 / 0/8 | 1/8 / 1/8 |
+
+- **P-a1, pela letra: PASSA.** No depois, 0 decisões `palavras_corte` com texto que é trecho EXATO da `RESPOSTA`
+  (antes: 1 no −6 e 1 no −10).
+- **P-a1, no mérito: NÃO resolve no −6.** As 3 decisões `palavras_corte` do −6 depois são eco com 1 palavra trocada pelo
+  STT. "Com calma, sem calma." / "Com calma, sim." vêm de "…com calma, sem pressa…": `restante_ms` 7648, `fala_ms`
+  320, no trecho final da resposta. A régua EXATA (com palavra de corte) não as reconhece como eco, e o agente
+  ainda se corta. Foi o risco declarado no pré-registro ("match exato rígido demais para o STT"). A definição do
+  P-a1 (trecho exato) não captura esse caso, e por isso o readout dá os dois números. No −10 a troca zerou o
+  auto-corte (1 → 0).
+- **P-a2: PASSA** nas duas condições. Fração detectada com playback 1/1 → 4/4 (−6) e 3/3 → 4/4 (−10); em ≤ 1,5 s,
+  0 → 0 e 1 → 1. No −6 o depois tem mais falas B com playback (4 contra 1), porque o agente se corta menos antes de B.
+- **Leitura:** a troca resolve o eco exato e não piora a detecção, mas o eco com STT ruidoso ainda passa pelas
+  `palavras_corte`. A régua que separa "Com calma, sem calma." (eco) de "para tudo" sobre "para isso" (dono) não
+  sai da tolerância por palavras sozinha. É decisão do PM, em card próprio.
