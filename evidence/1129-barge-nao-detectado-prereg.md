@@ -204,3 +204,14 @@ Mini, screen `s3b`, eco −15, `--ciclos 10`, ABAB: antes = `50e352f`, depois = 
   par de `cancel` por turno aparece igual nos dois braços (é o par do log, não um barge repetido).
 - O stop ainda fica em ~3,3 s: o que sobra é a decisão por conteúdo (duck p50 ~1,9 s) mais a entrega, como
   previsto no pré-registro.
+
+**Adendo (2026-11-12), genlock fora do trem:** as medidas do cancel (C1–C4) rodaram em clones COM o `50e352f` (genlock).
+O delta medido (antes × depois) não depende dele: o S3 não tem carga de `/api/tts`, e o árbitro ocioso custa 0 ms
+(glk/glk2). O trem vai ao ar sem o genlock (`wt/speech-pipeline-trem2`, `d4e7cf7`).
+
+**Adendo (2026-11-12, ANTES de largar), controle positivo do C2 com injeção:** o controle `50e352f` do `04bed57` não
+serve, porque ele não vaza áudio depois do `interrupted` (o aviso só sai depois do trecho, e o `break` descarta o
+PCM). O controle novo é o clone `5b12f9a` com as DUAS camadas do descarte sabotadas: `_live_pcm_do_turno_cancelado`
+→ `False` e sem o `break` do `_fala_worker`. É 1 bloco a −15, `--ciclos 10`, com `live_bench` `f2c306b` e
+`bancada.lock`. Critério do controle: `pos_corte_com_audio` > 0. Se passar, os 2 blocos depois (0 de 22 cortes com
+áudio) valem e o C2 PASSA. Se der 0, o contador não vê o vazamento e o C2 segue sem passar.
