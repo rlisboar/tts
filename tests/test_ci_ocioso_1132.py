@@ -222,6 +222,29 @@ def test_pega_toma_o_lock_de_dono_morto_e_status_acusa_orfao(tmp_path):
         vivo.kill()
 
 
+def test_guarda_fresca_de_outro_pega_nao_gira_o_laco_quente(tmp_path):
+    """qa #1150: com lock órfão e a guarda `mkdir` de outro `pega` fresca, o laço dava `continue`
+    sem dormir (28 s de CPU). Um `sleep` de fachada no PATH conta as dormidas."""
+    import time
+    morto = subprocess.Popen(["true"]); morto.wait()
+    (tmp_path / "b.lock").write_text(f"agente=morto\npid={morto.pid}\ndesde=1\n")
+    (tmp_path / "b.lock.guarda").mkdir()
+    fachada = tmp_path / "bin"; fachada.mkdir()
+    conta = tmp_path / "dormiu"
+    (fachada / "sleep").write_text(f'#!/bin/sh\necho x >> "{conta}"\nexec /bin/sleep "$@"\n')
+    (fachada / "sleep").chmod(0o755)
+    e = _env_b(tmp_path, TTS_BANCADA_ESPERA="30", PATH=f"{fachada}:{os.environ['PATH']}")
+    p = subprocess.Popen([BASH, str(BANCADA), "pega", "a", str(os.getpid())], env=e,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(1.5)
+        assert p.poll() is None
+        n = len(conta.read_text().split()) if conta.exists() else 0
+        assert 2 <= n <= 12, f"dormidas em 1,5 s: {n} (0 = laço quente)"
+    finally:
+        p.kill(); p.wait()
+
+
 def test_mesmo_dono_pedindo_de_novo_e_idempotente(tmp_path):
     vivo = _vivo(tmp_path)
     try:

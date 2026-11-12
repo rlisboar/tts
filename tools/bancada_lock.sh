@@ -53,6 +53,7 @@ case "${1:-}" in
         elif [ -d "$LOCK.guarda" ] && [ $(( $(date +%s) - $(_mtime "$LOCK.guarda") )) -gt 30 ]; then
           rmdir "$LOCK.guarda" 2>/dev/null   # guarda de um `pega` que morreu no meio
         fi
+        sleep "$PASSO"   # guarda fresca de outro `pega`: sem isto o laço gira a 100 % de CPU
         continue
       fi
       if [ "$(date +%s)" -ge "$limite" ]; then

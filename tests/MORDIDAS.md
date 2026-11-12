@@ -1432,3 +1432,4 @@ dono e `status` distingue PRESENTE de ÓRFÃO.
 |---|---|
 | `ln -f` (volta a sobrescrever) | `test_dois_pega_simultaneos_um_espera_o_outro` e `test_pega_esgota_o_teto_*` **FAILED** |
 | sem o ramo de órfão | `test_pega_toma_o_lock_de_dono_morto_e_status_acusa_orfao` **FAILED** |
+| sem o `sleep` com a guarda fresca (laço quente, 28 s de CPU no qa) | `test_guarda_fresca_de_outro_pega_nao_gira_o_laco_quente` **FAILED** |
