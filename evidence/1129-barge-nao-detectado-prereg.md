@@ -123,3 +123,26 @@ do #870 sugeriu (dono a −27,6 dBFS no playback contra −23,5 fora dele)?
 
 **O H2 não sai deste proxy.** Saber se a "voz" no playback é resíduo de eco ou o dono **só a sessão anotada
 do dono decide**. O proxy não tem AEC real, não tem a sala e não tem o dono.
+
+### Adendo ao pré-registro do proxy (2026-11-11 ~22:00, ANTES de abrir as condições −6, −30 e −10)
+
+**O n por condição é 5, e não 10, por estrutura da bancada.** O `live_bench` alterna os ciclos: nos pares, a
+fala A é longa e a fala B a interrompe (`tipo=interrupcao`); nos ímpares, a fala A é **curta** (0,9 s, mede
+o S1) e a fala B não interrompe. Com `--ciclos 10`, cada condição tem **5 interrupções**. Isso apareceu na
+condição −15, a única aberta até agora (`interrupcoes: 5`).
+
+**O P1 com n = 5, declarado antes de ver as outras condições:**
+- P1 conta interrupção **detectada em até 1,5 s do `b_ini`**, como estava pré-registrado. O critério inclui
+  o tempo; detecção tardia não conta como detectada;
+- "≥ 9/10" vira **proporção ≥ 0,9**. Com n = 5 isso só é atingido por **5/5**; 4/5 = 0,8 reprova;
+- cada proporção sai com o **IC95 de Wilson**. Com n = 5 o teste tem pouco poder: **5/5 dá IC [56,6; 100] %**.
+  Por isso uma aprovação vira só "o proxy não aponta o limiar", e não prova de que o limiar está certo.
+  Uma reprovação com 0–2/5 é sinal forte;
+- as faixas da tabela de leitura continuam as mesmas, com "≥ 9/10" lido como "5/5" e "< 9/10" lido como
+  "≤ 4/5".
+
+**Achado da condição −15, registrado como dado e sem mudar o critério:** as **5/5** interrupções acabaram
+detectadas, mas com **duck em 1154–2354 ms (p50 1854)** e **stop em 3073–6640 ms (p50 3374)**. Pelo
+critério de 1,5 s, só **2/5** contam (1254 e 1154). Mesmo com margem ~13 dB, o que pesa no proxy é a
+**latência** da detecção e do corte, mais do que a falta de detecção. Isso entra no readout como achado
+principal da condição −15.
