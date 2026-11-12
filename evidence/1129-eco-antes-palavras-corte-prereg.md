@@ -1,0 +1,61 @@
+# #1129 / task_3ecbe8f5 — filtro `eco` antes de `palavras_corte`: PRÉ-REGISTRO (2026-11-11, antes do código)
+
+## O defeito
+
+No proxy S3 (readout `b461d59`, eco −6, `s3-eco-6-39834.log` linhas 754–767 e 1507–1519), o eco da
+resposta do agente ("…os detalhes com calma…") sai do STT como `"Com calma."`. `_live_avalia_filtros`
+checa `palavras_corte` antes do filtro `eco`, e `calma` está em `_COMANDO_PARAR`, que casa em qualquer
+posição. Resultado: `tipo=interrupcao filtro=palavras_corte decisao_ms=0` e o agente cancela a própria
+resposta. A lista também tem `para` e `nao`. Decisão do PM: é bug, não preferência.
+
+## A mudança (decidida pelo PM)
+
+1. `eco` roda **antes** de `palavras_corte` na cadeia.
+2. **Match exato quando há palavra de corte:** se o transcript contém uma palavra de corte, só é eco
+   se aparecer contíguo e **sem nenhuma troca** no texto em reprodução (`minimo=1.0`). Sem palavra de
+   corte, a tolerância de sempre (40 %, teto 2). Motivo: com tolerância, "para tudo" sobre um trecho
+   com "para X", ou o caso do #547 ("…e aí, para" com o eco na frente), seriam engolidos como eco.
+   O `_ECO_MIN_PALAVRAS = 2` já garante que "para" sozinho nunca é eco.
+
+Fora do escopo: o eco fechado com "?" (falsos cortes do −10, `filtro=pergunta`) é o card
+`task_21d2c3b3`, depois deste trem.
+
+## Células (motor real do Live, `_motor_inteligente` + `_live_decide_barge`)
+
+- eco "Com calma." com o texto em reprodução contendo "com calma" → `eco`, sem cancelar;
+- caso #547: "olá, meu nome é valentina e aí, para" sobre uma reprodução "olá, meu nome é valentina e
+  aí tudo bem" → `interrupcao/palavras_corte` (cancela);
+- "para tudo" sobre uma reprodução com "para isso" → corta; "para" sozinho → corta;
+- passo intermediário (`so_comando`) com o eco de corte não decide nem cancela.
+
+**Mordida:** com a ordem invertida de volta (`palavras_corte` antes de `eco`), a célula do eco cai.
+Com tolerância no lugar do match exato, as células do #547 e de "para tudo" caem.
+
+## Medida no mini (proxy S3, mesmo roteiro `mede_s3.sh`)
+
+- Condições **eco −6** e **eco −10**; `--ciclos 10`, `--seed 875`; mesmo corpus FLEURS e mesma voz;
+  LLM falso (`tools/llm_fake_sse.py`); estado sintético; nada no `/tmp`.
+- **Antes:** clone do HEAD de `wt/speech-pipeline-cancel` sem a troca. **Depois:** o mesmo, com a troca.
+  A comparação contra o `13716e3` do readout fica só como referência, porque o trem também traz
+  `50e352f` e o cancel imediato.
+- Validade: como na H6 e no S3 (`bancada.lock`, CI parado, 7860 sem `/api/tts` no bloco). Roda depois
+  do glk (H6 genlock), em série.
+
+**Critério, fixado antes:**
+
+- **P-a1:** no depois, **0** decisões `barge_decisao tipo=interrupcao filtro=palavras_corte` sobre
+  eco em −6 e em −10. "Sobre eco" = o texto normalizado é um trecho contíguo e exato da `RESPOSTA` do
+  LLM falso. Palavra de corte que vem da fala B (FLEURS) não conta. Referência: no `13716e3`, 2 no
+  −6 e 0 no −10.
+- **P-a2, a detecção não piora:** em cada condição, entre as falas B **com playback**
+  (`eco_tocado_s > 0`):
+  - a fração com barge detectado (duck não nulo) no depois é ≥ a do antes;
+  - as detectadas em até 1,5 s do `b_ini` no depois são ≥ as do antes − 1 (tolerância de 1, porque
+    n = 4–7).
+- Entram como dado, sem decidir: o número de falas B com playback no −6 (no `13716e3` era 0/4,
+  porque o agente se cortava antes), falso corte e falso duck da bancada, duck e stop p50/máx, e a
+  contagem de decisões por filtro.
+
+Passa se P-a1 **e** P-a2 passarem. Se o P-a1 falhar, o texto que escapou mostra o caminho (match
+exato rígido demais para o STT, ou a referência `texto_em_reproducao` errada). Se o P-a2 falhar,
+volta para análise antes do deploy.
