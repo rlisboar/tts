@@ -34,3 +34,12 @@ Análise offline nos 3 ecos reais do −6 e em 6 casos do dono (detalhe no card 
   dono no meio de uma frase que reusa o vocabulário do agente (#547).
 
 Perder um "para" do dono é pior que um auto-corte raro com eco ≈ voz.
+
+## Readout da (a) (2026-11-12)
+
+- **A1 PASSA:** matriz `smoke_eco_regra.py` com os 2 casos novos, código da main × `6c8bdbe`: eco descartado 30/32 →
+  **32/32**; falso-descarte 0/30 → **0/30**.
+- **A2 PASSA:** proxy S3 eco −10, clone `501bd3b`, 19:24–19:46, `rc=0`, limpo. Falso corte **0/9** [IC95 0; 29,9],
+  contra 3/8 (`b461d59`) e 1/8 (`3c89f31`) antes. Ressalva: nesta rodada o STT não produziu o "Posso te ajudar com
+  isso?". As decisões `pergunta`/`conteudo` foram da fala B real (FLEURS), então o caminho do "?" fica provado pelas
+  células e pela matriz, não pelo proxy. `pos_corte_com_audio` 0/12. Brutos em `~/tts-bench/s3e-res`.
