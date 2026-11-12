@@ -5,7 +5,7 @@ servidor só tinha `HH:MM:SS`: não dava para separar a decisão do servidor da 
 cliente. Aqui:
   * os eventos do barge/turno levam `ts=` (relógio de parede, ms) — o PREFIXO da linha
     não muda, quem lê o log pelo começo segue igual;
-  * cada um desses eventos, ao ser ESCRITO no WS, gera `enviado tipo=… fila_ms=…` (quanto
+  * cada um desses eventos, ao ser ESCRITO no WS, gera `enviado tipo=… espera_ms=…` (quanto
     esperou na fila atrás do áudio).
 Só números: nada de áudio nem texto.
 """
@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import queue
 import re
+from pathlib import Path
 
 import pytest
 
@@ -72,7 +73,7 @@ def test_enviado_mede_quanto_o_evento_esperou_na_fila(caplog, monkeypatch):
     t[0] = 101.25                           # 1,25 s atrás do áudio na fila do WS
     app._live_enviado(s, carga)
     (linha,) = _linhas(caplog, "enviado")
-    assert "tipo=barge_suspeito" in linha and "fila_ms=1250" in linha, linha
+    assert "tipo=barge_suspeito" in linha and "espera_ms=1250" in linha, linha
     assert re.search(rf" ts={TS}$", linha), linha
     assert s["_t_enfileirado"] == {}, "a marca da fila sai quando o evento é enviado"
 
@@ -94,3 +95,28 @@ def test_o_sender_chama_o_enviado_depois_do_send_json():
     fonte = inspect.getsource(app._live_sender)
     i = fonte.index("await asyncio.wait_for(ws.send_json(payload), _LIVE_SEND_TIMEOUT_S)")
     assert "_live_enviado(sess, payload)" in fonte[i:i + 200]
+
+
+def test_enviado_nao_usa_o_nome_fila_ms_do_niveis(caplog, monkeypatch):
+    """qa (P3): `fila_ms` no `niveis` é ÁUDIO por tocar; a espera do `enviado` é TEMPO."""
+    caplog.set_level(logging.INFO, logger="live")
+    monkeypatch.setattr(app, "_live_janela_turno", lambda *a, **k: None)
+    s = _sess()
+    app._live_envia_json(s, {"type": "cancel", "turn": 2})
+    app._live_enviado(s, s["fila"].get_nowait()[1])
+    (linha,) = _linhas(caplog, "enviado")
+    assert "espera_ms=" in linha and "fila_ms=" not in linha, linha
+
+
+def test_interrupted_dup_leva_ts(caplog):
+    """qa (P3): a duplicata engolida do cancel imediato entra na conta do vão."""
+    caplog.set_level(logging.INFO, logger="live")
+    app._live_log_kv("interrupted_dup", sess="sx", turno=3)
+    (linha,) = _linhas(caplog, "interrupted_dup")
+    assert re.search(rf" ts={TS}$", linha), linha
+
+
+def test_sessao_nasce_com_a_tabela_de_marcas():
+    """qa (P3): a tabela do `enviado` existe desde a criação (sem `setdefault` em corrida)."""
+    fonte = (Path(app.__file__)).read_text(encoding="utf-8")
+    assert '"_t_enfileirado": {},' in fonte

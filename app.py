@@ -11626,6 +11626,9 @@ def _provedor_marca(estado: str, http: int | None = None) -> None:
 _LIVE_EVENTOS_CRONO = frozenset({
     "speech_start", "speech_end", "barge_suspeito", "barge_decisao", "barge_pausa",
     "barge_retoma", "barge_in", "cancel", "interrupted", "enviado",
+    # só linha de log (nenhum frame do WS tem esse `type`): a duplicata engolida
+    # do cancel imediato também entra na conta do vão (qa, P3 do f5a1333)
+    "interrupted_dup",
 })
 
 
@@ -14416,7 +14419,11 @@ async def _live_manda_stats(sess: dict, ws) -> bool:
 
 def _live_enviado(sess: dict, payload) -> None:
     """#1129: evento do barge/turno ESCRITO no WS: `enviado` com o `ts` (ms) e quanto
-    ficou na fila atrás do áudio (`fila_ms`). Só número; nunca levanta."""
+    esperou do enfileiramento até sair (`espera_ms`). Só número; nunca levanta.
+
+    `espera_ms` é TEMPO (fila do WS atrás do áudio + o próprio `send`, porque o log sai
+    depois do `await`). Não confundir com o `fila_ms` do `niveis`, que é ÁUDIO ainda por
+    tocar no cliente (qa, P3 do f5a1333)."""
     try:
         tipo = payload.get("type") if isinstance(payload, dict) else None
         if tipo not in _LIVE_EVENTOS_CRONO:
@@ -14424,7 +14431,7 @@ def _live_enviado(sess: dict, payload) -> None:
         t0 = (sess.get("_t_enfileirado") or {}).pop(id(payload), None)
         _live_log_kv("enviado", sess=sess.get("id"), tipo=tipo,
                      turno=payload.get("turn"),
-                     fila_ms=(int((time.monotonic() - t0) * 1000) if t0 is not None else None))
+                     espera_ms=(int((time.monotonic() - t0) * 1000) if t0 is not None else None))
     except Exception:                         # noqa: BLE001 — telemetria não derruba
         pass
 
@@ -14764,6 +14771,9 @@ async def live_ws(ws: WebSocket):
         "resumo": (retomado or {}).get("resumo") or "",
         # #300: fila com teto em BYTES — derruba o áudio mais antigo e nunca JSON
         "truncado": False, "fila": _LiveFila(_LIVE_FILA_MAX_BYTES), "turno": 0,
+        # #1129: marcas de enfileiramento do `enviado`, criadas JÁ AQUI — o 1º
+        # evento crono pode vir do pipeline e do handler do WS ao mesmo tempo
+        "_t_enfileirado": {},
         "cancelado": threading.Event(), "vencida": False, "substituida": False,
         "fechar": False,
         # #478: cliente que pediu versão de protocolo desconhecida fica sem
