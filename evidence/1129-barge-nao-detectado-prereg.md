@@ -174,3 +174,33 @@ corpus FLEURS e sem dump.
 
 O duck (abertura da suspeita) **não** muda com este conserto e entra só como dado. A lacuna de ~1 s entre
 servidor e cliente no duck é medida à parte com o instrumento de ms (`enviado`).
+
+### Readout do cancel imediato, antes × depois (2026-11-12)
+
+Mini, screen `s3b`, eco −15, `--ciclos 10`, ABAB: antes = `50e352f`, depois = `5b12f9a` (adendos `b80be92` e
+`2d9892b`). 4 blocos de 00:59 a 02:02, todos com `rc=0`, `prod_tts_no_bloco=0` e `ci_amostras=0`. Brutos em
+`~/tts-bench/s3b-res/s3-cancel-*`. n = 10 interrupções por braço.
+
+| | antes (`50e352f`) | depois (`5b12f9a`) |
+|---|---|---|
+| stop p50 / p95 / máx (ms) | 6101 / 9171 / 11330 | **3300 / 5900** / 7773 |
+| stop, valores | 3230, 3237, 3295, 3520, 5965, 6237, 6342, 6532, 6533, 11330 | 2889, 3026, 3048, 3168, 3193, 3406, 3427, 3452, 3611, 7773 |
+| duck p50 / p95 (ms, só dado) | 2054 / 6712 | 1854 / 2354 |
+| S1 aceitas | 33/40 | 34/40 |
+| turnos descartados no servidor | 3 | 0 |
+| respostas sem texto / erros | 0 / 0 | 0 / 0 |
+| turno com ≥ 3 `cancel` (barge repetido) | 2 (turno 7: 3× e 4×) | 0 |
+| `interrupted_dup` engolidos | — | 6 e 7 |
+
+- **C1 PASSA:** stop p50 −2801 ms (≤ −500), e o p95 5900 ≤ 9171.
+- **C2 NÃO MEDIDO:** a bancada não exporta os chunks de áudio recebidos depois do `interrupted` (`c.bin` só fica em
+  memória no `live_bench`). O critério pedia "pela bancada" e o instrumento não tinha o campo. Fica registrado como
+  falha de instrumento, sem inventar proxy. A garantia vem das células com o pipeline real (`9e2bab4` + `9ea2faa`,
+  12 mordidas que caem: 8 do cancel + 4 do gate do qa). Para medir, o `live_bench` precisa contar os bytes recebidos depois de cada `interrupted`
+  do turno; isso entra no próximo ciclo da bancada.
+- **C3 PASSA:** S1 34/40 ≥ 33/40 − 1, 0 turno seguinte mudo (todas as respostas com texto, S2 n=15 nos 4 blocos,
+  0 descarte).
+- **C4 (dado):** o barge repetido sumiu (antes, o turno 7 teve 3 e 4 `cancel`; depois, nenhum turno passa de 2). O
+  par de `cancel` por turno aparece igual nos dois braços (é o par do log, não um barge repetido).
+- O stop ainda fica em ~3,3 s: o que sobra é a decisão por conteúdo (duck p50 ~1,9 s) mais a entrega, como
+  previsto no pré-registro.
