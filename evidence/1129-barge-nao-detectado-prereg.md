@@ -215,3 +215,23 @@ PCM). O controle novo é o clone `5b12f9a` com as DUAS camadas do descarte sabot
 → `False` e sem o `break` do `_fala_worker`. É 1 bloco a −15, `--ciclos 10`, com `live_bench` `f2c306b` e
 `bancada.lock`. Critério do controle: `pos_corte_com_audio` > 0. Se passar, os 2 blocos depois (0 de 22 cortes com
 áudio) valem e o C2 PASSA. Se der 0, o contador não vê o vazamento e o C2 segue sem passar.
+
+### Readout do C2 (2026-11-12): PASSA
+
+Instrumento: `live_bench` `f2c306b` (`S3.pos_corte_com_audio` = cortes com ≥ 1 chunk de áudio entre o `interrupted` e
+o `transcript_user` seguinte). O critério é `pos_corte_com_audio` = 0. O `pos_corte_n` é o total de cortes e não
+decide.
+
+| bloco | clone | cortes (`pos_corte_n`) | com áudio | chunks | maior (ms) |
+|---|---|---|---|---|---|
+| c2-depois-a (06:28) | `5b12f9a` | 12 | **0** | 0 | 0 |
+| c2-depois-b (06:43) | `5b12f9a` | 10 | **0** | 0 | 0 |
+| c2-antes-controle (07:07) | `50e352f` | 12 | 0 | 0 | 0 |
+| **c2-controle-injecao** (14:10) | `5b12f9a` com portão → `False` e sem o `break` | 19 | **14** | 14 | 4760 |
+
+- **O controle com injeção viu o vazamento:** 14/19 cortes com áudio, até 4,76 s de fala depois do `interrupted`. O
+  contador funciona no fio real.
+- O controle `50e352f` deu 0 por construção: o aviso dele só sai depois do trecho, e o `break` descarta o PCM. Isso
+  está explicado no adendo `29c7eef`, e esse bloco não decide nada.
+- **C2 PASSA:** 0/22 cortes com áudio no braço depois (`5b12f9a`). Brutos em `~/tts-bench/s3c-res` e
+  `~/tts-bench/s3d-res`. Todos os blocos com `rc=0`, `prod_tts_no_bloco=0` e `ci_amostras=0`.
