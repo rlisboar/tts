@@ -1463,3 +1463,17 @@ o script inteiro roda sob `fila_suite roda`, o rebase é feito já com a trava, 
 |---|---|
 | o `integra.sh` volta a rebasar antes da trava (sem o embrulho) | `test_outra_integracao_entra_enquanto_espera_a_trava_e_o_rebase_a_pega` **FAILED** |
 | sem a guarda de reentrância (re-embrulha sob a trava que já tem) | `test_dentro_da_trava_nao_pede_a_trava_de_novo` e a de "outra integração" **FAILED** |
+
+### #1133 — `test_worktree_sem_estado` num clone temporário, sem escrever no repo real
+
+O arquivo ainda mexia no repo REAL: `git worktree add`/`remove` (gravava em `.git/worktrees`, a lista global que os
+`cria` dos outros agentes também mexem — o flake do #1126) e criava symlinks `voices`/`.venv-mlx`/`outputs`/`state`
+na raiz do dono para testar o `.gitignore`. Agora os dois testes rodam num `git clone --local` em `tmp_path` (que só
+LÊ o repo real, objetos por hardlink) e o `.gitignore` testado é o do working tree. Guarda estática:
+`test_este_arquivo_nao_escreve_no_repo_real`.
+
+| Sabotagem | Resultado |
+|---|---|
+| o teste volta a `git -C <REPO> worktree add` | `test_este_arquivo_nao_escreve_no_repo_real` **FAILED** |
+| um `git -C <REPO> branch …` no arquivo | idem **FAILED** |
+| os symlinks voltam a ser criados em `REPO / nome` | idem **FAILED** |

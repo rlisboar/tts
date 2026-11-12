@@ -40,8 +40,14 @@ _sem_venv = pytest.mark.skipif(not PY.is_file(), reason="precisa da .venv-mlx")
 @pytest.mark.timeout(600)   # #783: o teto default é 90 s; estes passam de 100
 def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
     wt = tmp_path / "wt"
-    git = ["git", "-C", str(REPO)]
-    subprocess.run([*git, "worktree", "add", "-q", "--detach", str(wt), "HEAD"],
+    # #1133: um CLONE temporário, e não `git worktree add` no repo REAL. O `worktree add` grava em
+    # `.git/worktrees` do repo real e o `remove` no fim disputava a lista global com os `cria`
+    # de outros agentes (o flake do #1126). O clone só LÊ o repo real (objetos por hardlink).
+    sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], check=True,
+                         capture_output=True, text=True).stdout.strip()
+    subprocess.run(["git", "clone", "-q", "--local", "--no-checkout", str(REPO), str(wt)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(wt), "checkout", "-q", "--detach", sha],
                    check=True, capture_output=True)
     try:
         # `tests/` do WORKING TREE por cima do checkout: o filho tem de rodar o que
@@ -102,11 +108,11 @@ def test_suite_passa_em_worktree_sem_estado_do_dono(tmp_path):
             assert r.returncode == 0, (f"{arquivo} -k {filtro}\n"
                                        + r.stdout[-2500:] + r.stderr[-1500:])
     finally:
-        subprocess.run([*git, "worktree", "remove", "--force", str(wt)],
-                       capture_output=True)
+        import shutil as _sh2
+        _sh2.rmtree(wt, ignore_errors=True)        # o clone é só do teste; o repo real não muda
 
 
-def test_symlink_de_estado_e_ignorado_pelo_git():
+def test_symlink_de_estado_e_ignorado_pelo_git(tmp_path):
     """Num worktree `voices`/`.venv-mlx` são SYMLINK — e `voices/` no `.gitignore`
     (com barra) só casa diretório, então eles escapavam e iam para o commit.
 
@@ -115,23 +121,21 @@ def test_symlink_de_estado_e_ignorado_pelo_git():
 
     Custa caro: `voices` é o dado REAL do dono (o commit apontaria para o caminho
     dele) e `voices/voices` nasce quando o link cai dentro da pasta real."""
-    criados = []
-    try:
-        for nome in ("voices", ".venv-mlx", "outputs", "state"):
-            alvo = REPO / nome
-            if alvo.exists() or alvo.is_symlink():
-                continue
-            alvo.symlink_to(REPO / "tests" / "fixtures", target_is_directory=True)
-            criados.append(alvo)
-        r = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-v",
-                            "voices", ".venv-mlx", "outputs", "state"],
-                           capture_output=True, text=True)
-        assert r.returncode == 0, r.stdout + r.stderr
-        for nome in ("voices", ".venv-mlx", "outputs", "state"):
-            assert f"\t{nome}" in r.stdout, f"{nome} (symlink) não está ignorado: {r.stdout}"
-    finally:
-        for alvo in criados:
-            alvo.unlink()
+    # #1133: num CLONE temporário. O teste antigo criava os symlinks `voices`/`.venv-mlx`/`outputs`/
+    # `state` DENTRO do repo real (e os removia no `finally`): com a suíte morta no meio, ficava
+    # lixo apontando para a pasta de fixtures na raiz do dono.
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--local", "--no-checkout", str(REPO), str(clone)],
+                   check=True, capture_output=True)
+    (clone / ".gitignore").write_text((REPO / ".gitignore").read_text())   # o que está ENTRANDO
+    for nome in ("voices", ".venv-mlx", "outputs", "state"):
+        (clone / nome).symlink_to(REPO / "tests" / "fixtures", target_is_directory=True)
+    r = subprocess.run(["git", "-C", str(clone), "check-ignore", "-v",
+                        "voices", ".venv-mlx", "outputs", "state"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    for nome in ("voices", ".venv-mlx", "outputs", "state"):
+        assert f"\t{nome}" in r.stdout, f"{nome} (symlink) não está ignorado: {r.stdout}"
 
 
 # --- tools/integra.sh e tools/worktrees.sh num repo FALSO em tmp (#705) ----------
@@ -419,3 +423,19 @@ def test_todo_script_que_importa_app_isola_o_estado_em_tmp():
                 if not marcou:
                     furos.append(f"{caminho.name}:{n}: importação do app sem isola() antes")
     assert not furos, "\n".join(furos)
+
+
+def test_este_arquivo_nao_escreve_no_repo_real():
+    """#1133: nenhum teste deste arquivo muda o repo REAL — nem `git worktree add`, nem symlink na
+    raiz. Tudo que escreve vai para clone/worktree em `tmp_path`. Guarda estática: sem `-C REPO`
+    em comando que não seja leitura, e sem `symlink_to`/`unlink` num caminho `REPO / …`."""
+    import re
+    fonte = Path(__file__).read_text().split("def test_este_arquivo_nao_escreve_no_repo_real")[0]
+    leitura = {"rev-parse", "for-each-ref", "worktree", "check-ignore", "merge-base"}
+    for m in re.finditer(r'\["git", "-C", str\(REPO\), "([a-z-]+)"(, "([a-z-]+)")?', fonte):
+        verbo, sub = m.group(1), m.group(3)
+        assert verbo in leitura, f"git {verbo} no repo real"
+        assert not (verbo == "worktree" and sub not in (None, "list")), f"git worktree {sub} no repo real"
+    assert not re.search(r'REPO\s*/[^\n]*\)\.symlink_to\(|alvo\.(symlink_to|unlink)\(', fonte), \
+        "escreve symlink no repo real"
+    assert 'worktree", "add"' not in fonte
