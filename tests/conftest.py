@@ -655,6 +655,39 @@ def _apikeys_publicadas():
 
 
 @pytest.fixture(autouse=True)
+def _settings_restaurados_entre_testes():
+    """O `_settings` global volta ao que era no início de cada teste (#1143).
+
+    `_settings` é um dict de processo e vários testes chamam `app._apply_settings`
+    direto, sem `monkeypatch`. O caso medido: `test_live_turns.py` deixava
+    `live_barge_filtros.modelo.on = True` para o resto da sessão, e todo
+    `/api/live/ws` seguinte esperava o aquecimento do classificador antes do
+    `ready` — o `test_api` estourava o prazo de 20 s do `_setup_ok` conforme a
+    ordem dos arquivos. A restauração é por chave: só volta o que mudou, com
+    cópia profunda do original (quem guardou a referência do dict aninhado antes
+    do teste continua apontando para o valor de antes, não para uma cópia nova
+    de uma chave que ninguém mexeu). Chave criada pelo teste é removida.
+
+    O snapshot é tirado no SETUP do teste, depois das fixtures de escopo maior:
+    o que um fixture de módulo/sessão configurou faz parte do "antes"."""
+    import copy
+
+    import app
+
+    antes = copy.deepcopy(app._settings)
+    yield
+    for chave in list(app._settings):
+        if chave not in antes:
+            app._settings.pop(chave, None)
+    for chave, valor in antes.items():
+        if app._settings.get(chave, _AUSENTE_1143) != valor:
+            app._settings[chave] = copy.deepcopy(valor)
+
+
+_AUSENTE_1143 = object()
+
+
+@pytest.fixture(autouse=True)
 def _registro_limpo_entre_testes():
     """Zera `_jobs` e o pool do dsh entre testes — o espiao de teardown é sinal.
 

@@ -14683,19 +14683,6 @@ async def live_ws(ws: WebSocket):
         "st_proximo": 0.0,
     }
     sess["engine"] = _live_engine_novo(sess)
-    # AQUECIMENTO (#596): o card pede o classificador pronto na ABERTURA. Antes o
-    # import+aquece caía no primeiro barge, dentro do laço do WS — 3,4 s medidos
-    # contra um cap de 5 s, e com o `_morto` do #507 podia ser a única tentativa.
-    # Some quando o filtro `modelo` está desligado (não sobe 2 GB à toa).
-    if ((_settings.get("live_barge_filtros") or {}).get("modelo") or {}).get("on"):
-        try:
-            import live_intencao
-
-            # `pega()` sobe worker e pode esperar 60 s: fora do loop (#798)
-            sess["intencao"] = await asyncio.to_thread(live_intencao.pega)
-            sess["intencao_ref"] = True      # `solta()` sai no fechamento
-        except Exception as exc:             # noqa: BLE001 — sem filtro, segue
-            _live_log_kv("barge_modelo_indisponivel", sess=sid, erro=str(exc)[:100])
     _live_log_kv("abre" if not retomado else "resume", sess=sid,
                  voz=sess["voice_id"], retomado=bool(retomado),
                  history=len(sess["history"]), criadas=len(_live_sessions))
@@ -14760,6 +14747,25 @@ async def live_ws(ws: WebSocket):
             except Exception:              # noqa: BLE001 — close também pode pendurar
                 pass
             return
+        # AQUECIMENTO (#596): o card pede o classificador pronto na ABERTURA. Antes o
+        # import+aquece caía no primeiro barge, dentro do laço do WS — 3,4 s medidos
+        # contra um cap de 5 s, e com o `_morto` do #507 podia ser a única tentativa.
+        # Some quando o filtro `modelo` está desligado (não sobe 2 GB à toa).
+        # DEPOIS do `ready` (#1143): o `pega()` espera o worker subir (até 2×30 s do
+        # `aquece`) e o handshake não pode depender de um modelo de 2 GB para
+        # abrir. Nada se perde na janela: o laço ainda não está no `receive()`, os
+        # frames do cliente esperam no buffer do socket, e VAD/barge/envio só
+        # começam com o classificador quente — a garantia do #596 segue valendo.
+        # Dentro do `try`: fechar durante o aquecimento passa pelo `finally`.
+        if ((_settings.get("live_barge_filtros") or {}).get("modelo") or {}).get("on"):
+            try:
+                import live_intencao
+
+                # `pega()` sobe worker e pode esperar 60 s: fora do loop (#798)
+                sess["intencao"] = await asyncio.to_thread(live_intencao.pega)
+                sess["intencao_ref"] = True      # `solta()` sai no fechamento
+            except Exception as exc:             # noqa: BLE001 — sem filtro, segue
+                _live_log_kv("barge_modelo_indisponivel", sess=sid, erro=str(exc)[:100])
         _live_marca_prewarm()       # #657: sobe o marcador fora do caminho do 1º áudio
         # dentro do try: o `finally` mata o ffmpeg mesmo se o pipeline não nascer.
         # O `abrir` corre enquanto o cliente liga o microfone. O NS do navegador

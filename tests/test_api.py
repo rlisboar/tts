@@ -4691,6 +4691,104 @@ def test_live_ws_loopback_abre_sessao_com_ready(ws_client, live_limpo):
             assert len(app._live_sessions) == 1
 
 
+def test_ready_sai_antes_do_aquecimento_do_classificador(ws_client, live_limpo, monkeypatch):
+    """#1143: o `ready` não espera `live_intencao.pega()` (até 2×30 s de `aquece`).
+
+    Com o filtro `modelo` ligado, o handshake esperava o worker do classificador
+    subir; sob carga passava dos 20 s do `_setup_ok`. Aqui o `pega` fica PRESO até
+    o fim do teste: o `ready` tem de chegar assim mesmo. Depois de solto, a
+    referência é gravada na sessão e o fechamento devolve (`solta`) uma vez."""
+    import live_intencao
+
+    solta_chamadas = []
+    liberar = threading.Event()
+    chamado = threading.Event()
+    alvo = object()
+
+    def pega_preso():
+        chamado.set()
+        assert liberar.wait(20), "o teste não liberou o pega"
+        return alvo
+
+    monkeypatch.setattr(live_intencao, "pega", pega_preso)
+    monkeypatch.setattr(live_intencao, "solta", lambda: solta_chamadas.append(1))
+    monkeypatch.setitem(app._settings, "live_barge_filtros",
+                        {"modelo": {"on": True, "provedor": "local", "limiar": 0.5,
+                                    "timeout_ms": 400}})
+    try:
+        with ws_client.websocket_connect("/api/live/ws") as ws:
+            ws.send_json({"type": "setup"})
+            m = _proximo(ws, 5.0)           # bem abaixo dos 20 s do `_setup_ok`
+            assert m is not None and m.get("text"), \
+                "`ready` esperou o aquecimento do classificador"
+            assert _json.loads(m["text"])["type"] == "ready"
+            assert chamado.wait(5), "o aquecimento não foi pedido depois do ready"
+            with app._live_lock:
+                sess = next(iter(app._live_sessions.values()))
+            assert not sess.get("intencao_ref"), "referência gravada antes do pega voltar"
+            liberar.set()
+            prazo = time.monotonic() + 5
+            while not sess.get("intencao_ref") and time.monotonic() < prazo:
+                time.sleep(0.02)
+            assert sess.get("intencao") is alvo and sess.get("intencao_ref") is True
+        prazo = time.monotonic() + 5
+        while not solta_chamadas and time.monotonic() < prazo:
+            time.sleep(0.02)
+        assert solta_chamadas == [1], "o fechamento não devolveu a referência"
+    finally:
+        liberar.set()
+
+
+def test_frames_mandados_durante_o_aquecimento_chegam_todos_e_em_ordem(
+        ws_client, live_limpo, monkeypatch):
+    """#1143: o cliente já pode falar depois do `ready` e o servidor só começa a ler
+    quando o classificador esquenta. O backlog tem de sair INTEIRO e na ordem:
+    nenhum frame cortado ou descartado ao sair do aquecimento, e nada processado
+    (VAD/buffer) antes dele — a garantia do #596 (classificador quente antes do
+    1º barge) continua valendo."""
+    import live_intencao
+
+    liberar = threading.Event()
+    chamado = threading.Event()
+
+    def pega_preso():
+        chamado.set()
+        assert liberar.wait(20), "o teste não liberou o pega"
+        return object()
+
+    monkeypatch.setattr(live_intencao, "pega", pega_preso)
+    monkeypatch.setattr(live_intencao, "solta", lambda: None)
+    monkeypatch.setitem(app._settings, "live_barge_filtros",
+                        {"modelo": {"on": True, "provedor": "local", "limiar": 0.5,
+                                    "timeout_ms": 400}})
+    n, tam = 60, 640                       # 60 frames de 20 ms (PCM16 16 kHz)
+    # amostras pequenas e distintas por frame: sem silêncio digital puro e com
+    # ordem verificável byte a byte
+    frames = [bytes(((i * 7 + j) % 50) + 1 for j in range(tam)) for i in range(n)]
+    try:
+        with ws_client.websocket_connect("/api/live/ws") as ws:
+            ws.send_json({"type": "setup"})
+            m = _proximo(ws, 5.0)
+            assert m is not None and _json.loads(m["text"])["type"] == "ready"
+            assert chamado.wait(5)
+            with app._live_lock:
+                sess = next(iter(app._live_sessions.values()))
+            for f in frames:               # o cliente fala durante o aquecimento
+                ws.send_bytes(f)
+            time.sleep(0.4)
+            assert sess["st_frames"] == 0 and not sess["buffer"], \
+                "frame processado antes de o classificador esquentar"
+            liberar.set()
+            prazo = time.monotonic() + 10
+            while sess["st_frames"] < n and time.monotonic() < prazo:
+                time.sleep(0.02)
+            assert sess["st_frames"] == n, f"{n - sess['st_frames']} frames perdidos"
+            assert sess["st_bytes"] == n * tam
+            assert sess.get("truncado") is not True
+    finally:
+        liberar.set()
+
+
 def test_setup_sem_voz_e_sem_vozes_grava_devolve_erro(ws_client, live_limpo, monkeypatch):
     """`_resolve_voice` levanta HTTPException (não ValueError): sem ramo próprio o
     handshake morria sem NENHUM frame — o cliente pendurava no receive e não sabia
