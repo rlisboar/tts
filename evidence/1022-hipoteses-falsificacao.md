@@ -318,13 +318,21 @@ Mini, clone `50e352f`, 6 blocos ABAB (sem-a/com-a/sem-b/com-b/sem-c/com-c, 22:56
 |---|---|---|
 | `lock+fila` n / p50 / p95 / máx (ms) | 13 / 0 / 1 / 1 | 15 / 337 / **2937** / 2990 |
 | valores `lock+fila` com carga | | 0×7, 337, 676, 900, 2407, 2518, 2518, 2914, 2990 |
-| S2 (`s2_ms`) n / p50 / p95 | 43 / 2510 / 3649 | 42 / 3686 / **9608** |
+| S2, MESMO corte do critério e da H6 (turnos com estágios, fora do 1º): n / p50 / p95 | 13 / 2510 / 4179 | 15 / 3451 / **8709** |
+| S2 por fala (todas com `s2_ms`; corte diferente, só referência) n / p50 / p95 | 43 / 2510 / 3649 | 42 / 3686 / 9608 |
 | `tts_gen` p95 | 1258 | 1256 |
 | jobs de carga concluídos por bloco `com` (erros) | | 85 (0), 108 (0), **52** (0) |
 
 - **M1 REPROVA:** `lock+fila` p95 2937 ms > 1300 (a H6 deu 2654). O árbitro não entrega "no máximo um trecho".
   5 de 15 esperas ficam em 2,4–3,0 s, ~2 × `tts_gen`.
-- **M2 REPROVA:** S2 p95 com carga 9608 ms > 5563, e > 1,5 × 3649 (= 5473).
+- **M2 REPROVA:** S2 p95 com carga 8709 ms > 5563 (H6, mesmo corte: turnos com estágios fora do 1º), e > 1,5 × 4179
+  (= 6269). Correção de 2026-11-12: a 1ª versão deste readout comparou o S2 POR FALA (9608, n=42) com o 5563 da H6,
+  que é do corte do critério. O veredito não muda.
+- **Braço sem carga, mesmo corte:** H6 13 / 2356 / 2886 contra glk 13 / 2510 / 4179. O p95 sobe por UM turno: a
+  fala 18 do sem-a (A curta logo depois de uma interrupção), com `resto` 3007 ms, `lock` 0 e `vad` ausente. Na H6 a
+  fala 18 não gerou S2, então o turno nem entrou na amostra. O `lock` é 0/0 ms nos dois braços sem carga, e o árbitro
+  ocioso custa < 1 ms. O candidato é o turno pós-barge esperando o turno cancelado terminar (o #1136, sem o cancel
+  no `50e352f`). O glk2 traz o cancel e o `ts=` para confirmar.
 - **M3, pela letra, REPROVA no com-c:** 52 < 55 jobs, sem nenhum erro. O com-c durou 13,6 min, contra 22 e 28 min
   dos outros. A vazão é a mesma nos três (~3,9 jobs/min: 86/22, 109/27,7, 53/13,6), então não há sinal de fome do
   lote. O critério fixou uma contagem absoluta sem fixar a duração do bloco, e isso fica registrado como falha do
