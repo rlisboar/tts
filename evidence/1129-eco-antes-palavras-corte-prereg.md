@@ -116,3 +116,11 @@ Mini, screen `s3b`, 02:02–04:17, 4 blocos com `rc=0`, `prod_tts_no_bloco=0` e 
   SUBIU de 1 para 3 com a troca, por causa do eco ruidoso (1 palavra trocada pelo STT), que a régua exata não pega.
   Seguimento no `task_21d2c3b3`: tolerância de 1 troca só com todas as palavras de corte alinhadas, célula do #547 e
   medida em −6.
+
+### Adendo (2026-11-12): o trem vai ao ar SEM o genlock
+
+O glk e o glk2 reprovaram, então o genlock sai do trem (regra do PM). O trem novo é `wt/speech-pipeline-trem2`
+(`d4e7cf7`), sobre a main `44e1c85`, com cherry-pick dos commits do cancel, do eco, do instrumento de ms e do
+`live_bench`. As medidas do cancel (C1–C4) e do eco (P-a1/P-a2) rodaram em clones COM o `50e352f`. Na bancada
+S3 não há carga de `/api/tts`, e o árbitro ocioso custa 0 ms (glk e glk2: `lock+fila` 0 e `gen_espera_live` p95 0).
+Por isso as leituras valem para o trem sem o genlock. Os critérios não mudam.
