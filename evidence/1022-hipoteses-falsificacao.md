@@ -344,3 +344,33 @@ com-a e antes deste readout: o job novo pegava o `_gen_lock` cru (o RLock não �
 sem ponto de cessão. Com 2 trechos por job, as esperas de ~2 trechos batem com isso. O conserto é o `74e2b32`
 (+ `315aaa3`), a medir no glk2 (adendo `c217f74`) com os mesmos critérios. O `50e352f` não vai para a main sem o
 glk2 passar.
+
+### Readout do glk2 (2026-11-12): REPROVA M1 e M2; M3 passa. O genlock sai do trem
+
+Mini, clone `74e2b32`, 6 blocos ABAB, 04:21–06:25, `rc=0`, `prod_tts_no_bloco=0` e `ci_amostras=0`. Os brutos foram
+gravados em `/tmp` (o clone não tinha o patch do `BENCH_TMP` do `mede_pos_llm.sh`) e copiados para
+`~/tts-bench/glk2-res/` antes da limpeza da meia-noite. MESMO corte nos três (turnos com estágios, fora do 1º),
+n / p50 / p95 (ms):
+
+| | H6 (sem genlock) | glk (`50e352f`) | glk2 (`74e2b32`) |
+|---|---|---|---|
+| S2 sem carga | 13 / 2356 / 2886 | 13 / 2510 / 4179 | 13 / 2554 / 3908 |
+| S2 com carga | 12 / 2870 / 5563 | 15 / 3451 / 8709 | 15 / 2967 / **5836** |
+| `lock+fila` com carga, p95 / máx | 2654 / 2812 | 2937 / 2990 | **2823** / 3439 |
+| `lock+fila` sem carga, p95 | 1 | 1 | 0 |
+| `resto` p95 / máx, sem carga | 195 / 367 | 1482 / 3007 | 1291 / 2527 |
+| `resto` p95 / máx, com carga | 1197 / 2082 | 2825 / 3868 | 998 / 1138 |
+| jobs por bloco `com` (erros) | 75–84 | 85, 108, 52 (0) | 83, 77, 77 (0) |
+
+- **M1 REPROVA** (2823 > 1300). **M2 REPROVA** (5836 > 5563, por 273 ms; cabe em 1,5 × 3908). **M3 PASSA.**
+- **Custo ocioso: zero.** `lock+fila` 0/0 e `gen_espera_live` sem carga n=193 com p95 0 ms.
+- **Telemetria (nova no glk2), braço com carga:** `gen_cede` = **0**, `gen_lote_espera` n=48 (máx 4294 ms) e
+  `gen_espera_live` n=174 com p95 3460 e máx 4967 ms. O lote nunca cedeu ENTRE trechos com o Live esperando. As
+  células (job local real + `_tts_app` real) cedem; no laptop, o experimento com a mesma carga loga
+  `gen_cede trecho=1`. A diferença conhecida é a **marca d'água**: ligada na bancada (`[marca] aquecido`) e em
+  produção, desligada nas células. O `_marca_arquivo` solta o `_gen_lock` a cada trecho (`_corre_sem_gen_lock`,
+  #915) e o repega CRU, fora do árbitro. Hipótese, ainda não provada: as esperas longas do Live acontecem nessa
+  troca crua. Para provar, falta o tempo por trecho do job no log.
+- **Decisão (regra do PM):** o genlock sai do trem. O árbitro fica num ramo próprio (`wt/speech-pipeline-cancel`
+  guarda `50e352f`, `c84a6cd`, `74e2b32` e `315aaa3`) até a hipótese da marca ser testada com células COM a marca e
+  uma medida nova.
