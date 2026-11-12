@@ -70,4 +70,4 @@ dito sobre um trecho que também contém "para" seria lido como eco). Card próp
 (`task_3ecbe8f5`), a pré-registrar antes de qualquer mudança.
 
 No mesmo trecho aparecem `cancel`/`interrupted` em dobro no mesmo turno: é a anomalia do #1136,
-consertada em `wt/speech-pipeline-cancel` (gate pendente).
+consertada em `wt/speech-pipeline-cancel` (`9e2bab4` + `9ea2faa`, aprovado pelo qa no task_78871739).
