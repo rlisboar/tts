@@ -5600,9 +5600,11 @@ _LIVE_INTERRUPCAO_MODOS = ("inteligente", "imediata", "so_comando")
 # canônico é continua|interrompe; `corta` é o nome que a tela usa (#501)
 _LIVE_SEM_DECISAO_ALIAS = {"corta": "interrompe", "cortar": "interrompe",
                            "continua": "continua", "continuar": "continua"}
-# Ordem da cadeia (#501): o modelo é o 5º e só é consultado quando os rápidos não
-# decidiram. O vocabulário vem FECHADO daqui para o `settings.json` não virar
-# contrato aberto.
+# VOCABULÁRIO dos filtros do barge (#501), FECHADO aqui para o `settings.json` não
+# virar contrato aberto. NÃO é a ordem de execução: a cadeia de verdade está em
+# `_live_avalia_filtros` (desde o task_3ecbe8f5/#1129 o `eco` roda ANTES das
+# `palavras_corte`). Aqui só se testa PERTENÇA (o merge do `/api/settings`); a tela
+# tem a própria lista em `static/index.html`.
 _LIVE_BARGE_FILTROS = ("palavras_corte", "eco", "identidade", "backchannel", "ruido",
                        "modelo", "pergunta", "frase_longa", "fala_sustentada",
                        "fim_de_resposta")
