@@ -12,6 +12,9 @@ FRACAO_SUITE_CHEIA = 0.9
 
 
 def suite_cheia_fora_da_trava(coletados: set, todos: set, env) -> bool:
-    if env.get("TTS_FILA_SEGURA") == "1" or env.get("TTS_FILA") == "0" or env.get("CI"):
+    # `CI == "true"` ESTRITO (#1132): é o que o GitHub Actions põe; `CI=0`/`false`/`1` herdados por
+    # acidente não desligam a guarda. (No runner self-hosted do mini o CI não passa pela trava
+    # do Mac de dev — quem o protege lá é `tools/ci_mini_ocioso.sh`.)
+    if env.get("TTS_FILA_SEGURA") == "1" or env.get("TTS_FILA") == "0" or env.get("CI") == "true":
         return False
     return bool(todos) and len(coletados & todos) >= FRACAO_SUITE_CHEIA * len(todos)

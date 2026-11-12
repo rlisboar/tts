@@ -79,6 +79,8 @@ def test_logica_do_guarda_cobertura_e_escapes():
     assert f(cheia, todos, {"TTS_FILA_SEGURA": "1"}) is False   # dentro da trava
     assert f(cheia, todos, {"TTS_FILA": "0"}) is False          # escape explícito
     assert f(cheia, todos, {"CI": "true"}) is False             # runner do CI
+    for lixo in ("0", "false", "1", "", "True", "yes"):          # #1132: só `true` escapa
+        assert f(cheia, todos, {"CI": lixo}) is True, lixo
     assert f(set(), set(), {}) is False
 
 

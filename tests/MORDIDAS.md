@@ -1318,3 +1318,23 @@ Agora a comparação só olha os nomes que ESTE arquivo passa ao `cria` num repo
 | Sabotagem | Resultado |
 |---|---|
 | o filtro devolve o estado global do repo | `test_a_guarda_do_repo_real_ignora_branch_e_worktree_de_outro_agente` **FAILED** |
+
+### #1132 — o CI no mini só larga a suíte com o mini ocioso
+
+O runner do GitHub é self-hosted NO mini: a suíte cheia disputava CPU/GPU com a produção e com as
+bancadas (a H6 quase foi contaminada), e a trava de suíte vive no Mac de dev. Agora cada job do
+mini passa por `tools/ci_mini_ocioso.sh`: 0 jobs TTS e 0 Live na 7860, sem `~/.tts-studio/bancada.lock`
+(órfão se o pid morreu ou passou de 4 h), estável por `TTS_CI_ESTAVEL` s seguidos, amostrando a cada
+1 s. Esgotar a espera é NEUTRO (`ocioso=false`, aviso e resumo, exit 0): o `pytest` é pulado por
+`if: steps.ocioso.outputs.ocioso == 'true'`. `testes-lentos` espera `testes` (`needs`) e os dois
+dividem o grupo de concorrência `tts-mini-suite`. A guarda do conftest só escapa com `CI == "true"`.
+`tools/bancada_lock.sh pega|solta|status` é o que as bancadas chamam.
+
+| Sabotagem | Resultado |
+|---|---|
+| o porteiro ignora o `bancada.lock` | `test_bancada_lock_segura_o_ci_e_soltar_libera` **FAILED** |
+| esgotar a espera sai com código 1 (vermelho) | `test_com_job_ou_live_espera_e_esgotar_e_neutro` (3 casos) **FAILED** |
+| sem estabilidade (larga no 1º instante ocioso) | `test_exige_estabilidade_um_vao_curto_nao_basta` **FAILED** |
+| o `pytest` do lento sem o `if` do porteiro | `test_os_dois_jobs_do_mini_esperam_o_porteiro_*` **FAILED** |
+| o lento volta a rodar em paralelo (sem `needs` do rápido) | `test_testes_e_lentos_rodam_em_serie_no_mini` **FAILED** |
+| a guarda aceita qualquer `CI` (`CI=0`, `false`…) | `test_logica_do_guarda_cobertura_e_escapes` **FAILED** |

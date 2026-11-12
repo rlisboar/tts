@@ -229,7 +229,8 @@ def _sem_exit_de_verdade():
 # ela, é barrado AQUI com rc 75 — antes de a primeira célula rodar. "Suíte cheia" = a COLETA
 # cobre (quase) todos os `tests/test_*.py`, e não um número mágico de testes que envelhece.
 # Rodada curta (um arquivo, `-k` estreito, o `pytest` aninhado de uma célula) não é afetada.
-# Escapes: `TTS_FILA=0` (explícito) e `CI` (o runner do GitHub não divide a máquina).
+# Escapes: `TTS_FILA=0` (explícito) e `CI=true` (o GitHub Actions; no runner self-hosted do mini
+# a proteção é o porteiro `tools/ci_mini_ocioso.sh`, não esta trava).
 from _guarda_trava import suite_cheia_fora_da_trava as _suite_cheia_fora_da_trava  # noqa: E402
 
 

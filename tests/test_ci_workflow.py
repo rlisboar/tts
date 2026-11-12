@@ -76,7 +76,10 @@ def test_jobs_caros_dependem_do_estatico_e_tem_timeout():
     for nome, job in _wf()["jobs"].items():
         if nome == "estatica":
             continue
-        assert job.get("needs") == "estatica", f"`{nome}` não depende do estágio estático"
+        needs = job.get("needs")
+        needs = [needs] if isinstance(needs, str) else list(needs or [])
+        # #1132: o lento também espera o rápido (em série no mini), mas SEMPRE depende da estática
+        assert "estatica" in needs, f"`{nome}` não depende do estágio estático"
         assert job.get("timeout-minutes"), f"`{nome}` sem timeout de job"
 
 
