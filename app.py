@@ -13391,7 +13391,7 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
         cfg = filtros.get(nome)
         return padrao if cfg is None else bool(cfg.get("on", padrao))
 
-    # 1) palavras de corte — a lista do settings manda (cadastrável pelo dono).
+    # Palavras de corte — a lista do settings manda (cadastrável pelo dono).
     # DOIS detalhes que matavam o elo (#547):
     # · lista VAZIA (o default) caía no `get` com a chave existindo, então a lista
     #   interna `_COMANDO_PARAR` NUNCA era usada e `palavras_corte` não casava
@@ -13400,19 +13400,29 @@ def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
     #   frente do trecho ("...e aí, para") o comando ficava no meio e passava
     #   batido. A lista de comando é curta e distintiva — vale em QUALQUER
     #   posição (decisão do PM, hipótese 3 do card).
+    corte = False
     if ligado("palavras_corte") and palavras:
         cadastradas = (filtros.get("palavras_corte") or {}).get("palavras") or []
         # a lista entra na MESMA normalização do texto (sem acento, minúscula):
         # cadastrar "não"/"olá" com acento nunca casaria com a fala normalizada
         lista = {_sem_acento(str(x).lower()).strip()
                  for x in (cadastradas or _COMANDO_PARAR)}
-        if any(p in lista for p in palavras):
-            return "interrupcao", None, None, "palavras_corte"
-    # 2) eco
+        corte = any(p in lista for p in palavras)
+    # 1) eco ANTES das palavras de corte (task_3ecbe8f5, #1129): no proxy S3 o eco
+    # da resposta ("…os detalhes com calma…") voltou como "Com calma." e o
+    # `palavras_corte`, que vinha primeiro, cancelou a resposta do PRÓPRIO
+    # agente (`calma`, `para` e `nao` estão na lista e são comuns na fala dele).
+    # Com palavra de corte no trecho, o eco só vale com match EXATO (`minimo=1.0`,
+    # zero troca): com a tolerância de sempre, "para tudo" sobre um trecho com
+    # "para isso", ou o comando do #547 atrás do eco ("…e aí, para"), seriam
+    # engolidos como eco. "para" sozinho nunca é eco (`_ECO_MIN_PALAVRAS`).
     if ligado("eco") and eco_txt:
         from live_pipeline import _parece_eco
-        if _parece_eco(texto, eco_txt):
+        if _parece_eco(texto, eco_txt, minimo=1.0 if corte else 0.6):
             return "eco", None, None, "eco"
+    # 2) palavras de corte
+    if corte:
+        return "interrupcao", None, None, "palavras_corte"
     # 2b) IDENTIDADE (#527): só voz cadastrada corta. Vem depois do eco (áudio
     # idêntico ao TTS é eco, não importa quem fala) e antes do resto: TV/outra
     # pessoa não pode cortar por ser "fala longa". Sem áudio (dublês) é pulado.

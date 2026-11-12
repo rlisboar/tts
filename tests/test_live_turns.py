@@ -3279,3 +3279,87 @@ def test_referencia_24k_chega_em_16k():
 
     y = app._live_ref_16k(np.zeros(24000, dtype="<i2").tobytes())
     assert abs(len(y) - 16000) <= 2, len(y)
+
+
+# --------------------------------------------------------------------------
+# task_3ecbe8f5 (#1129): o eco vem ANTES das palavras de corte
+# --------------------------------------------------------------------------
+class _PipeTocando:
+    """Pipeline mínimo: só a referência do eco (o que está em reprodução)."""
+
+    ocupado = False                         # sem turno rodando no pipeline
+
+    def __init__(self, texto: str):
+        self._texto = texto
+
+    def texto_em_reproducao(self) -> str:
+        return self._texto
+
+    def cancel(self, *a, **k) -> None:     # o `_live_cancela` derruba o turno
+        self.cancelado = True
+
+
+_RESPOSTA_PROXY = ("Claro, posso te ajudar com isso agora mesmo. O mais simples é "
+                   "começar pelo que você já tem em casa e ver o que falta. Depois a "
+                   "gente ajusta os detalhes com calma, sem pressa nenhuma.")
+
+
+def _sess_eco(tocando: str):
+    import queue
+    import threading
+    motor, rel = _motor_inteligente()
+    _abrir_por_barge(motor, rel)
+    return {"id": "s3ecb", "ultimo_assistente": "", "pipe": _PipeTocando(tocando),
+            "cancelado": threading.Event(), "turno": 1, "fila": queue.Queue(),
+            "engine": motor, "barge_suspeito": {"audio": b"\x01\x00" * 800}}
+
+
+def _decide(monkeypatch, sess: dict, ouvido: str, **kw) -> None:
+    import app
+    monkeypatch.setitem(app._settings, "live_barge_filtros", {})
+    monkeypatch.setattr(app, "_live_transcreve_trecho", lambda *a, **k: ouvido)
+    app._live_decide_barge(sess, b"\x01\x00" * 800, 700, **kw)
+
+
+def test_eco_com_palavra_de_corte_nao_cancela_o_proprio_agente(monkeypatch):
+    """Proxy S3 do #1129 (eco −6): o eco "…com calma…" voltou como "Com calma." e
+    o `palavras_corte`, que vinha antes do `eco`, cancelou a resposta do agente."""
+    import app
+    sess = _sess_eco(_RESPOSTA_PROXY)
+    assert app._live_avalia_filtros(sess, "Com calma.", 320, {})[::3] == ("eco", "eco")
+    _decide(monkeypatch, sess, "Com calma.")
+    assert not sess["cancelado"].is_set(), "o agente se cortou com o próprio eco"
+
+
+def test_comando_atras_do_eco_corta_mesmo_com_eco_tolerante(monkeypatch):
+    """#547 com o eco na frente: "…e aí, para" sobre "…e aí tudo bem". Com a
+    tolerância do eco (até 2 trocas) a janela casaria e o comando sumiria; com
+    palavra de corte o eco exige match EXATO."""
+    import app
+    sess = _sess_eco("olá, meu nome é valentina e aí tudo bem com você hoje")
+    ouvido = "olá, meu nome é valentina e aí, para"
+    assert app._live_avalia_filtros(sess, ouvido, 900, {})[::3] == (
+        "interrupcao", "palavras_corte")
+    _decide(monkeypatch, sess, ouvido)
+    assert sess["cancelado"].is_set(), "o comando do dono atrás do eco TEM de cortar"
+
+
+@pytest.mark.parametrize("ouvido", ["para tudo", "para", "não, espera"])
+def test_comando_do_dono_sobre_trecho_com_a_mesma_palavra_corta(monkeypatch, ouvido):
+    """O agente dizendo "para isso"/"não é" não pode transformar o "para tudo" ou o
+    "não, espera" do dono em eco (janela de 2 com 1 troca casaria sem o exato)."""
+    import app
+    sess = _sess_eco("vamos ver isso para isso funcionar, não é difícil")
+    assert app._live_avalia_filtros(sess, ouvido, 600, {})[::3] == (
+        "interrupcao", "palavras_corte")
+    _decide(monkeypatch, sess, ouvido)
+    assert sess["cancelado"].is_set()
+
+
+def test_passo_so_comando_com_eco_de_corte_nao_decide(monkeypatch):
+    """O passo intermediário só fecha por `palavras_corte`; o eco "Com calma." não
+    pode fechar nem cancelar ali — a suspeita segue para a decisão de verdade."""
+    sess = _sess_eco(_RESPOSTA_PROXY)
+    _decide(monkeypatch, sess, "Com calma.", so_comando=True)
+    assert not sess["cancelado"].is_set()
+    assert sess.get("barge_suspeito") is not None, "o passo não consome a suspeita"

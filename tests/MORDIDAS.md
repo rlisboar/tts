@@ -1361,3 +1361,18 @@ depois de cada uma.
 
 As duas camadas do descarte (o `break` do pipeline e o portão do app) só mordem com uma célula por
 camada: com uma só célula, a outra camada cobria a sabotagem.
+### task_3ecbe8f5 (#1129) — o filtro `eco` vem ANTES das `palavras_corte`; com palavra de corte, eco só por match exato
+
+No proxy S3 (eco −6) o eco "…com calma…" voltou como "Com calma." e o `palavras_corte`, primeiro da
+cadeia, cancelou a resposta do próprio agente (2× no log). Agora o `eco` roda antes. Quando o trecho
+tem palavra de corte, o eco exige janela contígua SEM troca (`minimo=1.0`): com a tolerância de
+sempre, o comando do dono atrás do eco (#547) ou "para tudo" sobre "para isso" virariam eco.
+Pré-registro `92217bf`.
+
+| Sabotagem | Resultado |
+|---|---|
+| `palavras_corte` de volta antes do `eco` | `test_eco_com_palavra_de_corte_nao_cancela_o_proprio_agente` e `test_passo_so_comando_com_eco_de_corte_nao_decide` **FAILED** (o agente se corta com o próprio eco) |
+| eco tolerante mesmo com palavra de corte (`minimo=0.6` sempre) | `test_comando_atras_do_eco_corta_mesmo_com_eco_tolerante` e `test_comando_do_dono_sobre_trecho_com_a_mesma_palavra_corta[para tudo]` **FAILED** (o comando do dono vira eco) |
+
+`[para]` e `[não, espera]` não mordem com a 2ª sabotagem, por desenho: 1 palavra nunca é eco
+(`_ECO_MIN_PALAVRAS`), e "espera" fora da referência é marcador de humano. São guardas de regressão.
