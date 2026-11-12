@@ -176,6 +176,24 @@ def _pasta_do_time() -> str:
     return str(REPO.parent / f"{REPO.name}-wt")
 
 
+#: nomes que ESTE arquivo passa ao `worktrees.sh cria` (num repo FALSO). Se um deles aparecer no repo
+#: REAL, o arquivo vazou. Qualquer outro branch/worktree novo é de OUTRO agente rodando ao lado.
+_NOMES_DESTE_ARQUIVO = ("agentea", "agenteb", "x")
+
+
+def _so_os_deste_arquivo(ramos: set[str], wts: set[str]) -> tuple[set[str], set[str]]:
+    """Filtra o estado global do repo real para o que este arquivo PODE ter criado.
+
+    A guarda comparava o repo inteiro antes/depois: numa rodada de 30 min, o `cria` de outro
+    agente (`wt/speech-pipeline-h6r`…) aparecia como "branch criada no repo real" e derrubava o
+    hook de commit de gente que nada tinha a ver com isso (o mesmo flake do #1126, que bloqueou
+    três commits seguidos)."""
+    meus_ramos = {r for r in ramos if r.rsplit("/", 1)[-1] in _NOMES_DESTE_ARQUIVO
+                  and r.startswith("refs/heads/wt/")}
+    meus_wts = {w for w in wts if w.rstrip("/").rsplit("/", 1)[-1] in _NOMES_DESTE_ARQUIVO}
+    return meus_ramos, meus_wts
+
+
 def _estado_real() -> tuple[str, set[str], set[str]]:
     """(HEAD da main real, branches, worktrees do time) — o que um teste não pode mexer.
 
@@ -188,7 +206,22 @@ def _estado_real() -> tuple[str, set[str], set[str]]:
     wts = subprocess.run(["git", "-C", str(REPO), "worktree", "list", "--porcelain"],
                          capture_output=True, text=True).stdout.splitlines()
     pasta = _pasta_do_time()
-    return head, set(ramos), {l for l in wts if l.startswith(f"worktree {pasta}")}
+    meus_ramos, meus_wts = _so_os_deste_arquivo(
+        set(ramos), {l for l in wts if l.startswith(f"worktree {pasta}")})
+    return head, meus_ramos, meus_wts
+
+
+def test_a_guarda_do_repo_real_ignora_branch_e_worktree_de_outro_agente():
+    """Regressão do flake que derrubou os hooks do #1133 e do #1134: branch/worktree de OUTRO
+    agente aparecendo durante a rodada não é vazamento deste arquivo; os nomes deste arquivo, sim."""
+    pasta = _pasta_do_time()
+    ramos = {"refs/heads/main", "refs/heads/wt/speech-pipeline-h6r", "refs/heads/wt/infra-1134"}
+    wts = {f"worktree {pasta}/speech-pipeline-h6r", f"worktree {pasta}/infra-1134"}
+    assert _so_os_deste_arquivo(ramos, wts) == (set(), set())
+    ramos |= {"refs/heads/wt/agentea"}
+    wts |= {f"worktree {pasta}/agenteb"}
+    assert _so_os_deste_arquivo(ramos, wts) == ({"refs/heads/wt/agentea"},
+                                               {f"worktree {pasta}/agenteb"})
 
 
 @pytest.fixture(scope="module", autouse=True)

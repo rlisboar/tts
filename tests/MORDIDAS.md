@@ -1306,3 +1306,15 @@ e a contagem da regressão do conftest acima é **2** (o `test_qa_gate194` é in
 | Sabotagem | Resultado |
 |---|---|
 | o plist volta a apontar para o script do repo (`${0:A}`) | `test_install_copia_o_script_para_tts_studio_e_o_plist_aponta_para_a_copia` **FAILED** |
+
+### worktree_sem_estado — a guarda do repo real não pode culpar o branch de outro agente
+
+`test_worktree_sem_estado.py` comparava TODOS os branches e worktrees do repo real antes/depois do arquivo. Numa
+rodada de ~30 min, o `cria` de outro agente (`wt/speech-pipeline-h6r`) aparecia como "branch criada no repo
+real" e derrubava, com ERROR no teardown, os hooks de commit do #1133 e do #1134 (o flake do #1126, de novo).
+Agora a comparação só olha os nomes que ESTE arquivo passa ao `cria` num repo falso (`agentea`, `agenteb`,
+`x`): se um deles aparecer no repo real, o arquivo vazou.
+
+| Sabotagem | Resultado |
+|---|---|
+| o filtro devolve o estado global do repo | `test_a_guarda_do_repo_real_ignora_branch_e_worktree_de_outro_agente` **FAILED** |
