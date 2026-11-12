@@ -379,16 +379,22 @@ def test_speech_start_adota_o_turno_do_pipeline():
 def test_cancel_com_turno_em_curso_emite_interrupted():
     class PipeOcupado:
         ocupado = True
+        _turno_atual = 2
 
         def cancel(self):
             pass
 
     sess = _sess(pipe=PipeOcupado(), turno=2)
     app._live_cancela(sess)
-    # com turno RODANDO o evento `interrupted` vem do pipeline (ele é quem vê o
-    # `cancelado` e fecha o turno); a sessão não duplica.
-    assert sess["fila"].empty()
+    # #1129: com turno RODANDO a sessão avisa NA HORA (antes o `interrupted` só
+    # vinha do pipeline quando o trecho de TTS em geração voltava, ~2 s depois);
+    # o aviso atrasado do pipeline para o mesmo turno é engolido — não duplica.
+    tipo, aviso = sess["fila"].get(False)
+    assert tipo == "json" and aviso["type"] == "interrupted" and aviso["turn"] == 2
     assert sess["cancelado"].is_set()
+    app._live_envia_json(sess, {"type": "interrupted", "turn": 2,
+                                "_do_pipeline": True, "_turno_pipe": 2})
+    assert sess["fila"].empty(), "o interrupted atrasado do pipeline duplicou"
 
 
 def test_cancel_ocioso_nao_emite_interrupted_nem_deixa_flag():

@@ -12481,6 +12481,23 @@ class _LiveFila:
                 self._bytes -= peso
         return item
 
+    def descarta_audio(self) -> int:
+        """#1129: o turno foi cancelado — o áudio dele que ainda NÃO saiu da fila não
+        vai mais ao ar (o cliente já descartou o playback no `interrupted`). JSON fica.
+        Devolve quantos itens de áudio saíram."""
+        n = 0
+        with self._q.mutex:
+            fica = [it for it in self._q.queue if not (it is not None and it[0] == "audio")]
+            n = len(self._q.queue) - len(fica)
+            if n:
+                self._q.queue.clear()
+                self._q.queue.extend(fica)
+        if n:
+            with self._trava:
+                self._bytes = sum(self._peso(it) for it in fica)
+                self.descartados += n
+        return n
+
     def _descartar_ate_caber(self, protegido=None) -> int:
         """Derruba o áudio mais antigo até caber. `_trava` já tomada."""
         n = 0
@@ -12506,6 +12523,13 @@ class _LiveFila:
 
 def _live_envia_json(sess: dict, obj: dict) -> None:
     """Ponto de acoplamento do pipeline (#93): pode ser chamado de QUALQUER thread."""
+    if (obj.get("type") == "interrupted" and obj.get("_do_pipeline")
+            and obj.get("_turno_pipe") in sess.get("_interrompidos", ())):
+        # #1129: a sessão já avisou este turno no `cancel`; este é o atrasado
+        _live_log_kv("interrupted_dup", sess=sess.get("id"), turno=obj.get("turn"))
+        return
+    obj.pop("_do_pipeline", None)
+    obj.pop("_turno_pipe", None)
     terminal = obj.get("type") in ("turn_complete", "interrupted") or (
         obj.get("type") == "error" and obj.get("code") == "pipeline")
     if terminal:
@@ -12647,6 +12671,12 @@ def _live_envia_audio(sess: dict, pcm: bytes, *, marcar: bool = True,
             # sobre um playback que já foi cortado.
             sess["audio_pendente"] = max(0, sess["audio_pendente"] - derrubados)
             sess["audio_descartados"] = sess.get("audio_descartados", 0) + derrubados
+
+
+def _live_pcm_do_turno_cancelado(sess: dict, pipe) -> bool:
+    """#1129: o PCM é do turno do pipeline que a sessão já cancelou? (descartar)"""
+    cancelado = sess.get("_turno_pipe_cancelado")
+    return cancelado is not None and getattr(pipe, "_turno_atual", None) == cancelado
 
 
 def _live_buffer(sess: dict) -> bytes:
@@ -12904,7 +12934,29 @@ def _live_cancela(sess: dict, do_cliente: bool = False, *,
     pipe = sess.get("pipe")
     if pipe is not None:
         pipe.cancel()
-        if pipe.ocupado:                 # com turno rodando, quem avisa é o pipeline
+        if pipe.ocupado:
+            # #1129: o pipeline só nota o cancel quando o trecho de TTS em geração
+            # VOLTA (o `_generate_chunk` não é interrompível) — medido no proxy:
+            # `interrupted` ~2 s depois do `cancel` e o motor repetindo `barge_in` a
+            # cada 400 ms enquanto isso. Agora a sessão reconhece NA HORA: o
+            # `interrupted` sai já, o áudio do turno ainda na fila sai dela, o PCM que
+            # o trecho em curso terminar de gerar é descartado (`_live_pcm_do_turno_
+            # cancelado`) e o `interrupted` atrasado do pipeline para ESTE turno é
+            # engolido. O trecho em curso termina com a `_gen_lock` (não é cortado).
+            turno_pipe = getattr(pipe, "_turno_atual", None)
+            ja = sess.setdefault("_interrompidos", set())
+            if turno_pipe is not None and turno_pipe in ja:
+                return                   # mesmo turno: um cancel/`interrupted` só
+            sess["_turno_pipe_cancelado"] = turno_pipe
+            tirados = sess["fila"].descarta_audio() if hasattr(sess["fila"], "descarta_audio") else 0
+            if tirados:
+                sess["audio_pendente"] = max(0, sess.get("audio_pendente", 0) - tirados)
+            aviso = {"type": "interrupted", "turn": sess["turno"]}
+            if fala_ms is not None:
+                aviso["fala_ms"] = int(fala_ms)
+            _live_envia_json(sess, aviso)
+            if turno_pipe is not None:
+                ja.add(turno_pipe)
             return
     if not em_curso:
         # ocioso: nada a interromper. O stub lê esta flag para não abrir turno e
@@ -14190,6 +14242,8 @@ def _live_pipe_novo(sess: dict):
 
     def _envia_pcm(pcm, _caixa=caixa):
         pipe = _caixa.get("pipe")
+        if _live_pcm_do_turno_cancelado(sess, pipe):
+            return                       # #1129: o trecho terminou depois do cancel
         primeiro = bool(getattr(pipe, "_primeiro_pcm", False)) if pipe is not None else False
         relogio = getattr(pipe, "relogio_pcm", None) if pipe is not None else None
         _live_envia_audio(sess, pcm, marcar=_live_marca_este_pcm(primeiro),

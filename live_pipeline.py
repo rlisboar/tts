@@ -1301,7 +1301,10 @@ class LivePipeline:
         self.emit_json({"type": "latency", **lat})
         frame = {"type": "interrupted", "turn": turno,
                  "audio_bytes": estado.get("audio_bytes", 0),
-                 "truncated": self._truncado}
+                 "truncated": self._truncado,
+                 # #1129: marcas internas (a sessão tira antes do fio) — deixam o app
+                 # engolir este aviso se o `cancel` da sessão já avisou o turno
+                 "_do_pipeline": True, "_turno_pipe": turno}
         # #877: continuação retira o turno antes de qualquer chunk. Sem este
         # motivo a tela mostra "interrompido" numa pausa de respiração.
         if getattr(self, "_sem_historico", False):

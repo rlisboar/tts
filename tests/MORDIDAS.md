@@ -1338,3 +1338,26 @@ dividem o grupo de concorrência `tts-mini-suite`. A guarda do conftest só esca
 | o `pytest` do lento sem o `if` do porteiro | `test_os_dois_jobs_do_mini_esperam_o_porteiro_*` **FAILED** |
 | o lento volta a rodar em paralelo (sem `needs` do rápido) | `test_testes_e_lentos_rodam_em_serie_no_mini` **FAILED** |
 | a guarda aceita qualquer `CI` (`CI=0`, `false`…) | `test_logica_do_guarda_cobertura_e_escapes` **FAILED** |
+| uma célula recarrega o `conftest.py` por `importlib` (o erro do 1º commit) | `test_nenhum_teste_recarrega_o_conftest` **FAILED**; antes dele, 3 testes de isolamento (`test_tmpdir_sem_credencial`, `test_watchdog_suite_1050`, `test_qa_gate194`) falhavam no mesmo processo (`TTS_OUTPUTS_DIR` None). A lógica pura do guarda mora em `tests/_guarda_trava.py` |
+
+
+### #1129 / task_1b861de8 — o cancel do Live é reconhecido NA HORA (`interrupted` sem esperar o trecho de TTS)
+
+Com o pipeline gerando, `_live_cancela` só ligava a flag e o `interrupted` saía quando o
+`_generate_chunk` em curso voltava (stop de 6640 ms no proxy, `barge_in` repetido 4× no turno).
+Rodadas por `tests/test_cancel_imediato_1129.py` + `tests/test_live_obs313.py`, restaurando do índice
+depois de cada uma.
+
+| Sabotagem | Resultado |
+|---|---|
+| `_live_cancela` não emite o `interrupted` na hora | `test_cancel_no_meio_do_tts_avisa_na_hora_e_o_trecho_tardio_nao_vai_ao_ar` **FAILED** |
+| sem dedupe por turno do pipeline no `_live_cancela` | `test_barge_repetido_no_mesmo_turno_gera_um_interrupted_so` **FAILED** |
+| a fila do WS não descarta o áudio do turno (`tirados = 0`) | `test_cancel_tira_da_fila_o_audio_do_turno_e_deixa_o_json` **FAILED** |
+| portão `_live_pcm_do_turno_cancelado` devolvendo sempre `False` | `test_camada_app_cancel_que_chega_depois_do_check_do_pipeline_e_barrado` **FAILED** |
+| `interrupted` atrasado do pipeline (mesmo turno) não é engolido | `test_cancel_no_meio_do_tts_avisa_na_hora_e_o_trecho_tardio_nao_vai_ao_ar` **FAILED** |
+| engole o `interrupted` do pipeline de QUALQUER turno | `test_interrupted_de_turno_novo_nao_e_engolido` **FAILED** |
+| marcas internas (`_do_pipeline`, `_turno_pipe`) não saem antes do fio | `test_interrupted_de_turno_novo_nao_e_engolido` **FAILED** |
+| `_fala_worker` sem o `break` do cancel depois do `_tts` | `test_camada_pipeline_trecho_que_volta_depois_do_cancel_nao_e_emitido` **FAILED** |
+
+As duas camadas do descarte (o `break` do pipeline e o portão do app) só mordem com uma célula por
+camada: com uma só célula, a outra camada cobria a sabotagem.
