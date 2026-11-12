@@ -101,3 +101,67 @@ de A e B somadas (timbre ≤ 0,08 no curto). S2 p50 esperado ≈ 2,36 − 0,5 �
 - Nenhum pino (`mlx-audio`, `mlx-lm`, `transformers`) sobe. C exigiria fork do laço do pino 0.4.4 e só entra se A/B não bastarem.
 - Dado do dono intocável; só sintético/FLEURS; mini só sem `~/.tts-studio/bancada.lock`.
 - A fila do `_gen_lock` tem conserto próprio em medição (`50e352f`): não entra nestas contas.
+
+---
+
+## 5. READOUT das guardas objetivas de A e B (mini, 2026-11-12 13:57–14:07, estado sintético, voz FLEURS `flvoz` de 227 tokens)
+
+Script `evidence/1135-guardas-ab.py`; dados `evidence/1135-guardas-ab-rodada1.json` (todas as condições) e
+`…-rodada2-ctrlnr.json` (controle da transcrição). 12 textos × 2 repetições; 1º trecho, 10 passos; `gen` = `generate` do modelo quente.
+
+| condição | `gen` p50 / curto (ms) | timbre vs ctrl (curto · longo) | WER médio | vazios |
+|---|---|---|---|---|
+| ctrl (hoje) | 1574 / 1346 | — | 0,16 | 0 |
+| ctrlb (outra semente = piso de ruído) | 1460 / 1346 | 0,54 · 0,77 | 0,13 | 2 |
+| **B** (CFG 0) | 1184 / 1141 (**−25 % / −15 %**) | 0,52 · **0,52** | **0,245** | 2 |
+| **A4** (ref 4 s, sem transcrição) | 1006 / 813 (**−36 % / −40 %**) | 0,36 · 0,72 | **1,10** | 0 |
+| A6 (ref 6 s) | 1163 / 986 | 0,34 · 0,68 | 1,30 | 0 |
+| AB | 713 / 591 (−55 %) | 0,25 · 0,34 | 0,71 | **10** |
+| ctrlnr (ref inteira, SEM transcrição) | 1351 / 1153 | 0,54 · 0,73 | 0,386 | 4 |
+
+**Veredito de B: MORRE** pelo critério pré-registrado. Ganho no limite (−25 % no p50, mas só −15 % no curto que é o
+tamanho real) e duas guardas falham: timbre no longo 0,52 contra 0,77 do controle de ruído, e WER +0,085 (limite +0,03).
+O CFG é o que mantém o locutor e o texto: sem ele o modelo desliza para outra voz.
+
+**Veredito de A: MORRE como desenhado** (WER 1,10 e 1,30 contra o critério de morte; AB com 10 transcrições vazias). O
+confundidor foi separado: **descartar a transcrição sozinha** (ctrlnr) já leva o WER de 0,16 para 0,39 e a 4 vazios, e
+**cortar o prefixo a 4 s** leva de 0,39 para 1,10 — o modelo alucina palavras ("Nosso papai é com a Lisa" para "Claro,"). Dois
+motivos somados: o corte cai no meio de palavra e o `ref_text` deixa de casar com os tokens. O ganho de custo é real
+(−40 % no curto), então o caminho que sobra NÃO é cortar às cegas e sim: **ref de ~4 s que termina em fronteira de palavra e vem
+com a transcrição alinhada** (STT com timestamps no cadastro da voz, derivando o recorte e o texto juntos). Isso é um card
+novo, com bancada própria, e só vale se o WER voltar a ≤ ctrl + 0,03.
+
+Ressalvas: o controle de ruído (ctrlb) já mostra 2 vazios e 0,77 no longo, então a régua de timbre desta voz é folgada;
+n=24 por célula; uma voz só. As conclusões de B e A não dependem dessa folga (as diferenças são de 0,25 a 0,9).
+
+## 6. Próxima alavanca: 1º trecho do Live mais curto (análise + pré-registro; nada rodado no mini)
+
+**Medida local** (MBP, `evidence/1135-gen-vs-tamanho-texto.py`, 10 passos, ref 250 tokens, mediana de 9):
+
+| texto | chars | áudio | `generate` (ms) |
+|---|---|---|---|
+| "Claro," | 6 | 1,32 s | 583 |
+| "Sim, claro." | 11 | 1,56 s | 629 |
+| "Deixa eu ver isso." (hoje, `first_max_chars=18`) | 18 | 1,84 s | 530 |
+| "Claro, posso te ajudar." | 23 | 2,00 s | 753 |
+| 38 chars | 38 | 2,60 s | 591 |
+| 75 chars | 75 | 5,04 s | 919 |
+
+O custo é **plano de 6 a 38 chars** (530–750, dentro do ruído de ±100): o passo é dominado pelo prefixo de 250 tokens
+e pelo piso de 10 passos, e o alvo (T = 25 tokens/s, 33–65 tokens) é pequeno ao lado dele. Cortar o 1º trecho de 18 para 6 chars
+**não reduz o `gen`** (o "Claro," saiu até mais lento que o de 18). Só a partir de ~40 chars o custo cresce.
+
+**Onde sobra ganho:** na `llm_frase` (1º token → 1ª cláusula fechada). Com LLM real a ~40 tok/s e ~3–4 chars/token,
+18 chars ≈ 5 tokens ≈ 125 ms e 6 chars ≈ 2 tokens ≈ 50 ms: **~−75 ms no S2**, no melhor caso. Com a regra de vírgula/N palavras
+do #942 muitas respostas já fecham a 1ª cláusula antes dos 18 chars ("Claro,"), então o ganho médio é menor.
+
+**Veredito de análise: lever pequeno, ≤ ~75 ms e sem ganho no `gen`.** Risco de prosódia: trecho de 1–2 palavras
+("Claro,") vira uma interjeição isolada, o modelo entona como frase completa (queda final) e a emenda com o 2º trecho
+fica audível; o ECAPA em trecho curto também comprime a medida (#1079). Não vale o risco antes de A/B.
+
+**Pré-registro (se mesmo assim for medido, depois do C2):** braço `first_max_chars` 18 × 10 (controle × tratamento), blocos
+alternados, ≥ 4 blocos, n ≥ 20 por braço, LLM real pela exceção do #446 §C (o ganho está no LLM, o falso esconde-o).
+- **Ganho:** `llm_frase` p50 −40 ms ou mais; `tts_gen` p50 **inalterado** (±10 %), senão a hipótese do custo plano morre.
+- **Guarda de emenda:** ABX do dono no par "1º trecho + 2º trecho" (8 pares); morre se ≥ 7/8 distinguirem e apontarem o curto como pior.
+- **Guarda de WER/timbre:** as do #1079 (timbre ≥ controle − 0,06 no curto; WER ≤ +0,03; 0 vazios).
+- **Critério de morte:** ganho de `llm_frase` < 40 ms ou qualquer guarda falha.

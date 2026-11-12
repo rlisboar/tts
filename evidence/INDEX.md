@@ -22,8 +22,12 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `1116-marca-sem-compile.md` | #1116 | 2026-11-10 | 1116 — marca d'água sem `torch.compile` (1º trecho quente) |
 | `1120-deploy-head-7303b8e.txt` | #1120 | 2026-11-10 | == deploy 7303b8e (main) no mini — 2026-11-10 22:45 (#1120, autorizado pelo dono 22:04) |
 | `1129-barge-nao-detectado-prereg.md` | #1129 | 2026-11-11 | 1129 — interrupção do dono não detectada com AEC ligado: PRÉ-REGISTRO (2026-11-11, antes de medir) |
-| `1135-prefixo-cfg-quant.py` | #1135 | — | """#1135 — de onde vem o custo do `tts_gen` do OmniVoice (micro-bench, MLX, 1 voz sintética). |
-| `1135-tts-gen-alavancas.md` | #1135 | — | 1135 — de onde vem o `tts_gen` do 1º trecho do Live e o que dá para cortar |
+| `1135-gen-vs-tamanho-texto.py` | #1135 | 2026-11-12 | """#1135 — custo do `generate` contra o tamanho do texto do 1º trecho (micro-bench local, MLX). |
+| `1135-guardas-ab-rodada1.json` | #1135 | 2026-11-12 | "voz": "flvoz", |
+| `1135-guardas-ab-rodada2-ctrlnr.json` | #1135 | 2026-11-12 | "voz": "flvoz", |
+| `1135-guardas-ab.py` | #1135 | 2026-11-12 | """#1135 — guardas OBJETIVAS de B (CFG desligado no 1º trecho) e A (prefixo de ref de ~4 s). |
+| `1135-prefixo-cfg-quant.py` | #1135 | 2026-11-11 | """#1135 — de onde vem o custo do `tts_gen` do OmniVoice (micro-bench, MLX, 1 voz sintética). |
+| `1135-tts-gen-alavancas.md` | #1135 | 2026-11-12 | 1135 — de onde vem o `tts_gen` do 1º trecho do Live e o que dá para cortar |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
