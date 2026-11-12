@@ -165,3 +165,39 @@ alternados, ≥ 4 blocos, n ≥ 20 por braço, LLM real pela exceção do #446 �
 - **Guarda de emenda:** ABX do dono no par "1º trecho + 2º trecho" (8 pares); morre se ≥ 7/8 distinguirem e apontarem o curto como pior.
 - **Guarda de WER/timbre:** as do #1079 (timbre ≥ controle − 0,06 no curto; WER ≤ +0,03; 0 vazios).
 - **Critério de morte:** ganho de `llm_frase` < 40 ms ou qualquer guarda falha.
+
+## 7. Tamanho real do 1º trecho do Live × `gen` do mini (esclarecimento pedido pelo PM) e A′
+
+**O 1º trecho do Live é curto por construção.** `SentenceChunker` (`live_pipeline.py:156`): o 1º trecho sai na 1ª vírgula, nas
+6 palavras (se couberem em `first_max`) ou no último separador antes de **`first_max = 18` chars**. O "140" é o `chunk_max_chars` do
+JOB do app, não do Live. Simulação do chunker com 12 respostas em pt (`SentenceChunker.push` em deltas de 2, 4 e 20 chars):
+**1º trecho = 4–18 chars, p50 8**. Só com um provedor SEM streaming (resposta inteira numa delta) o 1º trecho passa de 18
+(26–43 chars em 3 de 12). Logo o `tts_gen` de ~1,25 s do mini é o custo de um trecho de ≤ 18 chars: **piso fixo** de prefixo + passos.
+
+**`gen` no mini por tamanho** (medido no #1079, `evidence/1079-piso-passos.md`, mini, 10 passos, ref bf16): trecho
+curto (1,4–2,2 s, ~6–25 chars) **1183 ms**; trecho longo (4,1–5,2 s, ~55–75 chars) **1664 ms** → ~+160 ms por segundo de áudio. Para **30 chars (~2,2 s)** o
+mesmo ~1,2–1,3 s. Para **140 chars (~9–10 s)** a extrapolação linear dá ~2,3–2,5 s (+1,1–1,3 s); **não foi medido no mini** (bancada ocupada) e
+fica como medida de 5 min depois do C2 se alguém quiser confirmar. Conclusão: o trecho curto NÃO ganha ~500 ms no Live, porque o 1º trecho já tem ≤ 18 chars; só o caso
+"provedor sem streaming" teria 1º trecho de 26–43 chars, e aí o corte para 18 pouparia ~40–150 ms. **Descartada.**
+
+### A′ — prefixo de ref de ~4 s em fronteira de palavra, com transcrição alinhada (pré-registro)
+
+Por que A falhou (§5): o corte caiu no meio de palavra e o `ref_text` deixou de casar. Os tokens de referência NÃO mapeiam o tempo do
+arquivo original: `create_voice_clone_prompt` reamostra a 24 kHz, normaliza o RMS e **remove silêncios** (`_remove_silence`) antes de tokenizar; os
+25 tokens/s valem para o áudio JÁ processado. O alinhamento tem de ser feito sobre esse mesmo áudio processado.
+
+**Desenho (sem tocar `voices/` nem o cadastro):** derivado e recalculável, em cache no estado do app (`state/ref-live/<voice_id>-<mtime>-<params>.json|npy`):
+1. replicar o pré-processamento do `create_voice_clone_prompt` em RAM → áudio processado `x'`;
+2. STT com timestamps por palavra sobre `x'` (mlx_whisper `word_timestamps=True`, motor já carregado) → `[(palavra, t0, t1)]`;
+3. escolher o maior prefixo de palavras com `t1 ≤ ~4,0 s` (parar no fim de palavra, de preferência após pausa);
+4. `tokens' = tokens[: round(t1 × 25)]` e `ref_text' = palavras até lá`;
+5. o Live usa `(tokens', ref_text')` só no 1º trecho; a chave inclui mtime e parâmetros, então voz regravada invalida o cache; falha de STT → cai no prefixo inteiro (comportamento de hoje).
+
+**Guardas e critérios (antes de medir; mini, estado sintético, FLEURS, em série após o C2):**
+- **Ganho:** `tts_gen` p50 do 1º trecho −30 % ou mais nas vozes com prefixo > 4 s (hoje 227 tokens ≈ 9 s); morre abaixo de 15 %.
+- **WER:** ≤ controle + 0,03 e **0 vazios** (A deu 1,10); pior caso ≤ 0,25.
+- **Timbre:** ECAPA contra a amostra original, queda ≤ 0,05 no curto; p10 ≥ p10 do controle de ruído.
+- **Alinhamento:** em ≥ 95 % das vozes sintéticas o corte cai em fronteira de palavra (conferir `t1` contra o silêncio mais próximo); `ref_text'` tem de ser prefixo literal do original.
+- **ABX do dono:** só se passar tudo acima (8 pares).
+- **Morte:** WER > ctrl + 0,03 ou ABX ≥ 7/8 contra A′. Variante: 6 s.
+- **Restrições:** nenhum arquivo de `voices/` nem do cadastro é escrito; teste unitário só com voz sintética (fixture `voz_sintetica`/FLEURS); cache fora de `voices/`.
