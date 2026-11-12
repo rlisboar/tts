@@ -14,7 +14,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `1022-hipoteses-falsificacao.md` | #1022 | 2026-11-10 | 1022 — hipóteses de causa do pos_llm e critérios de FALSIFICAÇÃO (pré-registro) |
 | `1049-deploy-head-48b11d5.txt` | #1049 | 2026-11-09 | == deploy 48b11d5 (main) — 2026-11-09T10:19:17-03:00 |
 | `1060-rede-so-llm.png` | #1060 | 2026-11-09 | (imagem) |
-| `1064-deploy-13716e3.txt` | #1064 | — | == deploy 13716e3 (main) no mini — 2026-11-11 17:19–17:21 (autorizado pelo dono; #1064, #1128, #1129) |
+| `1064-deploy-13716e3.txt` | #1064 | 2026-11-11 | == deploy 13716e3 (main) no mini — 2026-11-11 17:19–17:21 (autorizado pelo dono; #1064, #1128, #1129) |
 | `1067-live-aec-diag.png` | #1067 | 2026-11-09 | (imagem) |
 | `1079-piso-passos.md` | #1079 | 2026-11-09 | 1079 — piso de `num_steps` do 1º trecho do Live |
 | `1079-piso-passos.py` | #1079 | 2026-11-09 | """#1079 — piso de `num_steps` do 1º trecho do Live: custo, timbre (ECAPA), WER e ABX. |
@@ -22,6 +22,8 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `1116-marca-sem-compile.md` | #1116 | 2026-11-10 | 1116 — marca d'água sem `torch.compile` (1º trecho quente) |
 | `1120-deploy-head-7303b8e.txt` | #1120 | 2026-11-10 | == deploy 7303b8e (main) no mini — 2026-11-10 22:45 (#1120, autorizado pelo dono 22:04) |
 | `1129-barge-nao-detectado-prereg.md` | #1129 | 2026-11-11 | 1129 — interrupção do dono não detectada com AEC ligado: PRÉ-REGISTRO (2026-11-11, antes de medir) |
+| `1135-prefixo-cfg-quant.py` | #1135 | — | """#1135 — de onde vem o custo do `tts_gen` do OmniVoice (micro-bench, MLX, 1 voz sintética). |
+| `1135-tts-gen-alavancas.md` | #1135 | — | 1135 — de onde vem o `tts_gen` do 1º trecho do Live e o que dá para cortar |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
