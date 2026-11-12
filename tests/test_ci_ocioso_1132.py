@@ -144,14 +144,94 @@ def test_app_fora_do_ar_nao_segura_o_ci(tmp_path):
 
 def test_bancada_lock_helper_pega_status_e_solta(tmp_path):
     e = {**os.environ, "TTS_BANCADA_LOCK": str(tmp_path / "b.lock"), "HOME": str(tmp_path)}
-    r = subprocess.run([BASH, str(BANCADA), "pega", "speech", "4242"], env=e, capture_output=True,
+    r = subprocess.run([BASH, str(BANCADA), "pega", "speech", str(os.getpid())], env=e, capture_output=True,
                        text=True)
-    assert r.returncode == 0 and "pid=4242" in r.stdout
+    assert r.returncode == 0 and f"pid={os.getpid()}" in r.stdout
     assert oct((tmp_path / "b.lock").stat().st_mode & 0o777) == "0o600"
     assert "PRESENTE" in subprocess.run([BASH, str(BANCADA), "status"], env=e, capture_output=True,
                                         text=True).stdout
     subprocess.run([BASH, str(BANCADA), "solta"], env=e, check=True, capture_output=True)
     assert not (tmp_path / "b.lock").exists()
+
+
+# --- #1150: `pega` atômico e que ESPERA dono vivo -----------------------------------------
+
+def _env_b(tmp_path, **extra):
+    return {**os.environ, "TTS_BANCADA_LOCK": str(tmp_path / "b.lock"), "HOME": str(tmp_path),
+            "TTS_BANCADA_PASSO": "0.2", **extra}
+
+
+def _vivo(tmp_path):
+    """processo longo que faz de dono vivo"""
+    return subprocess.Popen(["sleep", "60"])
+
+
+def test_dois_pega_simultaneos_um_espera_o_outro(tmp_path):
+    d1, d2 = _vivo(tmp_path), _vivo(tmp_path)
+    try:
+        e = _env_b(tmp_path, TTS_BANCADA_ESPERA="30")
+        p1 = subprocess.Popen([BASH, str(BANCADA), "pega", "audio-ml", str(d1.pid)], env=e,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        p2 = subprocess.Popen([BASH, str(BANCADA), "pega", "speech", str(d2.pid)], env=e,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        import time
+        time.sleep(1.5)
+        # exatamente UM largou; o outro ainda espera e o lock é do vencedor (não sobrescrito)
+        rcs = [p1.poll(), p2.poll()]
+        assert sorted(x is None for x in rcs) == [False, True], rcs
+        vencedor, perdedor = (p1, p2) if p1.poll() == 0 else (p2, p1)
+        dono = (tmp_path / "b.lock").read_text()
+        assert f"pid={d1.pid if vencedor is p1 else d2.pid}" in dono, dono
+        # solta: o que esperava assume
+        subprocess.run([BASH, str(BANCADA), "solta"], env=e, check=True, capture_output=True)
+        assert perdedor.wait(timeout=10) == 0
+        assert f"pid={d2.pid if vencedor is p1 else d1.pid}" in (tmp_path / "b.lock").read_text()
+    finally:
+        for d in (d1, d2):
+            d.kill()
+
+
+def test_pega_esgota_o_teto_com_dono_vivo_e_nao_sobrescreve(tmp_path):
+    d1, d2 = _vivo(tmp_path), _vivo(tmp_path)
+    try:
+        e = _env_b(tmp_path, TTS_BANCADA_ESPERA="1")
+        assert subprocess.run([BASH, str(BANCADA), "pega", "a", str(d1.pid)], env=e,
+                              capture_output=True).returncode == 0
+        r = subprocess.run([BASH, str(BANCADA), "pega", "b", str(d2.pid)], env=e,
+                           capture_output=True, text=True, timeout=20)
+        assert r.returncode == 1 and "OCUPADA por a" in r.stderr, (r.returncode, r.stderr)
+        assert f"pid={d1.pid}" in (tmp_path / "b.lock").read_text()
+    finally:
+        for d in (d1, d2):
+            d.kill()
+
+
+def test_pega_toma_o_lock_de_dono_morto_e_status_acusa_orfao(tmp_path):
+    e = _env_b(tmp_path, TTS_BANCADA_ESPERA="5")
+    morto = subprocess.Popen(["true"]); morto.wait()
+    (tmp_path / "b.lock").write_text(f"agente=morto\npid={morto.pid}\ndesde=1\n")
+    st = subprocess.run([BASH, str(BANCADA), "status"], env=e, capture_output=True, text=True).stdout
+    assert "ÓRFÃO" in st, st
+    vivo = _vivo(tmp_path)
+    try:
+        r = subprocess.run([BASH, str(BANCADA), "pega", "novo", str(vivo.pid)], env=e,
+                           capture_output=True, text=True, timeout=20)
+        assert r.returncode == 0, r.stderr
+        assert f"pid={vivo.pid}" in (tmp_path / "b.lock").read_text()
+    finally:
+        vivo.kill()
+
+
+def test_mesmo_dono_pedindo_de_novo_e_idempotente(tmp_path):
+    vivo = _vivo(tmp_path)
+    try:
+        e = _env_b(tmp_path, TTS_BANCADA_ESPERA="1")
+        for _ in range(2):
+            r = subprocess.run([BASH, str(BANCADA), "pega", "a", str(vivo.pid)], env=e,
+                               capture_output=True, text=True, timeout=20)
+            assert r.returncode == 0, r.stderr
+    finally:
+        vivo.kill()
 
 
 # --- o workflow ----------------------------------------------------------------------------

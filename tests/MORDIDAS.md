@@ -1420,3 +1420,15 @@ bancada os lê em `s2_tts_params`). `guidance_scale=0` (o braço B) é valor, n�
 | `_tts_app` sem gravar `tts_ref_tokens` | `test_tts_app_grava_prefixo_cfg_e_passos` e `test_cfg_desligado_continua_medido_como_zero` **FAILED** |
 | `if _o.get("guidance_scale"):` (CFG 0 vira ausente) | `test_cfg_desligado_continua_medido_como_zero` **FAILED** |
 | laço do 1º áudio sem copiar `_TTS_PARAMS` para o `latency` | `test_latency_do_1o_audio_leva_os_parametros` **FAILED** |
+
+### #1150 — `bancada_lock.sh pega` atômico e que espera
+
+O `pega` sobrescrevia o lock: duas bancadas no mini pegavam juntas e disputavam a GPU. Agora cria
+por `ln` (falha se existir), ESPERA dono vivo (pid vivo e < 4 h) até `TTS_BANCADA_ESPERA` s (exit 1 e
+mensagem "OCUPADA por …" se esgotar), toma lock órfão sob guarda `mkdir`, é idempotente para o mesmo
+dono e `status` distingue PRESENTE de ÓRFÃO.
+
+| Sabotagem | Resultado |
+|---|---|
+| `ln -f` (volta a sobrescrever) | `test_dois_pega_simultaneos_um_espera_o_outro` e `test_pega_esgota_o_teto_*` **FAILED** |
+| sem o ramo de órfão | `test_pega_toma_o_lock_de_dono_morto_e_status_acusa_orfao` **FAILED** |
