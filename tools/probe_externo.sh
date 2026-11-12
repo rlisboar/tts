@@ -12,9 +12,9 @@
 # Roda no Mac de dev E no mini (cada um vê a produção do SEU ponto de vista). NUNCA usa chave:
 # /health é público por desenho, a URL não carrega segredo e nada de chave é lido ou gravado.
 # Alarme: depois de TTS_PROBE_FALHAS (padrão 2) falhas SEGUIDAS no mesmo alvo → linha ALARME no
-# log, arquivo $ESTADO/ALARME e, se houver, TTS_PROBE_ALARME_CMD (recebe PROBE_ALVO/PROBE_FALHAS/
+# log, arquivo $ESTADO/ALARME.<alvo> (lan|publico) e, se houver, TTS_PROBE_ALARME_CMD (recebe PROBE_ALVO/PROBE_FALHAS/
 # PROBE_MSG no ambiente — é o gancho para avisar o PM). Repete a cada 12 passadas enquanto durar
-# e loga RECUPERADO quando voltar.
+# e loga RECUPERADO quando voltar (apaga só o ALARME do alvo recuperado).
 set -u
 umask 077
 LAN="${TTS_PROBE_LAN:-http://192.168.15.34:7860/health}"
@@ -40,7 +40,7 @@ _sonda() { # $1 = url
 _alarma() { # $1 = alvo $2 = falhas $3 = mensagem
   local msg="$3"
   _log "ALARME $1 falhas_seguidas=$2 — $msg"
-  printf '%s %s falhas=%s %s\n' "$(date '+%F %T')" "$1" "$2" "$msg" > "$ESTADO/ALARME"
+  printf '%s %s falhas=%s %s\n' "$(date '+%F %T')" "$1" "$2" "$msg" > "$ESTADO/ALARME.$1"
   if [ -n "${TTS_PROBE_ALARME_CMD:-}" ]; then
     PROBE_ALVO="$1" PROBE_FALHAS="$2" PROBE_MSG="$msg" bash -c "$TTS_PROBE_ALARME_CMD" >/dev/null 2>&1 || _log "aviso: TTS_PROBE_ALARME_CMD saiu ≠ 0"
   fi
@@ -55,7 +55,7 @@ _passada() {
       if [ "$f" -ge "$N" ]; then
         _log "RECUPERADO $alvo após $f falha(s) seguidas"
         [ -n "${TTS_PROBE_ALARME_CMD:-}" ] && PROBE_ALVO="$alvo" PROBE_FALHAS=0 PROBE_MSG="recuperado" bash -c "$TTS_PROBE_ALARME_CMD" >/dev/null 2>&1
-        grep -q "^[^ ]* [^ ]* $alvo " "$ESTADO/ALARME" 2>/dev/null && rm -f "$ESTADO/ALARME"
+        rm -f "$ESTADO/ALARME.$alvo"      # só o DESTE alvo: recuperar a LAN não apaga o alarme do público
       else
         _log "ok $alvo"
       fi
@@ -75,23 +75,34 @@ case "${1:-}" in
   laco) while :; do _passada; sleep "$INTERVALO"; done ;;
   status)
     for alvo in lan publico; do printf '%s: %s falha(s) seguida(s)\n' "$alvo" "$(cat "$ESTADO/falhas.$alvo" 2>/dev/null || echo 0)"; done
-    if [ -f "$ESTADO/ALARME" ]; then echo "ALARME em aberto: $(cat "$ESTADO/ALARME")"; else echo "sem alarme"; fi ;;
+    achou=0
+    for alvo in lan publico; do
+      [ -f "$ESTADO/ALARME.$alvo" ] && { echo "ALARME em aberto ($alvo): $(cat "$ESTADO/ALARME.$alvo")"; achou=1; }
+    done
+    [ "$achou" = 1 ] || echo "sem alarme" ;;
   instala)
     ag="$HOME/Library/LaunchAgents/$LABEL.plist"; aqui="$(cd "$(dirname "$0")" && pwd)/probe_externo.sh"
     # o launchd NÃO lê ~/Documents (TCC, #1128): copia o script para ~/.tts-studio e roda de lá
-    mkdir -p "$HOME/.tts-studio"; cp "$aqui" "$HOME/.tts-studio/probe_externo.sh"; chmod 700 "$HOME/.tts-studio/probe_externo.sh"
+    mkdir -p "$HOME/.tts-studio" "$HOME/Library/LaunchAgents"; cp "$aqui" "$HOME/.tts-studio/probe_externo.sh"; chmod 700 "$HOME/.tts-studio/probe_externo.sh"
+    ENVXML=""
+    if [ -n "${TTS_PROBE_ALARME_CMD:-}" ]; then
+      cmd_xml="$(printf '%s' "$TTS_PROBE_ALARME_CMD" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
+      ENVXML="<key>EnvironmentVariables</key><dict><key>TTS_PROBE_ALARME_CMD</key><string>$cmd_xml</string></dict>"
+    fi
     cat > "$ag" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>$LABEL</string>
 <key>ProgramArguments</key><array><string>/bin/bash</string><string>$HOME/.tts-studio/probe_externo.sh</string><string>uma</string></array>
-<key>StartInterval</key><integer>300</integer>
+${ENVXML}<key>StartInterval</key><integer>300</integer>
 <key>RunAtLoad</key><true/>
 </dict></plist>
 PL
     chmod 600 "$ag"
-    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null; launchctl bootstrap "gui/$(id -u)" "$ag" && echo "instalado: $LABEL (a cada 300 s) — log $LOG" ;;
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
+    if launchctl bootstrap "gui/$(id -u)" "$ag"; then echo "instalado: $LABEL (a cada 300 s) — log $LOG"
+    else echo "ERRO: launchctl bootstrap falhou — a sonda NÃO está agendada (plist em $ag)" >&2; exit 1; fi ;;
   desinstala)
     launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null; rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"; echo "removido: $LABEL" ;;
   *) echo "uso: $0 uma | laco | status | instala | desinstala" >&2; exit 2 ;;

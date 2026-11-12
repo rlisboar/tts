@@ -460,6 +460,9 @@ na 2ª falha seguida (`remote/RUNBOOK-FIREWALL.md` traz o passo do dono).
 | `_ambiente_bloqueado` ignora o loopback (todo vermelho vira "ambiente") | `test_deploy_com_smoke_vermelho_reverte…` e `test_health_vermelho_tambem_no_loopback…` **FAILED** |
 | a sonda alarma em toda falha ≥ N (não só na N-ésima) | `test_uma_falha_nao_alarma_duas_seguidas_sim_uma_vez_so` **FAILED** |
 | a sonda aceita 200 sem o corpo `"ok"` | `test_200_sem_corpo_ok_vale_falha` **FAILED** |
+| (P3) recuperar o alvo apaga o ALARME de todos | `test_recuperar_a_lan_nao_apaga_o_alarme_do_publico` **FAILED** |
+| (P3) `instala` engole o `bootstrap` falho | `test_instala_com_bootstrap_falho_nao_e_silencioso` **FAILED** |
+| (P3) o dispatcher achata o exit 3 em 1 | `test_ambiente_bloqueado_*` (2) **FAILED** |
 
 ### O que a suíte de áudio (`live_barge_rep.sh`) cobra por bloco
 

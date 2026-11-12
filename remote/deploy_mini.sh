@@ -878,7 +878,7 @@ case "$ACAO" in
   recon)    recon ;;
   compare)  compare ;;
   smoke)    smoke || falhas=1 ;;
-  deploy)   deploy || falhas=1 ;;
+  deploy)   deploy; rc_deploy=$?; [ $rc_deploy -ne 0 ] && falhas=$rc_deploy ;;   # preserva o 3 (ambiente, #1152)
   rollback) rollback || falhas=1 ;;
 esac
 exit $falhas

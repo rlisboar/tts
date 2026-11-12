@@ -77,7 +77,7 @@ def test_uma_falha_nao_alarma_duas_seguidas_sim_uma_vez_so(amb):
     log = _uma(amb, T_LAN="000")                           # 2ª seguida → alarma
     assert "ALARME lan falhas_seguidas=2" in log
     assert len(_alarmes(amb)) == 1 and _alarmes(amb)[0].startswith("lan 2 ")
-    assert "lan" in (Path(amb["TTS_PROBE_ESTADO"]) / "ALARME").read_text()
+    assert "lan" in (Path(amb["TTS_PROBE_ESTADO"]) / "ALARME.lan").read_text()
     _uma(amb, T_LAN="000")                                 # 3ª: não repete o alarme
     assert len(_alarmes(amb)) == 1
 
@@ -99,7 +99,7 @@ def test_recuperado_loga_e_limpa_o_alarme(amb):
     _uma(amb, T_LAN="000"); _uma(amb, T_LAN="000")
     log = _uma(amb)
     assert "RECUPERADO lan após 2 falha(s)" in log
-    assert not (Path(amb["TTS_PROBE_ESTADO"]) / "ALARME").exists()
+    assert not (Path(amb["TTS_PROBE_ESTADO"]) / "ALARME.lan").exists()
 
 
 def test_200_sem_corpo_ok_vale_falha(amb):
@@ -124,4 +124,43 @@ def test_nenhuma_chave_na_url_no_argv_no_log_nem_no_estado(amb):
 def test_log_e_estado_nascem_0600(amb):
     _uma(amb, T_LAN="000"); _uma(amb, T_LAN="000")
     assert oct(Path(amb["TTS_PROBE_LOG"]).stat().st_mode & 0o777) == "0o600"
-    assert oct((Path(amb["TTS_PROBE_ESTADO"]) / "ALARME").stat().st_mode & 0o777) == "0o600"
+    assert oct((Path(amb["TTS_PROBE_ESTADO"]) / "ALARME.lan").stat().st_mode & 0o777) == "0o600"
+
+
+def test_recuperar_a_lan_nao_apaga_o_alarme_do_publico(amb):
+    """P3 do qa: o arquivo ALARME era único; a LAN voltando apagava o aviso do público."""
+    _uma(amb, T_LAN="000", T_PUB="502"); _uma(amb, T_LAN="000", T_PUB="502")
+    est = Path(amb["TTS_PROBE_ESTADO"])
+    assert (est / "ALARME.lan").exists() and (est / "ALARME.publico").exists()
+    _uma(amb, T_PUB="502")                                  # a LAN volta; o público segue mal
+    assert not (est / "ALARME.lan").exists() and (est / "ALARME.publico").exists()
+    st = subprocess.run(["bash", str(SONDA), "status"], env=amb, capture_output=True, text=True).stdout
+    assert "ALARME em aberto (publico)" in st and "(lan)" not in st
+
+
+def _instala(amb, tmp_path, bootstrap_rc: int, **extra):
+    bin_ = Path(amb["PATH"].split(":")[0])
+    (bin_ / "launchctl").write_text(f"""#!/bin/bash
+echo "$@" >> "{tmp_path}/launchctl.log"
+[ "$1" = bootstrap ] && exit {bootstrap_rc}
+exit 0
+""")
+    (bin_ / "launchctl").chmod(0o755)
+    home = tmp_path / "home"; home.mkdir(exist_ok=True)
+    return subprocess.run(["bash", str(SONDA), "instala"], env={**amb, "HOME": str(home), **extra},
+                          capture_output=True, text=True, timeout=60), home
+
+
+def test_instala_leva_o_gancho_do_alarme_no_plist_e_o_script_para_fora_de_documents(amb, tmp_path):
+    r, home = _instala(amb, tmp_path, 0, TTS_PROBE_ALARME_CMD="osascript -e 'display notification \"A & B <x>\"'")
+    assert r.returncode == 0 and "instalado" in r.stdout, r.stderr
+    plist = (home / "Library/LaunchAgents/com.local.tts-probe-externo.plist").read_text()
+    assert "<key>TTS_PROBE_ALARME_CMD</key>" in plist and "A &amp; B &lt;x&gt;" in plist
+    assert "StartInterval" in plist and "<integer>300</integer>" in plist
+    assert (home / ".tts-studio/probe_externo.sh").exists()
+    assert SEGREDO not in plist
+
+
+def test_instala_com_bootstrap_falho_nao_e_silencioso(amb, tmp_path):
+    r, _ = _instala(amb, tmp_path, 5)
+    assert r.returncode == 1 and "bootstrap falhou" in r.stderr and "instalado" not in r.stdout

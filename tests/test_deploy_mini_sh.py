@@ -1153,7 +1153,7 @@ def test_ambiente_bloqueado_com_alf_nao_reverte_nem_reinicia_de_novo(amb):
     macOS segurando a LAN. Trocar de rev não conserta; reiniciar a produção por isso é pior."""
     anterior, r = _deploy_ambiente_bloqueado(
         amb, "x socketfilterfw: Enqueuing new inbound flow for Python with identifier: org.python.python\n" * 3)
-    assert r.returncode == 1, _saida(r)
+    assert r.returncode == 3, _saida(r)       # o 3 (ambiente) sobrevive ao dispatcher
     assert "FALHA DE AMBIENTE, NÃO DO REV" in r.stdout
     assert "ENFILEIRADOS" in r.stdout and "3 fluxo(s)" in r.stdout
     assert "socketfilterfw --unblockapp" in r.stdout
@@ -1164,7 +1164,7 @@ def test_ambiente_bloqueado_com_alf_nao_reverte_nem_reinicia_de_novo(amb):
 
 def test_ambiente_bloqueado_sem_alf_ainda_nao_reverte_e_diz_para_olhar_a_rede(amb):
     _, r = _deploy_ambiente_bloqueado(amb, "nada do firewall aqui\n")
-    assert r.returncode == 1, _saida(r)
+    assert r.returncode == 3, _saida(r)
     assert "FALHA DE AMBIENTE" in r.stdout and "sem 'Enqueuing' do ALF" in r.stdout
     assert "REVERTIDO" not in r.stdout and len(_log(amb, "launch")) == 1
 
