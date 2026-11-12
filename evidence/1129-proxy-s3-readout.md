@@ -23,6 +23,11 @@ P1 como proporção com IC95 de Wilson). Este readout não muda nenhum critério
 | eco −10 (~8 dB)  | **2/7** | 8,2–64,1 % | 1154, 1254, 1852, 2062, 2154, —, — | 1852 | 3493 / 6395 | 3/8 | 3/8 |
 | eco −6 (~4 dB)   | **0/4** (não mensurável) | 0–49 % | —, —, —, 10762 | — | — | 4/6 | 0/6 |
 
+- **O n por condição (6/5/7/4) não é o 5 estrutural do adendo:** o `live_bench` só tipa a fala B como
+  `interrupcao` quando o playback do agente ainda está tocando quando ela entra (`interrompeu`,
+  `tools/live_bench.py:666`). No −30 (+1, fala 11) e no −10 (+2, falas 3 e 15), falas B depois de uma
+  A curta caíram com playback ativo. No −6 (−1, fala 13), o auto-corte deixou um ciclo sem playback.
+  As proporções e os IC usam o n real.
 - Nenhuma pausa (`barge_pausa`) em nenhuma condição: a pausa rápida segue desligada, como previsto.
 - eco −10: 2 das 7 interrupções caíram sem playback tocando (`eco_tocado_s = 0`); nas 5 com
   playback, 2/5.
