@@ -111,3 +111,8 @@ Mini, screen `s3b`, 02:02–04:17, 4 blocos com `rc=0`, `prod_tts_no_bloco=0` e 
 - **Leitura:** a troca resolve o eco exato e não piora a detecção, mas o eco com STT ruidoso ainda passa pelas
   `palavras_corte`. A régua que separa "Com calma, sem calma." (eco) de "para tudo" sobre "para isso" (dono) não
   sai da tolerância por palavras sozinha. É decisão do PM, em card próprio.
+- **Decisão do PM (2026-11-12): a troca vai no trem.** O −10 zerou o auto-corte, a detecção não piorou, e o −6 é
+  o caso extremo (eco ≈ voz). **Registrado com transparência:** no −6, o total de decisões `palavras_corte` sobre eco
+  SUBIU de 1 para 3 com a troca, por causa do eco ruidoso (1 palavra trocada pelo STT), que a régua exata não pega.
+  Seguimento no `task_21d2c3b3`: tolerância de 1 troca só com todas as palavras de corte alinhadas, célula do #547 e
+  medida em −6.
