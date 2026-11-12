@@ -25,7 +25,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `1129-eco-antes-palavras-corte-prereg.md` | #1129 | 2026-11-12 | 1129 / task_3ecbe8f5 — filtro `eco` antes de `palavras_corte`: PRÉ-REGISTRO (2026-11-11, antes do código) |
 | `1129-proxy-s3-readout.md` | #1129 | 2026-11-12 | 1129 — proxy sintético S3 (H1, curva do limiar por margem): READOUT |
 | `1129-barge-nao-detectado-prereg.md` | #1129 | 2026-11-11 | 1129 — interrupção do dono não detectada com AEC ligado: PRÉ-REGISTRO (2026-11-11, antes de medir) |
-| `1129-eco-ruidoso-prereg.md` | #1129 | — | 1129 → #301 — régua do eco com STT ruidoso (task_21d2c3b3): PRÉ-REGISTRO (2026-11-12, antes do código) |
+| `1129-eco-ruidoso-prereg.md` | #1129 | 2026-11-12 | 1129 → #301 — régua do eco com STT ruidoso (task_21d2c3b3): PRÉ-REGISTRO (2026-11-12, antes do código) |
 | `1135-gen-vs-tamanho-texto.py` | #1135 | 2026-11-12 | """#1135 — custo do `generate` contra o tamanho do texto do 1º trecho (micro-bench local, MLX). |
 | `1135-guardas-ab-rodada1.json` | #1135 | 2026-11-12 | "voz": "flvoz", |
 | `1135-guardas-ab-rodada2-ctrlnr.json` | #1135 | 2026-11-12 | "voz": "flvoz", |

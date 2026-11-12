@@ -25,5 +25,12 @@ que passa hoje).
 
 ## (b) eco com 1 palavra trocada + palavra de corte
 
-PENDENTE da decisão do PM sobre a régua (b) × (b2) (análise offline enviada em 2026-11-12). Este arquivo ganha um
-adendo com a régua escolhida ANTES do código da (b).
+**FECHADA sem código (decisão do PM, 2026-11-12): não se resolve por texto; vai para energia/AEC (#870).**
+Análise offline nos 3 ecos reais do −6 e em 6 casos do dono (detalhe no card `task_21d2c3b3`):
+- (b) do card: pega 0/3 e tem 1 falso positivo ("com calma aí" do dono vira eco);
+- (b2), com palavras a ≤ 1 letra contadas como iguais: pega 1/3, mas o dono a 1 letra do agente ("para isto" sobre
+  "para isso") viraria eco;
+- "Com calma, sem calma." tem a troca justo na posição da palavra de corte. Aceitar essa troca é aceitar o comando do
+  dono no meio de uma frase que reusa o vocabulário do agente (#547).
+
+Perder um "para" do dono é pior que um auto-corte raro com eco ≈ voz.
