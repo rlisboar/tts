@@ -446,6 +446,21 @@ Contraprova da cadeia (não da função): `test_cada_filtro_desligado_muda_o_des
 e `test_paridade_entre_cadeia_e_classifica_barge` cobrem o `on` de cada filtro e a
 paridade passo a passo — a cadeia não reimplementa a regra.
 
+### #1152 — falha de AMBIENTE no deploy e sonda externa
+
+Produção ficou ~20 h inacessível por fora (firewall do macOS enfileirando o Python) e o rollback do
+deploy de 11-12 também falhou. Agora o smoke vermelho do deploy é classificado ANTES de reverter:
+loopback do mini 200 + LAN morta = ambiente → PARA, diagnostica (conta os "Enqueuing" do ALF) e não
+reinicia. `tools/probe_externo.sh` sonda LAN e público (só `/health`, sem chave) a cada 5 min e alarma
+na 2ª falha seguida (`remote/RUNBOOK-FIREWALL.md` traz o passo do dono).
+
+| Sabotagem | Resultado |
+|---|---|
+| o deploy não consulta `_ambiente_bloqueado` (reverte sempre) | `test_ambiente_bloqueado_*` (2) **FAILED** |
+| `_ambiente_bloqueado` ignora o loopback (todo vermelho vira "ambiente") | `test_deploy_com_smoke_vermelho_reverte…` e `test_health_vermelho_tambem_no_loopback…` **FAILED** |
+| a sonda alarma em toda falha ≥ N (não só na N-ésima) | `test_uma_falha_nao_alarma_duas_seguidas_sim_uma_vez_so` **FAILED** |
+| a sonda aceita 200 sem o corpo `"ok"` | `test_200_sem_corpo_ok_vale_falha` **FAILED** |
+
 ### O que a suíte de áudio (`live_barge_rep.sh`) cobra por bloco
 
 | Bloco | Cenário | Piso |

@@ -764,11 +764,43 @@ deploy() {
   print -r -- "  esperando ${ESPERA}s o run.sh subir a porta…"
   sleep "$ESPERA"
   POS_DEPLOY=1 REV_ALVO="$ALVO_SHA" smoke && return 0
+  # Falha de ambiente (loopback ok, LAN morta): reverter não conserta (#1152)
+  _ambiente_bloqueado && return 3
   # Smoke vermelho com o rev JÁ no ar: deixar assim é produção quebrada esperando
   # alguém digitar outro comando. Volta sozinho para o rev do estado (o anterior
   # a este deploy) e diz em destaque o que aconteceu (#345).
   _reverte_e_reporta "$ALVO_SHA"
   return 1
+}
+
+# ---------------------------------------------------------------- ambiente (#1152)
+
+# Falha de AMBIENTE não é falha do rev: com o app respondendo 200 no loopback DO MINI
+# e a LAN morta, trocar de rev não conserta nada (o rollback de 2026-11-12 ficou
+# igual). Era o firewall do macOS (ALF) segurando as conexões de entrada do Python
+# ("Enqueuing new inbound flow for Python") à espera de um clique na tela do mini.
+# Aqui o smoke vermelho é classificado ANTES de reverter: ambiente → PARA e diagnostica
+# (sem kickstart extra), em vez de reiniciar a produção por uma causa que o restart
+# não toca. O comando do log do ALF é injetável para o teste (`TTS_MINI_ALF_CMD`).
+ALF_CMD="${TTS_MINI_ALF_CMD:-/usr/bin/log show --last 10m --info --predicate 'process == \"socketfilterfw\"'}"
+_ambiente_bloqueado() { # 0 = ambiente (loopback ok, LAN morta); imprime o diagnóstico
+  local lo lan alf
+  lo="$(distante "curl -s -m 8 -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORTA/health 2>/dev/null" | tail -1 | tr -d '[:space:]')"
+  [ "$lo" = 200 ] || return 1
+  lan="$(codigo_http -o /dev/null -w '%{http_code}' "http://$HOST:$PORTA/health")"
+  [ "$lan" = 200 ] && return 1
+  alf="$(distante "$ALF_CMD 2>/dev/null | grep -c 'Enqueuing new inbound flow'" | tail -1 | tr -d '[:space:]')"
+  print -r -- ""
+  print -r -- "== FALHA DE AMBIENTE, NÃO DO REV (#1152) — NÃO vou reverter nem reiniciar"
+  print -r -- "  loopback do mini /health = 200, mas pela LAN ($HOST:$PORTA) = ${lan:-000}: o app está vivo e o caminho de rede, preso."
+  if [ "${alf:-0}" -gt 0 ] 2>/dev/null; then
+    print -r -- "  causa provável: firewall do macOS (ALF) com ${alf} fluxo(s) de entrada do Python ENFILEIRADOS (diálogo \"Permitir conexões?\" pendente na tela do mini)."
+    print -r -- "  passo do dono: clicar Permitir na tela do mini, ou no terminal do mini: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp <Python.app> (runbook: remote/RUNBOOK-FIREWALL.md)."
+  else
+    print -r -- "  sem 'Enqueuing' do ALF nos últimos 10 min: ver firewall/rota/cloudflared no mini antes de culpar o rev."
+  fi
+  print -r -- "  rev no ar: ${ALVO_SHA[1,12]}; estado de rollback preservado ($(_sha_do_estado | cut -c1-12)). Depois de liberar: ./remote/deploy_mini.sh smoke"
+  return 0
 }
 
 # ---------------------------------------------------------------- rollback

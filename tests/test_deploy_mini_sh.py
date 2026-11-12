@@ -102,6 +102,10 @@ print -r -- "$metodo $url" >> "$T_CURL_LOG"
 codigo=200; corpo=""; arquivo=""
 case "$url" in
   */ttsproxy/ttsproxy/*) codigo="${T_CURL_PREFIXO_DUPLO_CODE:-401}" ;;
+  http://127.0.0.1:*/health)
+      # #1152: o loopback DO MINI (o smoke de ambiente o consulta por ssh). Sem override
+      # segue o código geral, então os testes antigos de health vermelho não mudam.
+      codigo="${T_CURL_LOOPBACK_CODE:-${T_CURL_HEALTH_CODE:-200}}"; corpo='{"ok":true}' ;;
   */health)
       # `T_CURL_HOST_CODE` só vale para a requisição que manda `Host:` — é a
       # sonda da allowlist do #779, e as outras checagens de /health seguem 200
@@ -1127,6 +1131,54 @@ def test_deploy_com_smoke_vermelho_reverte_para_o_rev_anterior(amb):
     assert _log(amb, "launch") == [f"kickstart -k gui/{os.getuid()}/{LABEL}"] * 2
     # e a árvore viva volta a ser a do rev anterior (paridade do index.html)
     assert (Path(amb["TTS_MINI_DIR"]) / "static" / "index.html").read_text() == "<html>v2</html>\n"
+
+
+# --- #1152: falha de AMBIENTE (loopback ok, LAN morta) não reverte nem reinicia -------------------
+def _deploy_ambiente_bloqueado(amb, alf_texto: str):
+    anterior = _sha(amb, "HEAD~1")
+    amb["TTS_MINI_REV"] = anterior
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    Path(amb["T_LAUNCH_LOG"]).unlink()
+    amb.pop("TTS_MINI_REV", None)
+    log_alf = Path(amb["T_LAUNCH_LOG"]).parent / "alf.log"
+    log_alf.write_text(alf_texto)
+    amb["TTS_MINI_ALF_CMD"] = f"cat {log_alf}"
+    amb["T_CURL_HEALTH_CODE"] = "000"          # a LAN/público não respondem…
+    amb["T_CURL_LOOPBACK_CODE"] = "200"        # …mas o app está vivo no loopback do mini
+    return anterior, _run(amb, "deploy", "--apply")
+
+
+def test_ambiente_bloqueado_com_alf_nao_reverte_nem_reinicia_de_novo(amb):
+    """O incidente de 2026-11-12: o rollback também falhou porque a causa era o firewall do
+    macOS segurando a LAN. Trocar de rev não conserta; reiniciar a produção por isso é pior."""
+    anterior, r = _deploy_ambiente_bloqueado(
+        amb, "x socketfilterfw: Enqueuing new inbound flow for Python with identifier: org.python.python\n" * 3)
+    assert r.returncode == 1, _saida(r)
+    assert "FALHA DE AMBIENTE, NÃO DO REV" in r.stdout
+    assert "ENFILEIRADOS" in r.stdout and "3 fluxo(s)" in r.stdout
+    assert "socketfilterfw --unblockapp" in r.stdout
+    assert "REVERTIDO" not in r.stdout and "revertendo sozinho" not in r.stdout
+    assert len(_log(amb, "launch")) == 1, "reiniciou de novo por causa de falha de ambiente"
+    assert _head(amb, "mini") != anterior, "voltou o rev (rollback indevido)"
+
+
+def test_ambiente_bloqueado_sem_alf_ainda_nao_reverte_e_diz_para_olhar_a_rede(amb):
+    _, r = _deploy_ambiente_bloqueado(amb, "nada do firewall aqui\n")
+    assert r.returncode == 1, _saida(r)
+    assert "FALHA DE AMBIENTE" in r.stdout and "sem 'Enqueuing' do ALF" in r.stdout
+    assert "REVERTIDO" not in r.stdout and len(_log(amb, "launch")) == 1
+
+
+def test_health_vermelho_tambem_no_loopback_continua_revertendo(amb):
+    """Controle: app quebrado de verdade (loopback também vermelho) é falha DO REV."""
+    anterior = _sha(amb, "HEAD~1")
+    amb["TTS_MINI_REV"] = anterior
+    assert _run(amb, "deploy", "--apply").returncode == 0
+    Path(amb["T_LAUNCH_LOG"]).unlink()
+    amb.pop("TTS_MINI_REV", None)
+    amb["T_CURL_CODE_PRIMEIRO"] = "502"
+    r = _run(amb, "deploy", "--apply")
+    assert "FALHA DE AMBIENTE" not in r.stdout and "REVERTIDO" in r.stdout
 
 
 def test_rollback_automatico_sem_estado_diz_que_e_manual(amb):
