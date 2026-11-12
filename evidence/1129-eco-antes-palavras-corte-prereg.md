@@ -75,3 +75,11 @@ O trem cresceu antes da medida (regra do #446). O HEAD é o `5b12f9a` (`wt/speec
 - **Nome do campo no C1 do cancel:** o clone `5b12f9a` é anterior ao `d1ea6eb`, então a espera do `enviado` sai
   como `enviado.fila_ms` (o nome do `90948a1`). O nome `espera_ms` só vale do `d1ea6eb` em diante. O `fila_ms` do
   `niveis` é OUTRA coisa (áudio por tocar) e não entra no C1.
+- **C2 do cancel, medido à parte (adendo de 2026-11-12, ANTES de largar):** o readout `7add436` deixou o C2 sem
+  medir, porque o `live_bench` não exportava o áudio recebido depois do `interrupted`. O instrumento é o `f2c306b`
+  (`S3.pos_corte_com_audio`: cortes com ≥ 1 chunk de áudio entre o `interrupted` e o `transcript_user` do turno
+  seguinte). Rodada `s3c`, depois do glk2: 2 blocos **depois** (`5b12f9a`, eco −15, `--ciclos 10`, n ≈ 10 cortes),
+  com o servidor do clone e o `live_bench` do `f2c306b`. Critério do `90948a1` sem mudança:
+  **`pos_corte_com_audio` = 0** no braço depois. Mais 1 bloco **antes** (`50e352f`) como CONTROLE POSITIVO do
+  instrumento. Ele não decide o C2, só mostra que o contador vê o vazamento quando existe. Se o controle der 0, o
+  instrumento fica sob suspeita e o C2 não é dado como passado.

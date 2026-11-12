@@ -21,7 +21,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `1087-deploy-head-e8ea9df.txt` | #1087 | 2026-11-09 | deploy de e8ea9df no mini — 2026-11-09 20:33 |
 | `1116-marca-sem-compile.md` | #1116 | 2026-11-10 | 1116 — marca d'água sem `torch.compile` (1º trecho quente) |
 | `1120-deploy-head-7303b8e.txt` | #1120 | 2026-11-10 | == deploy 7303b8e (main) no mini — 2026-11-10 22:45 (#1120, autorizado pelo dono 22:04) |
-| `1129-barge-nao-detectado-prereg.md` | #1129 | 2026-11-11 | 1129 — interrupção do dono não detectada com AEC ligado: PRÉ-REGISTRO (2026-11-11, antes de medir) |
+| `1129-barge-nao-detectado-prereg.md` | #1129 | 2026-11-12 | 1129 — interrupção do dono não detectada com AEC ligado: PRÉ-REGISTRO (2026-11-11, antes de medir) |
 | `1129-eco-antes-palavras-corte-prereg.md` | #1129 | 2026-11-12 | 1129 / task_3ecbe8f5 — filtro `eco` antes de `palavras_corte`: PRÉ-REGISTRO (2026-11-11, antes do código) |
 | `1129-proxy-s3-readout.md` | #1129 | 2026-11-12 | 1129 — proxy sintético S3 (H1, curva do limiar por margem): READOUT |
 | `1135-gen-vs-tamanho-texto.py` | #1135 | 2026-11-12 | """#1135 — custo do `generate` contra o tamanho do texto do 1º trecho (micro-bench local, MLX). |
