@@ -59,3 +59,16 @@ Com tolerância no lugar do match exato, as células do #547 e de "para tudo" ca
 Passa se P-a1 **e** P-a2 passarem. Se o P-a1 falhar, o texto que escapou mostra o caminho (match
 exato rígido demais para o STT, ou a referência `texto_em_reproducao` errada). Se o P-a2 falhar,
 volta para análise antes do deploy.
+
+### Adendo (2026-11-12, ANTES de medir): os clones exatos
+
+O trem cresceu antes da medida (regra do #446). O HEAD é o `5b12f9a` (`wt/speech-pipeline-cancel`):
+`50e352f` → `9e2bab4` (cancel) → `c5966d7` (esta troca) → `9ea2faa` (gate do qa no cancel) → `c84a6cd`
+(telemetria do árbitro) → `1dae648` (comentário) → merge do `f5a1333` (instrumento de ms).
+
+- **Depois** = clone em `5b12f9a`.
+- **Antes** = o MESMO clone com `git revert --no-commit c5966d7` (só a troca de ordem sai; cancel,
+  telemetria e instrumento ficam). Assim a diferença entre os braços é só a troca.
+- Ordem no mini, em série e depois do glk, sob o `bancada.lock`: primeiro a medida do cancel (C1–C4,
+  `90948a1`, eco −15, ABAB), depois esta (eco −6 e −10, braços alternados por condição: antes, depois).
+- Critérios P-a1/P-a2 sem mudança. O readout "depois" sai ANTES de qualquer deploy (P3 do qa).
