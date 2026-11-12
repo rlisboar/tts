@@ -11,7 +11,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 
 | arquivo | task | data | o que mostra |
 |---|---|---|---|
-| `1022-hipoteses-falsificacao.md` | #1022 | 2026-11-10 | 1022 — hipóteses de causa do pos_llm e critérios de FALSIFICAÇÃO (pré-registro) |
+| `1022-hipoteses-falsificacao.md` | #1022 | 2026-11-12 | 1022 — hipóteses de causa do pos_llm e critérios de FALSIFICAÇÃO (pré-registro) |
 | `1049-deploy-head-48b11d5.txt` | #1049 | 2026-11-09 | == deploy 48b11d5 (main) — 2026-11-09T10:19:17-03:00 |
 | `1060-rede-so-llm.png` | #1060 | 2026-11-09 | (imagem) |
 | `1064-deploy-13716e3.txt` | #1064 | 2026-11-11 | == deploy 13716e3 (main) no mini — 2026-11-11 17:19–17:21 (autorizado pelo dono; #1064, #1128, #1129) |

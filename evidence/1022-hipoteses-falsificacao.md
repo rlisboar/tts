@@ -307,3 +307,32 @@ A exclusividade do Metal (nunca dois `_generate_chunk` juntos) é provada pelas 
 
 **Adendo glk2 (2026-11-12, ANTES de largar):** mesma medida, mesmos critérios M1–M3 sem mudança, no clone `74e2b32` (`wt/speech-pipeline-cancel`: o trem do #1129 + `lote()` do árbitro e cessão antes do trecho 0, achados pelo código depois do bloco com-a do glk).
 Roda depois das medidas do cancel (`90948a1`) e do eco (`92217bf`/`b80be92`), em série, com o `bancada.lock`; o `50e352f` só vai para a main se o glk ou o glk2 passarem.
+
+### Readout do glk (2026-11-12): REPROVA M1 e M2; M3 reprova por contagem num bloco curto
+
+Mini, clone `50e352f`, 6 blocos ABAB (sem-a/com-a/sem-b/com-b/sem-c/com-c, 22:56–00:49), `rc=0` em todos,
+`prod_tts_no_bloco=0`, `ci_amostras=0`. Brutos em `~/tts-bench/glk-res/` (`pos-llm-glk-*.json`, `h6-carga-com-*.json`,
+`h6.log`). Turnos do Live fora do 1º, juntando os 3 blocos de cada braço:
+
+| | sem carga | com carga |
+|---|---|---|
+| `lock+fila` n / p50 / p95 / máx (ms) | 13 / 0 / 1 / 1 | 15 / 337 / **2937** / 2990 |
+| valores `lock+fila` com carga | | 0×7, 337, 676, 900, 2407, 2518, 2518, 2914, 2990 |
+| S2 (`s2_ms`) n / p50 / p95 | 43 / 2510 / 3649 | 42 / 3686 / **9608** |
+| `tts_gen` p95 | 1258 | 1256 |
+| jobs de carga concluídos por bloco `com` (erros) | | 85 (0), 108 (0), **52** (0) |
+
+- **M1 REPROVA:** `lock+fila` p95 2937 ms > 1300 (a H6 deu 2654). O árbitro não entrega "no máximo um trecho".
+  5 de 15 esperas ficam em 2,4–3,0 s, ~2 × `tts_gen`.
+- **M2 REPROVA:** S2 p95 com carga 9608 ms > 5563, e > 1,5 × 3649 (= 5473).
+- **M3, pela letra, REPROVA no com-c:** 52 < 55 jobs, sem nenhum erro. O com-c durou 13,6 min, contra 22 e 28 min
+  dos outros. A vazão é a mesma nos três (~3,9 jobs/min: 86/22, 109/27,7, 53/13,6), então não há sinal de fome do
+  lote. O critério fixou uma contagem absoluta sem fixar a duração do bloco, e isso fica registrado como falha do
+  critério, sem relaxá-lo.
+- **M4:** não passa (esperado).
+
+**Leitura:** o árbitro do `50e352f` não muda a espera do Live com carga. A explicação pelo código, achada depois do
+com-a e antes deste readout: o job novo pegava o `_gen_lock` cru (o RLock não é FIFO) e segurava preparo + trecho 0
+sem ponto de cessão. Com 2 trechos por job, as esperas de ~2 trechos batem com isso. O conserto é o `74e2b32`
+(+ `315aaa3`), a medir no glk2 (adendo `c217f74`) com os mesmos critérios. O `50e352f` não vai para a main sem o
+glk2 passar.
