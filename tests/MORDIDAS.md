@@ -1361,6 +1361,8 @@ depois de cada uma.
 
 As duas camadas do descarte (o `break` do pipeline e o portão do app) só mordem com uma célula por
 camada: com uma só célula, a outra camada cobria a sabotagem.
+
+
 ### task_3ecbe8f5 (#1129) — o filtro `eco` vem ANTES das `palavras_corte`; com palavra de corte, eco só por match exato
 
 No proxy S3 (eco −6) o eco "…com calma…" voltou como "Com calma." e o `palavras_corte`, primeiro da
