@@ -397,6 +397,12 @@ class Cliente:
         self.morreu = asyncio.Event()                   # task do mic caiu (#941)
         self.pausado = False                            # #881: contexto suspenso
         self.pausa_desde = 0.0
+        # #1129 (C2 do 90948a1): áudio que CHEGA depois de um `interrupted` de corte
+        # e antes do `transcript_user` do turno seguinte. É o que o dono ouviria
+        # depois de parar (o cliente já zerou o playback). O áudio de um turno novo
+        # só nasce depois do `transcript_user` dele (o TTS começa depois do STT).
+        self.cortes: list[dict] = []
+        self._corte_aberto: dict | None = None
 
     def agora(self) -> float:
         return time.monotonic() - self.t0
@@ -416,6 +422,10 @@ class Cliente:
                 if isinstance(m, (bytes, bytearray)):
                     pcm = np.frombuffer(m, dtype="<i2").astype(np.float32) / 32768.0
                     self.bin.append((t, len(pcm)))
+                    if self._corte_aberto is not None:
+                        self._corte_aberto["chunks"] += 1
+                        self._corte_aberto["bytes"] += len(m)
+                        self._corte_aberto["ultimo_s"] = round(t - self._corte_aberto["t"], 3)
                     self.play = np.concatenate([self.play, pcm])
                     continue
                 try:
@@ -438,6 +448,12 @@ class Cliente:
                     self.pausado = False
                     if ev.get("motivo") != "continuacao":
                         self.play = np.zeros(0, dtype=np.float32)   # o cliente corta
+                        if self._corte_aberto is None:              # dup não reabre
+                            self._corte_aberto = {"t": t, "turn": ev.get("turn"),
+                                                  "chunks": 0, "bytes": 0}
+                            self.cortes.append(self._corte_aberto)
+                elif tipo == "transcript_user":
+                    self._corte_aberto = None                       # turno novo
                 elif tipo == "pausa_teto":
                     self.pausado = False
         except Exception as exc:                                  # noqa: BLE001
@@ -1012,7 +1028,8 @@ async def sessao(args, corpus: list[dict]) -> dict:
     return {"linhas": linhas, "respostas": resps, "erros": erros, "erros_msg": erros_msg, "textos": textos,
             "proc_ini": proc_ini,
             "proc_fim": proc_fim, "sessao_s": round(time.time() - t_ini),
-            "ciclos": k, "ws_vivo_no_fim": vivo_no_fim, "erro_ws": c.erro}
+            "ciclos": k, "ws_vivo_no_fim": vivo_no_fim, "erro_ws": c.erro,
+            "cortes": [{k2: v for k2, v in x.items() if k2 != "t"} for x in c.cortes]}
 
 
 def _ic95(k: int, n: int) -> list | None:
@@ -1043,6 +1060,7 @@ def resumo(res: dict, args) -> dict:
     inter = [l for l in obs if l["tipo"] == "interrupcao"]
     eco = [l for l in L if "eco_falso_corte" in l]
     resp = [r for r in res["respostas"] if r["chars"]]
+    cortes = res.get("cortes") or []
     r = {
         "erros": res.get("erros") or [],
         "erros_msg": res.get("erros_msg") or [],
@@ -1099,6 +1117,12 @@ def resumo(res: dict, args) -> dict:
                "eco_falso_duck": sum(l.get("eco_falso_duck", False) for l in eco),
                "eco_falso_duck_ic95": _ic95(sum(l.get("eco_falso_duck", False) for l in eco), len(eco)),
                "eco_falso_pausa": sum(l.get("eco_falso_pausa", False) for l in eco),
+               # C2 do #1129: áudio recebido depois do `interrupted` (24 kHz PCM16)
+               "pos_corte_n": len(cortes),
+               "pos_corte_com_audio": sum(x["bytes"] > 0 for x in cortes),
+               "pos_corte_chunks": sum(x["chunks"] for x in cortes),
+               "pos_corte_ms_max": max((round(x["bytes"] / 2 / 24000 * 1000)
+                                        for x in cortes), default=0),
                "meta": "duck ≤300, pausa ≤800, falso corte ≤5 %, falso duck ≤5 %"},
         "S4": {"respostas": len(resp),
                "com_simbolo": sum(bool(r["s4_simbolos"]) for r in resp),

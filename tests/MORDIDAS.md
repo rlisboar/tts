@@ -1432,3 +1432,20 @@ depois do preparo e mascarava a aquisição crua. O marco "P" (o job pegou a tra
 | `enviado` volta a usar `fila_ms` (o mesmo nome do `niveis`, que é ÁUDIO por tocar) | `test_enviado_nao_usa_o_nome_fila_ms_do_niveis` e `test_enviado_mede_quanto_o_evento_esperou_na_fila` **FAILED** |
 | `interrupted_dup` fora de `_LIVE_EVENTOS_CRONO` | `test_interrupted_dup_leva_ts` **FAILED** |
 | a sessão nasce sem `_t_enfileirado` | `test_sessao_nasce_com_a_tabela_de_marcas` **FAILED** (célula de fonte: a corrida do `setdefault` não é reproduzível por célula) |
+
+
+### #1022 (glk2) / P3 do qa no 74e2b32 — `lote()` não espera o prazo com a vez já marcada
+
+| Sabotagem | Resultado |
+|---|---|
+| o `while` do `lote()` sem `not self._vez_do_lote` | `test_lote_com_a_vez_ja_marcada_nao_espera_o_prazo` **FAILED** (esperou o `cede_max_s` inteiro) |
+
+
+### #1129 (C2 do `90948a1`) — o `live_bench` conta o áudio que chega depois do `interrupted`
+
+| Sabotagem | Resultado |
+|---|---|
+| o chunk depois do corte não soma bytes | `test_conta_o_audio_que_chega_depois_do_interrupted` **FAILED** |
+| o corte não fecha no `transcript_user` (o áudio legítimo do turno novo contaria) | `test_conta_o_audio_que_chega_depois_do_interrupted` **FAILED** |
+| `interrupted` duplicado reabre o corte | `test_conta_o_audio_que_chega_depois_do_interrupted` **FAILED** |
+| `interrupted` de continuação (#877) abre corte | `test_interrupted_de_continuacao_nao_abre_corte` **FAILED** |

@@ -504,3 +504,66 @@ def test_resto_e_pos_llm_saem_dos_marcos_de_A_e_nao_dos_de_B():
     assert est["llm_frase"] == 1500 - 1400      # cláusula de A, não 350 − 300
     assert est["tts"] == 2900 - 1520            # geração de A, não 700 − 360
     assert est["resto"] != 2600 - 700           # o valor que o defeito produzia
+
+
+class _WSRoteiro:
+    """WS que entrega uma sequência fixa de frames (bytes = áudio, dict = evento)."""
+
+    def __init__(self, frames):
+        self._it = iter(frames)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        import json
+        try:
+            f = next(self._it)
+        except StopIteration:
+            raise StopAsyncIteration
+        return f if isinstance(f, (bytes, bytearray)) else json.dumps(f)
+
+
+def _audio(ms: int) -> bytes:
+    return b"\x01\x00" * int(24 * ms)          # PCM16 24 kHz
+
+
+def test_conta_o_audio_que_chega_depois_do_interrupted():
+    """C2 do #1129: o chunk que chega depois do `interrupted` e antes do
+    `transcript_user` do turno seguinte é o que o dono ouviria depois de parar."""
+    c = _cliente(_WSRoteiro([
+        _audio(100),                                        # turno 1 tocando
+        {"type": "interrupted", "turn": 1},
+        _audio(80),                                         # VAZOU
+        {"type": "interrupted", "turn": 1},                 # dup: não reabre
+        _audio(20),                                         # vazou também
+        {"type": "transcript_user", "text": "oi"},
+        _audio(200),                                        # turno 2: legítimo
+        {"type": "interrupted", "turn": 2},
+        {"type": "transcript_user", "text": "e aí"},
+        _audio(100),
+    ]))
+    asyncio.run(asyncio.wait_for(c.recebe(), 1.0))
+    assert [(x["turn"], x["chunks"], x["bytes"]) for x in c.cortes] == [
+        (1, 2, len(_audio(80)) + len(_audio(20))), (2, 0, 0)]
+
+
+def test_interrupted_de_continuacao_nao_abre_corte():
+    c = _cliente(_WSRoteiro([
+        {"type": "interrupted", "turn": 1, "motivo": "continuacao"},
+        _audio(50),
+    ]))
+    asyncio.run(asyncio.wait_for(c.recebe(), 1.0))
+    assert c.cortes == []
+
+
+def test_resumo_traz_o_c2():
+    base = {"linhas": [], "respostas": [], "sessao_s": 1, "ciclos": 1,
+            "ws_vivo_no_fim": True, "erro_ws": None, "proc_ini": {}, "proc_fim": {},
+            "erros": [], "cortes": [{"turn": 1, "chunks": 2, "bytes": 4800},
+                                    {"turn": 2, "chunks": 0, "bytes": 0}]}
+    s3 = lb.resumo(base, types.SimpleNamespace(sessao_min=0))["S3"]
+    assert (s3["pos_corte_n"], s3["pos_corte_com_audio"], s3["pos_corte_chunks"],
+            s3["pos_corte_ms_max"]) == (2, 1, 2, 100)
+    del base["cortes"]                                      # JSON antigo, sem o campo
+    assert lb.resumo(base, types.SimpleNamespace(sessao_min=0))["S3"]["pos_corte_n"] == 0
