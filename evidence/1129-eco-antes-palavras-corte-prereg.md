@@ -72,3 +72,6 @@ O trem cresceu antes da medida (regra do #446). O HEAD é o `5b12f9a` (`wt/speec
 - Ordem no mini, em série e depois do glk, sob o `bancada.lock`: primeiro a medida do cancel (C1–C4,
   `90948a1`, eco −15, ABAB), depois esta (eco −6 e −10, braços alternados por condição: antes, depois).
 - Critérios P-a1/P-a2 sem mudança. O readout "depois" sai ANTES de qualquer deploy (P3 do qa).
+- **Nome do campo no C1 do cancel:** o clone `5b12f9a` é anterior ao `d1ea6eb`, então a espera do `enviado` sai
+  como `enviado.fila_ms` (o nome do `90948a1`). O nome `espera_ms` só vale do `d1ea6eb` em diante. O `fila_ms` do
+  `niveis` é OUTRA coisa (áudio por tocar) e não entra no C1.
