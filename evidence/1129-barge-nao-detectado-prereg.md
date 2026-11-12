@@ -146,3 +146,31 @@ detectadas, mas com **duck em 1154–2354 ms (p50 1854)** e **stop em 3073–664
 critério de 1,5 s, só **2/5** contam (1254 e 1154). Mesmo com margem ~13 dB, o que pesa no proxy é a
 **latência** da detecção e do corte, mais do que a falta de detecção. Isso entra no readout como achado
 principal da condição −15.
+
+## Medida do cancel imediato, antes × depois (PRÉ-REGISTRO, 2026-11-12, antes de medir)
+
+**Código:** `wt/speech-pipeline-cancel`, sobre o `50e352f` (genlock). Muda três coisas:
+- o `interrupted` sai NA HORA do cancel, com dedupe por turno;
+- a fila do WS perde o áudio do turno cancelado;
+- o PCM tardio do trecho em geração é descartado.
+
+**Causa medida no proxy (eco −15):** o `interrupted` saía só quando o trecho de TTS em geração voltava.
+O turno 4 teve `cancel` às :54 e `interrupted` às :56 (stop de 6640 ms), e o turno 7 teve `barge_in` repetido 4×.
+
+**Desenho:** a mesma bancada S3 do proxy (`mede_s3.sh`), com os settings não sensíveis de produção,
+corpus FLEURS e sem dump.
+- Dois braços, alternados **antes, depois, antes, depois**: **antes** = clone no `50e352f`; **depois** = clone
+  no SHA do cancel.
+- Condição única **eco −15** (o −15 do proxy), `--ciclos 10` por bloco, o que dá 5 interrupções por bloco
+  e **n = 10 por braço**.
+- Guardas iguais aos do proxy: CI parado, 7860 sem `/api/tts`, `bancada.lock`, nada no `/tmp`.
+
+| critério | passa se | se falhar |
+|---|---|---|
+| **C1, o stop melhora** | stop p50 do braço depois ≤ p50 do antes − **500 ms** **e** stop p95 do depois ≤ p95 do antes | o conserto não chega ao cliente. Investigar a entrega com o `enviado.fila_ms` (#1129) |
+| **C2, nada de áudio depois do corte** | 0 interrupção com áudio recebido pelo cliente depois do `interrupted` no braço depois (pela bancada) | o descarte vaza. Volta ao código |
+| **C3, sem regressão no turno seguinte** | S1 do braço depois ≥ S1 do antes − 1 fala, e 0 turno seguinte mudo | o dedupe ou o portão engoliu o turno novo. Volta ao código |
+| **C4, um cancel por turno (só dado)** | contagem de `cancel` por turno interrompido = 1 no braço depois | dado; não decide |
+
+O duck (abertura da suspeita) **não** muda com este conserto e entra só como dado. A lacuna de ~1 s entre
+servidor e cliente no duck é medida à parte com o instrumento de ms (`enviado`).
