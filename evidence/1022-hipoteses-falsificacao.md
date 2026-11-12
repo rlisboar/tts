@@ -304,3 +304,6 @@ guardas), com **n ≥ 12 por braço** fora do 1º turno.
 | **M4, alvo esticado (só dado)** | `lock+fila` p95 < 100 ms | esperado não passar. Decide se a alavanca seguinte entra |
 
 A exclusividade do Metal (nunca dois `_generate_chunk` juntos) é provada pelas células do código, não por esta medida.
+
+**Adendo glk2 (2026-11-12, ANTES de largar):** mesma medida, mesmos critérios M1–M3 sem mudança, no clone `74e2b32` (`wt/speech-pipeline-cancel`: o trem do #1129 + `lote()` do árbitro e cessão antes do trecho 0, achados pelo código depois do bloco com-a do glk).
+Roda depois das medidas do cancel (`90948a1`) e do eco (`92217bf`/`b80be92`), em série, com o `bancada.lock`; o `50e352f` só vai para a main se o glk ou o glk2 passarem.
