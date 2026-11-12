@@ -5,7 +5,8 @@
 #   1. exige a raiz em `main` e SEM trabalho não commitado (o merge é `--ff-only`,
 #      e WIP na raiz seria atropelado);
 #   2. exige o worktree do agente limpo (commit primeiro, nada de stash invisível);
-#   3. faz `rebase main` no worktree — conflito aborta e volta tudo;
+#   3. faz `rebase main` no worktree — conflito aborta e volta tudo — DENTRO da trava da suíte
+#      (#1153), logo antes do hook: a rodada não nasce velha;
 #   4. roda o HOOK no worktree (é o gate: análise estática + testes);
 #   5. só então `merge --ff-only` do SHA que o hook exercitou na raiz — commit
 #      feito durante a suíte NÃO entra sem gate (#911).
@@ -33,6 +34,17 @@ case "$agente" in
 esac
 WT="$PASTA/$agente"
 branch="wt/$agente"
+
+# #1153: o rebase tem de ser feito DENTRO da trava da suíte, logo antes da suíte. Antes o
+# script rebasava, depois ESPERAVA a trava no hook (30 min+): outra integração entrava nesse
+# intervalo e a rodada já nascia velha ("a main andou durante a rodada", 3 vezes em 2026-11-12).
+# Agora o script inteiro (checagens, rebase, hook, merge) roda sob `fila_suite roda`; o hook,
+# reentrante (TTS_FILA_SEGURA), não pede a trava de novo. `TTS_INTEGRA_FILA=0` desliga.
+if [ "${TTS_FILA_SEGURA:-0}" != 1 ] && [ "${TTS_INTEGRA_FILA:-1}" != 0 ] \
+   && [ -x "$RAIZ/tools/fila_suite.sh" ]; then
+    echo "→ esperando a trava da suíte ANTES do rebase (#1153)"
+    exec "$RAIZ/tools/fila_suite.sh" roda -- bash "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" "$@"
+fi
 
 [ -d "$WT" ] || _aborta "não achei o worktree de $agente em $WT (crie com tools/worktrees.sh cria $agente)"
 git -C "$RAIZ" rev-parse --verify -q "refs/heads/$branch" >/dev/null || _aborta "a branch $branch não existe"

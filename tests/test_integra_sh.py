@@ -80,3 +80,64 @@ def test_integra_mergeia_o_sha_validado_e_nao_a_ref(tmp_path):
     assert _git("rev-parse", "wt/agente", cwd=raiz) != main, (
         "o commit intruso ficou para a próxima rodada")
     assert "a branch andou durante o hook" in r.stdout, "o aviso tem de ser alto"
+
+
+# --- #1153: o rebase acontece DENTRO da trava, não antes de esperá-la -------------------
+
+def _com_fila_falsa(raiz: Path, tmp_path: Path, antes_de_rodar: str) -> None:
+    """tools/fila_suite.sh falso no repo descartável: registra a chamada, executa
+    `antes_de_rodar` (o que acontece ENQUANTO se espera a trava) e roda o comando com
+    TTS_FILA_SEGURA=1, como o real."""
+    f = raiz / "tools" / "fila_suite.sh"
+    f.parent.mkdir(exist_ok=True)
+    f.write_text(
+        "#!/bin/bash\n"
+        f"echo \"roda $*\" >> '{tmp_path}/fila.log'\n"
+        f"{antes_de_rodar}\n"
+        "shift 2\n"                          # `roda --`
+        "TTS_FILA_SEGURA=1 exec \"$@\"\n")
+    f.chmod(0o755)
+    _git("add", "tools/fila_suite.sh", cwd=raiz)
+    _git("commit", "-q", "-m", "fila falsa", cwd=raiz)
+    # o worktree precisa estar à frente de uma base que tem o arquivo: rebase cuida disso
+
+
+def _env_limpo() -> dict:
+    return {k: v for k, v in os.environ.items()
+            if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "TTS_INTEGRA_SEM_HOOK",
+                         "TTS_FILA_SEGURA", "TTS_INTEGRA_FILA")}
+
+
+def test_outra_integracao_entra_enquanto_espera_a_trava_e_o_rebase_a_pega(tmp_path):
+    """O defeito: rebase antes da trava => a main anda durante a espera => "a main andou"."""
+    raiz, wt = _repo(tmp_path)
+    # a "outra integração" que entra na main enquanto este espera a trava
+    _com_fila_falsa(raiz, tmp_path,
+                    f"cd '{raiz}' && echo outro > outro.txt && git add outro.txt "
+                    "&& git commit -q -m 'outra integracao' && cd - >/dev/null")
+    r = subprocess.run([str(SCRIPT), "agente"], cwd=raiz, env=_env_limpo(),
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "a main andou durante a rodada" not in r.stdout + r.stderr
+    log = _git("log", "--format=%s", "main", cwd=raiz).splitlines()
+    assert "outra integracao" in log and "mudanca" in log, log          # as duas na main, linear
+    assert len((tmp_path / "fila.log").read_text().splitlines()) == 1   # a trava foi pedida UMA vez
+    assert "esperando a trava da suíte ANTES do rebase" in r.stdout
+
+
+def test_dentro_da_trava_nao_pede_a_trava_de_novo(tmp_path):
+    raiz, wt = _repo(tmp_path)
+    _com_fila_falsa(raiz, tmp_path, ":")
+    env = {**_env_limpo(), "TTS_FILA_SEGURA": "1"}
+    r = subprocess.run([str(SCRIPT), "agente"], cwd=raiz, env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (tmp_path / "fila.log").exists(), "re-embrulhou sob a trava que já tinha"
+
+
+def test_integra_fila_zero_nao_embrulha(tmp_path):
+    raiz, wt = _repo(tmp_path)
+    _com_fila_falsa(raiz, tmp_path, ":")
+    env = {**_env_limpo(), "TTS_INTEGRA_FILA": "0"}
+    r = subprocess.run([str(SCRIPT), "agente"], cwd=raiz, env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (tmp_path / "fila.log").exists()

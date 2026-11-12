@@ -1433,3 +1433,15 @@ dono e `status` distingue PRESENTE de ÓRFÃO.
 | `ln -f` (volta a sobrescrever) | `test_dois_pega_simultaneos_um_espera_o_outro` e `test_pega_esgota_o_teto_*` **FAILED** |
 | sem o ramo de órfão | `test_pega_toma_o_lock_de_dono_morto_e_status_acusa_orfao` **FAILED** |
 | sem o `sleep` com a guarda fresca (laço quente, 28 s de CPU no qa) | `test_guarda_fresca_de_outro_pega_nao_gira_o_laco_quente` **FAILED** |
+
+### #1153 — o `integra.sh` rebasa DENTRO da trava
+
+O script rebasava, depois esperava a trava no hook (30 min+); outra integração entrava no intervalo e a
+rodada nascia velha ("a main andou durante a rodada", 3 vezes em 2026-11-12, suíte verde jogada fora). Agora
+o script inteiro roda sob `fila_suite roda`, o rebase é feito já com a trava, logo antes da suíte, e o hook
+(reentrante) não pede de novo. `TTS_INTEGRA_FILA=0` desliga.
+
+| Sabotagem | Resultado |
+|---|---|
+| o `integra.sh` volta a rebasar antes da trava (sem o embrulho) | `test_outra_integracao_entra_enquanto_espera_a_trava_e_o_rebase_a_pega` **FAILED** |
+| sem a guarda de reentrância (re-embrulha sob a trava que já tem) | `test_dentro_da_trava_nao_pede_a_trava_de_novo` e a de "outra integração" **FAILED** |
