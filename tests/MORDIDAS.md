@@ -1376,3 +1376,15 @@ Pré-registro `92217bf`.
 
 `[para]` e `[não, espera]` não mordem com a 2ª sabotagem, por desenho: 1 palavra nunca é eco
 (`_ECO_MIN_PALAVRAS`), e "espera" fora da referência é marcador de humano. São guardas de regressão.
+
+
+### #1129 / gate do qa no cancel imediato (task_78871739) — portão depois da marca, `_bytes` sem foto, ordem do `ja.add`, `fala_ms`
+
+Rodadas por `tests/test_cancel_imediato_1129.py`, restaurando do índice depois de cada uma.
+
+| Sabotagem | Resultado |
+|---|---|
+| sem o 2º portão em `_live_envia_audio` (só o do `_envia_pcm`, antes da marca) | `test_cancel_durante_a_marca_nao_deixa_o_pcm_tardio_ir_ao_ar` **FAILED** (o chunk entra depois do `interrupted`) |
+| `descarta_audio` recalcula `_bytes` da foto | `test_descarta_audio_nao_apaga_o_put_concorrente_do_contador` **FAILED** (`_bytes` negativo no `get`) |
+| `ja.add` depois do envio do `interrupted` | `test_interrupted_atrasado_entre_o_envio_e_a_marca_do_turno_e_engolido` **FAILED** (2 `interrupted`) |
+| `fala_ms` some do ramo do pipeline ocupado | `test_fala_ms_vai_no_interrupted_do_ramo_do_pipeline_ocupado` **FAILED** |

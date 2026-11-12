@@ -253,3 +253,94 @@ def test_camada_app_cancel_que_chega_depois_do_check_do_pipeline_e_barrado():
     itens = _drena(sess["fila"])
     assert not [i for i in itens if i[0] == "audio"], "o portão do app deixou passar"
     assert [i for i in itens if i[0] == "json" and i[1]["type"] == "interrupted"]
+
+
+# --------------------------------------------------------------------------
+# gate do qa (task_78871739): portão depois da marca, `_bytes` sem foto,
+# turno marcado antes do envio, `fala_ms` no ramo do pipeline ocupado
+# --------------------------------------------------------------------------
+class _PipeOcupado:
+    ocupado = True
+
+    def __init__(self, turno):
+        self._turno_atual = turno
+
+    def cancel(self, sem_historico=False):
+        pass
+
+
+def test_cancel_durante_a_marca_nao_deixa_o_pcm_tardio_ir_ao_ar(monkeypatch):
+    """P2 do qa: o portão do `_envia_pcm` passa, a marca segura o chunk (até 1,5 s) e
+    o cancel chega no meio. Sem o 2º portão o chunk entrava DEPOIS do `interrupted`."""
+    entrou, libera = threading.Event(), threading.Event()
+
+    def marca(pcm, sr=16000):
+        entrou.set()
+        libera.wait(5)
+        return pcm
+    monkeypatch.setattr(app, "_marca_pcm", marca)
+    sess = _sess()
+    p, _ = _pipeline(sess)
+
+    def envia_pcm(pcm):
+        if app._live_pcm_do_turno_cancelado(sess, sess.get("pipe")):
+            return
+        app._live_envia_audio(sess, pcm, marcar=True)
+    p.emit_audio = envia_pcm
+    t = _roda_turno(p)
+    assert entrou.wait(5)
+    sess["turno"] = p._turno_atual
+    app._live_cancela(sess, forcar=True)                   # chega DURANTE a marca
+    libera.set()
+    t.join(10)
+    assert not [i for i in _drena(sess["fila"]) if i[0] == "audio"]
+
+
+def test_descarta_audio_nao_apaga_o_put_concorrente_do_contador():
+    """P3 do qa: o `put` da thread do TTS caindo entre a varredura (sob o mutex da
+    fila) e o acerto do `_bytes` (sob `_trava`) era sobrescrito pela foto velha."""
+    fila = app._LiveFila(1 << 22)
+    fila.put(("audio", b"\x00" * 100))                     # o áudio do turno cancelado
+    real = fila._trava
+    pendente = [lambda: fila.put(("audio", b"\x01" * 100))]
+
+    class Trava:
+        def __enter__(self):
+            if pendente:
+                pendente.pop()()                           # o put da outra thread
+            return real.__enter__()
+
+        def __exit__(self, *a):
+            return real.__exit__(*a)
+    fila._trava = Trava()
+    assert fila.descarta_audio() == 1
+    assert fila.bytes == 100 and fila.qsize() == 1
+    fila.get(False)
+    assert fila.bytes == 0, "contador negativo: o teto de 2 MiB vira furo"
+
+
+def test_interrupted_atrasado_entre_o_envio_e_a_marca_do_turno_e_engolido(monkeypatch):
+    """P3 do qa: o turno entra em `_interrompidos` ANTES de o aviso ir à fila; o
+    `interrupted` do pipeline que chegar nesse vão é engolido, não duplica."""
+    sess = _sess(pipe=_PipeOcupado(5), turno=5)
+    orig = app._live_envia_json
+    tardio = {"type": "interrupted", "turn": 5, "_do_pipeline": True, "_turno_pipe": 5}
+
+    def envia(s, obj):
+        if tardio is not None and obj.get("type") == "interrupted" \
+                and not obj.get("_do_pipeline"):
+            orig(s, dict(tardio))                          # a outra thread chega antes
+        orig(s, obj)
+    monkeypatch.setattr(app, "_live_envia_json", envia)
+    app._live_cancela(sess, forcar=True)
+    tipos = [i[1].get("type") for i in _drena(sess["fila"]) if i[0] == "json"]
+    assert tipos.count("interrupted") == 1
+
+
+def test_fala_ms_vai_no_interrupted_do_ramo_do_pipeline_ocupado():
+    """P3 do qa: os testes de `fala_ms` (#881) só cobriam o ramo antigo (`pipe=None`)."""
+    sess = _sess(pipe=_PipeOcupado(2), turno=2)
+    app._live_cancela(sess, forcar=True, fala_ms=850)
+    avisos = [i[1] for i in _drena(sess["fila"])
+              if i[0] == "json" and i[1].get("type") == "interrupted"]
+    assert len(avisos) == 1 and avisos[0].get("fala_ms") == 850

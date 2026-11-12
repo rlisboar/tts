@@ -12485,16 +12485,21 @@ class _LiveFila:
         """#1129: o turno foi cancelado — o áudio dele que ainda NÃO saiu da fila não
         vai mais ao ar (o cliente já descartou o playback no `interrupted`). JSON fica.
         Devolve quantos itens de áudio saíram."""
-        n = 0
+        n = removido = 0
         with self._q.mutex:
             fica = [it for it in self._q.queue if not (it is not None and it[0] == "audio")]
             n = len(self._q.queue) - len(fica)
             if n:
+                removido = sum(self._peso(it) for it in self._q.queue) - sum(
+                    self._peso(it) for it in fica)
                 self._q.queue.clear()
                 self._q.queue.extend(fica)
         if n:
+            # DECREMENTA pelo que saiu, nunca recalcula: o `put` soma DEPOIS do
+            # `_q.put`, sob outra trava, e um total tirado da foto sobrescreveria
+            # o `+=` de um put concorrente (`_bytes` negativo no `get`, qa #1129)
             with self._trava:
-                self._bytes = sum(self._peso(it) for it in fica)
+                self._bytes -= removido
                 self.descartados += n
         return n
 
@@ -12655,6 +12660,12 @@ def _live_envia_audio(sess: dict, pcm: bytes, *, marcar: bool = True,
     if pcm:
         if marcar:
             pcm = _marca_pcm(pcm, _LIVE_AUDIO_SR)  # 24 kHz, grade 16 kHz por dentro (#908)
+        # #1129 (qa): o portão do `_envia_pcm` roda ANTES da marca, que pode levar
+        # até 1,5 s (`_LIVE_MARCA_PRAZO_S`). Um cancel nessa janela não acha o chunk
+        # na fila (`descarta_audio`) e ele entraria DEPOIS do `interrupted`, tocando
+        # no cliente que já limpou o playback. Confere de novo antes do `put`.
+        if _live_pcm_do_turno_cancelado(sess, sess.get("pipe")):
+            return
         if relogio is not None and relogio.get("marca") is None:
             relogio["marca"] = time.perf_counter()
         _live_janela_turno(sess, True)   # #167: turno do assistente com áudio em voo
@@ -12951,12 +12962,14 @@ def _live_cancela(sess: dict, do_cliente: bool = False, *,
             tirados = sess["fila"].descarta_audio() if hasattr(sess["fila"], "descarta_audio") else 0
             if tirados:
                 sess["audio_pendente"] = max(0, sess.get("audio_pendente", 0) - tirados)
+            # marca o turno ANTES de enfileirar: o `interrupted` atrasado do
+            # pipeline (outra thread) que chegar entre o envio e a marca duplicaria
+            if turno_pipe is not None:
+                ja.add(turno_pipe)
             aviso = {"type": "interrupted", "turn": sess["turno"]}
             if fala_ms is not None:
                 aviso["fala_ms"] = int(fala_ms)
             _live_envia_json(sess, aviso)
-            if turno_pipe is not None:
-                ja.add(turno_pipe)
             return
     if not em_curso:
         # ocioso: nada a interromper. O stub lê esta flag para não abrir turno e
