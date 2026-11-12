@@ -11617,8 +11617,20 @@ def _provedor_marca(estado: str, http: int | None = None) -> None:
     _provedor_estado.update({"estado": estado, "http": http, "ts": time.monotonic()})
 
 
+#: #1129: eventos do barge/turno que levam `ts=` em ms (relógio de PAREDE do servidor).
+#: O prefixo `HH:MM:SS` da linha tem 1 s de resolução e não separava, no proxy do
+#: #1129, a decisão do servidor da chegada no cliente. O prefixo NÃO muda: quem lê o
+#: log pelo começo da linha segue igual; o `ts=` é um campo a mais, no fim.
+_LIVE_EVENTOS_CRONO = frozenset({
+    "speech_start", "speech_end", "barge_suspeito", "barge_decisao", "barge_pausa",
+    "barge_retoma", "barge_in", "cancel", "interrupted", "enviado",
+})
+
+
 def _live_log_kv(evento: str, **campos) -> None:
     """Uma linha de metadados: `evento chave=valor …` (nada de áudio/texto)."""
+    if evento in _LIVE_EVENTOS_CRONO and "ts" not in campos:
+        campos["ts"] = _live_ts()
     _live_log.info("%s %s", evento,
                    " ".join(f"{k}={v}" for k, v in campos.items() if v is not None))
 
@@ -12504,7 +12516,13 @@ def _live_envia_json(sess: dict, obj: dict) -> None:
         # `busy`, `json`, `comando`) ficam de fora.
         _live_janela_turno(sess, False)
     _live_observa(sess, obj)
-    sess["fila"].put(("json", _live_enriquece(sess, obj)))
+    carga = _live_enriquece(sess, obj)
+    if obj.get("type") in _LIVE_EVENTOS_CRONO:
+        # #1129: quando entrou na fila do WS — o `enviado` mede quanto esperou
+        # atrás do áudio. Chave pelo id do dict (vive na fila até o envio); a
+        # tabela é da sessão e sai com ela.
+        sess.setdefault("_t_enfileirado", {})[id(carga)] = time.monotonic()
+    sess["fila"].put(("json", carga))
 
 
 def _live_conta_underrun(sess: dict, nbytes: int) -> None:
@@ -14317,6 +14335,21 @@ async def _live_manda_stats(sess: dict, ws) -> bool:
     return True
 
 
+def _live_enviado(sess: dict, payload) -> None:
+    """#1129: evento do barge/turno ESCRITO no WS: `enviado` com o `ts` (ms) e quanto
+    ficou na fila atrás do áudio (`fila_ms`). Só número; nunca levanta."""
+    try:
+        tipo = payload.get("type") if isinstance(payload, dict) else None
+        if tipo not in _LIVE_EVENTOS_CRONO:
+            return
+        t0 = (sess.get("_t_enfileirado") or {}).pop(id(payload), None)
+        _live_log_kv("enviado", sess=sess.get("id"), tipo=tipo,
+                     turno=payload.get("turn"),
+                     fila_ms=(int((time.monotonic() - t0) * 1000) if t0 is not None else None))
+    except Exception:                         # noqa: BLE001 — telemetria não derruba
+        pass
+
+
 async def _live_sender(sess: dict, ws) -> None:
     """Única task que escreve no WS (evita corrida de send entre turno e eventos)."""
     fila = sess["fila"]
@@ -14349,6 +14382,7 @@ async def _live_sender(sess: dict, ws) -> None:
                 # mesmo ramo da exceção: o par parou de ler, o socket acabou.
                 if tipo == "json":
                     await asyncio.wait_for(ws.send_json(payload), _LIVE_SEND_TIMEOUT_S)
+                    _live_enviado(sess, payload)
                 else:
                     await asyncio.wait_for(ws.send_bytes(payload), _LIVE_SEND_TIMEOUT_S)
             except Exception:  # noqa: BLE001 — o socket morreu (a limpeza de recursos
