@@ -1409,3 +1409,14 @@ Rodadas por `tests/test_cancel_imediato_1129.py`, restaurando do índice depois 
 | o corte não fecha no `transcript_user` (o áudio legítimo do turno novo contaria) | `test_conta_o_audio_que_chega_depois_do_interrupted` **FAILED** |
 | `interrupted` duplicado reabre o corte | `test_conta_o_audio_que_chega_depois_do_interrupted` **FAILED** |
 | `interrupted` de continuação (#877) abre corte | `test_interrupted_de_continuacao_nao_abre_corte` **FAILED** |
+### #1135 — `latency` do 1º áudio leva o prefixo de ref, o CFG e os passos do `tts_gen`
+
+Células em `tests/test_tts_params_1135.py` (5). Só leitura: o `_tts_app` grava `tts_ref_tokens`/
+`tts_cfg`/`tts_steps` no `espera` do turno e o laço do 1º áudio os copia para o `latency` (a
+bancada os lê em `s2_tts_params`). `guidance_scale=0` (o braço B) é valor, não ausência.
+
+| Sabotagem | Resultado |
+|---|---|
+| `_tts_app` sem gravar `tts_ref_tokens` | `test_tts_app_grava_prefixo_cfg_e_passos` e `test_cfg_desligado_continua_medido_como_zero` **FAILED** |
+| `if _o.get("guidance_scale"):` (CFG 0 vira ausente) | `test_cfg_desligado_continua_medido_como_zero` **FAILED** |
+| laço do 1º áudio sem copiar `_TTS_PARAMS` para o `latency` | `test_latency_do_1o_audio_leva_os_parametros` **FAILED** |

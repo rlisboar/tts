@@ -1288,6 +1288,9 @@ class LivePipeline:
                     for _k in _TTS_SUB_MARCAS:
                         if espera.get(f"tts_{_k}_ms") is not None:
                             lat[f"tts_{_k}_ms"] = int(espera[f"tts_{_k}_ms"])
+                    for _k in _TTS_PARAMS:               # #1135: o que o gen custou por
+                        if espera.get(f"tts_{_k}") is not None:
+                            lat[f"tts_{_k}"] = espera[f"tts_{_k}"]
                     self.ultima_latencia = dict(lat)
                     primeiro = False
                 # libera VRAM FORA do caminho crítico: o áudio acima já foi emitido
@@ -1876,6 +1879,12 @@ def _llm_stream_app(messages: list):
 #: #1065 aprovou um par em que um gravava `modelo_ms` e o outro lia
 #: `tts_modelo_ms`: a janela sairia toda `None`).
 _TTS_SUB_MARCAS = ("modelo", "cond", "prep", "gen")
+#: #1135: PARÂMETROS que o `tts_gen` custa por (não são ms): comprimento do prefixo
+#: de referência em tokens (25/s; 0 = sem clone), `guidance_scale` do CFG e passos.
+#: O custo do passo é linear no prefixo e dobra com o CFG (evidence/1135-…): sem
+#: eles a bancada de A/B não separa "gen mais rápido" de "voz de amostra mais curta".
+#: Só leitura — nada aqui muda a geração. Mesma regra das sub-marcas: ausente = None.
+_TTS_PARAMS = ("ref_tokens", "cfg", "steps")
 
 
 def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
@@ -1921,8 +1930,18 @@ def _tts_app(texto: str, omni: dict, voice_id: str | None = None,
         conds = app._cond_for(model, voice_id, path)
         _marco("cond")
         ref_text = app._voice_ref_text(voice_id)
+        if espera is not None:                            # #1135: tokens do prefixo
+            _n = getattr(conds, "shape", None)
+            if _n:
+                espera["tts_ref_tokens"] = int(_n[0])
     elif path.exists():
         ref_audio = str(path)
+    if espera is not None:                                # #1135: CFG e passos do trecho
+        _o = omni or {}
+        if _o.get("guidance_scale") is not None:
+            espera["tts_cfg"] = float(_o["guidance_scale"])
+        if _o.get("num_steps") is not None:
+            espera["tts_steps"] = int(_o["num_steps"])
     trava = app._gen_lock
     _marco("prep")
     t_trava = _t.perf_counter()

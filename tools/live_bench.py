@@ -767,6 +767,10 @@ async def ciclo(c: Cliente, k: int, fa: dict, fb: dict, curta: bool,
                 la["s2_pos_llm_ms"] = max(0, la["s2_ms"] - la["s2_llm_ttft_ms"])
             # #1022: onde o pos_llm gasta, trecho a trecho
             la["s2_estagios"] = estagios_pos_llm(_lat, la.get("s2_ms"))
+            # #1135: o que o `tts_gen` custou por (prefixo de ref, CFG, passos);
+            # ausente = não medido. Fica FORA de `s2_estagios` (não é ms).
+            la["s2_tts_params"] = {k: _lat[f"tts_{k}"] for k in ("ref_tokens", "cfg", "steps")
+                                   if _lat.get(f"tts_{k}") is not None}
     lb["eco_tocado_s"] = round(c.tocado_s, 1) if t_audio_b else 0.0
     if t_audio_b is not None:
         lb["eco_falso_corte"] = bool([e for _, _, e in c.evs(

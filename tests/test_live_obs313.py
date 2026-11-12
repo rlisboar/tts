@@ -282,8 +282,8 @@ def test_tts_app_marca_setup_e_geracao(monkeypatch, tmp_path):
     # copia para o `latency` (+ a espera do lock do #313). Antes cada lado tinha
     # a sua convenção e as sub-marcas nunca chegavam ao evento.
     assert set(espera) == ({f"tts_{k}_ms" for k in lp._TTS_SUB_MARCAS}
-                           | {"lock_espera_ms"})
-    assert all(isinstance(v, int) and v >= 0 for v in espera.values())
+                           | {"lock_espera_ms", "tts_steps"})   # conds sem forma, perfil sem CFG (#1135)
+    assert all(isinstance(v, (int, float)) and v >= 0 for v in espera.values())
 
 
 def test_espera_ausente_nao_inventa_campo(monkeypatch):
