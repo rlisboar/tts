@@ -10,7 +10,7 @@ depois do `cancel` (stop de 6640 ms) — e o motor repetia `barge_in` + `cancel`
   * o `interrupted` atrasado do pipeline para o MESMO turno é engolido — o de um turno
     NOVO, não;
   * o trecho em curso termina COM a `_gen_lock` e o turno seguinte não a pega antes
-    (árbitro do #1022).
+    (a mesma `_gen_lock` do `_tts_app`).
 As células usam o `LivePipeline` real com dublês de STT/LLM/TTS (sem MLX).
 """
 from __future__ import annotations
@@ -77,7 +77,7 @@ def _pipeline(sess, tts_s=0.6, metal=None, frases=("Primeira frase. ", "Segunda 
         cont["n"] += 1
         gerando.set()
         if metal is not None:
-            with app._gen_arbitro.live():            # mesmo árbitro do `_tts_app`
+            with app._gen_lock:                      # a mesma trava do `_tts_app`
                 metal.gera(f"T{p._turno_atual}.{cont['n']}", tts_s)
         else:
             time.sleep(tts_s)
@@ -186,7 +186,7 @@ def test_cancel_tira_da_fila_o_audio_do_turno_e_deixa_o_json():
     assert sess["fila"].bytes == 0 and sess["audio_pendente"] == 0
 
 
-def test_genlock_o_trecho_em_curso_termina_com_a_trava_e_o_turno_seguinte_espera():
+def test_o_trecho_em_curso_termina_com_a_trava_e_o_turno_seguinte_espera():
     metal = _Metal()
     sess = _sess()
     p, gerando = _pipeline(sess, tts_s=0.5, metal=metal, frases=("Uma frase. ",))

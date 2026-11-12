@@ -1392,39 +1392,6 @@ Rodadas por `tests/test_cancel_imediato_1129.py`, restaurando do índice depois 
 | `fala_ms` some do ramo do pipeline ocupado | `test_fala_ms_vai_no_interrupted_do_ramo_do_pipeline_ocupado` **FAILED** |
 
 
-### #1022 (glk) — telemetria do árbitro do `_gen_lock`: `gen_espera_live` e `gen_cede`
-
-Só telemetria, sem mudar a ordem nem os tetos do `50e352f` medido. O `lock` do S2 dizia quanto o Live
-esperou, não QUEM segurava nem se o lote cedeu; o árbitro não logava nada. Rodadas por
-`tests/test_gen_prioridade_live_1022.py`, restaurando do índice.
-
-| Sabotagem | Resultado |
-|---|---|
-| `live()` sem a linha `gen_espera_live` | `test_trecho_do_live_loga_quanto_esperou_a_trava` **FAILED** |
-| `_gen_cede_ao_live` não loga a cessão | `test_lote_loga_a_cessao_com_trecho_e_job` **FAILED** |
-| `_log` do árbitro sem `try` | `test_telemetria_que_explode_nao_derruba_o_trecho_do_live` **FAILED** (o log derruba o trecho) |
-| laço do job sem `trecho`/`job` | `test_o_laco_do_job_passa_trecho_e_job_para_a_telemetria` **FAILED** |
-
-
-### #1022 (glk2) — o job NOVO dá a vez ao Live: aquisição pelo árbitro e cessão antes do trecho 0
-
-O job pegava o `_gen_lock` com `with _gen_lock` cru (o RLock não é FIFO: o Live disputava de igual) e
-segurava preparo + trecho 0 inteiro sem ponto de cessão (o 1º `cede` era no `i > 0`). Agora o job pega
-pela `_GenArbitro.lote()` (espera o Live querendo, com o mesmo teto anti-starvation) e cede também antes
-do trecho 0, depois do preparo. Células com o job local real (`_run_tts_job`) e o trecho real do Live
-(`live_pipeline._tts_app`), só geração/modelo dublês. Rodadas por `tests/test_gen_prioridade_live_1022.py`.
-
-| Sabotagem | Resultado |
-|---|---|
-| job pega a trava cru (sem `lote()`) | `test_job_novo_da_a_vez_ao_live_que_ja_esperava_a_trava` **FAILED** |
-| sem cessão antes do trecho 0 (`if i > 0:` de volta) | `test_live_que_chega_no_preparo_passa_antes_do_trecho_0` e a fiação `test_o_laco_do_job_local_cede_entre_trechos` **FAILED** |
-| `lote()` sem o teto anti-starvation | `test_live_continuo_nao_mata_o_job_novo_de_fome` **FAILED** (2 Lives alternando: o job nunca entra) |
-| job com modelo diferente também dá a vez | `test_job_com_modelo_diferente_nao_da_a_vez` e as 2 células antigas do modelo **FAILED** |
-
-A 1ª versão da célula da aquisição NÃO mordia: a cessão antes do trecho 0 deixava o Live passar logo
-depois do preparo e mascarava a aquisição crua. O marco "P" (o job pegou a trava) separou as duas.
-
-
 ### #1129 / P3 do qa no instrumento de ms (f5a1333) — `espera_ms`, `interrupted_dup` com `ts`, tabela criada com a sessão
 
 | Sabotagem | Resultado |
@@ -1432,13 +1399,6 @@ depois do preparo e mascarava a aquisição crua. O marco "P" (o job pegou a tra
 | `enviado` volta a usar `fila_ms` (o mesmo nome do `niveis`, que é ÁUDIO por tocar) | `test_enviado_nao_usa_o_nome_fila_ms_do_niveis` e `test_enviado_mede_quanto_o_evento_esperou_na_fila` **FAILED** |
 | `interrupted_dup` fora de `_LIVE_EVENTOS_CRONO` | `test_interrupted_dup_leva_ts` **FAILED** |
 | a sessão nasce sem `_t_enfileirado` | `test_sessao_nasce_com_a_tabela_de_marcas` **FAILED** (célula de fonte: a corrida do `setdefault` não é reproduzível por célula) |
-
-
-### #1022 (glk2) / P3 do qa no 74e2b32 — `lote()` não espera o prazo com a vez já marcada
-
-| Sabotagem | Resultado |
-|---|---|
-| o `while` do `lote()` sem `not self._vez_do_lote` | `test_lote_com_a_vez_ja_marcada_nao_espera_o_prazo` **FAILED** (esperou o `cede_max_s` inteiro) |
 
 
 ### #1129 (C2 do `90948a1`) — o `live_bench` conta o áudio que chega depois do `interrupted`
