@@ -1414,7 +1414,15 @@ def _parece_eco(transcript: str, ultimo_assistente: str, minimo: float = 0.6) ->
     if len(dito) > len(alvo) + 1:          # o humano falou mais: não é eco
         return False
     if _marcador_de_humano(transcript, dito, ultimo_assistente, alvo):
-        return False
+        # task_21d2c3b3 (a): o Whisper fecha o ECO com "?" ("Posso te ajudar com
+        # isso?" do "…posso te ajudar com isso agora mesmo."; 3/8 falsos cortes no
+        # proxy −10). Com ≥ 3 palavras casando EXATO numa janela da referência, o
+        # "?" sozinho não faz humano; palavra-marcador fora da referência ainda faz.
+        # Custo declarado (#301): o dono repetindo literalmente ≥ 3 palavras do
+        # agente em tom de pergunta vira eco.
+        so_interrogacao = not ((set(dito) - set(alvo)) & _MARCADORES_HUMANO)
+        if not (so_interrogacao and len(dito) >= 3 and _janela_ate(alvo, dito, 0)):
+            return False
     fracao = (1.0 - minimo) if minimo else _ECO_DIVERGENCIA
     return _janela_ate(alvo, dito,
                        min(_ECO_DIVERGENCIA_TETO, int(round(len(dito) * fracao))))

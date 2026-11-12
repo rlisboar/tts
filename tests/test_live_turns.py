@@ -3363,3 +3363,27 @@ def test_passo_so_comando_com_eco_de_corte_nao_decide(monkeypatch):
     _decide(monkeypatch, sess, "Com calma.", so_comando=True)
     assert not sess["cancelado"].is_set()
     assert sess.get("barge_suspeito") is not None, "o passo não consome a suspeita"
+
+
+# --------------------------------------------------------------------------
+# task_21d2c3b3 (a): o "?" que o Whisper põe no eco não o faz humano
+# --------------------------------------------------------------------------
+def test_eco_fechado_com_interrogacao_nao_corta_o_proprio_agente(monkeypatch):
+    """Proxy S3 −10: o eco de "…posso te ajudar com isso agora mesmo." voltou como
+    "Posso te ajudar com isso?" e o `pergunta` cortou o agente (3/8 falsos cortes)."""
+    import app
+    sess = _sess_eco(_RESPOSTA_PROXY)
+    assert app._live_avalia_filtros(sess, "Posso te ajudar com isso?", 1056, {})[::3] == (
+        "eco", "eco")
+    _decide(monkeypatch, sess, "Posso te ajudar com isso?")
+    assert not sess["cancelado"].is_set()
+
+
+@pytest.mark.parametrize("ouvido", ["posso te ajudar com isso, né?",
+                                    "quando você começa?"])
+def test_pergunta_do_dono_sobre_a_resposta_segue_humana(monkeypatch, ouvido):
+    """Sem janela EXATA (ou com palavra-marcador fora da referência), o "?" vale."""
+    import app
+    sess = _sess_eco(_RESPOSTA_PROXY)
+    tipo, _p, _m, filtro = app._live_avalia_filtros(sess, ouvido, 1200, {})
+    assert filtro != "eco", (tipo, filtro)

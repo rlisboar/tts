@@ -45,6 +45,10 @@ REFS = {
               "sexta-feira. O número de páginas subiu porque entrou a parte de "
               "metas do trimestre. Se você quiser, eu mando a versão revisada por "
               "e-mail antes da reunião com o cliente."),
+    # a resposta do LLM falso do proxy S3 (#1129, task_21d2c3b3)
+    "proxy": ("Claro, posso te ajudar com isso agora mesmo. O mais simples é começar "
+              "pelo que você já tem em casa e ver o que falta. Depois a gente ajusta "
+              "os detalhes com calma, sem pressa nenhuma."),
 }
 
 # (referência, transcript) — frases do USUÁRIO que reusam o vocabulário.
@@ -79,6 +83,9 @@ HUMANO = [
     ("curta", "vou terminar antes"),
     # matriz JÁ aceita no LIVE.md, que não pode regredir
     ("media", "Não, obrigado. Pode ser amanhã."),
+    # task_21d2c3b3 (a): pergunta do dono que reusa o começo da resposta — não é
+    # janela EXATA, o "?" segue valendo
+    ("proxy", "posso te ajudar com isso, né?"),
 ]
 
 # (referência, transcript) — o próprio TTS voltando (eco puro).
@@ -117,6 +124,8 @@ ECO = [
     ("media", "a tarde no parque, depois eu passo"),
     ("curta", "claro, eu te aviso assim q terminar"),
     ("longa", "o prazo de entrega é sexta-feira?"),
+    # task_21d2c3b3 (a): o eco real do proxy −10 (s3-eco-10-44011.log:107)
+    ("proxy", "Posso te ajudar com isso?"),
 ]
 
 

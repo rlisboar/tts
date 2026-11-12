@@ -1477,3 +1477,12 @@ LÊ o repo real, objetos por hardlink) e o `.gitignore` testado é o do working 
 | o teste volta a `git -C <REPO> worktree add` | `test_este_arquivo_nao_escreve_no_repo_real` **FAILED** |
 | um `git -C <REPO> branch …` no arquivo | idem **FAILED** |
 | os symlinks voltam a ser criados em `REPO / nome` | idem **FAILED** |
+
+### task_21d2c3b3 (a) — o "?" que o Whisper põe no eco não o faz humano (janela EXATA de ≥ 3 palavras)
+
+Pré-registro `d249e8a`. Matriz `smoke_eco_regra.py` com 2 casos novos (eco "Posso te ajudar com isso?" e humano
+"posso te ajudar com isso, né?"): antes 30/32 eco, 0/30 falso-descarte; depois 32/32, 0/30.
+
+| Sabotagem | Resultado |
+|---|---|
+| o "?" volta a decidir sozinho (sem a exceção da janela exata) | `test_eco_fechado_com_interrogacao_nao_corta_o_proprio_agente` **FAILED** (e a matriz cai para 30/32, REPROVADO) |
