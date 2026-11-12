@@ -13389,7 +13389,9 @@ def _cfg_identidade(cfg: dict) -> dict:
 def _live_avalia_filtros(sess: dict, texto: str, fala_ms: int,
                          filtros: dict, audio: bytes = b""
                          ) -> tuple[str, float | None, int | None, str]:
-    """Roda a cadeia NA ORDEM do card e devolve (tipo, p_cortar, modelo_ms).
+    """Roda a cadeia e devolve (tipo, p_cortar, modelo_ms). A ordem é a do card
+    (#501), com uma troca: desde o task_3ecbe8f5 (#1129) o `eco` roda ANTES das
+    `palavras_corte` (o eco do agente com "calma"/"para" cancelava a resposta).
 
     Cada filtro só age se estiver `on`. `modelo` é o único assíncrono e o único
     que devolve `p_cortar`; sem classificador ligado ele é pulado. Quem chega ao
