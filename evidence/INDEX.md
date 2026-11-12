@@ -336,6 +336,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `869-ab-s1-cru-filtrado.py` | #869 | 2026-11-08 | """#869 item 3 (A/B isolado do S1, script) — S1 ISOLADO do PCM cru: mesmo SHA, mesmo áudio, só muda o que o |
 | `869-live-vad-cru.md` | #869 | 2026-11-06 | 869 — Live descarta turno com fala real (`motivo=vad` / "sem fala") |
 | `869-repro-cru.py` | #869 | 2026-11-06 | """#869 — reproduz o descarte `motivo=vad` do Live com áudio gravado. |
+| `874-pausa-lote-live-prereg.md` | #874 | — | 874 / task_e6abe331 — a narração pausa entre trechos enquanto houver Live ativo (opção b da H-trecho): PRÉ-REG |
 | `875-bancada-afc3f42-PARCIAL.json` | #875 | 2026-11-08 | "rotulo": "afc3f42", |
 | `875-bancada-afc3f42-PARCIAL.log` | #875 | 2026-11-08 | (sem descrição) |
 | `875-bancada-e2bb4f7.json` | #875 | 2026-11-08 | "rotulo": "e2bb4f7", |
