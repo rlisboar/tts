@@ -1,0 +1,68 @@
+== deploy 7341f9f (main) no mini — 2026-11-13 17:14–17:22 (autorizado pelo dono 17:12; #874/#1129)
+
+ACHADO DE PARTIDA: o 7341f9f JÁ estava no ar. Um deploy anterior nesta mesma janela rodou às
+14:55:49 (branch prod-7341f9f18545, uvicorn pid 17861 desde 14:55:57, /health rev=7341f9f) e deixou
+o alvo de rollback em .deploy-mini-estado (sha=5fd2942…, data 2026-11-13 14:55:49 — preservado, não
+sobrescrito). Não havia, porém, evidência registrada deste rev. Esta rodada revalidou a produção
+inteira sem reiniciar: o script só reinicia quando há o que MUDAR, e restart aqui recarrega modelo.
+
+read-only inicial: ./remote/deploy_mini.sh recon e compare
+  HEAD local = origin/main = mini HEAD = 7341f9f18545… (distância 0 local / 0 atrás)
+  árvore do mini limpa; app.py e static/index.html [IGUAL] ao blob do rev alvo
+  dep websockets/importlib_resources presentes; venv 3.12.4; 35Gi livres
+
+pré-condições (via /api/status, chave só em header):
+  jobs_active=0, live_sessions=0; sem listener em 7890/7895/7899; bancada.lock AUSENTE
+  1 uvicorn (pid 17861)
+
+comando: ./remote/deploy_mini.sh deploy --apply   (rc=0)
+== deploy (rev alvo 7341f9f18545… (HEAD))
+  push: nada a publicar (origin já contém o rev alvo)
+== mini
+  deps: pip install -r requirements.txt -c requirements.lock (ambos do rev alvo)
+    preview: /tmp/deploy-mini-requirements-preview-31354  (fora da árvore do mini)
+    nada a instalar (o venv já satisfaz o requirements)
+  pesos: todos conferem com models/sha256sums.txt
+  nada a fazer (rev alvo no ar, sem deps novas e código já carregado) — restart recarrega modelo, então não reinicia
+== smoke (rev alvo 7341f9f18545…)
+  [ok] LAN /health 200
+  [ok] LAN sem chave → 401 (loopback não isenta)
+  [ok] LAN Host público (tts.the-dudes.com) aceito → 200
+  [ok] LAN prefixo duplo sem chave → 401
+  [ok] LAN com a chave do mini → 200
+  [ok] LAN /api/build codigo=5ad75cea = rev alvo 7341f9f18545…
+  [aviso] boot_ms=8319156 — a verificação de novo-processo ancorada no marcador roda só no pós-deploy (#252)
+  [ok] LAN POST /api/live/ticket emitiu o ticket (chave só no header)
+  [ok] LAN WebSocket 101 (uvicorn com upgrade)
+  [ok] LAN index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] LAN POST /api/tts real: job 3340878b0b em ~6s, peça 0 com 95766 bytes
+  [ok] público /health 200
+  [ok] público sem chave → 401 (loopback não isenta)
+  [ok] público Host público (tts.the-dudes.com) aceito → 200
+  [ok] público prefixo duplo sem chave → 401
+  [ok] público com a chave do mini → 200
+  [ok] público /api/build codigo=5ad75cea = rev alvo 7341f9f18545…
+  [aviso] boot_ms=8332997 — idem (#252)
+  [ok] público POST /api/live/ticket emitiu o ticket (chave só no header)
+  [ok] público WebSocket 101 (uvicorn com upgrade)
+  [ok] público index.html = blob do rev alvo (nonce do CSP ignorado)
+  [ok] público POST /api/tts real: job a891bbc8bb em ~3s, peça 0 com 95766 bytes
+
+conferência pós (17:22–17:26, read-only):
+  /health rev=7341f9f na LAN e no público (https://tts.the-dudes.com/health)
+  público /api/voices sem chave → 401
+  1 uvicorn (pid 17861, o mesmo do deploy de 14:55 — nada reiniciou nesta rodada)
+  7890/7895/7899 sem listener; bancada.lock ausente após o smoke (jobs_active=0, live=0)
+  [marca] carregado em 67 ms · [marca] aquecido em 543 ms (linhas 41384/41386, DEPOIS do boot na 41114)
+  marca_worker vivo (pid 43781)
+  log persistente ~/Library/Logs/tts-studio/tts-studio.log: 3207729 -> 3207787 bytes com um /health
+    (cresce), arquivo 0600 e diretório 0700, fora de /tmp; /tmp/tts-studio.log parado em 2959266 (11/11 17:19)
+  StandardOut/ErrorPath do plist = o log novo
+  rotação intacta: ~/.tts-studio/log_rotate.sh (0755) + agente com.local.tts-log-rotate, run interval 3600 s,
+    runs=48, últimas passadas "sem rotação" (teto 52428800)
+  0 linhas com `key=` e 0 com `ticket=` cru no log; 0 Traceback
+  TTS_LIVE_DUMP_DIR ausente do ambiente do processo (não ligado, como pedido)
+  não tocado: .apikey (10/11 23:22), settings.json (29/10 15:48), voices/ (38), outputs/ (40) —
+    .apikeys.json e .speaker-profiles.json não existem no mini
+
+rollback: ./remote/deploy_mini.sh rollback --apply  (volta ao 5fd2942 salvo no .deploy-mini-estado)

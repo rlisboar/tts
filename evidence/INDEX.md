@@ -35,7 +35,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `1159-biometria-curta.md` | #1159 | 2026-11-13 | 1159 — READOUT: verificação de locutor em fala curta (0,3–3 s) |
 | `1159-biometria-curta.py` | #1159 | 2026-11-13 | """#1159 — verificação de locutor por duração (0,3–3 s). Ver 1159-prereg-biometria-curta.md. |
 | `1159-prereg-biometria-curta.md` | #1159 | 2026-11-13 | 1159 — PRÉ-REGISTRO: verificação de locutor em fala curta (0,3–2 s) |
-| `1169-theta-3s.md` | #1169 | — | 1169 — READOUT: o θ de 3 s não segura o alvo; o valor que segura é 0,41 |
+| `1169-theta-3s.md` | #1169 | 2026-11-13 | 1169 — READOUT: o θ de 3 s não segura o alvo; o valor que segura é 0,41 |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
@@ -338,6 +338,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `869-ab-s1-cru-filtrado.py` | #869 | 2026-11-08 | """#869 item 3 (A/B isolado do S1, script) — S1 ISOLADO do PCM cru: mesmo SHA, mesmo áudio, só muda o que o |
 | `869-live-vad-cru.md` | #869 | 2026-11-06 | 869 — Live descarta turno com fala real (`motivo=vad` / "sem fala") |
 | `869-repro-cru.py` | #869 | 2026-11-06 | """#869 — reproduz o descarte `motivo=vad` do Live com áudio gravado. |
+| `874-deploy-7341f9f.txt` | #874 | — | == deploy 7341f9f (main) no mini — 2026-11-13 17:14–17:22 (autorizado pelo dono 17:12; #874/#1129) |
 | `874-pausa-lote-live-prereg.md` | #874 | 2026-11-12 | 874 / task_e6abe331 — a narração pausa entre trechos enquanto houver Live ativo (opção b da H-trecho): PRÉ-REG |
 | `875-bancada-afc3f42-PARCIAL.json` | #875 | 2026-11-08 | "rotulo": "afc3f42", |
 | `875-bancada-afc3f42-PARCIAL.log` | #875 | 2026-11-08 | (sem descrição) |
