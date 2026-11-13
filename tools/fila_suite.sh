@@ -179,9 +179,13 @@ case "${1:-}" in
     # solta a trava
     _acaba() {
       if [ -n "$FILHO" ]; then
+        # Prazo por RELÓGIO, não por contagem de voltas (#1176): `sleep 0.1` num laço
+        # de 50 iterações são 50 fork+exec, e sob suíte inteira isso passava MUITO de
+        # 5 s — o filho já tinha morrido e o `wait` do teste (30 s) estourava antes.
+        # A carência é do grupo sair; estourou, KILL.
         _mata_filho TERM
-        local i=0
-        while [ "$i" -lt 50 ] && _vivo_filho; do sleep 0.1; i=$((i + 1)); done
+        local prazo=$((SECONDS + 5))
+        while [ "$SECONDS" -lt "$prazo" ] && _vivo_filho; do sleep 0.1; done
         _mata_filho KILL
         wait "$FILHO" 2>/dev/null
       fi

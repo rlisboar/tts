@@ -159,7 +159,12 @@ def test_sinal_derruba_a_arvore_inteira_e_solta_a_trava(tmp_path, sinal):
         time.sleep(0.1)
     filho, neto = int(filho_f.read_text()), int(neto_f.read_text())
     p.send_signal(sinal)
-    p.wait(timeout=30)
+    # Teto FOLGADO de propósito (#1176): o que se mede é ORDEM de eventos — sinal,
+    # árvore morta, trava solta —, não latência. Com 30 s o teste já derrubou duas
+    # integrações: sob a suíte inteira (39 min, núcleo a 75 %) o filho morria muito
+    # antes, mas o laço de carência do `fila_suite.sh` gastava o orçamento. 90 s é o
+    # mesmo teto do `pytest-timeout` do repo e fica fora da distribuição medida.
+    p.wait(timeout=90)
     assert p.returncode in (128 + sinal, -sinal), p.returncode
     for nome, pid in (("filho", filho), ("neto", neto)):
         for _ in range(30):
@@ -258,3 +263,27 @@ def test_mutex_de_recuperacao_recente_nao_e_roubado(tmp_path):
                        stdin=subprocess.DEVNULL, timeout=30)
     assert r.returncode == 75, (r.returncode, r.stdout, r.stderr)
     assert (raiz / ".recupera").exists()
+
+
+def test_filho_que_ignora_o_sinal_ainda_leva_kill_depois_da_carencia(tmp_path):
+    """A carência do `_acaba` é por RELÓGIO e o KILL de reserva continua (#1176).
+
+    Um filho que ignora TERM/INT/HUP não pode segurar a trava para sempre: passada a
+    carência (5 s), o grupo leva KILL e a trava é solta. Sem o KILL, este teste
+    pendura; com prazo por contagem de voltas, sob carga ele estourava o `wait`.
+    """
+    p = _roda(tmp_path, "sh", "-c", "trap '' TERM INT HUP; sleep 60 & echo $! > neto.pid; echo $$ > filho.pid; wait")
+    filho_f = tmp_path / "filho.pid"
+    for _ in range(80):
+        if filho_f.exists() and filho_f.read_text().strip():
+            break
+        time.sleep(0.1)
+    t0 = time.monotonic()
+    p.send_signal(signal.SIGTERM)
+    p.wait(timeout=90)
+    decorrido = time.monotonic() - t0
+    assert p.returncode in (128 + signal.SIGTERM, -signal.SIGTERM), p.returncode
+    # a carência é de 5 s: o KILL não pode vir antes (senão não há carência) nem
+    # muito depois (senão a trava fica presa e a fila para)
+    assert 4.0 <= decorrido < 30.0, f"carência fora da faixa: {decorrido:.1f}s"
+    assert not (tmp_path / "locks" / "suite").exists()
