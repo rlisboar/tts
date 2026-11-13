@@ -38,6 +38,19 @@ trap limpa EXIT INT TERM
 "$PY" "$RAIZ/tools/corpus_bancada.py" --fleurs "$FLEURS" --destino "$EST" >/dev/null
 AUDIO="$EST/corpus"; VOZ=flvoz
 
+# #1157: as duas portas têm de estar livres — a do app e a do LLM falso. Sem isto
+# o uvicorn morre no bind e o sintoma é "app não subiu" 4 min depois.
+for _p in "$PORTA" "$PORTA_LLM"; do
+  [ "$(lsof -nP -iTCP:"$_p" -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ] \
+    || { echo "porta $_p ocupada — derrube a outra rodada antes" >&2; exit 1; }
+done
+
+# O dump do eco (#869) fica FORA daqui: ele grava um wav por turno e o que se mede
+# é latência. `unset` porque env herdado do shell ligaria a gravação em silêncio.
+[ -z "${TTS_LIVE_DUMP_DIR:-}" ] \
+  || echo "  aviso: TTS_LIVE_DUMP_DIR herdado ($TTS_LIVE_DUMP_DIR) — fica fora" >&2
+unset TTS_LIVE_DUMP_DIR
+
 "$PY" "$RAIZ/tools/llm_fake_sse.py" --porta "$PORTA_LLM" \
   --ttft-ms "${TTFT_MS:-300}" --tps "${TPS:-40}" >>"$LOG" 2>&1 &
 PID_LLM=$!
@@ -58,6 +71,25 @@ until curl -fs "http://127.0.0.1:$PORTA/health" >/dev/null 2>&1; do
   i=$((i + 1)); [ "$i" -gt 240 ] && { echo "app não subiu" >&2; exit 1; }
   sleep 1
 done
+
+# #1157: o braço da pausa do lote tem de estar no valor pedido ANTES de medir. O
+# default do app é LIGADO, então sem escrever o "off" o braço sairia igual ao "on"
+# e a medida viraria dois nomes para o mesmo número.
+PAUSA_LOTE="${PAUSA_LOTE:-1}"
+case "$PAUSA_LOTE" in
+  1|0) ;;
+  *) echo "PAUSA_LOTE tem de ser 1 ou 0 (veio '$PAUSA_LOTE')" >&2; exit 1 ;;
+esac
+[ "$PAUSA_LOTE" = 1 ] && _pausa_json=true || _pausa_json=false
+curl -fsS -H 'Content-Type: application/json' -X POST \
+  -d "{\"live_pausa_lote\": $_pausa_json}" \
+  "http://127.0.0.1:$PORTA/api/settings" >/dev/null \
+  || { echo "não consegui escrever live_pausa_lote" >&2; exit 1; }
+_pausa_lida="$(curl -fsS "http://127.0.0.1:$PORTA/api/settings" \
+  | "$PY" -c 'import json,sys; print(int(bool(json.load(sys.stdin).get("live_pausa_lote"))))')"
+[ "$_pausa_lida" = "$PAUSA_LOTE" ] \
+  || { echo "live_pausa_lote=$_pausa_lida, esperado $PAUSA_LOTE — braço errado" >&2; exit 1; }
+echo "  pré-voo: live_pausa_lote=$PAUSA_LOTE · dump do eco fora"
 
 "$PY" -u "$RAIZ/tools/live_bench.py" --url "ws://127.0.0.1:$PORTA/api/live/ws" \
   --audio "$AUDIO" --voice "$VOZ" --ciclos "$CICLOS" --seed 875 --teto-turno-s 120 \
