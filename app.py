@@ -14953,19 +14953,26 @@ async def live_ws(ws: WebSocket):
         _live_log_kv("fecha", sess=sid, idade_s=int(time.time() - sess["criada"]),
                      frames=sess.get("st_frames", 0), bytes=sess.get("st_bytes", 0),
                      chunks=sess.get("st_chunks", 0), turnos=sess.get("turno", 0))
+        # CancelledError guardada para o FIM do finally (#1149): o servidor ASGI
+        # cancela esta task no meio do await (o TestClient cancela o escopo ao sair
+        # do `with`). Sem `shield`, o future do `close()` era cancelado ainda NA
+        # FILA do pool e o `close()` nunca rodava — dsh órfão do #188 reaparecendo
+        # sob carga. O resto da limpeza não pode ser pulado pela cancelamento.
+        cancelada: asyncio.CancelledError | None = None
         if alvo is not None:
+            fut = asyncio.get_running_loop().run_in_executor(
+                _LIVE_FECHAMENTO_POOL, alvo.close)
             try:
-                await asyncio.wait_for(
-                    asyncio.get_running_loop().run_in_executor(
-                        _LIVE_FECHAMENTO_POOL, alvo.close),
-                    _LIVE_FECHAMENTO_TIMEOUT_S)
+                await asyncio.wait_for(asyncio.shield(fut), _LIVE_FECHAMENTO_TIMEOUT_S)
             except asyncio.TimeoutError:
-                # o future cancelado pode nem ter começado (o `run` desiste antes):
-                # sem esta linha o processo órfão não aparece em lugar nenhum
+                # o future segue no pool (shield); sem esta linha o processo órfão
+                # não aparece em lugar nenhum
                 print(f"[live] fechamento de {sid} passou de "
                       f"{_LIVE_FECHAMENTO_TIMEOUT_S:g}s — worker pode ficar órfão",
                       file=sys.stderr, flush=True)
-            except Exception:            # noqa: BLE001
+            except asyncio.CancelledError as exc:
+                cancelada = exc             # o close continua no pool
+            except Exception:               # noqa: BLE001
                 pass
         try:
             _live_hist_guarda(sess)       # retomável pelo session_id
@@ -14977,6 +14984,8 @@ async def live_ws(ws: WebSocket):
                 await asyncio.wait_for(sender, 2.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 sender.cancel()
+        if cancelada is not None:
+            raise cancelada
 
 
 async def _live_loop(sess: dict, ws) -> None:

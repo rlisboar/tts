@@ -323,6 +323,40 @@ def test_atribuicao_sob_j3_nomeia_a_certa_e_nao_as_vizinhas(tmp_path):
     assert "zz_parada.sh" in r.stdout.split("co-rodavam no instante:")[1]
 
 
+def test_dica_desempata_pela_ordem_de_largada(tmp_path):
+    """#1149: empate de idade na dica de autoria não pode escolher pela ordem em que o
+    `awk` viu os candidatos.
+
+    As suítes de uma leva largam juntas e a idade só difere pelo escalonamento — sob
+    carga a vítima ficava mais nova que o culpado e a dica trocava de nome (integrei
+    o caso vivo no teste de `-j 3` acima). A lista vem na ordem de LARGADA; dentro da
+    janela de empate o veredito é o ÚLTIMO lançado. Fora da janela, a idade manda."""
+    fonte = (AQUI / "run_sh.sh").read_text()
+    # da FUNÇÃO (o `_DICA_JANELA_S` pode não existir numa versão sabotada)
+    ini = fonte.index("_dica() {")
+    fim = fonte.index("\n}\n", ini) + 3
+    roteiro = tmp_path / "dica.sh"
+    roteiro.write_text(f"DIR={tmp_path!s}\n_DICA_JANELA_S=${{_DICA_JANELA_S:-0.5}}\n"
+                       + fonte[ini:fim] + '\n_dica settings.json\n')
+
+    def _roda(eventos: str) -> str:
+        (tmp_path / "eventos").write_text(eventos)
+        r = subprocess.run(["bash", str(roteiro)], capture_output=True, text=True,
+                           timeout=30)
+        assert r.returncode == 0, r.stderr
+        return r.stdout.strip()
+
+    # idades INVERTIDAS (a primeira é a mais nova) e dentro da janela: vale a última
+    saida = _roda("settings.json|zz_parada.sh:0.05 suja_o_dono.sh:0.40\n")
+    assert saida.split()[0] == "suja_o_dono.sh", saida
+    assert "zz_parada.sh" in saida.split()[2:], saida   # a vítima vira co-rodante
+    # fora da janela a idade volta a mandar, mesmo com a nova por último
+    saida = _roda("settings.json|novo.sh:0.02 velho.sh:9.0\n")
+    assert saida.split()[0] == "novo.sh", saida
+    # sem candidato nenhum: escritor de fora
+    assert _roda("settings.json|\n") == "-"
+
+
 # --- #591: o caminho do estado vai por ENV, ANTES do `import app` ────────────
 LAUNCHERS = ["admin_ui_flow.sh", "cfg_sujo_e_erros.sh", "live_barge_rep.sh"]
 

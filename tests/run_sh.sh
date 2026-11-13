@@ -448,8 +448,15 @@ done < <(sort -k2 "$DIR/resultado")
 # Dica de autoria de UM arquivo: o evento com MENOS candidatos e, ali, o candidato
 # mais NOVO (a escrita do import sai ~1 s depois da largada); os outros ficam como
 # "co-rodavam". Sem candidato em nenhum evento → escritor de fora.
+#
+# EMPATE (#1149): as suítes de uma mesma leva largam juntas e a idade delas difere
+# só pelo escalonamento — sob carga a vítima podia ficar mais nova que o culpado e
+# a dica trocava de nome. A lista de candidatos vem na ordem de LARGADA (`ls` do
+# `rodando` = chave `N-nome`), então a janela de empate escolhe o ÚLTIMO lançado
+# (maior N), não o primeiro que o `awk` viu. Fora da janela, a idade manda.
+_DICA_JANELA_S=0.5
 _dica() {
-    awk -F'|' -v alvo="$1" '
+    awk -F'|' -v alvo="$1" -v janela="$_DICA_JANELA_S" '
         $1 != alvo { next }
         { n = split($2, c, " "); if (n == 0) { sem = 1; next }
           if (melhor == "" || n < n_melhor) { melhor = $2; n_melhor = n } }
@@ -458,7 +465,12 @@ _dica() {
             split(melhor, c, " "); esc = ""; mi = -1
             for (i = 1; i <= n_melhor; i++) {
                 split(c[i], p, ":")
-                if (mi < 0 || p[2] + 0 < mi) { mi = p[2] + 0; esc = p[1] }
+                if (mi < 0 || p[2] + 0 < mi) mi = p[2] + 0
+            }
+            # dentro da janela de empate, o ÚLTIMO da lista (lançado por último)
+            for (i = 1; i <= n_melhor; i++) {
+                split(c[i], p, ":")
+                if (p[2] + 0 <= mi + janela) esc = p[1]
             }
             printf "%s %.1f", esc, mi
             for (i = 1; i <= n_melhor; i++) {

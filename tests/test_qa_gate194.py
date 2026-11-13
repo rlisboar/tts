@@ -7,6 +7,7 @@ devolvido fora de ordem, o teto sob concorrência real).
 """
 
 import contextlib
+import concurrent.futures
 import threading
 import time
 
@@ -342,6 +343,67 @@ def test_pipeline_que_nao_nasce_fecha_o_dsh_orfao(ws_client, live_limpo, monkeyp
     _espera(lambda: fechados, "o dsh órfão da sessão sem pipeline não foi fechado")
     _espera(lambda: not app._live_sessions, "sessão presa no registry",
             diag=lambda: list(app._live_sessions))
+
+
+def test_pipeline_que_nao_nasce_fecha_o_dsh_orfao_mesmo_com_a_task_cancelada(
+        ws_client, live_limpo, monkeypatch):
+    """#1149: o `close()` do dsh órfão não pode ser CANCELADO junto com a task do WS.
+
+    O TestClient cancela o escopo da task ao sair do `with` (estrela/cancel scope).
+    Sob carga o future do pool ainda estava NA FILA e era cancelado antes de rodar —
+    o `close()` nunca acontecia e a célula do #188 false-vermelhava (2 em ~15
+    rodadas). Aqui o pool tem UM operário ocupado de propósito: o `close` fica
+    garantidamente enfileirado (o `submit` avisa) quando o escopo é cancelado.
+    Sem o `shield`, nada roda depois; com ele, o `close` roda ao liberar o portão."""
+    fechados = []
+    enviado = threading.Event()
+    portao = threading.Event()
+
+    class DshOrfao:
+        def close(self):
+            fechados.append(self)
+
+    class PoolEspiao:
+        def __init__(self, real):
+            self._real = real
+
+        def submit(self, fn, *a, **k):
+            fut = self._real.submit(fn, *a, **k)
+            enviado.set()               # o close chegou ao pool (na fila)
+            return fut
+
+    def explode(sess):
+        sess["dsh"] = DshOrfao()          # como o `_live_pipe_novo` real faz
+        raise RuntimeError("boom")
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1,
+                                                 thread_name_prefix="gate194-fecha")
+    monkeypatch.setattr(app, "_LIVE_FECHAMENTO_POOL", PoolEspiao(pool))
+    monkeypatch.setattr(app, "_live_pipe_novo", explode)
+
+    def _solta_quando_enfileirar():
+        # o `submit` só acontece DENTRO do `finally`, depois de a task já ter
+        # recebido a CancelledError — então aqui o cancelamento é passado.
+        enviado.wait(15)
+        # folga para a task CHEGAR ao await do close: sem isto o operário pode
+        # ser solto antes do cancelamento e o future já estaria rodando (não
+        # cancelável) — a célula deixaria de morder.
+        time.sleep(0.3)
+        portao.set()
+
+    try:
+        pool.submit(portao.wait)          # ocupa o único operário
+        with ws_client.websocket_connect("/api/live/ws") as ws:
+            _setup_ok(ws)
+            assert ws.receive_json()["code"] == "pipeline"
+            threading.Thread(target=_solta_quando_enfileirar, daemon=True).start()
+        # `with` saiu: escopo cancelado com o close AINDA na fila
+        assert enviado.is_set(), "o close nem chegou ao pool"
+        _espera(lambda: fechados,
+                "o close foi cancelado junto com a task — dsh órfão de novo (#188)")
+    finally:
+        portao.set()
+        pool.shutdown(wait=False)
 
 
 def test_retomada_que_nasce_DURANTE_o_fechamento_sobrevive(ws_client, live_limpo,
