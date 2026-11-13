@@ -64,7 +64,7 @@ def gate(monkeypatch, tmp_path):
     monkeypatch.setitem(app._settings, "speaker_anticlone", False)
     monkeypatch.setattr(app, "_speaker_load_estado", lambda: (PERFIS, ""))
     monkeypatch.setattr(app, "_speaker_modelo_efetivo", lambda: "ecapa:v1")
-    monkeypatch.setattr(app, "_speaker_limiar", lambda m: (0.44, "cru"))
+    monkeypatch.setattr(app, "_speaker_limiar", lambda m, dur=None: (0.44, "cru"))
     voz = {"seg": 1.0, "sim": 0.9, "falha": False}
 
     def _pontua(wav, perfis):
@@ -254,8 +254,10 @@ def test_live_nao_passa_pelo_gate_de_arquivo():
 
     fonte_live = inspect.getsource(app._voz_do_dono) + inspect.getsource(live_pipeline)
     assert "_speaker_gate" not in fonte_live
-    # #1167: o piso do Live é o MESMO `_SPEAKER_PISO_S`, não um 0,6 próprio
-    assert "_SPEAKER_PISO_S" in inspect.getsource(app._voz_do_dono)
+    # #1167/#1183: o piso do Live é uma CONSTANTE, não um literal solto — e é a do
+    # recorte, não a da verificação (são perguntas diferentes)
+    fonte = inspect.getsource(app._voz_do_dono) + inspect.getsource(app._voz_recorta_fala)
+    assert "_VOZ_RECORTE_PISO_S" in fonte and "16000 * 0.6" not in fonte
 
 
 # --- setting `speaker_curto_aceita` (decisão do PM) -----------------------------
@@ -406,8 +408,10 @@ def test_piso_e_um_segundo_e_os_tres_sitios_concordam():
     assert app._SPEAKER_PISO_S == 1.0
     fonte = inspect.getsource(app)
     assert "16000 * 0.6" not in fonte, "sobrou piso cravado em app.py"
-    for fn in (app._speaker_embed, app._speaker_embed_ecapa_x, app._voz_do_dono):
+    for fn in (app._speaker_embed, app._speaker_embed_ecapa_x):
         assert "_SPEAKER_PISO_S" in inspect.getsource(fn), fn.__name__
+    # o Live usa o piso do RECORTE (#1183) — constante também, mas outra
+    assert "_VOZ_RECORTE_PISO_S" in inspect.getsource(app._voz_recorta_fala)
 
 
 def test_um_segundo_verifica_e_meio_segundo_e_curto(gate, tmp_path):
@@ -417,3 +421,4 @@ def test_um_segundo_verifica_e_meio_segundo_e_curto(gate, tmp_path):
     assert "curto" in curto["speaker_aviso"]
     ok = app._speaker_gate_stt(_recorte(tmp_path, 1.0))
     assert not ok.get("curto") and not ok.get("rejected"), ok
+
