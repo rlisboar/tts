@@ -17,6 +17,7 @@ carrega na suíte.
 """
 import inspect
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -302,15 +303,75 @@ def _js_rejeicao() -> str:
     return HTML[ini:fim]
 
 
+def _prefixo(no) -> set[str]:
+    """Prefixos textuais ESTÁVEIS do valor de `reason` (a UI casa por `startsWith`).
+
+    `Constant` devolve o texto; f-string só até a 1ª interpolação; concatenação
+    segue o lado esquerdo; ternário devolve os DOIS lados. Assim
+    `f"outra voz (melhor {x} < {y})"` vira `"outra voz (melhor "` — o pedaço que
+    não muda entre execuções."""
+    import ast
+    if isinstance(no, ast.Constant) and isinstance(no.value, str):
+        return {no.value}
+    if isinstance(no, ast.JoinedStr):
+        for parte in no.values:
+            if isinstance(parte, ast.Constant) and isinstance(parte.value, str):
+                return {parte.value}
+            if isinstance(parte, ast.FormattedValue):
+                return set()
+        return set()
+    if isinstance(no, ast.BinOp) and isinstance(no.op, ast.Add):
+        return _prefixo(no.left)
+    if isinstance(no, ast.IfExp):
+        return _prefixo(no.body) | _prefixo(no.orelse)
+    return set()
+
+
+def _literais_de_reason(fn) -> set[str]:
+    """Todo prefixo de `reason` que a função pode emitir, lido do AST.
+
+    Lista escrita à mão não morde: renomear um motivo no app deixava a célula
+    verde (achado do gate #1168). A fonte aqui é o próprio código."""
+    import ast
+    arvore = ast.parse(inspect.getsource(fn).lstrip())
+    achados: set[str] = set()
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.Dict):
+            for chave, valor in zip(no.keys, no.values):
+                if isinstance(chave, ast.Constant) and chave.value == "reason":
+                    achados |= {x.strip() for x in _prefixo(valor) if x.strip()}
+        # `out["reason"] = ...` não é dict literal: o motivo também sai por aqui
+        elif isinstance(no, ast.Assign):
+            for alvo in no.targets:
+                if (isinstance(alvo, ast.Subscript)
+                        and isinstance(alvo.slice, ast.Constant)
+                        and alvo.slice.value == "reason"):
+                    achados |= {x.strip() for x in _prefixo(no.value) if x.strip()}
+    return achados
+
+
+def test_todo_reason_do_gate_e_reconhecido_pela_ui():
+    """O gate só pode emitir motivo que a UI sabe mandar à biometria (#1168).
+
+    Cobre as duas pontas: motivo novo/renomeado no app tem de entrar na lista da
+    UI, e a lista não pode carregar motivo que o gate não emite mais."""
+    do_gate = _literais_de_reason(app._speaker_gate_ok)
+    assert len(do_gate) >= 3, do_gate          # curto, outra voz, falha, clone
+    na_ui = set(re.findall(r'"([^"]+)"', HTML.split("const MOTIVOS_BIOMETRIA")[1]
+                           .split("];", 1)[0]))
+    faltando = {m for m in do_gate if not any(m.startswith(u) or u.startswith(m)
+                                              for u in na_ui)}
+    assert not faltando, f"motivo do gate fora da lista da UI: {sorted(faltando)}"
+    mortos = {u for u in na_ui if not any(u.startswith(m) or m.startswith(u)
+                                          for m in do_gate)}
+    assert not mortos, f"lista da UI cita motivo que o gate não emite: {sorted(mortos)}"
+
+
 @pytest.mark.skipif(not shutil.which("node"), reason="sem node")
 def test_ui_texto_da_rejeicao_por_origem():
-    casos = {
-        "áudio curto p/ identificar a voz": "fala curta demais para conferir a voz",
-        "voz não autorizada (melhor: ana 0.20 < 0.44)": "rejeitado pela biometria: voz não autorizada",
-        "biometria falhou ao extrair a voz (veja o log)": "rejeitado pela biometria",
-        "áudio com marca d'água de TTS (clone) — detecção 0.9": "rejeitado pela biometria",
-        "sem fala (no_speech 0.92)": "rejeitado pelo anti-ruído",
-    }
+    # os motivos vêm do AST do gate; os de anti-ruído são o contraponto
+    casos = {m: "rejeitado pela biometria" for m in _literais_de_reason(app._speaker_gate_ok)}
+    casos["sem fala (no_speech 0.92)"] = "rejeitado pelo anti-ruído"
     js = _js_rejeicao() + "\nconst casos = " + json.dumps(list(casos)) + ";\n" \
         "console.log(JSON.stringify(casos.map(textoRejeicaoStt)));"
     p = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
