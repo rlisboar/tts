@@ -161,3 +161,29 @@ def test_familia_in_process_continua_pausando_e_nao_leva_aviso(lote):  # noqa: F
     _fecha()
     t.join(20)
     assert job["status"] == "done", job.get("error")
+
+
+def test_live_que_abre_no_MEIO_do_job_tambem_avisa(bancada):
+    """#1179: o Live pode abrir DEPOIS de o job começar.
+
+    A marcação da abertura não serve para ele: o caminho isolado não tem espera
+    onde reavaliar, então sem a marcação no laço o aviso nunca apareceria e o job
+    ficaria em silêncio — o que o #1166 veio matar. Aqui o job começa sem Live e a
+    sessão abre no meio: o estágio seguinte tem de sair decorado.
+    """
+    proc = _ProcMudo()
+    bancada(proc)
+    estagios = []
+
+    def _espia():
+        while not proc.morto:
+            estagios.append((app._jobs["j"].get("progress") or {}).get("stage"))
+            time.sleep(0.02)
+
+    threading.Thread(target=_espia, daemon=True).start()
+    threading.Timer(0.25, _sessao).start()   # Live abre com o job já em curso
+    _roda()
+
+    assert app._jobs["j"].get("pausa_lote_sem_efeito") == app._PAUSA_LOTE_SEM_EFEITO, \
+        f"o Live abriu no meio e o job ficou calado: {estagios[:6]}"
+    assert any(s and app._PAUSA_LOTE_SEM_EFEITO in s for s in estagios), estagios[:6]

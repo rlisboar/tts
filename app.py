@@ -7999,6 +7999,12 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
 
         try:
             while True:
+                # #1179: o Live pode abrir NO MEIO do job. Este caminho não tem
+                # espera para reavaliar, então sem esta linha o aviso só existiria
+                # para quem já estava ativo na abertura — e o silêncio voltaria
+                # justamente no recorte que o #1166 veio matar. Um `get` por volta.
+                if not job.get("pausa_lote_sem_efeito"):
+                    _marca_pausa_sem_efeito(job)
                 rc = proc.poll()
                 if status_path.exists():
                     try:
