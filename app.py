@@ -666,6 +666,10 @@ _SETTINGS_DEFAULTS = {
     # Anti-clone (#525): GANCHO do gate. Ligado, `_speaker_gate_ok` consulta a
     # MARCA d'água do áudio e rejeita clone em `enforce`; desligado, nem o campo sai.
     "speaker_anticlone": False,
+    # Fala curta demais para a biometria (sem embedding) nas rotas que só
+    # TRANSCREVEM (#1158, decisão do PM): ligado, passa como "voz não verificada";
+    # desligado, o `enforce` rejeita como antes. Fala→voz e Live não leem isto.
+    "speaker_curto_aceita": True,
     # Marca d'água AudioSeal em todo áudio GERADO (#657). O app clona voz, então
     # sem marca a saída é indistinguível de fala humana; é admin porque muda o áudio
     # de todo mundo. LIGADA no default: o ABX do dono passou (só o par 7 audível de
@@ -5337,7 +5341,7 @@ _SETTINGS_ADMIN = frozenset({
     # existe. Uma chave `use` que mexesse aqui viraria "o dono" para o gate e para
     # o "só a minha voz" do Live — ou desligaria os dois.
     "speaker_gate", "speaker_threshold", "speaker_far_alvo", "speaker_anticlone",
-    "live_so_minha_voz",
+    "speaker_curto_aceita", "live_so_minha_voz",
 })
 _SETTINGS_SECRETS = ("remote_api_key", "chat_api_key")
 # marcador da máscara: começa com "•" e nunca é confundido com chave de verdade.
@@ -5924,6 +5928,11 @@ def _apply_settings(payload: dict):
         v = payload["speaker_anticlone"]
         _settings["speaker_anticlone"] = (v if isinstance(v, bool)
                                           else str(v).strip().lower() in ("1", "true", "on"))
+    if "speaker_curto_aceita" in payload:
+        # booleano por aceitação explícita, como o anti-clone (#1158)
+        v = payload["speaker_curto_aceita"]
+        _settings["speaker_curto_aceita"] = (v if isinstance(v, bool)
+                                             else str(v).strip().lower() in ("1", "true", "on"))
     if "live_so_minha_voz" in payload:
         # "só a minha voz" no Live (#533): bloco próprio, só as chaves conhecidas
         # (o resto do bloco fica como está — a UI manda o objeto montado).
@@ -10079,8 +10088,9 @@ def stt_partial(audio: UploadFile = None, source_lang: str = Form("auto")):
         raise HTTPException(400, "Áudio obrigatório")
     tmp = _save_audio_upload(audio, ".pstt")
     try:
+        gate: dict = {}
         if (_settings.get("speaker_gate") or "off").lower() == "enforce":
-            gate = _speaker_gate_ok(tmp)
+            gate = _speaker_gate_stt(tmp)
             if gate.get("rejected"):
                 return {"text": "", "rejected": True, "reason": gate["reason"]}
         r = _transcribe(tmp, language=(source_lang or "auto").lower())
@@ -10088,8 +10098,11 @@ def stt_partial(audio: UploadFile = None, source_lang: str = Form("auto")):
         return {"text": ""}
     finally:
         tmp.unlink(missing_ok=True)
-    return {"text": (r.get("text") or "").strip(),
-            "language": (r.get("language") or "").strip().lower()}
+    out = {"text": (r.get("text") or "").strip(),
+           "language": (r.get("language") or "").strip().lower()}
+    if gate.get("speaker_aviso"):                  # curto: passou sem verificar (#1158)
+        out["speaker_aviso"] = gate["speaker_aviso"]
+    return out
 
 
 def _parse_time(v) -> "float | None":
@@ -10311,6 +10324,13 @@ def youtube_audio(payload: dict):
 # autorizadas são transcritas, ou etiqueta quem falou.
 
 SPEAKER_MAX_SAMPLES = 5      # embeddings por perfil (média robuza o timbre)
+#: piso do extrator: abaixo disso não sai embedding confiável (os dois modelos).
+#: O gate do STT usa o MESMO número para dizer "curto" em vez de "falhou" (#1158).
+#: MEDIDO no #1159 (`evidence/1159-biometria-curta.md`): com 0,6 s o FRR é 34,4 %
+#: — 1 em 3 falas legítimas rejeitadas. Em 1,0 s o FAR segue abaixo do alvo
+#: (0,076 % na CV, 0,389 % no FLEURS, IC95 superior < 1 %) e o FRR cai a 15,9 %.
+#: Abaixo de 1,0 s a verificação vira `indeterminado`, nunca passa sem conferir.
+_SPEAKER_PISO_S = 1.0
 #: versão do EXTRATOR. Embedding de um modelo não se compara com o de outro, então
 #: o perfil carrega a dele (`modelo`) e o gate pontua cada perfil pelo extrator que
 #: o gerou. Perfil sem o campo é do extrator legado — segue valendo, marcado como
@@ -10412,7 +10432,7 @@ def _speaker_embed(wav_path: Path, modelo: str | None = None) -> list[float] | N
                 if _speaker_encoder is None:
                     _speaker_encoder = VoiceEncoder()
         f32 = preprocess_wav(wav_path)  # carrega 16k mono + trim VAD próprio
-        if len(f32) < 16000 * 0.6:      # < 0.6s não gera embedding confiável
+        if len(f32) < 16000 * _SPEAKER_PISO_S:   # trecho curto: sem embedding
             return None
         return [float(x) for x in _speaker_encoder.embed_utterance(f32)]
     except Exception as e:  # noqa: BLE001 — sem o gate não derruba o STT
@@ -10535,7 +10555,7 @@ def _speaker_embed_ecapa_x(x) -> list[float] | None:
         import numpy as np
         import torch
 
-        if x.size < 16000 * 0.6:        # mesmo piso do caminho legado
+        if x.size < 16000 * _SPEAKER_PISO_S:     # mesmo piso do caminho legado
             return None
         enc = _speaker_encoder_ecapa()
         with torch.no_grad():
@@ -10934,13 +10954,32 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
         return {}  # sem perfis cadastrados: gate inerte (não é erro)
     melhor, sim, houve_emb, modo = _speaker_pontua(wav_path, perfis)
     if not houve_emb:
-        # sem embedding (áudio curto/erro): enforce rejeita, label segue
-        # `enforce` rejeita; `label` antes seguia MUDO — agora diz que seguiu sem
-        # etiqueta por falta de embedding (#282)
-        return ({"rejected": True, "reason": "áudio curto p/ identificar a voz"}
-                if gate == "enforce" else
-                {"speaker_aviso": "áudio curto p/ identificar a voz — segue sem "
-                                  "etiqueta de locutor"})
+        # sem embedding: `label` antes seguia MUDO — agora diz que seguiu sem
+        # etiqueta (#282). Em `enforce` há DOIS casos (#1158):
+        # - áudio CURTO (abaixo do piso do extrator): a biometria não tem o que
+        #   avaliar. Rejeita marcado `curto`, e quem só transcreve
+        #   (`_speaker_gate_stt`) troca a rejeição por "voz não verificada".
+        #   Fala→voz segue barrando;
+        # - o extrator FALHOU com áudio de tamanho bom: falha fechado, com o
+        #   motivo real (antes saía "áudio curto" também, e enganava).
+        if gate != "enforce":
+            return {"speaker_aviso": "áudio curto p/ identificar a voz — segue sem "
+                                     "etiqueta de locutor"}
+        dur = _speaker_dur_s(wav_path)
+        if dur is None or dur >= _SPEAKER_PISO_S:
+            print(f"[speaker] embedding não saiu com {dur} s de áudio — gate "
+                  "enforce falha fechado", flush=True)
+            return {"rejected": True,
+                    "reason": "biometria falhou ao extrair a voz (veja o log)"}
+        if _settings.get("speaker_anticlone"):
+            # quem transcreve deixa o curto passar: o veto do clone vale aqui também
+            anti = _speaker_anticlone(wav_path)
+            if anti.get("anticlone") == "marcado":
+                return {**anti, "rejected": True,
+                        "reason": ("áudio com marca d'água de TTS (clone) — "
+                                   f"detecção {anti.get('anticlone_prob')}")}
+        return {"rejected": True, "curto": True, "speaker_dur_s": round(dur, 2),
+                "reason": "áudio curto p/ identificar a voz"}
     modelo_limiar = _speaker_modelo_do_perfil(perfis[melhor]) if melhor \
         else _speaker_modelo_efetivo()
     lim, modo_lim = _speaker_limiar(modelo_limiar)
@@ -10978,6 +11017,53 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
                 out["speaker_aviso"] = ("áudio parece CLONE: marca d'água do TTS "
                                         "detectada")
     return out
+
+
+def _speaker_dur_s(wav_path: Path) -> float | None:
+    """Duração que o extrator em uso enxerga, None se não deu para ler.
+
+    O ECAPA mede o áudio inteiro; o Resemblyzer (legado, máquina sem os pesos do
+    ECAPA) corta o silêncio antes (`preprocess_wav`) e mede o que sobra — 1 s
+    gravado com 0,4 s de fala é curto para ele."""
+    try:
+        if _speaker_modelo_efetivo() == SPEAKER_MODELO_LEGADO:
+            from resemblyzer import preprocess_wav
+            return len(preprocess_wav(wav_path)) / 16000
+        return _wav_to_mono16k(wav_path).size / 16000
+    except Exception as exc:  # noqa: BLE001 — ilegível: o gate decide fechado
+        print(f"[speaker] duração ilegível: {exc}", flush=True)
+        return None
+
+
+#: aviso das rotas que só TRANSCREVEM quando a biometria não teve o que avaliar
+_SPEAKER_AVISO_NAO_VERIFICADA = "voz não verificada (áudio curto p/ identificar a voz)"
+
+
+def _speaker_gate_stt(wav_path: Path) -> dict:
+    """O gate das rotas que só TRANSCREVEM (ditado, prévia, /v1 STT) (#1158).
+
+    Áudio curto demais para a biometria NÃO é barrado: a transcrição segue com o
+    aviso "voz não verificada". A biometria só barra o que consegue avaliar: voz
+    de outra pessoa, clone marcado e falha do extrator seguem rejeitados. Fala→voz
+    (`_preparar_fala_para_voz`) e o Live não passam por aqui.
+
+    `speaker_curto_aceita` desligado volta ao comportamento de antes: o curto é
+    rejeitado também aqui."""
+    gate = _speaker_gate_ok(wav_path)
+    if gate.get("rejected") and gate.get("curto") and _settings.get(
+            "speaker_curto_aceita", _SETTINGS_DEFAULTS["speaker_curto_aceita"]):
+        return {"speaker_aviso": _SPEAKER_AVISO_NAO_VERIFICADA,
+                "speaker_verificado": False}
+    return gate
+
+
+def _speaker_aviso_na_resposta(out: dict, gate: dict) -> None:
+    """Leva o aviso do gate ao corpo da resposta de STT (antes ficava no dict e
+    ninguém via). `speaker_verificado` só aparece quando é False (#1158)."""
+    if gate.get("speaker_aviso"):
+        out["speaker_aviso"] = gate["speaker_aviso"]
+    if gate.get("speaker_verificado") is False:
+        out["speaker_verificado"] = False
 
 
 def _speaker_anticlone(wav_path: Path) -> dict:
@@ -11086,7 +11172,7 @@ def _voz_recorta_fala(a, fala_ms: int):
     perto do microfone, então ela é o pedaço de MAIOR energia daquele tamanho.
     Folga de 0,2 s (ataque e cauda) e piso de 0,6 s (o mínimo do extrator)."""
     import numpy as np
-    n = max(int(16000 * (fala_ms / 1000.0 + 0.2)), int(16000 * 0.6))
+    n = max(int(16000 * (fala_ms / 1000.0 + 0.2)), int(16000 * _SPEAKER_PISO_S))
     if fala_ms <= 0 or n >= a.size:
         return a
     acum = np.concatenate([[0.0], np.cumsum(a.astype(np.float64) ** 2)])
@@ -11135,7 +11221,7 @@ def _voz_do_dono(pcm16: bytes, cfg: dict | None = None, fala_ms: int = 0) -> dic
     janela = int(16000 * _VOZ_JANELA_S)
     passo = int(16000 * _VOZ_PASSO_S)
     if a.size < janela:                   # curto demais p/ 1 janela cheia
-        if a.size < 16000 * 0.6:          # piso do próprio extrator
+        if a.size < 16000 * _SPEAKER_PISO_S:   # piso do próprio extrator
             return _fora("áudio curto para identificar")
         janela = a.size
     # piso de ENERGIA: ventoinha/zumbido não confirmam ninguém (p90 do trecho)
@@ -11506,7 +11592,7 @@ def transcribe_audio(response: Response, audio: UploadFile = None,
         except Exception:       # noqa: BLE001 — prewarm é otimização
             pass
     try:
-        gate = _speaker_gate_ok(tmp)
+        gate = _speaker_gate_stt(tmp)
         if gate.get("rejected"):
             return {"rejected": True, "reason": gate["reason"], "text": ""}
         tmp_stt, extra_alvo = _aplica_speaker_alvo(tmp, speaker_alvo)
@@ -11536,6 +11622,7 @@ def transcribe_audio(response: Response, audio: UploadFile = None,
         # se compara com o `speaker_threshold` cru (#525)
         if gate.get("speaker_escore_modo"):
             out["speaker_escore_modo"] = gate["speaker_escore_modo"]
+    _speaker_aviso_na_resposta(out, gate)
     out.update(extra_alvo)          # `separacao`/`segmentos_descartados` quando pedido
     return out
 
@@ -15351,6 +15438,8 @@ def _headers_speaker_stt(headers, gate: dict) -> None:
         headers["X-TTS-Speaker-Reason"] = _cabecalho_latin1(gate.get("reason") or "")
     if gate.get("speaker"):
         headers["X-TTS-Speaker"] = _cabecalho_latin1(gate["speaker"])
+    if gate.get("speaker_verificado") is False:     # curto: passou sem verificar
+        headers["X-TTS-Speaker-Verificado"] = "0"
 
 
 def _openai_stt_rejeitado(response_format, translate, gate, response):
@@ -15401,7 +15490,7 @@ def _openai_stt(file, language, response_format, translate, response=None,
             pass
     extra_alvo: dict = {}
     try:
-        gate = _speaker_gate_ok(tmp)
+        gate = _speaker_gate_stt(tmp)
         if gate.get("rejected"):
             return _openai_stt_rejeitado(response_format, translate, gate, response)
         tmp_stt, extra_alvo = _aplica_speaker_alvo(tmp, speaker_alvo)
@@ -15444,6 +15533,7 @@ def _openai_stt(file, language, response_format, translate, response=None,
             corpo["speaker_sim"] = gate.get("speaker_sim")
             if gate.get("speaker_escore_modo"):
                 corpo["speaker_escore_modo"] = gate["speaker_escore_modo"]
+        _speaker_aviso_na_resposta(corpo, gate)
         return corpo
     return {"text": text}
 

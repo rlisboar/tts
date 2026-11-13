@@ -3294,6 +3294,9 @@
           <p class="hint" style="margin-top:0">Sua voz costuma dar <b>0.65–0.85</b>; outra pessoa, <b>0.40–0.55</b>. Padrão 0.60 — rejeita intrusos sem rejeitar você (resfriado/afastado do mic). Só vale no modo cru.</p>
         </details>
         <label class="check" title="Marca d'água em toda saída do TTS, com detector — ainda não implementado (#522)"><input type="checkbox" id="spAntiClone" data-sempre-travado="1" data-admin-setting="speaker_anticlone" disabled> Anti-clone (marca d'água) <span class="hint">— em breve</span></label>
+        <!-- #1158: fala curta demais não dá para conferir; no ditado/transcrição ela
+             passa marcada "voz não verificada" em vez de ser barrada -->
+        <label class="check" title="Abaixo de 1,0 s a biometria não tem como conferir a voz. Ligado: no ditado e na transcrição o texto sai com o aviso “voz não verificada”. Desligado: com “Só vozes cadastradas”, a fala curta é rejeitada. Fala→voz e o Live não mudam."><input type="checkbox" id="spCurtoAceita" data-admin-setting="speaker_curto_aceita" checked> Aceitar fala curta sem conferir a voz <span class="hint">— só no ditado/transcrição</span></label>
         <!-- o app pode cair para o extrator legado quando faltam os pesos do
              atual; quem diz é o servidor (`extrator_efetivo`) e aqui só se avisa
              — sem o campo (servidor anterior) o parágrafo fica oculto -->
@@ -3497,6 +3500,7 @@ const ROTULO_SETTING = {
   metrics_ttl_dias: "retenção do histórico",
   speaker_gate: "gate de locutor", speaker_threshold: "rigor do locutor",
   speaker_far_alvo: "alvo de erro (FAR)", speaker_anticlone: "anti-clone",
+  speaker_curto_aceita: "aceitar fala curta sem conferir a voz",
 };
 const rotuloSetting = k => ROTULO_SETTING[k] || k;
 // Administrativos que existem no servidor mas ainda não têm input na tela: sem
@@ -5666,6 +5670,19 @@ function rotuloStt() {
     : `Whisper local ${(s.stt_whisper_repo || "?").split("/").pop()}`;
 }
 
+// #1158: quem barrou a fala? A dica de "baixe Mín. confiança / Máx. sem fala" só
+// serve ao anti-ruído — para a biometria ela mandava mexer no controle errado.
+const MOTIVOS_BIOMETRIA = ["áudio curto p/ identificar a voz", "voz não autorizada",
+  "voz não reconhecida", "biometria falhou", "áudio com marca d'água", "perfis de voz ilegíveis"];
+function textoRejeicaoStt(reason) {
+  const m = reason || "?";
+  if (m.startsWith("áudio curto p/ identificar a voz"))
+    return "rejeitado pela biometria: fala curta demais para conferir a voz (ajuste em “Biometria de voz”)";
+  if (MOTIVOS_BIOMETRIA.some(p => m.startsWith(p)))
+    return `rejeitado pela biometria: ${m} (ajuste em “Biometria de voz”)`;
+  return `rejeitado pelo anti-ruído: ${m} (baixe Mín. confiança / Máx. "sem fala")`;
+}
+
 async function transcreveMonitor(blob, t0) {
   const caixa = $("micFxTexto"), tempo = $("micFxTempo");
   const eng = rotuloStt();
@@ -5684,7 +5701,8 @@ async function transcreveMonitor(blob, t0) {
     let msg = `transcrito em ${(ms / 1000).toFixed(2)} s`
       + (dur > 0.2 ? ` para ${dur.toFixed(1)} s de áudio — ${(ms / 1000 / dur).toFixed(2)}× tempo real` : "")
       + ` · ${eng}` + (r.language ? ` · idioma ${r.language}` : "");
-    if (r.rejected) msg += ` · ⛔ rejeitado pelo anti-ruído: ${r.reason || "?"} (baixe Mín. confiança / Máx. "sem fala")`;
+    if (r.rejected) msg += " · ⛔ " + textoRejeicaoStt(r.reason);
+    if (r.speaker_aviso) msg += " · ⚠ " + r.speaker_aviso;
     if (!r.text && !r.rejected) msg += " · vazio (o VAD não viu fala)";
     tempo.textContent = msg;
   } catch (e) {
@@ -7115,6 +7133,7 @@ async function loadSettings() {
     marcarSegredosMascarados();
     cfgTxt("chatExtra", s.chat_extra);
     if ($("speakerGate")) $("speakerGate").value = s.speaker_gate || "off";
+    if ($("spCurtoAceita")) $("spCurtoAceita").checked = s.speaker_curto_aceita !== false;
     cfgTxt("sttWhisperModel", s.stt_whisper_repo);
     cfgNum("spThr", s.speaker_threshold, 0.6)   // mesmo default do servidor (#525);
     if ($("spThrOut")) $("spThrOut").textContent = (+($("spThr").value)).toFixed(2);
@@ -7667,6 +7686,7 @@ $("cfgSave").onclick = async () => {
       speaker_gate: $("speakerGate")?.value || "off",
       speaker_threshold: parseFloat($("spThr")?.value) || 0.6,
       speaker_far_alvo: $("spFarAlvo")?.value || "",
+      speaker_curto_aceita: $("spCurtoAceita")?.checked !== false,
       stt_whisper_repo: $("sttWhisperModel")?.value || "",
       stt_anti_ruido: $("sttFiltros")?.checked !== false,
       stt_denoise: $("sttDenoise")?.checked !== false,
@@ -8087,6 +8107,7 @@ async function cvTranscribeEEnvia(blob) {
     const r = await api("/api/transcribe", { method: "POST", body: fd });
     soVozAvisa(svCv, r);
     if (r.rejected) { cvStatus("🔇 " + (r.reason || "sem fala")); cvBusy = false; return; }
+    if (r.speaker_aviso) cvDbg("⚠ " + r.speaker_aviso);
     texto = (r.text || "").trim();
     cvLocutor = r.speaker || null;
     cvDbg("stt ok: " + texto.slice(0, 50));

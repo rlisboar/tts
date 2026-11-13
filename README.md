@@ -578,6 +578,28 @@ custa 4,6 s). Detector indisponível
 R3 é áudio curto/cortado (83 % com 60 % do trecho cortado). Só vale para áudio de
 ARQUIVO: o Live tem o portão dele (`_voz_do_dono`).
 
+**Fala curta demais para a biometria** (`speaker_curto_aceita`, admin, default
+`true`, #1158): abaixo do piso do extrator (**1,0 s** desde o #1159, `_SPEAKER_PISO_S`;
+no Resemblyzer, contado depois do corte de silêncio) não sai embedding e não há o que
+conferir. O piso era 0,6 s e foi medido: a 0,75 s o FRR é 34,4 % — 1 em 3 falas
+legítimas rejeitadas; a 1,0 s o FAR segue abaixo do alvo (0,389 % no FLEURS, IC95
+superior 0,561 %) e o FRR cai a 15,9 % (`evidence/1159-biometria-curta.md`). Nas rotas que só
+TRANSCREVEM (`/api/transcribe`, `/api/stt-partial`, `/v1/audio/transcriptions`,
+`/v1/audio/translations`), o `enforce` deixa o texto sair com
+`speaker_aviso: "voz não verificada (áudio curto p/ identificar a voz)"` e
+`speaker_verificado: false`. Nas rotas `/v1`, vai junto o header
+`X-TTS-Speaker-Verificado: 0`; o `verbose_json` também traz os dois campos.
+
+Desligado, o curto é rejeitado como antes. Continuam barrados, nos dois modos:
+- voz de outra pessoa quando há amostra suficiente;
+- clone marcado (o anti-clone roda também no curto);
+- extrator que FALHOU com áudio de tamanho bom: `biometria falhou ao extrair a voz`,
+  falha fechado;
+- fala→voz (`/api/modify-speech`, `/api/translate-speech`), porque a saída é a voz
+  clonada.
+
+O Live não lê esse setting.
+
 ## API compatível com OpenAI
 
 `POST /v1/audio/speech` — mesmo contrato da OpenAI; funciona com o SDK oficial
