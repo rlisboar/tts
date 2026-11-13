@@ -2241,7 +2241,7 @@ def test_speaker_enforce_rejeita_e_aceita(client, auth, monkeypatch):
     app._settings["speaker_gate"] = "enforce"
     app._settings["speaker_threshold"] = 0.75
     # mesma voz → passa
-    assert app._speaker_gate_ok(Path("x.wav")) == {}
+    assert app._speaker_gate_ok(Path("x.wav")) == {"speaker_limiar": 0.75}
     # outra voz (similaridade 0) → rejeitada
     monkeypatch.setattr(app, "_speaker_embed", lambda p, modelo=None: list(VEC_B))
     out = app._speaker_gate_ok(Path("x.wav"))
@@ -2273,14 +2273,14 @@ def test_transcribe_avisa_a_escala_do_escore_quando_o_limiar_e_asnorm(client, au
     monkeypatch.setattr(app, "_transcribe", lambda p, language=None:
                         {"text": "pode mandar o texto", "language": "pt", "segments": []})
     monkeypatch.setitem(app._settings, "speaker_gate", "label")
-    monkeypatch.setattr(app, "_speaker_limiar", lambda m: (0.5, "asnorm"))
+    monkeypatch.setattr(app, "_speaker_limiar", lambda m, dur=None: (0.5, "asnorm"))
     r = client.post("/api/transcribe", headers=auth, data={"source_lang": "pt"},
                     files={"audio": ("a.wav", b"x", "audio/wav")})
     corpo = r.json()
     assert corpo["speaker"] == "eu", corpo
     assert corpo["speaker_escore_modo"] == "asnorm"
     # no caminho CRU o campo não aparece: ali o número se compara com o rigor direto
-    monkeypatch.setattr(app, "_speaker_limiar", lambda m: (0.6, "cru"))
+    monkeypatch.setattr(app, "_speaker_limiar", lambda m, dur=None: (0.6, "cru"))
     r = client.post("/api/transcribe", headers=auth, data={"source_lang": "pt"},
                     files={"audio": ("a.wav", b"x", "audio/wav")})
     assert "speaker_escore_modo" not in r.json()
@@ -2309,7 +2309,8 @@ def test_speaker_perfil_de_outro_extrator_autentica_e_pede_recadastro(
     monkeypatch.setattr(app, "_speaker_embed", _embed)
     app._settings["speaker_gate"] = "enforce"
     try:
-        assert app._speaker_gate_ok(Path("x.wav")) == {}, "perfil legado foi rejeitado"
+        assert app._speaker_gate_ok(Path("x.wav")).get("rejected") is not True, \
+            "perfil legado foi rejeitado"
         assert app.SPEAKER_MODELO_LEGADO in pedidos
 
         monkeypatch.setattr(app, "_speaker_load", lambda: legado)
@@ -2673,13 +2674,13 @@ def test_speaker_far_alvo_normaliza_o_escore_e_usa_o_limiar_calibrado(monkeypatc
         # bem acima do limiar de FAR 1 %, com o modo declarado na resposta
         assert sim > lim
         out = app._speaker_gate_ok(Path("x.wav"))
-        assert out == {"speaker_escore_modo": "asnorm"}, out
+        assert out == {"speaker_limiar": 2.906, "speaker_escore_modo": "asnorm"}, out
         # ECAPA com o mesmo alvo: cru, faixa de FAR 1 % calibrada no MLS PT (0,39)
         perfis["eu"]["modelo"] = "ecapa:v1"
         assert app._speaker_limiar("ecapa:v1") == (0.39, "cru")
         _n, sim, _h, modo_escore = app._speaker_pontua(Path("x.wav"), perfis)
         assert modo_escore == "cru" and abs(sim - 1.0) < 1e-6
-        assert app._speaker_gate_ok(Path("x.wav")) == {}
+        assert app._speaker_gate_ok(Path("x.wav")) == {"speaker_limiar": 0.39}
     finally:
         monkeypatch.setitem(app._settings, "speaker_far_alvo", "")
         monkeypatch.setitem(app._settings, "speaker_gate", "off")
