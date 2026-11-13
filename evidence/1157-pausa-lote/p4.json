@@ -1,0 +1,40 @@
+{
+  "ociosa_s": 60.0,
+  "n_pedido": 3,
+  "jobs": [
+    {
+      "id": "e96e729250",
+      "viu_pausa": true,
+      "t_soltou": 1794591478.710755,
+      "pausa_lote_saida": "ocioso",
+      "t_ocioso": 1794591478.6572318,
+      "p4_s": 0.054
+    },
+    {
+      "id": "74b213f5e4",
+      "viu_pausa": true,
+      "t_soltou": 1794591478.712652,
+      "pausa_lote_saida": "ocioso",
+      "t_ocioso": 1794591478.6566029,
+      "p4_s": 0.056
+    },
+    {
+      "id": "a60746335c",
+      "viu_pausa": true,
+      "t_soltou": 1794591478.714203,
+      "pausa_lote_saida": "ocioso",
+      "t_ocioso": 1794591478.656794,
+      "p4_s": 0.057
+    }
+  ],
+  "ws_aberto_no_carimbo": true,
+  "n": 3,
+  "n_teto": 0,
+  "p4_s": [
+    0.054,
+    0.056,
+    0.057
+  ],
+  "teto_s": 65.0,
+  "passa": true
+}

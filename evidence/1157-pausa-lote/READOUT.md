@@ -67,9 +67,9 @@ Só o par a cabe. pos_llm p95 (TTS+fila), à parte: sem 1652 / 1566 / 1556, com 
 
 Um job por braço ficou sem status. Nenhum `t_fim` é ≥ `t_live_fim`. A régua "todo job termina depois que o Live fica ocioso" não se verifica com esse carimbo: os jobs fecharam com a sessão ainda aberta.
 
-## P4
+## P4 da rodada longa — instrumento errado
 
-`t_soltou − t_live_fim` nos 9 jobs com pausa e `t_soltou`: p50 cerca de −520 s, o mais tardio cerca de −89 s. Soltaram antes do fim da sessão. Não há carimbo separado de "ficou ocioso", então a régua "retomada ≤ 60 s" não fecha com este JSON.
+`t_soltou − t_live_fim` nos 9 jobs com pausa e `t_soltou`: p50 cerca de −520 s, o mais tardio cerca de −89 s. Soltaram antes do fim da sessão. Esse JSON não tem `t_ocioso`. A régua "retomada ≤ 60 s" não fecha aqui. O número que vale está em "P4 — passa".
 
 ## S3 — não atribuível
 
@@ -96,15 +96,19 @@ S2 p95 com/sem: 1,15 / 1,29 / 1,77 contra 1,2×. Reprova nos pares (b) e (c). N�
 
 A fala 12 do par (c) concentra o excesso: S2 6 290 ms contra 2 977 ms na mesma fala do sem-c. Desses 3 313 ms, 2 134 são lock. Os outros 1 179 ms não são a pausa. O veredito abaixo fecha isso: o P2 reprova.
 
-## P4 — vazia
+## P4 — passa
 
-Não há número de retomada. Esta seção fica vazia até o `task_7533b217`.
+O tree da rodada longa (`6c23f647…`) não tem o campo. O número abaixo é um bloco curto, uma sessão, no clone `484ad8861a3aaecb9cae2b3a4198dd328c30bef7`. `ociosa_s` = 60 (default). Critério: `p4_s = t_soltou − t_ocioso` ≤ 65 s.
 
-`t_live_fim` não serve: é o `touch` de `p1157.livefim` depois que o `mede_pos_llm.sh` volta, o fim do processo da bancada, não o instante em que `_live_ativo_para_lote` ficou falso. `t_soltou` cai 89–956 s antes desse carimbo, e `retomada_s` sai negativo. Isso mostra o instrumento errado. Não é medida de retomada e não prova a promessa (retomada ≤ 60 s).
+A sessão ficou aberta 40 s antes dos posts. A janela de atividade que restava era ~20 s, menor que o teto de 30 s — com a sessão recém-aberta o teto dispararia primeiro e a saída `teto` não provaria a retomada. O websocket continuou aberto no carimbo (não foi fechamento de sessão).
+
+n = 3. As três saídas foram `ocioso`. Nenhuma `teto`. `p4_s`: 0,054 / 0,056 / 0,057 s. Passa. JSON: `p4.json`.
+
+`t_live_fim` da rodada longa continua sem servir: era o fim do processo da bancada. Não entra nesta conta.
 
 ## Veredito
 
-O card **reprova no P2**. P1a, P3 e P5 passam. P2 falha em (b) e (c) e a régua de 1,2× não mudou. A feature fica na main porque é melhoria estrita no lock e não piora nada — não é vitória. P4 continua não medido (`task_7533b217`).
+O card **reprova no P2**. P1a, P3, P4 e P5 passam. P2 falha em (b) e (c) e a régua de 1,2× não mudou. A feature fica na main porque é melhoria estrita no lock e não piora nada — não é vitória. P4 passou no bloco curto (n=3, saída `ocioso`, `p4_s` 0,054–0,057 s contra 65 s).
 
 O lock cai ao resíduo de um trecho, e isso é o ganho.
 
