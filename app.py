@@ -11168,7 +11168,9 @@ def _speaker_gate_stt(wav_path: Path) -> dict:
     if gate.get("rejected") and gate.get("curto") and _settings.get(
             "speaker_curto_aceita", _SETTINGS_DEFAULTS["speaker_curto_aceita"]):
         return {"speaker_aviso": _SPEAKER_AVISO_NAO_VERIFICADA,
-                "speaker_verificado": False}
+                "speaker_verificado": False,
+                **({"speaker_limiar": gate["speaker_limiar"]}
+                   if gate.get("speaker_limiar") is not None else {})}
     return gate
 
 
@@ -11179,6 +11181,10 @@ def _speaker_aviso_na_resposta(out: dict, gate: dict) -> None:
         out["speaker_aviso"] = gate["speaker_aviso"]
     if gate.get("speaker_verificado") is False:
         out["speaker_verificado"] = False
+    # a RÉGUA aplicada vai junto (#1169): sem ela não há como conferir de fora
+    # qual limiar valeu, e a tabela por duração ficaria invisível ao cliente
+    if gate.get("speaker_limiar") is not None:
+        out["speaker_limiar"] = gate["speaker_limiar"]
 
 
 def _speaker_anticlone(wav_path: Path) -> dict:

@@ -422,3 +422,12 @@ def test_um_segundo_verifica_e_meio_segundo_e_curto(gate, tmp_path):
     ok = app._speaker_gate_stt(_recorte(tmp_path, 1.0))
     assert not ok.get("curto") and not ok.get("rejected"), ok
 
+
+
+def test_a_regua_aplicada_chega_ao_cliente(gate, client, auth):
+    """#1169: o `speaker_limiar` era calculado e MORRIA no dict do gate — a rota
+    monta o corpo do zero e copiava só o aviso, então a régua aplicada era
+    invisível por fora e a tabela por duração não dava para conferir."""
+    r = _post(client, auth, "/api/transcribe")
+    assert r.status_code == 200, r.text
+    assert r.json().get("speaker_limiar") == 0.44, r.json()
