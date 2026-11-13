@@ -1,0 +1,768 @@
+{
+ "rotulo": "p1157-com-a",
+ "quando": "2026-11-13 08:32:53",
+ "params": {
+  "url": "ws://127.0.0.1:7895/api/live/ws",
+  "audio": "/Users/lisboa/tts-bench/run/pos-llm-estado.pOqLWJ/corpus",
+  "voice": "flvoz",
+  "ciclos": 10,
+  "sessao_min": 0,
+  "interrompe_apos_ms": 1500,
+  "eco_db": -15.0,
+  "eco_atraso_ms": 100,
+  "ruido_dbfs": -60.0,
+  "pausa_min_s": 1.0,
+  "pausa_max_s": 4.0,
+  "teto_turno_s": 120.0,
+  "prewarm_s": 20.0,
+  "seed": 875,
+  "out": "/Users/lisboa/tts-bench/run/pos-llm-p1157-com-a-90848.json",
+  "rotulo": "p1157-com-a",
+  "marca": null,
+  "aquecimento": 0,
+  "verbose": false
+ },
+ "corpus": 39,
+ "resumo": {
+  "erros": [],
+  "erros_msg": [],
+  "S1": {
+   "falas": 20,
+   "aceitas": 17,
+   "pct_aceitas": 85.0,
+   "aceitas_ic95": [
+    64.0,
+    94.8
+   ],
+   "recusadas_identidade": 0,
+   "cobertura_media": 0.769,
+   "ciclos_com_wer": 10,
+   "wer_ciclo_medio": 0.244,
+   "wer_ciclo_mediana": 0.209,
+   "ciclos_wer_ok_10": 1,
+   "falas_ge_0_8s_perdidas": 3,
+   "turnos_descartados_srv": 0,
+   "meta": "≥95 % aceitas, WER ≤10 %, 0 descarte ≥0,8 s"
+  },
+  "S2": {
+   "n": 15,
+   "p50_ms": 2662.0,
+   "p95_ms": 4059.7,
+   "max_ms": 5011,
+   "llm_ttft_n": 5,
+   "llm_ttft_p50_ms": 1405.0,
+   "llm_ttft_p95_ms": 1796.6,
+   "pos_llm_p50_ms": 1306.0,
+   "pos_llm_p95_ms": 1612.0,
+   "pos_llm_estagios": {
+    "llm_frase": {
+     "n": 5,
+     "p50_ms": 34.0,
+     "p95_ms": 35.8
+    },
+    "fila_tts": {
+     "n": 5,
+     "p50_ms": 0.0,
+     "p95_ms": 0.8
+    },
+    "lock": {
+     "n": 5,
+     "p50_ms": 0.0,
+     "p95_ms": 344.8
+    },
+    "tts": {
+     "n": 5,
+     "p50_ms": 1254.0,
+     "p95_ms": 1258.4
+    },
+    "marca": {
+     "n": 5,
+     "p50_ms": 0.0,
+     "p95_ms": 0.8
+    },
+    "envio": {
+     "n": 5,
+     "p50_ms": 0.0,
+     "p95_ms": 0.0
+    },
+    "resto": {
+     "n": 5,
+     "p50_ms": 12.0,
+     "p95_ms": 334.8
+    },
+    "vad": {
+     "n": 4,
+     "p50_ms": 608.0,
+     "p95_ms": 608.0
+    },
+    "fio": {
+     "n": 4,
+     "p50_ms": -775.5,
+     "p95_ms": -256.2
+    },
+    "fio_rx": {
+     "n": 4,
+     "p50_ms": 0.0,
+     "p95_ms": 0.0
+    },
+    "fio_cliente": {
+     "n": 4,
+     "p50_ms": -775.5,
+     "p95_ms": -256.2
+    },
+    "tts_modelo": {
+     "n": 5,
+     "p50_ms": 0.0,
+     "p95_ms": 0.0
+    },
+    "tts_cond": {
+     "n": 5,
+     "p50_ms": 0.0,
+     "p95_ms": 0.0
+    },
+    "tts_prep": {
+     "n": 5,
+     "p50_ms": 0.0,
+     "p95_ms": 0.0
+    },
+    "tts_gen": {
+     "n": 5,
+     "p50_ms": 1253.0,
+     "p95_ms": 1256.6
+    },
+    "tts_fora": {
+     "n": 5,
+     "p50_ms": 1.0,
+     "p95_ms": 59.6
+    }
+   },
+   "meta": "p50 ≤1500, p95 ≤2500 (llm_ttft = 1º token; pos_llm = TTS+fila)"
+  },
+  "S3": {
+   "interrupcoes": 5,
+   "duck_n": 5,
+   "duck_p50_ms": 1354.0,
+   "duck_max_ms": 1854,
+   "duck_ok_300": 0,
+   "stop_n": 4,
+   "stop_p50_ms": 3666.0,
+   "stop_max_ms": 4001,
+   "stop_ok_800": 0,
+   "pausa_n": 0,
+   "pausa_p50_ms": null,
+   "pausa_max_ms": null,
+   "pausa_ok_800": 0,
+   "eco_respostas": 10,
+   "eco_falso_corte": 0,
+   "eco_falso_corte_ic95": [
+    0.0,
+    27.8
+   ],
+   "eco_falso_duck": 0,
+   "eco_falso_duck_ic95": [
+    0.0,
+    27.8
+   ],
+   "eco_falso_pausa": 0,
+   "pos_corte_n": 12,
+   "pos_corte_com_audio": 0,
+   "pos_corte_chunks": 0,
+   "pos_corte_ms_max": 0,
+   "meta": "duck ≤300, pausa ≤800, falso corte ≤5 %, falso duck ≤5 %"
+  },
+  "S4": {
+   "respostas": 18,
+   "com_simbolo": 0,
+   "por_tipo": {},
+   "cru_com_simbolo": 0,
+   "cru_por_tipo": {},
+   "limpador": "/Users/lisboa/tts-bench/b-p1157/common.py",
+   "meta": "0 em 50 respostas (texto LIMPO, o que vai ao TTS)"
+  },
+  "S5": {
+   "sessao_s": 993,
+   "ciclos": 10,
+   "ws_vivo_no_fim": true,
+   "erro_ws": null,
+   "proc_ini": {
+    "pid": 90861,
+    "rss_mb": 66,
+    "threads": 5,
+    "filhos": 0
+   },
+   "proc_fim": {
+    "pid": 90861,
+    "rss_mb": 3809,
+    "threads": 51,
+    "filhos": 1
+   },
+   "erros": {},
+   "meta": "30 min sem travar nem vazar worker/lock (não rodado: use --sessao-min 30)"
+  }
+ },
+ "falas": [
+  {
+   "fala": 0,
+   "tipo": "longa",
+   "voz": "fl13",
+   "dur_s": 8.96,
+   "papel": "A",
+   "audio_durante_fala": false,
+   "s2_ms": 2662,
+   "interrupcao_valida": true,
+   "s2_llm_ttft_ms": 1346,
+   "s2_pos_llm_ms": 1316,
+   "s2_estagios": {
+    "llm_frase": 34,
+    "fila_tts": 1,
+    "lock": 0,
+    "tts": 1219,
+    "marca": 0,
+    "envio": 0,
+    "resto": 62,
+    "vad": 608,
+    "fio": -546,
+    "fio_rx": 0,
+    "fio_cliente": -546,
+    "tts_modelo": 0,
+    "tts_cond": 0,
+    "tts_prep": 0,
+    "tts_gen": 1218,
+    "tts_fora": 1
+   },
+   "s2_tts_params": {
+    "ref_tokens": 227,
+    "cfg": 2.0,
+    "steps": 10
+   },
+   "cobertura": 1.0,
+   "aceito": true
+  },
+  {
+   "fala": 1,
+   "tipo": "interrupcao",
+   "voz": "fl15",
+   "dur_s": 9.36,
+   "papel": "B",
+   "duck_antes_da_fala": false,
+   "s3_duck_ms": 1854,
+   "s3_pausa_ms": null,
+   "s3_stop_ms": 4001,
+   "s2_ms": 1985,
+   "eco_tocado_s": 12.8,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 0.6,
+   "aceito": true,
+   "wer_ciclo": 0.207,
+   "turnos_descartados": 0,
+   "pendente": false
+  },
+  {
+   "fala": 2,
+   "tipo": "curta",
+   "voz": "fl06",
+   "dur_s": 0.9,
+   "papel": "A",
+   "audio_durante_fala": false,
+   "s2_ms": null,
+   "interrupcao_valida": false,
+   "aceito": true,
+   "sobra_palavras": 2
+  },
+  {
+   "fala": 3,
+   "tipo": "longa",
+   "voz": "fl11",
+   "dur_s": 9.4,
+   "papel": "B",
+   "s2_ms": 1573,
+   "eco_tocado_s": 25.8,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 0.941,
+   "aceito": true,
+   "wer_ciclo": 0.211,
+   "turnos_descartados": 0,
+   "pendente": false
+  },
+  {
+   "fala": 4,
+   "tipo": "longa",
+   "voz": "fl12",
+   "dur_s": 9.22,
+   "papel": "A",
+   "audio_durante_fala": false,
+   "s2_ms": 3068,
+   "interrupcao_valida": true,
+   "s2_llm_ttft_ms": 1880,
+   "s2_pos_llm_ms": 1188,
+   "s2_estagios": {
+    "llm_frase": 36,
+    "fila_tts": 0,
+    "lock": 431,
+    "tts": 1229,
+    "marca": 0,
+    "envio": 0,
+    "resto": -508,
+    "vad": 608,
+    "fio": -1116,
+    "fio_rx": 0,
+    "fio_cliente": -1116,
+    "tts_modelo": 0,
+    "tts_cond": 0,
+    "tts_prep": 0,
+    "tts_gen": 1155,
+    "tts_fora": 74
+   },
+   "s2_tts_params": {
+    "ref_tokens": 227,
+    "cfg": 2.0,
+    "steps": 10
+   },
+   "cobertura": 0.667,
+   "aceito": true
+  },
+  {
+   "fala": 5,
+   "tipo": "interrupcao",
+   "voz": "fl37",
+   "dur_s": 6.9,
+   "papel": "B",
+   "duck_antes_da_fala": false,
+   "s3_duck_ms": 1154,
+   "s3_pausa_ms": null,
+   "s3_stop_ms": null,
+   "s2_ms": 1670,
+   "eco_tocado_s": 8.8,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 0.182,
+   "aceito": false,
+   "wer_ciclo": 0.586,
+   "turnos_descartados": 0,
+   "pendente": false
+  },
+  {
+   "fala": 6,
+   "tipo": "curta",
+   "voz": "fl28",
+   "dur_s": 0.9,
+   "papel": "A",
+   "audio_durante_fala": false,
+   "s2_ms": null,
+   "interrupcao_valida": false,
+   "aceito": false,
+   "sobra_palavras": 0
+  },
+  {
+   "fala": 7,
+   "tipo": "longa",
+   "voz": "fl38",
+   "dur_s": 6.96,
+   "papel": "B",
+   "s2_ms": 3407,
+   "eco_tocado_s": 21.8,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 1.0,
+   "aceito": true,
+   "wer_ciclo": 0.133,
+   "turnos_descartados": 0,
+   "pendente": false
+  },
+  {
+   "fala": 8,
+   "tipo": "longa",
+   "voz": "fl36",
+   "dur_s": 13.8,
+   "papel": "A",
+   "audio_durante_fala": true,
+   "s2_ms": 2541,
+   "interrupcao_valida": true,
+   "s2_llm_ttft_ms": 1235,
+   "s2_pos_llm_ms": 1306,
+   "s2_estagios": {
+    "llm_frase": 35,
+    "fila_tts": 0,
+    "lock": 0,
+    "tts": 1259,
+    "marca": 0,
+    "envio": 0,
+    "resto": 12,
+    "vad": null,
+    "fio": null,
+    "fio_rx": null,
+    "fio_cliente": null,
+    "tts_modelo": 0,
+    "tts_cond": 0,
+    "tts_prep": 0,
+    "tts_gen": 1257,
+    "tts_fora": 2
+   },
+   "s2_tts_params": {
+    "ref_tokens": 227,
+    "cfg": 2.0,
+    "steps": 10
+   },
+   "cobertura": 0.815,
+   "aceito": true
+  },
+  {
+   "fala": 9,
+   "tipo": "interrupcao",
+   "voz": "fl35",
+   "dur_s": 6.64,
+   "papel": "B",
+   "duck_antes_da_fala": false,
+   "s3_duck_ms": 1354,
+   "s3_pausa_ms": null,
+   "s3_stop_ms": 3549,
+   "s2_ms": 1956,
+   "eco_tocado_s": 12.8,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 0.467,
+   "aceito": false,
+   "wer_ciclo": 0.31,
+   "turnos_descartados": 0,
+   "pendente": true
+  },
+  {
+   "fala": 10,
+   "tipo": "curta",
+   "voz": "fl10",
+   "dur_s": 0.9,
+   "papel": "A",
+   "audio_durante_fala": false,
+   "s2_ms": null,
+   "interrupcao_valida": false,
+   "aceito": true,
+   "sobra_palavras": 1
+  },
+  {
+   "fala": 11,
+   "tipo": "longa",
+   "voz": "fl09",
+   "dur_s": 20.88,
+   "papel": "B",
+   "s2_ms": 2829,
+   "eco_tocado_s": 25.9,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 0.98,
+   "aceito": true,
+   "wer_ciclo": 0.059,
+   "turnos_descartados": 0,
+   "pendente": false
+  },
+  {
+   "fala": 12,
+   "tipo": "longa",
+   "voz": "fl18",
+   "dur_s": 28.36,
+   "papel": "A",
+   "audio_durante_fala": true,
+   "s2_ms": 3149,
+   "interrupcao_valida": true,
+   "s2_llm_ttft_ms": 1463,
+   "s2_pos_llm_ms": 1686,
+   "s2_estagios": {
+    "llm_frase": 26,
+    "fila_tts": 0,
+    "lock": 0,
+    "tts": 1256,
+    "marca": 1,
+    "envio": 0,
+    "resto": 403,
+    "vad": 608,
+    "fio": -205,
+    "fio_rx": 0,
+    "fio_cliente": -205,
+    "tts_modelo": 0,
+    "tts_cond": 0,
+    "tts_prep": 0,
+    "tts_gen": 1255,
+    "tts_fora": 1
+   },
+   "s2_tts_params": {
+    "ref_tokens": 227,
+    "cfg": 2.0,
+    "steps": 10
+   },
+   "cobertura": 0.86,
+   "aceito": true
+  },
+  {
+   "fala": 13,
+   "tipo": "interrupcao",
+   "voz": "fl00",
+   "dur_s": 18.54,
+   "papel": "B",
+   "duck_antes_da_fala": false,
+   "s3_duck_ms": 1154,
+   "s3_pausa_ms": null,
+   "s3_stop_ms": 3386,
+   "s2_ms": 3652,
+   "eco_tocado_s": 12.8,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 0.886,
+   "aceito": true,
+   "wer_ciclo": 0.128,
+   "turnos_descartados": 0,
+   "pendente": false
+  },
+  {
+   "fala": 14,
+   "tipo": "curta",
+   "voz": "fl20",
+   "dur_s": 0.9,
+   "papel": "A",
+   "audio_durante_fala": false,
+   "s2_ms": null,
+   "interrupcao_valida": false,
+   "aceito": true,
+   "sobra_palavras": 1
+  },
+  {
+   "fala": 15,
+   "tipo": "longa",
+   "voz": "fl25",
+   "dur_s": 7.64,
+   "papel": "B",
+   "s2_ms": 3552,
+   "eco_tocado_s": 25.8,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 0.944,
+   "aceito": true,
+   "wer_ciclo": 0.15,
+   "turnos_descartados": 0,
+   "pendente": false
+  },
+  {
+   "fala": 16,
+   "tipo": "longa",
+   "voz": "fl08",
+   "dur_s": 12.06,
+   "papel": "A",
+   "audio_durante_fala": true,
+   "s2_ms": 2292,
+   "interrupcao_valida": true,
+   "s2_llm_ttft_ms": 1405,
+   "s2_pos_llm_ms": 887,
+   "s2_estagios": {
+    "llm_frase": 30,
+    "fila_tts": 0,
+    "lock": 0,
+    "tts": 1254,
+    "marca": 0,
+    "envio": 0,
+    "resto": -397,
+    "vad": 608,
+    "fio": -1005,
+    "fio_rx": 0,
+    "fio_cliente": -1005,
+    "tts_modelo": 0,
+    "tts_cond": 0,
+    "tts_prep": 0,
+    "tts_gen": 1253,
+    "tts_fora": 1
+   },
+   "s2_tts_params": {
+    "ref_tokens": 227,
+    "cfg": 2.0,
+    "steps": 10
+   },
+   "cobertura": 0.636,
+   "aceito": true
+  },
+  {
+   "fala": 17,
+   "tipo": "interrupcao",
+   "voz": "fl27",
+   "dur_s": 21.38,
+   "papel": "B",
+   "duck_antes_da_fala": false,
+   "s3_duck_ms": 1655,
+   "s3_pausa_ms": null,
+   "s3_stop_ms": 3783,
+   "s2_ms": 5011,
+   "eco_tocado_s": 13.2,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 0.784,
+   "aceito": true,
+   "wer_ciclo": 0.288,
+   "turnos_descartados": 0,
+   "pendente": false
+  },
+  {
+   "fala": 18,
+   "tipo": "curta",
+   "voz": "fl02",
+   "dur_s": 0.9,
+   "papel": "A",
+   "audio_durante_fala": false,
+   "s2_ms": null,
+   "interrupcao_valida": false,
+   "aceito": true,
+   "sobra_palavras": 2
+  },
+  {
+   "fala": 19,
+   "tipo": "longa",
+   "voz": "fl33",
+   "dur_s": 6.52,
+   "papel": "B",
+   "s2_ms": 2181,
+   "eco_tocado_s": 26.3,
+   "eco_falso_corte": false,
+   "eco_falso_duck": false,
+   "eco_falso_pausa": false,
+   "cobertura": 0.778,
+   "aceito": true,
+   "wer_ciclo": 0.364,
+   "turnos_descartados": 0,
+   "pendente": false
+  }
+ ],
+ "respostas": [
+  {
+   "t": 27.75,
+   "fim": "interrupted",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 41.56,
+   "fim": "turn_complete",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 186.83,
+   "fim": "turn_complete",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 213.07,
+   "fim": "turn_complete",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 361.38,
+   "fim": "turn_complete",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 386.71,
+   "fim": "interrupted",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 391.58,
+   "fim": "interrupted",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 402.71,
+   "fim": "turn_complete",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 561.97,
+   "fim": "turn_complete",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 586.65,
+   "fim": "interrupted",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 605.97,
+   "fim": "interrupted",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 630.64,
+   "fim": "turn_complete",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 775.7,
+   "fim": "turn_complete",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 797.79,
+   "fim": "interrupted",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 804.71,
+   "fim": "interrupted",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 821.0,
+   "fim": "interrupted",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 831.68,
+   "fim": "turn_complete",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  },
+  {
+   "t": 977.63,
+   "fim": "turn_complete",
+   "chars": 182,
+   "s4_simbolos": {},
+   "s4_cru": {}
+  }
+ ]
+}
