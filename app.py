@@ -10372,6 +10372,11 @@ SPEAKER_MAX_SAMPLES = 5      # embeddings por perfil (média robuza o timbre)
 #: (0,076 % na CV, 0,389 % no FLEURS, IC95 superior < 1 %) e o FRR cai a 15,9 %.
 #: Abaixo de 1,0 s a verificação vira `indeterminado`, nunca passa sem conferir.
 _SPEAKER_PISO_S = 1.0
+#: piso do RECORTE da fala nova no barge — outro conceito que o de cima. Aqui é só
+#: o mínimo para o extrator não devolver `None`; subir para 1,0 engorda o recorte
+#: com eco e derruba o escore do próprio dono (#984). O de cima responde "a partir
+#: de que tamanho a comparação é confiável?".
+_VOZ_RECORTE_PISO_S = 0.6
 #: versão do EXTRATOR. Embedding de um modelo não se compara com o de outro, então
 #: o perfil carrega a dele (`modelo`) e o gate pontua cada perfil pelo extrator que
 #: o gerou. Perfil sem o campo é do extrator legado — segue valendo, marcado como
@@ -11211,9 +11216,14 @@ def _voz_recorta_fala(a, fala_ms: int):
     janela de 1 s era quase toda eco e o portão recusava o próprio dono. O motor
     mede a fala (`fala_ms`); o resíduo do eco (pós-AEC) é mais baixo que a voz
     perto do microfone, então ela é o pedaço de MAIOR energia daquele tamanho.
-    Folga de 0,2 s (ataque e cauda) e piso de 0,6 s (o mínimo do extrator)."""
+    Folga de 0,2 s (ataque e cauda) e piso de 0,6 s (o mínimo do extrator).
+
+    O piso daqui NÃO é o `_SPEAKER_PISO_S`: aquele é o tamanho a partir do qual a
+    VERIFICAÇÃO é confiável (1,0 s, #1159); este é o mínimo para o extrator sair
+    do `None`. Confundir os dois engordava o recorte em 0,3 s de eco e o dono
+    voltava a ser recusado no barge (#984, regressão do #1167)."""
     import numpy as np
-    n = max(int(16000 * (fala_ms / 1000.0 + 0.2)), int(16000 * _SPEAKER_PISO_S))
+    n = max(int(16000 * (fala_ms / 1000.0 + 0.2)), int(16000 * _VOZ_RECORTE_PISO_S))
     if fala_ms <= 0 or n >= a.size:
         return a
     acum = np.concatenate([[0.0], np.cumsum(a.astype(np.float64) ** 2)])
@@ -11262,7 +11272,7 @@ def _voz_do_dono(pcm16: bytes, cfg: dict | None = None, fala_ms: int = 0) -> dic
     janela = int(16000 * _VOZ_JANELA_S)
     passo = int(16000 * _VOZ_PASSO_S)
     if a.size < janela:                   # curto demais p/ 1 janela cheia
-        if a.size < 16000 * _SPEAKER_PISO_S:   # piso do próprio extrator
+        if a.size < 16000 * _VOZ_RECORTE_PISO_S:   # piso do extrator, não o da verificação
             return _fora("áudio curto para identificar")
         janela = a.size
     # piso de ENERGIA: ventoinha/zumbido não confirmam ninguém (p90 do trecho)
