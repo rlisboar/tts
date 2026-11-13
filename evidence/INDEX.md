@@ -28,6 +28,10 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `1135-guardas-ab.py` | #1135 | 2026-11-12 | """#1135 — guardas OBJETIVAS de B (CFG desligado no 1º trecho) e A (prefixo de ref de ~4 s). |
 | `1135-prefixo-cfg-quant.py` | #1135 | 2026-11-11 | """#1135 — de onde vem o custo do `tts_gen` do OmniVoice (micro-bench, MLX, 1 voz sintética). |
 | `1135-tts-gen-alavancas.md` | #1135 | 2026-11-12 | 1135 — de onde vem o `tts_gen` do 1º trecho do Live e o que dá para cortar |
+| `1159-biometria-curta.json` | #1159 | — | "locutores": 18, |
+| `1159-biometria-curta.md` | #1159 | — | 1159 — READOUT: verificação de locutor em fala curta (0,3–3 s) |
+| `1159-biometria-curta.py` | #1159 | — | """#1159 — verificação de locutor por duração (0,3–3 s). Ver 1159-prereg-biometria-curta.md. |
+| `1159-prereg-biometria-curta.md` | #1159 | 2026-11-13 | 1159 — PRÉ-REGISTRO: verificação de locutor em fala curta (0,3–2 s) |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
