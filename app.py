@@ -700,6 +700,12 @@ _SETTINGS_DEFAULTS = {
     # extra (silêncio) entre uma fala e a próxima.
     "speech_queue": True,             # ligado por padrão (vários clientes na rede)
     "speech_queue_gap_s": 0.35,       # folga extra após a duração da fala (0–5 s)
+    # #1157: enquanto houver sessão Live ATIVA, o lote (jobs de TTS e o
+    # `/v1/audio/speech`) não começa trecho novo — o trecho em curso termina, e o
+    # lote retoma quando nenhuma sessão teve atividade (frame/turno) há
+    # `live_pausa_lote_ociosa_s` ou a sessão fecha. False = comportamento antigo.
+    "live_pausa_lote": True,
+    "live_pausa_lote_ociosa_s": 60,   # 5–3600 s
     # URL https do túnel (#784/#950). Vazio = o status não checa destino fixo.
     # Tem de estar nos defaults: `_save_settings` só grava chave conhecida.
     "public_url": "",
@@ -805,6 +811,9 @@ def _save_settings():
         _settings["speech_queue_gap_s"] = float(_settings.get("speech_queue_gap_s") or 0.35)
     except (TypeError, ValueError):
         _settings["speech_queue_gap_s"] = 0.35
+    _settings["live_pausa_lote"] = bool(_settings.get("live_pausa_lote", True))
+    _settings["live_pausa_lote_ociosa_s"] = _clamp(
+        _settings.get("live_pausa_lote_ociosa_s"), 5.0, 3600.0, 60.0)
     payload = {k: _settings.get(k, v) for k, v in _SETTINGS_DEFAULTS.items()}
     try:
         disco = json.loads(SETTINGS_PATH.read_text())
@@ -5949,6 +5958,11 @@ def _apply_settings(payload: dict):
         _settings["speech_queue"] = bool(payload["speech_queue"])
     if "speech_queue_gap_s" in payload:
         _settings["speech_queue_gap_s"] = _clamp(payload["speech_queue_gap_s"], 0.0, 5.0, 0.35)
+    if "live_pausa_lote" in payload:
+        _settings["live_pausa_lote"] = bool(payload["live_pausa_lote"])
+    if "live_pausa_lote_ociosa_s" in payload:
+        _settings["live_pausa_lote_ociosa_s"] = _clamp(
+            payload["live_pausa_lote_ociosa_s"], 5.0, 3600.0, 60.0)
     _save_settings()
     # EFEITOS ficam para o `update_settings`, DEPOIS do commit (#282): disparados
     # aqui dentro, um erro posterior (ex.: descarga de modelo) já os tinha feito e o
@@ -7697,6 +7711,85 @@ def _unload_local_tts():
                                 precision=None, path=None)
 
 
+# --- #1157: o lote cede a vez ao Live --------------------------------------
+# H-trecho: o trecho do lote (~3,5 s) segura o `_gen_lock` e o Live espera até 1
+# trecho (lock p95 2,9 s; S2 p95 7,7 s com narração em paralelo). Enquanto há
+# sessão Live ATIVA o lote não começa trecho novo: o em curso termina, e entre
+# um trecho e outro o `_gen_lock` fica LIVRE para o Live.
+_PAUSA_LOTE_PASSO_S = 0.25
+#: teto de trabalho efetivo do `/v1/audio/speech` síncrono (sem o tempo pausado)
+_SPEECH_SINC_TETO_S = 600.0
+
+
+def _live_marca_atividade(sess: dict) -> None:
+    """Carimba que a sessão FEZ algo agora (#1157). Não é `visto`: esse renova a cada
+    frame de mic, inclusive em silêncio, e a narração nunca voltaria."""
+    sess["atividade"] = time.monotonic()
+
+
+def _live_ativo_para_lote(agora: float | None = None) -> bool:
+    """Há sessão Live ATIVA? Sessão aberta (não `fechar`/`vencida`/`substituida`) E
+    ao menos um de: turno em curso, áudio do agente ainda tocando no cliente
+    (`pb_fim_est`), ou `atividade` nos últimos `live_pausa_lote_ociosa_s`.
+
+    Lê um retrato de `_live_sessions` SEM tomar o `_live_lock`: esta função roda na
+    thread do job, que segura o `_gen_lock`, e o Live toma as duas travas em
+    ordens próprias — um `with _live_lock` aqui abriria uma ordem nova. Só leitura
+    de campos; um valor velho erra por um passo de 0,25 s."""
+    if not _settings.get("live_pausa_lote", True):
+        return False
+    ociosa = _clamp(_settings.get("live_pausa_lote_ociosa_s"), 5.0, 3600.0, 60.0)
+    agora = time.monotonic() if agora is None else agora
+    for _ in range(3):                     # dict mudou durante a cópia: tenta de novo
+        try:
+            sessoes = list(_live_sessions.values())
+            break
+        except RuntimeError:
+            continue
+    else:
+        return False
+    for sess in sessoes:
+        if sess.get("fechar") or sess.get("vencida") or sess.get("substituida"):
+            continue
+        try:
+            if _live_turno_em_curso(sess):
+                return True
+        except Exception:                  # noqa: BLE001 — sessão meio montada
+            pass
+        if float(sess.get("pb_fim_est") or 0.0) > agora:
+            return True
+        ultima = sess.get("atividade")
+        if isinstance(ultima, (int, float)) and agora - float(ultima) < ociosa:
+            return True
+    return False
+
+
+def _lote_espera_live(job: dict, atual: int, total: int) -> float:
+    """Espera o Live sossegar ANTES de um trecho novo. Devolve os segundos pausados.
+
+    Roda sem o `_gen_lock` (o Live gera enquanto o lote espera) e o repega na
+    volta. Não falha o job nem conta como travado: o job só mostra
+    `pausado_pelo_live`. Cancelamento sai na hora."""
+    if not _live_ativo_para_lote():
+        return 0.0
+    t0 = time.monotonic()
+    job["pausado_pelo_live"] = True
+    job["progress"] = {"stage": "pausado pelo Live", "pausado_pelo_live": True,
+                       "current": atual, "total": total}
+
+    def _espera() -> None:
+        while _live_ativo_para_lote() and not job.get("cancelado"):
+            time.sleep(_PAUSA_LOTE_PASSO_S)
+
+    try:
+        _corre_sem_gen_lock(_espera)
+    finally:
+        job["pausado_pelo_live"] = False
+        job["pausado_s"] = round(float(job.get("pausado_s") or 0.0)
+                                 + (time.monotonic() - t0), 2)
+    return time.monotonic() - t0
+
+
 def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Path,
                           language: str, omni: dict, be: dict, sq=None,
                           model: str | None = None):
@@ -8032,6 +8125,16 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
         pdir.mkdir(exist_ok=True)
         _job_owner_write(pdir)      # dono: o boot de outro processo consulta
 
+        # #1157: com Live ativo o job nem pega o `_gen_lock` nem carrega o modelo
+        _lote_espera_live(job, 0, len(chunks))
+        if job.get("cancelado"):
+            _speech_queue_abort(sq)
+            job.update(status="error", error="cancelado pelo usuário",
+                       progress=None, pieces=0)
+            _jobs_hist_salva()
+            _model_state.update(status="idle", progress=None, error=None)
+            return
+
         # serializa load+gen no _gen_lock (evita 2 modelos MLX em paralelo / segfault)
         with _gen_lock:
             started = time.time()
@@ -8138,6 +8241,15 @@ def _run_tts_job(job_id: str, text: str, voice_id: str, voice_path: Path,
                 # cancelamento no caminho LOCAL (#800): o job pode ser parado
                 # entre trechos sem esperar o job inteiro
                 if job.get("cancelado"):
+                    _speech_queue_abort(sq)
+                    job.update(status="error", error="cancelado pelo usuário",
+                               progress=None, pieces=i)
+                    _jobs_hist_salva()
+                    _model_state.update(status="idle", progress=None, error=None)
+                    return
+                # #1157: o lote cede a vez ao Live entre trechos (nunca no meio de um)
+                _lote_espera_live(job, i + 1, len(chunks))
+                if job.get("cancelado"):          # cancelou durante a pausa
                     _speech_queue_abort(sq)
                     job.update(status="error", error="cancelado pelo usuário",
                                progress=None, pieces=i)
@@ -12540,6 +12652,8 @@ def _live_envia_json(sess: dict, obj: dict) -> None:
         return
     obj.pop("_do_pipeline", None)
     obj.pop("_turno_pipe", None)
+    if obj.get("type") in ("speech_start", "speech_end", "turn_complete", "interrupted"):
+        _live_marca_atividade(sess)         # #1157: início/fim de fala e de turno
     terminal = obj.get("type") in ("turn_complete", "interrupted") or (
         obj.get("type") == "error" and obj.get("code") == "pipeline")
     if terminal:
@@ -12663,6 +12777,7 @@ def _live_envia_audio(sess: dict, pcm: bytes, *, marcar: bool = True,
     que a marca foi pulada) e `send` (handoff na fila da sessão). O pipeline
     transforma isso em `marca_ms`/`send_ms` do evento `latency` (#942)."""
     if pcm:
+        _live_marca_atividade(sess)            # #1157: áudio do agente saindo é atividade
         if marcar:
             pcm = _marca_pcm(pcm, _LIVE_AUDIO_SR)  # 24 kHz, grade 16 kHz por dentro (#908)
         # #1129 (qa): o portão do `_envia_pcm` roda ANTES da marca, que pode levar
@@ -14762,6 +14877,7 @@ async def live_ws(ws: WebSocket):
                            for m in (retomado.get("msgs") or [])] or cfg["history"]}
     sess = {
         "id": sid, "criada": time.time(), "visto": time.monotonic(),
+        "atividade": time.monotonic(),     # #1157: sessão recém-aberta conta como ativa
         # geração: quem nasce depois MANDA no registro de retomada — a sessão antiga
         # (socket zumbi) não pode sobrescrever o contexto da que a retomou.
         "geracao": time.monotonic(),
@@ -15400,7 +15516,13 @@ def openai_speech(payload: dict):
         daemon=True,
     )
     t.start()
-    t.join(timeout=600)
+    # 600 s de trabalho EFETIVO: o tempo em que o lote ficou pausado pelo Live
+    # (#1157) não entra na conta — pausa não é síntese lenta.
+    restante = _SPEECH_SINC_TETO_S
+    while t.is_alive() and restante > 0:
+        t.join(timeout=0.5)
+        if not job.get("pausado_pelo_live"):
+            restante -= 0.5
     if t.is_alive():
         raise HTTPException(504, "Síntese excedeu 10 minutos")
     if job["status"] != "done":

@@ -615,6 +615,30 @@ curl -s http://127.0.0.1:7860/v1/audio/speech \
 - Conversão de formato/velocidade usa `ffmpeg` (`brew install ffmpeg`).
 - `GET /v1/models` lista `tts-1` e `tts-1-hd`.
 
+### O lote cede a vez ao Live (`live_pausa_lote`)
+
+Enquanto houver sessão **Live ativa**, os jobs de TTS em lote (`/api/tts`, narração)
+e o `/v1/audio/speech` **não começam trecho novo**: o trecho em curso termina (não é
+cancelado) e, entre um trecho e outro, o `_gen_lock` fica livre para o Live. O job
+também espera antes de pegar o lock e de carregar o modelo.
+
+**Live ativa** = sessão aberta (não fechando/vencida/substituída) **e** ao menos um de:
+turno em curso; áudio do agente ainda tocando no cliente (`pb_fim_est`); ou carimbo
+`atividade` com menos de `live_pausa_lote_ociosa_s` (padrão 60 s, faixa 5–3600). O
+carimbo renova na abertura da sessão, em `speech_start`/`speech_end`, no fim de turno e
+no envio de áudio do agente — **não** em frame de microfone (que chega o tempo todo,
+inclusive em silêncio). O lote retoma quando nenhuma sessão satisfaz isso, ou na hora
+em que a sessão fecha.
+
+- Settings (não admin): `live_pausa_lote` (padrão `true`; `false` = comportamento
+  antigo) e `live_pausa_lote_ociosa_s`.
+- O job **não falha nem expira** por estar pausado. `GET /api/tts/jobs/{id}` traz
+  `pausado_pelo_live` (`true` enquanto espera; `progress.stage` = "pausado pelo
+  Live") e `pausado_s` (total já pausado). O `/v1/audio/speech` síncrono não conta o
+  tempo pausado nos seus 600 s.
+- Vale para o caminho **in-process** (ex.: OmniVoice). Famílias em subprocesso
+  (`qwen3_*`, `fish`, `kokoro`…) ainda não cedem a vez.
+
 ### Limites de geração (429)
 
 As rotas que geram (`/api/tts`, `/api/translate-speech`, `/api/modify-speech`,
