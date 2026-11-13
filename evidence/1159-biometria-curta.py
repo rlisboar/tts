@@ -166,14 +166,21 @@ for d in DURS:
     ts = np.linspace(-0.2, 1.0, 1201)
     far = np.array([(imp >= t).mean() for t in ts]); frr = np.array([(gen < t).mean() for t in ts])
     i = int(np.argmin(abs(far - frr)))
-    final[str(d)] = {"theta": {a: round(theta(imp, BASE[a], ALVO[a]), 3) for a in ALVO},
+    # θ do #1169: o quantil que realiza o alvo em CADA corpus; vale o MAIOR dos dois
+    # (o corpus mais duro manda). O θ de produção fica ao lado, como referência.
+    q_cv = {a: float(np.quantile(imp, 1 - ALVO[a])) for a in ALVO}
+    final[str(d)] = {"theta_cv": {a: round(q_cv[a], 3) for a in ALVO},
+                     "theta": {a: round(theta(imp, BASE[a], ALVO[a]), 3) for a in ALVO},
                      "EER": round(float((far[i] + frr[i]) / 2), 4), "EER_limiar": round(float(ts[i]), 3),
                      "imp_p50_p99_max": [round(float(np.percentile(imp, q)), 3) for q in (50, 99)] + [round(float(imp.max()), 3)],
                      "gen_p5_p50": [round(float(np.percentile(gen, q)), 3) for q in (5, 50)],
                      "n_imp": len(imp), "n_gen": len(gen)}
 
 # ---------- FLEURS: impostor garantido (corpora disjuntos), θ final
-fl = sorted(glob.glob(str(fleurs_dir / "**" / "*.wav"), recursive=True))
+# `**` alcança `test/x.wav` E o atalho `x.wav` na raiz: sem dedupe por nome o
+# mesmo arquivo entra duas vezes e o IC sai ~1,4x estreito do que devia.
+fl = sorted({pathlib.Path(x).name: x for x in
+             glob.glob(str(fleurs_dir / "**" / "*.wav"), recursive=True)}.values())
 fl_aud = [trim(le(f)) for f in fl]   # #1169: todos (919), não 400
 fleurs = {}
 for d in DURS:
@@ -187,11 +194,19 @@ for d in DURS:
     if not cs:
         continue
     S = (emb(cs) @ C.T).ravel()
+    gen_d = escores(idx, [], d, True)          # FRR no MESMO θ, para não vender só o FAR
     fleurs[str(d)] = {}
     for a in ALVO:
-        t = final[str(d)]["theta"][a]
+        q_fl = float(np.quantile(S, 1 - ALVO[a]))
+        t = max(q_fl, float(np.quantile(escores(idx, idx, d, False), 1 - ALVO[a])))
         k = int((S >= t).sum())
-        fleurs[str(d)][a] = {"FAR": round(k / len(S), 5), "FAR_IC": wilson(k, len(S)), "n": len(S)}
+        kc = int((escores(idx, idx, d, False) >= t).sum())
+        nc = len(escores(idx, idx, d, False))
+        kg = int((gen_d < t).sum())
+        fleurs[str(d)][a] = {"theta_final": round(t, 3), "theta_fleurs": round(q_fl, 3),
+                             "FAR": round(k / len(S), 5), "FAR_IC": wilson(k, len(S)), "n": len(S),
+                             "FAR_cv": round(kc / nc, 5), "FRR_cv": round(kg / len(gen_d), 5),
+                             "n_gen": len(gen_d)}
 saida.write_text(json.dumps({"locutores": len(locs), "seed": SEED, "crops": CROPS, "cv": res,
                              "final": final, "fleurs": fleurs, "fleurs_arquivos": len(fl_aud)},
                             ensure_ascii=False, indent=1))

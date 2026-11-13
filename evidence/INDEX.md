@@ -23,19 +23,19 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `1120-deploy-head-7303b8e.txt` | #1120 | 2026-11-10 | == deploy 7303b8e (main) no mini — 2026-11-10 22:45 (#1120, autorizado pelo dono 22:04) |
 | `1129-barge-nao-detectado-prereg.md` | #1129 | 2026-11-12 | 1129 — interrupção do dono não detectada com AEC ligado: PRÉ-REGISTRO (2026-11-11, antes de medir) |
 | `1129-eco-antes-palavras-corte-prereg.md` | #1129 | 2026-11-12 | 1129 / task_3ecbe8f5 — filtro `eco` antes de `palavras_corte`: PRÉ-REGISTRO (2026-11-11, antes do código) |
-| `1129-proxy-s3-readout.md` | #1129 | 2026-11-12 | 1129 — proxy sintético S3 (H1, curva do limiar por margem): READOUT |
-| `1129-barge-nao-detectado-prereg.md` | #1129 | 2026-11-11 | 1129 — interrupção do dono não detectada com AEC ligado: PRÉ-REGISTRO (2026-11-11, antes de medir) |
 | `1129-eco-ruidoso-prereg.md` | #1129 | 2026-11-12 | 1129 → #301 — régua do eco com STT ruidoso (task_21d2c3b3): PRÉ-REGISTRO (2026-11-12, antes do código) |
+| `1129-proxy-s3-readout.md` | #1129 | 2026-11-12 | 1129 — proxy sintético S3 (H1, curva do limiar por margem): READOUT |
 | `1135-gen-vs-tamanho-texto.py` | #1135 | 2026-11-12 | """#1135 — custo do `generate` contra o tamanho do texto do 1º trecho (micro-bench local, MLX). |
 | `1135-guardas-ab-rodada1.json` | #1135 | 2026-11-12 | "voz": "flvoz", |
 | `1135-guardas-ab-rodada2-ctrlnr.json` | #1135 | 2026-11-12 | "voz": "flvoz", |
 | `1135-guardas-ab.py` | #1135 | 2026-11-12 | """#1135 — guardas OBJETIVAS de B (CFG desligado no 1º trecho) e A (prefixo de ref de ~4 s). |
 | `1135-prefixo-cfg-quant.py` | #1135 | 2026-11-11 | """#1135 — de onde vem o custo do `tts_gen` do OmniVoice (micro-bench, MLX, 1 voz sintética). |
 | `1135-tts-gen-alavancas.md` | #1135 | 2026-11-12 | 1135 — de onde vem o `tts_gen` do 1º trecho do Live e o que dá para cortar |
-| `1159-biometria-curta.json` | #1159 | — | "locutores": 18, |
-| `1159-biometria-curta.md` | #1159 | — | 1159 — READOUT: verificação de locutor em fala curta (0,3–3 s) |
-| `1159-biometria-curta.py` | #1159 | — | """#1159 — verificação de locutor por duração (0,3–3 s). Ver 1159-prereg-biometria-curta.md. |
+| `1159-biometria-curta.json` | #1159 | 2026-11-13 | "locutores": 33, |
+| `1159-biometria-curta.md` | #1159 | 2026-11-13 | 1159 — READOUT: verificação de locutor em fala curta (0,3–3 s) |
+| `1159-biometria-curta.py` | #1159 | 2026-11-13 | """#1159 — verificação de locutor por duração (0,3–3 s). Ver 1159-prereg-biometria-curta.md. |
 | `1159-prereg-biometria-curta.md` | #1159 | 2026-11-13 | 1159 — PRÉ-REGISTRO: verificação de locutor em fala curta (0,3–2 s) |
+| `1169-theta-3s.md` | #1169 | — | 1169 — READOUT: o θ de 3 s não segura o alvo; o valor que segura é 0,41 |
 | `117-live-feedback-erros.png` | #117 | 2026-09-29 | (imagem) |
 | `119-live-painel-obs.png` | #119 | 2026-09-29 | (imagem) |
 | `120-obs-conversa.png` | #120 | 2026-09-29 | (imagem) |
@@ -338,7 +338,7 @@ Depois de acrescentar, regenere: `./.venv-mlx/bin/python tests/gera_evidence_ind
 | `869-ab-s1-cru-filtrado.py` | #869 | 2026-11-08 | """#869 item 3 (A/B isolado do S1, script) — S1 ISOLADO do PCM cru: mesmo SHA, mesmo áudio, só muda o que o |
 | `869-live-vad-cru.md` | #869 | 2026-11-06 | 869 — Live descarta turno com fala real (`motivo=vad` / "sem fala") |
 | `869-repro-cru.py` | #869 | 2026-11-06 | """#869 — reproduz o descarte `motivo=vad` do Live com áudio gravado. |
-| `874-pausa-lote-live-prereg.md` | #874 | — | 874 / task_e6abe331 — a narração pausa entre trechos enquanto houver Live ativo (opção b da H-trecho): PRÉ-REG |
+| `874-pausa-lote-live-prereg.md` | #874 | 2026-11-12 | 874 / task_e6abe331 — a narração pausa entre trechos enquanto houver Live ativo (opção b da H-trecho): PRÉ-REG |
 | `875-bancada-afc3f42-PARCIAL.json` | #875 | 2026-11-08 | "rotulo": "afc3f42", |
 | `875-bancada-afc3f42-PARCIAL.log` | #875 | 2026-11-08 | (sem descrição) |
 | `875-bancada-e2bb4f7.json` | #875 | 2026-11-08 | "rotulo": "e2bb4f7", |
