@@ -204,6 +204,10 @@ for d in DURS:
         nc = len(escores(idx, idx, d, False))
         kg = int((gen_d < t).sum())
         fleurs[str(d)][a] = {"theta_final": round(t, 3), "theta_fleurs": round(q_fl, 3),
+                             "theta_09": round(max(float(np.quantile(S, 0.991)),
+                                                   float(np.quantile(escores(idx, idx, d, False), 0.991))), 3),
+                             "FRR_09_cv": round(float((gen_d < max(float(np.quantile(S, 0.991)),
+                                                                   float(np.quantile(escores(idx, idx, d, False), 0.991)))).mean()), 5),
                              "FAR": round(k / len(S), 5), "FAR_IC": wilson(k, len(S)), "n": len(S),
                              "FAR_cv": round(kc / nc, 5), "FRR_cv": round(kg / len(gen_d), 5),
                              "n_gen": len(gen_d)}

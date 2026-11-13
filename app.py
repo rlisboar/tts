@@ -10958,12 +10958,40 @@ def _speaker_asnorm(emb, vecs_perfil: list, modelo: str,
     return (cru - mu) / (sd or 1e-6), "asnorm"
 
 
-def _speaker_limiar(modelo: str) -> tuple[float, str]:
+#: θ por DURAÇÃO (s) para o ECAPA no alvo de 1 %, com margem: derivado no quantil
+#: de 0,9 % do corpus mais duro, para o IC95 superior cair em ~1 % (#1169). Um θ só
+#: para a curva inteira dava 1,55 % de FAR aos 3 s e 0,02 % aos 0,3 s. Abaixo de
+#: 1,0 s não se aplica — ali o piso de verificação já manda `indeterminado`.
+#: Valores medidos em `evidence/1169-theta-3s.md`; interpolação linear entre eles e
+#: clamp acima do último (tabela com buraco vira `KeyError` em duração nova).
+_SPEAKER_LIMIAR_DUR = ((1.0, 0.341), (1.5, 0.371), (2.0, 0.394), (3.0, 0.417))
+
+
+def _speaker_limiar_por_dur(dur_s: float | None) -> float | None:
+    """θ interpolado na duração (None se não se aplica). Fora da faixa, clampa."""
+    if dur_s is None or dur_s < _SPEAKER_LIMIAR_DUR[0][0]:
+        return None
+    if dur_s >= _SPEAKER_LIMIAR_DUR[-1][0]:
+        return _SPEAKER_LIMIAR_DUR[-1][1]
+    for (d0, v0), (d1, v1) in zip(_SPEAKER_LIMIAR_DUR, _SPEAKER_LIMIAR_DUR[1:]):
+        if d0 <= dur_s <= d1:
+            return v0 + (v1 - v0) * (dur_s - d0) / (d1 - d0)
+    return None
+
+
+def _speaker_limiar(modelo: str, dur_s: float | None = None) -> tuple[float, str]:
     """(limiar, modo). Resemblyzer: AS-norm com alvo de FAR, senão o
     `speaker_threshold` cru. ECAPA (#982): sempre CRU — o alvo de FAR escolhe a
-    faixa (0,39/0,48) e sem alvo vale o calibrado de identidade (0,44)."""
+    faixa e sem alvo vale o calibrado de identidade (0,44).
+
+    Com `dur_s` e alvo `1`, o ECAPA usa o θ da DURAÇÃO (#1169); o alvo `0.1` fica
+    na tabela plana (0,48) porque a curva dele não foi para o código ainda."""
     alvo = str(_settings.get("speaker_far_alvo") or "").strip()
     if modelo in _SPEAKER_DECIDE_CRU:
+        if alvo == "1":
+            por_dur = _speaker_limiar_por_dur(dur_s)
+            if por_dur is not None:
+                return por_dur, "cru"
         lim = _SPEAKER_LIMIAR_FAR.get(modelo, {}).get(alvo) if alvo else None
         return (float(lim) if lim is not None else _ECAPA_LIMIAR_IDENTIDADE), "cru"
     if alvo and _speaker_cohorte(modelo):
@@ -10999,6 +11027,9 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
     if not perfis:
         return {}  # sem perfis cadastrados: gate inerte (não é erro)
     melhor, sim, houve_emb, modo = _speaker_pontua(wav_path, perfis)
+    # duração SEMPRE: o θ do ECAPA depende dela (#1169) e o ramo de "sem embedding"
+    # também precisa do número para separar curto de falha (#1158)
+    dur = _speaker_dur_s(wav_path)
     if not houve_emb:
         # sem embedding: `label` antes seguia MUDO — agora diz que seguiu sem
         # etiqueta (#282). Em `enforce` há DOIS casos (#1158):
@@ -11011,7 +11042,6 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
         if gate != "enforce":
             return {"speaker_aviso": "áudio curto p/ identificar a voz — segue sem "
                                      "etiqueta de locutor"}
-        dur = _speaker_dur_s(wav_path)
         if dur is None or dur >= _SPEAKER_PISO_S:
             print(f"[speaker] embedding não saiu com {dur} s de áudio — gate "
                   "enforce falha fechado", flush=True)
@@ -11028,9 +11058,11 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
                 "reason": "áudio curto p/ identificar a voz"}
     modelo_limiar = _speaker_modelo_do_perfil(perfis[melhor]) if melhor \
         else _speaker_modelo_efetivo()
-    lim, modo_lim = _speaker_limiar(modelo_limiar)
+    lim, modo_lim = _speaker_limiar(modelo_limiar, dur)
     autorizado = melhor is not None and sim is not None and sim >= lim
-    out: dict = {}
+    # o limiar aplicado vai na resposta: é o número que a tela e o gate usaram, e
+    # sem ele não há como conferir de fora qual régua valeu (#1169)
+    out: dict = {"speaker_limiar": round(float(lim), 3)}
     # o modo só aparece quando é normalizado: escore AS-norm não se confunde com
     # o cru, e o caminho cru (default) mantém a resposta de antes
     if modo_lim == "asnorm":
@@ -11366,7 +11398,7 @@ def _speaker_avalia_amostra(tmp: Path, emb: list | None, vecs: list, modelo: str
         faltas.append(f"ruído alto: SNR {snr:.0f} dB (mínimo "
                       f"{SPEAKER_MIN_SNR_DB:.0f} dB) — grave num ambiente quieto")
     if emb and len(vecs) >= 2:
-        lim, _modo = _speaker_limiar(modelo)
+        lim, _modo = _speaker_limiar(modelo, fala)
         centroide = _speaker_centroide(vecs)
         media = _cos_sim(emb, centroide)
         if media < lim:
@@ -11603,11 +11635,14 @@ async def speaker_check(audio: UploadFile = None):
 
     _tmp, perfis, (melhor, sim, houve_emb, _modo_escore) = \
         await run_in_threadpool(_pontua)
+    dur_chk = _speaker_dur_s(_tmp) if _tmp.exists() else None
     if not houve_emb:
         raise HTTPException(400, "Áudio curto demais p/ identificar (grave 8s+)")
     modelo = (_speaker_modelo_do_perfil(perfis[melhor]) if melhor
               else _speaker_modelo_efetivo())
-    limiar, modo_limiar = _speaker_limiar(modelo)
+    # a MESMA régua do gate inclui o θ por duração (#1169), senão a tela aprova
+    # com um número que o gate não usa
+    limiar, modo_limiar = _speaker_limiar(modelo, dur_chk)
     passa = bool(melhor and sim is not None and sim >= limiar)
     # a régua do Live na MESMA escala (#982): o check pontua o áudio inteiro contra
     # o limiar de identidade; o portão do Live pontua janelas de 1 s contra este.
