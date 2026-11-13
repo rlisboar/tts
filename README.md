@@ -665,7 +665,11 @@ em que a sessão fecha.
   Live") e `pausado_s` (total já pausado). O `/v1/audio/speech` síncrono não conta o
   tempo pausado nos seus 600 s.
 - Vale para o caminho **in-process** (ex.: OmniVoice). Famílias em subprocesso
-  (`qwen3_*`, `fish`, `kokoro`…) ainda não cedem a vez.
+  (`qwen3_*`, `fish`, `kokoro`…) **não pausam** — o worker tem laço próprio e o
+  watchdog de 180 s mataria um worker parado. Em vez de prometer calado, o job
+  recusa: `pausa_lote_sem_efeito` = "família em subprocesso: sem pausa pelo Live" e
+  o `progress.stage` leva o aviso (ex.: `gerando trecho 1/3 (família em
+  subprocesso: sem pausa pelo Live)`).
 
 ### Limites de geração (429)
 

@@ -7811,6 +7811,36 @@ def _lote_espera_live(job: dict, atual: int, total: int) -> float:
     return time.monotonic() - t0
 
 
+#: aviso de recusa da pausa (#1166). O worker tem laço próprio e o pai segura o
+#: `_gen_lock` o job inteiro; pausar de fora exigiria o watchdog ciente da pausa
+#: (180 s mataria um worker parado). Em vez de prometer calado, o job DIZ.
+_PAUSA_LOTE_SEM_EFEITO = "família em subprocesso: sem pausa pelo Live"
+
+
+def _pausa_lote_aviso(job: dict, stage: str | None) -> str | None:
+    """Decora o estágio com a recusa da pausa, quando ela não vale (#1166)."""
+    aviso = job.get("pausa_lote_sem_efeito")
+    if not aviso:
+        return stage
+    return f"{stage or 'gerando'} ({aviso})"
+
+
+def _marca_pausa_sem_efeito(job: dict) -> None:
+    """Marca o job quando a pausa do lote NÃO vale para a família dele.
+
+    Só na família em subprocesso; com o Live já ativo o estágio corrente é
+    redecorado na hora para o aviso não esperar o próximo poll. A setting
+    `live_pausa_lote` desligada já zera `_live_ativo_para_lote` — nada de checar
+    de novo aqui (dois lugares para a mesma regra divergem).
+    """
+    if not _live_ativo_para_lote():
+        return
+    job["pausa_lote_sem_efeito"] = _PAUSA_LOTE_SEM_EFEITO
+    atual = (job.get("progress") or {}).get("stage")
+    if atual:
+        job["progress"] = {**job["progress"], "stage": _pausa_lote_aviso(job, atual)}
+
+
 def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Path,
                           language: str, omni: dict, be: dict, sq=None,
                           model: str | None = None):
@@ -7828,6 +7858,9 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
     family = be["family"]
     hold_pieces = sq is not None  # fila ligada: não publica trechos até entregar
 
+    # #1166: a pausa entre trechos não vale neste caminho — avisa em vez de calar
+    _marca_pausa_sem_efeito(job)
+
     # libera RAM do modelo in-process antes do filho carregar o Qwen/etc.
     _unload_local_tts()
     _model_state.update(
@@ -7836,7 +7869,7 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
         backend_id=be.get("id"), backend_label=label,
     )
     job.update(status="running",
-               progress={"stage": f"iniciando worker ({label})…",
+               progress={"stage": _pausa_lote_aviso(job, f"iniciando worker ({label})…"),
                          "backend": be.get("id"), "family": family})
 
     cfg = {
@@ -7977,13 +8010,15 @@ def _run_tts_job_isolated(job_id: str, text: str, voice_id: str, voice_path: Pat
                         if st.get("total") is not None:
                             job["total"] = int(st["total"])
                         if st.get("progress") is not None and not hold_pieces:
-                            job["progress"] = st["progress"]
-                            stage = (st["progress"] or {}).get("stage")
+                            stage = _pausa_lote_aviso(
+                                job, (st["progress"] or {}).get("stage"))
+                            job["progress"] = {**(st["progress"] or {}), "stage": stage}
                             if stage:
                                 _model_state["progress"] = stage
                         elif st.get("progress") is not None and hold_pieces:
                             # ainda gera: mostra estágio sem liberar trechos
-                            stage = (st["progress"] or {}).get("stage")
+                            stage = _pausa_lote_aviso(
+                                job, (st["progress"] or {}).get("stage"))
                             if stage:
                                 job["progress"] = {"stage": stage, "backend": be.get("id"),
                                                    "family": family}
