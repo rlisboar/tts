@@ -1389,6 +1389,9 @@ _LIVE_ANTI_RUIDO = os.environ.get("TTS_LIVE_ANTI_RUIDO", "1") != "0"
 _ECO_DIVERGENCIA = 1.0 - 0.6          # 40 % de palavras diferentes, no máximo
 _ECO_DIVERGENCIA_TETO = 2             # 2 palavras, sempre
 _ECO_MIN_PALAVRAS = 2                 # 1 palavra nunca é eco
+#: piso da janela EXATA que anula o `?` inventado pelo Whisper (#301). Abaixo
+#: disto o `?` sozinho ainda faz humano: 2 palavras casadas não bastam.
+_ECO_PERGUNTA_MIN_PALAVRAS = 3
 
 
 def _parece_eco(transcript: str, ultimo_assistente: str, minimo: float = 0.6) -> bool:
@@ -1402,12 +1405,15 @@ def _parece_eco(transcript: str, ultimo_assistente: str, minimo: float = 0.6) ->
     que o assistente) e marcador de humano (`_marcador_de_humano`, que só vale
     contra referência sem o mesmo marcador).
 
-    Medido em `smoke_eco_regra.py`: 0 falso-descarte nas falas humanas e eco puro
-    preservado. **Limite conhecido:** eco que o Whisper fecha com um `?` que o
-    assistente não falou é lido como humano (ex.: "o prazo de entrega é sexta-feira?"
-    virando resposta à própria voz) — exigir palavra interrogativa junto do `?`
-    devolveria metade dos falsos-descartes, então o custo fica. Sem AEC não dá para
-    separar por energia."""
+    O `?` que o Whisper inventa no eco NÃO basta para tratar como humano quando a
+    janela é EXATA e tem `_ECO_PERGUNTA_MIN_PALAVRAS` (3) ou mais: aí o eco segue
+    eco — foi o conserto da task_21d2c3b3 (a), que derrubou 3/8 falsos cortes no
+    proxy −10. Abaixo do piso o `?` ainda decide por humano, e uma palavra de
+    `_MARCADORES_HUMANO` fora da referência também.
+
+    **Custo declarado:** o dono repetindo literalmente 3+ palavras do assistente em
+    tom de pergunta vira eco. Medido em `smoke_eco_regra.py`: 0 falso-descarte nas
+    falas humanas e eco puro preservado. Sem AEC não dá para separar por energia."""
     alvo, dito = _normaliza(ultimo_assistente), _normaliza(transcript)
     if len(dito) < _ECO_MIN_PALAVRAS or len(alvo) < _ECO_MIN_PALAVRAS:
         return False
@@ -1418,10 +1424,11 @@ def _parece_eco(transcript: str, ultimo_assistente: str, minimo: float = 0.6) ->
         # isso?" do "…posso te ajudar com isso agora mesmo."; 3/8 falsos cortes no
         # proxy −10). Com ≥ 3 palavras casando EXATO numa janela da referência, o
         # "?" sozinho não faz humano; palavra-marcador fora da referência ainda faz.
-        # Custo declarado (#301): o dono repetindo literalmente ≥ 3 palavras do
-        # agente em tom de pergunta vira eco.
+        # Custo declarado (#301): o dono repetindo literalmente o piso de 3
+        # palavras do agente em tom de pergunta vira eco.
         so_interrogacao = not ((set(dito) - set(alvo)) & _MARCADORES_HUMANO)
-        if not (so_interrogacao and len(dito) >= 3 and _janela_ate(alvo, dito, 0)):
+        if not (so_interrogacao and len(dito) >= _ECO_PERGUNTA_MIN_PALAVRAS
+                and _janela_ate(alvo, dito, 0)):
             return False
     fracao = (1.0 - minimo) if minimo else _ECO_DIVERGENCIA
     return _janela_ate(alvo, dito,

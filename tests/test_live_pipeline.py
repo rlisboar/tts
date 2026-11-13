@@ -496,6 +496,21 @@ def test_parece_eco_reconhece_janela_da_propria_fala():
     assert not lp._parece_eco("que horas são", assistente)
 
 
+def test_parece_eco_piso_de_tres_palavras_para_anular_o_interrogacao():
+    """#1172: o `?` inventado pelo Whisper só deixa de fazer humano a partir do piso.
+
+    A janela EXATA de 3+ palavras anula o `?` (o eco copia a prosódia; o "?" é
+    ruído do STT). Abaixo do piso o `?` ainda manda para humano — e é isso que o
+    número `_ECO_PERGUNTA_MIN_PALAVRAS` compra. A célula morde nos DOIS sentidos:
+    baixar o piso para 2 reprova o caso de 2 palavras; subir para 4 reprova o de 3.
+    """
+    assistente = "posso te ajudar com isso agora mesmo"
+    assert not lp._parece_eco("te ajudar?", assistente)          # 2 palavras: humano
+    assert lp._parece_eco("posso te ajudar?", assistente)        # 3 palavras: eco
+    # e a janela de 3 tem de ser EXATA: com uma troca a mais, volta a ser humano
+    assert not lp._parece_eco("posso te atrapalhar?", assistente)
+
+
 def test_parece_eco_ignora_transcript_longo_demais():
     assistente = "Sim, claro."
     assert lp._parece_eco("sim claro", assistente)
