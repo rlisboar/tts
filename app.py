@@ -7717,6 +7717,10 @@ def _unload_local_tts():
 # sessão Live ATIVA o lote não começa trecho novo: o em curso termina, e entre
 # um trecho e outro o `_gen_lock` fica LIVRE para o Live.
 _PAUSA_LOTE_PASSO_S = 0.25
+#: teto da espera por um TURNO em curso do Live (#1157). O `ociosa_s` já limita o
+#: resto; um turno travado (bug do motor, cliente mudo) não pode segurar o lote
+#: para sempre — estourou isto, o lote segue mesmo com o turno aberto.
+_LOTE_TURNO_PRESO_S = 30.0
 #: teto de trabalho efetivo do `/v1/audio/speech` síncrono (sem o tempo pausado)
 _SPEECH_SINC_TETO_S = 600.0
 
@@ -7769,7 +7773,11 @@ def _lote_espera_live(job: dict, atual: int, total: int) -> float:
 
     Roda sem o `_gen_lock` (o Live gera enquanto o lote espera) e o repega na
     volta. Não falha o job nem conta como travado: o job só mostra
-    `pausado_pelo_live`. Cancelamento sai na hora."""
+    `pausado_pelo_live`. Cancelamento sai na hora.
+
+    SEM Live ativo o lock NÃO é solto: dois jobs de lote não têm por que se
+    intercalar (dois modelos residentes, `_model_state` de um pisando no outro).
+    É também o que mantém o P5 fiel — sem Live o comportamento é o de antes."""
     if not _live_ativo_para_lote():
         return 0.0
     t0 = time.monotonic()
@@ -7778,7 +7786,11 @@ def _lote_espera_live(job: dict, atual: int, total: int) -> float:
                        "current": atual, "total": total}
 
     def _espera() -> None:
-        while _live_ativo_para_lote() and not job.get("cancelado"):
+        while not job.get("cancelado"):
+            if not _live_ativo_para_lote():
+                break                      # o Live sossegou: nem soltou o lock
+            if time.monotonic() - t0 > _LOTE_TURNO_PRESO_S:
+                break                      # turno travado: segue depois do teto
             time.sleep(_PAUSA_LOTE_PASSO_S)
 
     try:

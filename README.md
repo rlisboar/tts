@@ -632,6 +632,12 @@ em que a sessão fecha.
 
 - Settings (não admin): `live_pausa_lote` (padrão `true`; `false` = comportamento
   antigo) e `live_pausa_lote_ociosa_s`.
+- **Sem Live ativo o `_gen_lock` não é solto**: dois jobs de lote não se intercalam
+  (não há dois modelos residentes nem `_model_state` de um pisando no outro). Com
+  Live, o lock é solto entre trechos e o Live gera — é o ganho do card.
+- Teto de espera (`_LOTE_TURNO_PRESO_S`, 30 s): turno travado (sem `speech_end`
+  nem `turn_complete`) não segura o lote para o resto da sessão; estourou o teto,
+  o lote segue mesmo com o turno aberto.
 - O job **não falha nem expira** por estar pausado. `GET /api/tts/jobs/{id}` traz
   `pausado_pelo_live` (`true` enquanto espera; `progress.stage` = "pausado pelo
   Live") e `pausado_s` (total já pausado). O `/v1/audio/speech` síncrono não conta o

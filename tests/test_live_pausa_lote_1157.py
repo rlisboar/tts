@@ -282,6 +282,78 @@ def test_v1_audio_speech_respeita_a_pausa_e_conclui_quando_o_live_sai(lote):
     assert len(lote.gerados) >= 3
 
 
+def test_a_pausa_de_FRONTEIRA_de_trecho_nao_segura_o_gen_lock(lote):
+    """O GANHO do card, na pausa que se REPETE (gate #1161, achado 1).
+
+    A célula de cima só olha a pausa de ENTRADA, antes do `with _gen_lock` — ali o
+    lock nunca foi tomado, então segurá-lo não muda nada. A pausa que importa é a de
+    fronteira de trecho, DENTRO do `with`: aqui o trecho 0 termina com o Live já
+    ativo e o `_gen_lock` tem de estar LIVRE para o Live gerar."""
+    lote.segura[0] = threading.Event()
+    t, job = _dispara()
+    assert lote.entrou.setdefault(0, threading.Event()).wait(8)
+    _sessao()                               # Live ativo com o trecho 0 no meio
+    lote.segura[0].set()                    # fronteira: o trecho 1 tem de esperar
+    assert _espera(lambda: job.get("pausado_pelo_live")), "não pausou na fronteira"
+    assert app._gen_lock.acquire(timeout=2), \
+        "o lote segurou o _gen_lock na pausa de FRONTEIRA — o Live espera o job inteiro"
+    app._gen_lock.release()
+    assert len(lote.gerados) == 1, "começou trecho novo durante a pausa"
+    _fecha()
+    t.join(20)
+    assert job["status"] == "done", job.get("error")
+    assert len(lote.gerados) == job["total"]
+
+
+def test_sem_live_o_laco_nao_solta_o_gen_lock(lote, monkeypatch):
+    """Gate #1161, decisão 4: sem Live o lock NÃO é solto entre trechos.
+
+    Soltar sempre deixava dois jobs de LOTE se intercalarem — dois modelos residentes
+    e o `_model_state` de um pisando no outro — e fazia o P5 virar "quase hoje"."""
+    chamadas = []
+    real = app._corre_sem_gen_lock
+    monkeypatch.setattr(app, "_corre_sem_gen_lock",
+                        lambda fn: (chamadas.append(1), real(fn))[1])
+    t, job = _dispara()
+    t.join(20)
+    assert job["status"] == "done", job.get("error")
+    assert chamadas == [], "soltou o _gen_lock sem Live ativo"
+
+
+def test_turno_travado_nao_segura_o_lote_alem_do_teto(lote, monkeypatch):
+    """Gate #1161, decisão 5: turno preso tem teto.
+
+    `_live_turno_em_curso` sozinho não expira; sem o teto uma sessão com turno
+    travado (nada de `speech_end`/`turn_complete`) segurava o lote para sempre — o
+    TTL só a marca `vencida`, e vencida é pulada por `_live_ativo_para_lote`."""
+    monkeypatch.setattr(app, "_LOTE_TURNO_PRESO_S", 0.5)
+    _sessao(audio_pendente=True)            # turno aberto e NADA mais recente
+    t, job = _dispara()
+    assert _espera(lambda: job.get("pausado_pelo_live")), "nem pausou"
+    assert lote.gerados == []
+    t.join(15)                              # o teto solta o lote sozinho
+    assert not t.is_alive(), "o turno travado segurou o lote além do teto"
+    assert job["status"] == "done", job.get("error")
+    assert len(lote.gerados) >= 3
+
+
+def test_cancelar_na_pausa_de_FRONTEIRA_nao_gera_o_trecho_seguinte(lote):
+    """Gate #1161, achado 3: o cancelamento tem de furar TAMBÉM a pausa de
+    fronteira (a célula antiga cancelava na pausa de entrada, antes do lock)."""
+    lote.segura[0] = threading.Event()
+    t, job = _dispara()
+    assert lote.entrou.setdefault(0, threading.Event()).wait(8)
+    _sessao()
+    lote.segura[0].set()
+    assert _espera(lambda: job.get("pausado_pelo_live")), "não pausou na fronteira"
+    job["cancelado"] = True
+    t.join(10)
+    assert not t.is_alive(), "o cancelamento não furou a pausa de fronteira"
+    assert job["status"] == "error" and "cancelado" in job["error"]
+    assert len(lote.gerados) == 1, f"gerou depois do cancelamento: {len(lote.gerados)}"
+    assert not app._gen_lock._is_owned()
+
+
 def test_v1_audio_speech_nao_conta_o_tempo_pausado_no_teto(lote, monkeypatch):
     """Pausa não é síntese lenta: com o teto efetivo em 1,5 s, o pedido fica pausado
     por ~3 s (o dobro do teto) e ainda assim termina em 200, não em 504."""
@@ -304,6 +376,39 @@ def test_v1_audio_speech_nao_conta_o_tempo_pausado_no_teto(lote, monkeypatch):
     _fecha()
     th.join(30)
     assert saida["r"].status_code == 200, saida["r"].text[:300]
+
+
+def test_v1_audio_speech_estoura_o_teto_pelo_TRABALHO_mesmo_com_pausa(lote, monkeypatch):
+    """Gate #1161, achado 2: o teto é consultado de verdade.
+
+    Teto efetivo de 0,3 s e geração de 0,5 s por trecho (trabalho acima do teto); a
+    pausa de 2 s NÃO conta. Tem de dar 504. Com `join(_SPEECH_SINC_TETO_S)` o
+    relógio real (2,5 s) caberia no valor monkeypatched e sairia 200."""
+    from fastapi.testclient import TestClient
+
+    original = app._generate_chunk
+
+    def gera_lento(*a, **k):
+        time.sleep(0.5)
+        return original(*a, **k)
+
+    monkeypatch.setattr(app, "_generate_chunk", gera_lento)
+    monkeypatch.setattr(app, "_SPEECH_SINC_TETO_S", 0.3)
+    _sessao()
+    cli = TestClient(app.app, raise_server_exceptions=False, client=("127.0.0.1", 50003))
+    saida = {}
+
+    def pede():
+        saida["r"] = cli.post("/v1/audio/speech", json={
+            "input": TEXTO, "voice": "alloy", "response_format": "wav"})
+
+    th = threading.Thread(target=pede, daemon=True)
+    th.start()
+    assert _espera(lambda: any(j.get("pausado_pelo_live") for j in app._jobs_snapshot()))
+    time.sleep(2.0)                          # pausa longa: não pode virar trabalho
+    _fecha()
+    th.join(30)
+    assert saida["r"].status_code == 504, saida["r"].status_code
 
 
 def test_settings_roundtrip_e_clamp(client, auth):  # noqa: F811
