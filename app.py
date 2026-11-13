@@ -7793,12 +7793,20 @@ def _lote_espera_live(job: dict, atual: int, total: int) -> float:
     job["pausado_pelo_live"] = True
     job["progress"] = {"stage": "pausado pelo Live", "pausado_pelo_live": True,
                        "current": atual, "total": total}
+    # #1184: a primeira saída da espera. `ocioso` é o Live que sossegou
+    # (predicado falso); `teto` é o `_LOTE_TURNO_PRESO_S`; `cancelado` é o
+    # pedido. `t_ocioso` só existe na saída ociosa — o P4 é
+    # `t_soltou − t_ocioso` no cliente, não `t_soltou − t_live_fim`.
+    saida = "cancelado"
 
     def _espera() -> None:
+        nonlocal saida
         while not job.get("cancelado"):
             if not _live_ativo_para_lote():
+                saida = "ocioso"
                 break                      # o Live sossegou: nem soltou o lock
             if time.monotonic() - t0 > _LOTE_TURNO_PRESO_S:
+                saida = "teto"
                 break                      # turno travado: segue depois do teto
             time.sleep(_PAUSA_LOTE_PASSO_S)
 
@@ -7808,6 +7816,11 @@ def _lote_espera_live(job: dict, atual: int, total: int) -> float:
         job["pausado_pelo_live"] = False
         job["pausado_s"] = round(float(job.get("pausado_s") or 0.0)
                                  + (time.monotonic() - t0), 2)
+        if "pausa_lote_saida" not in job:
+            job["pausa_lote_saida"] = saida
+            job["t_pausa_saida"] = time.time()
+            if saida == "ocioso":
+                job["t_ocioso"] = job["t_pausa_saida"]
     return time.monotonic() - t0
 
 

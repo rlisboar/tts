@@ -117,6 +117,7 @@ def test_sem_live_o_job_e_identico_ao_de_hoje(lote):
     assert job["status"] == "done", job.get("error")
     assert job["total"] == len(lote.gerados) >= 3
     assert not job.get("pausado_pelo_live") and not job.get("pausado_s")
+    assert "t_ocioso" not in job and "pausa_lote_saida" not in job
 
 
 def test_com_live_ativo_nenhum_trecho_comeca_e_o_gen_lock_fica_livre(lote):
@@ -135,6 +136,9 @@ def test_com_live_ativo_nenhum_trecho_comeca_e_o_gen_lock_fica_livre(lote):
     assert job["status"] == "done", job.get("error")
     assert len(lote.gerados) == job["total"]
     assert job["pausado_pelo_live"] is False and job["pausado_s"] >= 0.5
+    assert job["pausa_lote_saida"] == "ocioso"
+    assert isinstance(job.get("t_ocioso"), float)
+    assert abs(time.time() - job["t_ocioso"]) < 30
 
 
 def test_o_trecho_em_curso_termina_e_o_proximo_espera(lote):
@@ -172,6 +176,8 @@ def test_sessao_aberta_em_silencio_por_ociosa_s_o_lote_retoma(lote, monkeypatch)
         t.join(20)
         assert job["status"] == "done", job.get("error")
         assert 0.2 <= job["pausado_s"] < 3.0
+        assert job["pausa_lote_saida"] == "ocioso"
+        assert isinstance(job.get("t_ocioso"), float)
         assert "s1" in app._live_sessions        # retomou com a sessão ainda aberta
     finally:
         parar.set()
@@ -335,6 +341,8 @@ def test_turno_travado_nao_segura_o_lote_alem_do_teto(lote, monkeypatch):
     assert not t.is_alive(), "o turno travado segurou o lote além do teto"
     assert job["status"] == "done", job.get("error")
     assert len(lote.gerados) >= 3
+    assert job["pausa_lote_saida"] == "teto"
+    assert "t_ocioso" not in job
 
 
 def test_cancelar_na_pausa_de_FRONTEIRA_nao_gera_o_trecho_seguinte(lote):
@@ -352,6 +360,8 @@ def test_cancelar_na_pausa_de_FRONTEIRA_nao_gera_o_trecho_seguinte(lote):
     assert job["status"] == "error" and "cancelado" in job["error"]
     assert len(lote.gerados) == 1, f"gerou depois do cancelamento: {len(lote.gerados)}"
     assert not app._gen_lock._is_owned()
+    assert job["pausa_lote_saida"] == "cancelado"
+    assert "t_ocioso" not in job
 
 
 def test_v1_audio_speech_nao_conta_o_tempo_pausado_no_teto(lote, monkeypatch):
