@@ -332,17 +332,28 @@ def test_dica_desempata_pela_ordem_de_largada(tmp_path):
     o caso vivo no teste de `-j 3` acima). A lista vem na ordem de LARGADA; dentro da
     janela de empate o veredito é o ÚLTIMO lançado. Fora da janela, a idade manda."""
     fonte = (AQUI / "run_sh.sh").read_text()
-    # da FUNÇÃO (o `_DICA_JANELA_S` pode não existir numa versão sabotada)
+    # A CONSTANTE vem do próprio runner (#1175): o roteiro não pode fixar 0,5, senão
+    # mudar o valor no `run_sh.sh` não derruba nada. Só a função e a linha da
+    # constante são extraídas — o resto do runner não roda.
     ini = fonte.index("_dica() {")
     fim = fonte.index("\n}\n", ini) + 3
+    assert "_DICA_JANELA_S=" in fonte, "a constante da janela sumiu do runner"
+    linha = fonte.index("_DICA_JANELA_S=")
+    constante = fonte[linha:fonte.index("\n", linha)]
     roteiro = tmp_path / "dica.sh"
-    roteiro.write_text(f"DIR={tmp_path!s}\n_DICA_JANELA_S=${{_DICA_JANELA_S:-0.5}}\n"
+    # `DICA_JANELA_S_ROTEIRO` permite medir a SEMÂNTICA da janela (não só o valor
+    # que está no runner, que é o default aqui)
+    roteiro.write_text(f"DIR={tmp_path!s}\n"
+                       f"_DICA_JANELA_S=${{DICA_JANELA_S_ROTEIRO:-{constante.split('=')[1]}}}\n"
                        + fonte[ini:fim] + '\n_dica settings.json\n')
 
-    def _roda(eventos: str) -> str:
+    def _roda(eventos: str, janela: str | None = None) -> str:
         (tmp_path / "eventos").write_text(eventos)
+        env = {k: v for k, v in os.environ.items()}
+        if janela is not None:
+            env["DICA_JANELA_S_ROTEIRO"] = janela
         r = subprocess.run(["bash", str(roteiro)], capture_output=True, text=True,
-                           timeout=30)
+                           timeout=30, env=env)
         assert r.returncode == 0, r.stderr
         return r.stdout.strip()
 
@@ -353,6 +364,12 @@ def test_dica_desempata_pela_ordem_de_largada(tmp_path):
     # fora da janela a idade volta a mandar, mesmo com a nova por último
     saida = _roda("settings.json|novo.sh:0.02 velho.sh:9.0\n")
     assert saida.split()[0] == "novo.sh", saida
+    # a JANELA é o que decide: com 1 ms o par acima (0,05 x 0,40) deixa de empatar
+    # e o veredito volta a ser o mais novo. Se o número não fosse lido, continuaria
+    # sendo o último lançado.
+    saida = _roda("settings.json|zz_parada.sh:0.05 suja_o_dono.sh:0.40\n",
+                  janela="0.001")
+    assert saida.split()[0] == "zz_parada.sh", saida
     # sem candidato nenhum: escritor de fora
     assert _roda("settings.json|\n") == "-"
 

@@ -6,10 +6,13 @@ eventos diferente (a morte do socket ANTIGO com o novo vivo, o cliente do pool
 devolvido fora de ordem, o teto sob concorrência real).
 """
 
+import asyncio
 import contextlib
 import concurrent.futures
+import json as _json
 import threading
 import time
+import types
 
 import pytest
 from starlette.websockets import WebSocketDisconnect
@@ -401,6 +404,108 @@ def test_pipeline_que_nao_nasce_fecha_o_dsh_orfao_mesmo_com_a_task_cancelada(
         assert enviado.is_set(), "o close nem chegou ao pool"
         _espera(lambda: fechados,
                 "o close foi cancelado junto com a task — dsh órfão de novo (#188)")
+    finally:
+        portao.set()
+        pool.shutdown(wait=False)
+
+
+class _WsFalso:
+    """WebSocket mínimo para dirigir o endpoint DIRETO (fora do TestClient).
+
+    O TestClient esconde a task, e o que se mede aqui é a task: se o `finally`
+    engolir o `CancelledError` ela termina "completa" em vez de cancelada."""
+
+    def __init__(self):
+        self.headers = {"host": "127.0.0.1:7860"}   # loopback de verdade
+        self.query_params = {}
+        self.client = types.SimpleNamespace(host="127.0.0.1")
+        self.enviados = []
+        self._primeiro = True
+        self._disconnect = asyncio.Event()
+
+    async def accept(self, **k):
+        pass
+
+    async def receive(self):
+        if self._primeiro:
+            self._primeiro = False
+            return {"type": "websocket.receive", "text": _json.dumps({"type": "setup"})}
+        await self._disconnect.wait()
+        return {"type": "websocket.disconnect"}
+
+    async def send_json(self, obj):
+        self.enviados.append(obj)
+
+    async def send_bytes(self, b):
+        self.enviados.append(b)
+
+    async def close(self, *a, **k):
+        pass
+
+
+def test_o_cancelamento_nao_e_engolido_pela_limpeza(live_limpo, hist_limpo, monkeypatch):
+    """#1175: o `finally` NÃO pode engolir o cancelamento.
+
+    Sem o `raise cancelada` final a task terminaria "completa": o `CancelledError`
+    que estoura no `await` do fechamento fica guardado para o fim, e sem o reerguer
+    ele morre ali — alguém apaga como código morto. O contrato é o inverso: limpa
+    tudo e REERGUE.
+
+    A janela é a mesma da célula do #188 (pool de UM operário ocupado: o close fica
+    na fila), senão o cancelamento cai no `receive()` e o `finally` nem chega a
+    capturar — o `finally` roda desenrolando o erro original e o reerguer seria
+    inócuo.
+    """
+    fechados, enviado, portao = [], threading.Event(), threading.Event()
+
+    class DshOrfao:
+        def close(self):
+            fechados.append(self)
+
+    class PoolEspiao:
+        def __init__(self, real):
+            self._real = real
+
+        def submit(self, fn, *a, **k):
+            fut = self._real.submit(fn, *a, **k)
+            enviado.set()
+            return fut
+
+    def explode(sess):
+        sess["dsh"] = DshOrfao()
+        raise RuntimeError("boom")
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1,
+                                                 thread_name_prefix="gate194-cancela")
+    monkeypatch.setattr(app, "_LIVE_FECHAMENTO_POOL", PoolEspiao(pool))
+    monkeypatch.setattr(app, "_live_pipe_novo", explode)
+
+    async def cenario():
+        ws = _WsFalso()
+        t = asyncio.create_task(app.live_ws(ws))
+        await asyncio.sleep(0.05)            # deixa o setup armar a sessão
+        ws._disconnect.set()                 # desconexão limpa: o `finally` começa
+        for _ in range(2500):
+            if enviado.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert enviado.is_set(), "o close nem chegou ao pool"
+        await asyncio.sleep(0.05)            # a task chega ao await do close
+        t.cancel()                           # ...e é aí que ela é cancelada
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        assert t.cancelled(), "o finally engoliu o CancelledError"
+        assert not app._live_sessions, "e a limpeza ainda tem de ter rodado"
+        portao.set()
+        for _ in range(500):                 # o close segue no pool (shield)
+            if fechados:
+                break
+            await asyncio.sleep(0.01)
+        assert fechados, "o close morreu junto com o cancelamento"
+
+    try:
+        pool.submit(portao.wait)
+        asyncio.run(cenario())
     finally:
         portao.set()
         pool.shutdown(wait=False)
