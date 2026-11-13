@@ -174,7 +174,7 @@ for d in DURS:
 
 # ---------- FLEURS: impostor garantido (corpora disjuntos), θ final
 fl = sorted(glob.glob(str(fleurs_dir / "**" / "*.wav"), recursive=True))
-fl_aud = [trim(le(f)) for f in fl[:400]]
+fl_aud = [trim(le(f)) for f in fl]   # #1169: todos (919), não 400
 fleurs = {}
 for d in DURS:
     cs = []
@@ -182,7 +182,7 @@ for d in DURS:
         c = recorta(a_, d)
         if c is not None:
             cs.append(c)
-        if len(cs) >= 400:
+        if len(cs) >= len(fl_aud):
             break
     if not cs:
         continue

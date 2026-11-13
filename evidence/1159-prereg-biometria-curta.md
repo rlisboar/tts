@@ -74,3 +74,32 @@ com o #1158 (transcrição) sem mudar o que o #1158 decidir sobre o filtro.
 θ, FAR (CV e FLEURS), FRR, n. Veredito APROVADO/REPROVADO por critério, contra este
 texto. Só então muda `app.py` (piso por duração, θ(d), mensagem), com testes; qa-review
 gateia. Qualquer desvio do protocolo é declarado no readout, não corrigido aqui.
+
+---
+
+## ADENDO #1169 (2026-11-13) — mudança de ESCOPO, declarada antes da recontagem
+
+O readout do #1159 (commit `fcdfc19`) mostrou que o alvo de 0,1 % não é resolvível
+com 18 360 pares (o mínimo aqui é 20 000) e que o θ de 3 s aceita 2,14 % de impostor
+no FLEURS contra alvo de 1 %. O #1169 recalibra o θ; para o número valer, o corpus de
+impostor cresce. **O que muda, e só isto:**
+
+- **Locutores de cadastro (MLS PT): 18 → 48.** O split `dev`+`test` do MLS PT tem
+  só 20 locutores e estava todo baixado; os novos vêm do split **`train`** (133
+  disponíveis), mesmo corpus e mesma licença (CC BY 4.0). Parou em 48 porque o
+  rendimento cai (vários `.tar.gz` do `train` são do MESMO locutor) e 48 já passa
+  do alvo com folga.
+- **Arquivos FLEURS por duração: 400 → 919** (todos os do split `test`). Com 48
+  cadastros isso dá **44 112 pares impostores por duração**, 2,2× o mínimo — o alvo
+  de 0,1 % deixa de ser "não resolvível" por tamanho.
+
+**O que NÃO muda:** protocolo (trim por energia, cadastro 3×3 s de 3 enunciados,
+recortes de início aleatório, seed 1159, k=5 dobras por locutor, θ só na calibração),
+critério de aprovação (IC95 superior de FAR ≤ alvo na CV **e** no FLEURS; útil =
+FRR ≤ 25 %) e o θ de produção como ponto de partida.
+
+**Custódia do corpus** (exigência do PM): tudo fora do repo, em
+`~/.cache/tts-bancada/{mls-pt,fleurs-pt}`; procedência = `facebook/multilingual_librispeech`
+`data/mls_portuguese/{dev,test,train}` e `google/fleurs` `data/pt_br/test`, ambos
+CC BY 4.0. O readout publica split, contagem por split e sha256 do manifesto de
+arquivos usados — FAR sem corpus identificado não vale.
