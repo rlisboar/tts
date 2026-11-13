@@ -164,3 +164,32 @@ def test_instala_leva_o_gancho_do_alarme_no_plist_e_o_script_para_fora_de_docume
 def test_instala_com_bootstrap_falho_nao_e_silencioso(amb, tmp_path):
     r, _ = _instala(amb, tmp_path, 5)
     assert r.returncode == 1 and "bootstrap falhou" in r.stderr and "instalado" not in r.stdout
+
+
+def test_instala_sem_gancho_avisa_que_o_alarme_e_passivo(amb, tmp_path):
+    """Sem `TTS_PROBE_ALARME_CMD` o alarme é log+arquivo que ninguém lê (#1152, P3).
+
+    A premissa do incidente é "ninguém viu" — então a instalação não pode sair
+    silenciosa. Avisa no stderr e instala assim mesmo.
+    """
+    amb.pop("TTS_PROBE_ALARME_CMD", None)
+    r, home = _instala(amb, tmp_path, 0)
+    assert r.returncode == 0 and "instalado" in r.stdout, r.stderr
+    assert "aviso:" in r.stderr and "TTS_PROBE_ALARME_CMD" in r.stderr
+    assert (home / ".tts-studio/probe_externo.sh").exists()
+
+
+def test_desinstala_limpa_plist_copia_e_estado_e_preserva_o_log(amb, tmp_path):
+    """Desinstalar não pode deixar lixo: some agente, plist, cópia e estado."""
+    r, home = _instala(amb, tmp_path, 0, TTS_PROBE_ALARME_CMD="true")
+    assert r.returncode == 0, r.stderr
+    est = Path(amb["TTS_PROBE_ESTADO"])
+    est.mkdir(parents=True, exist_ok=True)
+    (est / "ALARME.lan").write_text("x")
+    r = subprocess.run(["bash", str(SONDA), "desinstala"], env={**amb, "HOME": str(home)},
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert not (home / "Library/LaunchAgents/com.local.tts-probe-externo.plist").exists()
+    assert not (home / ".tts-studio/probe_externo.sh").exists()
+    assert not est.exists()
+    assert "log preservado" in r.stdout

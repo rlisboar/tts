@@ -37,4 +37,20 @@ aponta para o IP de LAN, de propósito) devolvia 1033/timeout. ~20 h sem ningué
     tools/probe_externo.sh status
     TTS_PROBE_ALARME_CMD='…'           # gancho do alarme (recebe PROBE_ALVO/PROBE_FALHAS/PROBE_MSG)
 
+**Sem o gancho o alarme é passivo** (log + arquivo que ninguém lê) — o `instala` avisa.
+No Mac de dev, que tem sessão gráfica, o padrão é notificação do macOS:
+
+    TTS_PROBE_ALARME_CMD='osascript -e "display notification \"$PROBE_MSG\" with title \"produção $PROBE_ALVO\""' \
+      tools/probe_externo.sh instala
+
+No mini não há GUI para o ssh: use o que o PM lê (webhook/`send_message` do time) ou aceite o log.
+O gancho não recebe chave — `PROBE_MSG` já vem sem segredo.
+
+## Regra que o incidente deixou
+
+Teste que o CI roda **não abre socket fora do loopback** (`0.0.0.0`/`::`): o CI usa o mesmo
+Python da produção, e cada bind na interface é um motivo para o ALF perguntar de novo. As
+suítes de navegador escutam em `0.0.0.0` de propósito (a UI abre pelo IP de LAN) e ficam fora
+do CI — quem cobra é `tests/test_ci_nao_escuta_fora_do_loopback.py`.
+
 Só `GET /health`; nenhuma chave é lida, enviada ou gravada. Log: `~/Library/Logs/tts-studio/probe-externo.log`.

@@ -100,10 +100,22 @@ ${ENVXML}<key>StartInterval</key><integer>300</integer>
 </dict></plist>
 PL
     chmod 600 "$ag"
+    # Sem gancho o alarme é PASSIVO (log + arquivo que ninguém lê) — e a premissa
+    # do incidente é justamente "ninguém viu". Avisa alto, sem impedir a instalação.
+    if [ -z "${TTS_PROBE_ALARME_CMD:-}" ]; then
+      echo "aviso: TTS_PROBE_ALARME_CMD não definido — o alarme fica só no log ($LOG) e em $ESTADO/ALARME.*." >&2
+      echo "       ex.: TTS_PROBE_ALARME_CMD='osascript -e \"display notification \\\"\$PROBE_MSG\\\" with title \\\"produção \$PROBE_ALVO\\\"\"'" >&2
+    fi
     launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
     if launchctl bootstrap "gui/$(id -u)" "$ag"; then echo "instalado: $LABEL (a cada 300 s) — log $LOG"
     else echo "ERRO: launchctl bootstrap falhou — a sonda NÃO está agendada (plist em $ag)" >&2; exit 1; fi ;;
   desinstala)
-    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null; rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"; echo "removido: $LABEL" ;;
+    # Remove o que o `instala` criou: o agente, o plist e a CÓPIA do script
+    # (~/.tts-studio, por TCC). O estado vai junto — contador órfão confundiria
+    # uma reinstalação. O log fica: é diagnóstico, e o caminho é impresso.
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
+    rm -f "$HOME/Library/LaunchAgents/$LABEL.plist" "$HOME/.tts-studio/probe_externo.sh"
+    rm -rf "$ESTADO"
+    echo "removido: $LABEL (agente, plist e cópia do script) — log preservado em $LOG" ;;
   *) echo "uso: $0 uma | laco | status | instala | desinstala" >&2; exit 2 ;;
 esac
