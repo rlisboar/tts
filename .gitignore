@@ -78,3 +78,6 @@ models/**/*.whl
 # config que vem junto do grafo do DFN3 (contrato do repositório): artefato igual
 # ao `.onnx`, materializado pelo script — ver models/dfn3-onnx/NOTICE
 models/dfn3-onnx/config.json
+# pids da árvore do test_fila_suite_1130 (o teste roda com cwd no repo)
+filho.pid
+neto.pid
