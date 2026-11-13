@@ -135,3 +135,25 @@ def test_gate_numa_fala_de_dois_e_meio_segundos_usa_o_theta_da_duracao(tmp_path,
     out = app._speaker_gate_ok(_wav(tmp_path, 2.5))
     assert out["speaker_limiar"] == pytest.approx(app._speaker_limiar_por_dur(2.5), abs=1e-3)
     assert out["speaker_limiar"] > 0.39, "θ plano vazando: a duração não foi usada"
+
+
+@pytest.mark.parametrize("bruto,canonico", [
+    ("1", "1"), ("1.0", "1"), (" 1 ", "1"), ("1,0", "1"),
+    ("0.1", "0.1"), ("0.10", "0.1"), ("0,1", "0.1"),
+    ("", ""), (None, ""), ("2", "2"),
+])
+def test_alvo_e_normalizado_antes_de_comparar(bruto, canonico):
+    """`settings.json` escrito à mão traz "1.0"/"1,0": sem normalizar, o alvo caía
+    calado no limiar de identidade e o dono perdia a curva por duração."""
+    assert app._normaliza_alvo_far(bruto) == canonico
+
+
+def test_alvo_1_virgula_usa_a_curva(monkeypatch):
+    """A consequência do normalizador, no caminho de verdade."""
+    monkeypatch.setitem(app._settings, "speaker_far_alvo", "1,0")
+    assert app._speaker_limiar("ecapa:v1", 3.0)[0] == pytest.approx(0.417, abs=1e-3)
+
+
+def test_alvo_0_1_virgula_usa_a_tabela_plana(monkeypatch):
+    monkeypatch.setitem(app._settings, "speaker_far_alvo", "0,1")
+    assert app._speaker_limiar("ecapa:v1", 3.0)[0] == 0.48

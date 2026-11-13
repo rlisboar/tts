@@ -10979,6 +10979,25 @@ def _speaker_limiar_por_dur(dur_s: float | None) -> float | None:
     return None
 
 
+def _normaliza_alvo_far(bruto) -> str:
+    """`speaker_far_alvo` na forma canônica: "1" ou "0.1" (vazio = sem alvo).
+
+    O campo vem de `settings.json` escrito à mão, então `"1.0"`, `"1,0"` e `" 1 "`
+    aparecem. Comparar a string crua fazia `"1.0"` cair calado no limiar de
+    identidade — o dono perdia a curva por duração sem nenhum aviso."""
+    v = str(bruto if bruto is not None else "").strip().replace(",", ".")
+    if not v:
+        return ""
+    try:
+        n = float(v)
+    except ValueError:
+        return v
+    for canonico, valor in (("0.1", 0.1), ("1", 1.0)):
+        if abs(n - valor) < 1e-9:
+            return canonico
+    return v
+
+
 def _speaker_limiar(modelo: str, dur_s: float | None = None) -> tuple[float, str]:
     """(limiar, modo). Resemblyzer: AS-norm com alvo de FAR, senão o
     `speaker_threshold` cru. ECAPA (#982): sempre CRU — o alvo de FAR escolhe a
@@ -10986,7 +11005,7 @@ def _speaker_limiar(modelo: str, dur_s: float | None = None) -> tuple[float, str
 
     Com `dur_s` e alvo `1`, o ECAPA usa o θ da DURAÇÃO (#1169); o alvo `0.1` fica
     na tabela plana (0,48) porque a curva dele não foi para o código ainda."""
-    alvo = str(_settings.get("speaker_far_alvo") or "").strip()
+    alvo = _normaliza_alvo_far(_settings.get("speaker_far_alvo"))
     if modelo in _SPEAKER_DECIDE_CRU:
         if alvo == "1":
             por_dur = _speaker_limiar_por_dur(dur_s)
@@ -11027,8 +11046,13 @@ def _speaker_gate_ok(wav_path: Path) -> dict:
     if not perfis:
         return {}  # sem perfis cadastrados: gate inerte (não é erro)
     melhor, sim, houve_emb, modo = _speaker_pontua(wav_path, perfis)
-    # duração SEMPRE: o θ do ECAPA depende dela (#1169) e o ramo de "sem embedding"
-    # também precisa do número para separar curto de falha (#1158)
+    # A duração é decodificada uma vez e serve a dois fins: separar "curto" de
+    # "falhou" (#1158) e escolher o θ (#1169). No modo `label` com embedding ela é
+    # custo puro — mas é uma decodificação do MESMO wav que o extrator acabou de
+    # ler, então fica barata; decodificar só quando o θ é usado deixaria dois
+    # caminhos e o `label` voltaria a não saber separar curto de falha.
+    # Divergência conhecida: aqui a duração é a do ARQUIVO; o cadastro mede a FALA
+    # pelo VAD, que é menor — a direção é conservadora (arquivo maior ⇒ θ maior).
     dur = _speaker_dur_s(wav_path)
     if not houve_emb:
         # sem embedding: `label` antes seguia MUDO — agora diz que seguiu sem
